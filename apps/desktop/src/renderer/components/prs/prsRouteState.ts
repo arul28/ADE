@@ -44,22 +44,18 @@ function parseOptionalId(value: string | null): string | null {
 export function parsePrsRouteState(args: { search?: string | null; hash?: string | null }): ParsedPrsRouteState {
   const searchParams = parseSearch(args.search ?? "");
   const hashParams = parseHashParams(args.hash ?? "");
+  const hashHasRouteSignal = hashParams.has("tab") || hashParams.has("workflow");
+  const routeParams = hashHasRouteSignal ? hashParams : searchParams;
 
-  const pick = (key: string): string | null =>
-    parseOptionalId(searchParams.get(key)) ?? parseOptionalId(hashParams.get(key));
+  const pick = (key: string): string | null => parseOptionalId(routeParams.get(key));
 
-  // Workflow precedence: when both search and hash carry a workflow value, the
-  // hash is authoritative. In BrowserRouter mock mode (e.g. when the outer
-  // location is `?tab=workflows&workflow=queue#/prs?...&workflow=rebase`), the
-  // inner hash is the current in-app location; the outer search may be stale
-  // and must not mask it. Still fall back to search when hash has no workflow.
-  const hashWorkflowRaw = hashParams.get("workflow");
-  const searchWorkflowRaw = searchParams.get("workflow");
-  const hashWorkflow = parseWorkflowTab(hashWorkflowRaw);
-  const workflowTab = hashWorkflow ?? parseWorkflowTab(searchWorkflowRaw);
+  // In BrowserRouter mock mode the inner hash is the current in-app location,
+  // while the outer search may be stale from a previous view. Once the hash
+  // carries any PR route signal, treat it as authoritative for the whole route.
+  const workflowTab = parseWorkflowTab(routeParams.get("workflow"));
 
   return {
-    tab: parseTab(searchParams.get("tab") ?? hashParams.get("tab")),
+    tab: parseTab(routeParams.get("tab")),
     workflowTab,
     laneId: pick("laneId"),
     prId: pick("prId"),

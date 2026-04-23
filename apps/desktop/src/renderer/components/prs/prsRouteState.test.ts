@@ -2,17 +2,17 @@ import { describe, expect, it } from "vitest";
 import { buildPrsRouteSearch, parsePrsRouteState, resolvePrsActiveTab } from "./prsRouteState";
 
 describe("prsRouteState", () => {
-  it("parses route state from search params and falls back to hash params when needed", () => {
+  it("treats a hash PR route as authoritative over stale outer search params", () => {
     expect(
       parsePrsRouteState({
         search: "?tab=normal&prId=pr-123&laneId=lane-search",
         hash: "#/prs?tab=workflows&workflow=queue&queueGroupId=group-hash",
       }),
     ).toEqual({
-      tab: "normal",
+      tab: "workflows",
       workflowTab: "queue",
-      laneId: "lane-search",
-      prId: "pr-123",
+      laneId: null,
+      prId: null,
       queueGroupId: "group-hash",
       eventId: null,
       threadId: null,
@@ -154,5 +154,25 @@ describe("resolvePrsActiveTab", () => {
     expect(resolved.isWorkflowRoute).toBe(true);
     expect(resolved.effectiveWorkflow).toBe("rebase");
     expect(resolved.activeTab).toBe("rebase");
+  });
+
+  it("keeps hash lane ids with the hash workflow when outer search is stale", () => {
+    const parsed = parsePrsRouteState({
+      search: "?tab=workflows&workflow=rebase&laneId=old",
+      hash: "#/prs?tab=workflows&workflow=rebase&laneId=new",
+    });
+    expect(parsed.workflowTab).toBe("rebase");
+    expect(parsed.laneId).toBe("new");
+  });
+
+  it("defaults a bare hash workflows route to integration even when outer search says normal", () => {
+    const parsed = parsePrsRouteState({
+      search: "?tab=normal",
+      hash: "#/prs?tab=workflows",
+    });
+    const resolved = resolvePrsActiveTab(parsed);
+    expect(parsed.tab).toBe("workflows");
+    expect(resolved.isWorkflowRoute).toBe(true);
+    expect(resolved.activeTab).toBe("integration");
   });
 });
