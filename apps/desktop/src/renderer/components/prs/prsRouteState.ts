@@ -44,7 +44,8 @@ function parseOptionalId(value: string | null): string | null {
 export function parsePrsRouteState(args: { search?: string | null; hash?: string | null }): ParsedPrsRouteState {
   const searchParams = parseSearch(args.search ?? "");
   const hashParams = parseHashParams(args.hash ?? "");
-  const hashHasRouteSignal = hashParams.has("tab") || hashParams.has("workflow");
+  const hashHasRouteSignal =
+    parseTab(hashParams.get("tab")) !== null || parseWorkflowTab(hashParams.get("workflow")) !== null;
   const routeParams = hashHasRouteSignal ? hashParams : searchParams;
 
   const pick = (key: string): string | null => parseOptionalId(routeParams.get(key));

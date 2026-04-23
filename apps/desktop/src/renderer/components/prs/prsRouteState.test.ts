@@ -175,4 +175,16 @@ describe("resolvePrsActiveTab", () => {
     expect(resolved.isWorkflowRoute).toBe(true);
     expect(resolved.activeTab).toBe("integration");
   });
+
+  it("ignores invalid hash route signals instead of dropping valid search params", () => {
+    const parsed = parsePrsRouteState({
+      search: "?tab=normal&prId=pr-123",
+      hash: "#/prs?tab=bogus",
+    });
+    const resolved = resolvePrsActiveTab(parsed);
+    expect(parsed.tab).toBe("normal");
+    expect(parsed.prId).toBe("pr-123");
+    expect(resolved.isWorkflowRoute).toBe(false);
+    expect(resolved.activeTab).toBe("normal");
+  });
 });
