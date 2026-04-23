@@ -416,7 +416,7 @@ describe("TerminalView", () => {
     // 1) timer flush kicks off the render + initRendererChain
     // 2) microtask flush lets the dynamic import resolve
     // 3) second timer flush lets the post-import code run
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 200; i++) {
       await act(async () => {});
       await flushAllTimers();
       const runtime = getTerminalRuntimeSnapshot("session-dom");
