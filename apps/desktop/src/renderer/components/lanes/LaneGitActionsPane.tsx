@@ -1571,7 +1571,7 @@ export function LaneGitActionsPane({
             {autoRebaseStatus.state !== "autoRebased" ? (
               isAutoRebaseFailure ? (
                 <SmartTooltip content={{
-                  label: "Open Rebase/Merge tab",
+                  label: "Open Rebase/Merge Tab",
                   description: "View detailed rebase information and resolve issues.",
                   effect: "Navigate to the rebase details view",
                 }}>

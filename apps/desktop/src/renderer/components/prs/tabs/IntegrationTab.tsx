@@ -161,7 +161,7 @@ function RebaseGuidancePanel({
               navigate({ pathname: "/prs", search: `?${search.toString()}` });
             }}
           >
-            OPEN REBASE/MERGE TAB
+            Open Rebase/Merge tab
           </button>
           {onResimulate ? (
             <button

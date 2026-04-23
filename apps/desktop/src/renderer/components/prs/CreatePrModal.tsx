@@ -447,7 +447,7 @@ function LaneWarningPanel({
                   cursor: "pointer",
                 }}
               >
-                Open Rebase/Merge Tab
+                Open Rebase/Merge tab
               </button>
               <span style={{ fontSize: 10, color: C.textMuted, fontFamily: MONO_FONT }}>
                 Review rebase status before PR creation{rebaseLaneIds.length > 1 ? ` (${rebaseLaneIds.length} lanes)` : ""}.

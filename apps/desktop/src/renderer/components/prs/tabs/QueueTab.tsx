@@ -469,7 +469,13 @@ export function QueueTab({
     const need = findLaneBaseNeed(visibleRebaseNeeds, laneId);
     setSelectedRebaseItemId(need ? rebaseNeedItemKey(need) : null);
     setActiveTab("rebase");
-  }, [setActiveTab, setSelectedRebaseItemId, visibleRebaseNeeds]);
+    // Keep the URL in sync with the tab switch so deep links / back-button
+    // behaviour match other openRebaseTab migrations (CreatePrModal,
+    // IntegrationTab). The `laneId` drives PRsPage's resolveRouteRebaseSelection
+    // on the receiving side.
+    const search = new URLSearchParams({ tab: "workflows", workflow: "rebase", laneId });
+    navigate({ pathname: "/prs", search: `?${search.toString()}` });
+  }, [navigate, setActiveTab, setSelectedRebaseItemId, visibleRebaseNeeds]);
 
   const handleLandCurrentPr = React.useCallback(async () => {
     if (!selectedGroup) return;

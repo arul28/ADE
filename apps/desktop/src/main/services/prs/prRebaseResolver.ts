@@ -158,6 +158,11 @@ export async function launchRebaseResolutionChat(
   await deps.agentChatService.sendMessage({
     sessionId: session.id,
     text: prompt,
+    // Show the short human-readable title in the transcript instead of the
+    // full composed prompt (which is long and technical). Mirrors
+    // prIssueResolver's pattern; agentChatService falls back to `text` when
+    // displayText is absent, which would surface the raw prompt to the user.
+    displayText: title,
     ...(reasoningEffort ? { reasoningEffort } : {}),
   });
 
