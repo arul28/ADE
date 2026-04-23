@@ -446,6 +446,24 @@ describe("githubService issue-domain helpers", () => {
     expect(lastFetchCall()[0]).toMatch(/page=2/);
   });
 
+  it("keeps following cached pagination links when a page returns 304", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, [{ number: 1 }], {
+        etag: '"page-1"',
+        link: '<https://api.github.com/repos/acme/ade/issues?page=2&per_page=1>; rel="next"',
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, [{ number: 2 }], { etag: '"page-2"' }))
+      .mockResolvedValueOnce(jsonResponse(304, {}))
+      .mockResolvedValueOnce(jsonResponse(304, {}));
+    const service = makeService();
+
+    expect((await service.listRepoIssues("acme", "ade", { perPage: 1 })).map((issue) => issue.number)).toEqual([1, 2]);
+    expect((await service.listRepoIssues("acme", "ade", { perPage: 1 })).map((issue) => issue.number)).toEqual([1, 2]);
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+    expect(mockFetch.mock.calls[2]?.[1]?.headers).toMatchObject({ "if-none-match": '"page-1"' });
+    expect(mockFetch.mock.calls[3]?.[0]).toContain("page=2");
+  });
+
   it("URL-encodes owner/name so special characters don't break the path", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
     const service = makeService();

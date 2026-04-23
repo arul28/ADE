@@ -36,6 +36,12 @@ const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as co
 const SIDEBAR_ICON_SIZE = 20;
 const SIDEBAR_AVATAR_SIZE_CLASS = "h-5 w-5";
 
+function primaryTabPath(pathname: string): string {
+  const match = mainItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`));
+  if (match) return match.to;
+  return pathname === settingsItem.to || pathname.startsWith(`${settingsItem.to}/`) ? settingsItem.to : pathname;
+}
+
 export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null }) {
   const project = useAppStore((s) => s.project);
   const showWelcome = useAppStore((s) => s.showWelcome);
@@ -81,7 +87,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const renderItem = (
     it: { to: string; label: string; icon: React.ElementType },
   ) => {
-    const isActive = location.pathname === it.to;
+    const isActive = primaryTabPath(location.pathname) === it.to;
     const isActiveAllowed = (!showWelcome && hasActiveProject) || it.to === "/project";
 
     if (!isActiveAllowed) {

@@ -98,6 +98,12 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
       } as any;
     }
+    if (action.type === "launch-mission") {
+      return {
+        type: action.type,
+        ...(action.sessionTitle ? { missionTitle: action.sessionTitle } : {}),
+      } as any;
+    }
     return { type: action.type } as any;
   });
   return {

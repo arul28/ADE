@@ -148,7 +148,7 @@ export function ActionRow({
               value={value.suiteId ?? ""}
               onChange={(event) => onChange({ ...value, suiteId: event.target.value })}
             >
-              <option value="">Project default</option>
+              <option value="" disabled>Select a suite</option>
               {suites.map((suite) => (
                 <option key={suite.id} value={suite.id}>
                   {suite.name ?? suite.id}

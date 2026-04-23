@@ -30,7 +30,7 @@ const DEFAULT_MODEL_ID =
   ?? getDefaultModelDescriptor("claude")?.id
   ?? "anthropic/claude-sonnet-4-6";
 
-type TriggerFamily = "manual" | "schedule" | "github" | "linear" | "local-git" | "file-change" | "webhook";
+type TriggerFamily = "manual" | "schedule" | "github" | "linear" | "local-git" | "file-change" | "lane" | "session" | "webhook";
 
 const TRIGGER_FAMILIES: Array<{ value: TriggerFamily; label: string }> = [
   { value: "github", label: "GitHub" },
@@ -38,6 +38,8 @@ const TRIGGER_FAMILIES: Array<{ value: TriggerFamily; label: string }> = [
   { value: "schedule", label: "Schedule" },
   { value: "local-git", label: "Local git" },
   { value: "file-change", label: "File change" },
+  { value: "lane", label: "Lane" },
+  { value: "session", label: "Session" },
   { value: "webhook", label: "Webhook" },
   { value: "manual", label: "Manual" },
 ];
@@ -68,6 +70,11 @@ const TRIGGER_OPTIONS: Record<TriggerFamily, Array<{ value: AutomationTrigger["t
     { value: "git.push", label: "Push completed" },
   ],
   "file-change": [{ value: "file.change", label: "File changed" }],
+  lane: [
+    { value: "lane.created", label: "Lane created" },
+    { value: "lane.archived", label: "Lane archived" },
+  ],
+  session: [{ value: "session-end", label: "Session ended" }],
   webhook: [
     { value: "github-webhook", label: "GitHub relay webhook" },
     { value: "webhook", label: "Custom webhook" },
@@ -89,6 +96,8 @@ function triggerFamilyForType(type: AutomationTrigger["type"]): TriggerFamily {
   if (type === "git.commit" || type === "git.push") return "local-git";
   if (type.startsWith("linear.")) return "linear";
   if (type === "file.change") return "file-change";
+  if (type === "lane.created" || type === "lane.archived") return "lane";
+  if (type === "session-end") return "session";
   if (type === "github-webhook" || type === "webhook") return "webhook";
   if (type === "manual") return "manual";
   return "manual";
@@ -106,6 +115,10 @@ function defaultTriggerForFamily(family: TriggerFamily): AutomationTrigger {
       return { type: "git.push" };
     case "file-change":
       return { type: "file.change" };
+    case "lane":
+      return { type: "lane.created" };
+    case "session":
+      return { type: "session-end" };
     case "webhook":
       return { type: "github-webhook", event: "pull_request", secretRef: "github-webhook" };
     case "manual":
@@ -464,6 +477,10 @@ export function RuleEditorPanel({
                 <LocalGitFields trigger={primaryTrigger} onPatch={patchTrigger} />
               ) : triggerFamily === "file-change" ? (
                 <FileChangeFields trigger={primaryTrigger} onPatch={patchTrigger} />
+              ) : triggerFamily === "lane" ? (
+                <LaneFields trigger={primaryTrigger} onPatch={patchTrigger} />
+              ) : triggerFamily === "session" ? (
+                <div className="text-[11px] text-[#93A4B8]">Runs when an agent session ends.</div>
               ) : triggerFamily === "webhook" ? (
                 <WebhookFields trigger={primaryTrigger} onPatch={patchTrigger} />
               ) : (
@@ -724,6 +741,27 @@ function FileChangeFields({
           })
         }
         placeholder="src/**, apps/**"
+      />
+    </label>
+  );
+}
+
+function LaneFields({
+  trigger,
+  onPatch,
+}: {
+  trigger: AutomationTrigger;
+  onPatch: (patch: Partial<AutomationTrigger>) => void;
+}) {
+  return (
+    <label className="space-y-1 block">
+      <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Name pattern</span>
+      <input
+        className={INPUT_CLS}
+        style={INPUT_STYLE}
+        value={trigger.namePattern ?? ""}
+        onChange={(event) => onPatch({ namePattern: event.target.value })}
+        placeholder="feature/*"
       />
     </label>
   );

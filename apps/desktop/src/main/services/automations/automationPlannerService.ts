@@ -603,6 +603,12 @@ function normalizeDraft(args: {
     if (stateTransition) trigger.stateTransition = stateTransition;
     const changedFields = Array.isArray(raw?.changedFields) ? raw.changedFields.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
     if (changedFields.length) trigger.changedFields = changedFields;
+    if (raw?.activeHours && typeof raw.activeHours === "object") {
+      const start = safeTrim(raw.activeHours.start);
+      const end = safeTrim(raw.activeHours.end);
+      const timezone = safeTrim(raw.activeHours.timezone) || "local";
+      if (start && end) trigger.activeHours = { start, end, timezone };
+    }
     const secretRef = safeTrim(raw?.secretRef);
     if ((triggerType === "webhook" || triggerType === "github-webhook") && !secretRef) {
       issues.push({ level: "error", path: `triggers[${index}].secretRef`, message: "Webhook triggers require secretRef." });

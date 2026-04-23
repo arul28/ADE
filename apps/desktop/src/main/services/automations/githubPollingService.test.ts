@@ -743,6 +743,33 @@ describe("githubPollingService — error resilience", () => {
     expect(comments[0]?.rawPayload).toMatchObject({ commentId: 101, body: "new comment" });
   });
 
+  it("does not snapshot a first-seen PR until comment cursor initialization succeeds", async () => {
+    const { service, dispatchCalls } = makeHarness({
+      issuesByCall: [[], [], []],
+      pullsByCall: [
+        [{ number: 42, updatedAt: "2026-04-23T10:00:00Z", comments: 1 }],
+        [{ number: 42, updatedAt: "2026-04-23T10:00:00Z", comments: 1 }],
+        [{ number: 42, updatedAt: "2026-04-23T11:00:00Z", comments: 2 }],
+      ],
+      commentsByCall: [
+        new Error("comments API down"),
+        [{ id: 100, body: "existing", createdAt: "2026-04-23T10:00:00Z" }],
+        [
+          { id: 100, body: "existing", createdAt: "2026-04-23T10:00:00Z" },
+          { id: 101, body: "new comment", createdAt: "2026-04-23T11:00:00Z" },
+        ],
+      ],
+    });
+
+    await service.pollNow();
+    await service.pollNow();
+    await service.pollNow();
+
+    const comments = dispatchCalls.filter((c) => c.triggerType === "github.pr_commented");
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.rawPayload).toMatchObject({ commentId: 101, body: "new comment" });
+  });
+
   it("continues to other repos when one repo's poll throws", async () => {
     const dispatchCalls: DispatchCall[] = [];
     const cursors = new Map<string, string>();

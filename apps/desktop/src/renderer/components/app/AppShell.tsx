@@ -56,6 +56,11 @@ type PrToast = {
   event: Extract<PrEventPayload, { type: "pr-notification" }>;
 };
 
+function primaryTabPath(pathname: string): string {
+  const roots = ["/project", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/missions", "/settings"];
+  return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
+}
+
 type AiBannerState = {
   laneId: string | null;
   jobId: string | null;
@@ -720,7 +725,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/missions": "tab-tint-missions",
       "/settings": "tab-tint-settings",
     };
-    return tintMap[location.pathname] ?? "";
+    return tintMap[primaryTabPath(location.pathname)] ?? "";
   }, [location.pathname]);
 
   const shouldHoldProjectRouteForOnboarding =

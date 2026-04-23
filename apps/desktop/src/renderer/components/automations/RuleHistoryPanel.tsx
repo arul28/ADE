@@ -60,9 +60,11 @@ export function RuleHistoryPanel({
   }, []);
 
   useEffect(() => {
-    void load();
+    detailRequestId.current += 1;
     setSelectedRunId(null);
     setDetail(null);
+    setDetailLoading(false);
+    void load();
   }, [automationId, load]);
 
   useEffect(() => {

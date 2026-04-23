@@ -265,7 +265,14 @@ function LabelPicker({
           className={cn(INPUT_CLS, "flex-1")}
           style={INPUT_STYLE}
           value={input}
-          onChange={(event) => setInput(event.target.value)}
+          onChange={(event) => {
+            const next = event.target.value;
+            setInput(next);
+            if (available.includes(next.trim())) commit(next);
+          }}
+          onBlur={() => {
+            if (available.includes(input.trim())) commit(input);
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && input.trim()) {
               event.preventDefault();
@@ -319,7 +326,16 @@ function AuthorPicker({
           className={cn(INPUT_CLS, "flex-1")}
           style={INPUT_STYLE}
           value={input}
-          onChange={(event) => setInput(event.target.value)}
+          onChange={(event) => {
+            const next = event.target.value;
+            setInput(next);
+            const normalized = next.trim().replace(/^@/, "");
+            if (available.includes(normalized)) commit(next);
+          }}
+          onBlur={() => {
+            const normalized = input.trim().replace(/^@/, "");
+            if (available.includes(normalized)) commit(input);
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && input.trim()) {
               event.preventDefault();

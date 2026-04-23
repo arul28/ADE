@@ -422,7 +422,6 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
             summary: `PR #${pr.number} opened: ${pr.title}`,
           });
         }
-        snapshotByRepo.set(pr.number, currentSnapshot);
         if (since === undefined) {
           if ((pr.comments ?? 0) > 0) {
             await pollComments(repo, pr.number, since, ctx, /* isPr */ true, /* emit */ false);
@@ -431,6 +430,7 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
         } else {
           await pollReviews(repo, pr.number, ctx);
         }
+        snapshotByRepo.set(pr.number, currentSnapshot);
         continue;
       }
 

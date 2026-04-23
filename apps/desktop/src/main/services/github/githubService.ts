@@ -209,7 +209,7 @@ export function createGithubService({
 
   // ETag cache for conditional GET requests. Responses that return 304 Not Modified
   // don't count against GitHub's rate limit, so this dramatically reduces API usage.
-  const etagCache = new Map<string, { etag: string; data: unknown }>();
+  const etagCache = new Map<string, { etag: string; data: unknown; linkHeader: string | null }>();
   const ETAG_CACHE_MAX_SIZE = 200;
 
   const apiRequest = async <T>(args: {
@@ -218,7 +218,7 @@ export function createGithubService({
     query?: Record<string, string | number | boolean | undefined | null>;
     body?: unknown;
     token?: string;
-  }): Promise<{ data: T; response: Response | null }> => {
+  }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const token = (args.token ?? readStoredToken() ?? "").trim();
     if (!token) {
       throw new Error("GitHub token missing. Set it in Settings.");
@@ -258,7 +258,7 @@ export function createGithubService({
     if (response.status === 304) {
       const cached = etagCache.get(urlKey);
       if (cached) {
-        return { data: cached.data as T, response };
+        return { data: cached.data as T, response, linkHeader: cached.linkHeader };
       }
     }
 
@@ -295,6 +295,8 @@ export function createGithubService({
       throw new Error(message + detail);
     }
 
+    const linkHeader = response.headers.get("link");
+
     // Cache ETag for future conditional requests
     if (args.method === "GET") {
       const etag = response.headers.get("etag");
@@ -304,11 +306,11 @@ export function createGithubService({
           const firstKey = etagCache.keys().next().value;
           if (firstKey) etagCache.delete(firstKey);
         }
-        etagCache.set(urlKey, { etag, data });
+        etagCache.set(urlKey, { etag, data, linkHeader });
       }
     }
 
-    return { data: data as T, response };
+    return { data: data as T, response, linkHeader };
   };
 
   const apiRequestAllPages = async <T>(args: {
@@ -318,7 +320,7 @@ export function createGithubService({
   }): Promise<T[]> => {
     const first = await apiRequest<T[]>({ method: "GET", ...args });
     const out = Array.isArray(first.data) ? [...first.data] : [];
-    let nextUrl = parseNextLink(first.response?.headers.get("link") ?? null);
+    let nextUrl = parseNextLink(first.linkHeader ?? first.response?.headers.get("link") ?? null);
     while (nextUrl) {
       const url = new URL(nextUrl);
       const next = await apiRequest<T[]>({
@@ -327,7 +329,7 @@ export function createGithubService({
         token: args.token,
       });
       if (Array.isArray(next.data)) out.push(...next.data);
-      nextUrl = parseNextLink(next.response?.headers.get("link") ?? null);
+      nextUrl = parseNextLink(next.linkHeader ?? next.response?.headers.get("link") ?? null);
     }
     return out;
   };
