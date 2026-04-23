@@ -22,7 +22,7 @@ function makeHarness(overrides?: {
   detectRepo?: () => Promise<{ owner: string; name: string } | null>;
   issuesByCall?: Array<Array<Parameters<typeof makeIssue>[0]>>;
   pullsByCall?: Array<Array<Parameters<typeof makePull>[0]>>;
-  commentsByCall?: Array<Array<Parameters<typeof makeComment>[0]>>;
+  commentsByCall?: Array<Array<Parameters<typeof makeComment>[0]> | Error>;
   reviewsByCall?: Array<Array<Parameters<typeof makeReview>[0]>>;
   extraRepos?: Array<{ owner: string; name: string }>;
   initialCursor?: string;
@@ -69,6 +69,7 @@ function makeHarness(overrides?: {
     listIssueComments: vi.fn(async () => {
       const batch = commentsByCall[commentsIdx] ?? [];
       commentsIdx += 1;
+      if (batch instanceof Error) throw batch;
       return batch.map((spec) => makeComment(spec));
     }),
     listPullRequestReviews: vi.fn(async () => {
@@ -719,6 +720,29 @@ describe("githubPollingService — lifecycle", () => {
 });
 
 describe("githubPollingService — error resilience", () => {
+  it("does not advance issue comment snapshots until comment polling succeeds", async () => {
+    const { service, dispatchCalls } = makeHarness({
+      issuesByCall: [
+        [{ number: 10, updatedAt: "2026-04-23T10:00:00Z", comments: 0 }],
+        [{ number: 10, updatedAt: "2026-04-23T11:00:00Z", comments: 1 }],
+        [{ number: 10, updatedAt: "2026-04-23T11:00:00Z", comments: 1 }],
+      ],
+      pullsByCall: [[], []],
+      commentsByCall: [
+        new Error("comments API down"),
+        [{ id: 101, body: "new comment", createdAt: "2026-04-23T10:30:00Z" }],
+      ],
+    });
+
+    await service.pollNow();
+    await service.pollNow();
+    await service.pollNow();
+
+    const comments = dispatchCalls.filter((c) => c.triggerType === "github.issue_commented");
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.rawPayload).toMatchObject({ commentId: 101, body: "new comment" });
+  });
+
   it("continues to other repos when one repo's poll throws", async () => {
     const dispatchCalls: DispatchCall[] = [];
     const cursors = new Map<string, string>();

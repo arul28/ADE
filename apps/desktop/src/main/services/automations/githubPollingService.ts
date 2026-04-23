@@ -327,15 +327,15 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
             summary: `Issue #${issue.number} opened: ${issue.title}`,
           });
         }
+        if (since === undefined && (issue.comments ?? 0) > 0) {
+          await pollComments(repo, issue.number, since, ctx, /* isPr */ false, /* emit */ false);
+        }
         snapshotByRepo.set(issue.number, {
           labels: currentLabels,
           updatedAt: issue.updated_at,
           state: issue.state,
           commentCount: issue.comments ?? 0,
         });
-        if (since === undefined && (issue.comments ?? 0) > 0) {
-          await pollComments(repo, issue.number, since, ctx, /* isPr */ false, /* emit */ false);
-        }
         continue;
       }
 
@@ -380,18 +380,18 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
         });
       }
 
+      // New comments. The `issues` endpoint gives us a count; if it grew we
+      // fetch comments since the last cursor.
+      if (newCommentCount > prev.commentCount) {
+        await pollComments(repo, issue.number, since, ctx, /* isPr */ false);
+      }
+
       snapshotByRepo.set(issue.number, {
         labels: currentLabels,
         updatedAt: issue.updated_at,
         state: issue.state,
         commentCount: issue.comments ?? prev.commentCount,
       });
-
-      // New comments. The `issues` endpoint gives us a count; if it grew we
-      // fetch comments since the last cursor.
-      if (newCommentCount > prev.commentCount) {
-        await pollComments(repo, issue.number, since, ctx, /* isPr */ false);
-      }
     }
 
     return maxUpdatedAt;
