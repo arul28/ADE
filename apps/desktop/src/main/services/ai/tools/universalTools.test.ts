@@ -4,7 +4,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkerSandboxConfig } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
-import { checkWorkerSandbox, createUniversalToolSet, resolveWorkerShellInvocation } from "./universalTools";
+import {
+  checkWorkerSandbox,
+  createUniversalToolSet,
+  resolveWorkerShellInvocation,
+  tokenizePowerShellCommand,
+} from "./universalTools";
 
 const isWin = process.platform === "win32";
 
@@ -92,6 +97,20 @@ function sandboxWith(overrides: Partial<WorkerSandboxConfig>): WorkerSandboxConf
     ...overrides
   };
 }
+
+// ============================================================================
+// tokenizePowerShellCommand
+// ============================================================================
+
+describe("tokenizePowerShellCommand", () => {
+  it("treats doubled single quotes as a literal ' inside a single-quoted string", () => {
+    expect(tokenizePowerShellCommand("Remove-Item 'C:\\a\\user''s file.txt' -Force")).toEqual([
+      "Remove-Item",
+      "C:\\a\\user's file.txt",
+      "-Force",
+    ]);
+  });
+});
 
 // ============================================================================
 // checkWorkerSandbox

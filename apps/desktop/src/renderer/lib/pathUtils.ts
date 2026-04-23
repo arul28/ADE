@@ -85,12 +85,12 @@ function collapsePathSegments(root: string, segments: string[]): string[] {
 }
 
 export function normalizePath(value: string): string {
-  const trimmed = normalizeSeparators(value).trim();
-  if (!trimmed.length) return "";
+  const normalizedInput = normalizeSeparators(value);
+  if (!normalizedInput.length) return "";
 
-  const collapsed = trimmed.startsWith("//")
-    ? `//${trimmed.slice(2).replace(/\/+/g, "/")}`
-    : trimmed.replace(/\/+/g, "/");
+  const collapsed = normalizedInput.startsWith("//")
+    ? `//${normalizedInput.slice(2).replace(/\/+/g, "/")}`
+    : normalizedInput.replace(/\/+/g, "/");
   const normalizedDrivePrefix = collapsed.replace(/^\/([A-Za-z]:)(?=\/|$)/, "$1");
 
   if (/^[A-Za-z]:$/.test(normalizedDrivePrefix)) return `${normalizedDrivePrefix}/`;

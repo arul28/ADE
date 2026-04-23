@@ -258,7 +258,7 @@ function requiresTurnMemoryGuard(state?: TurnMemoryPolicyState): boolean {
   return !!state && state.classification === "required" && !state.orientationSatisfied && !state.explicitSearchPerformed;
 }
 
-function tokenizePowerShellCommand(command: string): string[] {
+export function tokenizePowerShellCommand(command: string): string[] {
   const tokens: string[] = [];
   let current = "";
   let quote: "'" | '"' | null = null;
@@ -284,7 +284,12 @@ function tokenizePowerShellCommand(command: string): string[] {
     }
     if (quote) {
       if (ch === quote) {
-        quote = null;
+        if (quote === "'" && command[i + 1] === "'") {
+          current += "'";
+          i += 1;
+        } else {
+          quote = null;
+        }
       } else {
         current += ch;
       }

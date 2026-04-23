@@ -1677,7 +1677,7 @@ export function LaneGitActionsPane({
               effect: hasStaged
                 ? `${amendCommit ? "Amend" : "Commit"} ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}`
                 : "No staged files to commit",
-              shortcut: "\u2318+Enter",
+              shortcut: `${modifierKeyLabel}+Enter`,
             }}>
               <button
                 type="button"

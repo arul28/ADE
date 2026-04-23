@@ -25,6 +25,11 @@ describe("pathUtils", () => {
     expect(normalizePath("../repo/./src/../main.ts")).toBe("../repo/main.ts");
   });
 
+  it("preserves leading and trailing spaces in path segments", () => {
+    expect(normalizePath(" docs/spec.md")).toBe(" docs/spec.md");
+    expect(normalizePath("src/App.tsx ")).toBe("src/App.tsx ");
+  });
+
   it("compares Windows paths case-insensitively", () => {
     expect(normalizePathForComparison("C:\\Users\\Me\\Repo")).toBe("c:/users/me/repo");
     expect(isPathEqualOrDescendant("c:/users/me/repo/src/main.ts", "C:\\Users\\Me\\Repo")).toBe(true);
