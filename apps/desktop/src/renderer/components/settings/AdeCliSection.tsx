@@ -59,6 +59,9 @@ export function AdeCliSection({ compact = false }: Props) {
   const terminalReady = status?.terminalInstalled === true;
   const agentReady = status?.agentPathReady === true;
   const bundledReady = status?.bundledAvailable === true;
+  const installTargetDir = status?.installTargetPath
+    ? status.installTargetPath.replace(/[\\/](?:ade|ade\.cmd)$/i, "")
+    : "";
   let statusColor: string = COLORS.textMuted;
   let statusLabel = "Manual action";
   if (terminalReady) {
@@ -118,7 +121,7 @@ export function AdeCliSection({ compact = false }: Props) {
 
         {!status?.installTargetDirOnPath && status?.installTargetPath ? (
           <div style={{ ...infoBoxStyle(), marginTop: 14 }}>
-            {status.installTargetPath.replace(/\/ade$/, "")} is not on this shell PATH. Agents still get the bundled command; add that directory to your shell PATH for Terminal use.
+            {installTargetDir} is not on this shell PATH. Agents still get the bundled command; add that directory to your shell PATH for Terminal use.
           </div>
         ) : null}
 

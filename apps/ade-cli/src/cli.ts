@@ -5,6 +5,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { type JsonRpcHandler, type JsonRpcId, type JsonRpcRequest } from "./jsonrpc";
+import { isAdeMcpNamedPipePath } from "../../desktop/src/shared/adeMcpIpc";
 
 type JsonObject = Record<string, unknown>;
 
@@ -1641,7 +1642,8 @@ function resolveRoots(options: GlobalOptions): { projectRoot: string; workspaceR
 }
 
 function commandExists(command: string): boolean {
-  const result = spawnSync("which", [command], {
+  const lookupCommand = process.platform === "win32" ? "where" : "which";
+  const result = spawnSync(lookupCommand, [command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   });
@@ -1787,9 +1789,9 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
 
 function checkComputerUseReadiness(): ReadinessCheck {
   const isDarwin = process.platform === "darwin";
-  const screenshotReady = !isDarwin || commandExists("screencapture");
-  const appLaunchReady = !isDarwin || commandExists("open");
-  const guiReady = !isDarwin || commandExists("swift") || commandExists("osascript");
+  const screenshotReady = isDarwin && commandExists("screencapture");
+  const appLaunchReady = isDarwin && commandExists("open");
+  const guiReady = isDarwin && (commandExists("swift") || commandExists("osascript"));
   const ready = isDarwin && screenshotReady && appLaunchReady && guiReady;
   return {
     ready,
@@ -1814,9 +1816,11 @@ function checkComputerUseReadiness(): ReadinessCheck {
 }
 
 function checkPathReadiness(): ReadinessCheck {
-  const which = runLocalCommand("which", ["ade"], process.cwd());
+  const lookup = process.platform === "win32"
+    ? runLocalCommand("where", ["ade"], process.cwd())
+    : runLocalCommand("which", ["ade"], process.cwd());
   const current = path.resolve(process.argv[1] ?? "");
-  const whichPath = which.ok && which.stdout ? path.resolve(which.stdout.split("\n")[0]!) : null;
+  const whichPath = lookup.ok && lookup.stdout ? path.resolve(lookup.stdout.split(/\r?\n/)[0]!) : null;
   const onPath = Boolean(whichPath);
   return {
     ready: onPath,
@@ -1831,6 +1835,7 @@ function checkPathReadiness(): ReadinessCheck {
       sameBinary: Boolean(whichPath && current && whichPath === current),
       electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE === "1",
       electronVersion: process.versions.electron ?? null,
+      lookupCommand: process.platform === "win32" ? "where" : "which",
     },
   };
 }
@@ -1862,8 +1867,10 @@ function buildReadinessSnapshot(args: {
   const adeDir = path.join(connection.projectRoot, ".ade");
   const sharedConfigPath = path.join(adeDir, "ade.yaml");
   const localConfigPath = path.join(adeDir, "local.yaml");
-  const socketExists = fs.existsSync(connection.socketPath);
   const desktopSocketAvailable = connection.mode === "desktop-socket";
+  const socketExists = isAdeMcpNamedPipePath(connection.socketPath)
+    ? desktopSocketAvailable
+    : fs.existsSync(connection.socketPath);
   const checks = {
     git: checkGitReadiness(connection.projectRoot),
     github: checkGitHubReadiness(connection.projectRoot),
@@ -2082,6 +2089,10 @@ class InProcessJsonRpcClient {
   }
 }
 
+export function shouldAttemptDesktopSocketConnection(socketPath: string): boolean {
+  return isAdeMcpNamedPipePath(socketPath) || fs.existsSync(socketPath);
+}
+
 async function initializeConnection(connection: CliConnection, options: GlobalOptions): Promise<void> {
   await connection.request("ade/initialize", {
     protocolVersion: PROTOCOL_VERSION,
@@ -2103,7 +2114,7 @@ async function createConnection(options: GlobalOptions): Promise<CliConnection> 
   const { resolveAdeLayout } = await import("../../desktop/src/shared/adeLayout");
   const layout = resolveAdeLayout(roots.projectRoot);
 
-  if (!options.headless && fs.existsSync(layout.socketPath)) {
+  if (!options.headless && shouldAttemptDesktopSocketConnection(layout.socketPath)) {
     try {
       const socketClient = await SocketJsonRpcClient.connect(layout.socketPath, options.timeoutMs);
       const connection: CliConnection = {
@@ -2665,7 +2676,13 @@ async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalO
     connection = await createConnection(options);
   } catch (error) {
     const roots = resolveRoots(options);
-    const socketPath = path.join(roots.projectRoot, ".ade", "ade.sock");
+    let socketPath = path.join(roots.projectRoot, ".ade", "ade.sock");
+    try {
+      const { resolveAdeLayout } = await import("../../desktop/src/shared/adeLayout");
+      socketPath = resolveAdeLayout(roots.projectRoot).socketPath;
+    } catch {
+      // Keep the conventional Unix fallback if shared layout loading fails.
+    }
     const requestedMode = options.requireSocket ? "desktop-socket" : options.headless ? "headless" : "auto";
     const cause = error instanceof Error ? error.message : String(error);
     const sourceRuntimeInterop = isSourceRuntimeInteropError(cause);

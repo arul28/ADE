@@ -31,6 +31,7 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
 
 function resolveAutomationCwdBase(
@@ -388,15 +389,18 @@ async function runCodexExec(args: {
   }
   const commandPreview = [quoteIfNeeded(codexExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
-  const child = spawn(codexExecutable, cliArgs, {
+  const env = {
+    ...process.env,
+    // Keep output parseable.
+    NO_COLOR: "1",
+    TERM: "dumb"
+  };
+  const invocation = resolveCliSpawnInvocation(codexExecutable, cliArgs, env);
+  const child = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
-    env: {
-      ...process.env,
-      // Keep output parseable.
-      NO_COLOR: "1",
-      TERM: "dumb"
-    },
-    stdio: ["ignore", "pipe", "pipe"]
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
 
   let stderr = "";
@@ -469,14 +473,17 @@ async function runClaudeHeadless(args: {
   const claudeExecutable = resolveClaudeCodeExecutable().path;
   const commandPreview = [quoteIfNeeded(claudeExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
-  const child = spawn(claudeExecutable, cliArgs, {
+  const env = {
+    ...process.env,
+    NO_COLOR: "1",
+    TERM: "dumb"
+  };
+  const invocation = resolveCliSpawnInvocation(claudeExecutable, cliArgs, env);
+  const child = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
-    env: {
-      ...process.env,
-      NO_COLOR: "1",
-      TERM: "dumb"
-    },
-    stdio: ["ignore", "pipe", "pipe"]
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
 
   let stdout = "";

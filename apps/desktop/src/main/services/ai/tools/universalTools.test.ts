@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkerSandboxConfig } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
-import { checkWorkerSandbox, createUniversalToolSet } from "./universalTools";
+import { checkWorkerSandbox, createUniversalToolSet, resolveWorkerShellInvocation } from "./universalTools";
+
+const isWin = process.platform === "win32";
 
 const tmpDirs: string[] = [];
 function makeTmpDir(prefix: string): string {
@@ -144,10 +146,75 @@ describe("checkWorkerSandbox", () => {
     expect(result.allowed).toBe(true);
   });
 
+  it("treats POSIX double-slash paths as POSIX paths", () => {
+    const result = checkWorkerSandbox(
+      "//mnt/shared/tool --version",
+      sandboxWith({ allowedPaths: ["/"] }),
+      "/tmp/project",
+    );
+
+    expect(result.allowed).toBe(true);
+  });
+
   it("rejects mutating writes into /usr/local/bin even under the default sandbox", () => {
     const result = checkWorkerSandbox("cp ./payload /usr/local/bin/tool", DEFAULT_WORKER_SANDBOX_CONFIG, "/tmp/project");
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("blocks Windows registry mutation commands", () => {
+    const result = checkWorkerSandbox(
+      "reg add HKCU\\Software\\Foo /v Bar /t REG_SZ /d 1",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Blocked command pattern");
+  });
+
+  it("blocks reg.exe mutation commands", () => {
+    const result = checkWorkerSandbox(
+      "reg.exe add HKCU\\Software\\Foo /v Bar /t REG_SZ /d 1",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Blocked command pattern");
+  });
+
+  it("blocks format.exe drive commands", () => {
+    const result = checkWorkerSandbox("format.exe c:", DEFAULT_WORKER_SANDBOX_CONFIG, "C:\\projects\\repo");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Blocked command pattern");
+  });
+
+  it("blocks Windows drive paths outside the sandbox", () => {
+    const result = checkWorkerSandbox(
+      "type C:\\Windows\\win.ini",
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("blocks Windows copy commands that target protected files", () => {
+    const result = checkWorkerSandbox(
+      "copy foo .env",
+      sandboxWith({ protectedFiles: ["\\.env"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("protected file pattern");
+  });
+
+  it("allows git.exe read-only subcommands like Unix git", () => {
+    const result = checkWorkerSandbox(
+      "git.exe status",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(true);
   });
 
   it("blocks commands that are not in the safe list when blockByDefault is enabled", () => {
@@ -1129,17 +1196,31 @@ describe("createUniversalToolSet", () => {
 
   // ── bash tool ───────────────────────────────────────────────────
 
+  it("resolveWorkerShellInvocation uses cmd on Windows and bash elsewhere", () => {
+    const inv = resolveWorkerShellInvocation("echo test");
+    if (isWin) {
+      expect(inv.file.toLowerCase().endsWith("cmd.exe")).toBe(true);
+      expect(inv.args[0]).toBe("/d");
+      expect(inv.args[1]).toBe("/s");
+      expect(inv.args[2]).toBe("/c");
+      expect(inv.args[3]).toBe("echo test");
+    } else {
+      expect(inv.file).toBe("bash");
+      expect(inv.args).toEqual(["-c", "echo test"]);
+    }
+  });
+
   it("executes a basic bash command and returns output", async () => {
     const cwd = makeTmpDir("ade-tools-bash-basic-");
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
     const result = await (tools.bash as any).execute({
-      command: "echo hello from bash",
+      command: isWin ? "echo hello from worker-shell" : "echo hello from bash",
       timeout: 5_000,
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("hello from bash");
+    expect(result.stdout).toContain(isWin ? "hello from worker-shell" : "hello from bash");
   });
 
   it("returns nonzero exit code for failing commands", async () => {
@@ -1147,7 +1228,7 @@ describe("createUniversalToolSet", () => {
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
     const result = await (tools.bash as any).execute({
-      command: "exit 42",
+      command: isWin ? "exit /b 42" : "exit 42",
       timeout: 5_000,
     });
 

@@ -144,7 +144,7 @@ export function createComputerUseArtifactPath(projectRoot: string, stem: string,
 export function toProjectArtifactUri(projectRoot: string, absolutePath: string): string {
   const relative = path.relative(projectRoot, absolutePath);
   if (!relative.startsWith("..") && !path.isAbsolute(relative)) {
-    return relative;
+    return relative.replace(/\\/g, "/");
   }
   return absolutePath;
 }

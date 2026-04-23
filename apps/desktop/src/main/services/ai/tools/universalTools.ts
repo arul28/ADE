@@ -15,6 +15,7 @@ import type { createMemoryService } from "../../memory/memoryService";
 import type { AgentChatApprovalDecision, AgentChatEvent, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
 import { getErrorMessage, isEnoentError, isWithinDir, resolvePathWithinRoot } from "../../shared/utils";
+import { terminateProcessTree } from "../../shared/processExecution";
 
 const execFileAsync = promisify(execFile);
 
@@ -174,6 +175,7 @@ function compileSandbox(config: WorkerSandboxConfig): CompiledSandbox {
 
 const WRITE_COMMAND_RE = /(?:>|>>|\btee\b|\bcp\s|\bmv\s|\brm\s|\bwrite\b|\bedit\b)/;
 const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
+const MUTATING_CMD_RE = /\b(?:copy|xcopy|robocopy|move|del|erase|rd|rmdir|md|mkdir|ren|rename)\b|>>?|tee\b/i;
 
 const MEMORY_GUARD_REASON = "Search memory before mutating files or running mutating commands for this turn.";
 
@@ -189,22 +191,49 @@ function requiresTurnMemoryGuard(state?: TurnMemoryPolicyState): boolean {
 }
 
 function bashCommandLikelyMutates(command: string): boolean {
-  return MUTATING_BASH_RE.test(command) || WRITE_COMMAND_RE.test(command);
+  return MUTATING_BASH_RE.test(command) || MUTATING_CMD_RE.test(command) || WRITE_COMMAND_RE.test(command);
 }
 
-function resolveAllowedWriteRoots(cwd: string, sandboxConfig?: WorkerSandboxConfig): string[] {
-  const roots = new Set<string>([path.resolve(cwd)]);
+function resolveAllowedWriteRoots(cwd: string, sandboxConfig?: WorkerSandboxConfig, pathApi: SandboxPathApi = getSandboxPathApi(cwd)): string[] {
+  const roots = new Set<string>([pathApi.resolve(cwd)]);
   if (sandboxConfig?.allowedPaths) {
     for (const allowedPath of sandboxConfig.allowedPaths) {
       if (typeof allowedPath !== "string" || allowedPath.trim().length === 0) continue;
-      roots.add(path.resolve(cwd, allowedPath));
+      roots.add(pathApi.resolve(cwd, allowedPath));
     }
   }
   return [...roots];
 }
 
-function canonicalizePathForContainment(absPath: string): string {
-  const resolved = path.resolve(absPath);
+type SandboxPathApi = typeof path | typeof path.win32;
+
+function isWindowsPathLike(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    /^[a-zA-Z]:$/.test(trimmed) ||
+    /(?:^|[\s"'`(=])[a-zA-Z]:[\\/]/.test(value) ||
+    trimmed.startsWith("\\\\")
+  );
+}
+
+function getSandboxPathApi(cwd: string, commandOrPath = ""): SandboxPathApi {
+  return process.platform === "win32" || isWindowsPathLike(cwd) || isWindowsPathLike(commandOrPath)
+    ? path.win32
+    : path;
+}
+
+function isWithinDirForPathApi(pathApi: SandboxPathApi, root: string, candidate: string): boolean {
+  const normalizedRoot = pathApi === path.win32 ? root.toLowerCase() : root;
+  const normalizedCandidate = pathApi === path.win32 ? candidate.toLowerCase() : candidate;
+  const rel = pathApi.relative(normalizedRoot, normalizedCandidate);
+  return rel === "" || (!rel.startsWith("..") && !pathApi.isAbsolute(rel));
+}
+
+function canonicalizePathForContainment(absPath: string, pathApi: SandboxPathApi = getSandboxPathApi(absPath)): string {
+  const resolved = pathApi.resolve(absPath);
+  if (pathApi === path.win32 && process.platform !== "win32") {
+    return resolved;
+  }
   try {
     return fs.realpathSync(resolved);
   } catch (error) {
@@ -213,11 +242,11 @@ function canonicalizePathForContainment(absPath: string): string {
     }
   }
 
-  const parent = path.dirname(resolved);
+  const parent = pathApi.dirname(resolved);
   if (parent === resolved) {
     return resolved;
   }
-  return path.join(canonicalizePathForContainment(parent), path.basename(resolved));
+  return pathApi.join(canonicalizePathForContainment(parent, pathApi), pathApi.basename(resolved));
 }
 
 function toPortablePath(value: string): string {
@@ -229,17 +258,18 @@ function matchesProtectedPathPattern(
   cwd: string,
   filePath: string,
   targetPath: string,
+  pathApi: SandboxPathApi = getSandboxPathApi(cwd, filePath),
 ): boolean {
-  const resolvedCwd = path.resolve(cwd);
+  const resolvedCwd = pathApi.resolve(cwd);
   const normalizedRaw = normalizePathToken(filePath);
   const normalizedTarget = toPortablePath(targetPath);
-  const relativeTarget = toPortablePath(path.relative(resolvedCwd, targetPath));
+  const relativeTarget = toPortablePath(pathApi.relative(resolvedCwd, targetPath));
   const candidates = new Set<string>([
     normalizedRaw,
     normalizedTarget,
-    path.basename(normalizedTarget),
+    pathApi.basename(targetPath),
   ]);
-  if (relativeTarget.length && !relativeTarget.startsWith("..") && !path.isAbsolute(relativeTarget)) {
+  if (relativeTarget.length && !relativeTarget.startsWith("..") && !pathApi.isAbsolute(relativeTarget)) {
     candidates.add(relativeTarget);
   }
   return [...candidates].some((candidate) => candidate.length > 0 && pattern.re.test(candidate));
@@ -250,13 +280,14 @@ function resolveWritableTargetPath(
   filePath: string,
   sandboxConfig?: WorkerSandboxConfig,
 ): { targetPath: string | null; error?: string } {
-  const targetPath = path.resolve(cwd, filePath);
-  const realCwd = canonicalizePathForContainment(cwd);
-  const realTargetPath = canonicalizePathForContainment(targetPath);
-  const allowedRoots = resolveAllowedWriteRoots(cwd, sandboxConfig).map((allowedRoot) =>
-    canonicalizePathForContainment(allowedRoot),
+  const pathApi = getSandboxPathApi(cwd, filePath);
+  const targetPath = pathApi.resolve(cwd, filePath);
+  const realCwd = canonicalizePathForContainment(cwd, pathApi);
+  const realTargetPath = canonicalizePathForContainment(targetPath, pathApi);
+  const allowedRoots = resolveAllowedWriteRoots(cwd, sandboxConfig, pathApi).map((allowedRoot) =>
+    canonicalizePathForContainment(allowedRoot, pathApi),
   );
-  const withinAllowedRoots = allowedRoots.some((allowedRoot) => isWithinDir(allowedRoot, realTargetPath));
+  const withinAllowedRoots = allowedRoots.some((allowedRoot) => isWithinDirForPathApi(pathApi, allowedRoot, realTargetPath));
   if (!withinAllowedRoots) {
     return {
       targetPath: null,
@@ -266,7 +297,7 @@ function resolveWritableTargetPath(
   if (sandboxConfig) {
     const protectedPatterns = compileSandbox(sandboxConfig).protected;
     const matchedPattern = protectedPatterns.find((pattern) =>
-      matchesProtectedPathPattern(pattern, realCwd, filePath, realTargetPath),
+      matchesProtectedPathPattern(pattern, realCwd, filePath, realTargetPath, pathApi),
     );
     if (matchedPattern) {
       return {
@@ -282,19 +313,20 @@ function normalizePathToken(token: string): string {
   return token.trim().replace(/^[("'`]+/, "").replace(/[)"'`,;]+$/, "");
 }
 
-function tokenizeCommand(command: string): string[] {
+function tokenizeCommand(command: string, windowsMode = process.platform === "win32"): string[] {
   const tokens: string[] = [];
   let current = "";
   let quote: "'" | '"' | "`" | null = null;
   let escaped = false;
 
-  for (const ch of command) {
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]!;
     if (escaped) {
       current += ch;
       escaped = false;
       continue;
     }
-    if (ch === "\\") {
+    if (!windowsMode && ch === "\\") {
       escaped = true;
       continue;
     }
@@ -308,6 +340,20 @@ function tokenizeCommand(command: string): string[] {
     }
     if (ch === "'" || ch === '"' || ch === "`") {
       quote = ch;
+      continue;
+    }
+    if (ch === "&" || ch === "|" || (!windowsMode && ch === ";")) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+      const next = command[i + 1];
+      if ((ch === "&" || ch === "|") && next === ch) {
+        tokens.push(`${ch}${ch}`);
+        i += 1;
+        continue;
+      }
+      tokens.push(ch);
       continue;
     }
     if (/\s/.test(ch)) {
@@ -326,11 +372,18 @@ function tokenizeCommand(command: string): string[] {
   return tokens;
 }
 
-function looksLikePathToken(value: string): boolean {
+function looksLikePathToken(value: string, windowsMode = process.platform === "win32"): boolean {
   return (
     value.startsWith(".") ||
     value.startsWith("~") ||
-    value.includes("/")
+    value.includes("/") ||
+    (windowsMode && (
+      /^[a-zA-Z]:(?:[\\/]|$)/.test(value) ||
+      value.startsWith("\\\\") ||
+      value.startsWith(".\\") ||
+      value.startsWith("..\\") ||
+      value.includes("\\")
+    ))
   );
 }
 
@@ -351,8 +404,9 @@ function splitCommandSegments(tokens: string[]): string[][] {
   return segments;
 }
 
-function collectPathReferences(command: string, cwd: string): PathReference[] {
+function collectPathReferences(command: string, cwd: string, pathApi: SandboxPathApi = getSandboxPathApi(cwd, command)): PathReference[] {
   const refs = new Map<string, PathReference>();
+  const windowsMode = pathApi === path.win32;
   const accessPriority: Record<PathAccessMode, number> = {
     unknown: 0,
     read: 1,
@@ -368,9 +422,11 @@ function collectPathReferences(command: string, cwd: string): PathReference[] {
       normalizedRaw === "~"
         ? os.homedir()
         : normalizedRaw.startsWith("~/")
-          ? path.join(os.homedir(), normalizedRaw.slice(2))
+          ? pathApi.join(os.homedir(), normalizedRaw.slice(2))
+        : windowsMode && normalizedRaw.startsWith("~\\")
+          ? pathApi.join(os.homedir(), normalizedRaw.slice(2))
           : normalizedRaw;
-    const resolved = path.resolve(cwd, expandedPath);
+    const resolved = pathApi.resolve(cwd, expandedPath);
     const key = `${normalizedRaw}::${resolved}`;
     const existing = refs.get(key);
     if (!existing || accessPriority[access] > accessPriority[existing.access]) {
@@ -378,15 +434,22 @@ function collectPathReferences(command: string, cwd: string): PathReference[] {
     }
   };
 
-  for (const token of tokenizeCommand(command)) {
+  for (const token of tokenizeCommand(command, windowsMode)) {
     const value = normalizePathToken(token);
     if (!value.length) continue;
     if (value.startsWith("-")) continue;
     if (value === "|" || value === "||" || value === "&&" || value === ";" || value === "&") continue;
-    if (value.includes("=") && !value.startsWith("./") && !value.startsWith("../") && !value.startsWith("/") && !value.startsWith(".")) {
+    if (
+      value.includes("=")
+      && !value.startsWith("./")
+      && !value.startsWith("../")
+      && !value.startsWith("/")
+      && !value.startsWith(".")
+      && !(windowsMode && (value.startsWith(".\\") || value.startsWith("..\\")))
+    ) {
       continue;
     }
-    if (looksLikePathToken(value)) {
+    if (looksLikePathToken(value, windowsMode)) {
       addPath(value, "unknown");
     }
   }
@@ -396,25 +459,38 @@ function collectPathReferences(command: string, cwd: string): PathReference[] {
   }
 
   const markOperands = (commandName: string, args: string[]) => {
-    const normalizedCommand = path.basename(commandName).toLowerCase();
-    const pathOperands = args
+    const normalizedCommand = pathApi.basename(commandName).toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, "");
+    const normalizedArgs = args
       .map((value) => normalizePathToken(value))
-      .filter((value) => value.length > 0 && !value.startsWith("-") && looksLikePathToken(value));
+      .filter((value) => value.length > 0 && !value.startsWith("-") && !(windowsMode && /^\/[a-z?]/i.test(value)));
+    const pathOperands = normalizedArgs.filter((value) => looksLikePathToken(value, windowsMode));
     if (!pathOperands.length) return;
 
     switch (normalizedCommand) {
       case "cp":
+      case "copy":
+      case "xcopy":
+      case "robocopy":
       case "install":
       case "ln": {
-        if (pathOperands.length >= 2) {
+        const destination = [...normalizedArgs].reverse().find((value) => looksLikePathToken(value, windowsMode));
+        if (destination) {
           pathOperands.slice(0, -1).forEach((value) => addPath(value, "read"));
-          addPath(pathOperands[pathOperands.length - 1]!, "write");
+          addPath(destination, "write");
         }
         return;
       }
       case "mv":
+      case "move":
+      case "ren":
+      case "rename":
       case "rm":
+      case "del":
+      case "erase":
       case "mkdir":
+      case "md":
+      case "rmdir":
+      case "rd":
       case "touch":
       case "chmod":
       case "chown":
@@ -438,12 +514,12 @@ function collectPathReferences(command: string, cwd: string): PathReference[] {
     }
   };
 
-  for (const segment of splitCommandSegments(tokenizeCommand(command))) {
+  for (const segment of splitCommandSegments(tokenizeCommand(command, windowsMode))) {
     let commandIndex = 0;
     while (
       commandIndex < segment.length
       && normalizePathToken(segment[commandIndex] ?? "").includes("=")
-      && !looksLikePathToken(normalizePathToken(segment[commandIndex] ?? ""))
+      && !looksLikePathToken(normalizePathToken(segment[commandIndex] ?? ""), windowsMode)
     ) {
       commandIndex += 1;
     }
@@ -457,6 +533,26 @@ function collectPathReferences(command: string, cwd: string): PathReference[] {
   return [...refs.values()];
 }
 
+function isNullDevicePath(resolved: string): boolean {
+  if (resolved === "/dev/null") return true;
+  if (process.platform === "win32") {
+    const norm = resolved.replace(/\\/g, "/").toLowerCase();
+    return norm === "nul" || norm.endsWith("/nul");
+  }
+  return false;
+}
+
+function isSystemExecutableSandboxPath(resolved: string): boolean {
+  const norm = resolved.replace(/\\/g, "/");
+  if (process.platform !== "win32") {
+    return norm.startsWith("/usr/bin/") || norm.startsWith("/usr/local/bin/");
+  }
+  const lower = norm.toLowerCase();
+  const systemRoot = (process.env.SystemRoot || process.env.windir || "C:\\Windows").replace(/\\/g, "/");
+  const sr = systemRoot.toLowerCase();
+  return lower.startsWith(`${sr}/system32/`) || lower.startsWith(`${sr}/syswow64/`);
+}
+
 /**
  * Check a bash command against the worker sandbox config.
  * Returns { allowed: true } or { allowed: false, reason: string }.
@@ -467,6 +563,7 @@ export function checkWorkerSandbox(
   projectRoot: string,
 ): { allowed: boolean; reason?: string } {
   const compiled = compileSandbox(config);
+  const pathApi = getSandboxPathApi(projectRoot, command);
 
   // 1. Check blocked patterns first (always reject)
   for (const { re, src } of compiled.blocked) {
@@ -479,20 +576,20 @@ export function checkWorkerSandbox(
   const commandMutates = bashCommandLikelyMutates(command);
 
   // 2. Validate file paths against allowedPaths (absolute + relative)
-  const rootResolved = canonicalizePathForContainment(projectRoot);
-  const pathRefs = collectPathReferences(command, projectRoot);
+  const rootResolved = canonicalizePathForContainment(projectRoot, pathApi);
+  const pathRefs = collectPathReferences(command, projectRoot, pathApi);
   for (const entry of pathRefs) {
     const p = entry.raw;
-    const resolved = canonicalizePathForContainment(entry.resolved);
-    const isSystemExecutablePath = resolved.startsWith("/usr/bin/") || resolved.startsWith("/usr/local/bin/");
-    if (resolved === "/dev/null") continue;
+    const resolved = canonicalizePathForContainment(entry.resolved, pathApi);
+    const isSystemExecutablePath = isSystemExecutableSandboxPath(resolved);
+    if (isNullDevicePath(resolved)) continue;
     if (isSystemExecutablePath && (entry.access === "read" || (!commandMutates && entry.access !== "write"))) continue;
 
     const withinAllowed = config.allowedPaths.some((allowed) => {
-      const allowedAbs = canonicalizePathForContainment(path.resolve(projectRoot, allowed));
-      return isWithinDir(allowedAbs, resolved);
+      const allowedAbs = canonicalizePathForContainment(pathApi.resolve(projectRoot, allowed), pathApi);
+      return isWithinDirForPathApi(pathApi, allowedAbs, resolved);
     });
-    if (!withinAllowed && !isWithinDir(rootResolved, resolved)) {
+    if (!withinAllowed && !isWithinDirForPathApi(pathApi, rootResolved, resolved)) {
       return { allowed: false, reason: `Path outside sandbox: ${p}` };
     }
   }
@@ -504,7 +601,7 @@ export function checkWorkerSandbox(
       if (re.test(command)) {
         return { allowed: false, reason: `Command targets protected file pattern: ${src}` };
       }
-      const targetsProtectedPath = protectedRefs.some((entry) => matchesProtectedPathPattern({ re, src }, projectRoot, entry.raw, entry.resolved));
+      const targetsProtectedPath = protectedRefs.some((entry) => matchesProtectedPathPattern({ re, src }, projectRoot, entry.raw, entry.resolved, pathApi));
       if (targetsProtectedPath) {
         return { allowed: false, reason: `Command targets protected file pattern: ${src}` };
       }
@@ -526,6 +623,15 @@ export function checkWorkerSandbox(
 
 // ── New tool implementations ────────────────────────────────────────
 
+/** Spawn argv for worker shell execution (bash on Unix, cmd via ComSpec on Windows). */
+export function resolveWorkerShellInvocation(command: string): { file: string; args: string[] } {
+  if (process.platform === "win32") {
+    const comSpec = process.env.ComSpec?.trim() || "cmd.exe";
+    return { file: comSpec, args: ["/d", "/s", "/c", command] };
+  }
+  return { file: "bash", args: ["-c", command] };
+}
+
 function createBashTool(
   cwd: string,
   mode: PermissionMode,
@@ -536,7 +642,9 @@ function createBashTool(
   return tool({
     description:
       "Execute a shell command and return stdout/stderr. " +
-      "Commands run in a non-interactive shell with a 120-second timeout.",
+      (process.platform === "win32"
+        ? "On Windows, commands run via cmd.exe (ComSpec) with a 120-second timeout; on macOS/Linux they run in bash. "
+        : "Commands run in a non-interactive bash shell with a 120-second timeout. "),
     inputSchema: z.object({
       command: z.string().describe("The shell command to execute"),
       timeout: z
@@ -582,15 +690,25 @@ function createBashTool(
         }
       }
       const clampedTimeout = Math.min(timeout, 600_000);
+      const killProc = (proc: ReturnType<typeof spawn>): void => {
+        terminateProcessTree(proc, "SIGTERM");
+      };
       try {
         const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
           (resolve, reject) => {
-            const proc = spawn("bash", ["-c", command], {
+            const { file, args } = resolveWorkerShellInvocation(command);
+            const proc = spawn(file, args, {
               cwd,
-              timeout: clampedTimeout,
               stdio: ["ignore", "pipe", "pipe"],
-              env: { ...process.env, TERM: "dumb" },
+              windowsVerbatimArguments: process.platform === "win32",
+              env:
+                process.platform === "win32"
+                  ? { ...process.env }
+                  : { ...process.env, TERM: "dumb" },
             });
+            const timeoutId = setTimeout(() => {
+              killProc(proc);
+            }, clampedTimeout);
 
             let stdout = "";
             let stderr = "";
@@ -599,24 +717,28 @@ function createBashTool(
               stdout += d.toString();
               // Cap output at 1MB
               if (stdout.length > 1_000_000) {
-                proc.kill("SIGTERM");
+                killProc(proc);
               }
             });
             proc.stderr.on("data", (d: Buffer) => {
               stderr += d.toString();
               if (stderr.length > 1_000_000) {
-                proc.kill("SIGTERM");
+                killProc(proc);
               }
             });
 
             proc.on("close", (code) => {
+              clearTimeout(timeoutId);
               resolve({
                 stdout: stdout.slice(0, 200_000),
                 stderr: stderr.slice(0, 50_000),
                 exitCode: code ?? 1,
               });
             });
-            proc.on("error", reject);
+            proc.on("error", (error) => {
+              clearTimeout(timeoutId);
+              reject(error);
+            });
           }
         );
         return result;

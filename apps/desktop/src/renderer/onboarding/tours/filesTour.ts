@@ -65,7 +65,7 @@ export const filesTour: Tour = {
     {
       target: '[data-tour="files.openIn"]',
       title: "Open in external editor",
-      body: "Send the active file straight to VS Code, Cursor, Zed, or Finder without leaving ADE.",
+      body: "Send the active file straight to VS Code, Cursor, Zed, or the system file browser without leaving ADE.",
       docUrl: docs.filesEditor,
       placement: "bottom",
     },

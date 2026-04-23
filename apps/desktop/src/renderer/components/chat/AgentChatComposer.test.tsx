@@ -4,6 +4,61 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { AgentChatComposer } from "./AgentChatComposer";
+import { modifierKeyLabel } from "../../lib/platform";
+
+function installMatchMediaMock(): void {
+  if (typeof window.matchMedia === "function") return;
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+}
+
+vi.mock("@emoji-mart/data", () => ({
+  default: { categories: [], emojis: {}, aliases: {}, sheet: { cols: 0, rows: 0 } },
+}));
+
+vi.mock("@emoji-mart/data/sets/15/native.json", () => ({
+  default: { categories: [], emojis: {}, aliases: {}, sheet: { cols: 0, rows: 0 } },
+}));
+
+vi.mock("@lobehub/icons", () => {
+  const brand = () => {
+    const Component = () => null;
+    Object.assign(Component, {
+      Avatar: () => null,
+      Color: () => null,
+      Combine: () => null,
+      Text: () => null,
+      colorPrimary: "#888",
+      title: "stub",
+    });
+    return Component;
+  };
+  return {
+    Anthropic: brand(),
+    Claude: brand(),
+    Codex: brand(),
+    Cursor: brand(),
+    Gemini: brand(),
+    Google: brand(),
+    Grok: brand(),
+    Groq: brand(),
+    OpenAI: brand(),
+    OpenCode: brand(),
+    OpenRouter: brand(),
+    XAI: brand(),
+  };
+});
 
 afterEach(cleanup);
 
@@ -52,6 +107,7 @@ function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatCo
 }
 
 function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
+  installMatchMediaMock();
   const props = buildComposerProps(overrides);
 
   render(<AgentChatComposer {...props} />);
@@ -88,7 +144,7 @@ describe("AgentChatComposer", () => {
   it("stop only interrupts the active turn", () => {
     const props = renderComposer();
 
-    const stopButtons = screen.getAllByTitle("Stop the active turn only (Cmd+.)");
+    const stopButtons = screen.getAllByTitle(`Stop the active turn only (${modifierKeyLabel}+.)`);
     fireEvent.click(stopButtons[stopButtons.length - 1]!);
 
     expect(props.onInterrupt).toHaveBeenCalledTimes(1);

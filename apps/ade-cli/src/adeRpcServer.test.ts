@@ -1823,7 +1823,12 @@ describe("adeRpcServer", () => {
         cols: 120,
         rows: 36,
         tracked: true,
-        toolType: "claude-orchestrated"
+        toolType: "claude-orchestrated",
+        command: "claude",
+        args: expect.arrayContaining(["--model", "claude-sonnet-4-6", "--permission-mode", "default", "Implement API wiring"]),
+        env: expect.objectContaining({
+          ADE_DEFAULT_ROLE: "agent",
+        }),
       })
     );
     expect(response.structuredContent.startupCommand).toContain("claude");
@@ -1853,6 +1858,16 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("ADE_RUN_ID=run-1");
     expect(response.structuredContent.startupCommand).toContain("ADE_ATTEMPT_ID=attempt-workspace-roots");
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "claude",
+        env: expect.objectContaining({
+          ADE_RUN_ID: "run-1",
+          ADE_ATTEMPT_ID: "attempt-workspace-roots",
+          ADE_DEFAULT_ROLE: "agent",
+        }),
+      })
+    );
   });
 
   it("rejects config-toml permission mode for Claude spawn_agent sessions", async () => {

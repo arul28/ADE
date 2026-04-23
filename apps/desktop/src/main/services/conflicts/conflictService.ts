@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import type {
   ApplyConflictProposalArgs,
   BatchOverlapEntry,
@@ -3498,10 +3499,13 @@ export function createConflictService({
     });
 
     const proc = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      const child = spawn(bin, renderedCommand.slice(1), {
+      const invocation = resolveCliSpawnInvocation(bin, renderedCommand.slice(1), process.env);
+      const child = spawn(invocation.command, invocation.args, {
         cwd: cwdLane.worktreePath,
+        env: process.env,
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 8 * 60_000,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       let stdout = "";
       let stderr = "";

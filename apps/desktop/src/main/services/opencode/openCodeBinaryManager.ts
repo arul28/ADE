@@ -12,19 +12,30 @@ export type OpenCodeBinaryInfo = {
 
 let cachedInfo: OpenCodeBinaryInfo | null = null;
 
-function bundledBinaryPath(): string {
-  const ext = process.platform === "win32" ? ".exe" : "";
+function bundledBinaryCandidatePaths(): string[] {
+  const fileNames = process.platform === "win32"
+    ? ["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"]
+    : ["opencode"];
   // In packaged app, process.resourcesPath points to Resources/
   // In dev, fall back to node_modules/.bin
   const resourcesPath = (process as any).resourcesPath;
   if (resourcesPath) {
-    return join(resourcesPath, `opencode${ext}`);
+    return fileNames.map((fileName) => join(resourcesPath, fileName));
   }
   // Dev fallback: check node_modules
   if (typeof __dirname !== "string") {
-    return join(process.cwd(), "apps", "desktop", "node_modules", ".bin", `opencode${ext}`);
+    return fileNames.map((fileName) => join(process.cwd(), "apps", "desktop", "node_modules", ".bin", fileName));
   }
-  return join(__dirname, "..", "..", "..", "..", "node_modules", ".bin", `opencode${ext}`);
+  return fileNames.map((fileName) => join(__dirname, "..", "..", "..", "..", "node_modules", ".bin", fileName));
+}
+
+function canRunBundledBinary(filePath: string): boolean {
+  try {
+    accessSync(filePath, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
@@ -41,13 +52,10 @@ export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
   }
 
   // 2. Fall back to bundled binary
-  const bundled = bundledBinaryPath();
-  try {
-    accessSync(bundled, constants.X_OK);
+  const bundled = bundledBinaryCandidatePaths().find((candidate) => canRunBundledBinary(candidate));
+  if (bundled) {
     cachedInfo = { path: bundled, source: "bundled" };
     return cachedInfo;
-  } catch {
-    // Bundled binary not found or not executable
   }
 
   cachedInfo = { path: null, source: "missing" };

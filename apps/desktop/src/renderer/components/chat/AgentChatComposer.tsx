@@ -31,6 +31,7 @@ import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
+import { modifierKeyLabel } from "../../lib/platform";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
@@ -1566,7 +1567,7 @@ export function AgentChatComposer({
                 <button
                   type="button"
                   className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-red-500/25 bg-red-500/[0.08] text-red-400/80 transition-all hover:border-red-500/40 hover:bg-red-500/[0.14] hover:text-red-400"
-                  title="Stop the active turn only (Cmd+.)"
+                  title={`Stop the active turn only (${modifierKeyLabel}+.)`}
                   aria-label="Stop active turn"
                   onClick={onInterrupt}
                 >
