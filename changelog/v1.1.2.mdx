@@ -45,7 +45,7 @@ Sessions whose lane isn't in the current UI lane list (archived lanes, lanes hid
 
 - **Unified tailnet discovery.** `SyncTailnetDiscovery` host and port candidates are consolidated. Tailnet-address detection is centralized in `syncIsTailscaleRoute`, covering MagicDNS hostnames, `ts.net` suffixes, and `100.64/10` IPv4 literals. Port `8788` is preserved as a fallback since the desktop retries there when `8787` is busy.
 - **IPv6 route normalization.** `syncNormalizedRouteHost` only strips a trailing `:port` when there's exactly one colon, so unbracketed IPv6 literals (`::1`, `fc00::1`) survive normalization instead of being truncated before the allowlist check.
-- **Shared desktop device ID.** `deviceRegistryService` now accepts an optional `localDeviceIdPath` so the device identity can live under `userData` instead of per-project secrets. Legacy per-project `sync-device-id` files are preserved when present — opening a second project doesn't silently flip its device identity to the first project's ID.
+- **Shared desktop device ID.** `deviceRegistryService` now accepts an optional `localDeviceIdPath` so the device identity can live under `userData` instead of per-project secrets. The shared file is authoritative across projects: on first use we migrate whichever legacy per-project id we encounter (or mint a fresh UUID), and every project context afterwards returns that same identity. `O_EXCL` on the seed write prevents two concurrent contexts from racing to mint different ids.
 - **Runtime discovery toggle.** `syncHostService` exposes `setDiscoveryEnabled()` to gate LAN/Tailnet advertisement at runtime, with `unpublishLanDiscovery` called on dispose so stale entries don't linger.
 
 ---
