@@ -191,6 +191,17 @@ function envToken(...names: string[]): string | null {
   return null;
 }
 
+function ghAuthToken(): string | null {
+  try {
+    const result = spawnSync("gh", ["auth", "token"], { encoding: "utf8", timeout: 5_000 });
+    if (result.status !== 0) return null;
+    const token = result.stdout?.trim() ?? "";
+    return token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
 function detectGitHubRepo(projectRoot: string): { owner: string; name: string } | null {
   const result = spawnSync("git", ["remote", "get-url", "origin"], {
     cwd: projectRoot,
@@ -219,7 +230,7 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
   let cachedStatus: Awaited<ReturnType<HeadlessGitHubService["getStatus"]>> | null = null;
   let cachedAt = 0;
 
-  const getToken = (): string => envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN") ?? "";
+  const getToken = (): string => envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN") ?? ghAuthToken() ?? "";
   const getTokenType = (token: string): HeadlessGitHubStatus["tokenType"] => {
     if (token.startsWith("github_pat_")) return "fine-grained";
     if (token.startsWith("ghp_")) return "classic";
@@ -229,7 +240,7 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
   const apiRequest: HeadlessGitHubService["apiRequest"] = async (args) => {
     const token = (args.token ?? getToken()).trim();
     if (!token) {
-      throw new Error("GitHub token missing. Set ADE_GITHUB_TOKEN or GITHUB_TOKEN for headless Linear PR workflows.");
+      throw new Error("GitHub token missing. Set ADE_GITHUB_TOKEN or GITHUB_TOKEN, or run `gh auth login` so `gh auth token` returns a token.");
     }
     const url = new URL(`https://api.github.com${args.path}`);
     for (const [key, value] of Object.entries(args.query ?? {})) {
@@ -290,7 +301,7 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
     },
     getTokenOrThrow() {
       const token = getToken();
-      if (!token) throw new Error("GitHub token missing. Set ADE_GITHUB_TOKEN or GITHUB_TOKEN.");
+      if (!token) throw new Error("GitHub token missing. Set ADE_GITHUB_TOKEN or GITHUB_TOKEN, or run `gh auth login`.");
       return token;
     },
     apiRequest,
