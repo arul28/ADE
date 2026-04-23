@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPrsRouteSearch, parsePrsRouteState } from "./prsRouteState";
+import { buildPrsRouteSearch, parsePrsRouteState, resolvePrsActiveTab } from "./prsRouteState";
 
 describe("prsRouteState", () => {
   it("parses route state from search params and falls back to hash params when needed", () => {
@@ -96,5 +96,48 @@ describe("prsRouteState", () => {
         selectedRebaseItemId: "lane-456",
       }),
     ).toBe("?tab=workflows&workflow=rebase&laneId=lane-456");
+  });
+});
+
+describe("resolvePrsActiveTab", () => {
+  it("routes a stale tab=normal + hash workflow=rebase to the rebase workflow", () => {
+    const parsed = parsePrsRouteState({
+      search: "?tab=normal",
+      hash: "#/prs?tab=workflows&workflow=rebase&laneId=lane-1",
+    });
+    const resolved = resolvePrsActiveTab(parsed);
+    expect(resolved.isWorkflowRoute).toBe(true);
+    expect(resolved.effectiveWorkflow).toBe("rebase");
+    expect(resolved.activeTab).toBe("rebase");
+  });
+
+  it("falls back to integration when tab=workflows has no workflow param", () => {
+    const parsed = parsePrsRouteState({ search: "?tab=workflows" });
+    const resolved = resolvePrsActiveTab(parsed);
+    expect(resolved.isWorkflowRoute).toBe(true);
+    expect(resolved.effectiveWorkflow).toBeNull();
+    expect(resolved.activeTab).toBe("integration");
+  });
+
+  it("treats a workflow-alias tab (tab=queue) as a workflow route", () => {
+    const parsed = parsePrsRouteState({ search: "?tab=queue&queueGroupId=g-1" });
+    const resolved = resolvePrsActiveTab(parsed);
+    expect(resolved.isWorkflowRoute).toBe(true);
+    expect(resolved.effectiveWorkflow).toBe("queue");
+    expect(resolved.activeTab).toBe("queue");
+  });
+
+  it("keeps tab=normal on the normal tab when no workflow signal is present", () => {
+    const parsed = parsePrsRouteState({ search: "?tab=normal&prId=pr-1" });
+    const resolved = resolvePrsActiveTab(parsed);
+    expect(resolved.isWorkflowRoute).toBe(false);
+    expect(resolved.activeTab).toBe("normal");
+  });
+
+  it("returns normal when the route has no tab or workflow signal", () => {
+    const parsed = parsePrsRouteState({ search: "" });
+    const resolved = resolvePrsActiveTab(parsed);
+    expect(resolved.isWorkflowRoute).toBe(false);
+    expect(resolved.activeTab).toBe("normal");
   });
 });

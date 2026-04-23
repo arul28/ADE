@@ -141,10 +141,10 @@ describe("launchRebaseResolutionChat", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "session-rebase-1",
-        displayText: "Rebase feature/rebase-target onto main",
         reasoningEffort: "high",
       }),
     );
+    expect(sendMessage.mock.calls[0]?.[0]).not.toHaveProperty("displayText");
     expect(result).toEqual({
       sessionId: "session-rebase-1",
       laneId: lane.id,

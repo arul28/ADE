@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 
 // ---------------------------------------------------------------------------
 // Spies used across all tests
@@ -28,7 +28,10 @@ function resetFakeAppStoreState() {
 // Module-level mocks (hoisted by vitest)
 // ---------------------------------------------------------------------------
 
-const listSessionsCachedMock = vi.fn().mockResolvedValue([]);
+const { listSessionsCachedMock, useSearchParamsMock } = vi.hoisted(() => ({
+  listSessionsCachedMock: vi.fn().mockResolvedValue([]),
+  useSearchParamsMock: vi.fn(() => [new URLSearchParams(), vi.fn()]),
+}));
 
 vi.mock("../../lib/sessionListCache", () => ({
   listSessionsCached: (...args: unknown[]) => listSessionsCachedMock(...args),
@@ -73,7 +76,7 @@ vi.mock("../../lib/sessions", () => ({
 
 vi.mock("react-router-dom", () => ({
   useNavigate: vi.fn(() => navigateSpy),
-  useSearchParams: vi.fn(() => [new URLSearchParams(), vi.fn()]),
+  useSearchParams: useSearchParamsMock,
 }));
 
 vi.mock("../../state/appStore", () => ({
@@ -121,6 +124,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     resetFakeAppStoreState();
     installWindowAde();
     listSessionsCachedMock.mockResolvedValue([]);
+    useSearchParamsMock.mockReturnValue([new URLSearchParams(), vi.fn()]);
   });
 
   afterEach(() => {
@@ -307,6 +311,150 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.activeItemId).toBe("session-1");
     expect(workState.selectedItemId).toBe("session-1");
     expect(navigateSpy).not.toHaveBeenCalled();
+  });
+
+  it("preserves saved Work filters when a URL targets a specific session", async () => {
+    const session = {
+      id: "session-1",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "claude-chat" as const,
+      title: "Claude Chat",
+      status: "running" as const,
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "idle" as const,
+      resumeCommand: null,
+    };
+    listSessionsCachedMock.mockResolvedValue([session]);
+    useSearchParamsMock.mockReturnValue([
+      new URLSearchParams("laneId=lane-1&status=running&sessionId=session-1"),
+      vi.fn(),
+    ]);
+
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "chat" as const,
+      laneFilter: "lane-2",
+      statusFilter: "completed" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [
+        { id: "lane-1", name: "Lane 1" },
+        { id: "lane-2", name: "Lane 2" },
+      ],
+      workViewByProject: {
+        "/fake/project": workState,
+      },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+
+    renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(focusSessionSpy).toHaveBeenCalledWith("session-1");
+    });
+
+    expect(selectLaneSpy).toHaveBeenCalledWith("lane-1");
+    expect(workState.laneFilter).toBe("lane-2");
+    expect(workState.statusFilter).toBe("completed");
+    expect(workState.openItemIds).toContain("session-1");
+    expect(workState.activeItemId).toBe("session-1");
+    expect(workState.selectedItemId).toBe("session-1");
+  });
+
+  it("falls back to URL lane/status filters when the requested sessionId is stale", async () => {
+    // Only session-2 exists in the list — the URL's sessionId=missing-session
+    // is stale (e.g. deleted). The laneId/status hints must still apply so
+    // the user lands in the right filter context instead of nowhere.
+    const session = {
+      id: "session-2",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "claude-chat" as const,
+      title: "Claude Chat",
+      status: "running" as const,
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "idle" as const,
+      resumeCommand: null,
+    };
+    listSessionsCachedMock.mockResolvedValue([session]);
+    useSearchParamsMock.mockReturnValue([
+      new URLSearchParams("laneId=lane-1&status=running&sessionId=missing-session"),
+      vi.fn(),
+    ]);
+
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [
+        { id: "lane-1", name: "Lane 1" },
+        { id: "lane-2", name: "Lane 2" },
+      ],
+      workViewByProject: {
+        "/fake/project": workState,
+      },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+
+    renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(workState.laneFilter).toBe("lane-1");
+      expect(workState.statusFilter).toBe("running");
+    });
+
+    // The stale session never existed, so focusSession must not fire for it.
+    expect(focusSessionSpy).not.toHaveBeenCalledWith("missing-session");
   });
 
   it("refreshes against the newly active project before pruning that project's saved tabs", async () => {

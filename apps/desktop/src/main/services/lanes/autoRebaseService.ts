@@ -112,17 +112,17 @@ function blockedMessage(
   laneId: string | null,
   reason: "conflict" | "manual" | "lookup" | "failed" | "unavailable" | null,
 ): string {
-  if (!laneId) return "Pending: auto-rebase stopped at an earlier lane. Open the Rebase tab to continue.";
+  if (!laneId) return "Pending: auto-rebase stopped at an earlier lane. Open the Rebase/Merge tab to continue.";
   if (reason === "manual") {
-    return `Pending: ancestor lane '${laneId}' has a fixed PR base. Rebase that lane manually from the Rebase tab before descendants can continue.`;
+    return `Pending: ancestor lane '${laneId}' has a fixed PR base. Rebase that lane manually from the Rebase/Merge tab before descendants can continue.`;
   }
   if (reason === "lookup" || reason === "unavailable") {
-    return `Pending: ancestor lane '${laneId}' needs review before descendants can continue. Open the Rebase tab to inspect it.`;
+    return `Pending: ancestor lane '${laneId}' needs review before descendants can continue. Open the Rebase/Merge tab to inspect it.`;
   }
   if (reason === "failed") {
-    return `Pending: ancestor lane '${laneId}' failed automatic rebase. Open the Rebase tab to retry.`;
+    return `Pending: ancestor lane '${laneId}' failed automatic rebase. Open the Rebase/Merge tab to retry.`;
   }
-  return `Pending: ancestor lane '${laneId}' has unresolved rebase conflicts. Open the Rebase tab to continue.`;
+  return `Pending: ancestor lane '${laneId}' has unresolved rebase conflicts. Open the Rebase/Merge tab to continue.`;
 }
 
 function resolveAffectedChainLaneId(
@@ -459,7 +459,7 @@ export function createAutoRebaseService(args: {
             parentHeadSha: null,
             state: "rebasePending",
             conflictCount: 0,
-            message: "Pending: parent lane is unavailable. Open the Rebase tab to review the lane."
+            message: "Pending: parent lane is unavailable. Open the Rebase/Merge tab to review the lane."
           });
           blocked = true;
           blockedLaneId = lane.id;
@@ -522,7 +522,7 @@ export function createAutoRebaseService(args: {
           parentHeadSha,
           state: "rebaseConflict",
           conflictCount: Math.max(1, need.conflictingFiles.length),
-          message: `Auto-rebase blocked: ${Math.max(1, need.conflictingFiles.length)} conflict(s) expected. Open the Rebase tab to resolve and publish.`
+          message: `Auto-rebase blocked: ${Math.max(1, need.conflictingFiles.length)} conflict(s) expected. Open the Rebase/Merge tab to resolve and publish.`
         });
         continue;
       }
@@ -541,7 +541,7 @@ export function createAutoRebaseService(args: {
           parentHeadSha,
           state: "rebasePending",
           conflictCount: 0,
-          message: "PR carries an immutable base — drift detected. Rebase manually from the Rebase tab when ready."
+          message: "PR carries an immutable base — drift detected. Rebase manually from the Rebase/Merge tab when ready."
         });
         continue;
       }
@@ -572,8 +572,8 @@ export function createAutoRebaseService(args: {
           state: conflictHint ? "rebaseConflict" : "rebaseFailed",
           conflictCount: conflictHint ? 1 : 0,
           message: conflictHint
-            ? "Auto-rebase stopped due to conflicts. Open the Rebase tab to resolve, then publish."
-            : `Auto-rebase failed: ${rebaseRun.run.error}. Open the Rebase tab to retry.`
+            ? "Auto-rebase stopped due to conflicts. Open the Rebase/Merge tab to resolve, then publish."
+            : `Auto-rebase failed: ${rebaseRun.run.error}. Open the Rebase/Merge tab to retry.`
         });
         continue;
       }
@@ -625,8 +625,8 @@ export function createAutoRebaseService(args: {
           state: "rebaseFailed",
           conflictCount: 0,
           message: rollbackError
-            ? `Auto-push failed: ${pushError}. Automatic rollback also failed: ${rollbackError}. Open the Rebase tab to retry.`
-            : `Auto-push failed: ${pushError}. The lane was restored to its pre-rebase state. Open the Rebase tab to retry.`
+            ? `Auto-push failed: ${pushError}. Automatic rollback also failed: ${rollbackError}. Open the Rebase/Merge tab to retry.`
+            : `Auto-push failed: ${pushError}. The lane was restored to its pre-rebase state. Open the Rebase/Merge tab to retry.`
         });
       }
     }

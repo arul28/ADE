@@ -1217,7 +1217,7 @@ export function QueueTab({
                 }}
               >
                 <GitBranch size={12} />
-                Open rebase tab
+                Open Rebase/Merge tab
               </button>
             </div>
 
@@ -1447,7 +1447,7 @@ export function QueueTab({
                   ) : null}
 
                   <div style={{ fontSize: 11, color: "#71717A", lineHeight: "18px" }}>
-                    Batch rebases stop at the first failure so the queue does not quietly drift. Use the Rebase tab for detailed lane history, aborts, rollbacks, and any follow-up after a partial run.
+                    Batch rebases stop at the first failure so the queue does not quietly drift. Use the Rebase/Merge tab for detailed lane history, aborts, rollbacks, and any follow-up after a partial run.
                   </div>
                 </div>
               </>
@@ -1502,7 +1502,7 @@ export function QueueTab({
                         cursor: "pointer",
                       }}
                     >
-                      Open failed lane in rebase tab
+                      Open failed lane in Rebase/Merge tab
                     </button>
                   </div>
                 ) : null}

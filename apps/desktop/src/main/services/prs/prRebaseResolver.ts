@@ -158,7 +158,6 @@ export async function launchRebaseResolutionChat(
   await deps.agentChatService.sendMessage({
     sessionId: session.id,
     text: prompt,
-    displayText: title,
     ...(reasoningEffort ? { reasoningEffort } : {}),
   });
 

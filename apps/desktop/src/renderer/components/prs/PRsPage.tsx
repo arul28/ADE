@@ -11,7 +11,7 @@ import { GitHubTab } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
 import { isMissionLaneHiddenByDefault } from "../lanes/laneUtils";
-import { buildPrsRouteSearch, parsePrsRouteState } from "./prsRouteState";
+import { buildPrsRouteSearch, parsePrsRouteState, resolvePrsActiveTab } from "./prsRouteState";
 import { resolveRouteRebaseSelection } from "./shared/rebaseNeedUtils";
 import type { PrSummary } from "../../../shared/types";
 
@@ -84,31 +84,21 @@ function PRsPageInner() {
           search: location.search,
           hash: window.location.hash,
         });
-        const tab = routeState.tab;
-        const workflowTab = routeState.workflowTab;
+        const resolved = resolvePrsActiveTab(routeState);
         const routeRebaseItemId = resolveRouteRebaseSelection({
           rebaseNeeds,
           routeItemId: routeState.laneId,
         });
 
-        if (tab === "github" || tab === "normal") {
-          setActiveTab("normal");
-        } else if (tab === "workflows") {
-          const nextWorkflowTab = workflowTab === "queue" || workflowTab === "integration" || workflowTab === "rebase"
-            ? workflowTab
-            : "integration";
-          setActiveTab(nextWorkflowTab);
-        } else if (tab === "queue" || tab === "integration" || tab === "rebase") {
-          setActiveTab(tab);
-        }
+        setActiveTab(resolved.activeTab);
 
-        if (tab === "normal" || tab === "github") {
+        if (!resolved.isWorkflowRoute && (routeState.tab === "normal" || routeState.tab === "github")) {
           setSelectedPrId(routeState.prId ?? null);
         }
-        if (tab === "queue" || workflowTab === "queue") {
+        if (resolved.effectiveWorkflow === "queue") {
           setSelectedQueueGroupId(routeState.queueGroupId ?? null);
         }
-        if (tab === "rebase" || workflowTab === "rebase") {
+        if (resolved.effectiveWorkflow === "rebase") {
           setSelectedRebaseItemId(routeRebaseItemId);
         }
       } catch {

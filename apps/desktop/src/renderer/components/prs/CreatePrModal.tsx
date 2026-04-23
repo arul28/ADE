@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash, ArrowUp, ArrowDown } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
@@ -446,7 +447,7 @@ function LaneWarningPanel({
                   cursor: "pointer",
                 }}
               >
-                Open Rebase Tab
+                Open Rebase/Merge Tab
               </button>
               <span style={{ fontSize: 10, color: C.textMuted, fontFamily: MONO_FONT }}>
                 Review rebase status before PR creation{rebaseLaneIds.length > 1 ? ` (${rebaseLaneIds.length} lanes)` : ""}.
@@ -470,6 +471,7 @@ export function CreatePrModal({
   onOpenChange: (open: boolean) => void;
   onCreated?: (created: PrSummary[]) => void | Promise<void>;
 }) {
+  const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
@@ -596,8 +598,9 @@ export function CreatePrModal({
 
   const openRebaseTab = React.useCallback((laneId: string) => {
     onOpenChange(false);
-    window.location.hash = `#/prs?tab=rebase&laneId=${encodeURIComponent(laneId)}`;
-  }, [onOpenChange]);
+    const search = new URLSearchParams({ tab: "workflows", workflow: "rebase", laneId });
+    navigate({ pathname: "/prs", search: `?${search.toString()}` });
+  }, [navigate, onOpenChange]);
 
   // Reset on close
   React.useEffect(() => {

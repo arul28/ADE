@@ -50,13 +50,13 @@ export function LaneRebaseBanner({
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                    <SmartTooltip content={{ label: "View in Rebase tab", description: "Open the Rebase tab for this lane." }}>
+                    <SmartTooltip content={{ label: "View in Rebase/Merge tab", description: "Open the Rebase/Merge tab for this lane." }}>
                       <button
                         type="button"
                         style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
                         onClick={() => onViewRebaseDetails(s.laneId)}
                       >
-                        View in Rebase tab
+                        View in Rebase/Merge tab
                       </button>
                     </SmartTooltip>
                     <SmartTooltip content={{ label: "Dismiss", description: "Remove this rebase suggestion permanently until new parent commits arrive." }}>
@@ -120,13 +120,13 @@ export function LaneRebaseBanner({
                     </div>
                   </div>
                   <div className="shrink-0 flex items-center gap-1.5">
-                    <SmartTooltip content={{ label: "View in Rebase tab", description: "Open the Rebase tab for this lane." }}>
+                    <SmartTooltip content={{ label: "View in Rebase/Merge tab", description: "Open the Rebase/Merge tab for this lane." }}>
                       <button
                         type="button"
                         style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
                         onClick={() => onViewRebaseDetails(status.laneId)}
                       >
-                        View in Rebase tab
+                        View in Rebase/Merge tab
                       </button>
                     </SmartTooltip>
                     <SmartTooltip content={{ label: "Dismiss", description: "Hide this alert until the parent or base changes again." }}>

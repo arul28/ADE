@@ -60,6 +60,42 @@ export function parsePrsRouteState(args: { search?: string | null; hash?: string
   };
 }
 
+export type ResolvedPrsRoute = {
+  isWorkflowRoute: boolean;
+  effectiveWorkflow: PrWorkflowTab | null;
+  activeTab: "normal" | PrWorkflowTab;
+};
+
+/**
+ * Collapse a parsed route into a single activeTab decision.
+ *
+ * Routing bounce-back guard: the presence of a `workflow=` param, or a
+ * workflow-alias `tab=` value (queue/integration/rebase), is treated as
+ * authoritative evidence of a workflow route. This prevents a stale
+ * `?tab=normal` in the outer search (BrowserRouter mock mode) from shadowing
+ * a hash-based workflow URL.
+ */
+export function resolvePrsActiveTab(route: ParsedPrsRouteState): ResolvedPrsRoute {
+  const workflowAlias: PrWorkflowTab | null =
+    route.tab === "queue" || route.tab === "integration" || route.tab === "rebase"
+      ? route.tab
+      : null;
+  const effectiveWorkflow = route.workflowTab ?? workflowAlias;
+  const isWorkflowRoute = Boolean(effectiveWorkflow) || route.tab === "workflows";
+  if (isWorkflowRoute) {
+    return {
+      isWorkflowRoute: true,
+      effectiveWorkflow,
+      activeTab: effectiveWorkflow ?? "integration",
+    };
+  }
+  return {
+    isWorkflowRoute: false,
+    effectiveWorkflow: null,
+    activeTab: "normal",
+  };
+}
+
 export function buildPrsRouteSearch(args: {
   activeTab: PrActiveTab;
   selectedPrId: string | null;
