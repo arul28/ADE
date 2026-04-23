@@ -944,6 +944,7 @@ Windows:
 - Windows-only wrappers for the bundled `ade` CLI ship in `apps/desktop/scripts/`: `ade-cli-windows-wrapper.cmd` (launcher) and `ade-cli-install-path.cmd` (idempotent PATH install helper). The platform-agnostic `.sh` wrapper covers macOS/Linux.
 - The Windows installer bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/` plus a Windows node-pty ConPTY worker.
 - GitHub Actions `release-core.yml` builds and validates Windows artifacts; they are not currently code-signed or notarized.
+- Ongoing Windows integration lane (rebase with `main`, smoke tests, backlog): `docs/development/windows-port-lane.md`.
 
 Post-packaging hardening (`apps/desktop/scripts/`):
 
