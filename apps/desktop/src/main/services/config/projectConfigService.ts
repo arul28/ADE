@@ -66,7 +66,7 @@ import type {
   TestSuiteDefinition,
   TestSuiteTag
 } from "../../../shared/types";
-import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
+import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { isRecord, resolvePathWithinRoot } from "../shared/utils";
@@ -85,6 +85,15 @@ const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
   "memory",
   "mission",
 ];
+const AUTOMATION_TRIGGER_TYPE_SET = new Set<string>(AUTOMATION_TRIGGER_TYPES);
+const AUTOMATION_ACTION_TYPE_SET = new Set<string>([
+  "agent-session",
+  "launch-mission",
+  "predict-conflicts",
+  "run-tests",
+  "run-command",
+  "ade-action",
+]);
 
 function isPathWithinProjectRoot(projectRoot: string, candidate: string, opts: { allowMissing?: boolean } = {}): boolean {
   try {
@@ -385,28 +394,9 @@ function parseReadiness(value: unknown): ConfigProcessReadiness | undefined {
 function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined {
   if (!isRecord(value)) return undefined;
   const typeRaw = asString(value.type)?.trim() ?? "";
-  const type: AutomationTriggerType | null =
-    typeRaw === "session-end" ||
-    typeRaw === "commit" ||
-    typeRaw === "git.commit" ||
-    typeRaw === "git.push" ||
-    typeRaw === "git.pr_opened" ||
-    typeRaw === "git.pr_updated" ||
-    typeRaw === "git.pr_merged" ||
-    typeRaw === "git.pr_closed" ||
-    typeRaw === "file.change" ||
-    typeRaw === "lane.created" ||
-    typeRaw === "lane.archived" ||
-    typeRaw === "schedule" ||
-    typeRaw === "manual" ||
-    typeRaw === "linear.issue_created" ||
-    typeRaw === "linear.issue_updated" ||
-    typeRaw === "linear.issue_assigned" ||
-    typeRaw === "linear.issue_status_changed" ||
-    typeRaw === "github-webhook" ||
-    typeRaw === "webhook"
-      ? (typeRaw as AutomationTriggerType)
-      : null;
+  const type: AutomationTriggerType | null = AUTOMATION_TRIGGER_TYPE_SET.has(typeRaw)
+    ? (typeRaw as AutomationTriggerType)
+    : null;
   if (!type) return undefined;
 
   const out: AutomationTrigger = { type };
@@ -415,9 +405,12 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const targetBranch = asString(value.targetBranch);
   const event = asString(value.event);
   const author = asString(value.author);
+  const authors = asStringArray(value.authors);
   const labels = asStringArray(value.labels);
   const paths = asStringArray(value.paths);
   const keywords = asStringArray(value.keywords);
+  const titleRegex = asString(value.titleRegex);
+  const bodyRegex = asString(value.bodyRegex);
   const namePattern = asString(value.namePattern);
   const project = asString(value.project);
   const team = asString(value.team);
@@ -425,6 +418,7 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const stateTransition = asString(value.stateTransition);
   const changedFields = asStringArray(value.changedFields);
   const secretRef = asString(value.secretRef);
+  const repo = asString(value.repo);
   const draftStateRaw = asString(value.draftState)?.trim();
   const activeHours = coerceAutomationActiveHours(value.activeHours);
   if (cron != null) out.cron = cron;
@@ -432,9 +426,12 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   if (targetBranch != null) out.targetBranch = targetBranch;
   if (event != null) out.event = event;
   if (author != null) out.author = author;
+  if (authors != null) out.authors = authors;
   if (labels != null) out.labels = labels;
   if (paths != null) out.paths = paths;
   if (keywords != null) out.keywords = keywords;
+  if (titleRegex != null) out.titleRegex = titleRegex;
+  if (bodyRegex != null) out.bodyRegex = bodyRegex;
   if (namePattern != null) out.namePattern = namePattern;
   if (project != null) out.project = project;
   if (team != null) out.team = team;
@@ -442,6 +439,7 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   if (stateTransition != null) out.stateTransition = stateTransition;
   if (changedFields != null) out.changedFields = changedFields;
   if (secretRef != null) out.secretRef = secretRef;
+  if (repo != null) out.repo = repo;
   if (draftStateRaw === "draft" || draftStateRaw === "ready" || draftStateRaw === "any") out.draftState = draftStateRaw;
   if (activeHours) out.activeHours = activeHours;
   return out;
@@ -471,13 +469,9 @@ function coerceAutomationActiveHours(value: unknown): AutomationActiveHours | un
 function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (!isRecord(value)) return null;
   const typeRaw = asString(value.type)?.trim() ?? "";
-  const type: AutomationActionType | null =
-    typeRaw === "update-packs" ||
-    typeRaw === "predict-conflicts" ||
-    typeRaw === "run-tests" ||
-    typeRaw === "run-command"
-      ? (typeRaw as AutomationActionType)
-      : null;
+  const type: AutomationActionType | null = AUTOMATION_ACTION_TYPE_SET.has(typeRaw)
+    ? (typeRaw as AutomationActionType)
+    : null;
   if (!type) return null;
 
   const out: AutomationAction = { type };
@@ -488,6 +482,9 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const continueOnFailure = asBool(value.continueOnFailure);
   const timeoutMs = asNumber(value.timeoutMs);
   const retry = asNumber(value.retry);
+  const adeAction = coerceRunAdeActionConfig(value.adeAction);
+  const prompt = asString(value.prompt);
+  const sessionTitle = asString(value.sessionTitle);
 
   if (suiteId != null) out.suiteId = suiteId;
   if (command != null) out.command = command;
@@ -496,8 +493,26 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (continueOnFailure != null) out.continueOnFailure = continueOnFailure;
   if (timeoutMs != null) out.timeoutMs = timeoutMs;
   if (retry != null) out.retry = retry;
+  if (adeAction != null) out.adeAction = adeAction;
+  if (prompt != null) out.prompt = prompt;
+  if (sessionTitle != null) out.sessionTitle = sessionTitle;
 
   return out;
+}
+
+function coerceRunAdeActionConfig(value: unknown): AutomationAction["adeAction"] | undefined {
+  if (!isRecord(value)) return undefined;
+  const domain = asString(value.domain)?.trim();
+  const action = asString(value.action)?.trim();
+  if (!domain || !action) return undefined;
+  const args = Array.isArray(value.args) || isRecord(value.args) ? value.args : undefined;
+  const resolvers = asStringMap(value.resolvers);
+  return {
+    domain,
+    action,
+    ...(args !== undefined ? { args } : {}),
+    ...(resolvers ? { resolvers } : {}),
+  };
 }
 
 function coerceAutomationExecution(value: unknown): AutomationExecution | undefined {
@@ -786,6 +801,7 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   const outputs = coerceAutomationOutputs(value.outputs);
   const verification = coerceAutomationVerification(value.verification);
   const billingCode = asString(value.billingCode);
+  const includeProjectContext = asBool(value.includeProjectContext);
   const queueStatusRaw = asString(value.queueStatus)?.trim();
   const queueStatus: AutomationRunQueueStatus | undefined =
     queueStatusRaw === "pending-review" ||
@@ -819,6 +835,7 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (verification != null) out.verification = verification;
   if (billingCode != null) out.billingCode = billingCode;
   if (queueStatus != null) out.queueStatus = queueStatus;
+  if (includeProjectContext != null) out.includeProjectContext = includeProjectContext;
 
   return out;
 }
@@ -2215,9 +2232,12 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.targetBranch ? { targetBranch: trigger.targetBranch.trim() } : {}),
         ...(trigger.event ? { event: trigger.event.trim() } : {}),
         ...(trigger.author ? { author: trigger.author.trim() } : {}),
+        ...(trigger.authors?.length ? { authors: trigger.authors.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.labels?.length ? { labels: trigger.labels.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.paths?.length ? { paths: trigger.paths.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.keywords?.length ? { keywords: trigger.keywords.map((value) => value.trim()).filter(Boolean) } : {}),
+        ...(trigger.titleRegex ? { titleRegex: trigger.titleRegex.trim() } : {}),
+        ...(trigger.bodyRegex ? { bodyRegex: trigger.bodyRegex.trim() } : {}),
         ...(trigger.namePattern ? { namePattern: trigger.namePattern.trim() } : {}),
         ...(trigger.project ? { project: trigger.project.trim() } : {}),
         ...(trigger.team ? { team: trigger.team.trim() } : {}),
@@ -2226,6 +2246,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.changedFields?.length ? { changedFields: trigger.changedFields.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
         ...(trigger.secretRef ? { secretRef: trigger.secretRef.trim() } : {}),
+        ...(trigger.repo ? { repo: trigger.repo.trim() } : {}),
         ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
       })),
       trigger: legacyTrigger ?? triggers[0] ?? { type: "manual" },
@@ -2244,6 +2265,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       verification: entry.verification ?? { verifyBeforePublish: false, mode: "intervention" },
       billingCode: entry.billingCode?.trim() || `auto:${entry.id.trim()}`,
       ...(entry.queueStatus ? { queueStatus: entry.queueStatus } : {}),
+      ...(typeof entry.includeProjectContext === "boolean" ? { includeProjectContext: entry.includeProjectContext } : {}),
       actions: (entry.actions ?? []).map((action) => ({
         type: action.type,
         ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
@@ -2253,6 +2275,9 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
         ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
         ...(action.retry != null ? { retry: action.retry } : {}),
+        ...(action.adeAction ? { adeAction: action.adeAction } : {}),
+        ...(action.prompt ? { prompt: action.prompt } : {}),
+        ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
       })),
       legacy: {
         ...(legacyTrigger ? { trigger: legacyTrigger } : {}),
@@ -2266,6 +2291,9 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
             ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
             ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
             ...(action.retry != null ? { retry: action.retry } : {}),
+            ...(action.adeAction ? { adeAction: action.adeAction } : {}),
+            ...(action.prompt ? { prompt: action.prompt } : {}),
+            ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
           })),
         } : {}),
       },
@@ -2772,27 +2800,7 @@ function validateEffectiveConfig(
     for (let triggerIdx = 0; triggerIdx < rule.triggers.length; triggerIdx += 1) {
       const trigger = rule.triggers[triggerIdx]!;
       const tp = `${p}.triggers[${triggerIdx}]`;
-      if (
-        trigger.type !== "session-end" &&
-        trigger.type !== "commit" &&
-        trigger.type !== "git.commit" &&
-        trigger.type !== "git.push" &&
-        trigger.type !== "git.pr_opened" &&
-        trigger.type !== "git.pr_updated" &&
-        trigger.type !== "git.pr_merged" &&
-        trigger.type !== "git.pr_closed" &&
-        trigger.type !== "file.change" &&
-        trigger.type !== "lane.created" &&
-        trigger.type !== "lane.archived" &&
-        trigger.type !== "schedule" &&
-        trigger.type !== "manual" &&
-        trigger.type !== "linear.issue_created" &&
-        trigger.type !== "linear.issue_updated" &&
-        trigger.type !== "linear.issue_assigned" &&
-        trigger.type !== "linear.issue_status_changed" &&
-        trigger.type !== "github-webhook" &&
-        trigger.type !== "webhook"
-      ) {
+      if (!AUTOMATION_TRIGGER_TYPE_SET.has(trigger.type)) {
         issues.push({ path: `${tp}.type`, message: "Invalid trigger type" });
       }
       if (trigger.type === "schedule") {
@@ -2853,11 +2861,7 @@ function validateEffectiveConfig(
         const action = rule.legacy.actions[actionIdx]!;
         const ap = `${p}.legacy.actions[${actionIdx}]`;
         const type = action.type as AutomationActionType;
-        if (
-          type !== "predict-conflicts" &&
-          type !== "run-tests" &&
-          type !== "run-command"
-        ) {
+        if (!AUTOMATION_ACTION_TYPE_SET.has(type)) {
           issues.push({ path: `${ap}.type`, message: `Unknown action type '${String((action as any).type)}'` });
           continue;
         }
@@ -2868,6 +2872,9 @@ function validateEffectiveConfig(
           } else if (!suiteIds.has(suiteId)) {
             issues.push({ path: `${ap}.suiteId`, message: `Unknown suiteId '${suiteId}'` });
           }
+        }
+        if (type === "ade-action" && (!(action.adeAction?.domain ?? "").trim() || !(action.adeAction?.action ?? "").trim())) {
+          issues.push({ path: `${ap}.adeAction`, message: "ade-action requires domain and action" });
         }
       }
     }

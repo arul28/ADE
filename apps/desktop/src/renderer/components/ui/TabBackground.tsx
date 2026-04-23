@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { cn } from "./cn";
 
+function primaryTabPath(pathname: string): string {
+  const roots = ["/project", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/missions", "/settings"];
+  return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
+}
+
 const routeToTabBg: Record<string, string> = {
   "/project": "ade-tab-bg-project",
   "/lanes": "ade-tab-bg-lanes",
@@ -30,7 +35,7 @@ const routeToTint: Record<string, string> = {
 
 export function TabBackground() {
   const location = useLocation();
-  const path = location.pathname;
+  const path = primaryTabPath(location.pathname);
   const bgClass = routeToTabBg[path] ?? null;
   const tintClass = routeToTint[path] ?? null;
   const [prev, setPrev] = useState<string | null>(null);

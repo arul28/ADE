@@ -6,11 +6,16 @@ import type {
   BudgetCapScope,
   BudgetCapType,
   BudgetPreset,
-} from "../../../../shared/types";
-import { Button } from "../../ui/Button";
-import { Chip } from "../../ui/Chip";
-import { cn } from "../../ui/cn";
-import { CARD_SHADOW_STYLE } from "../shared";
+} from "../../../shared/types";
+import { Button } from "../ui/Button";
+import { Chip } from "../ui/Chip";
+import { cn } from "../ui/cn";
+
+const CARD_SHADOW_STYLE: React.CSSProperties = {
+  background: "linear-gradient(180deg, rgba(20, 31, 45, 0.96) 0%, rgba(10, 18, 28, 0.94) 100%)",
+  border: "1px solid rgba(87, 108, 128, 0.22)",
+  boxShadow: "0 18px 40px -24px rgba(0, 0, 0, 0.78), inset 0 1px 0 rgba(255,255,255,0.04)",
+};
 
 type BudgetCapDraft = NonNullable<BudgetCapConfig["budgetCaps"]>[number] & { rowId: string };
 

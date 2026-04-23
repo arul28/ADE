@@ -1,4 +1,4 @@
-import { cn } from "../../ui/cn";
+import { cn } from "../ui/cn";
 
 export function UsageMeter({
   label,

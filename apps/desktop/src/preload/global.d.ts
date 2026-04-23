@@ -113,6 +113,7 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AdeActionRegistryEntry,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -770,6 +771,9 @@ declare global {
         ) => Promise<AutomationSimulateResult>;
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
       };
+      actions: {
+        listRegistry: () => Promise<AdeActionRegistryEntry[]>;
+      };
       usage: {
         getSnapshot: () => Promise<UsageSnapshot | null>;
         refresh: () => Promise<UsageSnapshot | null>;
@@ -1333,6 +1337,9 @@ declare global {
         getStatus: () => Promise<GitHubStatus>;
         setToken: (token: string) => Promise<GitHubStatus>;
         clearToken: () => Promise<GitHubStatus>;
+        detectRepo: () => Promise<{ owner: string; name: string } | null>;
+        listRepoLabels: (args: { owner: string; name: string }) => Promise<Array<{ name: string; color?: string }>>;
+        listRepoCollaborators: (args: { owner: string; name: string }) => Promise<Array<{ login: string; avatarUrl?: string }>>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

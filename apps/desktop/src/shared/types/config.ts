@@ -562,10 +562,23 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "commit",
   "git.commit",
   "git.push",
+  // Legacy PR trigger names — kept as aliases for back-compat. New rules
+  // should prefer the `github.pr_*` canonical names below.
   "git.pr_opened",
   "git.pr_updated",
   "git.pr_merged",
   "git.pr_closed",
+  "github.pr_opened",
+  "github.pr_updated",
+  "github.pr_merged",
+  "github.pr_closed",
+  "github.pr_commented",
+  "github.pr_review_submitted",
+  "github.issue_opened",
+  "github.issue_edited",
+  "github.issue_closed",
+  "github.issue_labeled",
+  "github.issue_commented",
   "file.change",
   "lane.created",
   "lane.archived",
@@ -579,12 +592,41 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "webhook",
 ] as const;
 export type AutomationTriggerType = (typeof AUTOMATION_TRIGGER_TYPES)[number];
+
+/** Legacy GitHub PR trigger aliases → canonical `github.pr_*` names. */
+export const LEGACY_GITHUB_PR_TRIGGER_ALIASES: Readonly<Record<string, AutomationTriggerType>> = {
+  "git.pr_opened": "github.pr_opened",
+  "git.pr_updated": "github.pr_updated",
+  "git.pr_merged": "github.pr_merged",
+  "git.pr_closed": "github.pr_closed",
+};
+
 export type AutomationActionType =
   | "agent-session"
   | "launch-mission"
   | "predict-conflicts"
   | "run-tests"
-  | "run-command";
+  | "run-command"
+  | "ade-action";
+
+/**
+ * Configuration for an `ade-action` automation action. Points at a domain +
+ * action registered in the shared ADE action registry. `args` may contain
+ * `{{trigger.*}}` placeholders that are resolved from the trigger context at
+ * dispatch time.
+ */
+export type RunAdeActionConfig = {
+  domain: string;
+  action: string;
+  args?: Record<string, unknown> | unknown[];
+  /**
+   * Optional explicit mapping of placeholder keys → trigger-context paths,
+   * e.g. `{ issueNumber: "trigger.issue.number" }`. Placeholders embedded
+   * inside `args` strings (`"{{trigger.issue.number}}"`) are resolved
+   * independently.
+   */
+  resolvers?: Record<string, string>;
+};
 
 export type AutomationMode = "review" | "fix" | "monitor";
 
@@ -646,9 +688,14 @@ export type AutomationTrigger = {
   targetBranch?: string;
   event?: string;
   author?: string;
+  authors?: string[];
   labels?: string[];
   paths?: string[];
   keywords?: string[];
+  /** Regex applied to the title of an issue/PR. */
+  titleRegex?: string;
+  /** Regex applied to the body of an issue/PR. */
+  bodyRegex?: string;
   namePattern?: string;
   project?: string;
   team?: string;
@@ -657,6 +704,8 @@ export type AutomationTrigger = {
   changedFields?: string[];
   draftState?: "draft" | "ready" | "any";
   secretRef?: string;
+  /** For `github.*` triggers: restrict to a specific repository. */
+  repo?: string;
   activeHours?: AutomationActiveHours;
 };
 
@@ -669,6 +718,15 @@ export type AutomationAction = {
   continueOnFailure?: boolean;
   timeoutMs?: number;
   retry?: number;
+  /** Configuration payload for actions of kind `ade-action`. */
+  adeAction?: RunAdeActionConfig;
+  /**
+   * Prompt + session title for agent-session actions embedded inside a
+   * multi-step built-in chain. Not used when the rule's `execution.kind` is
+   * `"agent-session"` (that path reads `rule.prompt` / `execution.session.title`).
+   */
+  prompt?: string;
+  sessionTitle?: string;
 };
 
 export type AutomationExecutionKind = "agent-session" | "mission" | "built-in";
@@ -739,6 +797,8 @@ export type AutomationOutputs = {
   notificationChannel?: string | null;
 };
 
+/** @deprecated Review/verification gate is no longer surfaced in the UI; kept
+ * for YAML compatibility so existing rules still load. */
 export type AutomationVerification = {
   verifyBeforePublish: boolean;
   mode?: "intervention" | "dry-run";
@@ -758,15 +818,22 @@ export type AutomationRule = {
   permissionConfig?: MissionPermissionConfig;
   templateId?: string;
   prompt?: string;
+  /** @deprecated Review profile is no longer surfaced in the UI. */
   reviewProfile: AutomationReviewProfile;
+  /** @deprecated Tool palette is no longer surfaced in the UI. */
   toolPalette: AutomationToolFamily[];
+  /** @deprecated Replaced by `includeProjectContext` in the UI. */
   contextSources: AutomationContextSource[];
+  /** @deprecated Replaced by `includeProjectContext` in the UI. */
   memory: AutomationMemoryConfig;
   guardrails: AutomationGuardrails;
   outputs: AutomationOutputs;
+  /** @deprecated Review/verification gate no longer surfaced in the UI. */
   verification: AutomationVerification;
   billingCode: string;
   queueStatus?: AutomationRunQueueStatus;
+  /** Single collapsed toggle that replaces the legacy memory/context-source knobs. */
+  includeProjectContext?: boolean;
   /** @deprecated Legacy compatibility shim for action-list surfaces. */
   actions: AutomationAction[];
   legacy?: {
@@ -797,6 +864,7 @@ export type ConfigAutomationRule = {
   verification?: AutomationVerification;
   billingCode?: string;
   queueStatus?: AutomationRunQueueStatus;
+  includeProjectContext?: boolean;
   trigger?: AutomationTrigger;
   actions?: AutomationAction[];
   enabled?: boolean;

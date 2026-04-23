@@ -195,6 +195,7 @@ jobs:
   ci-pass:
     if: always()
     needs:
+      - install
       - secret-scan
       - typecheck-desktop
       - typecheck-ade-cli
@@ -209,8 +210,9 @@ jobs:
       - name: Check all jobs passed
         run: |
           if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] ||
+             [[ "${{ contains(needs.*.result, 'skipped') }}" == "true" ]] ||
              [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
-            echo "::error::One or more required jobs failed or were cancelled"
+            echo "::error::One or more required jobs failed, were skipped, or were cancelled"
             exit 1
           fi
           echo "All CI jobs passed"

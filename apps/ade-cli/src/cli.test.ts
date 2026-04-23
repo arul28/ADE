@@ -317,6 +317,250 @@ describe("ADE CLI", () => {
     expect(renderLaneGraph(null)).toBe("ADE lanes\n(no lanes)");
   });
 
+  it("automations list maps to the automations.list action", () => {
+    const plan = buildCliPlan(["automations", "list"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "automations", action: "list", args: {} },
+    });
+  });
+
+  it("automations show reads the id from a positional or from --id", () => {
+    const byPositional = buildCliPlan(["automations", "show", "rule-42"]);
+    expect(byPositional.kind).toBe("execute");
+    if (byPositional.kind !== "execute") return;
+    expect(byPositional.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "automations", action: "get", args: { id: "rule-42" } },
+    });
+
+    const byFlag = buildCliPlan(["automations", "show", "--id", "rule-42"]);
+    expect(byFlag.kind).toBe("execute");
+    if (byFlag.kind !== "execute") return;
+    expect(byFlag.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "automations", action: "get", args: { id: "rule-42" } },
+    });
+  });
+
+  it("automations show errors loudly when id is missing", () => {
+    expect(() => buildCliPlan(["automations", "show"])).toThrow(/rule id/);
+  });
+
+  it("automations create parses an inline YAML --text body via parseDraftInput", () => {
+    // The CLI also accepts --from-file / --stdin; --text is the in-process variant.
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      "id: my-rule\nname: My rule\nenabled: true\n",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "saveRule",
+        args: {
+          draft: { id: "my-rule", name: "My rule", enabled: true },
+        },
+      },
+    });
+  });
+
+  it("automations create accepts an inline JSON --text body", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      '{"id":"json-rule","name":"J"}',
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: { draft: { id: "json-rule", name: "J" } },
+      },
+    });
+  });
+
+  it("automations create rejects an empty body with a usage error", () => {
+    expect(() =>
+      buildCliPlan(["automations", "create", "--text", "   \n  "]),
+    ).toThrow(/empty/i);
+  });
+
+  it("automations create rejects unparseable YAML/JSON", () => {
+    expect(() =>
+      buildCliPlan(["automations", "create", "--text", "{ this is: [unclosed"]),
+    ).toThrow(/Failed to parse rule body/i);
+  });
+
+  it("automations create rejects a top-level non-object body", () => {
+    // A bare string/array wouldn't round-trip through saveDraft safely.
+    expect(() =>
+      buildCliPlan(["automations", "create", "--text", "- one\n- two\n"]),
+    ).toThrow(/must be an object/i);
+  });
+
+  it("automations update merges the provided id into the draft payload", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "update",
+      "rule-42",
+      "--text",
+      "name: Renamed\n",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "saveRule",
+        args: {
+          draft: { name: "Renamed", id: "rule-42" },
+        },
+      },
+    });
+  });
+
+  it("automations delete targets the id", () => {
+    const plan = buildCliPlan(["automations", "delete", "rule-42"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "automations", action: "deleteRule", args: { id: "rule-42" } },
+    });
+  });
+
+  it("automations toggle requires --enabled true|false and coerces to boolean", () => {
+    const enabled = buildCliPlan(["automations", "toggle", "rule-42", "--enabled", "true"]);
+    expect(enabled.kind).toBe("execute");
+    if (enabled.kind !== "execute") return;
+    expect(enabled.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "automations", action: "toggleRule", args: { id: "rule-42", enabled: true } },
+    });
+
+    const disabled = buildCliPlan(["automations", "toggle", "rule-42", "--enabled", "false"]);
+    expect(disabled.kind).toBe("execute");
+    if (disabled.kind !== "execute") return;
+    expect(disabled.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "automations", action: "toggleRule", args: { id: "rule-42", enabled: false } },
+    });
+  });
+
+  it("automations toggle errors when --enabled is omitted", () => {
+    expect(() => buildCliPlan(["automations", "toggle", "rule-42"])).toThrow(
+      /--enabled <true\|false>/,
+    );
+  });
+
+  it("automations toggle rejects invalid --enabled values", () => {
+    expect(() => buildCliPlan(["automations", "toggle", "rule-42", "--enabled", "maybe"])).toThrow(
+      /must be true or false/,
+    );
+  });
+
+  it("automations run passes dryRun only when --dry-run is set", () => {
+    const plain = buildCliPlan(["automations", "run", "rule-42"]);
+    expect(plain.kind).toBe("execute");
+    if (plain.kind !== "execute") return;
+    expect(plain.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "automations", action: "triggerManually", args: { id: "rule-42" } },
+    });
+
+    const dry = buildCliPlan(["automations", "run", "rule-42", "--dry-run"]);
+    expect(dry.kind).toBe("execute");
+    if (dry.kind !== "execute") return;
+    expect(dry.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "triggerManually",
+        args: { id: "rule-42", dryRun: true },
+      },
+    });
+  });
+
+  it("automations run forwards --lane as laneId", () => {
+    const plan = buildCliPlan(["automations", "run", "rule-42", "--lane", "lane-7"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: { args: { id: "rule-42", laneId: "lane-7" } },
+    });
+  });
+
+  it("automations runs passes through --rule and --limit as filters", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "runs",
+      "--rule",
+      "rule-42",
+      "--limit",
+      "25",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "listRuns",
+        args: { automationId: "rule-42", limit: 25 },
+      },
+    });
+  });
+
+  it("automations runs sends an empty filter when no flags are given", () => {
+    const plan = buildCliPlan(["automations", "runs"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "automations", action: "listRuns", args: {} },
+    });
+  });
+
+  it("automations run-show / run-detail both map to getRunDetail", () => {
+    for (const verb of ["run-show", "run-detail"]) {
+      const plan = buildCliPlan(["automations", verb, "run-7"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") continue;
+      expect(plan.steps[0]?.params).toEqual({
+        name: "run_ade_action",
+        arguments: {
+          domain: "automations",
+          action: "getRunDetail",
+          args: { runId: "run-7" },
+        },
+      });
+    }
+  });
+
+  it("automations rejects unknown subcommands with a usage error", () => {
+    expect(() => buildCliPlan(["automations", "nope"])).toThrow(
+      /list, show, create, update, delete, toggle, run, runs/,
+    );
+  });
+
+  it("singular `automation` is accepted as an alias for `automations`", () => {
+    const plan = buildCliPlan(["automation", "list"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: { domain: "automations", action: "list" },
+    });
+  });
+
   it("attaches a rendered lane graph when the plan has the lanes visualizer", () => {
     const connection = {
       mode: "headless" as const,

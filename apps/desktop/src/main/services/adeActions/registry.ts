@@ -1,0 +1,335 @@
+import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
+import type {
+  AutomationManualTriggerRequest,
+  AutomationRun,
+  AutomationRunDetail,
+  AutomationRunListArgs,
+  AutomationRuleSummary,
+  AutomationSaveDraftRequest,
+  AutomationSaveDraftResult,
+} from "../../../shared/types/automations";
+import type { AutomationRule } from "../../../shared/types/config";
+
+export type AdeActionDomain =
+  | "lane"
+  | "git"
+  | "diff"
+  | "conflicts"
+  | "pr"
+  | "tests"
+  | "chat"
+  | "mission"
+  | "orchestrator"
+  | "orchestrator_core"
+  | "memory"
+  | "cto_state"
+  | "worker_agent"
+  | "session"
+  | "operation"
+  | "project_config"
+  | "issue_inventory"
+  | "flow_policy"
+  | "linear_dispatcher"
+  | "linear_issue_tracker"
+  | "linear_sync"
+  | "linear_ingress"
+  | "linear_routing"
+  | "file"
+  | "process"
+  | "pty"
+  | "computer_use_artifacts"
+  | "automations"
+  | "issue";
+
+export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  lane: [
+    "adoptAttached",
+    "attach",
+    "create",
+    "createFromUnstaged",
+    "delete",
+    "getChildren",
+    "getStackChain",
+    "importBranch",
+    "list",
+    "listUnregisteredWorktrees",
+    "refreshSnapshots",
+    "rename",
+    "reparent",
+    "updateAppearance",
+  ],
+  git: [
+    "abortRebase",
+    "cherryPickCommit",
+    "commit",
+    "continueRebase",
+    "fetch",
+    "getCommitMessage",
+    "getConflictState",
+    "getFileHistory",
+    "getSyncStatus",
+    "listCommitFiles",
+    "mergeAbort",
+    "mergeContinue",
+    "pull",
+    "push",
+    "rebaseAbort",
+    "rebaseContinue",
+    "revertCommit",
+    "stash",
+    "stagePaths",
+    "unstagePaths",
+  ],
+  diff: ["getChanges", "getFileDiff"],
+  conflicts: ["getLaneStatus", "listOverlaps", "rebaseLane", "runPrediction"],
+  pr: [
+    "addComment",
+    "aiReviewSummary",
+    "cleanupIntegrationWorkflow",
+    "createFromLane",
+    "createIntegrationLane",
+    "createIntegrationPr",
+    "createQueuePrs",
+    "dismissIntegrationCleanup",
+    "draftDescription",
+    "getActionRuns",
+    "getChecks",
+    "getComments",
+    "getDetail",
+    "getGithubSnapshot",
+    "getIntegrationResolutionState",
+    "getMobileSnapshot",
+    "getPrHealth",
+    "getQueueState",
+    "getReviewThreads",
+    "getReviews",
+    "landQueueNext",
+    "landStack",
+    "landStackEnhanced",
+    "linkToLane",
+    "listAll",
+    "listGroupPrs",
+    "listIntegrationProposals",
+    "listIntegrationWorkflows",
+    "listWithConflicts",
+    "postReviewComment",
+    "reactToComment",
+    "recheckIntegrationStep",
+    "refresh",
+    "reorderQueuePrs",
+    "requestReviewers",
+    "setLabels",
+    "setReviewThreadResolved",
+    "simulateIntegration",
+    "startIntegrationResolution",
+    "submitReview",
+    "updateDescription",
+    "updateIntegrationProposal",
+    "updateTitle",
+  ],
+  tests: ["getLogTail", "listRuns", "listSuites", "run", "stop"],
+  chat: [
+    "createSession",
+    "deleteSession",
+    "getAvailableModels",
+    "getSessionSummary",
+    "getSlashCommands",
+    "interrupt",
+    "listSessions",
+    "resumeSession",
+    "sendMessage",
+  ],
+  memory: ["addSharedFact", "pinMemory", "searchMemories", "writeMemory"],
+  session: ["get", "readTranscriptTail"],
+  operation: ["finish", "list", "start"],
+  project_config: ["get", "save"],
+  issue_inventory: [
+    "getConvergenceRuntime",
+    "getConvergenceStatus",
+    "getInventory",
+    "getNewItems",
+    "getPipelineSettings",
+    "markDismissed",
+    "markEscalated",
+    "markFixed",
+    "markSentToAgent",
+    "reconcileConvergenceSessionExit",
+    "savePipelineSettings",
+    "syncFromPrData",
+  ],
+  flow_policy: ["getPolicy", "savePolicy"],
+  linear_dispatcher: ["dispatchIssue", "getDashboard", "listEmployees", "listQueue"],
+  linear_issue_tracker: ["getStatus", "listIssues"],
+  linear_sync: ["getDashboard", "getRunDetail", "listQueue", "resolveQueueItem", "runSyncNow"],
+  linear_ingress: ["ensureRelayWebhook", "getStatus", "listRecentEvents"],
+  linear_routing: ["simulateRoute"],
+  file: [
+    "createDirectory",
+    "createFile",
+    "deletePath",
+    "listTree",
+    "listWorkspaces",
+    "quickOpen",
+    "readFile",
+    "rename",
+    "searchText",
+    "writeWorkspaceText",
+  ],
+  process: ["getLogTail", "listDefinitions", "listRuntime", "startAll", "stopAll"],
+  pty: ["create", "dispose", "resize", "write"],
+  computer_use_artifacts: ["ingest", "listArtifacts"],
+  automations: [
+    "list",
+    "get",
+    "saveRule",
+    "deleteRule",
+    "toggleRule",
+    "triggerManually",
+    "listRuns",
+    "getRunDetail",
+  ],
+  issue: [
+    "addComment",
+    "setLabels",
+    "close",
+    "reopen",
+    "assign",
+    "setTitle",
+  ],
+};
+
+type AutomationsDomainService = {
+  list(): AutomationRuleSummary[];
+  get(args: { id: string }): AutomationRule | null;
+  saveRule(args: AutomationSaveDraftRequest): AutomationSaveDraftResult;
+  deleteRule(args: { id: string }): AutomationRuleSummary[];
+  toggleRule(args: { id: string; enabled: boolean }): AutomationRuleSummary[];
+  triggerManually(args: AutomationManualTriggerRequest): Promise<AutomationRun>;
+  listRuns(args?: AutomationRunListArgs): AutomationRun[];
+  getRunDetail(args: { runId: string }): Promise<AutomationRunDetail | null>;
+};
+
+function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainService | null {
+  const automationService = runtime.automationService;
+  const plannerService = runtime.automationPlannerService;
+  const projectConfigService = runtime.projectConfigService;
+  if (!automationService || !plannerService || !projectConfigService) return null;
+  return {
+    list: () => automationService.list(),
+    get: ({ id }) => {
+      const trimmed = id?.trim();
+      if (!trimmed) return null;
+      return projectConfigService.get().effective.automations.find((r) => r.id === trimmed) ?? null;
+    },
+    saveRule: (args) => plannerService.saveDraft(args),
+    deleteRule: ({ id }) => automationService.deleteRule({ id }),
+    toggleRule: ({ id, enabled }) => automationService.toggle({ id, enabled }),
+    triggerManually: (args) => automationService.triggerManually(args),
+    listRuns: (args = {}) => automationService.listRuns(args),
+    getRunDetail: ({ runId }) => automationService.getRunDetail({ runId }),
+  };
+}
+
+type IssueDomainService = {
+  addComment(args: { owner?: string; name?: string; number: number; body: string }): Promise<unknown>;
+  setLabels(args: { owner?: string; name?: string; number: number; labels: string[] }): Promise<unknown>;
+  close(args: { owner?: string; name?: string; number: number; reason?: "completed" | "not_planned" }): Promise<unknown>;
+  reopen(args: { owner?: string; name?: string; number: number }): Promise<unknown>;
+  assign(args: { owner?: string; name?: string; number: number; assignees: string[] }): Promise<unknown>;
+  setTitle(args: { owner?: string; name?: string; number: number; title: string }): Promise<unknown>;
+};
+
+function buildIssueDomainService(runtime: AdeRuntime): IssueDomainService | null {
+  const githubService = runtime.githubService;
+  if (!githubService) return null;
+
+  const resolveRepo = async (owner?: string, name?: string): Promise<{ owner: string; name: string }> => {
+    if (owner && name) return { owner, name };
+    const repo = await githubService.detectRepo();
+    if (!repo) throw new Error("Unable to detect GitHub repo; pass owner/name explicitly.");
+    return { owner: repo.owner, name: repo.name };
+  };
+
+  return {
+    addComment: async ({ owner, name, number, body }) => {
+      const repo = await resolveRepo(owner, name);
+      return githubService.addIssueComment(repo.owner, repo.name, number, body);
+    },
+    setLabels: async ({ owner, name, number, labels }) => {
+      const repo = await resolveRepo(owner, name);
+      return githubService.setIssueLabels(repo.owner, repo.name, number, labels);
+    },
+    close: async ({ owner, name, number, reason }) => {
+      const repo = await resolveRepo(owner, name);
+      return githubService.closeIssue(repo.owner, repo.name, number, reason);
+    },
+    reopen: async ({ owner, name, number }) => {
+      const repo = await resolveRepo(owner, name);
+      return githubService.reopenIssue(repo.owner, repo.name, number);
+    },
+    assign: async ({ owner, name, number, assignees }) => {
+      const repo = await resolveRepo(owner, name);
+      return githubService.assignIssue(repo.owner, repo.name, number, assignees);
+    },
+    setTitle: async ({ owner, name, number, title }) => {
+      const repo = await resolveRepo(owner, name);
+      return githubService.setIssueTitle(repo.owner, repo.name, number, title);
+    },
+  };
+}
+
+type OpaqueService = Record<string, unknown>;
+
+function toService(value: unknown): OpaqueService | null {
+  return (value ?? null) as OpaqueService | null;
+}
+
+export function getAdeActionDomainServices(
+  runtime: AdeRuntime,
+): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
+  return {
+    lane: toService(runtime.laneService),
+    git: toService(runtime.gitService),
+    diff: toService(runtime.diffService),
+    conflicts: toService(runtime.conflictService),
+    pr: toService(runtime.prService),
+    tests: toService(runtime.testService),
+    chat: toService(runtime.agentChatService),
+    mission: toService(runtime.missionService),
+    orchestrator: toService(runtime.aiOrchestratorService),
+    orchestrator_core: toService(runtime.orchestratorService),
+    memory: toService(runtime.memoryService),
+    cto_state: toService(runtime.ctoStateService),
+    worker_agent: toService(runtime.workerAgentService),
+    session: toService(runtime.sessionService),
+    operation: toService(runtime.operationService),
+    project_config: toService(runtime.projectConfigService),
+    issue_inventory: toService(runtime.issueInventoryService),
+    flow_policy: toService(runtime.flowPolicyService),
+    linear_dispatcher: toService(runtime.linearDispatcherService),
+    linear_issue_tracker: toService(runtime.linearIssueTracker),
+    linear_sync: toService(runtime.linearSyncService),
+    linear_ingress: toService(runtime.linearIngressService),
+    linear_routing: toService(runtime.linearRoutingService),
+    file: toService(runtime.fileService),
+    process: toService(runtime.processService),
+    pty: toService(runtime.ptyService),
+    computer_use_artifacts: toService(runtime.computerUseArtifactBrokerService),
+    automations: toService(buildAutomationsDomainService(runtime)),
+    issue: toService(buildIssueDomainService(runtime)),
+  };
+}
+
+export function listAllowedAdeActionNames(
+  domain: AdeActionDomain,
+  service: Record<string, unknown>,
+): string[] {
+  const allowed = ADE_ACTION_ALLOWLIST[domain] ?? [];
+  return allowed
+    .filter((key) => typeof service[key] === "function")
+    .sort((a, b) => a.localeCompare(b));
+}
+
+export function isAllowedAdeAction(domain: AdeActionDomain, action: string): boolean {
+  return (ADE_ACTION_ALLOWLIST[domain] ?? []).includes(action);
+}

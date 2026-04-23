@@ -1,6 +1,11 @@
-import { cn } from "../../ui/cn";
-import { formatCost, formatTokens } from "../../../lib/format";
-import { CARD_SHADOW_STYLE } from "../shared";
+import { cn } from "../ui/cn";
+import { formatCost, formatTokens } from "../../lib/format";
+
+const CARD_SHADOW_STYLE: React.CSSProperties = {
+  background: "linear-gradient(180deg, rgba(20, 31, 45, 0.96) 0%, rgba(10, 18, 28, 0.94) 100%)",
+  border: "1px solid rgba(87, 108, 128, 0.22)",
+  boxShadow: "0 18px 40px -24px rgba(0, 0, 0, 0.78), inset 0 1px 0 rgba(255,255,255,0.04)",
+};
 
 export function CostSummaryCard({
   provider,

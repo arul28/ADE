@@ -1,5 +1,5 @@
-import type { UsagePacing, UsagePacingStatus } from "../../../../shared/types";
-import { cn } from "../../ui/cn";
+import type { UsagePacing, UsagePacingStatus } from "../../../shared/types";
+import { cn } from "../ui/cn";
 
 const PACING_STYLES: Record<string, { bg: string; border: string; text: string; label: string }> = {
   "far-behind":     { bg: "rgba(113,113,122,0.08)", border: "rgba(113,113,122,0.25)", text: "#71717A", label: "FAR BEHIND" },
@@ -65,6 +65,9 @@ export function UsagePacingBadge({
           <span>
             {pacing.deltaPercent > 0 ? "+" : ""}{pacing.deltaPercent.toFixed(1)}% vs expected
           </span>
+          {projectedPercent != null && (
+            <span>{projectedPercent.toFixed(1)}% projected</span>
+          )}
 
           {/* ETA to exhaustion */}
           {pacing.etaHours != null && (

@@ -418,6 +418,7 @@ describe("TerminalView", () => {
     // 3) second timer flush lets the post-import code run
     for (let i = 0; i < 100; i++) {
       await act(async () => {});
+      await (vi as any).dynamicImportSettled?.();
       await flushAllTimers();
       const runtime = getTerminalRuntimeSnapshot("session-dom");
       if (runtime?.renderer === "dom" && runtime.health.rendererFallbacks > previousFallbacks) {

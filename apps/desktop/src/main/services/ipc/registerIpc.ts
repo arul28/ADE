@@ -40,6 +40,7 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AdeActionRegistryEntry,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   ConflictProposal,
@@ -542,6 +543,9 @@ import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createAutomationIngressService } from "../automations/automationIngressService";
+import type { createGithubPollingService } from "../automations/githubPollingService";
+import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
+import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { type createMissionService } from "../missions/missionService";
 import type { createMissionPreflightService } from "../missions/missionPreflightService";
 
@@ -628,6 +632,7 @@ export type AppContext = {
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
+  githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   missionService: ReturnType<typeof createMissionService>;
   missionPreflightService: ReturnType<typeof createMissionPreflightService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
@@ -2713,6 +2718,24 @@ export function registerIpc({
   ipcMain.handle(IPC.automationsSimulate, async (_event, arg: AutomationSimulateRequest): Promise<AutomationSimulateResult> => {
     const ctx = getCtx();
     return ctx.automationPlannerService.simulate(arg);
+  });
+
+  ipcMain.handle(IPC.adeActionsListRegistry, async (): Promise<AdeActionRegistryEntry[]> => {
+    const ctx = getCtx();
+    const services = getAdeActionDomainServices(ctx as unknown as AdeRuntime);
+    const entries: AdeActionRegistryEntry[] = [];
+    for (const domain of Object.keys(ADE_ACTION_ALLOWLIST) as Array<keyof typeof ADE_ACTION_ALLOWLIST>) {
+      const service = services[domain];
+      if (!service) continue;
+      const actionNames = listAllowedAdeActionNames(domain, service as Record<string, unknown>);
+      if (actionNames.length === 0) continue;
+      entries.push({
+        domain,
+        actions: actionNames.map((name) => ({ name })),
+      });
+    }
+    entries.sort((a, b) => a.domain.localeCompare(b.domain));
+    return entries;
   });
 
   ipcMain.handle(IPC.missionsList, async (_event, arg: ListMissionsArgs = {}): Promise<MissionSummary[]> => {
@@ -5061,6 +5084,41 @@ export function registerIpc({
     const ctx = getCtx();
     ctx.githubService.clearToken();
     return await ctx.githubService.getStatus();
+  });
+
+  const resolveGithubRepoRef = async (
+    githubService: ReturnType<typeof createGithubService>,
+    arg?: { owner?: string; name?: string } | null
+  ): Promise<{ owner: string; name: string }> => {
+    const owner = arg?.owner?.trim();
+    const name = arg?.name?.trim();
+    if (owner && name) return { owner, name };
+    const detected = await githubService.detectRepo();
+    if (!detected) {
+      throw new Error("Unable to detect GitHub repo from git remote 'origin'. Provide owner/name explicitly.");
+    }
+    return detected;
+  };
+
+  ipcMain.handle(IPC.githubListRepoLabels, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoLabels(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListRepoCollaborators, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoCollaborators(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListRepoIssues, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all"; since?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoIssues(owner, name, {
+      state: arg?.state ?? "all",
+      since: arg?.since,
+    });
   });
 
   // ── Feedback Reporter ──────────────────────────────────────────────

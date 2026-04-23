@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import YAML from "yaml";
 import { type JsonRpcHandler, type JsonRpcId, type JsonRpcRequest } from "./jsonrpc";
 
 type JsonObject = Record<string, unknown>;
@@ -255,6 +256,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
     $ ade linear workflows | run | sync             Operate Linear routing and sync workflows
+    $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
@@ -346,6 +348,19 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade actions run git.stageFile --arg laneId=<id> --arg path=src/index.ts
     $ ade actions run <domain> <action> --input-json '{"key":"value"}'
     $ ade actions status --text                     Runtime action availability
+`,
+  automations: `${ADE_BANNER}
+  Automations
+
+    $ ade automations list [--json]                 List automation rules
+    $ ade automations show <id> [--json]            Inspect a rule
+    $ ade automations create --from-file <path>     Create from YAML (also accepts --stdin)
+    $ ade automations update <id> --from-file <path>
+    $ ade automations delete <id>                   Remove a local rule
+    $ ade automations toggle <id> --enabled true|false
+    $ ade automations run <id> [--dry-run]          Trigger a rule manually
+    $ ade automations runs [--rule <id>] [--limit 50] [--json]
+    $ ade automations run-show <runId> [--json]     Inspect a run
 `,
 };
 
@@ -1463,6 +1478,124 @@ function buildCtoPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `CTO ${sub}`, steps: [actionCallStep("result", sub.replace(/-/g, "_"), collectGenericObjectArgs(args))] };
 }
 
+function parseDraftInput(args: string[]): JsonObject {
+  const text = readFileTextInput(args);
+  if (text == null) {
+    throw new CliUsageError("Provide a rule body via --from-file, --stdin, or --text.");
+  }
+  const trimmed = text.trim();
+  if (!trimmed.length) {
+    throw new CliUsageError("Rule body is empty.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = trimmed.startsWith("{") || trimmed.startsWith("[")
+      ? JSON.parse(trimmed)
+      : YAML.parse(trimmed);
+  } catch (error) {
+    throw new CliUsageError(`Failed to parse rule body: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!isRecord(parsed)) {
+    throw new CliUsageError("Rule body must be an object.");
+  }
+  return parsed;
+}
+
+function buildAutomationsPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "list";
+
+  if (sub === "list") {
+    return { kind: "execute", label: "automations list", steps: [actionStep("result", "automations", "list")] };
+  }
+
+  if (sub === "show" || sub === "get") {
+    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
+    return { kind: "execute", label: `automations show ${id}`, steps: [actionStep("result", "automations", "get", { id })] };
+  }
+
+  if (sub === "create") {
+    const draft = parseDraftInput(args);
+    return {
+      kind: "execute",
+      label: "automations create",
+      steps: [actionStep("result", "automations", "saveRule", { draft })],
+    };
+  }
+
+  if (sub === "update") {
+    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
+    const draft = parseDraftInput(args);
+    return {
+      kind: "execute",
+      label: `automations update ${id}`,
+      steps: [actionStep("result", "automations", "saveRule", { draft: { ...draft, id } })],
+    };
+  }
+
+  if (sub === "delete") {
+    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
+    return { kind: "execute", label: `automations delete ${id}`, steps: [actionStep("result", "automations", "deleteRule", { id })] };
+  }
+
+  if (sub === "toggle") {
+    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
+    const enabledRaw = readValue(args, ["--enabled"]);
+    if (enabledRaw == null) {
+      throw new CliUsageError("automations toggle requires --enabled <true|false>.");
+    }
+    if (enabledRaw !== "true" && enabledRaw !== "false") {
+      throw new CliUsageError("automations toggle --enabled must be true or false.");
+    }
+    const enabled = enabledRaw === "true";
+    return {
+      kind: "execute",
+      label: `automations toggle ${id}`,
+      steps: [actionStep("result", "automations", "toggleRule", { id, enabled })],
+    };
+  }
+
+  if (sub === "run") {
+    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
+    const dryRun = readFlag(args, ["--dry-run"]);
+    const laneId = readLaneId(args);
+    return {
+      kind: "execute",
+      label: `automations run ${id}`,
+      steps: [actionStep("result", "automations", "triggerManually", {
+        id,
+        ...(dryRun ? { dryRun: true } : {}),
+        ...(laneId ? { laneId } : {}),
+      })],
+    };
+  }
+
+  if (sub === "runs") {
+    const automationId = readValue(args, ["--rule", "--automation", "--id"]);
+    const limit = readIntOption(args, ["--limit"]);
+    return {
+      kind: "execute",
+      label: "automations runs",
+      steps: [actionStep("result", "automations", "listRuns", {
+        ...(automationId ? { automationId } : {}),
+        ...(typeof limit === "number" ? { limit } : {}),
+      })],
+    };
+  }
+
+  if (sub === "run-show" || sub === "run-detail") {
+    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "run id");
+    return {
+      kind: "execute",
+      label: `automations run-show ${runId}`,
+      steps: [actionStep("result", "automations", "getRunDetail", { runId })],
+    };
+  }
+
+  throw new CliUsageError(
+    "automations supports list, show, create, update, delete, toggle, run, runs, or run-show.",
+  );
+}
+
 function buildLinearPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "workflows";
   if (sub === "workflows") return { kind: "execute", label: "Linear workflows", steps: [actionCallStep("result", "listLinearWorkflows", collectGenericObjectArgs(args))] };
@@ -1556,6 +1689,7 @@ function buildCliPlan(command: string[]): CliPlan {
       computer: "proof",
       "computer-use": "proof",
       action: "actions",
+      automation: "automations",
     };
     const key = aliases[topic] ?? topic;
     return { kind: "help", text: key && HELP_BY_COMMAND[key] ? HELP_BY_COMMAND[key] : TOP_LEVEL_HELP };
@@ -1603,6 +1737,7 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "cto") return buildCtoPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
+  if (primary === "automations" || primary === "automation") return buildAutomationsPlan(args);
   if (primary === "flow") return buildFlowPlan(args);
   if (primary === "coordinator" || primary === "coord") return buildCoordinatorPlan(args);
   if (primary === "ask") return { kind: "execute", label: "ask user", steps: [actionCallStep("result", "ask_user", collectGenericObjectArgs(args, { title: readValue(args, ["--title"]) ?? "ADE question", body: readValue(args, ["--body", "--question"]) ?? args.join(" ") }))] };

@@ -54,6 +54,9 @@ import { createConfigReloadService } from "./services/projects/configReloadServi
 import { IPC } from "../shared/ipc";
 import { resolveAdeLayout } from "../shared/adeLayout";
 import type { PortLease, ProjectInfo, RecentProjectSummary, SyncMobileProjectSummary, SyncProjectSwitchRequestPayload, SyncProjectSwitchResultPayload } from "../shared/types";
+import type { AutomationTriggerType } from "../shared/types/config";
+import type { AutomationTriggerLinearIssueContext } from "../shared/types/automations";
+import type { LinearIngressEventRecord } from "../shared/types/linearSync";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -73,6 +76,14 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createAutomationIngressService } from "./services/automations/automationIngressService";
+import { createGithubPollingService } from "./services/automations/githubPollingService";
+import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
+import {
+  ADE_ACTION_ALLOWLIST,
+  type AdeActionDomain,
+  getAdeActionDomainServices,
+  isAllowedAdeAction,
+} from "./services/adeActions/registry";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
@@ -195,6 +206,115 @@ function isBackgroundTaskEnabled(enableFlag?: string): boolean {
 const episodicSummaryEnabled = isBackgroundTaskEnabled(
   "ADE_ENABLE_EPISODIC_SUMMARY",
 );
+
+function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
+  const value = source?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readStringArray(source: Record<string, unknown> | null | undefined, key: string): string[] | undefined {
+  const value = source?.[key];
+  if (!Array.isArray(value)) return undefined;
+  const out = value.map((entry) => {
+    if (typeof entry === "string") return entry.trim();
+    if (entry && typeof entry === "object") {
+      const rec = entry as Record<string, unknown>;
+      const name = typeof rec.name === "string" ? rec.name.trim() : null;
+      if (name) return name;
+    }
+    return "";
+  }).filter((entry) => entry.length > 0);
+  return out.length > 0 ? out : undefined;
+}
+
+function readNested(source: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
+  const value = source?.[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function mapLinearActionToTriggerType(
+  action: string | null,
+  data: Record<string, unknown> | null,
+  prevData: Record<string, unknown> | null,
+): { triggerType: AutomationTriggerType; stateTransition: string | null; previousState: string | undefined } {
+  const currentState = readString(readNested(data, "state"), "name") ?? readString(data, "stateName");
+  const previousState = readString(readNested(prevData, "state"), "name") ?? readString(prevData, "stateName");
+  if (action === "create") {
+    return { triggerType: "linear.issue_created", stateTransition: null, previousState: undefined };
+  }
+  const prevAssignee = readString(prevData, "assigneeId") ?? readString(readNested(prevData, "assignee"), "id");
+  const curAssignee = readString(data, "assigneeId") ?? readString(readNested(data, "assignee"), "id");
+  if (curAssignee && curAssignee !== prevAssignee) {
+    return { triggerType: "linear.issue_assigned", stateTransition: null, previousState };
+  }
+  if (currentState && previousState && currentState !== previousState) {
+    return {
+      triggerType: "linear.issue_status_changed",
+      stateTransition: `${previousState}->${currentState}`,
+      previousState,
+    };
+  }
+  return { triggerType: "linear.issue_updated", stateTransition: null, previousState };
+}
+
+function buildLinearAutomationDispatch(event: LinearIngressEventRecord): {
+  source: "linear-relay";
+  eventKey: string;
+  triggerType: AutomationTriggerType;
+  eventName?: string | null;
+  summary?: string | null;
+  author?: string | null;
+  labels?: string[];
+  rawPayload?: Record<string, unknown> | null;
+  linear?: { issue: AutomationTriggerLinearIssueContext } | null;
+  project?: string | null;
+  team?: string | null;
+  assignee?: string | null;
+  stateTransition?: string | null;
+  changedFields?: string[];
+} | null {
+  if (!event.issueId) return null;
+  const payload = event.payload ?? null;
+  const data = readNested(payload, "data");
+  const prevData = readNested(payload, "updatedFrom");
+  const mapping = mapLinearActionToTriggerType(event.action, data, prevData);
+
+  const teamName = readString(readNested(data, "team"), "name") ?? readString(data, "teamName");
+  const projectName = readString(readNested(data, "project"), "name") ?? readString(data, "projectName");
+  const assigneeName = readString(readNested(data, "assignee"), "name") ?? readString(data, "assigneeName");
+  const stateName = readString(readNested(data, "state"), "name") ?? readString(data, "stateName");
+  const labels = readStringArray(data, "labels") ?? readStringArray(readNested(data, "labels"), "nodes");
+  const title = readString(data, "title") ?? undefined;
+
+  const changedFields = prevData ? Object.keys(prevData) : undefined;
+
+  const linearContext: AutomationTriggerLinearIssueContext = {
+    id: event.issueId,
+    title,
+    team: teamName,
+    project: projectName,
+    assignee: assigneeName,
+    state: stateName,
+    previousState: mapping.previousState,
+    labels,
+  };
+
+  return {
+    source: "linear-relay",
+    eventKey: event.eventId,
+    triggerType: mapping.triggerType,
+    eventName: event.action,
+    summary: event.summary,
+    labels,
+    rawPayload: payload,
+    linear: { issue: linearContext },
+    project: projectName ?? null,
+    team: teamName ?? null,
+    assignee: assigneeName ?? null,
+    stateTransition: mapping.stateTransition,
+    changedFields,
+  };
+}
 
 // The Claude CLI refuses to start if it detects it is inside another Claude Code
 // session (nested session guard). ADE is a host app, not a nested session, so
@@ -2187,6 +2307,12 @@ app.whenReady().then(async () => {
       listRules: () => projectConfigService.get().effective.automations ?? [],
     });
 
+    const githubPollingService = createGithubPollingService({
+      logger,
+      githubService,
+      automationService,
+    });
+
     let missionServiceRef: ReturnType<typeof createMissionService> | null =
       null;
     const missionService = createMissionService({
@@ -2667,6 +2793,18 @@ app.whenReady().then(async () => {
         });
         if (event.issueId) {
           await linearSyncService.processIssueUpdate(event.issueId);
+          try {
+            const dispatched = buildLinearAutomationDispatch(event);
+            if (dispatched) {
+              await automationService.dispatchIngressTrigger(dispatched);
+            }
+          } catch (error) {
+            logger.warn("linear.automation_dispatch_failed", {
+              issueId: event.issueId,
+              eventId: event.eventId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
       },
     });
@@ -2753,6 +2891,18 @@ app.whenReady().then(async () => {
       () => automationIngressService.start(),
       (error) => {
         logger.warn("automations.ingress_start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      0,
+      "ADE_ENABLE_AUTOMATION_INGRESS",
+    );
+
+    scheduleBackgroundProjectTask(
+      "automations.github_polling_start",
+      () => githubPollingService.start(),
+      (error) => {
+        logger.warn("automations.github_polling_start_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       },
@@ -3038,6 +3188,9 @@ app.whenReady().then(async () => {
       linearIngressService,
       linearRoutingService,
       processService,
+      githubService,
+      automationService,
+      automationPlannerService,
       computerUseArtifactBrokerService,
       orchestratorService,
       aiOrchestratorService,
@@ -3133,6 +3286,71 @@ app.whenReady().then(async () => {
     );
     logger.info("rpc.socket_server_started", { socketPath: rpcSocketPath });
 
+    // Wire the automation runtime into the shared ADE-action registry so
+    // that `ade-action` automation steps can invoke the same domain services
+    // the RPC server exposes. We do this lazily — the registry re-resolves
+    // services on every call so that runtime bindings (bindMissionRuntime,
+    // ctoStateService) that settle later are still visible.
+    {
+      const adeActionLookup: AutomationAdeActionRegistry = {
+        isAllowed(domain: string, action: string): boolean {
+          return isAllowedAdeAction(domain as AdeActionDomain, action);
+        },
+        getService(domain: string): Record<string, unknown> | null {
+          const pseudoRuntime = buildAdeActionRuntimeForAutomations();
+          const services = getAdeActionDomainServices(pseudoRuntime);
+          const service = services[domain as AdeActionDomain] ?? null;
+          return (service ?? null) as Record<string, unknown> | null;
+        },
+        listDomains(): string[] {
+          return Object.keys(ADE_ACTION_ALLOWLIST);
+        },
+        listActions(domain: string): string[] {
+          return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])];
+        },
+      };
+      automationService?.bindAdeActionRegistry(adeActionLookup);
+    }
+
+    // Helper: materialize an AdeRuntime-shaped bag from the current set of
+    // locally-created services so that the registry's service map resolves.
+    // Using a function closure means this stays reactive to late-bound refs
+    // like `ctoStateServiceRef`.
+    function buildAdeActionRuntimeForAutomations(): AdeRuntime {
+      return {
+        laneService,
+        gitService,
+        diffService,
+        conflictService,
+        prService,
+        testService,
+        agentChatService,
+        missionService,
+        aiOrchestratorService,
+        orchestratorService,
+        memoryService,
+        ctoStateService,
+        workerAgentService,
+        sessionService,
+        operationService,
+        projectConfigService,
+        issueInventoryService,
+        flowPolicyService,
+        linearDispatcherService,
+        linearIssueTracker,
+        linearSyncService,
+        linearIngressService,
+        linearRoutingService,
+        fileService,
+        processService,
+        ptyService,
+        computerUseArtifactBrokerService,
+        automationService,
+        automationPlannerService,
+        githubService,
+      } as unknown as AdeRuntime;
+    }
+
     return {
       db,
       logger,
@@ -3176,6 +3394,7 @@ app.whenReady().then(async () => {
       automationService,
       automationPlannerService,
       automationIngressService,
+      githubPollingService,
       usageTrackingService,
       budgetCapService,
       syncHostService: syncService.getHostService(),
@@ -3283,6 +3502,7 @@ app.whenReady().then(async () => {
       automationService: null,
       automationPlannerService: null,
       automationIngressService: null,
+      githubPollingService: null,
       usageTrackingService: null,
       budgetCapService: null,
       syncHostService: null,
@@ -3375,6 +3595,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.automationIngressService?.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.githubPollingService?.dispose();
     } catch {
       // ignore
     }

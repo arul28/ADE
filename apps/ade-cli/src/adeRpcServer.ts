@@ -14,6 +14,13 @@ import {
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
 import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPayload } from "../../desktop/src/main/services/proof/agentBrowserArtifactAdapter";
 import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/memory/memoryService";
+import {
+  ADE_ACTION_ALLOWLIST,
+  type AdeActionDomain,
+  getAdeActionDomainServices,
+  isAllowedAdeAction,
+  listAllowedAdeActionNames,
+} from "../../desktop/src/main/services/adeActions/registry";
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../../desktop/src/main/services/prs/prIssueResolver";
@@ -232,6 +239,8 @@ const TOOL_SPECS: ToolSpec[] = [
             "process",
             "pty",
             "computer_use_artifacts",
+            "automations",
+            "issue",
           ],
         },
         action: { type: "string", minLength: 1 },
@@ -2990,217 +2999,6 @@ async function waitForTestRunCompletion(args: {
     timedOut: true,
     logTail: runtime.testService.getLogTail({ runId, maxBytes: 220_000 })
   };
-}
-
-type AdeActionDomain =
-  | "lane"
-  | "git"
-  | "diff"
-  | "conflicts"
-  | "pr"
-  | "tests"
-  | "chat"
-  | "mission"
-  | "orchestrator"
-  | "orchestrator_core"
-  | "memory"
-  | "cto_state"
-  | "worker_agent"
-  | "session"
-  | "operation"
-  | "project_config"
-  | "issue_inventory"
-  | "flow_policy"
-  | "linear_dispatcher"
-  | "linear_issue_tracker"
-  | "linear_sync"
-  | "linear_ingress"
-  | "linear_routing"
-  | "file"
-  | "process"
-  | "pty"
-  | "computer_use_artifacts";
-
-const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
-  lane: [
-    "adoptAttached",
-    "attach",
-    "create",
-    "createFromUnstaged",
-    "delete",
-    "getChildren",
-    "getStackChain",
-    "importBranch",
-    "list",
-    "listUnregisteredWorktrees",
-    "refreshSnapshots",
-    "rename",
-    "reparent",
-    "updateAppearance",
-  ],
-  git: [
-    "abortRebase",
-    "cherryPickCommit",
-    "commit",
-    "continueRebase",
-    "fetch",
-    "getCommitMessage",
-    "getConflictState",
-    "getFileHistory",
-    "getSyncStatus",
-    "listCommitFiles",
-    "mergeAbort",
-    "mergeContinue",
-    "pull",
-    "push",
-    "rebaseAbort",
-    "rebaseContinue",
-    "revertCommit",
-    "stash",
-    "stagePaths",
-    "unstagePaths",
-  ],
-  diff: ["getChanges", "getFileDiff"],
-  conflicts: ["getLaneStatus", "listOverlaps", "rebaseLane", "runPrediction"],
-  pr: [
-    "addComment",
-    "aiReviewSummary",
-    "cleanupIntegrationWorkflow",
-    "createFromLane",
-    "createIntegrationLane",
-    "createIntegrationPr",
-    "createQueuePrs",
-    "dismissIntegrationCleanup",
-    "draftDescription",
-    "getActionRuns",
-    "getChecks",
-    "getComments",
-    "getDetail",
-    "getGithubSnapshot",
-    "getIntegrationResolutionState",
-    "getMobileSnapshot",
-    "getPrHealth",
-    "getQueueState",
-    "getReviewThreads",
-    "getReviews",
-    "landQueueNext",
-    "landStack",
-    "landStackEnhanced",
-    "linkToLane",
-    "listAll",
-    "listGroupPrs",
-    "listIntegrationProposals",
-    "listIntegrationWorkflows",
-    "listWithConflicts",
-    "postReviewComment",
-    "reactToComment",
-    "recheckIntegrationStep",
-    "refresh",
-    "reorderQueuePrs",
-    "requestReviewers",
-    "setLabels",
-    "setReviewThreadResolved",
-    "simulateIntegration",
-    "startIntegrationResolution",
-    "submitReview",
-    "updateDescription",
-    "updateIntegrationProposal",
-    "updateTitle",
-  ],
-  tests: ["getLogTail", "listRuns", "listSuites", "run", "stop"],
-  chat: [
-    "createSession",
-    "deleteSession",
-    "getAvailableModels",
-    "getSessionSummary",
-    "getSlashCommands",
-    "interrupt",
-    "listSessions",
-    "resumeSession",
-    "sendMessage",
-  ],
-  memory: ["addSharedFact", "pinMemory", "searchMemories", "writeMemory"],
-  session: ["get", "readTranscriptTail"],
-  operation: ["finish", "list", "start"],
-  project_config: ["get", "save"],
-  issue_inventory: [
-    "getConvergenceRuntime",
-    "getConvergenceStatus",
-    "getInventory",
-    "getNewItems",
-    "getPipelineSettings",
-    "markDismissed",
-    "markEscalated",
-    "markFixed",
-    "markSentToAgent",
-    "reconcileConvergenceSessionExit",
-    "savePipelineSettings",
-    "syncFromPrData",
-  ],
-  flow_policy: ["getPolicy", "savePolicy"],
-  linear_dispatcher: ["dispatchIssue", "getDashboard", "listEmployees", "listQueue"],
-  linear_issue_tracker: ["getStatus", "listIssues"],
-  linear_sync: ["getDashboard", "getRunDetail", "listQueue", "resolveQueueItem", "runSyncNow"],
-  linear_ingress: ["ensureRelayWebhook", "getStatus", "listRecentEvents"],
-  linear_routing: ["simulateRoute"],
-  file: [
-    "createDirectory",
-    "createFile",
-    "deletePath",
-    "listTree",
-    "listWorkspaces",
-    "quickOpen",
-    "readFile",
-    "rename",
-    "searchText",
-    "writeWorkspaceText",
-  ],
-  process: ["getLogTail", "listDefinitions", "listRuntime", "startAll", "stopAll"],
-  pty: ["create", "dispose", "resize", "write"],
-  computer_use_artifacts: ["ingest", "listArtifacts"],
-};
-
-function getAdeActionDomainServices(runtime: AdeRuntime): Partial<Record<AdeActionDomain, Record<string, unknown> | null | undefined>> {
-  return {
-    lane: runtime.laneService as unknown as Record<string, unknown>,
-    git: runtime.gitService as unknown as Record<string, unknown>,
-    diff: runtime.diffService as unknown as Record<string, unknown>,
-    conflicts: runtime.conflictService as unknown as Record<string, unknown>,
-    pr: (runtime.prService ?? null) as unknown as Record<string, unknown> | null,
-    tests: runtime.testService as unknown as Record<string, unknown>,
-    chat: (runtime.agentChatService ?? null) as unknown as Record<string, unknown> | null,
-    mission: runtime.missionService as unknown as Record<string, unknown>,
-    orchestrator: runtime.aiOrchestratorService as unknown as Record<string, unknown>,
-    orchestrator_core: runtime.orchestratorService as unknown as Record<string, unknown>,
-    memory: runtime.memoryService as unknown as Record<string, unknown>,
-    cto_state: runtime.ctoStateService as unknown as Record<string, unknown>,
-    worker_agent: runtime.workerAgentService as unknown as Record<string, unknown>,
-    session: runtime.sessionService as unknown as Record<string, unknown>,
-    operation: runtime.operationService as unknown as Record<string, unknown>,
-    project_config: runtime.projectConfigService as unknown as Record<string, unknown>,
-    issue_inventory: runtime.issueInventoryService as unknown as Record<string, unknown>,
-    flow_policy: (runtime.flowPolicyService ?? null) as unknown as Record<string, unknown> | null,
-    linear_dispatcher: (runtime.linearDispatcherService ?? null) as unknown as Record<string, unknown> | null,
-    linear_issue_tracker: (runtime.linearIssueTracker ?? null) as unknown as Record<string, unknown> | null,
-    linear_sync: (runtime.linearSyncService ?? null) as unknown as Record<string, unknown> | null,
-    linear_ingress: (runtime.linearIngressService ?? null) as unknown as Record<string, unknown> | null,
-    linear_routing: (runtime.linearRoutingService ?? null) as unknown as Record<string, unknown> | null,
-    file: (runtime.fileService ?? null) as unknown as Record<string, unknown> | null,
-    process: (runtime.processService ?? null) as unknown as Record<string, unknown> | null,
-    pty: runtime.ptyService as unknown as Record<string, unknown>,
-    computer_use_artifacts: runtime.computerUseArtifactBrokerService as unknown as Record<string, unknown>,
-  };
-}
-
-function listAllowedAdeActionNames(domain: AdeActionDomain, service: Record<string, unknown>): string[] {
-  const allowed = ADE_ACTION_ALLOWLIST[domain] ?? [];
-  return allowed
-    .filter((key) => typeof service[key] === "function")
-    .sort((a, b) => a.localeCompare(b));
-}
-
-function isAllowedAdeAction(domain: AdeActionDomain, action: string): boolean {
-  return (ADE_ACTION_ALLOWLIST[domain] ?? []).includes(action);
 }
 
 async function waitForSessionCompletion(args: {

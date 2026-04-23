@@ -38,6 +38,18 @@ import {
 } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
+import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
+import {
+  createAutomationService,
+  type AutomationAdeActionRegistry,
+} from "../../desktop/src/main/services/automations/automationService";
+import { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
+import {
+  ADE_ACTION_ALLOWLIST,
+  type AdeActionDomain,
+  getAdeActionDomainServices,
+  isAllowedAdeAction,
+} from "../../desktop/src/main/services/adeActions/registry";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 
@@ -93,6 +105,9 @@ export type AdeRuntime = {
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
+  githubService?: ReturnType<typeof createGithubService> | null;
+  automationService?: ReturnType<typeof createAutomationService> | null;
+  automationPlannerService?: ReturnType<typeof createAutomationPlannerService> | null;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
@@ -361,7 +376,30 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     openExternal: async () => {},
   });
 
-  return {
+  const agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
+  const automationService = createAutomationService({
+    db,
+    logger,
+    projectId,
+    projectRoot,
+    laneService,
+    projectConfigService,
+    conflictService,
+    testService,
+    agentChatService: agentChatService ?? undefined,
+    missionService,
+    aiOrchestratorService,
+    onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
+  });
+  const automationPlannerService = createAutomationPlannerService({
+    logger,
+    projectRoot,
+    projectConfigService,
+    laneService,
+    automationService,
+  });
+
+  const runtime: AdeRuntime = {
     projectRoot,
     workspaceRoot,
     projectId,
@@ -379,11 +417,12 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     missionService,
     ptyService,
     testService,
-    agentChatService: headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null,
+    agentChatService,
     issueInventoryService,
     memoryService,
     ctoStateService,
     workerAgentService,
+    githubService: headlessLinearServices.githubService as never,
     prService: headlessLinearServices.prService,
     fileService: headlessLinearServices.fileService,
     flowPolicyService: headlessLinearServices.flowPolicyService,
@@ -393,12 +432,15 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     linearIngressService: headlessLinearServices.linearIngressService,
     linearRoutingService: headlessLinearServices.linearRoutingService,
     processService: headlessLinearServices.processService,
+    automationService,
+    automationPlannerService,
     computerUseArtifactBrokerService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
+      swallow(() => automationService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
       swallow(() => testService.disposeAll());
@@ -407,4 +449,23 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       swallow(() => db.close());
     }
   };
+
+  const adeActionLookup: AutomationAdeActionRegistry = {
+    isAllowed(domain: string, action: string): boolean {
+      return isAllowedAdeAction(domain as AdeActionDomain, action);
+    },
+    getService(domain: string): Record<string, unknown> | null {
+      const services = getAdeActionDomainServices(runtime);
+      return (services[domain as AdeActionDomain] ?? null) as Record<string, unknown> | null;
+    },
+    listDomains(): string[] {
+      return Object.keys(ADE_ACTION_ALLOWLIST);
+    },
+    listActions(domain: string): string[] {
+      return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])];
+    },
+  };
+  automationService.bindAdeActionRegistry(adeActionLookup);
+
+  return runtime;
 }

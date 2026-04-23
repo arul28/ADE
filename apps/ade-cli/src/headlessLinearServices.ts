@@ -79,6 +79,7 @@ type HeadlessGitHubStatus = {
 
 type HeadlessGitHubService = {
   getStatus: () => Promise<HeadlessGitHubStatus>;
+  detectRepo: () => Promise<{ owner: string; name: string } | null>;
   getRepoOrThrow: () => Promise<{ owner: string; name: string }>;
   getTokenOrThrow: () => string;
   apiRequest: <T>(args: {
@@ -88,6 +89,12 @@ type HeadlessGitHubService = {
     body?: unknown;
     token?: string;
   }) => Promise<{ data: T; response: Response | null }>;
+  addIssueComment: (owner: string, name: string, number: number, body: string) => Promise<unknown>;
+  setIssueLabels: (owner: string, name: string, number: number, labels: string[]) => Promise<unknown>;
+  closeIssue: (owner: string, name: string, number: number, reason?: "completed" | "not_planned") => Promise<unknown>;
+  reopenIssue: (owner: string, name: string, number: number) => Promise<unknown>;
+  assignIssue: (owner: string, name: string, number: number, assignees: string[]) => Promise<unknown>;
+  setIssueTitle: (owner: string, name: string, number: number, title: string) => Promise<unknown>;
 };
 
 type HeadlessAgentChatSession = {
@@ -137,6 +144,7 @@ type HeadlessLinearDeps = {
 };
 
 type HeadlessLinearServices = {
+  githubService: HeadlessGitHubService;
   linearCredentialService: HeadlessLinearCredentialService;
   linearClient: ReturnType<typeof createLinearClient>;
   linearIssueTracker: ReturnType<typeof createLinearIssueTracker>;
@@ -294,6 +302,9 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
       cachedAt = now;
       return status;
     },
+    async detectRepo() {
+      return detectGitHubRepo(projectRoot);
+    },
     async getRepoOrThrow() {
       const repo = detectGitHubRepo(projectRoot);
       if (!repo) throw new Error("Unable to detect GitHub repo from git remote 'origin'.");
@@ -305,6 +316,48 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
       return token;
     },
     apiRequest,
+    async addIssueComment(owner, name, number, body) {
+      return (await apiRequest({
+        method: "POST",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
+        body: { body },
+      })).data;
+    },
+    async setIssueLabels(owner, name, number, labels) {
+      return (await apiRequest({
+        method: "PUT",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/labels`,
+        body: { labels },
+      })).data;
+    },
+    async closeIssue(owner, name, number, reason) {
+      return (await apiRequest({
+        method: "PATCH",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+        body: { state: "closed", ...(reason ? { state_reason: reason } : {}) },
+      })).data;
+    },
+    async reopenIssue(owner, name, number) {
+      return (await apiRequest({
+        method: "PATCH",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+        body: { state: "open" },
+      })).data;
+    },
+    async assignIssue(owner, name, number, assignees) {
+      return (await apiRequest({
+        method: "POST",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/assignees`,
+        body: { assignees },
+      })).data;
+    },
+    async setIssueTitle(owner, name, number, title) {
+      return (await apiRequest({
+        method: "PATCH",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+        body: { title },
+      })).data;
+    },
   };
 }
 
@@ -742,6 +795,7 @@ export function createHeadlessLinearServices(args: HeadlessLinearDeps): Headless
 
   return {
     linearCredentialService,
+    githubService,
     linearClient,
     linearIssueTracker: issueTracker,
     linearTemplateService: templateService,
