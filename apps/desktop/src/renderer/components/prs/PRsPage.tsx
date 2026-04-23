@@ -92,7 +92,7 @@ function PRsPageInner() {
 
         setActiveTab(resolved.activeTab);
 
-        if (!resolved.isWorkflowRoute && (routeState.tab === "normal" || routeState.tab === "github")) {
+        if (!resolved.isWorkflowRoute) {
           setSelectedPrId(routeState.prId ?? null);
         }
         if (resolved.effectiveWorkflow === "queue") {

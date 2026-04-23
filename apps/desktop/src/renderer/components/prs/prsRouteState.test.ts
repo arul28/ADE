@@ -141,6 +141,15 @@ describe("resolvePrsActiveTab", () => {
     expect(resolved.activeTab).toBe("normal");
   });
 
+  it("keeps legacy prId-only routes on the normal PR surface", () => {
+    const parsed = parsePrsRouteState({ search: "?prId=pr-123" });
+    const resolved = resolvePrsActiveTab(parsed);
+    expect(parsed.prId).toBe("pr-123");
+    expect(parsed.tab).toBeNull();
+    expect(resolved.isWorkflowRoute).toBe(false);
+    expect(resolved.activeTab).toBe("normal");
+  });
+
   it("prefers the hash workflow over a stale outer search workflow (BrowserRouter mock mode)", () => {
     // Outer URL like `/?tab=workflows&workflow=queue#/prs?tab=workflows&workflow=rebase`
     // In BrowserRouter mock mode the outer search is stale; the inner hash is the
