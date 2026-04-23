@@ -10912,9 +10912,15 @@ export function createAgentChatService(args: {
     }
     const laneDirectiveKey = executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
-    // Claude sessions already receive ADE_CLI_AGENT_GUIDANCE in their persistent system prompt
-    // (see buildClaudeV2SessionOpts). Skip the first-user-message copy to avoid duplicate guidance.
+    // Guidance injection is capability-based, not session-state-based:
+    // Claude sessions already receive ADE_CLI_AGENT_GUIDANCE in their
+    // persistent system prompt (see buildClaudeV2SessionOpts), so we skip the
+    // first-user-message copy there. Every other provider (Codex, OpenCode,
+    // Cursor…) has no persistent system prompt, so the guidance must be
+    // prepended even on resumed sessions where `shouldInjectLaneDirective` is
+    // false (review 3134504183 / 3134403060).
     const providerHasPersistentGuidance = managed.session.provider === "claude";
+    const shouldInjectGuidance = !providerHasPersistentGuidance;
     const promptText = providerSlashCommand
       ? trimmed
       : composeLaunchDirectives(trimmed, [
@@ -10926,7 +10932,7 @@ export function createAgentChatService(args: {
             : null,
           buildExecutionModeDirective(executionMode, managed.session.provider),
           buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
-          shouldInjectLaneDirective && !providerHasPersistentGuidance ? ADE_CLI_AGENT_GUIDANCE : null,
+          shouldInjectGuidance ? ADE_CLI_AGENT_GUIDANCE : null,
           buildComputerUseDirective(
             computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
           ),

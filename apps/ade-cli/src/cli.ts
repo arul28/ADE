@@ -1858,6 +1858,9 @@ function buildCoordinatorPlan(args: string[]): CliPlan {
 }
 
 const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
+  // Only flags that actually take a following value (readValue / readIntOption
+  // callers) belong here. Boolean-only flags consumed via readFlag must be
+  // excluded, otherwise the next positional would be swallowed as their value.
   "-b", "-m", "-q", "-t",
   "--additional-instructions", "--app", "--arg", "--arg-json", "--arg-value",
   "--arg-value-json", "--args-list-json", "--attempt", "--attempt-id",
@@ -1865,10 +1868,10 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--branch-name", "--branch-ref", "--category", "--color", "--cols",
   "--command", "--comment", "--comment-id", "--commit", "--compare-ref",
   "--compare-to", "--content", "--context-file", "--cwd", "--data",
-  "--delete-source", "--delete-source-lane", "--depth", "--desc",
+  "--depth", "--desc",
   "--description", "--domain", "--duration-sec", "--enabled", "--event",
   "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
-  "--include-ignored", "--input", "--input-json", "--instructions",
+  "--input", "--input-json", "--instructions",
   "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",
   "--max-log-bytes", "--max-prompt-chars", "--max-rounds", "--memory",
   "--memory-id", "--merge-method", "--message", "--method", "--mode", "--model",
@@ -1883,7 +1886,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--set-json", "--sha", "--source", "--source-lane", "--stack", "--stack-id",
   "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
   "--thread", "--thread-id", "--timeout-ms", "--title", "--tool-type",
-  "--unresolved", "--url", "--workspace", "--workspace-id", "--workspace-root",
+  "--url", "--workspace", "--workspace-id", "--workspace-root",
 ]);
 
 function hasHelpFlag(args: string[]): boolean {

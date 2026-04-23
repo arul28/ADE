@@ -729,29 +729,54 @@ export function createPrService({
       [projectId, repoOwner, repoName, prNumber]
     );
 
-  const getRowByNumber = (prNumber: number): PullRequestRow | null =>
-    db.get<PullRequestRow>(
+  const getRowByNumber = (
+    prNumber: number,
+    repoOwner?: string,
+    repoName?: string,
+  ): PullRequestRow | null => {
+    if (repoOwner && repoName) {
+      return getRowForRepoPr(repoOwner, repoName, prNumber);
+    }
+    // No repo context: check for ambiguity across repos in this project. If
+    // multiple rows match `github_pr_number`, refuse to guess — the caller
+    // must disambiguate with a full URL. If exactly one row matches, accept it.
+    const matches = db.all<PullRequestRow>(
       `select ${PR_COLUMNS}
          from pull_requests
         where project_id = ?
           and github_pr_number = ?
-        order by updated_at desc
-        limit 1`,
+        order by updated_at desc`,
       [projectId, prNumber]
     );
+    if (matches.length === 0) return null;
+    if (matches.length > 1) {
+      const repos = Array.from(
+        new Set(matches.map((row) => `${row.repo_owner}/${row.repo_name}`))
+      );
+      throw new Error(
+        `Ambiguous PR locator '#${prNumber}': multiple PRs with this number exist across repos in this project (${repos.join(", ")}). Specify a URL or owner/name.`
+      );
+    }
+    return matches[0] ?? null;
+  };
 
   const getRowByLocator = (locator: string): PullRequestRow | null => {
     const trimmed = String(locator ?? "").trim();
     if (!trimmed) return null;
+    let parsed: ReturnType<typeof parsePrLocator>;
     try {
-      const parsed = parsePrLocator(trimmed);
-      if (parsed.owner && parsed.repo) {
-        return getRowForRepoPr(parsed.owner, parsed.repo, parsed.number);
-      }
-      return getRowByNumber(parsed.number);
+      parsed = parsePrLocator(trimmed);
     } catch {
       return null;
     }
+    if (parsed.owner && parsed.repo) {
+      return getRowForRepoPr(parsed.owner, parsed.repo, parsed.number);
+    }
+    // Bare numeric locators (e.g. "#123") must not silently pick the most
+    // recently-updated match when multiple repos share a PR number. Let the
+    // ambiguity error from getRowByNumber surface to the caller so they can
+    // supply a full URL.
+    return getRowByNumber(parsed.number);
   };
 
   const getRow = (prIdOrLocator: string): PullRequestRow | null =>
@@ -1154,10 +1179,24 @@ export function createPrService({
     }));
   };
 
-  const upsertRow = (summary: Omit<PrSummary, "projectId"> & { projectId?: string }): string => {
+  const upsertRow = (
+    summary: Omit<PrSummary, "projectId"> & { projectId?: string },
+    options?: { allowRepoPrAdoption?: boolean },
+  ): string => {
     const now = nowIso();
-    const existing = getRowForLane(summary.laneId)
-      ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber);
+    // By default we only adopt an existing row that is already associated with
+    // this lane. Callers like `linkToLane`/`refreshOne` must not silently
+    // reassign an existing PR row from another lane just because the repo/PR
+    // number match — that was a data-loss bug when the same PR number was
+    // reused across lanes or when users manually linked an in-flight PR.
+    // The duplicate-PR recovery path in `createFromLane` (where GitHub rejects
+    // creation because a PR already exists for the head branch) is the only
+    // legitimate use of the repo/PR-number fallback; it opts in via
+    // `allowRepoPrAdoption: true`.
+    const existing = options?.allowRepoPrAdoption
+      ? getRowForLane(summary.laneId)
+          ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
+      : getRowForLane(summary.laneId);
     if (existing) {
       if (existing.lane_id !== summary.laneId) {
         db.run(`delete from pr_group_members where pr_id = ?`, [existing.id]);
@@ -2412,7 +2451,10 @@ export function createPrService({
       creationStrategy: strategy
     };
 
-    const prId = upsertRow(summary);
+    // Allow repo/PR-number fallback here: when the GitHub create call collides
+    // with an already-existing PR for this branch, we need to adopt the row
+    // that represents that PR (regardless of prior lane attribution).
+    const prId = upsertRow(summary, { allowRepoPrAdoption: true });
     markHotRefresh([prId]);
 
     return await refreshOne(prId);

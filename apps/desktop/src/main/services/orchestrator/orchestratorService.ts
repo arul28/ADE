@@ -62,7 +62,6 @@ import type {
   AgentChatExecutionMode,
   AgentChatPermissionMode,
 } from "../../../shared/types";
-import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_CONTEXT_VIEW_POLICIES,
@@ -4006,11 +4005,14 @@ export function createOrchestratorService({
               commandPreviewParts.push("--permission-mode", shellEscapeArg(claudePermissionMode));
             }
           }
-          const augmentedPrompt = [ADE_CLI_AGENT_GUIDANCE, prompt].join("\n\n");
+          // ADE_CLI_AGENT_GUIDANCE is injected into the worker's system prompt
+          // via buildFullPrompt in baseOrchestratorAdapter when hasMissionTooling
+          // is true. Do not prepend it again here — that would duplicate the
+          // "## ADE CLI" block for Claude workers.
           const promptFilePath = writeWorkerPromptFile({
             projectRoot,
             attemptId: args.attempt.id,
-            prompt: augmentedPrompt,
+            prompt,
           });
 
           let launchCommand;

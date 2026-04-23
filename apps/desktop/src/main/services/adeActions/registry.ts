@@ -79,7 +79,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   linear_ingress: ["ensureRelayWebhook"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
-  usage: ["start", "stop", "forceRefresh"],
+  usage: ["forceRefresh", "poll", "start", "stop"],
 };
 
 const ROLE_ORDER: Record<AdeActionRole, number> = {
@@ -483,9 +483,14 @@ function buildLayoutDomainService(runtime: AdeRuntime): LayoutService | null {
         throw new Error("Missing required 'layout' object. Pass an explicit null to clear.");
       }
       const rawLayout = args.layout;
-      const layout = rawLayout && typeof rawLayout === "object" && !Array.isArray(rawLayout)
-        ? clampDockLayout(rawLayout as Record<string, unknown>)
-        : {};
+      let layout: Record<string, number>;
+      if (rawLayout === null) {
+        layout = {};
+      } else if (rawLayout && typeof rawLayout === "object" && !Array.isArray(rawLayout)) {
+        layout = clampDockLayout(rawLayout as Record<string, unknown>);
+      } else {
+        throw new Error("Expected 'layout' to be a plain object or null.");
+      }
       runtime.db.setJson(`dock_layout:${layoutId}`, layout);
       return { layoutId, layout };
     },
@@ -510,6 +515,9 @@ function buildTilingTreeDomainService(runtime: AdeRuntime): TilingTreeService | 
         throw new Error("Missing required 'tree'. Pass an explicit null to clear.");
       }
       const tree = args.tree;
+      if (tree !== null && (typeof tree !== "object" || Array.isArray(tree))) {
+        throw new Error("Expected 'tree' to be a plain object or null.");
+      }
       runtime.db.setJson(`tiling_tree:${layoutId}`, tree);
       return { layoutId, tree };
     },
@@ -517,27 +525,29 @@ function buildTilingTreeDomainService(runtime: AdeRuntime): TilingTreeService | 
 }
 
 type GraphStateService = {
-  get(args?: { projectId?: unknown }): unknown;
-  set(args: { projectId?: unknown; state?: unknown }): { projectId: string; state: unknown };
+  get(): unknown;
+  set(args: { state?: unknown }): { projectId: string; state: unknown };
 };
 
 function buildGraphStateDomainService(runtime: AdeRuntime): GraphStateService | null {
   if (!runtime.db) return null;
-  const resolveProjectId = (value: unknown): string => {
-    if (typeof value === "string" && value.trim().length) return value.trim();
-    return runtime.projectId;
-  };
   return {
-    get(args) {
-      const projectId = resolveProjectId(args?.projectId);
+    // graph_state is strictly scoped to the current runtime project. The caller
+    // cannot override `projectId`; the field is intentionally absent from the
+    // args surface to prevent cross-project reads/writes via `run_ade_action`.
+    get() {
+      const projectId = runtime.projectId;
       return runtime.db.getJson(`graph_state:${projectId}`);
     },
     set(args) {
-      const projectId = resolveProjectId(args?.projectId);
+      const projectId = runtime.projectId;
       if (!args || !Object.prototype.hasOwnProperty.call(args, "state")) {
         throw new Error("Missing required 'state'. Pass an explicit null to clear.");
       }
       const state = args.state;
+      if (state !== null && (typeof state !== "object" || Array.isArray(state))) {
+        throw new Error("Expected 'state' to be a plain object or null.");
+      }
       runtime.db.setJson(`graph_state:${projectId}`, state);
       return { projectId, state };
     },

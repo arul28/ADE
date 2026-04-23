@@ -141,7 +141,7 @@ describe("providerOrchestratorAdapter", () => {
     expect(mockState.resolveClaudeCodeExecutable).toHaveBeenCalledTimes(1);
     expect(createTrackedSession).toHaveBeenCalledWith(expect.objectContaining({
       command: "C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd",
-      args: ["-p", "diagnose the failing check"],
+      args: ["-p", expect.stringContaining("diagnose the failing check")],
       startupCommand: expect.stringContaining("exec claude -p"),
     }));
   });
