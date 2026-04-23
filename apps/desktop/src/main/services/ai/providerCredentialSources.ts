@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import type { Logger } from "../logging/logger";
 import { isRecord, safeJsonParse } from "../shared/utils";
+import { killWindowsProcessTree } from "../shared/processExecution";
 
 const CLAUDE_TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token";
 const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -88,9 +89,13 @@ export function runShellCommand(
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("sh", ["-c", command], {
+    const useCmd = process.platform === "win32";
+    const executable = useCmd ? (process.env.ComSpec?.trim() || "cmd.exe") : "sh";
+    const args = useCmd ? ["/d", "/s", "/c", command] : ["-c", command];
+    const child = spawn(executable, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
+      windowsVerbatimArguments: useCmd,
     });
 
     let stdout = "";
@@ -104,7 +109,13 @@ export function runShellCommand(
 
     const timer = setTimeout(() => {
       try {
-        child.kill("SIGKILL");
+        if (process.platform === "win32") {
+          killWindowsProcessTree(child.pid ?? 0, (detail) => {
+            console.warn("provider_credentials.taskkill_failed", detail);
+          });
+        } else {
+          child.kill("SIGKILL");
+        }
       } catch {
         // ignore
       }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import * as nodePty from "node-pty";
@@ -15,6 +16,8 @@ import { createDiffService } from "../../desktop/src/main/services/diffs/diffSer
 import { createMissionService } from "../../desktop/src/main/services/missions/missionService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
+import { createProcessService } from "../../desktop/src/main/services/processes/processService";
+import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import type { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import { createIssueInventoryService } from "../../desktop/src/main/services/prs/issueInventoryService";
@@ -37,7 +40,6 @@ import {
   type ComputerUseArtifactBrokerService,
 } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
-import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import {
   createAutomationService,
@@ -134,6 +136,17 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
     orchestratorCacheDir: paths.orchestratorCacheDir,
     missionStateDir: paths.missionStateDir,
   };
+}
+
+function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = { ...baseEnv };
+  const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
+    env: next,
+    includeInteractiveShell: true,
+    timeoutMs: 1_000,
+  });
+  if (nextPath) setPathEnvValue(next, nextPath);
+  return next;
 }
 
 export async function createAdeRuntime(args: { projectRoot: string; workspaceRoot?: string } | string): Promise<AdeRuntime> {
@@ -233,6 +246,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     broadcastData: () => {},
     broadcastExit: () => {},
     onSessionEnded: () => {},
+    getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
     loadPty: () => nodePty
   });
 
@@ -246,6 +260,59 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     broadcastEvent: () => {}
   });
   const issueInventoryService = createIssueInventoryService({ db });
+  const eventBuffer = createEventBuffer();
+
+  function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
+    eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
+  }
+
+  // Headless lane runtime env. Unlike the desktop path (which leases ports via
+  // portAllocationService and builds collision-safe hostnames via
+  // laneProxyService), headless has no persistent allocator wired in — so we
+  // derive ports and hostname suffix from a stable hash of the laneId. This is
+  // (a) independent of the lane's current list position (archival/reordering
+  // no longer shifts a lane's PORT) and (b) resistant to slug collisions
+  // between lanes whose display names slugify to the same string.
+  // Range matches desktop: basePort=3000, portsPerLane=100, maxPort=9999 → 70 slots.
+  const HEADLESS_BASE_PORT = 3000;
+  const HEADLESS_PORTS_PER_LANE = 100;
+  const HEADLESS_MAX_SLOTS = 70;
+  const getHeadlessLaneRuntimeEnv = async (laneId: string): Promise<Record<string, string>> => {
+    const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+    const lane = lanes.find((entry) => entry.id === laneId);
+    const laneHash = createHash("sha256").update(laneId).digest();
+    const slotIndex = laneHash.readUInt32BE(0) % HEADLESS_MAX_SLOTS;
+    const portStart = HEADLESS_BASE_PORT + slotIndex * HEADLESS_PORTS_PER_LANE;
+    const portEnd = portStart + HEADLESS_PORTS_PER_LANE - 1;
+    const baseSlug = (lane?.name ?? lane?.branchRef ?? laneId)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "lane";
+    // 6-char suffix from the laneId hash keeps hostnames readable while making
+    // two lanes with identical slugs resolve to distinct hostnames.
+    const idSuffix = laneHash.toString("hex").slice(0, 6);
+    const hostname = `${baseSlug}-${idSuffix}.localhost`;
+    return {
+      PORT: String(portStart),
+      PORT_RANGE_START: String(portStart),
+      PORT_RANGE_END: String(portEnd),
+      HOSTNAME: hostname,
+      PROXY_HOSTNAME: hostname,
+    };
+  };
+
+  const processService = createProcessService({
+    db,
+    projectId,
+    logger,
+    laneService,
+    projectConfigService,
+    sessionService,
+    ptyService,
+    getLaneRuntimeEnv: getHeadlessLaneRuntimeEnv,
+    broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>),
+  });
 
   // Ensure evaluation tables exist for headless runtime checks.
   db.run(`
@@ -271,12 +338,6 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     CREATE INDEX IF NOT EXISTS idx_orchestrator_evaluations_run
     ON orchestrator_evaluations(run_id, evaluated_at)
   `);
-
-  const eventBuffer = createEventBuffer();
-
-  function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
-    eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
-  }
 
   const memoryService = createMemoryService(db);
   const ctoStateService = createCtoStateService({
@@ -431,7 +492,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     linearSyncService: headlessLinearServices.linearSyncService,
     linearIngressService: headlessLinearServices.linearIngressService,
     linearRoutingService: headlessLinearServices.linearRoutingService,
-    processService: headlessLinearServices.processService,
+    processService,
     automationService,
     automationPlannerService,
     computerUseArtifactBrokerService,
@@ -441,6 +502,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
       swallow(() => automationService.dispose());
+      swallow(() => processService.disposeAll());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
       swallow(() => testService.disposeAll());

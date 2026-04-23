@@ -13,6 +13,7 @@ import { resolveCodexExecutable } from "./codexExecutable";
 import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
 import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
+import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -41,6 +42,12 @@ type SpawnResult = {
   stderr: string;
   exitCode: number | null;
 };
+
+function isBenignStdinCloseError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+}
 
 function appendStructuredOutputInstruction(prompt: string, jsonSchema?: unknown): string {
   if (!jsonSchema) return prompt;
@@ -72,16 +79,20 @@ async function runCommand(args: {
   argv: string[];
   cwd: string;
   timeoutMs?: number;
+  stdinText?: string;
 }): Promise<SpawnResult> {
   return await new Promise((resolve, reject) => {
-    const child = spawn(args.command, args.argv, {
+    const env = {
+      ...process.env,
+      NO_COLOR: "1",
+      TERM: "dumb",
+    };
+    const invocation = resolveCliSpawnInvocation(args.command, args.argv, env);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: args.cwd,
-      env: {
-        ...process.env,
-        NO_COLOR: "1",
-        TERM: "dumb",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
+      env,
+      stdio: [args.stdinText != null ? "pipe" : "ignore", "pipe", "pipe"],
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
 
     let stdout = "";
@@ -91,7 +102,7 @@ async function runCommand(args: {
     const timeoutHandle = setTimeout(() => {
       if (settled) return;
       settled = true;
-      child.kill("SIGTERM");
+      terminateProcessTree(child, "SIGTERM");
       reject(new Error(`Provider task timed out after ${timeoutMs}ms.`));
     }, timeoutMs);
 
@@ -100,6 +111,12 @@ async function runCommand(args: {
     });
     child.stderr?.on("data", (chunk) => {
       stderr += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+    });
+    child.stdin?.on("error", (error) => {
+      if (settled || isBenignStdinCloseError(error)) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      reject(error);
     });
 
     child.on("error", (error) => {
@@ -115,6 +132,10 @@ async function runCommand(args: {
       clearTimeout(timeoutHandle);
       resolve({ stdout, stderr, exitCode });
     });
+
+    if (args.stdinText != null && child.stdin) {
+      child.stdin.end(args.stdinText);
+    }
   });
 }
 
@@ -139,7 +160,6 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const sessionId = args.sessionId?.trim() || (args.feature === "orchestrator" ? randomUUID() : null);
   const cliArgs = [
-    "-p",
     "--model",
     resolveClaudeCliModel(args.descriptor.providerModelId),
     "--output-format",
@@ -159,7 +179,7 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   } else {
     cliArgs.push("--no-session-persistence");
   }
-  cliArgs.push(prompt);
+  cliArgs.push("-p");
 
   const resolved = resolveClaudeCodeExecutable({ auth: args.auth });
   const result = await runCommand({
@@ -167,6 +187,7 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
     argv: cliArgs,
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
+    stdinText: prompt,
   });
   if (result.exitCode !== 0) {
     throw new Error(`Claude exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
@@ -208,11 +229,10 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     cliArgs.push("--output-schema", schemaPath);
   }
 
-  if (args.system?.trim()) {
-    cliArgs.push(`${args.system.trim()}\n\n${prompt}`);
-  } else {
-    cliArgs.push(prompt);
-  }
+  cliArgs.push("-");
+  const combinedPrompt = args.system?.trim()
+    ? `${args.system.trim()}\n\n${prompt}`
+    : prompt;
 
   const resolved = resolveCodexExecutable({ auth: args.auth });
   try {
@@ -221,6 +241,7 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
       argv: cliArgs,
       cwd: args.cwd,
       timeoutMs: args.timeoutMs,
+      stdinText: combinedPrompt,
     });
     const output = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8").trim() : result.stdout.trim();
     if (result.exitCode !== 0) {

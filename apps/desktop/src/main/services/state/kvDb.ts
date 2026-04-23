@@ -18,6 +18,7 @@ const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncC
 export type SqlValue = string | number | null | Uint8Array;
 
 export type AdeDbSyncApi = {
+  isAvailable?: () => boolean;
   getSiteId: () => string;
   getDbVersion: () => number;
   exportChangesSince: (version: number) => CrsqlChangeRow[];
@@ -3314,6 +3315,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   };
 
   const sync: AdeDbSyncApi = {
+    isAvailable: () => hasCrsqlite,
     getSiteId: () => desiredSiteId,
     getDbVersion: () => {
       if (!hasCrsqlite) return 0;

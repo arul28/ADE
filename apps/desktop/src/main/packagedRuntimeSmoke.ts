@@ -12,7 +12,11 @@ async function probePty(): Promise<{ ok: true; output: string }> {
   const pty = await import("node-pty");
   return new Promise((resolve, reject) => {
     let output = "";
-    const term = pty.spawn("/bin/sh", ["-lc", 'printf "ADE_PTY_OK\\n"'], {
+    const shellSpec =
+      process.platform === "win32"
+        ? { file: "powershell.exe", args: ["-NoProfile", "-Command", 'Write-Output "ADE_PTY_OK"'] }
+        : { file: "/bin/sh", args: ["-lc", 'printf "ADE_PTY_OK\\n"'] };
+    const term = pty.spawn(shellSpec.file, shellSpec.args, {
       name: "xterm-256color",
       cols: 80,
       rows: 24,

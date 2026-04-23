@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Server as NetServer } from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
@@ -587,6 +588,7 @@ import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
+import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 export type AppContext = {
@@ -1864,10 +1866,27 @@ export function registerIpc({
     await shell.openExternal(parsed.toString());
   });
 
+  const resolveRendererSuppliedPath = (rawPath: string, projectRoot: string): string => {
+    let inputPath = rawPath;
+    if (/^ade-artifact:\/\/project(?:\/|$)/i.test(inputPath)) {
+      const parsed = new URL(inputPath);
+      inputPath = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+    }
+    if (/^file:\/\//i.test(inputPath)) {
+      try {
+        inputPath = fileURLToPath(inputPath);
+      } catch {
+        inputPath = decodeURIComponent(inputPath.replace(/^file:\/\//i, ""));
+      }
+    }
+    return path.resolve(path.isAbsolute(inputPath) ? inputPath : path.join(projectRoot, inputPath));
+  };
+
   ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
-    const normalized = path.resolve(raw);
+    const ctx = getCtx();
+    const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
     // Validate the path is within known safe directories only.
     // Reject requests to reveal arbitrary paths (e.g. ~/.ssh, /etc, /System).
     const allowedDirs = getAllowedDirs(getCtx);
@@ -1888,7 +1907,8 @@ export function registerIpc({
   ipcMain.handle(IPC.appOpenPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
-    const normalized = path.resolve(raw);
+    const ctx = getCtx();
+    const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
     const allowedDirs = getAllowedDirs(getCtx);
     const allowed = allowedDirs.some((dir) => {
       try {
@@ -1916,13 +1936,13 @@ export function registerIpc({
     IPC.appOpenPathInEditor,
     async (
       _event,
-      arg: { rootPath: string; relativePath?: string; target: "finder" | "vscode" | "cursor" | "zed" }
+      arg: { rootPath: string; relativePath?: string; target: "default" | "finder" | "vscode" | "cursor" | "zed" }
     ): Promise<void> => {
       const rootRaw = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       const relRaw = typeof arg?.relativePath === "string" ? arg.relativePath.trim() : "";
       const target = arg?.target;
       if (!rootRaw) throw new Error("Missing root path.");
-      if (target !== "finder" && target !== "vscode" && target !== "cursor" && target !== "zed") {
+      if (target !== "default" && target !== "finder" && target !== "vscode" && target !== "cursor" && target !== "zed") {
         throw new Error("Unsupported editor target.");
       }
       const rootPath = path.resolve(rootRaw);
@@ -1954,26 +1974,55 @@ export function registerIpc({
         throw resolveError;
       }
 
+      if (target === "default") {
+        const errorMessage = await shell.openPath(targetPath);
+        if (errorMessage) {
+          throw new Error(`Failed to open path: ${errorMessage}`);
+        }
+        return;
+      }
+
       if (target === "finder") {
         shell.showItemInFolder(targetPath);
         return;
       }
 
-      const launchDetached = async (command: string, args: string[]): Promise<void> => {
+      const launchDetached = async (
+        command: string,
+        args: string[],
+        options?: { windowsVerbatimArguments?: boolean; resolveOn?: "spawn" | "exit" },
+      ): Promise<void> => {
         await new Promise<void>((resolve, reject) => {
           let settled = false;
+          const resolveOn = options?.resolveOn ?? "spawn";
           try {
-            const child = spawn(command, args, { detached: true, stdio: "ignore" });
+            const child = spawn(command, args, {
+              detached: true,
+              stdio: "ignore",
+              windowsVerbatimArguments: options?.windowsVerbatimArguments,
+            });
             child.once("error", (error) => {
               if (settled) return;
               settled = true;
               reject(error);
             });
             child.once("spawn", () => {
+              if (resolveOn !== "spawn") return;
               if (settled) return;
               settled = true;
               child.unref();
               resolve();
+            });
+            child.once("exit", (code) => {
+              if (resolveOn !== "exit") return;
+              if (settled) return;
+              settled = true;
+              child.unref();
+              if (code === 0) {
+                resolve();
+              } else {
+                reject(new Error(`exit code ${code}`));
+              }
             });
           } catch (error) {
             reject(error);
@@ -1981,11 +2030,16 @@ export function registerIpc({
         });
       };
 
-      const launchAttempts = async (attempts: Array<{ command: string; args: string[] }>): Promise<void> => {
+      const launchAttempts = async (
+        attempts: Array<{ command: string; args: string[]; windowsVerbatimArguments?: boolean; resolveOn?: "spawn" | "exit" }>,
+      ): Promise<void> => {
         let lastError: unknown = null;
         for (const attempt of attempts) {
           try {
-            await launchDetached(attempt.command, attempt.args);
+            await launchDetached(attempt.command, attempt.args, {
+              windowsVerbatimArguments: attempt.windowsVerbatimArguments,
+              resolveOn: attempt.resolveOn,
+            });
             return;
           } catch (error) {
             lastError = error;
@@ -1994,12 +2048,22 @@ export function registerIpc({
         throw lastError instanceof Error ? lastError : new Error("Failed to launch external editor.");
       };
 
-      const attempts: Array<{ command: string; args: string[] }> = [];
+      const attempts: Array<{ command: string; args: string[]; windowsVerbatimArguments?: boolean; resolveOn?: "spawn" | "exit" }> = [];
       const cliCommand = target === "vscode" ? "code" : target === "cursor" ? "cursor" : "zed";
 
       if (process.platform === "darwin") {
         const appName = target === "vscode" ? "Visual Studio Code" : target === "cursor" ? "Cursor" : "Zed";
         attempts.push({ command: "open", args: ["-a", appName, targetPath] });
+      }
+      if (process.platform === "win32") {
+        // `start "" <command> <args>` — empty title is required when the next token is quoted.
+        const windowsShell = process.env.ComSpec?.trim() || "cmd.exe";
+        attempts.push({
+          command: windowsShell,
+          args: ["/d", "/s", "/c", `start "" ${quoteWindowsCmdArg(cliCommand)} ${quoteWindowsCmdArg(targetPath)}`],
+          windowsVerbatimArguments: true,
+          resolveOn: "exit",
+        });
       }
       attempts.push({ command: cliCommand, args: [targetPath] });
 
@@ -4597,14 +4661,7 @@ export function registerIpc({
     // handler in main.ts which validates exclusively against currentArtifactsDir.
     const allowedRoots = [layout.artifactsDir];
 
-    let filePath = arg.uri;
-    if (filePath.startsWith("file://")) {
-      const { fileURLToPath } = await import("node:url");
-      try { filePath = fileURLToPath(filePath); } catch { filePath = decodeURIComponent(filePath.replace(/^file:\/\//i, "")); }
-    }
-    if (!path.isAbsolute(filePath)) {
-      filePath = path.resolve(projectRoot, filePath);
-    }
+    const filePath = resolveRendererSuppliedPath(arg.uri, projectRoot);
     // Canonicalize and verify the resolved path is inside an allowed artifact root.
     const canonical = path.normalize(path.resolve(filePath));
     const inside = allowedRoots.some((root) => {

@@ -300,6 +300,19 @@ export function createSyncService(args: SyncServiceArgs) {
   let disposed = false;
   const hostStartupEnabled = args.hostStartupEnabled !== false;
   let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
+  const isCrdtSyncAvailable = (): boolean => args.db.sync.isAvailable?.() !== false;
+  const assertPhonePairingAvailable = (): void => {
+    if (!hostStartupEnabled) {
+      throw new Error(
+        "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+      );
+    }
+    if (!isCrdtSyncAvailable()) {
+      throw new Error(
+        "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
+      );
+    }
+  };
   let activeLocalLanePresenceIds: string[] = [];
   const localLanePresenceHeartbeatTimer = setInterval(() => {
     if (disposed || !hostService || activeLocalLanePresenceIds.length === 0) return;
@@ -386,7 +399,7 @@ export function createSyncService(args: SyncServiceArgs) {
   };
 
   const startHostIfNeeded = async (): Promise<void> => {
-    if (!hostStartupEnabled) {
+    if (!hostStartupEnabled || !isCrdtSyncAvailable()) {
       if (hostService) {
         await stopHostIfRunning();
       }
@@ -541,6 +554,12 @@ export function createSyncService(args: SyncServiceArgs) {
           await startHostIfNeeded();
         } else {
           await stopHostIfRunning();
+          if (!isCrdtSyncAvailable()) {
+            if (syncPeerService.isConnected()) {
+              syncPeerService.disconnect({ preserveDraft: true });
+            }
+            continue;
+          }
           const draft = savedDraft ?? resolveViewerDraftFromRegistry();
           if (draft && !syncPeerService.isConnected()) {
             syncPeerService.setSavedDraft(draft);
@@ -682,7 +701,8 @@ export function createSyncService(args: SyncServiceArgs) {
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected();
       const role = isLocalBrain ? "brain" : "viewer";
-      const canHostPhonePairing = role === "brain" && hostStartupEnabled;
+      const crdtSyncAvailable = isCrdtSyncAvailable();
+      const canHostPhonePairing = role === "brain" && hostStartupEnabled && crdtSyncAvailable;
       const client = syncPeerService.getStatus();
       const mode =
         role === "viewer"
@@ -717,9 +737,13 @@ export function createSyncService(args: SyncServiceArgs) {
         client,
         transferReadiness: await getTransferReadiness(),
         survivableStateText:
-          "Paused and idle state will remain available on the new host.",
+          crdtSyncAvailable
+            ? "Paused and idle state will remain available on the new host."
+            : "Desktop sync is disabled because the CRDT database extension is unavailable on this platform.",
         blockingStateText:
-          "Live missions, chats, terminals, or run processes must stop first.",
+          crdtSyncAvailable
+            ? "Live missions, chats, terminals, or run processes must stop first."
+            : "Install a Windows cr-sqlite runtime before pairing or syncing devices.",
       };
     },
 
@@ -753,6 +777,9 @@ export function createSyncService(args: SyncServiceArgs) {
     async connectToBrain(
       draft: SyncDesktopConnectionDraft,
     ): Promise<SyncRoleSnapshot> {
+      if (!isCrdtSyncAvailable()) {
+        throw new Error("Desktop sync is unavailable because the CRDT database extension is not loaded.");
+      }
       await stopHostIfRunning();
       deviceRegistryService.clearClusterRegistryForViewerJoin();
       writeSavedDraft(draft);
@@ -785,11 +812,7 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async setPin(pin: string): Promise<SyncRoleSnapshot> {
-      if (!hostStartupEnabled) {
-        throw new Error(
-          "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
-        );
-      }
+      assertPhonePairingAvailable();
       const current = await service.getStatus();
       if (current.role !== "brain") {
         throw new Error("Phone pairing PINs can only be managed on the host desktop.");
@@ -801,6 +824,7 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async clearPin(): Promise<SyncRoleSnapshot> {
+      assertPhonePairingAvailable();
       const current = await service.getStatus();
       if (current.role !== "brain") {
         throw new Error("Phone pairing PINs can only be managed on the host desktop.");

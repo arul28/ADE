@@ -5,6 +5,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAdeRpcRequestHandler, _resetGlobalAskUserRateLimit } from "./adeRpcServer";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
+const originalPlatform = process.platform;
+
+function setPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    value,
+    configurable: true,
+  });
+}
+
+afterEach(() => {
+  setPlatform(originalPlatform);
+});
 
 function createRuntime() {
   const operationStart = vi.fn((args: any) => ({ operationId: `op-${args.kind}-${Date.now()}` }));
@@ -946,6 +958,14 @@ async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Pr
   }
 }
 
+function createFakePathExecutable(dir: string, name: string): string {
+  fs.mkdirSync(dir, { recursive: true });
+  const executablePath = path.join(dir, process.platform === "win32" ? `${name}.cmd` : name);
+  fs.writeFileSync(executablePath, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n");
+  if (process.platform !== "win32") fs.chmodSync(executablePath, 0o755);
+  return executablePath;
+}
+
 describe("adeRpcServer", () => {
   it("treats requested privileged roles as external without trusted env identity", async () => {
     const { runtime } = createRuntime();
@@ -1805,15 +1825,19 @@ describe("adeRpcServer", () => {
 
   it("routes spawn_agent to lane-scoped tracked pty sessions", async () => {
     const fixture = createRuntime();
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-spawn-bin-"));
+    const claudePath = createFakePathExecutable(binDir, "claude");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator" });
-    const response = await callTool(handler, "spawn_agent", {
-      laneId: "lane-1",
-      provider: "claude",
-      model: "claude-sonnet-4-6",
-      prompt: "Implement API wiring",
-      title: "Orchestrator Spawn"
+    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` }, async () => {
+      await initialize(handler, { role: "orchestrator" });
+      return await callTool(handler, "spawn_agent", {
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        prompt: "Implement API wiring",
+        title: "Orchestrator Spawn"
+      });
     });
 
     expect(response?.isError).toBeUndefined();
@@ -1823,7 +1847,12 @@ describe("adeRpcServer", () => {
         cols: 120,
         rows: 36,
         tracked: true,
-        toolType: "claude-orchestrated"
+        toolType: "claude-orchestrated",
+        command: claudePath,
+        args: expect.arrayContaining(["--model", "claude-sonnet-4-6", "--permission-mode", "default", "Implement API wiring"]),
+        env: expect.objectContaining({
+          ADE_DEFAULT_ROLE: "agent",
+        }),
       })
     );
     expect(response.structuredContent.startupCommand).toContain("claude");
@@ -1836,23 +1865,95 @@ describe("adeRpcServer", () => {
   it("starts spawn_agent without writing an attached ADE server config", async () => {
     const fixture = createRuntime();
     fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-spawn-workspace-"));
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-spawn-bin-"));
+    const claudePath = createFakePathExecutable(binDir, "claude");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator", runId: "run-from-identity" });
-    const response = await callTool(handler, "spawn_agent", {
-      laneId: "lane-1",
-      provider: "claude",
-      model: "claude-sonnet-4-6",
-      prompt: "Implement API wiring",
-      title: "Orchestrator Spawn",
-      runId: "run-1",
-      attemptId: "attempt-workspace-roots"
+    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` }, async () => {
+      await initialize(handler, { role: "orchestrator", runId: "run-from-identity" });
+      return await callTool(handler, "spawn_agent", {
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        prompt: "Implement API wiring",
+        title: "Orchestrator Spawn",
+        runId: "run-1",
+        attemptId: "attempt-workspace-roots"
+      });
     });
 
     expect(response?.isError).toBeUndefined();
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("ADE_RUN_ID=run-1");
     expect(response.structuredContent.startupCommand).toContain("ADE_ATTEMPT_ID=attempt-workspace-roots");
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: claudePath,
+        env: expect.objectContaining({
+          ADE_RUN_ID: "run-1",
+          ADE_ATTEMPT_ID: "attempt-workspace-roots",
+          ADE_DEFAULT_ROLE: "agent",
+        }),
+      })
+    );
+  });
+
+  it("keeps spawn_agent on shell startup when the provider executable cannot be resolved", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-path-")) }, async () => {
+      await initialize(handler, { role: "orchestrator" });
+      return await callTool(handler, "spawn_agent", {
+        laneId: "lane-1",
+        provider: "claude",
+        prompt: "Implement API wiring",
+      });
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        command: expect.any(String),
+      })
+    );
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startupCommand: expect.stringContaining("claude"),
+      })
+    );
+  });
+
+  it("does not use POSIX env assignment in unresolved Windows spawn_agent startup commands", async () => {
+    setPlatform("win32");
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-win-path-")) }, async () => {
+      await initialize(handler, { role: "orchestrator" });
+      return await callTool(handler, "spawn_agent", {
+        laneId: "lane-1",
+        provider: "claude",
+        prompt: "Implement API wiring",
+        runId: "run-1",
+        attemptId: "attempt-win-fallback",
+      });
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.startupCommand).toContain("claude");
+    expect(response.structuredContent.startupCommand).not.toContain("ADE_RUN_ID=run-1");
+    expect(response.structuredContent.startupCommand).not.toContain("ADE_ATTEMPT_ID=attempt-win-fallback");
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.objectContaining({
+          ADE_RUN_ID: "run-1",
+          ADE_ATTEMPT_ID: "attempt-win-fallback",
+          ADE_DEFAULT_ROLE: "agent",
+        }),
+        startupCommand: response.structuredContent.startupCommand,
+      })
+    );
   });
 
   it("rejects config-toml permission mode for Claude spawn_agent sessions", async () => {

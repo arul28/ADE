@@ -4,7 +4,14 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkerSandboxConfig } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
-import { checkWorkerSandbox, createUniversalToolSet } from "./universalTools";
+import {
+  checkWorkerSandbox,
+  createUniversalToolSet,
+  resolveWorkerShellInvocation,
+  tokenizePowerShellCommand,
+} from "./universalTools";
+
+const isWin = process.platform === "win32";
 
 const tmpDirs: string[] = [];
 function makeTmpDir(prefix: string): string {
@@ -92,6 +99,20 @@ function sandboxWith(overrides: Partial<WorkerSandboxConfig>): WorkerSandboxConf
 }
 
 // ============================================================================
+// tokenizePowerShellCommand
+// ============================================================================
+
+describe("tokenizePowerShellCommand", () => {
+  it("treats doubled single quotes as a literal ' inside a single-quoted string", () => {
+    expect(tokenizePowerShellCommand("Remove-Item 'C:\\a\\user''s file.txt' -Force")).toEqual([
+      "Remove-Item",
+      "C:\\a\\user's file.txt",
+      "-Force",
+    ]);
+  });
+});
+
+// ============================================================================
 // checkWorkerSandbox
 // ============================================================================
 
@@ -144,10 +165,255 @@ describe("checkWorkerSandbox", () => {
     expect(result.allowed).toBe(true);
   });
 
+  it("treats POSIX double-slash paths as POSIX paths", () => {
+    const result = checkWorkerSandbox(
+      "//mnt/shared/tool --version",
+      sandboxWith({ allowedPaths: ["/"] }),
+      "/tmp/project",
+    );
+
+    expect(result.allowed).toBe(true);
+  });
+
   it("rejects mutating writes into /usr/local/bin even under the default sandbox", () => {
     const result = checkWorkerSandbox("cp ./payload /usr/local/bin/tool", DEFAULT_WORKER_SANDBOX_CONFIG, "/tmp/project");
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("blocks Windows registry mutation commands", () => {
+    const result = checkWorkerSandbox(
+      "reg add HKCU\\Software\\Foo /v Bar /t REG_SZ /d 1",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Blocked command pattern");
+  });
+
+  it("blocks reg.exe mutation commands", () => {
+    const result = checkWorkerSandbox(
+      "reg.exe add HKCU\\Software\\Foo /v Bar /t REG_SZ /d 1",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Blocked command pattern");
+  });
+
+  it("blocks format.exe drive commands", () => {
+    const result = checkWorkerSandbox("format.exe c:", DEFAULT_WORKER_SANDBOX_CONFIG, "C:\\projects\\repo");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Blocked command pattern");
+  });
+
+  it("blocks Windows drive paths outside the sandbox", () => {
+    const result = checkWorkerSandbox(
+      "type C:\\Windows\\win.ini",
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("blocks Windows copy commands that target protected files", () => {
+    const result = checkWorkerSandbox(
+      "copy foo .env",
+      sandboxWith({ protectedFiles: ["\\.env"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("protected file pattern");
+  });
+
+  it("blocks PowerShell writes to protected files", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path .env -Value secret"',
+      sandboxWith({ protectedFiles: ["\\.env"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("protected file pattern");
+  });
+
+  it("blocks PowerShell writes outside the sandbox root", () => {
+    const result = checkWorkerSandbox(
+      'pwsh -Command "Add-Content ..\\outside.txt secret"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("blocks PowerShell registry provider mutations", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar -Value 1"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("non-filesystem provider path");
+  });
+
+  it("blocks PowerShell mutations that use non-literal path arguments", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "$path = \'.env\'; Set-Content -Path $path -Value secret"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("non-literal path argument");
+  });
+
+  it("blocks uninspected PowerShell -File script execution", () => {
+    const result = checkWorkerSandbox(
+      "powershell.exe -File .\\scripts\\setup.ps1",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("PowerShell script file is not inspectable");
+  });
+
+  it("blocks uninspected bare PowerShell script execution", () => {
+    const result = checkWorkerSandbox(
+      ".\\scripts\\setup.ps1",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("PowerShell script file is not inspectable");
+  });
+
+  it("detects PowerShell mutations through nested cmd.exe /c wrappers", () => {
+    const result = checkWorkerSandbox(
+      'cmd.exe /d /s /c cmd.exe /c powershell.exe -Command "Set-Content -Path ..\\outside.txt -Value hi"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("fails closed for generic mutating cmd.exe /c payloads", () => {
+    const result = checkWorkerSandbox(
+      'cmd.exe /c "copy foo ..\\outside.txt"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("cmd.exe /c mutating payload");
+  });
+
+  it("blocks PowerShell mutation paths hidden behind parenthesized expressions", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path (Join-Path .. outside.txt) -Value hi"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("uninspectable path argument");
+  });
+
+  it("blocks PowerShell mutation paths hidden behind subexpressions", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path $(Join-Path .. outside.txt) -Value hi"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("uninspectable path argument");
+  });
+
+  it("blocks PowerShell mutation paths hidden behind array expressions", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path @(\'..\\outside.txt\') -Value hi"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("uninspectable path argument");
+  });
+
+  it("blocks PowerShell mutations with empty path captures", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path -Value secret"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("uninspectable path argument");
+  });
+
+  it("does not let PowerShell switch parameters consume positional mutation paths", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -NoNewline ..\\outside.txt -Value hi"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("keeps inspecting positional paths after PowerShell -Force and -Recurse switches", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Remove-Item -Force -Recurse ..\\outside"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("blocks opaque PowerShell encoded commands", () => {
+    const result = checkWorkerSandbox(
+      "powershell.exe -EncodedCommand not-base64!!!",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("EncodedCommand payload is not inspectable");
+  });
+
+  it("blocks PowerShell encoded writes to protected files", () => {
+    const encoded = Buffer.from("Set-Content -Path .env -Value secret", "utf16le").toString("base64");
+    const result = checkWorkerSandbox(
+      `powershell.exe -EncodedCommand ${encoded}`,
+      sandboxWith({ protectedFiles: ["\\.env"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("protected file pattern");
+  });
+
+  it("allows read-only PowerShell file reads inside the sandbox", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Get-Content .\\README.md"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows git.exe read-only subcommands like Unix git", () => {
+    const result = checkWorkerSandbox(
+      "git.exe status",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(true);
   });
 
   it("blocks commands that are not in the safe list when blockByDefault is enabled", () => {
@@ -784,6 +1050,26 @@ describe("createUniversalToolSet", () => {
     expect(result.stderr).toContain("EXECUTION DENIED");
   });
 
+  it("blocks mutating PowerShell commands on required turns", async () => {
+    const cwd = makeTmpDir("ade-tools-memory-guard-powershell-");
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "full-auto",
+      turnMemoryPolicyState: {
+        classification: "required",
+        orientationSatisfied: false,
+        explicitSearchPerformed: false,
+      },
+    });
+
+    const result = await (tools.bash as any).execute({
+      command: 'powershell.exe -Command "Set-Content -Path .\\blocked.txt -Value hi"',
+      timeout: 5_000,
+    });
+
+    expect(result.exitCode).toBe(126);
+    expect(result.stderr).toContain("EXECUTION DENIED");
+  });
+
   it("does not block read-only bash commands on required turns", async () => {
     const cwd = makeTmpDir("ade-tools-memory-readonly-");
     const tools = createUniversalToolSet(cwd, {
@@ -1129,17 +1415,31 @@ describe("createUniversalToolSet", () => {
 
   // ── bash tool ───────────────────────────────────────────────────
 
+  it("resolveWorkerShellInvocation uses cmd on Windows and bash elsewhere", () => {
+    const inv = resolveWorkerShellInvocation("echo test");
+    if (isWin) {
+      expect(inv.file.toLowerCase().endsWith("cmd.exe")).toBe(true);
+      expect(inv.args[0]).toBe("/d");
+      expect(inv.args[1]).toBe("/s");
+      expect(inv.args[2]).toBe("/c");
+      expect(inv.args[3]).toBe("echo test");
+    } else {
+      expect(inv.file).toBe("bash");
+      expect(inv.args).toEqual(["-c", "echo test"]);
+    }
+  });
+
   it("executes a basic bash command and returns output", async () => {
     const cwd = makeTmpDir("ade-tools-bash-basic-");
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
     const result = await (tools.bash as any).execute({
-      command: "echo hello from bash",
+      command: isWin ? "echo hello from worker-shell" : "echo hello from bash",
       timeout: 5_000,
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("hello from bash");
+    expect(result.stdout).toContain(isWin ? "hello from worker-shell" : "hello from bash");
   });
 
   it("returns nonzero exit code for failing commands", async () => {
@@ -1147,7 +1447,7 @@ describe("createUniversalToolSet", () => {
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
     const result = await (tools.bash as any).execute({
-      command: "exit 42",
+      command: isWin ? "exit /b 42" : "exit 42",
       timeout: 5_000,
     });
 

@@ -38,7 +38,7 @@ jobs:
     needs: verify
     runs-on: macos-15
     concurrency:
-      group: release-${{ inputs.release_tag }}
+      group: release-${{ inputs.release_tag }}-mac
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
@@ -110,7 +110,6 @@ jobs:
         run: cd apps/desktop && npm run validate:mac:artifacts
 
       - name: Upload validated artifacts to workflow run
-        if: ${{ !inputs.publish }}
         uses: actions/upload-artifact@v4
         with:
           name: ade-mac-release-${{ inputs.release_tag }}
@@ -121,8 +120,79 @@ jobs:
             apps/desktop/release/latest-mac.yml
           if-no-files-found: error
 
+  build-win-release:
+    needs: verify
+    runs-on: windows-latest
+    concurrency:
+      group: release-${{ inputs.release_tag }}-win
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/ade-cli/package-lock.json
+
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+
+      - name: Install ADE CLI dependencies
+        run: cd apps/ade-cli && npm ci
+
+      - name: Stamp release version
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: cd apps/desktop && npm run version:release
+
+      - name: Reset release output
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force apps/desktop/release, apps/desktop/.cache -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path apps/desktop/.cache | Out-Null
+
+      - name: Build and validate Windows release
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
+        run: cd apps/desktop && npm run dist:win
+
+      - name: Upload validated Windows artifacts to workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-win-release-${{ inputs.release_tag }}
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+
+  publish-release:
+    if: ${{ inputs.publish }}
+    needs:
+      - build-mac-release
+      - build-win-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ade-mac-release-${{ inputs.release_tag }}
+          path: release-assets/mac
+
+      - name: Download Windows release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ade-win-release-${{ inputs.release_tag }}
+          path: release-assets/win
+
       - name: Create or update draft GitHub release
-        if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.release_tag }}
@@ -130,10 +200,13 @@ jobs:
         run: |
           shopt -s nullglob
           files=(
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*.zip
-            apps/desktop/release/*-mac.zip.blockmap
-            apps/desktop/release/latest-mac.yml
+            release-assets/mac/*.dmg
+            release-assets/mac/*.zip
+            release-assets/mac/*-mac.zip.blockmap
+            release-assets/mac/latest-mac.yml
+            release-assets/win/*.exe
+            release-assets/win/*.exe.blockmap
+            release-assets/win/latest.yml
           )
 
           if [ "${#files[@]}" -eq 0 ]; then

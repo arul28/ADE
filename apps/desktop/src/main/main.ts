@@ -1,7 +1,9 @@
 import { app, BrowserWindow, dialog, nativeImage, protocol, safeStorage, shell } from "electron";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type * as NodePty from "node-pty";
 type NodePtyType = typeof NodePty;
+import { isAdeMcpNamedPipePath } from "../shared/adeMcpIpc";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { openKvDb } from "./services/state/kvDb";
@@ -33,7 +35,7 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
-import { augmentProcessPathWithShellAndKnownCliDirs } from "./services/ai/cliExecutableResolver";
+import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService } from "./services/chat/agentChatService";
 import { createGithubService } from "./services/github/githubService";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
@@ -157,7 +159,10 @@ function fixElectronShellPath(): void {
     timeoutMs: 1_500,
   });
   if (nextPath) {
-    process.env.PATH = nextPath;
+    // Use setPathEnvValue so Windows processes inheriting a `Path` key collapse
+    // to a single canonical entry (direct `process.env.PATH = …` can leave a
+    // stale `Path` behind that later readers pick up instead).
+    setPathEnvValue(process.env, nextPath);
   }
 }
 
@@ -329,7 +334,7 @@ if (process.env.VITE_DEV_SERVER_URL) {
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) return devUrl;
-  return `file://${path.join(__dirname, "../renderer/index.html")}`;
+  return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
 }
 
 async function createWindow(args: {
@@ -338,10 +343,13 @@ async function createWindow(args: {
 } = {}): Promise<BrowserWindow> {
   // Load the app icon from the build directory.
   const iconDir = path.join(__dirname, "../../build");
+  const icoPath = path.join(iconDir, "icon.ico");
   const pngPath = path.join(iconDir, "icon.png");
   const icnsPath = path.join(iconDir, "icon.icns");
   let icon: Electron.NativeImage;
-  if (fs.existsSync(pngPath)) {
+  if (process.platform === "win32" && fs.existsSync(icoPath)) {
+    icon = nativeImage.createFromPath(icoPath);
+  } else if (fs.existsSync(pngPath)) {
     icon = nativeImage.createFromPath(pngPath);
   } else if (fs.existsSync(icnsPath)) {
     icon = nativeImage.createFromPath(icnsPath);
@@ -640,9 +648,17 @@ app.whenReady().then(async () => {
   protocol.handle("ade-artifact", (request) => {
     const url = new URL(request.url);
     let filePath = decodeURIComponent(url.pathname);
+    if (url.hostname === "project") {
+      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
+      filePath = path.resolve(activeProjectRoot, filePath.replace(/^[/\\]+/, ""));
+    }
     // On Windows, pathname starts with /C:/... — strip leading slash
     if (process.platform === "win32" && /^\/[a-zA-Z]:/.test(filePath)) {
       filePath = filePath.slice(1);
+    }
+    if (!path.isAbsolute(filePath)) {
+      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
+      filePath = path.resolve(activeProjectRoot, filePath);
     }
     filePath = path.resolve(filePath);
     let resolvedFile: string;
@@ -3226,10 +3242,11 @@ app.whenReady().then(async () => {
       destroyActiveRpcConnections,
     );
 
-    // Clean stale socket from prior crash
-    try {
-      fs.unlinkSync(rpcSocketPath);
-    } catch {}
+    if (!isAdeMcpNamedPipePath(rpcSocketPath)) {
+      try {
+        fs.unlinkSync(rpcSocketPath);
+      } catch {}
+    }
 
     const rpcSocketServer = net.createServer((conn) => {
       activeRpcConnections.add(conn);
@@ -3567,7 +3584,9 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      if (ctx.rpcSocketPath) fs.unlinkSync(ctx.rpcSocketPath);
+      if (ctx.rpcSocketPath && !isAdeMcpNamedPipePath(ctx.rpcSocketPath)) {
+        fs.unlinkSync(ctx.rpcSocketPath);
+      }
     } catch {
       // ignore
     }

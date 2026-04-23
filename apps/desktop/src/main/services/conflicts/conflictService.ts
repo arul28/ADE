@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import type {
   ApplyConflictProposalArgs,
   BatchOverlapEntry,
@@ -198,6 +199,23 @@ const PREFILTER_MAX_GLOBAL_PAIRS = 800;
 const PREFILTER_MAX_TOUCHED_FILES = 800;
 const STALE_MS = 5 * 60_000;
 const EXTERNAL_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+const EXTERNAL_RESOLVER_TIMEOUT_MS = 8 * 60_000;
+
+function terminateExternalResolverProcessTree(
+  child: ReturnType<typeof spawn>,
+  signal: NodeJS.Signals,
+): boolean {
+  if (child.exitCode !== null || child.signalCode !== null) return false;
+  if (process.platform !== "win32" && typeof child.pid === "number") {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch {
+      // Fall through to the direct child kill path.
+    }
+  }
+  return terminateProcessTree(child, signal);
+}
 
 function safeJsonArray<T>(raw: string | null): T[] {
   const parsed = safeJsonParse(raw, null);
@@ -3497,22 +3515,44 @@ export function createConflictService({
       command: renderedCommand
     });
 
-    const proc = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      const child = spawn(bin, renderedCommand.slice(1), {
+    const proc = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: NodeJS.Signals | null; timedOut: boolean }>((resolve) => {
+      const invocation = resolveCliSpawnInvocation(bin, renderedCommand.slice(1), process.env);
+      const child = spawn(invocation.command, invocation.args, {
         cwd: cwdLane.worktreePath,
+        env: process.env,
         stdio: ["ignore", "pipe", "pipe"],
-        timeout: 8 * 60_000,
+        detached: process.platform !== "win32",
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       let stdout = "";
       let stderr = "";
+      let timedOut = false;
+      let forceKillTimer: NodeJS.Timeout | null = null;
+      const timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        terminateExternalResolverProcessTree(child, "SIGTERM");
+        forceKillTimer = setTimeout(() => {
+          terminateExternalResolverProcessTree(child, "SIGKILL");
+        }, 2_000);
+      }, EXTERNAL_RESOLVER_TIMEOUT_MS);
+      const cleanupTimers = () => {
+        clearTimeout(timeoutTimer);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+      };
       child.stdout?.on("data", (chunk: Buffer) => {
         if (stdout.length < 8 * 1024 * 1024) stdout += chunk.toString("utf8");
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         if (stderr.length < 8 * 1024 * 1024) stderr += chunk.toString("utf8");
       });
-      child.on("error", () => resolve({ stdout, stderr, status: 1, signal: null }));
-      child.on("close", (code, signal) => resolve({ stdout, stderr, status: code, signal }));
+      child.on("error", () => {
+        cleanupTimers();
+        resolve({ stdout, stderr, status: 1, signal: null, timedOut });
+      });
+      child.on("close", (code, signal) => {
+        cleanupTimers();
+        resolve({ stdout, stderr, status: code, signal, timedOut });
+      });
     });
 
     const stdout = proc.stdout ?? "";
@@ -3532,7 +3572,7 @@ export function createConflictService({
       finalPatchPath = patchPath;
     }
 
-    const status: ConflictExternalResolverRunStatus = proc.status === 0 ? "completed" : "failed";
+    const status: ConflictExternalResolverRunStatus = proc.status === 0 && !proc.timedOut ? "completed" : "failed";
     const runRecord: ExternalResolverRunRecord = {
       ...existingRun,
       status,
@@ -3544,12 +3584,17 @@ export function createConflictService({
       logPath: outputLogPath,
       warnings: [
         ...existingRun.warnings,
+        ...(proc.timedOut ? ["resolver_timeout_process_tree_terminated"] : []),
         ...(proc.signal ? [`process_signal:${proc.signal}`] : []),
         ...(diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : []),
         ...(diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : []),
         ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
       ],
-      error: proc.status === 0 ? null : (stderr.trim() || `Exit code ${proc.status ?? -1}`)
+      error: status === "completed"
+        ? null
+        : proc.timedOut
+          ? `External resolver timed out after ${EXTERNAL_RESOLVER_TIMEOUT_MS}ms.`
+          : (stderr.trim() || `Exit code ${proc.status ?? -1}`)
     };
     writeExternalRunRecord(runRecord);
     return toRunSummary(runRecord);

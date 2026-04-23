@@ -11,6 +11,7 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -1119,7 +1120,11 @@ export function createPtyService({
         let created: IPty | null = null;
         if (directCommand) {
           try {
-            created = ptyLib.spawn(directCommand, directArgs, opts);
+            const invocation = resolveCliSpawnInvocation(directCommand, directArgs, launchEnv);
+            const ptyArgs = invocation.windowsVerbatimArguments
+              ? invocation.args.join(" ")
+              : invocation.args;
+            created = ptyLib.spawn(invocation.command, ptyArgs, opts);
           } catch (err) {
             lastErr = err;
           }
@@ -1318,7 +1323,11 @@ export function createPtyService({
         closeEntry(ptyId, exitCode ?? null);
       });
 
-      if (startupCommand) {
+      // Only type the startup command into the terminal when we launched an
+      // interactive shell (no directCommand). If directCommand is set we either
+      // already threw on spawn failure or the command is running directly — in
+      // neither case do we want to feed an extra startupCommand string.
+      if (startupCommand && !directCommand && selectedShell) {
         try {
           pty.write(`${startupCommand}\r`);
           setRuntimeState(sessionId, "running");

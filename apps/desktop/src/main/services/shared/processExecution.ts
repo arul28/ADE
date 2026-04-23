@@ -1,0 +1,135 @@
+import { spawnSync, type ChildProcess } from "node:child_process";
+import path from "node:path";
+
+export type SpawnInvocation = {
+  command: string;
+  args: string[];
+  windowsVerbatimArguments?: boolean;
+};
+
+export type ProcessTreeFailureDetail = {
+  pid: number;
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error: unknown;
+};
+
+export function processOutputToString(value: Buffer | string | null | undefined): string {
+  return Buffer.isBuffer(value) ? value.toString("utf8") : String(value ?? "");
+}
+
+/**
+ * Quote a single argument for a Windows `cmd.exe /s /c "..."` command line.
+ *
+ * SAFETY: this function strips `%` (variable expansion) and `\r\n` (line
+ * breaks) but does NOT escape other cmd metacharacters such as `|`, `&`,
+ * `<`, `>`, `!`, `^`. Those characters are inert only because the resulting
+ * string is embedded inside the outer `/c "…"` double-quoted block used by
+ * {@link resolveWindowsCmdInvocation} (with `/s` so cmd preserves the outer
+ * quotes). Do NOT reuse this helper outside of that context — if the caller
+ * builds a cmd line without the surrounding `/s /c "…"` wrapper, untrusted
+ * input can break out of quoting and become a shell injection vector.
+ */
+export function quoteWindowsCmdArg(value: string): string {
+  let quoted = "\"";
+  let backslashes = 0;
+  for (const char of value.replace(/%/g, "%%").replace(/[\r\n]/g, " ")) {
+    if (char === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (char === "\"") {
+      quoted += "\\".repeat(backslashes * 2);
+      quoted += "\"\"";
+    } else {
+      quoted += "\\".repeat(backslashes);
+      quoted += char;
+    }
+    backslashes = 0;
+  }
+  quoted += "\\".repeat(backslashes * 2);
+  quoted += "\"";
+  return quoted;
+}
+
+export function shouldUseWindowsCmdWrapper(command: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== "win32") return false;
+  const ext = path.win32.extname(command).toLowerCase();
+  return ext === "" || ext === ".cmd" || ext === ".bat";
+}
+
+export function resolveWindowsCmdInvocation(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): SpawnInvocation {
+  const comSpec = env.ComSpec?.trim() || "cmd.exe";
+  const cmdLine = [command, ...args].map(quoteWindowsCmdArg).join(" ");
+  return {
+    command: comSpec,
+    args: ["/d", "/s", "/c", cmdLine],
+    windowsVerbatimArguments: true,
+  };
+}
+
+export function resolveCliSpawnInvocation(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): SpawnInvocation {
+  if (shouldUseWindowsCmdWrapper(command, platform)) {
+    return resolveWindowsCmdInvocation(command, args, env);
+  }
+  return {
+    command,
+    args,
+    windowsVerbatimArguments: false,
+  };
+}
+
+export function killWindowsProcessTree(
+  pid: number,
+  onFailure?: (detail: ProcessTreeFailureDetail) => void,
+): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    const out = spawnSync("taskkill.exe", ["/T", "/F", "/PID", String(pid)], { windowsHide: true });
+    if (!out.error && out.status === 0) return true;
+    onFailure?.({
+      pid,
+      status: out.status,
+      stdout: processOutputToString(out.stdout),
+      stderr: processOutputToString(out.stderr),
+      error: out.error ?? null,
+    });
+  } catch (error) {
+    onFailure?.({
+      pid,
+      status: null,
+      stdout: "",
+      stderr: "",
+      error,
+    });
+  }
+  return false;
+}
+
+export function terminateProcessTree(
+  child: Pick<ChildProcess, "kill" | "pid" | "exitCode" | "signalCode">,
+  signal: NodeJS.Signals = "SIGTERM",
+  onWindowsTaskkillFailure?: (detail: ProcessTreeFailureDetail) => void,
+): boolean {
+  if (process.platform === "win32") {
+    if (child.exitCode !== null || child.signalCode !== null) return false;
+    if (typeof child.pid === "number" && killWindowsProcessTree(child.pid, onWindowsTaskkillFailure)) {
+      return true;
+    }
+  }
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}

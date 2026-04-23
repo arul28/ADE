@@ -91,6 +91,7 @@ import type {
 import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from "../../../shared/types/sync";
 import type { SyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
+import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 const execFileAsync = promisify(execFile);
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -101,7 +102,6 @@ const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_PORT = DEFAULT_SYNC_HOST_PORT;
-const TAILSCALE_CLI_MACOS_PATH = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
 const MOBILE_MUTATING_FILE_ACTIONS = new Set<SyncFileRequest["action"]>([
   "writeText",
   "createFile",
@@ -331,15 +331,6 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
       dbVersion: Number(peer.dbVersion ?? 0),
     },
   };
-}
-
-function resolveTailscaleCli(): string {
-  const configured = process.env.ADE_TAILSCALE_CLI?.trim();
-  if (configured) return configured;
-  if (process.platform === "darwin" && fs.existsSync(TAILSCALE_CLI_MACOS_PATH)) {
-    return TAILSCALE_CLI_MACOS_PATH;
-  }
-  return "tailscale";
 }
 
 function shouldAttemptTailnetServiceAdvertise(): boolean {
@@ -947,7 +938,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       return;
     }
-    const cli = resolveTailscaleCli();
+    const cli = resolveTailscaleCliPath();
     const signature = `${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}:${SYNC_TAILNET_DISCOVERY_SERVICE_PORT}->${port}`;
     if (tailnetServeSignature === signature && !options?.force) return;
     if (tailnetServeLastFailureSignature === signature && !options?.force) return;
@@ -1052,7 +1043,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       return;
     }
-    const cli = resolveTailscaleCli();
+    const cli = resolveTailscaleCliPath();
     try {
       await execFileAsync(
         cli,
