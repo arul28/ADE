@@ -133,8 +133,8 @@ struct WorkTerminalSessionView: View {
   }
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 14) {
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 10) {
         WorkSessionHeader(
           session: session,
           chatSummary: nil,
@@ -152,15 +152,24 @@ struct WorkTerminalSessionView: View {
             action: nil
           )
         }
-
-        Text(terminalDisplay.text)
-          .font(.system(.footnote, design: .monospaced))
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(14)
-          .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
       }
-      .padding(16)
+      .padding(.horizontal, 16)
+      .padding(.top, 10)
+      .padding(.bottom, 8)
+      .background(.ultraThinMaterial)
+
+      ScrollView([.horizontal, .vertical]) {
+        Text(terminalDisplay.text)
+          .font(.system(size: 12, weight: .regular, design: .monospaced))
+          .foregroundStyle(ADEColor.textPrimary)
+          .textSelection(.enabled)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 12)
+          .fixedSize(horizontal: true, vertical: false)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      }
+      .background(ADEColor.recessedBackground.opacity(0.96))
+      .scrollIndicators(.visible)
     }
     .adeScreenBackground()
     .adeNavigationGlass()

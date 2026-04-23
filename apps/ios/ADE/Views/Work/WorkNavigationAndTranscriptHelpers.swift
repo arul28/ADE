@@ -100,7 +100,163 @@ func sanitizeTerminalOutputForDisplay(_ input: String) -> String {
     }
   }
 
-  return String(output)
+  return collapseDuplicatedWorkStreamTextIfNeeded(String(output))
+}
+
+func collapseDuplicatedWorkStreamTextIfNeeded(_ input: String) -> String {
+  let scalars = Array(input.unicodeScalars)
+  guard scalars.count >= 12 else { return input }
+
+  func collapsedRun(_ run: ArraySlice<UnicodeScalar>) -> [UnicodeScalar] {
+    guard run.count >= 4 else { return Array(run) }
+    var duplicatePairs = 0
+    var segments = 0
+    var singletonSegments = 0
+    var hasLongDuplicateSegment = false
+    var previous: UnicodeScalar?
+    var currentSegmentLength = 0
+
+    func finishSegment() {
+      guard currentSegmentLength > 0 else { return }
+      segments += 1
+      if currentSegmentLength == 1 {
+        singletonSegments += 1
+      }
+      if currentSegmentLength >= 3 {
+        hasLongDuplicateSegment = true
+      }
+    }
+
+    for scalar in run {
+      if let previous, scalar != previous {
+        finishSegment()
+        currentSegmentLength = 0
+      }
+      if scalar == previous {
+        duplicatePairs += 1
+      }
+      currentSegmentLength += 1
+      previous = scalar
+    }
+    finishSegment()
+
+    let density = Double(duplicatePairs) / Double(max(run.count - 1, 1))
+    let mostlyDuplicated = singletonSegments == 0 || singletonSegments <= max(1, segments / 4)
+    guard duplicatePairs >= 2, density >= 0.3, mostlyDuplicated || hasLongDuplicateSegment else { return Array(run) }
+
+    var collapsed: [UnicodeScalar] = []
+    var index = run.startIndex
+    while index < run.endIndex {
+      let scalar = run[index]
+      var runEnd = run.index(after: index)
+      while runEnd < run.endIndex, run[runEnd] == scalar {
+        runEnd = run.index(after: runEnd)
+      }
+      let runLength = run.distance(from: index, to: runEnd)
+      let collapsedLength = max(1, (runLength + 1) / 2)
+      collapsed.append(contentsOf: Array(repeating: scalar, count: collapsedLength))
+      index = runEnd
+    }
+    return collapsed
+  }
+
+  var locallyCollapsed = String.UnicodeScalarView()
+  locallyCollapsed.reserveCapacity(input.unicodeScalars.count)
+  var runStart: Int?
+  for index in scalars.indices {
+    if CharacterSet.alphanumerics.contains(scalars[index]) {
+      if runStart == nil {
+        runStart = index
+      }
+      continue
+    }
+    if let start = runStart {
+      locallyCollapsed.append(contentsOf: collapsedRun(scalars[start..<index]))
+      runStart = nil
+    }
+    locallyCollapsed.append(scalars[index])
+  }
+  if let start = runStart {
+    locallyCollapsed.append(contentsOf: collapsedRun(scalars[start..<scalars.endIndex]))
+  }
+  let localResult = String(locallyCollapsed)
+  if localResult != input {
+    return collapseDuplicatedStreamPunctuation(in: localResult)
+  }
+
+  var comparablePairs = 0
+  var duplicatedAlphanumericPairs = 0
+  for index in scalars.indices.dropFirst() {
+    let scalar = scalars[index]
+    guard CharacterSet.alphanumerics.contains(scalar) else { continue }
+    comparablePairs += 1
+    if scalar == scalars[index - 1] {
+      duplicatedAlphanumericPairs += 1
+    }
+  }
+
+  guard duplicatedAlphanumericPairs >= 5 else { return input }
+  let density = Double(duplicatedAlphanumericPairs) / Double(max(comparablePairs, 1))
+  guard density >= 0.32 else { return input }
+
+  var collapsed = String.UnicodeScalarView()
+  collapsed.reserveCapacity(input.unicodeScalars.count)
+  var index = scalars.startIndex
+  while index < scalars.endIndex {
+    let scalar = scalars[index]
+    guard CharacterSet.alphanumerics.contains(scalar) else {
+      collapsed.append(scalar)
+      index = scalars.index(after: index)
+      continue
+    }
+
+    var runEnd = scalars.index(after: index)
+    while runEnd < scalars.endIndex, scalars[runEnd] == scalar {
+      runEnd = scalars.index(after: runEnd)
+    }
+    let runLength = scalars.distance(from: index, to: runEnd)
+    let collapsedLength = max(1, (runLength + 1) / 2)
+    for _ in 0..<collapsedLength {
+      collapsed.append(scalar)
+    }
+    index = runEnd
+  }
+  return String(collapsed)
+}
+
+private func collapseDuplicatedStreamPunctuation(in input: String) -> String {
+  let duplicatedPunctuation = CharacterSet(charactersIn: ",.;:!?")
+  let scalars = Array(input.unicodeScalars)
+  var collapsed = String.UnicodeScalarView()
+  collapsed.reserveCapacity(input.unicodeScalars.count)
+  var index = scalars.startIndex
+  while index < scalars.endIndex {
+    let scalar = scalars[index]
+    guard duplicatedPunctuation.contains(scalar) else {
+      collapsed.append(scalar)
+      index = scalars.index(after: index)
+      continue
+    }
+    var runEnd = scalars.index(after: index)
+    while runEnd < scalars.endIndex, scalars[runEnd] == scalar {
+      runEnd = scalars.index(after: runEnd)
+    }
+    let runLength = scalars.distance(from: index, to: runEnd)
+    // Preserve ellipses: a 3-dot run is a legitimate "..." the user typed; only halve
+    // dot-runs of 4+, which are the ones that came from streaming duplication.
+    let shouldHalve = scalar == "." ? runLength >= 4 : runLength >= 2
+    let collapsedLength = shouldHalve ? max(1, (runLength + 1) / 2) : runLength
+    collapsed.append(contentsOf: Array(repeating: scalar, count: collapsedLength))
+    index = runEnd
+  }
+  return String(collapsed)
+}
+
+func workSessionPreviewText(_ rawPreview: String?) -> String? {
+  guard let rawPreview else { return nil }
+  let trimmed = collapseDuplicatedWorkStreamTextIfNeeded(rawPreview)
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
 }
 
 func extractWorkNavigationTargets(from text: String) -> WorkNavigationTargets {

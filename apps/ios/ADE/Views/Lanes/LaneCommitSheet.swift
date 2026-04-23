@@ -20,9 +20,11 @@ struct LaneCommitSheet: View {
           statusRow
           messageField
           amendRow
+          commitActionSection
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 24)
       }
       .background(ADEColor.surfaceBackground.ignoresSafeArea())
       .navigationTitle(amendCommit ? "Amend commit" : "Commit changes")
@@ -34,9 +36,6 @@ struct LaneCommitSheet: View {
             dismissEnv()
           }
         }
-      }
-      .safeAreaInset(edge: .bottom) {
-        commitButtonBar
       }
       .onAppear { messageFieldFocused = true }
     }
@@ -115,9 +114,8 @@ struct LaneCommitSheet: View {
     .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
   }
 
-  private var commitButtonBar: some View {
-    VStack(spacing: 0) {
-      Divider().opacity(0.4)
+  private var commitActionSection: some View {
+    VStack(alignment: .leading, spacing: 8) {
       Button(action: onCommit) {
         HStack(spacing: 6) {
           Image(systemName: amendCommit ? "arrow.counterclockwise" : "checkmark.circle.fill")
@@ -131,10 +129,12 @@ struct LaneCommitSheet: View {
       .buttonStyle(.borderedProminent)
       .tint(ADEColor.accent)
       .disabled(!canCommit)
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
+      Text(commitActionHint)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
     }
-    .background(.ultraThinMaterial)
+    .padding(12)
+    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
   }
 
   private var trimmedMessage: String {
@@ -154,5 +154,13 @@ struct LaneCommitSheet: View {
     if stagedCount == 0 { return "Stage files first" }
     if trimmedMessage.isEmpty { return "Write a message" }
     return "Commit \(stagedCount) file\(stagedCount == 1 ? "" : "s")"
+  }
+
+  private var commitActionHint: String {
+    if !canRunLiveActions { return "Reconnect to commit changes." }
+    if amendCommit { return "This replaces the last commit on this lane." }
+    if stagedCount == 0 { return "Stage files before committing." }
+    if trimmedMessage.isEmpty { return "Write a commit message before continuing." }
+    return "Creates a commit from the staged files."
   }
 }

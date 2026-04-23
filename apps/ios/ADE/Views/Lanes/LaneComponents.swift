@@ -244,7 +244,7 @@ struct LaneListRow: View, Equatable {
           Spacer(minLength: 0)
         }
 
-        HStack(spacing: 6) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
           if snapshot.lane.status.dirty {
             LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
           }
@@ -268,6 +268,7 @@ struct LaneListRow: View, Equatable {
             LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
           }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
 
       Spacer(minLength: 8)
@@ -378,7 +379,7 @@ struct LaneStackCard: View, Equatable {
           .padding(.top, 4)
       }
 
-      HStack(spacing: 6) {
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
         if snapshot.lane.status.dirty {
           LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
         }
@@ -401,8 +402,8 @@ struct LaneStackCard: View, Equatable {
         if isPinned {
           LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
         }
-        Spacer(minLength: 0)
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
 
       if let activity = laneActivitySummary(snapshot) {
         Text(activity)
@@ -453,4 +454,3 @@ struct LaneStackCard: View, Equatable {
     return parts.joined(separator: ", ")
   }
 }
-

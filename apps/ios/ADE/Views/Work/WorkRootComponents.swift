@@ -9,15 +9,23 @@ import AVKit
 struct WorkFiltersSection: View {
   @Binding var searchText: String
   @Binding var selectedLaneId: String
+  @Binding var selectedStatus: WorkSessionStatusFilter
   @Binding var organization: WorkSessionOrganization
   @Binding var filterOpen: Bool
   let lanes: [LaneSummary]
-  let runningCount: Int
+  let liveCount: Int
   let needsInputCount: Int
+  let onClear: () -> Void
 
   private var selectedLaneName: String {
     if selectedLaneId == "all" { return "All lanes" }
     return lanes.first(where: { $0.id == selectedLaneId })?.name ?? "All lanes"
+  }
+
+  private var hasActiveFilters: Bool {
+    selectedStatus != .all
+      || selectedLaneId != "all"
+      || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   var body: some View {
@@ -27,10 +35,21 @@ struct WorkFiltersSection: View {
           Image(systemName: "magnifyingglass")
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
-          TextField("Search", text: $searchText)
+          TextField("Search sessions, lanes, output", text: $searchText)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .font(.footnote)
+          if !searchText.isEmpty {
+            Button {
+              searchText = ""
+            } label: {
+              Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(ADEColor.textMuted)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Clear search")
+          }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -64,91 +83,148 @@ struct WorkFiltersSection: View {
         .accessibilityLabel("Toggle filter panel")
       }
 
-      if filterOpen {
-        VStack(alignment: .leading, spacing: 10) {
-          HStack(alignment: .center, spacing: 10) {
-            Text("GROUP")
-              .font(.caption2.monospaced().weight(.bold))
-              .foregroundStyle(ADEColor.textMuted)
-              .frame(width: 48, alignment: .leading)
-            HStack(spacing: 4) {
-              ForEach(WorkSessionOrganization.allCases) { option in
-                Button {
-                  withAnimation(.snappy) { organization = option }
-                } label: {
-                  Text(option.title)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(organization == option ? ADEColor.textPrimary : ADEColor.textSecondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(
-                      organization == option ? ADEColor.surfaceBackground.opacity(0.7) : Color.clear,
-                      in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Group by \(option.title)")
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          ForEach(WorkSessionStatusFilter.allCases) { status in
+            WorkFilterChip(
+              title: status.title,
+              selected: selectedStatus == status,
+              tint: statusFilterTint(status)
+            ) {
+              withAnimation(.snappy(duration: 0.18)) {
+                selectedStatus = status
               }
-            }
-            .padding(3)
-            .background(ADEColor.recessedBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-          }
-
-          HStack(alignment: .center, spacing: 10) {
-            Text("LANE")
-              .font(.caption2.monospaced().weight(.bold))
-              .foregroundStyle(ADEColor.textMuted)
-              .frame(width: 48, alignment: .leading)
-            Menu {
-              Button("All lanes") { selectedLaneId = "all" }
-              ForEach(lanes) { lane in
-                Button(lane.name) { selectedLaneId = lane.id }
-              }
-            } label: {
-              HStack(spacing: 6) {
-                Image(systemName: "arrow.triangle.branch")
-                  .font(.system(size: 10, weight: .semibold))
-                  .foregroundStyle(ADEColor.textMuted)
-                Text(selectedLaneName)
-                  .font(.caption.weight(.medium))
-                  .foregroundStyle(ADEColor.textPrimary)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.up.chevron.down")
-                  .font(.system(size: 9, weight: .semibold))
-                  .foregroundStyle(ADEColor.textMuted)
-              }
-              .padding(.horizontal, 10)
-              .padding(.vertical, 8)
-              .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-              .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                  .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-              )
-            }
-            .buttonStyle(.plain)
-          }
-
-          if runningCount > 0 || needsInputCount > 0 {
-            HStack(spacing: 6) {
-              if runningCount > 0 {
-                WorkFlatCountChip(icon: "circle.fill", text: "\(runningCount) running", tint: ADEColor.success)
-              }
-              if needsInputCount > 0 {
-                WorkFlatCountChip(icon: "exclamationmark.circle.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
-              }
-              Spacer(minLength: 0)
             }
           }
         }
-        .padding(10)
-        .background(ADEColor.recessedBackground.opacity(0.38), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .stroke(ADEColor.border.opacity(0.15), lineWidth: 0.5)
-        )
+        .padding(.vertical, 1)
+      }
+
+      HStack(spacing: 6) {
+        WorkFlatCountChip(icon: "bolt.fill", text: "\(liveCount) live", tint: ADEColor.success)
+        if needsInputCount > 0 {
+          WorkFlatCountChip(icon: "exclamationmark.circle.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
+        }
+        Spacer(minLength: 0)
+        if hasActiveFilters {
+          Button("Clear") {
+            withAnimation(.snappy(duration: 0.18)) {
+              onClear()
+            }
+          }
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+          .buttonStyle(.plain)
+          .accessibilityLabel("Clear Work filters")
+        }
+      }
+
+      if filterOpen {
+        HStack(spacing: 8) {
+          Menu {
+            ForEach(WorkSessionOrganization.allCases) { option in
+              Button(option.title) {
+                organization = option
+              }
+            }
+          } label: {
+            WorkFilterMenuLabel(
+              icon: "rectangle.stack",
+              title: "Group",
+              value: organization.title
+            )
+          }
+          .buttonStyle(.plain)
+
+          Menu {
+            Button("All lanes") { selectedLaneId = "all" }
+            ForEach(lanes) { lane in
+              Button(lane.name) { selectedLaneId = lane.id }
+            }
+          } label: {
+            WorkFilterMenuLabel(
+              icon: "arrow.triangle.branch",
+              title: "Lane",
+              value: selectedLaneName
+            )
+          }
+          .buttonStyle(.plain)
+        }
         .transition(.move(edge: .top).combined(with: .opacity))
       }
     }
+  }
+
+  private func statusFilterTint(_ status: WorkSessionStatusFilter) -> Color {
+    switch status {
+    case .needsInput: return ADEColor.warning
+    case .running: return ADEColor.success
+    case .ended: return ADEColor.textMuted
+    case .archived: return ADEColor.warning
+    case .all: return ADEColor.accent
+    }
+  }
+}
+
+struct WorkFilterChip: View {
+  let title: String
+  let selected: Bool
+  let tint: Color
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Text(title)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(selected ? tint : ADEColor.textSecondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+          selected ? tint.opacity(0.12) : ADEColor.surfaceBackground.opacity(0.48),
+          in: Capsule(style: .continuous)
+        )
+        .overlay(
+          Capsule(style: .continuous)
+            .stroke(selected ? tint.opacity(0.28) : ADEColor.border.opacity(0.18), lineWidth: 0.6)
+        )
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+struct WorkFilterMenuLabel: View {
+  let icon: String
+  let title: String
+  let value: String
+
+  var body: some View {
+    HStack(spacing: 7) {
+      Image(systemName: icon)
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(title)
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+        Text(value)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+      Spacer(minLength: 0)
+      Image(systemName: "chevron.up.chevron.down")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity)
+    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+    )
   }
 }
 
@@ -241,13 +317,17 @@ struct WorkLiveCountPill: View {
     attentionCount > 0 ? ADEColor.warning : ADEColor.success
   }
 
+  var label: String {
+    attentionCount > 0 ? "\(attentionCount) waiting" : "\(liveCount) live"
+  }
+
   var body: some View {
     Button(action: onTap) {
       HStack(spacing: 4) {
         Circle()
           .fill(tint)
           .frame(width: 6, height: 6)
-        Text("\(liveCount)")
+        Text(label)
           .font(.caption2.monospacedDigit().weight(.semibold))
           .foregroundStyle(tint)
       }
@@ -259,7 +339,7 @@ struct WorkLiveCountPill: View {
       )
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("\(liveCount) chat\(liveCount == 1 ? "" : "s") live. Tap to jump.")
+    .accessibilityLabel("\(liveCount) Work session\(liveCount == 1 ? "" : "s") live, \(attentionCount) waiting for input. Tap to jump.")
   }
 }
 
@@ -489,8 +569,7 @@ struct WorkSessionRow: View {
             .lineLimit(1)
         }
 
-        if let preview = chatSummary?.summary ?? chatSummary?.lastOutputPreview ?? session.summary ?? session.lastOutputPreview,
-           !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let preview = workSessionPreviewText(chatSummary?.summary ?? chatSummary?.lastOutputPreview ?? session.summary ?? session.lastOutputPreview) {
           Text(preview)
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)

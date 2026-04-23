@@ -51,10 +51,8 @@ struct WorkSessionDestinationView: View {
     return chatSummary?.title ?? session?.title ?? "Session"
   }
 
-  /// Trailing nav-bar control: a single "…" overflow menu. The lane chip and
-  /// relative-time row that briefly lived here have been removed at the user's
-  /// request — the menu shows the active lane name and a "Go to lane" entry,
-  /// which is the only top-level action we expose from the chat header today.
+  /// Trailing nav-bar control scoped to the session's lane. The visible branch
+  /// icon keeps it distinct from in-transcript overflow menus.
   @ViewBuilder
   var sessionHeaderTrailingControls: some View {
     if let session, showsLaneActions {
@@ -68,14 +66,14 @@ struct WorkSessionDestinationView: View {
           Label("Go to lane", systemImage: "arrow.triangle.branch")
         }
       } label: {
-        Image(systemName: "ellipsis")
+        Image(systemName: "arrow.triangle.branch.circle")
           .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
           .frame(width: 28, height: 28)
           .contentShape(Rectangle())
       }
       .menuStyle(.borderlessButton)
-      .accessibilityLabel("Lane menu")
+      .accessibilityLabel("Session lane actions")
     } else {
       EmptyView()
     }
@@ -439,6 +437,8 @@ struct WorkSessionDestinationView: View {
 }
 
 private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: ViewModifier {
+  @Environment(\.dismiss) private var dismiss
+
   let mode: WorkSessionNavigationChrome
   let title: String
   let trailingControls: () -> TrailingControls
@@ -450,8 +450,18 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
       content
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            Button {
+              dismiss()
+            } label: {
+              Label("Work", systemImage: "chevron.left")
+                .labelStyle(.titleAndIcon)
+            }
+            .accessibilityLabel("Back to Work")
+          }
           ToolbarItem(placement: .topBarTrailing) {
             trailingControls()
           }

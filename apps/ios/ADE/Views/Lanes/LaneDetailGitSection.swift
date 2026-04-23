@@ -26,8 +26,6 @@ extension LaneDetailScreen {
           stagedSection(changes: diffChanges.staged)
         }
 
-        actionsCard
-
         NavigationLink {
           LaneSyncDetailScreen(
             laneName: detail.lane.name,
@@ -122,6 +120,8 @@ extension LaneDetailScreen {
           )
         }
         .buttonStyle(.plain)
+
+        actionsCard
       }
     }
   }
@@ -139,7 +139,7 @@ extension LaneDetailScreen {
         parentLabel: detail.lane.baseRef,
         canRunLiveActions: canRunLiveActions,
         onRebase: {
-          Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
+          requestGitConfirmation(.rebaseLane)
         },
         onDefer: handleRebaseSuggestionDefer,
         onDismiss: handleRebaseSuggestionDismiss
@@ -193,32 +193,15 @@ extension LaneDetailScreen {
 
   @ViewBuilder
   var actionsCard: some View {
-    if let detail {
+    if detail != nil {
       LaneActionsCard(
         canRunLiveActions: canRunLiveActions,
         disabledSubtitle: liveActionDisabledSubtitle,
-        canPush: (detail.lane.status.ahead) > 0 || detail.syncStatus?.hasUpstream == false,
-        isPublish: detail.syncStatus?.hasUpstream == false,
-        onPullMerge: {
-          Task { await performAction("pull merge") { try await syncService.pullGit(laneId: laneId) } }
-        },
-        onPullRebase: {
-          Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
-        },
-        onPush: {
-          Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
-        },
-        onSync: {
-          Task { await performAction("sync") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
-        },
-        onFetch: {
-          Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } }
-        },
         onRebaseLane: {
-          Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
+          requestGitConfirmation(.rebaseLane)
         },
         onRebaseDescendants: {
-          Task { await performAction("rebase descendants") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants") } }
+          requestGitConfirmation(.rebaseDescendants)
         },
         onRebaseAndPush: {
           requestGitConfirmation(.rebaseAndPush)
@@ -385,13 +368,7 @@ extension LaneDetailScreen {
       secondaryActionTint: ADEColor.danger,
       extraBulkActions: [
         LaneFileTreeBulkAction(title: "Discard all", symbol: "trash", tint: ADEColor.danger, isDestructive: true) {
-          Task {
-            await performAction("discard all") {
-              for file in changes {
-                try await syncService.discardFile(laneId: laneId, path: file.path)
-              }
-            }
-          }
+          pendingFileConfirmation = .discardAllUnstaged(changes)
         }
       ],
       onBulkAction: {
@@ -415,7 +392,7 @@ extension LaneDetailScreen {
         Task { await performAction("stage file") { try await syncService.stageFile(laneId: laneId, path: file.path) } }
       },
       onSecondaryAction: { file in
-        confirmDiscardFile = file
+        pendingFileConfirmation = .discardUnstaged(file)
       },
       onOpenFiles: { file in
         Task { await openFiles(path: file.path) }
@@ -464,7 +441,7 @@ extension LaneDetailScreen {
         Task { await performAction("unstage file") { try await syncService.unstageFile(laneId: laneId, path: file.path) } }
       },
       onSecondaryAction: { file in
-        Task { await performAction("restore staged file") { try await syncService.restoreStagedFile(laneId: laneId, path: file.path) } }
+        pendingFileConfirmation = .restoreStaged(file)
       },
       onOpenFiles: { file in
         Task { await openFiles(path: file.path) }

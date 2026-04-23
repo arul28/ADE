@@ -36,6 +36,20 @@ enum FilesEditorMode: String, CaseIterable, Identifiable {
   }
 }
 
+enum FilesCodeLayoutMode: String, CaseIterable, Identifiable {
+  case wrap
+  case scroll
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .wrap: return "Wrap"
+    case .scroll: return "Scroll"
+    }
+  }
+}
+
 struct FilesSectionFallback: Equatable {
   let title: String
   let message: String
@@ -121,6 +135,10 @@ func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
     title: "Diff preview paused",
     action: "Open the file on desktop or inspect a smaller diff before rendering it on iPhone."
   )
+}
+
+func filesDiffHasChanges(_ diff: FileDiff) -> Bool {
+  diff.original.exists != diff.modified.exists || diff.original.text != diff.modified.text
 }
 
 private func filesTextLimit(byteCount: Int, lineCount: Int, lineLimit: Int, byteLimit: Int, title: String, action: String) -> FilesPreviewLimit? {

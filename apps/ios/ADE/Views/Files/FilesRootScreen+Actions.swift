@@ -146,7 +146,7 @@ extension FilesRootScreen {
       return
     }
 
-    try? await Task.sleep(nanoseconds: 250_000_000)
+    try? await Task.sleep(nanoseconds: 150_000_000)
     guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
     guard query == quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
 
@@ -195,7 +195,7 @@ extension FilesRootScreen {
       return
     }
 
-    try? await Task.sleep(nanoseconds: 250_000_000)
+    try? await Task.sleep(nanoseconds: 150_000_000)
     guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
     guard query == textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
 
@@ -236,6 +236,9 @@ extension FilesRootScreen {
       syncService.requestedFilesNavigation = nil
       return
     }
+    if selectedWorkspaceId != workspace.id {
+      suppressNextWorkspaceNavigationReset = true
+    }
     selectedWorkspaceId = workspace.id
     if let relativePath = request.relativePath, !relativePath.isEmpty {
       selectedFileTransitionPath = relativePath
@@ -248,12 +251,18 @@ extension FilesRootScreen {
   }
 
   func openDirectory(_ parentPath: String, in workspace: FilesWorkspace) {
+    if selectedWorkspaceId != workspace.id {
+      suppressNextWorkspaceNavigationReset = true
+    }
     selectedWorkspaceId = workspace.id
     selectedFileTransitionPath = nil
     navigationPath = routesForDirectory(parentPath, workspace: workspace)
   }
 
   func openFile(_ relativePath: String, in workspace: FilesWorkspace, focusLine: Int?) {
+    if selectedWorkspaceId != workspace.id {
+      suppressNextWorkspaceNavigationReset = true
+    }
     selectedWorkspaceId = workspace.id
     selectedFileTransitionPath = relativePath
     navigationPath = routesForFile(relativePath, workspace: workspace, focusLine: focusLine)

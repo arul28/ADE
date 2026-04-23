@@ -7,15 +7,12 @@ struct FilesWorkspaceHeader: View {
   @Binding var showHidden: Bool
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
+    VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .top, spacing: 12) {
         VStack(alignment: .leading, spacing: 4) {
           Text("Workspace")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Switch between cached lane roots without leaving the Files tab.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
         }
 
         Spacer(minLength: 0)
@@ -31,8 +28,8 @@ struct FilesWorkspaceHeader: View {
 
       Text(selectedWorkspace.rootPath)
         .font(.caption.monospaced())
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(2)
         .truncationMode(.middle)
         .accessibilityLabel("Workspace path \(selectedWorkspace.rootPath)")
         .textSelection(.enabled)
@@ -190,18 +187,48 @@ struct FilesQueryCard: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text(title)
-        .font(.headline)
-        .foregroundStyle(ADEColor.textPrimary)
-      Text(scopeText)
-        .font(.caption.monospaced())
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
-      TextField(prompt, text: $query)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .disabled(disabled)
-        .adeInsetField()
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text(title)
+          .font(.headline)
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 8)
+        Text(disabled ? "Offline" : "Ready")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.success)
+      }
+
+      Label {
+        Text(scopeText)
+          .font(.caption.monospaced())
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
+          .truncationMode(.middle)
+      } icon: {
+        Image(systemName: "folder")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+
+      HStack(spacing: 8) {
+        Image(systemName: "magnifyingglass")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+        TextField(prompt, text: $query)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .submitLabel(.search)
+          .disabled(disabled)
+        if !query.isEmpty {
+          Button {
+            query = ""
+          } label: {
+            Image(systemName: "xmark.circle.fill")
+              .foregroundStyle(ADEColor.textMuted)
+          }
+          .accessibilityLabel("Clear \(title.lowercased())")
+        }
+      }
+      .adeInsetField()
       Text(emptyMessage)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)

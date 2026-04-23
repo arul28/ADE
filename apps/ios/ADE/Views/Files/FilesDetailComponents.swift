@@ -367,37 +367,24 @@ struct SyntaxHighlightedCodeView: View {
   let text: String
   let language: FilesLanguage
   let focusLine: Int?
+  let layoutMode: FilesCodeLayoutMode
 
   private var lines: [String] {
     let split = splitPreservingEmptyLines(text)
     return split.isEmpty ? [""] : split
   }
 
+  private var wrapsLines: Bool {
+    layoutMode == .wrap
+  }
+
+  private var lineNumberWidth: CGFloat {
+    min(max(CGFloat(String(lines.count).count) * 8 + 14, 28), 58)
+  }
+
   var body: some View {
     ScrollViewReader { proxy in
-      ScrollView([.horizontal, .vertical]) {
-        LazyVStack(alignment: .leading, spacing: 0) {
-          ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-            HStack(alignment: .top, spacing: 12) {
-              Text("\(index + 1)")
-                .font(.caption2.monospaced())
-                .foregroundStyle(ADEColor.textMuted)
-                .frame(minWidth: 36, alignment: .trailing)
-              Text(SyntaxHighlighter.highlightedAttributedString(line.isEmpty ? " " : line, as: language))
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(ADEColor.textPrimary)
-                .fixedSize(horizontal: true, vertical: false)
-                .textSelection(.enabled)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background((focusLine == index + 1 ? ADEColor.accent.opacity(0.12) : Color.clear), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .id(index + 1)
-          }
-        }
-        .padding(10)
-      }
+      codeScrollView
       .adeInsetField(cornerRadius: 16, padding: 0)
       .task(id: focusLine) {
         guard let focusLine else { return }
@@ -407,41 +394,111 @@ struct SyntaxHighlightedCodeView: View {
       }
     }
   }
+
+  @ViewBuilder
+  private var codeScrollView: some View {
+    if wrapsLines {
+      ScrollView(.vertical) {
+        codeRows
+      }
+    } else {
+      ScrollView([.horizontal, .vertical]) {
+        codeRows
+      }
+    }
+  }
+
+  private var codeRows: some View {
+    LazyVStack(alignment: .leading, spacing: 0) {
+      ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+        HStack(alignment: .top, spacing: wrapsLines ? 8 : 12) {
+          Text("\(index + 1)")
+            .font(.caption2.monospaced())
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: lineNumberWidth, alignment: .trailing)
+          Text(SyntaxHighlighter.highlightedAttributedString(line.isEmpty ? " " : line, as: language))
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(nil)
+            .fixedSize(horizontal: !wrapsLines, vertical: wrapsLines)
+            .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
+            .textSelection(.enabled)
+        }
+        .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background((focusLine == index + 1 ? ADEColor.accent.opacity(0.12) : Color.clear), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .id(index + 1)
+      }
+    }
+    .padding(10)
+    .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
+  }
 }
 
 struct FilesInlineDiffView: View {
   let lines: [FilesInlineDiffLine]
   let language: FilesLanguage
+  let layoutMode: FilesCodeLayoutMode
+
+  private var wrapsLines: Bool {
+    layoutMode == .wrap
+  }
+
+  private var lineNumberWidth: CGFloat {
+    let largestLineNumber = lines.reduce(0) { current, line in
+      max(current, line.originalLineNumber ?? 0, line.modifiedLineNumber ?? 0)
+    }
+    return min(max(CGFloat(String(max(largestLineNumber, 1)).count) * 8 + 12, 26), 54)
+  }
 
   var body: some View {
-    ScrollView([.horizontal, .vertical]) {
-      LazyVStack(alignment: .leading, spacing: 0) {
-        ForEach(lines) { line in
-          HStack(alignment: .top, spacing: 12) {
-            diffLineNumber(line.originalLineNumber)
-            diffLineNumber(line.modifiedLineNumber)
-            Text(SyntaxHighlighter.highlightedAttributedString(line.text.isEmpty ? " " : line.text, as: language))
-              .font(.system(.body, design: .monospaced))
-              .foregroundStyle(ADEColor.textPrimary)
-              .fixedSize(horizontal: true, vertical: false)
-              .textSelection(.enabled)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 4)
-          .background(diffBackground(for: line.kind), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-      }
-      .padding(10)
-    }
+    diffScrollView
     .adeInsetField(cornerRadius: 16, padding: 0)
+  }
+
+  @ViewBuilder
+  private var diffScrollView: some View {
+    if wrapsLines {
+      ScrollView(.vertical) {
+        diffRows
+      }
+    } else {
+      ScrollView([.horizontal, .vertical]) {
+        diffRows
+      }
+    }
+  }
+
+  private var diffRows: some View {
+    LazyVStack(alignment: .leading, spacing: 0) {
+      ForEach(lines) { line in
+        HStack(alignment: .top, spacing: wrapsLines ? 8 : 12) {
+          diffLineNumber(line.originalLineNumber)
+          diffLineNumber(line.modifiedLineNumber)
+          Text(SyntaxHighlighter.highlightedAttributedString(line.text.isEmpty ? " " : line.text, as: language))
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(nil)
+            .fixedSize(horizontal: !wrapsLines, vertical: wrapsLines)
+            .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
+            .textSelection(.enabled)
+        }
+        .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(diffBackground(for: line.kind), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      }
+    }
+    .padding(10)
+    .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
   }
 
   private func diffLineNumber(_ lineNumber: Int?) -> some View {
     Text(lineNumber.map(String.init) ?? "•")
       .font(.caption2.monospaced())
       .foregroundStyle(ADEColor.textMuted)
-      .frame(minWidth: 32, alignment: .trailing)
+      .frame(width: lineNumberWidth, alignment: .trailing)
   }
 
   private func diffBackground(for kind: FilesInlineDiffKind) -> Color {
