@@ -3,10 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
   created: [] as Array<{ close: ReturnType<typeof vi.fn>; url: string }>,
+  resolveOpenCodeBinaryPath: vi.fn(() => "/Users/admin/.opencode/bin/opencode"),
 }));
 
 vi.mock("./openCodeBinaryManager", () => ({
-  resolveOpenCodeBinaryPath: vi.fn(() => "/Users/admin/.opencode/bin/opencode"),
+  resolveOpenCodeBinaryPath: mockState.resolveOpenCodeBinaryPath,
 }));
 
 import {
@@ -65,6 +66,12 @@ describe("Windows managed OpenCode command detection", () => {
       'C:\\\\Windows\\\\System32\\\\cmd.exe /d /s /c set "ADE_OPENCODE_MANAGED=1"&&set "OPENCODE_DISABLE_PROJECT_CONFIG=1"&&set "ADE_OPENCODE_OWNER_PID=999"&&C:\\\\opencode\\\\opencode.cmd serve --hostname=127.0.0.1 --port=4310';
     expect(__isManagedOpenCodeServeCommandForTests(cmdLine)).toBe(true);
   });
+
+  it("detects cmd-wrapped .bat OpenCode serve shims", () => {
+    const cmdLine =
+      'C:\\\\Windows\\\\System32\\\\cmd.exe /d /s /c set "ADE_OPENCODE_MANAGED=1"&&set "OPENCODE_DISABLE_PROJECT_CONFIG=1"&&set "ADE_OPENCODE_OWNER_PID=999"&&"C:\\\\tools\\\\opencode.bat" serve --hostname=127.0.0.1 --port=4310';
+    expect(__isManagedOpenCodeServeCommandForTests(cmdLine)).toBe(true);
+  });
 });
 
 describe("openCodeServerManager", () => {
@@ -90,6 +97,7 @@ describe("openCodeServerManager", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mockState.created.length = 0;
+    mockState.resolveOpenCodeBinaryPath.mockReturnValue("/Users/admin/.opencode/bin/opencode");
     __resetOpenCodeServerManagerForTests();
     __setOpenCodeProcessControllerForTests({
       listProcesses: () => [],
@@ -459,6 +467,7 @@ describe("openCodeServerManager", () => {
   it("quotes the OpenCode executable in Windows cmd launch specs", () => {
     setProcessPlatform("win32");
     process.env.ADE_OPENCODE_XDG_ROOT = "/tmp/ade-opencode-test-home";
+    mockState.resolveOpenCodeBinaryPath.mockReturnValue("C:\\Users\\100% dev\\bin\\opencode.bat");
 
     const spec = __buildOpenCodeServeLaunchSpecForTests({
       config: { share: "disabled" } as const,
@@ -469,7 +478,7 @@ describe("openCodeServerManager", () => {
     expect(spec.args[0]).toBe("/d");
     expect(spec.args[1]).toBe("/s");
     expect(spec.args[2]).toBe("/c");
-    expect(spec.args[3]).toContain('&&"/Users/admin/.opencode/bin/opencode" serve --hostname=127.0.0.1 --port=4310');
+    expect(spec.args[3]).toContain('&&"C:\\Users\\100%% dev\\bin\\opencode.bat" "serve" "--hostname=127.0.0.1" "--port=4310"');
   });
 
   it("reaps orphaned ADE-managed OpenCode processes on Windows with a tree kill and skips ones with a live owner", async () => {

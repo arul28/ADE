@@ -5960,8 +5960,9 @@ async function runTool(args: {
     workerEnv.ADE_DEFAULT_ROLE = "agent";
     envPrefixParts.push("ADE_DEFAULT_ROLE=agent");
 
-    const startupCommand = envPrefixParts.length > 0
-      ? `${envPrefixParts.join(" ")} ${commandPreviewParts.join(" ")}`
+    const startupEnvPrefixParts = process.platform === "win32" ? [] : envPrefixParts;
+    const startupCommand = startupEnvPrefixParts.length > 0
+      ? `${startupEnvPrefixParts.join(" ")} ${commandPreviewParts.join(" ")}`
       : commandPreviewParts.join(" ");
     const providerExecutable = resolveExecutableOnPath(provider);
 

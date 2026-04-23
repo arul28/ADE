@@ -7,7 +7,7 @@ const path = require("node:path");
 
 const projectRoot = path.resolve(__dirname, "..");
 const distMainFile = path.join(projectRoot, "dist", "main", "main.cjs");
-const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
+const npxCommand = "npx";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -109,11 +109,53 @@ async function waitForStableFile(filePath, timeoutMs, stableWindowMs = 300) {
   }
 }
 
+function quoteWindowsCmdArg(value) {
+  let quoted = "\"";
+  let backslashes = 0;
+  for (const char of String(value).replace(/%/g, "%%")) {
+    if (char === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (char === "\"") {
+      quoted += "\\".repeat(backslashes * 2);
+      quoted += "\"\"";
+    } else {
+      quoted += "\\".repeat(backslashes);
+      quoted += char;
+    }
+    backslashes = 0;
+  }
+  quoted += "\\".repeat(backslashes * 2);
+  quoted += "\"";
+  return quoted;
+}
+
+function shouldUseWindowsCmdWrapper(cmd) {
+  if (process.platform !== "win32") return false;
+  const ext = path.win32.extname(cmd).toLowerCase();
+  return ext === "" || ext === ".cmd" || ext === ".bat";
+}
+
+function resolveSpawnInvocation(cmd, args, env) {
+  if (!shouldUseWindowsCmdWrapper(cmd)) {
+    return { command: cmd, args, windowsVerbatimArguments: false };
+  }
+  return {
+    command: env.ComSpec && env.ComSpec.trim() ? env.ComSpec.trim() : "cmd.exe",
+    args: ["/d", "/s", "/c", [cmd, ...args].map(quoteWindowsCmdArg).join(" ")],
+    windowsVerbatimArguments: true,
+  };
+}
+
 function spawnProcess(name, cmd, args, extraEnv = {}) {
-  const child = cp.spawn(cmd, args, {
+  const env = { ...process.env, ...extraEnv };
+  const invocation = resolveSpawnInvocation(cmd, args, env);
+  const child = cp.spawn(invocation.command, invocation.args, {
     cwd: projectRoot,
-    env: { ...process.env, ...extraEnv },
-    stdio: "inherit"
+    env,
+    stdio: "inherit",
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
   child.__adeName = name;
   return child;

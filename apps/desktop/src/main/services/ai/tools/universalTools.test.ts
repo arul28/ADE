@@ -248,6 +248,105 @@ describe("checkWorkerSandbox", () => {
     expect(result.reason).toContain("non-literal path argument");
   });
 
+  it("blocks uninspected PowerShell -File script execution", () => {
+    const result = checkWorkerSandbox(
+      "powershell.exe -File .\\scripts\\setup.ps1",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("PowerShell script file is not inspectable");
+  });
+
+  it("blocks uninspected bare PowerShell script execution", () => {
+    const result = checkWorkerSandbox(
+      ".\\scripts\\setup.ps1",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("PowerShell script file is not inspectable");
+  });
+
+  it("detects PowerShell mutations through nested cmd.exe /c wrappers", () => {
+    const result = checkWorkerSandbox(
+      'cmd.exe /d /s /c cmd.exe /c powershell.exe -Command "Set-Content -Path ..\\outside.txt -Value hi"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("blocks PowerShell mutation paths hidden behind parenthesized expressions", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path (Join-Path .. outside.txt) -Value hi"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("uninspectable path argument");
+  });
+
+  it("blocks PowerShell mutation paths hidden behind subexpressions", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path $(Join-Path .. outside.txt) -Value hi"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("uninspectable path argument");
+  });
+
+  it("blocks PowerShell mutation paths hidden behind array expressions", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path @(\'..\\outside.txt\') -Value hi"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("uninspectable path argument");
+  });
+
+  it("blocks PowerShell mutations with empty path captures", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path -Value secret"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("uninspectable path argument");
+  });
+
+  it("does not let PowerShell switch parameters consume positional mutation paths", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -NoNewline ..\\outside.txt -Value hi"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("keeps inspecting positional paths after PowerShell -Force and -Recurse switches", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Remove-Item -Force -Recurse ..\\outside"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
   it("blocks opaque PowerShell encoded commands", () => {
     const result = checkWorkerSandbox(
       "powershell.exe -EncodedCommand not-base64!!!",

@@ -428,9 +428,10 @@ export function createProviderOrchestratorAdapter(options?: {
     buildOverrideCommand: ({ prompt }) => {
       // For override commands, try to detect the best CLI
       // Default to claude since it's the most common
+      const resolvedClaude = resolveClaudeCodeExecutable();
       return {
         startupCommand: `exec claude -p ${shellInlineDecodedArg(prompt)}`,
-        command: "claude",
+        command: resolvedClaude.path,
         args: ["-p", prompt],
       };
     },

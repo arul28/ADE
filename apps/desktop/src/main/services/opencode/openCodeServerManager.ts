@@ -7,7 +7,7 @@ import path from "node:path";
 import type { Config as OpenCodeConfig } from "@opencode-ai/sdk";
 import type { Logger } from "../logging/logger";
 import { stableStringify } from "../shared/utils";
-import { processOutputToString } from "../shared/processExecution";
+import { processOutputToString, quoteWindowsCmdArg, resolveWindowsCmdInvocation } from "../shared/processExecution";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 
 export type OpenCodeServerLeaseKind = "shared" | "dedicated";
@@ -522,12 +522,12 @@ function isManagedOpenCodeServeCommand(command: string, configMarkers: string[])
   if (
     /\bcmd(?:\.exe)?\b/i.test(command)
     && command.includes(`${ADE_OPENCODE_MANAGED_ENV}=1`)
-    && /\bopencode(?:\.cmd|\.exe)?\b/i.test(command)
+    && /\bopencode(?:\.cmd|\.bat|\.exe)?\b/i.test(command)
     && /\bserve\b/i.test(command)
   ) {
     return command.includes("OPENCODE_DISABLE_PROJECT_CONFIG=1");
   }
-  if (!/\bopencode(?:\.cmd|\.exe)?\b\s+serve\b/i.test(command)) return false;
+  if (!/\bopencode(?:\.cmd|\.bat|\.exe)?\b\s+serve\b/i.test(command)) return false;
   if (!command.includes("OPENCODE_DISABLE_PROJECT_CONFIG=1")) return false;
   if (command.includes(`${ADE_OPENCODE_MANAGED_ENV}=1`)) return true;
   return configMarkers.some((marker) => command.includes(marker));
@@ -663,12 +663,18 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
   ensureOpenCodeIsolationDirs(xdgPaths);
   const env = buildIsolatedOpenCodeEnv(args.config, xdgPaths);
   if (process.platform === "win32") {
-    const comSpec = process.env.ComSpec?.trim() || "cmd.exe";
-    const exeForCmd = `"${executable.replace(/"/g, "\"\"")}"`;
+    const invocation = resolveWindowsCmdInvocation(
+      executable,
+      ["serve", "--hostname=127.0.0.1", `--port=${args.port}`],
+      env,
+    );
     const cmdLine =
-      `set "${ADE_OPENCODE_MANAGED_ENV}=1"&&set "OPENCODE_DISABLE_PROJECT_CONFIG=1"&&set "${ADE_OPENCODE_OWNER_PID_ENV}=${process.pid}"&&${exeForCmd} serve --hostname=127.0.0.1 --port=${args.port}`;
+      `set ${quoteWindowsCmdArg(`${ADE_OPENCODE_MANAGED_ENV}=1`)}`
+      + `&&set ${quoteWindowsCmdArg("OPENCODE_DISABLE_PROJECT_CONFIG=1")}`
+      + `&&set ${quoteWindowsCmdArg(`${ADE_OPENCODE_OWNER_PID_ENV}=${process.pid}`)}`
+      + `&&${invocation.args[3] ?? ""}`;
     return {
-      executable: comSpec,
+      executable: invocation.command,
       args: ["/d", "/s", "/c", cmdLine],
       env,
       useShell: false,
