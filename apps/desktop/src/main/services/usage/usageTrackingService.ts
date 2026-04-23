@@ -41,6 +41,12 @@ const COST_CACHE_TTL_MS = 60_000;             // 60s
 const CODEX_TOKEN_REFRESH_DAYS = 8;
 const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
 
+function isBenignStdinCloseError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+}
+
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 
@@ -445,6 +451,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
           finish(() => resolve({ stdout, stderr, exitCode: code }));
         });
         child.stdin?.on("error", (error) => {
+          if (isBenignStdinCloseError(error)) return;
           logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
             error: getErrorMessage(error),
           });
@@ -455,6 +462,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
           child.stdin?.write(combined);
           child.stdin?.end();
         } catch (err) {
+          if (isBenignStdinCloseError(err)) return;
           logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
             error: getErrorMessage(err),
           });

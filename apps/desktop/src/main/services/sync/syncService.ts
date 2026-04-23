@@ -554,6 +554,12 @@ export function createSyncService(args: SyncServiceArgs) {
           await startHostIfNeeded();
         } else {
           await stopHostIfRunning();
+          if (!isCrdtSyncAvailable()) {
+            if (syncPeerService.isConnected()) {
+              syncPeerService.disconnect({ preserveDraft: true });
+            }
+            continue;
+          }
           const draft = savedDraft ?? resolveViewerDraftFromRegistry();
           if (draft && !syncPeerService.isConnected()) {
             syncPeerService.setSavedDraft(draft);
@@ -771,6 +777,9 @@ export function createSyncService(args: SyncServiceArgs) {
     async connectToBrain(
       draft: SyncDesktopConnectionDraft,
     ): Promise<SyncRoleSnapshot> {
+      if (!isCrdtSyncAvailable()) {
+        throw new Error("Desktop sync is unavailable because the CRDT database extension is not loaded.");
+      }
       await stopHostIfRunning();
       deviceRegistryService.clearClusterRegistryForViewerJoin();
       writeSavedDraft(draft);

@@ -35,6 +35,7 @@ describe("processExecution", () => {
     expect(quoteWindowsCmdArg("100% done")).toBe('"100%% done"');
     expect(quoteWindowsCmdArg('say "hi"')).toBe('"say ""hi"""');
     expect(quoteWindowsCmdArg('C:\\path\\"quoted"')).toBe('"C:\\path\\\\\"\"quoted\"\"\"');
+    expect(quoteWindowsCmdArg("line one\r\nline two")).toBe('"line one  line two"');
   });
 
   it("wraps Windows shim invocations with ComSpec", () => {

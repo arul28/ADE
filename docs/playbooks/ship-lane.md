@@ -10,13 +10,14 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 - Polling CI and review comments
 - Fixing valid review comments and CI failures
 - Rebasing when teammates merge into `main` ahead of you
-- Repeating until the PR is merged, clean, or a human is required
+- Repeating until the PR is clean, capped, or a human is required
 
 ## Execution contract
 
 - **Autonomous.** Do not pause for user confirmation mid-loop.
-- **Bounded.** Hard cap: 10 iterations. Exit earlier if clean or blocked.
-- **Scoped checks.** Never run the full test suite between iterations — only failing test files and touched shards.
+- **Bounded.** Hard cap: 5 iterations. Exit earlier if clean or blocked. At the cap, do not auto-merge; leave a handoff comment that explains why the loop stopped and what remains, if anything.
+- **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2.
+- **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
 - **Token-idle waits.** Waiting is done by scheduler/resume, not by live polling loops. Between wake-ups, agents should be asleep, not consuming model context or tokens.
 - **Idempotent resume.** All state lives in `.ade/shipLane/<branch>.json`. A re-invocation reads that file and picks up where it left off.
 
@@ -51,6 +52,8 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
 ```
 
 `status` values: `running`, `done-clean`, `done-max`, `blocked`.
+
+The `iteration` value is the active turn budget counter, not a raw count of pushes. Normal fix iterations increment it by 1. Rebase/merge/conflict recovery decrements it by 2 first, then the current pass records its result. Never let it go below 0.
 
 ---
 
@@ -211,7 +214,7 @@ Pure logic on the poll summary:
 | Condition | Action |
 | --- | --- |
 | `merged == true` | Exit `done-clean`; clear state file. |
-| `behindMain == true` | Go to Phase 3a (rebase), then restart Phase 1. |
+| `behindMain == true` | Go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. |
 | `ciFailed` empty, `newComments` empty, `ciRunning == true` | No fix work. Go to Phase 5 (schedule next wake). |
 | `ciFailed` empty, `newComments` empty, `ciRunning == false` | Exit `done-clean`. |
 | Otherwise | Go to Phase 3b (fix). |
@@ -266,7 +269,15 @@ Then:
 git push --force-with-lease
 ```
 
-Post bot pings (Phase 4), update state (Phase 5), restart Phase 1 immediately — do not schedule a wake, because we just pushed and want a fresh poll soon.
+Before bookkeeping, apply the **rebase budget rebate**:
+
+```json
+{
+  "iteration": "max(0, previous iteration - 2)"
+}
+```
+
+Post bot pings (Phase 4), update state (Phase 5), and schedule the next wake. Do not immediately repoll after a rebase push; let CI and review bots run while the agent is asleep.
 
 ---
 
@@ -287,7 +298,20 @@ Extract:
 - Exact error snippets (stack trace + surrounding lines)
 - Which shard (e.g., `test-desktop (3)` → failing files only ran on shard 3)
 
-### 3b.2 Dispatch fix sub-agents in parallel
+Only investigate and rerun the failing target. If a shard fails because of one file, rerun that file, not the whole shard. If a typecheck/lint/build job fails, rerun that exact package-level command only after fixing the reported files.
+
+### 3b.2 Review-comment hygiene
+
+Before dispatching review fixes:
+
+- Group comments by normalized finding: same file, nearby line, same author, and materially same body. Treat repeats as one issue.
+- Drop stale comments whose line no longer exists or whose requested change is already present in the current diff.
+- If a review thread can be resolved with the available GitHub/ADE tooling, resolve it as soon as the fix is present or the comment is stale/duplicate.
+- Add every handled, stale, or duplicate comment id to `addressedCommentIds` so future iterations do not keep revisiting it.
+
+Do not linger on repeated bot feedback. Fix the underlying issue once, mark old copies handled/resolved when possible, and move on.
+
+### 3b.3 Dispatch fix sub-agents in parallel
 
 If both CI fixes and review-comment fixes are needed, spawn them **in parallel** (each scoped to its own minimum input):
 
@@ -296,6 +320,7 @@ If both CI fixes and review-comment fixes are needed, spawn them **in parallel**
 - Error snippets (not full logs)
 - Allowed to read any source file, but MUST NOT rewrite tests unless the test is genuinely wrong
 - Must verify each fix with `cd <app> && npx vitest run <specific file>` before reporting done
+- Must not run the full suite or an entire CI shard when the failing file is known
 
 **review-fix-agent** input:
 - List of new comments: `{id, author, body, path, line}`
@@ -304,11 +329,12 @@ If both CI fixes and review-comment fixes are needed, spawn them **in parallel**
   - Praise
   - Comments whose referenced line no longer exists in the current diff
   - IDs already in `addressedCommentIds`
-- Record every comment id it addressed (for the lead to merge into state)
+- Repeated comments for the same already-fixed issue
+- Record every comment id it addressed, resolved, or dismissed as stale/duplicate (for the lead to merge into state)
 
 Both agents edit files directly. They do not commit; only the lead commits.
 
-### 3b.3 Lead verification + commit
+### 3b.4 Lead verification + commit
 
 ```bash
 git status
@@ -317,7 +343,11 @@ git diff --stat
 
 The lead reviews the combined diff. If anything is surprising (unrelated files touched, enormous diffs), the lead can revert specific hunks with `git checkout -- <file>` before committing.
 
-Re-run scoped checks on touched files (same commands as Phase 3a validation).
+Re-run only the narrow checks that matter:
+
+- For CI fixes, rerun the failing test file(s) or exact failing check target.
+- For review-only fixes, rerun colocated/directly affected tests when they exist; otherwise run the smallest package typecheck/lint that covers the touched surface.
+- Do not run the full desktop or CLI suite inside the loop.
 
 Commit with a message that lists what was addressed:
 
@@ -358,7 +388,7 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ```json
 {
-  "iteration": <prev + 1>,
+  "iteration": <prev + 1, after any rebase/conflict rebate>,
   "lastPushSha": "<new HEAD sha>",
   "addressedCommentIds": [<prev list>, <new ids handled this iteration>],
   "lastPolledAt": "<ISO 8601 now>",
@@ -368,7 +398,7 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ### 5.2 Decide exit vs next wake
 
-- `iteration >= 10` → set `status: done-max`, `exitReason: "iteration-cap-reached"`, post a PR comment listing remaining unaddressed items, exit.
+- `iteration >= 5` → set `status: done-max`, `exitReason: "iteration-cap-reached"`, post a PR handoff comment explaining why the loop stopped and listing remaining unaddressed CI/review items, if any. Do not auto-merge at the cap; leave the PR open for a human to merge or rerun the lane.
 - `merged == true` (observed during this iteration) → set `status: done-clean`, exit.
 - Otherwise → schedule next wake.
 
@@ -390,7 +420,7 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 | status | meaning | next action |
 | --- | --- | --- |
 | `done-clean` | PR merged OR green + no unaddressed comments | clear state file; print summary |
-| `done-max` | 10 iterations exhausted | leave state file; post PR comment to human |
+| `done-max` | 5 iterations exhausted | leave state file; post PR handoff comment to human; do not auto-merge |
 | `blocked` | Unrecoverable conflict, gate failure, or API error | leave state file; post PR comment with reason |
 
 ## Summary output (always print on exit)

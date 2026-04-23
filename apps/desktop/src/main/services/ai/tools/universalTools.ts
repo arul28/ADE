@@ -744,6 +744,13 @@ function inspectPowerShellInvocations(
         const nestedInspection = inspectPowerShellInvocations(nestedCommand, cwd, pathApi, depth + 1);
         mergeInspection(nestedInspection);
         if (nestedInspection.blockedReason) return { ...nestedInspection, pathRefs: [...refs.values()] };
+        if (MUTATING_CMD_RE.test(nestedCommand)) {
+          return {
+            mutates: true,
+            pathRefs: [...refs.values()],
+            blockedReason: "cmd.exe /c mutating payload is not inspectable by the worker sandbox",
+          };
+        }
         mutates = mutates || nestedInspection.mutates;
       }
       continue;
