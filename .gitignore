@@ -1,6 +1,6 @@
 .DS_Store
 *.pem
-node_modules/
+node_modules
 /.npm-cache
 /apps/desktop/release-stable
 /apps/desktop/.cache
