@@ -35,7 +35,7 @@ Phase 3: Parallel test writing           (agents)
          ├── desktop-tester-1..N  (desktop app tests)
          └── mcp-tester           (mcp server tests, if applicable)
 Phase 4: Test reality check              (lead, after all testers done)
-Phase 5: Full test run                   (lead)
+Phase 5: Scoped test run (new + affected) (lead)
 Phase 6: CI verification                 (lead)
 Phase 7: Summary                         (lead)
 ```
@@ -247,59 +247,39 @@ If issues are found, fix them directly.
 
 ---
 
-## Phase 5: Full Test Run
+## Phase 5: Scoped Test Run
 
-After reality check passes, run ALL created tests to confirm everything passes together.
+Verify the tests **this command just wrote** pass. Do NOT run the full suite — that is `/finalize`'s job, and running it here doubles the wait with no new signal.
 
-### 5a. Desktop tests (all new test files)
+### 5a. New test files together
 
-Run new test files together first:
+Run every test file created in Phase 3 in a single invocation:
 
 ```bash
 cd apps/desktop && npx vitest run [space-separated list of all new test files]
 ```
 
-### 5b. Desktop tests (full sharded run — match CI)
+All new tests must pass. If any fail, fix in place and re-run only the failing files.
 
-Run the full suite the same way CI does — sharded 8-way. Run all 8 shards in parallel:
+### 5b. Affected existing tests
 
-```bash
-cd apps/desktop && npx vitest run --shard=1/8
-cd apps/desktop && npx vitest run --shard=2/8
-cd apps/desktop && npx vitest run --shard=3/8
-cd apps/desktop && npx vitest run --shard=4/8
-cd apps/desktop && npx vitest run --shard=5/8
-cd apps/desktop && npx vitest run --shard=6/8
-cd apps/desktop && npx vitest run --shard=7/8
-cd apps/desktop && npx vitest run --shard=8/8
-```
-
-Or run a specific workspace project:
-
-```bash
-cd apps/desktop && npx vitest run --project unit-main
-cd apps/desktop && npx vitest run --project unit-renderer
-cd apps/desktop && npx vitest run --project unit-shared
-```
-
-### 5c. MCP server tests (if applicable)
-
-```bash
-cd apps/mcp-server && npm test
-```
-
-### 5d. Run affected existing tests
-
-If code changes could break existing tests (e.g., changed a service function's signature), run those existing test files too:
+If the branch's source changes could break existing tests (e.g., changed a service function's signature, renamed an exported type, altered shared contracts), run those existing test files — NOT the full suite:
 
 ```bash
 cd apps/desktop && npx vitest run [affected existing test files]
 ```
 
+Scope "affected" narrowly — direct importers of touched modules and their test siblings. Do not expand to "everything in the same feature folder."
+
 **If tests fail:**
 - Check if it's a flaky test (retry once)
 - If a specific test fails consistently, fix it and re-run only that file
 - Do NOT re-run all tests — only the failed ones
+
+### 5c. Not this command's job
+
+- **Full sharded suite run:** `/finalize` runs all 8 shards (and `test-ade-cli`) the same way CI does. Skip it here.
+- **Build / typecheck / lint:** also deferred to `/finalize`.
 
 ---
 
@@ -354,9 +334,10 @@ Read `.github/workflows/ci.yml`. Verify:
 ### Test Files Created:
 - [List each file with test count]
 
-### Full Suite Run:
-- Desktop: PASS (X tests)
-- MCP Server: PASS (X tests)
+### Scoped Test Run:
+- New test files: PASS (X tests across Y files)
+- Affected existing tests: PASS (X tests) or N/A
+- NOTE: Full sharded suite run is deferred to `/finalize`.
 
 ### CI Coverage:
 - vitest.workspace.ts: All new tests matched by include patterns
@@ -394,7 +375,7 @@ Mark as **"completed"** ONLY if ALL of the following are true:
 
 1. ALL tests pass
 2. All applicable test types were created per gap tracker
-3. Full test run passed (Phase 5)
+3. Scoped test run passed (Phase 5 — new + affected only; full suite deferred to /finalize)
 4. CI covers all new test files (Phase 6)
 5. No tests with silent null guards
 6. No tests that mock the thing being tested
