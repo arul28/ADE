@@ -156,6 +156,26 @@ describe("PrsContext refresh", () => {
 
     window.history.replaceState(null, "", "/");
   });
+
+  it("hydrates a legacy PR deep link without an explicit tab as the normal surface", async () => {
+    window.history.replaceState(null, "", "/?prId=pr-123");
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-123")]);
+
+    render(
+      <PrsProvider>
+        <RouteHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-tab").textContent).toBe("normal");
+    });
+    expect(screen.getByTestId("selected-pr-id").textContent).toBe("pr-123");
+    expect(screen.getByTestId("selected-queue-group-id").textContent).toBe("");
+    expect(screen.getByTestId("selected-rebase-item-id").textContent).toBe("");
+
+    window.history.replaceState(null, "", "/");
+  });
 });
 
 // ---------------------------------------------------------------------------

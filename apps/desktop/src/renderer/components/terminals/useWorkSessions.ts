@@ -614,7 +614,11 @@ export function useWorkSessions() {
     // narrow the view instead of dumping the user into an unrelated context.
     if (sessionParam) {
       const sessionExists = sessions.some((s) => s.id === sessionParam);
-      if (sessionExists) return;
+      if (sessionExists) {
+        appliedUrlFilterKeyRef.current = null;
+        partiallyAppliedUrlFilterKeyRef.current = null;
+        return;
+      }
       if (!hasLoadedOnceRef.current) return;
     }
     // Apply URL-derived filters at most once per URL signature so later

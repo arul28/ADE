@@ -229,9 +229,7 @@ function readInitialRouteState(): {
       : "normal";
     return {
       activeTab,
-      selectedPrId: !resolved.isWorkflowRoute && (route.tab === "normal" || route.tab === "github")
-        ? route.prId
-        : null,
+      selectedPrId: !resolved.isWorkflowRoute ? route.prId : null,
       selectedQueueGroupId: resolved.effectiveWorkflow === "queue" ? route.queueGroupId : null,
       // Mirror PRsPage's resolver so the shape of this id matches what the
       // rebase UI later expects. rebaseNeeds are empty at provider mount, so

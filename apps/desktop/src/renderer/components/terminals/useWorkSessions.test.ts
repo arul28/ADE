@@ -544,7 +544,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.statusFilter).toBe("completed");
   });
 
-  it("reapplies the same stale-session URL filters after navigating away and back", async () => {
+  it("reapplies the same stale-session URL filters after navigating to a valid session and back", async () => {
     const session = {
       id: "session-2",
       laneId: "lane-1",
@@ -606,7 +606,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       expect(workState.statusFilter).toBe("running");
     });
 
-    currentSearchParams = new URLSearchParams();
+    currentSearchParams = new URLSearchParams("sessionId=session-2");
     act(() => {
       rerender();
     });
