@@ -15,6 +15,7 @@ function createRuntime() {
   const threadRows: Array<Record<string, unknown>> = [];
   const threadMessages = new Map<string, Array<Record<string, unknown>>>();
   let messageCounter = 0;
+  const kv = new Map<string, unknown>();
 
   const ensureThread = (input: { missionId: string; attemptId: string; runId?: string | null }): Record<string, unknown> => {
     const existing = threadRows.find(
@@ -84,6 +85,14 @@ function createRuntime() {
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     db: {
+      getJson: vi.fn((key: string) => (kv.has(key) ? kv.get(key) : null)),
+      setJson: vi.fn((key: string, value: unknown) => {
+        if (value == null) {
+          kv.delete(key);
+          return;
+        }
+        kv.set(key, value);
+      }),
       get: vi.fn((sql: string) => {
         if (sql.includes("orchestrator_evaluations") && sql.includes("SELECT")) {
           return {
@@ -129,6 +138,36 @@ function createRuntime() {
         }
       })
     },
+    keybindingsService: {
+      get: vi.fn(() => [{ command: "ade.openCommandPalette", binding: "mod+k" }]),
+      set: vi.fn((overrides: unknown) => overrides),
+    } as any,
+    onboardingService: {
+      getStatus: vi.fn(() => ({ completedAt: null, dismissedAt: null, freshProject: false })),
+      detectDefaults: vi.fn(async () => ({ indicators: [] })),
+    } as any,
+    automationPlannerService: {
+      validateDraft: vi.fn((draft: unknown) => ({ ok: true, draft })),
+    } as any,
+    githubService: {
+      getStatus: vi.fn(async () => ({ tokenStored: false, repo: "owner/repo" })),
+      getRepoOrThrow: vi.fn(() => ({ owner: "owner", repo: "repo" })),
+      setToken: vi.fn(async () => ({ tokenStored: true })),
+      clearToken: vi.fn(async () => ({ tokenStored: false })),
+    } as any,
+    usageTrackingService: {
+      getUsageSnapshot: vi.fn(() => ({ available: true, entries: [] })),
+      forceRefresh: vi.fn(async () => ({ available: true, entries: [] })),
+      poll: vi.fn(async () => ({ available: true, entries: [] })),
+      start: vi.fn(() => {}),
+      stop: vi.fn(() => {}),
+    } as any,
+    autoUpdateService: {
+      getSnapshot: vi.fn(() => ({ status: "idle", version: null })),
+      checkForUpdates: vi.fn(() => {}),
+      dismissInstalledNotice: vi.fn(() => {}),
+      quitAndInstall: vi.fn(() => false),
+    } as any,
     laneService: {
       list: vi.fn(async () => laneRows),
       listUnregisteredWorktrees: vi.fn(async () => [{ path: "/tmp/untracked-worktree", branch: "feature/untracked" }]),
@@ -178,7 +217,12 @@ function createRuntime() {
     },
     gitService: {
       getConflictState: vi.fn(async () => ({ laneId: "lane-1", kind: null, inProgress: false, conflictedFiles: [], canContinue: false, canAbort: false })),
+      stageFile: vi.fn(async () => ({ success: true })),
       stageAll: vi.fn(async () => ({ success: true })),
+      unstageFile: vi.fn(async () => ({ success: true })),
+      unstageAll: vi.fn(async () => ({ success: true })),
+      discardFile: vi.fn(async () => ({ success: true })),
+      restoreStagedFile: vi.fn(async () => ({ success: true })),
       commit: vi.fn(async () => ({ success: true })),
       generateCommitMessage: vi.fn(async () => ({ message: "generated commit message", model: "gpt-5-mini" })),
       listRecentCommits: vi.fn(async () => [{ sha: "abc123", subject: "test" }]),
@@ -293,6 +337,7 @@ function createRuntime() {
         })),
         getNewItems: vi.fn((_prId: string) => []),
         markSentToAgent: vi.fn(),
+        privateMaintenanceTask: vi.fn(),
         resetInventory: vi.fn(),
         saveConvergenceRuntime: vi.fn((prId: string, state: Record<string, unknown>) => {
           const existing = runtimeByPr.get(prId) ?? {};
@@ -311,6 +356,7 @@ function createRuntime() {
       simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
       createQueuePrs: vi.fn(async () => ({ groupId: "group-1", prs: [] })),
       createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
+      draftDescription: vi.fn(async () => ({ title: "Drafted PR", body: "Drafted body" })),
       createFromLane: vi.fn(async () => ({ id: "pr-new", laneId: "lane-1", title: "New PR", status: "open" })),
       getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
       landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" })),
@@ -1829,6 +1875,7 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
     expect(response.structuredContent.startupCommand).toContain("--permission-mode");
+    expect(response.structuredContent.startupCommand).toContain("Before reporting an ADE lane");
     expect(response.structuredContent.permissionMode).toBe("default");
     expect(response.structuredContent.contextRef?.path).toBeNull();
   });
@@ -2718,6 +2765,7 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.permissionMode).toBe("plan");
     expect(response.structuredContent.startupCommand).toContain("--sandbox");
     expect(response.structuredContent.startupCommand).toContain("read-only");
+    expect(response.structuredContent.startupCommand).toContain("Before reporting an ADE lane");
     const contextPath = response.structuredContent.contextRef?.path as string | null;
     expect(contextPath).toBeTruthy();
     expect(contextPath?.includes("/.ade/cache/orchestrator/agent-context/run-123/")).toBe(true);
@@ -3112,6 +3160,20 @@ describe("adeRpcServer", () => {
       draft: true,
     });
 
+    const drafted = await callTool(handler, "create_pr_from_lane", {
+      laneId: "lane-1",
+      baseBranch: "main",
+    });
+    expect(drafted?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.draftDescription).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
+      laneId: "lane-1",
+      baseBranch: "main",
+      title: "Drafted PR",
+      body: "Drafted body",
+      draft: false,
+    });
+
     const updateTitle = await callTool(handler, "pr_update_title", { prId: "pr-1", title: "Renamed" });
     expect(updateTitle?.isError).toBeUndefined();
     expect(fixture.runtime.prService.updateTitle).toHaveBeenCalledWith({ prId: "pr-1", title: "Renamed" });
@@ -3130,12 +3192,28 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(response.structuredContent.actions.some((entry: { action: string }) => entry.action === "push")).toBe(true);
     expect(response.structuredContent.actions.some((entry: { action: string }) => entry.action === "commit")).toBe(true);
+    expect(response.structuredContent.actions.some((entry: { action: string }) => entry.action === "stageFile")).toBe(true);
+    expect(response.structuredContent.actions.every((entry: { name?: string; usage?: string }) => entry.name && entry.usage)).toBe(true);
 
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "memory")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "mission")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator_core")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "cto_state")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "worker_agent")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "computer_use_artifacts")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "operation")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "keybindings")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "onboarding")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "automation_planner")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "github")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "usage")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "update")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "layout")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "tiling_tree")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(true);
   });
 
   it("invokes ADE actions dynamically and returns status hints", async () => {
@@ -3160,9 +3238,33 @@ describe("adeRpcServer", () => {
     });
     expect(variadic?.isError).toBeUndefined();
     expect(fixture.runtime.operationService.list).toHaveBeenCalledWith({ limit: 10 });
+
+    const keybindings = await callTool(handler, "run_ade_action", {
+      domain: "keybindings",
+      action: "get",
+      args: {},
+    });
+    expect(keybindings?.isError).toBeUndefined();
+    expect(fixture.runtime.keybindingsService.get).toHaveBeenCalled();
+
+    const layoutSet = await callTool(handler, "run_ade_action", {
+      domain: "layout",
+      action: "set",
+      args: { layoutId: "main", layout: { left: 120, right: -5, ignored: "wide" } },
+    });
+    expect(layoutSet?.isError).toBeUndefined();
+    expect(fixture.runtime.db.setJson).toHaveBeenCalledWith("dock_layout:main", { left: 100, right: 0 });
+
+    const layoutGet = await callTool(handler, "run_ade_action", {
+      domain: "layout",
+      action: "get",
+      args: { layoutId: "main" },
+    });
+    expect(layoutGet?.isError).toBeUndefined();
+    expect(layoutGet.structuredContent.result).toEqual({ left: 100, right: 0 });
   });
 
-  it("does not expose internal service mutators through dynamic ADE actions", async () => {
+  it("does not expose unlisted service methods through dynamic ADE actions", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { callerId: "agent-1", role: "agent" });
@@ -3171,21 +3273,22 @@ describe("adeRpcServer", () => {
     expect(listed?.isError).toBeUndefined();
     const actions = listed.structuredContent.actions.map((entry: { action: string }) => entry.action);
     expect(actions).toContain("getPipelineSettings");
-    expect(actions).not.toContain("resetInventory");
-    expect(actions).not.toContain("saveConvergenceRuntime");
-    expect(actions).not.toContain("deletePipelineSettings");
+    expect(actions).toContain("resetInventory");
+    expect(actions).toContain("saveConvergenceRuntime");
+    expect(actions).toContain("deletePipelineSettings");
+    expect(actions).not.toContain("privateMaintenanceTask");
 
     const response = await callTool(handler, "run_ade_action", {
       domain: "issue_inventory",
-      action: "resetInventory",
+      action: "privateMaintenanceTask",
       argsList: ["pr-1"],
     });
 
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
-      "Action 'issue_inventory.resetInventory' is not exposed through ADE actions.",
+      "Action 'issue_inventory.privateMaintenanceTask' is not exposed through ADE actions.",
     );
-    expect(fixture.runtime.issueInventoryService.resetInventory).not.toHaveBeenCalled();
+    expect(fixture.runtime.issueInventoryService.privateMaintenanceTask).not.toHaveBeenCalled();
   });
 
   it("rejects run_ade_action when the action is not a callable on the domain service", async () => {

@@ -62,6 +62,7 @@ import type {
   AgentChatExecutionMode,
   AgentChatPermissionMode,
 } from "../../../shared/types";
+import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_CONTEXT_VIEW_POLICIES,
@@ -3987,7 +3988,7 @@ export function createOrchestratorService({
               commandParts.push("--permission-mode", readOnlyExecution || cliMode === "read-only" ? "plan" : "acceptEdits");
             }
           }
-          commandParts.push(shellInlineDecodedArg(prompt));
+          commandParts.push(shellInlineDecodedArg([ADE_CLI_AGENT_GUIDANCE, prompt].join("\n\n")));
           const startupCommand = commandParts.join(" ");
 
           const session = await args.createTrackedSession({

@@ -229,6 +229,8 @@ describe("buildCodingAgentSystemPrompt", () => {
   it("always includes operating loop, editing rules, and verification rules", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
     expect(result).toContain("## Operating Loop");
+    expect(result).toContain("## ADE CLI");
+    expect(result).toContain("Before saying an ADE task is blocked");
     expect(result).toContain("## Editing Rules");
     expect(result).toContain("## Verification Rules");
     expect(result).toContain("## User-Facing Progress");

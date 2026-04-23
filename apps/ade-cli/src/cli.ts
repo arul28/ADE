@@ -240,7 +240,11 @@ const ADE_BANNER = String.raw`
 `;
 
 const TOP_LEVEL_HELP = `${ADE_BANNER}
-  Agent-focused command-line interface for ADE
+  Agent-focused command-line interface for ADE.
+
+  ADE CLI commands operate on the same project database and live desktop socket
+  used by the ADE app. By default the CLI connects to the app socket when it is
+  running; otherwise it falls back to a headless runtime for local-safe actions.
 
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
@@ -265,87 +269,252 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade actions list | run | status               Escape hatch for every ADE service action
 
   Global options:
-    --project-root <path> --workspace-root <path> --headless --socket --json --text --timeout-ms <ms>
+    --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
+    --workspace-root <path> Lane/worktree to treat as the active workspace.
+    --headless              Skip the desktop socket and run an in-process ADE runtime.
+    --socket                Require the desktop socket; fail instead of falling back to headless.
+    --json                  Print machine-readable JSON. This is the default output mode.
+    --text                  Print a compact human-readable summary when a formatter exists.
+    --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
 
   Common agent flows:
-    $ ade lanes create --name fix-login
-    $ ade git commit --lane <id>
-    $ ade prs create --lane <id> --base main --draft
-    $ ade prs path-to-merge <pr> --model <model> --max-rounds 3 --no-auto-merge
+    $ ade doctor --text
+    $ ade lanes list --text
+    $ ade lanes create --name fix-login --description "Repair login redirect"
+    $ ade git status --lane <lane> --text
+    $ ade git stage --lane <lane> src/index.ts
+    $ ade git commit --lane <lane> -m "Fix login redirect"
+    $ ade prs create --lane <lane> --base main --draft
+    $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
 
-  Escape hatch:
-    $ ade actions list --text
-    $ ade actions run <domain.action> --arg key=value
+  Generic ADE action JSON contract:
+    Object-shaped call:
+      $ ade actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
+      $ ade actions run git.push --arg laneId=lane-1 --arg setUpstream=true
+    JSON value fields:
+      $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
+    Multi-parameter service call:
+      $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
+    Single scalar parameter:
+      $ ade actions run mission.get --scalar mission-1
 
-  try: ade lanes list --text
+    $ ade actions list --text
+    $ ade actions list --domain pr --text
+    $ ade actions run <domain.action> --input-json '{"key":"value"}'
+
+  Start with: ade doctor --text
 `;
 
 const HELP_BY_COMMAND: Record<string, string> = {
   lanes: `${ADE_BANNER}
   Lanes
 
-    $ ade lanes list --text                         Show the lane stack graph
-    $ ade lanes show <lane> --text                  Inspect one lane
-    $ ade lanes create --name <name>                Create a lane from the current context
-    $ ade lanes child --lane <parent> --name <name> Create a child lane
-    $ ade lanes import --branch <branch>            Bring an existing worktree/branch into ADE
-    $ ade lanes actions                             List lane service actions
+  Lanes are ADE-managed worktrees and branches. Most commands accept either
+  --lane <lane-id> or a positional lane id.
+
+    $ ade lanes list --text                         Show lane stack graph and branch names
+    $ ade lanes show <lane> --text                  Inspect one lane status
+    $ ade lanes create --name <name>                Create a lane from the current project context
+    $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
+    $ ade lanes import --branch <branch>            Register an existing branch/worktree
+    $ ade lanes archive <lane>                      Archive a lane in ADE
+    $ ade lanes unarchive <lane>                    Restore an archived lane
+    $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
+    $ ade lanes actions --text                      List callable lane service methods
 `,
   git: `${ADE_BANNER}
   Git
 
-    $ ade git status --lane <id> --text             Show ADE-aware sync status
-    $ ade git commit --lane <id> [-m <message>]     Commit, generating a message when omitted
-    $ ade git push --lane <id> --set-upstream       Push through ADE
+  Git commands run in the lane worktree and record ADE operations so the app can
+  refresh lane state. Use --lane for anything other than the active workspace.
+
+    $ ade git status --lane <lane> --text           Show ADE-aware sync status
+    $ ade git stage --lane <lane> src/file.ts       Stage one file
+    $ ade git stage-all --lane <lane>               Stage all current changes
+    $ ade git unstage --lane <lane> src/file.ts     Unstage one file
+    $ ade git commit --lane <lane> [-m <message>]   Commit, generating a message when omitted
+    $ ade git push --lane <lane> --set-upstream     Push through ADE
     $ ade git stash push|list|apply|pop             Use ADE lane stash actions
-    $ ade git rebase --lane <id> --ai               Rebase with ADE conflict support
-    $ ade diff changes --lane <id> --text           Inspect changed files
+    $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
+    $ ade diff changes --lane <lane> --text         Inspect changed files
+`,
+  diff: `${ADE_BANNER}
+  Diffs
+
+    $ ade diff changes --lane <lane> --text         Summarize staged/unstaged file changes
+    $ ade diff file --lane <lane> <path> --text     Show one file diff
+    $ ade diff file --mode staged <path>            Inspect staged diff for one file
+    $ ade diff actions --text                       List diff service actions
 `,
   prs: `${ADE_BANNER}
   Pull requests
 
+  PR identifiers may be ADE PR ids, GitHub PR numbers, #numbers, or full PR URLs.
+  Creating or linking a PR persists the lane mapping in ADE so the PR tab tracks it.
+
     $ ade prs list --text                           List PRs known to ADE
-    $ ade prs create --lane <id> --base main        Open a PR from a lane
+    $ ade prs create --lane <lane> --base main      Open and map a GitHub PR from a lane
+    $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs inventory <pr>                        Refresh ADE issue inventory
     $ ade prs path-to-merge <pr> --model <model> --max-rounds 3 --no-auto-merge
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
+    $ ade prs labels set <pr> ready-to-merge        Replace labels
+    $ ade prs reviewers request <pr> alice bob      Request reviewers
 `,
   run: `${ADE_BANNER}
   Run tab
 
+  Run tab commands mirror ADE desktop process definitions and runtime state.
+  They require the desktop socket when live process state is needed.
+
     $ ade run defs --text                           List configured run commands
-    $ ade run ps --lane <id> --text                 List process runtime state
-    $ ade run start <process> --lane <id>           Start a process in a lane
+    $ ade run ps --lane <lane> --text               List process runtime state
+    $ ade run start <process> --lane <lane>         Start a process in a lane
+    $ ade run stop <process> --lane <lane>          Stop a process in a lane
     $ ade run logs <process> --run <run> --text     Tail process logs
-    $ ade run stack start --stack <id> --lane <id>  Start a process stack
+    $ ade run stack start --stack <id> --lane <lane> Start a process stack
+    $ ade run start-all --lane <lane>               Start all configured processes
+`,
+  shell: `${ADE_BANNER}
+  Shell sessions
+
+  Shell commands create tracked PTY sessions that ADE can display and audit.
+
+    $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
+    $ ade shell start --lane <lane> -c "npm test"   Start with a command string
+    $ ade shell write <pty-id> --data "q"           Write data to a PTY
+    $ ade shell resize <pty-id> --cols 120 --rows 36
+    $ ade shell close <pty-id>                      Dispose a PTY
 `,
   files: `${ADE_BANNER}
   Files
 
+  File commands operate inside an ADE workspace id, usually a lane id.
+
     $ ade files workspaces --text                   List workspace roots
-    $ ade files tree --workspace <id> --path src    Show a workspace tree
-    $ ade files read --workspace <id> <path> --text Read a file
-    $ ade files write --workspace <id> <path> --stdin
-    $ ade files search --workspace <id> -q <text>   Search text in a workspace
+    $ ade files tree --workspace <lane> --path src  Show a workspace tree
+    $ ade files read --workspace <lane> <path> --text Read a file
+    $ ade files write --workspace <lane> <path> --stdin
+    $ ade files write --workspace <lane> <path> --text "new content"
+    $ ade files create --workspace <lane> <path> --text "content"
+    $ ade files mkdir --workspace <lane> src/new
+    $ ade files search --workspace <lane> -q <text> Search text in a workspace
+    $ ade files quick-open --workspace <lane> -q app
+`,
+  chat: `${ADE_BANNER}
+  Work chats
+
+  Chat commands use ADE agent chat sessions. Live provider-backed chat normally
+  requires the desktop socket because the app owns provider/session state.
+
+    $ ade chat list --text                          List chat sessions
+    $ ade chat create --lane <lane> --provider codex --model <model>
+    $ ade chat send <session> --text "next step"    Send a message
+    $ ade chat interrupt <session>                  Stop an active turn
+    $ ade chat resume <session>                     Resume a session
+    $ ade agent spawn --lane <lane> --prompt "fix"  Start a new agent work session
+`,
+  agent: `${ADE_BANNER}
+  Agent sessions
+
+    $ ade agent spawn --lane <lane> --prompt "Fix the failing test"
+    $ ade agent spawn --lane <lane> --provider codex --model <model> --permissions workspace-write
+    $ ade agent spawn --lane <lane> --context-file docs/context.md --prompt "continue"
+    $ ade agent spawn --lane <lane> --tool=git --tool=files --prompt "review changes"
 `,
   proof: `${ADE_BANNER}
   Proof and computer use
 
-    $ ade proof status --text                       Show local proof backend capabilities
+  Proof commands capture or ingest artifacts that ADE can attach to work.
+  Local screenshot/video fallback is macOS-only; desktop socket mode has the
+  best parity with the app.
+
+    $ ade proof status --text                       Show proof backend capabilities
     $ ade proof list --text                         List captured artifacts
     $ ade proof screenshot                          Capture a screenshot artifact
     $ ade proof record --seconds 20                 Capture a short video proof
-    $ ade proof ingest --input-json '{...}'         Ingest external proof artifacts
+    $ ade proof launch --app "ADE"                  Launch an app for proof capture
+    $ ade proof ingest --input-json '{"artifacts":[]}' Ingest external proof artifacts
+`,
+  tests: `${ADE_BANNER}
+  Tests
+
+    $ ade tests list --text                         List configured test suites
+    $ ade tests run --lane <lane> --suite unit      Run a configured suite
+    $ ade tests run --lane <lane> --command "npm test" --wait
+    $ ade tests runs --lane <lane> --text           List recent test runs
+    $ ade tests logs <run-id> --text                Tail a test run log
+    $ ade tests stop <run-id>                       Stop an active test run
+`,
+  memory: `${ADE_BANNER}
+  Memory
+
+    $ ade memory add --category fact --content "User prefers concise summaries"
+    $ ade memory search -q "release process" --text
+    $ ade memory pin <memory-id>
+    $ ade memory core --arg projectSummary="Current focus"
+`,
+  cto: `${ADE_BANNER}
+  CTO and Work state
+
+    $ ade cto state --text                          Read CTO identity, core memory, and recent sessions
+    $ ade cto chats list --text                     List CTO work chats
+    $ ade cto chats spawn --lane <lane> --prompt "plan this"
+    $ ade cto chats send <session> --text "continue"
+    $ ade actions run cto_state.updateCoreMemory --input-json '{"projectSummary":"..."}'
+    $ ade actions run worker_agent.listAgents --input-json '{"includeDeleted":false}'
+`,
+  linear: `${ADE_BANNER}
+  Linear workflows
+
+    $ ade linear workflows --text                   List configured workflows
+    $ ade linear sync dashboard --text              Show sync dashboard
+    $ ade linear sync run                           Trigger a sync run
+    $ ade linear sync queue --text                  List sync queue items
+    $ ade linear sync resolve --queue-item <id> --action approve
+    $ ade linear route worker --input-json '{"issueId":"LIN-123","workerId":"worker-1"}'
+`,
+  flow: `${ADE_BANNER}
+  Flow policy
+
+    $ ade flow policy get --text                    Read current workflow policy
+    $ ade flow policy validate --input-json '{...}' Validate policy JSON
+    $ ade flow policy save --input-json '{...}'     Save policy JSON
+    $ ade flow policy revisions --text              List saved revisions
+    $ ade flow policy rollback <revision-id>        Restore a prior revision
+`,
+  coordinator: `${ADE_BANNER}
+  Coordinator runtime tools
+
+  Coordinator tools expose orchestration operations used by mission agents.
+  List tool names with:
+    $ ade actions call list_ade_actions --input-json '{"domain":"orchestrator_core"}'
+
+    $ ade coordinator <tool-name> --input-json '{"key":"value"}'
 `,
   actions: `${ADE_BANNER}
   ADE actions
 
+  Escape hatch for any exposed ADE service method. Use typed commands first
+  when they exist; use actions when an agent needs exact service coverage.
+
+  Argument shapes:
+    Object args become one object parameter:
+      $ ade actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
+      $ ade actions run git.push --arg laneId=lane-1 --arg setUpstream=true
+    --arg parses true/false/null/numbers; --arg-json parses a JSON value:
+      $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
+    argsList is for service methods with multiple positional parameters:
+      $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
+    scalar is for one non-object parameter:
+      $ ade actions run mission.get --scalar mission-1
+
     $ ade actions list --text                       Domain-grouped action catalog
-    $ ade actions list --domain git                 Narrow the catalog
-    $ ade actions run git.stageFile --arg laneId=<id> --arg path=src/index.ts
+    $ ade actions list --domain git --text          Narrow the catalog
+    $ ade actions run <domain.action> --input-json '{"key":"value"}'
     $ ade actions run <domain> <action> --input-json '{"key":"value"}'
     $ ade actions status --text                     Runtime action availability
 `,
@@ -996,7 +1165,22 @@ function buildPrPlan(args: string[]): CliPlan {
   if (sub === "resolve-thread") return { kind: "execute", label: "PR resolve thread", steps: [actionCallStep("result", "pr_resolve_review_thread", withPr({ prId: requireValue(prId ?? firstPositional(args), "prId"), threadId: requireValue(readValue(args, ["--thread", "--thread-id"]), "threadId") }))] };
   if (sub === "title" || sub === "update-title") return { kind: "execute", label: "PR update title", steps: [actionCallStep("result", "pr_update_title", withPr({ prId: prId ?? firstPositional(args), title: readValue(args, ["--title"]) }))] };
   if (sub === "body" || sub === "update-body") return { kind: "execute", label: "PR update body", steps: [actionCallStep("result", "pr_update_body", withPr({ prId: prId ?? firstPositional(args), body: readValue(args, ["--body"]) ?? "" }))] };
-  if (sub === "link") return { kind: "execute", label: "PR link", steps: [actionStep("result", "pr", "linkToLane", collectGenericObjectArgs(args, { laneId: readLaneId(args) ?? firstPositional(args), url: readValue(args, ["--url"]) }))] };
+  if (sub === "link") {
+    const laneId = readLaneId(args) ?? firstPositional(args);
+    const prUrlOrNumber =
+      readValue(args, ["--url", "--pr-url", "--number", "--pr-number"])
+      ?? firstPositional(args);
+    return {
+      kind: "execute",
+      label: "PR link",
+      steps: [
+        actionStep("result", "pr", "linkToLane", collectGenericObjectArgs(args, {
+          laneId: requireValue(laneId, "laneId"),
+          prUrlOrNumber: requireValue(prUrlOrNumber, "prUrlOrNumber"),
+        })),
+      ],
+    };
+  }
 
   const scalarPrActions: Record<string, string> = {
     status: "getStatus",
@@ -1672,25 +1856,47 @@ function buildCoordinatorPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `coordinator ${toolName}`, steps: [actionCallStep("result", toolName, collectGenericObjectArgs(args))] };
 }
 
+function hasHelpFlag(args: string[]): boolean {
+  const terminatorIndex = args.indexOf("--");
+  const searchable = terminatorIndex >= 0 ? args.slice(0, terminatorIndex) : args;
+  return searchable.includes("--help") || searchable.includes("-h");
+}
+
 function buildCliPlan(command: string[]): CliPlan {
   const args = [...command];
   const primary = firstPositional(args);
   if (!primary || primary === "-h" || primary === "--help") {
     return { kind: "help", text: TOP_LEVEL_HELP };
   }
+  const aliases: Record<string, string> = {
+    lane: "lanes",
+    diff: "diff",
+    diffs: "diff",
+    file: "files",
+    pr: "prs",
+    process: "run",
+    processes: "run",
+    pty: "shell",
+    chats: "chat",
+    work: "chat",
+    agents: "agent",
+    test: "tests",
+    computer: "proof",
+    "computer-use": "proof",
+    artifact: "proof",
+    artifacts: "proof",
+    setting: "settings",
+    config: "settings",
+    action: "actions",
+    coord: "coordinator",
+    automation: "automations",
+  };
+  const primaryHelpKey = aliases[primary] ?? primary;
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND[primaryHelpKey] ?? TOP_LEVEL_HELP };
+  }
   if (primary === "help") {
     const topic = (firstPositional(args) ?? "").toLowerCase();
-    const aliases: Record<string, string> = {
-      lane: "lanes",
-      pr: "prs",
-      process: "run",
-      processes: "run",
-      file: "files",
-      computer: "proof",
-      "computer-use": "proof",
-      action: "actions",
-      automation: "automations",
-    };
     const key = aliases[topic] ?? topic;
     return { kind: "help", text: key && HELP_BY_COMMAND[key] ? HELP_BY_COMMAND[key] : TOP_LEVEL_HELP };
   }
@@ -1749,10 +1955,30 @@ function buildCliPlan(command: string[]): CliPlan {
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
 }
 
-function findProjectRoot(startDir: string): string {
+function findAdeManagedWorktreeRoot(startDir: string): { projectRoot: string; workspaceRoot: string } | null {
+  const resolved = path.resolve(startDir);
+  const segments = resolved.split(path.sep);
+  for (let index = segments.length - 2; index >= 0; index -= 1) {
+    if (segments[index] !== ".ade" || segments[index + 1] !== "worktrees") continue;
+    const projectRoot = segments.slice(0, index).join(path.sep) || path.sep;
+    const worktreeName = segments[index + 2];
+    if (!worktreeName) continue;
+    const workspaceRoot = segments.slice(0, index + 3).join(path.sep) || path.sep;
+    if (!fs.existsSync(path.join(projectRoot, ".ade"))) continue;
+    return { projectRoot: path.resolve(projectRoot), workspaceRoot: path.resolve(workspaceRoot) };
+  }
+  return null;
+}
+
+function findProjectRoots(startDir: string): { projectRoot: string; workspaceRoot: string } {
+  const managedWorktree = findAdeManagedWorktreeRoot(startDir);
+  if (managedWorktree) return managedWorktree;
+
   let cursor = path.resolve(startDir);
   while (true) {
-    if (fs.existsSync(path.join(cursor, ".ade"))) return cursor;
+    if (fs.existsSync(path.join(cursor, ".ade"))) {
+      return { projectRoot: cursor, workspaceRoot: cursor };
+    }
     const parent = path.dirname(cursor);
     if (parent === cursor) break;
     cursor = parent;
@@ -1764,14 +1990,16 @@ function findProjectRoot(startDir: string): string {
     stdio: ["ignore", "pipe", "ignore"],
   });
   const gitRoot = git.status === 0 ? git.stdout.trim() : "";
-  return gitRoot ? path.resolve(gitRoot) : path.resolve(startDir);
+  const fallback = gitRoot ? path.resolve(gitRoot) : path.resolve(startDir);
+  return { projectRoot: fallback, workspaceRoot: fallback };
 }
 
 function resolveRoots(options: GlobalOptions): { projectRoot: string; workspaceRoot: string } {
+  const discovered = findProjectRoots(process.cwd());
   const projectRoot = options.projectRoot
-    ?? (process.env.ADE_PROJECT_ROOT?.trim() ? path.resolve(process.env.ADE_PROJECT_ROOT.trim()) : findProjectRoot(process.cwd()));
+    ?? (process.env.ADE_PROJECT_ROOT?.trim() ? path.resolve(process.env.ADE_PROJECT_ROOT.trim()) : discovered.projectRoot);
   const workspaceRoot = options.workspaceRoot
-    ?? (process.env.ADE_WORKSPACE_ROOT?.trim() ? path.resolve(process.env.ADE_WORKSPACE_ROOT.trim()) : projectRoot);
+    ?? (process.env.ADE_WORKSPACE_ROOT?.trim() ? path.resolve(process.env.ADE_WORKSPACE_ROOT.trim()) : discovered.workspaceRoot);
   return { projectRoot, workspaceRoot };
 }
 
@@ -2431,7 +2659,11 @@ function formatActionsList(value: unknown): string {
     list.push(action);
     byDomain.set(domain, list);
   }
-  const lines = ["ADE actions"];
+  const lines = [
+    "ADE actions",
+    "Use: ade actions run <domain.action> --input-json '{\"key\":\"value\"}'",
+    "For multi-parameter methods: --args-list-json '[\"first\",{\"second\":true}]'",
+  ];
   for (const [domain, list] of [...byDomain.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     lines.push("", `${domain}:`);
     for (const action of list.sort((left, right) => cell(left.action ?? left.name).localeCompare(cell(right.action ?? right.name)))) {
@@ -2461,10 +2693,10 @@ function formatPrList(value: unknown): string {
   return renderTable(
     ["PR", "state", "lane", "branch", "title"],
     prs.map((pr) => [
-      pr.number ?? pr.prNumber ?? pr.id,
+      pr.githubPrNumber ?? pr.number ?? pr.prNumber ?? pr.id,
       pr.state ?? pr.status,
       pr.laneId ?? pr.laneName,
-      pr.headRefName ?? pr.branchRef ?? pr.branch,
+      pr.headBranch ?? pr.headRefName ?? pr.branchRef ?? pr.branch,
       pr.title,
     ]),
     "ADE pull requests\n(no PRs)",
@@ -2931,9 +3163,11 @@ if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
 
 export {
   buildCliPlan,
+  findProjectRoots,
   formatOutput,
   parseCliArgs,
   renderLaneGraph,
+  resolveRoots,
   runCli,
   summarizeExecution,
   unwrapToolResult,

@@ -33,6 +33,7 @@ import {
 import { asRecord, filterExecutionSteps } from "./orchestratorContext";
 import { readMissionStateDocument, writeCoordinatorCheckpoint } from "./missionStateDoc";
 import { getLocalProviderDefaultEndpoint, resolveModelDescriptor, type LocalProviderFamily } from "../../../shared/modelRegistry";
+import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import type { DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";
 import type { createOrchestratorService } from "./orchestratorService";
@@ -2075,9 +2076,7 @@ Your conversation persists across the entire mission — you accumulate context,
 
 You are NOT a repo-editing worker. You are the mission lead who owns phase state, worker spawning, runtime judgment, and final completion. In normal operation, workers inspect the repo, edit code, and run commands. You keep the mission aligned and delegated. The difference between you and a dumb orchestrator is that you THINK before you act and EVALUATE after each step.
 
-## ADE CLI
-
-Terminal-capable workers can use the bundled \`ade\` command for internal ADE actions. Instruct them to run \`ade doctor\` for readiness, \`ade actions list --text\` for discovery, typed commands such as \`ade lanes list --text\` or \`ade prs checks <pr> --text\` first, and \`ade actions run ...\` as the escape hatch. Tell them to use \`--json\` for structured output and \`--text\` for readable output.
+${ADE_CLI_AGENT_GUIDANCE}
 
 ## Your Mission
 ${this.deps.missionGoal}

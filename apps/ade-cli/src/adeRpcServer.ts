@@ -27,10 +27,13 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
+import { ADE_CLI_INLINE_GUIDANCE } from "../../desktop/src/shared/adeCliGuidance";
 import { getPrIssueResolutionAvailability } from "../../desktop/src/shared/prIssueResolution";
 import {
   type LinearWorkflowConfig,
   type ComputerUseArtifactOwner,
+  type DockLayout,
+  type GraphPersistedState,
   type MergeMethod,
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
@@ -159,7 +162,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "list_ade_actions",
-    description: "List callable ADE action methods across core runtime services (lane/git/pr/tests/chat/mission/orchestrator).",
+    description: "List callable ADE service methods exposed to the CLI. Actions are returned as domain.action names with CLI usage hints.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -174,25 +177,63 @@ const TOOL_SPECS: ToolSpec[] = [
             "pr",
             "tests",
             "chat",
+            "keybindings",
+            "agent_tools",
+            "ade_cli",
+            "dev_tools",
+            "ai",
+            "sync",
+            "onboarding",
+            "automation",
+            "automation_planner",
+            "automation_ingress",
+            "context",
             "mission",
+            "mission_preflight",
             "orchestrator",
             "orchestrator_core",
+            "mission_budget",
             "memory",
             "cto_state",
             "worker_agent",
+            "worker_budget",
+            "worker_revision",
+            "worker_heartbeat",
+            "worker_task_session",
+            "openclaw",
             "session",
+            "session_delta",
             "operation",
             "project_config",
             "issue_inventory",
+            "queue_landing",
+            "pr_summary",
             "flow_policy",
+            "linear_credentials",
             "linear_dispatcher",
             "linear_issue_tracker",
             "linear_sync",
             "linear_ingress",
             "linear_routing",
+            "github",
+            "feedback",
+            "usage",
+            "budget",
+            "update",
             "file",
             "process",
             "pty",
+            "lane_env",
+            "lane_template",
+            "port_allocation",
+            "lane_proxy",
+            "oauth_redirect",
+            "runtime_diagnostics",
+            "rebase_suggestion",
+            "auto_rebase",
+            "layout",
+            "tiling_tree",
+            "graph_state",
             "computer_use_artifacts",
             "all"
           ],
@@ -203,7 +244,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "run_ade_action",
-    description: "Invoke any ADE action by domain and action name. Use args for object-style calls, or arg for scalar-style calls.",
+    description: "Invoke an exposed ADE service method by domain and action. Use args for one object parameter, argsList for multiple positional parameters, or arg for one scalar parameter.",
     inputSchema: {
       type: "object",
       required: ["domain", "action"],
@@ -219,25 +260,63 @@ const TOOL_SPECS: ToolSpec[] = [
             "pr",
             "tests",
             "chat",
+            "keybindings",
+            "agent_tools",
+            "ade_cli",
+            "dev_tools",
+            "ai",
+            "sync",
+            "onboarding",
+            "automation",
+            "automation_planner",
+            "automation_ingress",
+            "context",
             "mission",
+            "mission_preflight",
             "orchestrator",
             "orchestrator_core",
+            "mission_budget",
             "memory",
             "cto_state",
             "worker_agent",
+            "worker_budget",
+            "worker_revision",
+            "worker_heartbeat",
+            "worker_task_session",
+            "openclaw",
             "session",
+            "session_delta",
             "operation",
             "project_config",
             "issue_inventory",
+            "queue_landing",
+            "pr_summary",
             "flow_policy",
+            "linear_credentials",
             "linear_dispatcher",
             "linear_issue_tracker",
             "linear_sync",
             "linear_ingress",
             "linear_routing",
+            "github",
+            "feedback",
+            "usage",
+            "budget",
+            "update",
             "file",
             "process",
             "pty",
+            "lane_env",
+            "lane_template",
+            "port_allocation",
+            "lane_proxy",
+            "oauth_redirect",
+            "runtime_diagnostics",
+            "rebase_suggestion",
+            "auto_rebase",
+            "layout",
+            "tiling_tree",
+            "graph_state",
             "computer_use_artifacts",
             "automations",
             "issue",
@@ -935,10 +1014,10 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_pr_from_lane",
-    description: "Create a PR from a lane branch.",
+    description: "Create a PR from a lane branch. Drafts a title/body from ADE context when omitted.",
     inputSchema: {
       type: "object",
-      required: ["laneId", "baseBranch", "title"],
+      required: ["laneId"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
@@ -4099,6 +4178,8 @@ async function runTool(args: {
       return listAllowedAdeActionNames(entry, service).map((action) => ({
         domain: entry,
         action,
+        name: `${entry}.${action}`,
+        usage: `ade actions run ${entry}.${action} --input-json '{"key":"value"}' (or --scalar value / --args-list-json '[...]' for scalar or positional service methods)`,
       }));
     });
     return {
@@ -5402,16 +5483,22 @@ async function runTool(args: {
 
   if (name === "create_pr_from_lane") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-    const baseBranch = assertNonEmptyString(toolArgs.baseBranch, "baseBranch");
-    const title = assertNonEmptyString(toolArgs.title, "title");
-    const body = asOptionalTrimmedString(toolArgs.body);
+    const baseBranch = asOptionalTrimmedString(toolArgs.baseBranch);
+    const prSvc = requirePrService(runtime);
+    let title = asOptionalTrimmedString(toolArgs.title);
+    let body = typeof toolArgs.body === "string" ? toolArgs.body : null;
+    if (!title || body == null) {
+      const draft = await prSvc.draftDescription({ laneId });
+      title = title || asOptionalTrimmedString(draft.title) || `PR for ${laneId}`;
+      body = body ?? asOptionalTrimmedString(draft.body) ?? "";
+    }
     const draft = asBoolean(toolArgs.draft, false);
-    const pr = await requirePrService(runtime).createFromLane({
+    const pr = await prSvc.createFromLane({
       laneId,
-      baseBranch,
       title,
-      body: body ?? "",
+      body,
       draft,
+      ...(baseBranch ? { baseBranch } : {}),
     });
     return { pr };
   }
@@ -5668,6 +5755,7 @@ async function runTool(args: {
     });
 
     const promptSegments: string[] = [];
+    promptSegments.push(ADE_CLI_INLINE_GUIDANCE);
     if (promptRunId || promptStepId || promptAttemptId) {
       promptSegments.push(
         `Mission context: run=${promptRunId ?? "n/a"} step=${promptStepId ?? "n/a"} attempt=${promptAttemptId ?? "n/a"}.`

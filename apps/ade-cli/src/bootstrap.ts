@@ -13,15 +13,36 @@ import { createConflictService } from "../../desktop/src/main/services/conflicts
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
 import { createDiffService } from "../../desktop/src/main/services/diffs/diffService";
 import { createMissionService } from "../../desktop/src/main/services/missions/missionService";
+import type { createMissionPreflightService } from "../../desktop/src/main/services/missions/missionPreflightService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
+import type { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
+import type { createAgentToolsService } from "../../desktop/src/main/services/agentTools/agentToolsService";
+import type { createAdeCliService } from "../../desktop/src/main/services/cli/adeCliService";
+import type { createDevToolsService } from "../../desktop/src/main/services/devTools/devToolsService";
+import type { createOnboardingService } from "../../desktop/src/main/services/onboarding/onboardingService";
+import type { createLaneEnvironmentService } from "../../desktop/src/main/services/lanes/laneEnvironmentService";
+import type { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
+import type { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
+import type { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
+import type { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
+import type { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
+import type { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
+import type { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
+import type { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
+import type { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
 import { createIssueInventoryService } from "../../desktop/src/main/services/prs/issueInventoryService";
 import { createMemoryService } from "../../desktop/src/main/services/memory/memoryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
 import { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
+import type { createWorkerRevisionService } from "../../desktop/src/main/services/cto/workerRevisionService";
+import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
+import type { createWorkerTaskSessionService } from "../../desktop/src/main/services/cto/workerTaskSessionService";
+import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
+import type { createOpenclawBridgeService } from "../../desktop/src/main/services/cto/openclawBridgeService";
 import type { createFlowPolicyService } from "../../desktop/src/main/services/cto/flowPolicyService";
 import type { createLinearDispatcherService } from "../../desktop/src/main/services/cto/linearDispatcherService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -32,13 +53,24 @@ import { createOrchestratorService } from "../../desktop/src/main/services/orche
 import { createAiOrchestratorService } from "../../desktop/src/main/services/orchestrator/aiOrchestratorService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
 import { createMissionBudgetService } from "../../desktop/src/main/services/orchestrator/missionBudgetService";
+import type { createSyncService } from "../../desktop/src/main/services/sync/syncService";
+import type { createSyncHostService } from "../../desktop/src/main/services/sync/syncHostService";
+import type { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
+import type { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
+import type { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
+import type { createContextDocService } from "../../desktop/src/main/services/context/contextDocService";
+import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
+import type { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
+import type { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
+import type { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
+import type { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
+import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
 import {
   createComputerUseArtifactBrokerService,
   type ComputerUseArtifactBrokerService,
 } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
-import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import {
   createAutomationService,
   type AutomationAdeActionRegistry,
@@ -81,7 +113,20 @@ export type AdeRuntime = {
   paths: AdeRuntimePaths;
   logger: Logger;
   db: AdeDb;
+  keybindingsService?: ReturnType<typeof createKeybindingsService> | null;
+  agentToolsService?: ReturnType<typeof createAgentToolsService> | null;
+  adeCliService?: ReturnType<typeof createAdeCliService> | null;
+  devToolsService?: ReturnType<typeof createDevToolsService> | null;
+  onboardingService?: ReturnType<typeof createOnboardingService> | null;
   laneService: ReturnType<typeof createLaneService>;
+  laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService> | null;
+  laneTemplateService?: ReturnType<typeof createLaneTemplateService> | null;
+  portAllocationService?: ReturnType<typeof createPortAllocationService> | null;
+  laneProxyService?: ReturnType<typeof createLaneProxyService> | null;
+  oauthRedirectService?: ReturnType<typeof createOAuthRedirectService> | null;
+  runtimeDiagnosticsService?: ReturnType<typeof createRuntimeDiagnosticsService> | null;
+  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
+  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   operationService: ReturnType<typeof createOperationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
@@ -89,15 +134,25 @@ export type AdeRuntime = {
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
   missionService: ReturnType<typeof createMissionService>;
+  missionPreflightService?: ReturnType<typeof createMissionPreflightService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   testService: ReturnType<typeof createTestService>;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
   prService?: ReturnType<typeof createPrService>;
+  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
+  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
   fileService?: ReturnType<typeof createFileService> | null;
   memoryService: ReturnType<typeof createMemoryService>;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   workerAgentService: ReturnType<typeof createWorkerAgentService>;
+  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
+  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
+  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
+  workerTaskSessionService?: ReturnType<typeof createWorkerTaskSessionService> | null;
+  linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
+  openclawBridgeService?: ReturnType<typeof createOpenclawBridgeService> | null;
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
@@ -111,6 +166,16 @@ export type AdeRuntime = {
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
+  missionBudgetService?: ReturnType<typeof createMissionBudgetService> | null;
+  syncHostService?: ReturnType<typeof createSyncHostService> | null;
+  syncService?: ReturnType<typeof createSyncService> | null;
+  automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
+  contextDocService?: ReturnType<typeof createContextDocService> | null;
+  feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
+  usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
+  budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
+  sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
+  autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   eventBuffer: EventBuffer;
   dispose: () => void;
 };
@@ -415,14 +480,20 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     gitService,
     diffService,
     missionService,
+    missionBudgetService,
     ptyService,
     testService,
+    aiIntegrationService,
     agentChatService,
     issueInventoryService,
     memoryService,
     ctoStateService,
     workerAgentService,
+    workerBudgetService,
     githubService: headlessLinearServices.githubService as never,
+    workerTaskSessionService: headlessLinearServices.workerTaskSessionService,
+    workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
+    linearCredentialService: headlessLinearServices.linearCredentialService,
     prService: headlessLinearServices.prService,
     fileService: headlessLinearServices.fileService,
     flowPolicyService: headlessLinearServices.flowPolicyService,

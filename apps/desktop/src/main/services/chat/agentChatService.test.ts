@@ -1039,7 +1039,8 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("ADE actions are available through the `ade` CLI");
+      expect(opts?.systemPrompt?.append).toContain("internal ADE work");
+      expect(opts?.systemPrompt?.append).toContain("Before saying an ADE task is blocked");
       expect(opts?.systemPrompt?.append).toContain("ade lanes list");
     });
 
@@ -1577,7 +1578,10 @@ describe("createAgentChatService", () => {
       expect(firstUserContent).toContain("[ADE launch directive]");
       expect(firstUserContent).toContain(tmpRoot);
       expect(firstUserContent).toContain("only inside that worktree");
+      expect(firstUserContent).toContain("Before saying an ADE task is blocked");
+      expect(firstUserContent).toContain("ade actions list --text");
       expect(secondUserContent).not.toContain("[ADE launch directive]");
+      expect(secondUserContent).not.toContain("Before saying an ADE task is blocked");
     });
 
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
@@ -1602,6 +1606,12 @@ describe("createAgentChatService", () => {
 
       const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
       expect(startPayload?.params).toMatchObject({ cwd: expect.stringContaining("lane-2") });
+
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const turnParams = turnStartRequest?.params as { input?: Array<{ text?: unknown }> } | undefined;
+      const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(textInput).toContain("Before saying an ADE task is blocked");
+      expect(textInput).toContain("ade actions list --text");
     });
 
     it("spawns Codex with ADE CLI agent env injected", async () => {
