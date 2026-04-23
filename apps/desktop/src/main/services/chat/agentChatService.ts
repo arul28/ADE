@@ -12655,14 +12655,11 @@ export function createAgentChatService(args: {
 
     const preferred = canonicalExisting;
     if (preferred) {
-      // Defensive guard: if the selected canonical session ever drifted onto
-      // a foreign lane (e.g. from a legacy DB write), rewrite it to the
-      // canonical lane before we hydrate/resume so identity sessions never
-      // run on a non-primary lane.
-      if (preferred.laneId !== canonicalLaneId && isPrimaryPinnedIdentity(args.identityKey)) {
-        sessionService.updateMeta({ sessionId: preferred.sessionId, laneId: canonicalLaneId });
-        managedSessions.delete(preferred.sessionId);
-      }
+      // `canonicalExisting` is already filtered to `entry.laneId === canonicalLaneId`,
+      // so `preferred` is guaranteed to be on the canonical lane here — no
+      // migration guard needed. Foreign-lane legacy sessions are left untouched
+      // (see the `does not reuse a foreign-lane identity session` test); a
+      // fresh canonical session will be created below when none is found.
       const managed = ensureManagedSession(preferred.sessionId);
       managed.session.identityKey = args.identityKey;
       managed.session.capabilityMode = inferCapabilityMode(managed.session.provider);
