@@ -182,6 +182,7 @@ import type {
   AgentChatInterruptArgs,
   AgentChatListArgs,
   AgentChatModelInfo,
+  AgentChatEventEnvelope,
   AgentChatModelsArgs,
   AgentChatPermissionMode,
   AgentChatRespondToInputArgs,
@@ -4406,6 +4407,17 @@ export function registerIpc({
       original: { text: origResult.exitCode === 0 ? origResult.stdout : null },
       modified: { text: modResult.exitCode === 0 ? modResult.stdout : null },
     };
+  });
+
+  ipcMain.handle(IPC.agentChatGetEventHistory, async (
+    _event,
+    arg: { sessionId?: string; maxEvents?: number },
+  ): Promise<{ sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean }> => {
+    const ctx = getCtx();
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) return { sessionId: "", events: [], truncated: false };
+    const maxEvents = typeof arg?.maxEvents === "number" ? arg.maxEvents : undefined;
+    return ctx.agentChatService.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
   });
 
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {

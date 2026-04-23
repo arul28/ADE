@@ -2522,6 +2522,26 @@ export function createAgentChatService(args: {
 
   const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
 
+  // In-memory ring buffer of recent chat events per session. Populated on every
+  // emitted event (see emitChatEvent → commitChatEvent), and also lazily hydrated
+  // from the on-disk transcript when a snapshot is requested. This is the canonical
+  // source of truth for "what should the renderer see right now" on resubscribe,
+  // remount, or project switch — persisted-transcript reads can miss events that
+  // were emitted while fs.appendFile was still in flight, and a project-switch
+  // gap drops all IPC deliveries until the user returns.
+  const CHAT_EVENT_HISTORY_MAX_PER_SESSION = 2_000;
+  const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
+  const eventHistoryHydratedSessionIds = new Set<string>();
+
+  const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
+    const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
+    current.push(envelope);
+    if (current.length > CHAT_EVENT_HISTORY_MAX_PER_SESSION) {
+      current.splice(0, current.length - CHAT_EVENT_HISTORY_MAX_PER_SESSION);
+    }
+    eventHistoryBySession.set(envelope.sessionId, current);
+  };
+
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
 
   const layout = resolveAdeLayout(projectRoot);
@@ -3663,6 +3683,119 @@ export function createAgentChatService(args: {
     } catch {
       return [];
     }
+  };
+
+  // Read the full on-disk transcript for a session without requiring an active
+  // ManagedChatSession. Used by getChatEventHistory to hydrate the in-memory
+  // ring buffer on first read, even for sessions that haven't been resumed yet
+  // (e.g. a chat whose runtime was torn down by idle_ttl / budget_eviction).
+  const readTranscriptEnvelopesForSessionId = (sessionId: string): AgentChatEventEnvelope[] => {
+    const managed = managedSessions.get(sessionId);
+    if (managed?.transcriptPath) {
+      try {
+        return parseAgentChatTranscript(fs.readFileSync(managed.transcriptPath, "utf8"))
+          .filter((entry) => entry.sessionId === sessionId);
+      } catch {
+        return [];
+      }
+    }
+    // Fall back to the known transcript layout so sessions that were never
+    // ensured into managedSessions (e.g. because they were torn down and
+    // haven't been reopened yet) still surface their history.
+    const candidates = [
+      path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
+      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
+    ];
+    for (const candidatePath of candidates) {
+      try {
+        if (!fs.existsSync(candidatePath)) continue;
+        const raw = fs.readFileSync(candidatePath, "utf8");
+        return parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+      } catch {
+        // try next candidate
+      }
+    }
+    return [];
+  };
+
+  const mergeEnvelopeStreams = (
+    base: AgentChatEventEnvelope[],
+    tail: AgentChatEventEnvelope[],
+  ): AgentChatEventEnvelope[] => {
+    if (!base.length) return tail.slice();
+    if (!tail.length) return base.slice();
+    // Prefer sequence numbers when both sides have them; fall back to timestamps.
+    const baseBySequence = new Map<number, AgentChatEventEnvelope>();
+    const baseByTimestamp = new Map<string, AgentChatEventEnvelope>();
+    for (const entry of base) {
+      if (typeof entry.sequence === "number") {
+        baseBySequence.set(entry.sequence, entry);
+      }
+      baseByTimestamp.set(`${entry.timestamp}#${entry.event.type}`, entry);
+    }
+    const merged = base.slice();
+    for (const entry of tail) {
+      if (typeof entry.sequence === "number" && baseBySequence.has(entry.sequence)) continue;
+      if (baseByTimestamp.has(`${entry.timestamp}#${entry.event.type}`)) continue;
+      merged.push(entry);
+    }
+    merged.sort((left, right) => {
+      if (typeof left.sequence === "number" && typeof right.sequence === "number") {
+        return left.sequence - right.sequence;
+      }
+      return Date.parse(left.timestamp) - Date.parse(right.timestamp);
+    });
+    return merged;
+  };
+
+  /**
+   * Return the complete, ordered event history for a chat session.
+   *
+   * On first call (or any call that can tolerate a larger read), we merge the
+   * on-disk transcript with the in-memory ring buffer so that:
+   *   - events that were emitted while the renderer was on a different project
+   *     (and therefore dropped by emitProjectEvent) are still recovered;
+   *   - events that are still in fs.appendFile flight but already recorded in
+   *     the buffer are still delivered;
+   *   - truncating the persistent transcript for size does not lose recent
+   *     events that the buffer still has.
+   *
+   * This is the canonical snapshot path for renderer resubscribe / remount.
+   */
+  const getChatEventHistory = (
+    sessionId: string,
+    options?: { maxEvents?: number },
+  ): { sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean } => {
+    const trimmedId = sessionId.trim();
+    if (!trimmedId.length) {
+      return { sessionId: trimmedId, events: [], truncated: false };
+    }
+    const maxEvents = Math.max(
+      1,
+      Math.min(CHAT_EVENT_HISTORY_MAX_PER_SESSION, Math.floor(options?.maxEvents ?? CHAT_EVENT_HISTORY_MAX_PER_SESSION)),
+    );
+
+    // Hydrate the in-memory buffer from disk the first time we see a session,
+    // so a resubscribe after project switch or app restart has both the
+    // persisted history and any live events that arrived afterwards.
+    const bufferExisting = eventHistoryBySession.get(trimmedId) ?? [];
+    let merged: AgentChatEventEnvelope[];
+    if (!eventHistoryHydratedSessionIds.has(trimmedId)) {
+      const diskEnvelopes = readTranscriptEnvelopesForSessionId(trimmedId);
+      merged = mergeEnvelopeStreams(diskEnvelopes, bufferExisting);
+      // Cap after hydration so subsequent writes don't drift past the limit.
+      if (merged.length > CHAT_EVENT_HISTORY_MAX_PER_SESSION) {
+        merged = merged.slice(-CHAT_EVENT_HISTORY_MAX_PER_SESSION);
+      }
+      eventHistoryBySession.set(trimmedId, merged.slice());
+      eventHistoryHydratedSessionIds.add(trimmedId);
+    } else {
+      merged = bufferExisting.slice();
+    }
+
+    const truncated = merged.length > maxEvents;
+    const windowed = truncated ? merged.slice(-maxEvents) : merged;
+    return { sessionId: trimmedId, events: windowed, truncated };
   };
 
   const deriveTranscriptTurnActive = (entries: AgentChatEventEnvelope[]): boolean => {
@@ -5105,6 +5238,7 @@ export function createAgentChatService(args: {
     };
 
     writeTranscript(managed, envelope);
+    recordChatEventInHistory(envelope);
     onEvent?.(envelope);
     for (const subscriber of eventSubscribers) {
       try {
@@ -5522,8 +5656,18 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "pool_compaction" | "paused_run" | "shutdown" = "handle_close",
   ): void => {
+    flushBufferedReasoning(managed);
+    flushBufferedText(managed);
+
+    // If a prior teardown (e.g., idle_ttl, budget_eviction) already tore this
+    // runtime down, re-running teardown on shutdown would see runtime=null,
+    // compute preserveClaudeResumeState=false, and then clobber the
+    // previously-preserved sdkSessionId/laneDirectiveKey via the reset below.
+    // Bail early so the prior teardown's resume metadata stays on disk.
+    if (!managed.runtime) return;
+
     const preserveClaudeResumeState =
-      managed.runtime?.kind === "claude"
+      managed.runtime.kind === "claude"
       && (
         openCodeReason === "idle_ttl"
         || openCodeReason === "budget_eviction"
@@ -5532,9 +5676,6 @@ export function createAgentChatService(args: {
         || openCodeReason === "project_close"
         || openCodeReason === "shutdown"
       );
-
-    flushBufferedReasoning(managed);
-    flushBufferedText(managed);
     if (managed.runtime?.kind === "codex") {
       managed.runtime.suppressExitError = true;
       try { managed.runtime.reader.close(); } catch { /* ignore */ }
@@ -13008,6 +13149,8 @@ export function createAgentChatService(args: {
     } else {
       clearSubagentSnapshots(trimmedSessionId);
     }
+    eventHistoryBySession.delete(trimmedSessionId);
+    eventHistoryHydratedSessionIds.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
@@ -13820,6 +13963,7 @@ export function createAgentChatService(args: {
     listSessions,
     getSessionSummary,
     getChatTranscript,
+    getChatEventHistory,
     ensureIdentitySession,
     approveToolUse,
     respondToInput,

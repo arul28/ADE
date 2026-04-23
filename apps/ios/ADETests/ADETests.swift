@@ -428,6 +428,67 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [fresh])
   }
 
+  @MainActor
+  func testChatEventHistoryOrdersByParsedTimestampAcrossMixedFractionalVariants() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    // Lexicographic compare misorders these: "…56Z" > "…56.500Z" because
+    // "Z" (0x5A) > "." (0x2E) in ASCII. Chronologically "…56Z" comes first.
+    let noFractional = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:56Z",
+      event: .userMessage(text: "first", attachments: [], turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil),
+      sequence: 1,
+      provenance: nil
+    )
+    let withFractional = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:56.500Z",
+      event: .text(text: "second", messageId: "msg-1", turnId: "turn-1", itemId: "item-1"),
+      sequence: 2,
+      provenance: nil
+    )
+
+    service.replaceChatEventHistory(sessionId: "session-1", events: [withFractional, noFractional])
+
+    let history = service.chatEventHistory(sessionId: "session-1")
+    XCTAssertEqual(history.map(\.id), [noFractional.id, withFractional.id])
+  }
+
+  @MainActor
+  func testRecordChatEventEnvelopeSortsWhenLiveEventArrivesOutOfOrder() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let earlier = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:01.000Z",
+      event: .userMessage(text: "first", attachments: [], turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil),
+      sequence: 1,
+      provenance: nil
+    )
+    let later = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:02.000Z",
+      event: .text(text: "second", messageId: "msg-1", turnId: "turn-1", itemId: "item-1"),
+      sequence: 2,
+      provenance: nil
+    )
+
+    service.mergeChatEventHistory(sessionId: "session-1", events: [earlier, later])
+    // Live envelope arrives out of order (delayed tool_result that predates the
+    // already-merged later envelope). Must be inserted in chronological order
+    // rather than appended to the end.
+    let delayedInsert = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:01.500Z",
+      event: .toolResult(tool: "fs_read", result: .string("ok"), itemId: "tool-1", logicalItemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: "completed"),
+      sequence: 3,
+      provenance: nil
+    )
+    service.recordChatEventEnvelope(delayedInsert)
+
+    let history = service.chatEventHistory(sessionId: "session-1")
+    XCTAssertEqual(history.map(\.id), [earlier.id, delayedInsert.id, later.id])
+  }
+
   func testChatCommandRequestPayloadsEncodeExpectedShapes() throws {
     let subscribe = try jsonDictionary(from: AgentChatSubscriptionRequest(sessionId: "session-1"))
     XCTAssertEqual(subscribe["sessionId"] as? String, "session-1")

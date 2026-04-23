@@ -4500,8 +4500,25 @@ final class SyncService: ObservableObject {
   func recordChatEventEnvelope(_ envelope: AgentChatEventEnvelope) {
     var events = chatEventEnvelopesBySession[envelope.sessionId] ?? []
     guard !events.contains(where: { $0.id == envelope.id }) else { return }
-    events.append(envelope)
-    events = trimChatEventHistory(events)
+    // Fast path: arrival-order appends stay sorted when timestamps are
+    // monotonically non-decreasing — common for live streaming. Out-of-order
+    // deliveries (e.g., a delayed tool_result arriving after a later text
+    // fragment, or a merge with a historical snapshot) fall through to the
+    // full dedup/sort in deduplicatedChatEventHistory so bubble order matches
+    // the replace/merge paths.
+    let canAppendInOrder: Bool = {
+      guard let last = events.last else { return true }
+      let lastDate = Self.parseIso8601(last.timestamp)
+      let envelopeDate = Self.parseIso8601(envelope.timestamp)
+      if let lhs = envelopeDate, let rhs = lastDate { return lhs >= rhs }
+      return envelope.timestamp >= last.timestamp
+    }()
+    if canAppendInOrder {
+      events.append(envelope)
+      events = trimChatEventHistory(events)
+    } else {
+      events = deduplicatedChatEventHistory(events + [envelope])
+    }
     chatEventEnvelopesBySession[envelope.sessionId] = events
     chatEventRevisionsBySession[envelope.sessionId, default: 0] += 1
     lastSyncAt = Date()
@@ -4531,10 +4548,24 @@ final class SyncService: ObservableObject {
       return true
     }
     .sorted { lhs, rhs in
-      if lhs.timestamp == rhs.timestamp {
-        return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
+      // Parse timestamps to Date before comparing — a lexicographic compare
+      // misorders mixed ISO-8601 variants (e.g., "…56.500Z" sorts before
+      // "…56Z" because "." < "Z" in ASCII, even though chronologically it's
+      // half a second later).
+      let lhsDate = Self.parseIso8601(lhs.timestamp)
+      let rhsDate = Self.parseIso8601(rhs.timestamp)
+      if lhsDate == rhsDate {
+        if lhs.timestamp == rhs.timestamp {
+          return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
+        }
+        return lhs.timestamp < rhs.timestamp
       }
-      return lhs.timestamp < rhs.timestamp
+      switch (lhsDate, rhsDate) {
+      case (let l?, let r?): return l < r
+      case (nil, _?): return true
+      case (_?, nil): return false
+      case (nil, nil): return lhs.timestamp < rhs.timestamp
+      }
     }
     return trimChatEventHistory(unique)
   }

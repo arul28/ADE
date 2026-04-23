@@ -1145,6 +1145,14 @@ declare global {
           data: string;
           filename: string;
         }) => Promise<{ path: string }>;
+        getEventHistory: (args: {
+          sessionId: string;
+          maxEvents?: number;
+        }) => Promise<{
+          sessionId: string;
+          events: AgentChatEventEnvelope[];
+          truncated: boolean;
+        }>;
       };
       computerUse: {
         listArtifacts: (
