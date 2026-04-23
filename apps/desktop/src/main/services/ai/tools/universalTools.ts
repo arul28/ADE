@@ -186,12 +186,456 @@ type PathReference = {
   access: PathAccessMode;
 };
 
+type PowerShellInspection = {
+  mutates: boolean;
+  pathRefs: PathReference[];
+  blockedReason?: string;
+};
+
+type PowerShellMutationKind =
+  | "copy"
+  | "move"
+  | "new-item"
+  | "out-file"
+  | "path-write"
+  | "provider-item"
+  | "remove"
+  | "rename";
+
+const POWERSHELL_COMMAND_FLAGS = new Set(["-command", "-c"]);
+const POWERSHELL_ENCODED_COMMAND_FLAGS = new Set(["-encodedcommand", "-enc", "-e"]);
+const POWERSHELL_SEGMENT_SEPARATORS = new Set(["|", "||", "&&", ";"]);
+const POWERSHELL_PUNCTUATION_TOKENS = new Set(["{", "}", "(", ")", ","]);
+const POWERSHELL_MUTATION_KIND_BY_COMMAND = new Map<string, PowerShellMutationKind>([
+  ["add-content", "path-write"],
+  ["ac", "path-write"],
+  ["clear-content", "path-write"],
+  ["copy", "copy"],
+  ["copy-item", "copy"],
+  ["cpi", "copy"],
+  ["cp", "copy"],
+  ["move", "move"],
+  ["move-item", "move"],
+  ["mv", "move"],
+  ["mi", "move"],
+  ["new-item", "new-item"],
+  ["ni", "new-item"],
+  ["out-file", "out-file"],
+  ["remove-item", "remove"],
+  ["del", "remove"],
+  ["erase", "remove"],
+  ["rd", "remove"],
+  ["ri", "remove"],
+  ["rm", "remove"],
+  ["rmdir", "remove"],
+  ["rename-item", "rename"],
+  ["ren", "rename"],
+  ["rni", "rename"],
+  ["set-content", "path-write"],
+  ["set-item", "provider-item"],
+  ["set-itemproperty", "provider-item"],
+  ["new-itemproperty", "provider-item"],
+  ["remove-itemproperty", "provider-item"],
+  ["rename-itemproperty", "provider-item"],
+  ["move-itemproperty", "provider-item"],
+  ["clear-itemproperty", "provider-item"],
+]);
+
 function requiresTurnMemoryGuard(state?: TurnMemoryPolicyState): boolean {
   return !!state && state.classification === "required" && !state.orientationSatisfied && !state.explicitSearchPerformed;
 }
 
-function bashCommandLikelyMutates(command: string): boolean {
-  return MUTATING_BASH_RE.test(command) || MUTATING_CMD_RE.test(command) || WRITE_COMMAND_RE.test(command);
+function tokenizePowerShellCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  const pushCurrent = () => {
+    if (current.length > 0) {
+      tokens.push(current);
+      current = "";
+    }
+  };
+
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]!;
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "`") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === ">") {
+      if (/^\d$/.test(current)) {
+        const fd = current;
+        current = "";
+        const next = command[i + 1];
+        if (next === ">") {
+          tokens.push(`${fd}>>`);
+          i += 1;
+        } else {
+          tokens.push(`${fd}>`);
+        }
+        continue;
+      }
+      pushCurrent();
+      const next = command[i + 1];
+      if (next === ">") {
+        tokens.push(">>");
+        i += 1;
+      } else {
+        tokens.push(">");
+      }
+      continue;
+    }
+    if (ch === "|" || ch === "&" || ch === ";") {
+      pushCurrent();
+      const next = command[i + 1];
+      if ((ch === "|" || ch === "&") && next === ch) {
+        tokens.push(`${ch}${ch}`);
+        i += 1;
+      } else {
+        tokens.push(ch);
+      }
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      pushCurrent();
+      continue;
+    }
+    if (POWERSHELL_PUNCTUATION_TOKENS.has(ch)) {
+      pushCurrent();
+      tokens.push(ch);
+      continue;
+    }
+    current += ch;
+  }
+
+  pushCurrent();
+  return tokens;
+}
+
+function splitPowerShellSegments(tokens: string[]): string[][] {
+  const segments: string[][] = [];
+  let current: string[] = [];
+  for (const token of tokens) {
+    const normalizedToken = normalizePathToken(token);
+    if (POWERSHELL_SEGMENT_SEPARATORS.has(token) || POWERSHELL_SEGMENT_SEPARATORS.has(normalizedToken)) {
+      if (current.length > 0) segments.push(current);
+      current = [];
+      continue;
+    }
+    current.push(token);
+  }
+  if (current.length > 0) segments.push(current);
+  return segments;
+}
+
+function isPowerShellHostCommand(commandName: string): boolean {
+  const baseName = path.win32.basename(normalizePathToken(commandName)).toLowerCase();
+  return baseName === "powershell" || baseName === "powershell.exe" || baseName === "pwsh" || baseName === "pwsh.exe";
+}
+
+function decodePowerShellEncodedCommand(value: string): string | null {
+  const trimmed = normalizePathToken(value);
+  if (!trimmed.length || !/^[a-z0-9+/=]+$/i.test(trimmed)) {
+    return null;
+  }
+  try {
+    const decoded = Buffer.from(trimmed, "base64").toString("utf16le");
+    return decoded.trim().length > 0 ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPowerShellParameterToken(value: string): boolean {
+  return /^-[a-z]/i.test(value);
+}
+
+function isPowerShellDynamicArgument(value: string): boolean {
+  return value.startsWith("$") || value.startsWith("@(") || value.includes("$(");
+}
+
+function normalizePowerShellPathArgument(value: string): { path?: string; nonFilesystemProvider?: string; opaque?: string } {
+  const normalized = normalizePathToken(value);
+  if (!normalized.length) return {};
+  if (isPowerShellDynamicArgument(normalized)) {
+    return { opaque: normalized };
+  }
+
+  const fileSystemQualified = normalized.match(/^(?:microsoft\.powershell\.core\\)?filesystem::(.+)$/i);
+  if (fileSystemQualified?.[1]) {
+    return { path: fileSystemQualified[1] };
+  }
+  if (/^(?:microsoft\.powershell\.core\\)?registry::/i.test(normalized)) {
+    return { nonFilesystemProvider: normalized };
+  }
+  if (/^[a-z]:/.test(normalized)) {
+    return { path: normalized };
+  }
+  if (/^(?:[a-z][a-z0-9+.-]*::|[a-z][a-z0-9+.-]*:)/i.test(normalized)) {
+    return { nonFilesystemProvider: normalized };
+  }
+  return { path: normalized };
+}
+
+function parsePowerShellArgs(args: string[]): { positional: string[]; named: Map<string, string[]> } {
+  const positional: string[] = [];
+  const named = new Map<string, string[]>();
+
+  for (let i = 0; i < args.length; i += 1) {
+    const raw = normalizePathToken(args[i] ?? "");
+    if (!raw.length || POWERSHELL_PUNCTUATION_TOKENS.has(raw)) continue;
+
+    const inlineMatch = raw.match(/^(-[a-z][a-z0-9-]*):(.*)$/i);
+    if (inlineMatch) {
+      const key = inlineMatch[1]!.toLowerCase();
+      const value = normalizePathToken(inlineMatch[2] ?? "");
+      named.set(key, value.length > 0 ? [value] : [""]);
+      continue;
+    }
+
+    if (isPowerShellParameterToken(raw)) {
+      const key = raw.toLowerCase();
+      const next = normalizePathToken(args[i + 1] ?? "");
+      if (next.length > 0 && !isPowerShellParameterToken(next) && !POWERSHELL_PUNCTUATION_TOKENS.has(next)) {
+        const values = named.get(key) ?? [];
+        values.push(next);
+        named.set(key, values);
+        i += 1;
+      } else {
+        const values = named.get(key) ?? [];
+        values.push("");
+        named.set(key, values);
+      }
+      continue;
+    }
+
+    positional.push(raw);
+  }
+
+  return { positional, named };
+}
+
+function inspectPowerShellInvocations(
+  command: string,
+  cwd: string,
+  pathApi: SandboxPathApi = getSandboxPathApi(cwd, command),
+): PowerShellInspection {
+  const refs = new Map<string, PathReference>();
+  const accessPriority: Record<PathAccessMode, number> = {
+    unknown: 0,
+    read: 1,
+    write: 2,
+  };
+
+  const addResolvedPath = (rawValue: string, access: PathAccessMode): { blockedReason?: string } => {
+    const normalized = normalizePathToken(rawValue);
+    if (!normalized.length || normalized.includes("://")) return {};
+
+    const normalizedPath = normalizePowerShellPathArgument(normalized);
+    if (normalizedPath.opaque) {
+      if (access !== "read") {
+        return { blockedReason: `PowerShell mutation uses a non-literal path argument: ${normalizedPath.opaque}` };
+      }
+      return {};
+    }
+    if (normalizedPath.nonFilesystemProvider) {
+      if (access !== "read") {
+        return { blockedReason: `PowerShell mutation targets non-filesystem provider path: ${normalizedPath.nonFilesystemProvider}` };
+      }
+      return {};
+    }
+
+    const candidate = normalizedPath.path;
+    if (!candidate || candidate === "/dev/null") return {};
+    const expandedPath =
+      candidate === "~"
+        ? os.homedir()
+        : candidate.startsWith("~/")
+          ? pathApi.join(os.homedir(), candidate.slice(2))
+          : pathApi === path.win32 && candidate.startsWith("~\\")
+            ? pathApi.join(os.homedir(), candidate.slice(2))
+            : candidate;
+    const resolved = pathApi.resolve(cwd, expandedPath);
+    const key = `${candidate}::${resolved}`;
+    const existing = refs.get(key);
+    if (!existing || accessPriority[access] > accessPriority[existing.access]) {
+      refs.set(key, { raw: candidate, resolved, access });
+    }
+    return {};
+  };
+
+  const addFirstNamedOrPositionalPath = (
+    parsed: ReturnType<typeof parsePowerShellArgs>,
+    flags: string[],
+    positionalIndex: number | null,
+    access: PathAccessMode,
+  ): { blockedReason?: string } => {
+    for (const flag of flags) {
+      const values = parsed.named.get(flag);
+      if (values?.length) {
+        return addResolvedPath(values[0]!, access);
+      }
+    }
+    if (positionalIndex !== null && parsed.positional[positionalIndex]) {
+      return addResolvedPath(parsed.positional[positionalIndex]!, access);
+    }
+    return {};
+  };
+
+  const outerSegments = splitCommandSegments(tokenizeCommand(command, pathApi === path.win32));
+  let mutates = false;
+
+  for (const segment of outerSegments) {
+    const commandName = normalizePathToken(segment[0] ?? "");
+    if (!commandName.length || !isPowerShellHostCommand(commandName)) continue;
+
+    const args = segment.slice(1);
+    let script: string | null = null;
+    for (let i = 0; i < args.length; i += 1) {
+      const flag = normalizePathToken(args[i] ?? "").toLowerCase();
+      if (POWERSHELL_COMMAND_FLAGS.has(flag)) {
+        const remainder = args.slice(i + 1).join(" ").trim();
+        if (!remainder.length || remainder === "-") {
+          return {
+            mutates: true,
+            pathRefs: [...refs.values()],
+            blockedReason: "PowerShell -Command input is not inspectable by the worker sandbox",
+          };
+        }
+        script = remainder;
+        break;
+      }
+      if (POWERSHELL_ENCODED_COMMAND_FLAGS.has(flag)) {
+        const decoded = decodePowerShellEncodedCommand(args[i + 1] ?? "");
+        if (!decoded) {
+          return {
+            mutates: true,
+            pathRefs: [...refs.values()],
+            blockedReason: "PowerShell -EncodedCommand payload is not inspectable by the worker sandbox",
+          };
+        }
+        script = decoded;
+        break;
+      }
+    }
+
+    if (!script) continue;
+
+    const tokens = tokenizePowerShellCommand(script);
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = normalizePathToken(tokens[i] ?? "");
+      if (!token.length) continue;
+      if (token === ">" || token === ">>" || /^\d>>?$/.test(token)) {
+        mutates = true;
+        const writeTarget = addResolvedPath(tokens[i + 1] ?? "", "write");
+        if (writeTarget.blockedReason) {
+          return {
+            mutates: true,
+            pathRefs: [...refs.values()],
+            blockedReason: writeTarget.blockedReason,
+          };
+        }
+      }
+    }
+
+    for (const innerSegment of splitPowerShellSegments(tokens)) {
+      let innerCommandIndex = 0;
+      while (innerCommandIndex < innerSegment.length) {
+        const token = normalizePathToken(innerSegment[innerCommandIndex] ?? "");
+        if (!token.length || token === "&" || token === "." || POWERSHELL_PUNCTUATION_TOKENS.has(token)) {
+          innerCommandIndex += 1;
+          continue;
+        }
+        break;
+      }
+      if (innerCommandIndex >= innerSegment.length) continue;
+
+      const innerCommandName = normalizePathToken(innerSegment[innerCommandIndex] ?? "").toLowerCase();
+      const mutationKind = POWERSHELL_MUTATION_KIND_BY_COMMAND.get(innerCommandName);
+      if (!mutationKind) continue;
+      mutates = true;
+
+      const parsed = parsePowerShellArgs(innerSegment.slice(innerCommandIndex + 1));
+      let result: { blockedReason?: string } = {};
+
+      switch (mutationKind) {
+        case "path-write":
+          result = addFirstNamedOrPositionalPath(parsed, ["-path", "-literalpath", "-pspath", "-lp"], 0, "write");
+          break;
+        case "out-file":
+          result = addFirstNamedOrPositionalPath(parsed, ["-filepath", "-literalpath", "-path", "-pspath", "-lp"], 0, "write");
+          break;
+        case "copy": {
+          result = addFirstNamedOrPositionalPath(parsed, ["-path", "-literalpath", "-pspath", "-lp"], 0, "read");
+          if (result.blockedReason) break;
+          result = addFirstNamedOrPositionalPath(parsed, ["-destination"], 1, "write");
+          break;
+        }
+        case "move": {
+          result = addFirstNamedOrPositionalPath(parsed, ["-path", "-literalpath", "-pspath", "-lp"], 0, "write");
+          if (result.blockedReason) break;
+          result = addFirstNamedOrPositionalPath(parsed, ["-destination"], 1, "write");
+          break;
+        }
+        case "remove":
+          result = addFirstNamedOrPositionalPath(parsed, ["-path", "-literalpath", "-pspath", "-lp"], 0, "write");
+          break;
+        case "rename":
+          result = addFirstNamedOrPositionalPath(parsed, ["-path", "-literalpath", "-pspath", "-lp"], 0, "write");
+          if (result.blockedReason) break;
+          result = addFirstNamedOrPositionalPath(parsed, ["-newname"], 1, "write");
+          break;
+        case "new-item":
+          result = addFirstNamedOrPositionalPath(parsed, ["-path", "-literalpath", "-pspath", "-lp"], 0, "write");
+          if (result.blockedReason) break;
+          if (parsed.named.get("-name")?.[0]) {
+            result = addResolvedPath(parsed.named.get("-name")![0]!, "write");
+          }
+          break;
+        case "provider-item":
+          result = addFirstNamedOrPositionalPath(parsed, ["-path", "-literalpath", "-pspath", "-lp"], 0, "write");
+          break;
+      }
+
+      if (result.blockedReason) {
+        return {
+          mutates: true,
+          pathRefs: [...refs.values()],
+          blockedReason: result.blockedReason,
+        };
+      }
+    }
+  }
+
+  return { mutates, pathRefs: [...refs.values()] };
+}
+
+function bashCommandLikelyMutates(
+  command: string,
+  cwd = process.cwd(),
+  powerShellInspection?: PowerShellInspection,
+): boolean {
+  const inspection = powerShellInspection ?? inspectPowerShellInvocations(command, cwd);
+  return inspection.mutates || !!inspection.blockedReason || MUTATING_BASH_RE.test(command) || MUTATING_CMD_RE.test(command) || WRITE_COMMAND_RE.test(command);
 }
 
 function resolveAllowedWriteRoots(cwd: string, sandboxConfig?: WorkerSandboxConfig, pathApi: SandboxPathApi = getSandboxPathApi(cwd)): string[] {
@@ -393,7 +837,8 @@ function splitCommandSegments(tokens: string[]): string[][] {
   const segments: string[][] = [];
   let current: string[] = [];
   for (const token of tokens) {
-    if (COMMAND_SEPARATORS.has(normalizePathToken(token))) {
+    const normalizedToken = normalizePathToken(token);
+    if (COMMAND_SEPARATORS.has(token) || COMMAND_SEPARATORS.has(normalizedToken)) {
       if (current.length > 0) segments.push(current);
       current = [];
       continue;
@@ -404,7 +849,12 @@ function splitCommandSegments(tokens: string[]): string[][] {
   return segments;
 }
 
-function collectPathReferences(command: string, cwd: string, pathApi: SandboxPathApi = getSandboxPathApi(cwd, command)): PathReference[] {
+function collectPathReferences(
+  command: string,
+  cwd: string,
+  pathApi: SandboxPathApi = getSandboxPathApi(cwd, command),
+  powerShellInspection?: PowerShellInspection,
+): PathReference[] {
   const refs = new Map<string, PathReference>();
   const windowsMode = pathApi === path.win32;
   const accessPriority: Record<PathAccessMode, number> = {
@@ -530,6 +980,15 @@ function collectPathReferences(command: string, cwd: string, pathApi: SandboxPat
     markOperands(commandName, args);
   }
 
+  const nestedPowerShellRefs = (powerShellInspection ?? inspectPowerShellInvocations(command, cwd, pathApi)).pathRefs;
+  for (const entry of nestedPowerShellRefs) {
+    const key = `${entry.raw}::${entry.resolved}`;
+    const existing = refs.get(key);
+    if (!existing || accessPriority[entry.access] > accessPriority[existing.access]) {
+      refs.set(key, entry);
+    }
+  }
+
   return [...refs.values()];
 }
 
@@ -564,6 +1023,7 @@ export function checkWorkerSandbox(
 ): { allowed: boolean; reason?: string } {
   const compiled = compileSandbox(config);
   const pathApi = getSandboxPathApi(projectRoot, command);
+  const powerShellInspection = inspectPowerShellInvocations(command, projectRoot, pathApi);
 
   // 1. Check blocked patterns first (always reject)
   for (const { re, src } of compiled.blocked) {
@@ -572,12 +1032,16 @@ export function checkWorkerSandbox(
     }
   }
 
+  if (powerShellInspection.blockedReason) {
+    return { allowed: false, reason: powerShellInspection.blockedReason };
+  }
+
   const safeMatch = compiled.safe.some((re) => re.test(command));
-  const commandMutates = bashCommandLikelyMutates(command);
+  const commandMutates = bashCommandLikelyMutates(command, projectRoot, powerShellInspection);
 
   // 2. Validate file paths against allowedPaths (absolute + relative)
   const rootResolved = canonicalizePathForContainment(projectRoot, pathApi);
-  const pathRefs = collectPathReferences(command, projectRoot, pathApi);
+  const pathRefs = collectPathReferences(command, projectRoot, pathApi, powerShellInspection);
   for (const entry of pathRefs) {
     const p = entry.raw;
     const resolved = canonicalizePathForContainment(entry.resolved, pathApi);

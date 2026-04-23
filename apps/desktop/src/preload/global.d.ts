@@ -602,7 +602,7 @@ declare global {
         openPathInEditor: (args: {
           rootPath: string;
           relativePath?: string;
-          target: "finder" | "vscode" | "cursor" | "zed";
+          target: "default" | "finder" | "vscode" | "cursor" | "zed";
         }) => Promise<void>;
         logDebugEvent: (
           event: string,

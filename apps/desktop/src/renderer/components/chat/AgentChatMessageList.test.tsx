@@ -487,6 +487,88 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
   });
 
+  it("passes Windows line and column suffixes through to Files navigation", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-windows",
+        kind: "worktree",
+        laneId: "lane-win",
+        name: "Windows lane",
+        rootPath: "C:\\Users\\me\\repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `C:\\Users\\me\\repo\\src\\main.ts:42:5`.",
+            itemId: "text-windows-line-column",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-win" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "C:\\Users\\me\\repo\\src\\main.ts:42:5" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\",\"startLine\":42,\"startColumn\":5}",
+    );
+  });
+
+  it("normalizes Windows dot segments before navigating to Files", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-windows",
+        kind: "worktree",
+        laneId: "lane-win",
+        name: "Windows lane",
+        rootPath: "C:\\Users\\me\\repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `C:\\Users\\me\\repo\\src\\..\\main.ts:42`.",
+            itemId: "text-windows-dot-segments",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-win" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "C:\\Users\\me\\repo\\src\\..\\main.ts:42" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"main.ts\",\"laneId\":\"lane-win\",\"startLine\":42}",
+    );
+  });
+
   it("maps backslash UNC file references into Files navigation targets", async () => {
     vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
       {

@@ -612,7 +612,7 @@ contextBridge.exposeInMainWorld("ade", {
     openPathInEditor: async (args: {
       rootPath: string;
       relativePath?: string;
-      target: "finder" | "vscode" | "cursor" | "zed";
+      target: "default" | "finder" | "vscode" | "cursor" | "zed";
     }): Promise<void> => ipcRenderer.invoke(IPC.appOpenPathInEditor, args),
     logDebugEvent: (event: string, payload: Record<string, unknown> = {}): void =>
       ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),

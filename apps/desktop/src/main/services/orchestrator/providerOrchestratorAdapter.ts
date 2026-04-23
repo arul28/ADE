@@ -18,7 +18,9 @@ import type {
 } from "../../../shared/types";
 import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createAgentChatService } from "../chat/agentChatService";
 import {
   mapPermissionToClaude,
@@ -26,6 +28,7 @@ import {
   normalizeMissionPermissions,
   providerPermissionsToLegacyConfig,
 } from "./permissionMapping";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
 
 const WORKER_ENV_KEYS = [
   "ADE_MISSION_ID",
@@ -113,7 +116,8 @@ const child = spawn(spec.command, Array.isArray(spec.args) ? spec.args : [], {
   env: childEnv,
   shell: false,
   stdio: [spec.stdinFilePath ? "pipe" : "inherit", "inherit", "inherit"],
-  windowsHide: false
+  windowsHide: false,
+  windowsVerbatimArguments: !!spec.windowsVerbatimArguments
 });
 child.on("error", (err) => {
   console.error("[ADE] Failed to launch worker CLI: " + (err && err.message ? err.message : String(err)));
@@ -163,7 +167,7 @@ export function buildClaudeReadOnlyWorkerAllowedTools(extraToolNames: readonly s
   ]);
 }
 
-function writeWorkerPromptFile(args: {
+export function writeWorkerPromptFile(args: {
   projectRoot: string;
   attemptId: string;
   prompt: string;
@@ -174,7 +178,7 @@ function writeWorkerPromptFile(args: {
   return promptPath;
 }
 
-function writeWorkerLaunchFile(args: {
+export function writeWorkerLaunchFile(args: {
   projectRoot: string;
   attemptId: string;
   command: string;
@@ -184,11 +188,17 @@ function writeWorkerLaunchFile(args: {
 }): string {
   const launchPath = workerLaunchFilePath(args.projectRoot, args.attemptId);
   fs.mkdirSync(path.dirname(launchPath), { recursive: true });
+  const invocation = resolveCliSpawnInvocation(
+    args.command,
+    args.commandArgs,
+    { ...process.env, ...(args.env ?? {}) },
+  );
   fs.writeFileSync(
     launchPath,
     JSON.stringify({
-      command: args.command,
-      args: args.commandArgs,
+      command: invocation.command,
+      args: invocation.args,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments ?? false,
       stdinFilePath: args.promptFilePath,
       env: args.env ?? {},
     }),
@@ -197,7 +207,7 @@ function writeWorkerLaunchFile(args: {
   return launchPath;
 }
 
-function nodeWorkerLaunch(args: {
+export function nodeWorkerLaunch(args: {
   startupCommand: string;
   launchFilePath: string;
   env?: Record<string, string>;
@@ -453,6 +463,7 @@ export function createProviderOrchestratorAdapter(options?: {
           ? buildClaudeReadOnlyWorkerAllowedTools()
           : dedupeAllowedTools(configuredAllowedTools);
 
+        const resolvedClaude = resolveClaudeCodeExecutable();
         const commandArgs: string[] = ["--model", cliModel];
         const previewParts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
 
@@ -475,7 +486,7 @@ export function createProviderOrchestratorAdapter(options?: {
           prompt,
         });
         commandArgs.push("-p");
-        previewParts.push("-p", `"$(cat ${shellEscapeArg(promptFilePath)})"`);
+        previewParts.push("-p");
 
         const launchEnv: Record<string, string> = { ...workerEnv };
         const envParts = previewWorkerEnvVars(workerEnv);
@@ -489,12 +500,12 @@ export function createProviderOrchestratorAdapter(options?: {
         }
 
         const cmd = previewParts.join(" ");
-        const startup = `exec ${cmd}`;
+        const startup = `exec ${cmd} < ${shellEscapeArg(promptFilePath)}`;
         const startupCommand = envParts.length > 0 ? `${envParts.join(" ")} ${startup}` : startup;
         const launchFilePath = writeWorkerLaunchFile({
           projectRoot: canonicalProjectRoot,
           attemptId: attempt.id,
-          command: "claude",
+          command: resolvedClaude.path,
           commandArgs,
           promptFilePath,
           env: launchEnv,
@@ -519,6 +530,7 @@ export function createProviderOrchestratorAdapter(options?: {
             : mappedCodex?.sandbox ?? effectivePermissionConfig?._providers?.codexSandbox ?? effectivePermissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
         const writablePaths = effectivePermissionConfig?._providers?.writablePaths ?? effectivePermissionConfig?.cli?.writablePaths ?? [];
 
+        const resolvedCodex = resolveCodexExecutable();
         const commandArgs: string[] = ["--model", resolveCodexCliModel(descriptor.providerModelId)];
         const previewParts: string[] = [
           "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.providerModelId)),
@@ -552,7 +564,7 @@ export function createProviderOrchestratorAdapter(options?: {
         const launchFilePath = writeWorkerLaunchFile({
           projectRoot: canonicalProjectRoot,
           attemptId: attempt.id,
-          command: "codex",
+          command: resolvedCodex.path,
           commandArgs,
           promptFilePath,
           env: launchEnv,

@@ -11,7 +11,7 @@
     "prebuild": "node ./scripts/normalize-runtime-binaries.cjs && npm run ade:build",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
     "build": "tsup && vite build",
-    "dist:win": "npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never",
+    "dist:win": "npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
     "dist:mac:dir": "npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
     "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac --publish never",
@@ -20,7 +20,8 @@
     "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac zip --universal --publish never",
     "notarize:mac:dmg": "node ./scripts/notarize-mac-dmg.mjs",
     "validate:mac:artifacts": "node ./scripts/validate-mac-artifacts.mjs",
-    "validate:win:artifacts": "node ./scripts/validate-win-artifacts.mjs",
+    "validate:win:artifacts": "node ./scripts/validate-win-artifacts.mjs --mode=preflight",
+    "validate:win:release": "node ./scripts/validate-win-artifacts.mjs --mode=release",
     "release:mac:local": "node ./scripts/release-mac-local.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
@@ -148,6 +149,7 @@
     "asarUnpack": [
       "dist/main/packagedRuntimeSmoke.cjs",
       "node_modules/node-pty/**/*",
+      "node_modules/sql.js/**/*",
       "node_modules/@huggingface/transformers/node_modules/onnxruntime-node/**",
       "vendor/crsqlite/**"
     ],
@@ -188,8 +190,14 @@
     "npmRebuild": false,
     "win": {
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
+      "icon": "build/icon.ico",
       "artifactName": "${productName}-${version}-win-${arch}.${ext}"
     },
     "mac": {

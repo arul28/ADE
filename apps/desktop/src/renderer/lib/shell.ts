@@ -12,12 +12,17 @@ function isWindowsPlatform(platform: ShellPlatform = currentShellPlatform()): bo
   return platform === "win32";
 }
 
+function quoteWindowsArg(arg: string): string {
+  if (!arg.length) return '""';
+  if (!/[\s"]/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, "\"\"")}"`;
+}
+
 /** Quote a single shell argument, adding double quotes if needed. */
 export function quoteShellArg(arg: string, options: { platform?: ShellPlatform } = {}): string {
   if (!arg.length) return '""';
   if (isWindowsPlatform(options.platform)) {
-    if (/^[a-zA-Z0-9_.:@%+=,\\/-]+$/.test(arg)) return arg;
-    return `"${arg.replace(/"/g, "\\\"")}"`;
+    return quoteWindowsArg(arg);
   }
   if (/^[a-zA-Z0-9_.:@%+=,-]+$/.test(arg)) return arg;
   return `"${arg.replace(/(["\\$`])/g, "\\$1")}"`;
@@ -103,13 +108,12 @@ function parseWindowsCommandLine(input: string): string[] {
     const ch = input[i]!;
 
     if (ch === '"') {
-      inQuotes = !inQuotes;
-      continue;
-    }
-
-    if (ch === "\\" && input[i + 1] === '"') {
-      current += '"';
-      i += 1;
+      if (inQuotes && input[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
       continue;
     }
 

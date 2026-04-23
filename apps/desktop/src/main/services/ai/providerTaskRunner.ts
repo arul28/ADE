@@ -73,6 +73,7 @@ async function runCommand(args: {
   argv: string[];
   cwd: string;
   timeoutMs?: number;
+  stdinText?: string;
 }): Promise<SpawnResult> {
   return await new Promise((resolve, reject) => {
     const env = {
@@ -84,7 +85,7 @@ async function runCommand(args: {
     const child = spawn(invocation.command, invocation.args, {
       cwd: args.cwd,
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [args.stdinText != null ? "pipe" : "ignore", "pipe", "pipe"],
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
 
@@ -105,6 +106,12 @@ async function runCommand(args: {
     child.stderr?.on("data", (chunk) => {
       stderr += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
     });
+    child.stdin?.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      reject(error);
+    });
 
     child.on("error", (error) => {
       if (settled) return;
@@ -119,6 +126,10 @@ async function runCommand(args: {
       clearTimeout(timeoutHandle);
       resolve({ stdout, stderr, exitCode });
     });
+
+    if (args.stdinText != null && child.stdin) {
+      child.stdin.end(args.stdinText);
+    }
   });
 }
 
@@ -143,7 +154,6 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const sessionId = args.sessionId?.trim() || (args.feature === "orchestrator" ? randomUUID() : null);
   const cliArgs = [
-    "-p",
     "--model",
     resolveClaudeCliModel(args.descriptor.providerModelId),
     "--output-format",
@@ -163,7 +173,7 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   } else {
     cliArgs.push("--no-session-persistence");
   }
-  cliArgs.push(prompt);
+  cliArgs.push("-p");
 
   const resolved = resolveClaudeCodeExecutable({ auth: args.auth });
   const result = await runCommand({
@@ -171,6 +181,7 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
     argv: cliArgs,
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
+    stdinText: prompt,
   });
   if (result.exitCode !== 0) {
     throw new Error(`Claude exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
@@ -212,11 +223,10 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     cliArgs.push("--output-schema", schemaPath);
   }
 
-  if (args.system?.trim()) {
-    cliArgs.push(`${args.system.trim()}\n\n${prompt}`);
-  } else {
-    cliArgs.push(prompt);
-  }
+  cliArgs.push("-");
+  const combinedPrompt = args.system?.trim()
+    ? `${args.system.trim()}\n\n${prompt}`
+    : prompt;
 
   const resolved = resolveCodexExecutable({ auth: args.auth });
   try {
@@ -225,6 +235,7 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
       argv: cliArgs,
       cwd: args.cwd,
       timeoutMs: args.timeoutMs,
+      stdinText: combinedPrompt,
     });
     const output = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8").trim() : result.stdout.trim();
     if (result.exitCode !== 0) {
