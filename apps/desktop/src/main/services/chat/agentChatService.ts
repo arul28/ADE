@@ -151,6 +151,7 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import type { createMemoryService, Memory } from "../memory/memoryService";
@@ -9786,10 +9787,7 @@ export function createAgentChatService(args: {
           "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
           "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
           "",
-          "## ADE Tooling",
-          "ADE actions are available through the `ade` CLI in terminal-capable sessions.",
-          "Run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text`, `ade prs checks <pr> --text`, or `ade proof list --text` first, and `ade actions run ...` as the escape hatch.",
-          "Use `--json` for structured output and `--text` for readable output.",
+          ADE_CLI_AGENT_GUIDANCE,
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
@@ -10914,6 +10912,15 @@ export function createAgentChatService(args: {
     }
     const laneDirectiveKey = executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
+    // Guidance injection is capability-based, not session-state-based:
+    // Claude sessions already receive ADE_CLI_AGENT_GUIDANCE in their
+    // persistent system prompt (see buildClaudeV2SessionOpts), so we skip the
+    // first-user-message copy there. Every other provider (Codex, OpenCode,
+    // Cursor…) has no persistent system prompt, so the guidance must be
+    // prepended even on resumed sessions where `shouldInjectLaneDirective` is
+    // false (review 3134504183 / 3134403060).
+    const providerHasPersistentGuidance = managed.session.provider === "claude";
+    const shouldInjectGuidance = !providerHasPersistentGuidance;
     const promptText = providerSlashCommand
       ? trimmed
       : composeLaunchDirectives(trimmed, [
@@ -10925,6 +10932,7 @@ export function createAgentChatService(args: {
             : null,
           buildExecutionModeDirective(executionMode, managed.session.provider),
           buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
+          shouldInjectGuidance ? ADE_CLI_AGENT_GUIDANCE : null,
           buildComputerUseDirective(
             computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
           ),

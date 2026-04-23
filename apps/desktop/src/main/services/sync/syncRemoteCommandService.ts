@@ -868,6 +868,7 @@ function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDes
     ...("reasoningEffort" in value
       ? { reasoningEffort: value.reasoningEffort == null ? null : asTrimmedString(value.reasoningEffort) ?? null }
       : {}),
+    ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
   };
 }
 

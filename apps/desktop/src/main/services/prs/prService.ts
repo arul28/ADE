@@ -230,7 +230,14 @@ function getIntegrationLaneOrigin(row: {
   const integrationLaneId = asString(row.integration_lane_id).trim() || null;
   if (!integrationLaneId) return null;
   const preferredIntegrationLaneId = asString(row.preferred_integration_lane_id).trim() || null;
-  return preferredIntegrationLaneId === integrationLaneId ? "adopted" : "ade-created";
+  // A lane is only "adopted" when the caller's chosen merge-into lane (preferred) actually became
+  // the integration lane. `commitIntegration` can persist a new preferred lane alongside an
+  // existing scratch integration lane; in that case the two ids disagree and the scratch lane is
+  // still ade-created, so we must not claim it as adopted.
+  if (preferredIntegrationLaneId && preferredIntegrationLaneId === integrationLaneId) {
+    return "adopted";
+  }
+  return "ade-created";
 }
 
 function isAdeOwnedIntegrationLane(row: {
@@ -502,8 +509,9 @@ function hasMaterialSummaryChange(row: PullRequestRow, summary: PrSummary): bool
 function parsePrLocator(raw: string): { owner?: string; repo?: string; number: number } {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("PR URL or number is required");
-  if (/^[0-9]+$/.test(trimmed)) {
-    return { number: Number(trimmed) };
+  const numeric = trimmed.match(/^#?([0-9]+)$/);
+  if (numeric) {
+    return { number: Number(numeric[1]) };
   }
   try {
     const url = new URL(trimmed);
@@ -513,6 +521,10 @@ function parsePrLocator(raw: string): { owner?: string; repo?: string; number: n
   } catch {
     throw new Error("Invalid PR URL format");
   }
+}
+
+function repoPrKey(owner: string, repo: string, number: number): string {
+  return `${owner.trim().toLowerCase()}/${repo.trim().toLowerCase()}#${Number(number)}`;
 }
 
 function readPrTemplate(projectRoot: string): string | null {
@@ -698,11 +710,77 @@ export function createPrService({
     checks_status, review_status, additions, deletions, last_synced_at,
     created_at, updated_at, creation_strategy`;
 
-  const getRow = (prId: string): PullRequestRow | null =>
+  const getRowById = (prId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
       `select ${PR_COLUMNS} from pull_requests where id = ? and project_id = ? limit 1`,
       [prId, projectId]
     );
+
+  const getRowForRepoPr = (repoOwner: string, repoName: string, prNumber: number): PullRequestRow | null =>
+    db.get<PullRequestRow>(
+      `select ${PR_COLUMNS}
+         from pull_requests
+        where project_id = ?
+          and lower(repo_owner) = lower(?)
+          and lower(repo_name) = lower(?)
+          and github_pr_number = ?
+        order by updated_at desc
+        limit 1`,
+      [projectId, repoOwner, repoName, prNumber]
+    );
+
+  const getRowByNumber = (
+    prNumber: number,
+    repoOwner?: string,
+    repoName?: string,
+  ): PullRequestRow | null => {
+    if (repoOwner && repoName) {
+      return getRowForRepoPr(repoOwner, repoName, prNumber);
+    }
+    // No repo context: check for ambiguity across repos in this project. If
+    // multiple rows match `github_pr_number`, refuse to guess — the caller
+    // must disambiguate with a full URL. If exactly one row matches, accept it.
+    const matches = db.all<PullRequestRow>(
+      `select ${PR_COLUMNS}
+         from pull_requests
+        where project_id = ?
+          and github_pr_number = ?
+        order by updated_at desc`,
+      [projectId, prNumber]
+    );
+    if (matches.length === 0) return null;
+    if (matches.length > 1) {
+      const repos = Array.from(
+        new Set(matches.map((row) => `${row.repo_owner}/${row.repo_name}`))
+      );
+      throw new Error(
+        `Ambiguous PR locator '#${prNumber}': multiple PRs with this number exist across repos in this project (${repos.join(", ")}). Specify a URL or owner/name.`
+      );
+    }
+    return matches[0] ?? null;
+  };
+
+  const getRowByLocator = (locator: string): PullRequestRow | null => {
+    const trimmed = String(locator ?? "").trim();
+    if (!trimmed) return null;
+    let parsed: ReturnType<typeof parsePrLocator>;
+    try {
+      parsed = parsePrLocator(trimmed);
+    } catch {
+      return null;
+    }
+    if (parsed.owner && parsed.repo) {
+      return getRowForRepoPr(parsed.owner, parsed.repo, parsed.number);
+    }
+    // Bare numeric locators (e.g. "#123") must not silently pick the most
+    // recently-updated match when multiple repos share a PR number. Let the
+    // ambiguity error from getRowByNumber surface to the caller so they can
+    // supply a full URL.
+    return getRowByNumber(parsed.number);
+  };
+
+  const getRow = (prIdOrLocator: string): PullRequestRow | null =>
+    getRowById(prIdOrLocator) ?? getRowByLocator(prIdOrLocator);
 
   const requireRow = (prId: string): PullRequestRow => {
     const row = getRow(prId);
@@ -1101,14 +1179,34 @@ export function createPrService({
     }));
   };
 
-  const upsertRow = (summary: Omit<PrSummary, "projectId"> & { projectId?: string }): void => {
+  const upsertRow = (
+    summary: Omit<PrSummary, "projectId"> & { projectId?: string },
+    options?: { allowRepoPrAdoption?: boolean },
+  ): string => {
     const now = nowIso();
-    const existing = getRowForLane(summary.laneId);
+    // By default we only adopt an existing row that is already associated with
+    // this lane. Callers like `linkToLane`/`refreshOne` must not silently
+    // reassign an existing PR row from another lane just because the repo/PR
+    // number match — that was a data-loss bug when the same PR number was
+    // reused across lanes or when users manually linked an in-flight PR.
+    // The duplicate-PR recovery path in `createFromLane` (where GitHub rejects
+    // creation because a PR already exists for the head branch) is the only
+    // legitimate use of the repo/PR-number fallback; it opts in via
+    // `allowRepoPrAdoption: true`.
+    const existing = options?.allowRepoPrAdoption
+      ? getRowForLane(summary.laneId)
+          ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
+      : getRowForLane(summary.laneId);
     if (existing) {
+      if (existing.lane_id !== summary.laneId) {
+        db.run(`delete from pr_group_members where pr_id = ?`, [existing.id]);
+        db.run(`update integration_proposals set linked_pr_id = null where linked_pr_id = ?`, [existing.id]);
+      }
       db.run(
         `
           update pull_requests
-             set repo_owner = ?,
+             set lane_id = ?,
+                 repo_owner = ?,
                  repo_name = ?,
                  github_pr_number = ?,
                  github_url = ?,
@@ -1127,6 +1225,7 @@ export function createPrService({
            where id = ? and project_id = ?
         `,
         [
+          summary.laneId,
           summary.repoOwner,
           summary.repoName,
           summary.githubPrNumber,
@@ -1147,7 +1246,7 @@ export function createPrService({
           projectId,
         ]
       );
-      return;
+      return existing.id;
     }
 
     db.run(
@@ -1198,6 +1297,7 @@ export function createPrService({
         summary.creationStrategy ?? null
       ]
     );
+    return summary.id;
   };
 
   const assertDirtyWorktreesAllowed = (args: {
@@ -1263,6 +1363,29 @@ export function createPrService({
       if (batch.length < pageSize) break;
     }
     return out;
+  };
+
+  const findExistingPrForBranch = async (
+    repo: GitHubRepoRef,
+    headBranch: string,
+    baseBranch?: string | null,
+  ): Promise<any | null> => {
+    const candidates = await fetchAllPages<any>({
+      path: `/repos/${repo.owner}/${repo.name}/pulls`,
+      query: {
+        state: "all",
+        head: `${repo.owner}:${headBranch}`,
+        ...(baseBranch ? { base: baseBranch } : {}),
+        sort: "updated",
+        direction: "desc",
+      },
+    });
+    if (candidates.length === 0) return null;
+    const open = candidates.find((candidate) => {
+      const state = asString(candidate?.state).toLowerCase();
+      return state === "open";
+    });
+    return open ?? candidates[0] ?? null;
   };
 
   const listIntegrationProposalRows = (args: { where?: string; params?: Array<string | number | null> } = {}): IntegrationProposalRow[] =>
@@ -2093,11 +2216,15 @@ export function createPrService({
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
+    const baseRefForDiff = (args.baseBranch && args.baseBranch.trim().length > 0)
+      ? args.baseBranch.trim()
+      : lane.baseRef;
+
     const template = readPrTemplate(projectRoot);
     const packBody = await (async () => {
       // W6: pack-based context removed. Provide a bounded git-native lane change summary instead.
       const diff = await runGit(
-        ["diff", "--name-status", `${lane.baseRef}...HEAD`],
+        ["diff", "--name-status", `${baseRefForDiff}...HEAD`],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
       if (diff.exitCode === 0) {
@@ -2116,7 +2243,7 @@ export function createPrService({
       laneId,
       laneName: lane.name,
       branchRef: lane.branchRef,
-      baseRef: lane.baseRef,
+      baseRef: baseRefForDiff,
       parentLaneId: lane.parentLaneId,
       commits,
       packBody,
@@ -2248,9 +2375,29 @@ export function createPrService({
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Failed to create pull request for "${headBranch}" → "${baseBranch}": ${msg}`
-      );
+      const msgLower = msg.toLowerCase();
+      const duplicatePrMessage =
+        msgLower.includes("pull request already exists")
+        || msgLower.includes("a pull request already exists")
+        || /\bhead\b.*\balready exists\b/i.test(msg);
+      const existingPr = duplicatePrMessage
+        ? await findExistingPrForBranch(repo, headBranch, baseBranch).catch((lookupError) => {
+            logger.warn("prs.create_existing_lookup_failed", {
+              headBranch,
+              baseBranch,
+              error: lookupError instanceof Error ? lookupError.message : String(lookupError),
+            });
+            return null;
+          })
+        : null;
+      if (existingPr) {
+        logger.info("prs.create_existing_mapped", { headBranch, baseBranch, prNumber: Number(existingPr?.number) || null });
+        created = { data: existingPr, response: null };
+      } else {
+        throw new Error(
+          `Failed to create pull request for "${headBranch}" → "${baseBranch}": ${msg}`
+        );
+      }
     }
 
     const pr = created.data;
@@ -2304,9 +2451,13 @@ export function createPrService({
       creationStrategy: strategy
     };
 
-    upsertRow(summary);
+    // Allow repo/PR-number fallback here: when the GitHub create call collides
+    // with an already-existing PR for this branch, we need to adopt the row
+    // that represents that PR (regardless of prior lane attribution).
+    const prId = upsertRow(summary, { allowRepoPrAdoption: true });
+    markHotRefresh([prId]);
 
-    return await refreshOne(summary.id);
+    return await refreshOne(prId);
   };
 
   const linkToLane = async (args: LinkPrToLaneArgs): Promise<PrSummary> => {
@@ -2327,18 +2478,7 @@ export function createPrService({
     // that default here so linked PRs participate in strategy-aware rebase
     // behavior (follow-up 3) instead of being treated as "unset". The
     // upsertRow path uses COALESCE so we never clobber an existing value.
-    const existingRow = db.get<{ id: string; creation_strategy: string | null }>(
-      `
-        select id, creation_strategy
-        from pull_requests
-        where project_id = ?
-          and repo_owner = ?
-          and repo_name = ?
-          and github_pr_number = ?
-        limit 1
-      `,
-      [projectId, repo.owner, repo.name, locator.number],
-    );
+    const existingRow = getRowForRepoPr(repo.owner, repo.name, locator.number);
     const creationStrategy: PrCreationStrategy =
       normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
@@ -2365,8 +2505,9 @@ export function createPrService({
       creationStrategy
     };
 
-    upsertRow(summary);
-    return await refreshOne(summary.id);
+    const prId = upsertRow(summary);
+    markHotRefresh([prId]);
+    return await refreshOne(prId);
   };
 
   const land = async (args: LandPrArgs): Promise<LandResult> => {
@@ -3868,7 +4009,7 @@ export function createPrService({
     const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
     const pullRequestRows = listRows();
     const linkedPrByRepoKey = new Map(
-      pullRequestRows.map((row) => [`${row.repo_owner}/${row.repo_name}#${row.github_pr_number}`, row] as const)
+      pullRequestRows.map((row) => [repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)), row] as const)
     );
     const groupRows = db.all<{ pr_id: string; group_id: string; group_type: "queue" | "integration" }>(
       `select gm.pr_id, gm.group_id, g.group_type
@@ -3913,7 +4054,7 @@ export function createPrService({
       const repoOwner = asString(rawRepo?.owner?.login) || repositoryParts[0] || repo.owner;
       const repoName = asString(rawRepo?.name) || repositoryParts[1] || repo.name;
       const githubPrNumber = Number(rawPr?.number) || 0;
-      const linkedPrRow = linkedPrByRepoKey.get(`${repoOwner}/${repoName}#${githubPrNumber}`) ?? null;
+      const linkedPrRow = linkedPrByRepoKey.get(repoPrKey(repoOwner, repoName, githubPrNumber)) ?? null;
       const workflowRow = linkedPrRow ? workflowByPrId.get(linkedPrRow.id) ?? null : null;
       const groupRow = linkedPrRow ? groupByPrId.get(linkedPrRow.id) ?? null : null;
 
@@ -4755,8 +4896,10 @@ export function createPrService({
       return row ? rowToSummary(row) : null;
     },
 
-    listAll(): PrSummary[] {
-      return listRows().map(rowToSummary);
+    listAll(args: { laneId?: string } = {}): PrSummary[] {
+      const laneId = String(args.laneId ?? "").trim();
+      const summaries = listRows().map(rowToSummary);
+      return laneId ? summaries.filter((pr) => pr.laneId === laneId) : summaries;
     },
 
     async refresh(args: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> {

@@ -1,3 +1,5 @@
+import { ADE_CLI_AGENT_GUIDANCE } from "../../../../shared/adeCliGuidance";
+
 type HarnessMode = "chat" | "coding" | "planning";
 type HarnessPermissionMode = "plan" | "edit" | "full-auto";
 
@@ -113,8 +115,7 @@ export function buildCodingAgentSystemPrompt(args: {
       : "If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer.",
     "If tool results fail or contradict the current plan, synthesize the finding and adapt rather than repeating the same failing action.",
     "",
-    "## ADE CLI",
-    "In terminal-capable sessions, use the bundled `ade` command for internal ADE actions. Run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch. Use `--json` for structured output and `--text` for readable output.",
+    ADE_CLI_AGENT_GUIDANCE,
     ...(hasMemoryTools
       ? [
           "",

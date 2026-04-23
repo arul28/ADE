@@ -1,5 +1,31 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildCliPlan, formatOutput, parseCliArgs, renderLaneGraph, shouldAttemptDesktopSocketConnection, summarizeExecution, unwrapToolResult } from "./cli";
+import {
+  buildCliPlan,
+  findProjectRoots,
+  formatOutput,
+  parseCliArgs,
+  renderLaneGraph,
+  resolveRoots,
+  shouldAttemptDesktopSocketConnection,
+  summarizeExecution,
+  unwrapToolResult,
+} from "./cli";
+
+type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
+
+function baseResolveOpts(): Omit<ResolveRootsOptions, "projectRoot" | "workspaceRoot"> {
+  return {
+    role: "external",
+    headless: true,
+    requireSocket: false,
+    pretty: false,
+    text: false,
+    timeoutMs: 15_000,
+  };
+}
 
 describe("ADE CLI", () => {
   it("parses global options without stealing command flags", () => {
@@ -95,6 +121,68 @@ describe("ADE CLI", () => {
         },
       },
     });
+  });
+
+  it("builds documented generic ADE action JSON shapes", () => {
+    const objectCall = buildCliPlan([
+      "actions",
+      "run",
+      "git.push",
+      "--input-json",
+      "{\"laneId\":\"lane-1\",\"setUpstream\":true}",
+    ]);
+    expect(objectCall.kind).toBe("execute");
+    if (objectCall.kind !== "execute") return;
+    expect(objectCall.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "push",
+        args: {
+          laneId: "lane-1",
+          setUpstream: true,
+        },
+      },
+    });
+
+    const argsListCall = buildCliPlan([
+      "actions",
+      "run",
+      "issue_inventory.savePipelineSettings",
+      "--args-list-json",
+      "[\"pr-1\",{\"maxRounds\":3}]",
+    ]);
+    expect(argsListCall.kind).toBe("execute");
+    if (argsListCall.kind !== "execute") return;
+    expect(argsListCall.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "issue_inventory",
+        action: "savePipelineSettings",
+        argsList: ["pr-1", { maxRounds: 3 }],
+      },
+    });
+
+    const scalarCall = buildCliPlan(["actions", "run", "mission.get", "--scalar", "mission-1"]);
+    expect(scalarCall.kind).toBe("execute");
+    if (scalarCall.kind !== "execute") return;
+    expect(scalarCall.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "mission",
+        action: "get",
+        arg: "mission-1",
+      },
+    });
+  });
+
+  it("rejects invalid JSON action shapes before execution", () => {
+    expect(() => buildCliPlan(["actions", "run", "git.push", "--input-json", "[1,2]"])).toThrow(
+      /--input-json must be a JSON object/,
+    );
+    expect(() => buildCliPlan(["actions", "run", "git.push", "--args-list-json", "{\"laneId\":\"lane-1\"}"])).toThrow(
+      /--args-list-json must be a JSON array/,
+    );
   });
 
   it("rejects prototype-sensitive generic ADE action arg paths", () => {
@@ -294,6 +382,110 @@ describe("ADE CLI", () => {
       name: "run_ade_action",
       arguments: { domain: "pr", action: "listAll", args: {} },
     });
+  });
+
+  it("uses the parent ADE project when invoked inside an ADE-managed lane worktree", () => {
+    const rawRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-roots-"));
+    // findProjectRoots canonicalizes symlinks (e.g. /var -> /private/var on macOS).
+    const root = fs.realpathSync.native(rawRoot);
+    const worktree = path.join(root, ".ade", "worktrees", "feature-lane");
+    const nested = path.join(worktree, "apps", "ade-cli");
+    fs.mkdirSync(path.join(root, ".ade"), { recursive: true });
+    fs.mkdirSync(path.join(worktree, ".ade"), { recursive: true });
+    fs.mkdirSync(nested, { recursive: true });
+
+    expect(findProjectRoots(nested)).toEqual({
+      projectRoot: root,
+      workspaceRoot: worktree,
+    });
+  });
+
+  it("defaults workspaceRoot to projectRoot when ADE_PROJECT_ROOT overrides discovery", () => {
+    const prevProject = process.env.ADE_PROJECT_ROOT;
+    const prevWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    try {
+      delete process.env.ADE_WORKSPACE_ROOT;
+      process.env.ADE_PROJECT_ROOT = "/explicit/project-root";
+      const roots = resolveRoots({
+        ...baseResolveOpts(),
+        projectRoot: null,
+        workspaceRoot: null,
+      });
+      expect(roots.projectRoot).toBe("/explicit/project-root");
+      expect(roots.workspaceRoot).toBe("/explicit/project-root");
+    } finally {
+      if (prevProject === undefined) delete process.env.ADE_PROJECT_ROOT;
+      else process.env.ADE_PROJECT_ROOT = prevProject;
+      if (prevWorkspace === undefined) delete process.env.ADE_WORKSPACE_ROOT;
+      else process.env.ADE_WORKSPACE_ROOT = prevWorkspace;
+    }
+  });
+
+  it("defaults workspaceRoot to CLI projectRoot when only --project-root is set", () => {
+    const roots = resolveRoots({
+      ...baseResolveOpts(),
+      projectRoot: "/cli/project-root",
+      workspaceRoot: null,
+    });
+    expect(roots.projectRoot).toBe("/cli/project-root");
+    expect(roots.workspaceRoot).toBe("/cli/project-root");
+  });
+
+  it("still honors ADE_WORKSPACE_ROOT when both project and workspace overrides exist", () => {
+    const prevProject = process.env.ADE_PROJECT_ROOT;
+    const prevWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    try {
+      process.env.ADE_PROJECT_ROOT = "/explicit/project-root";
+      process.env.ADE_WORKSPACE_ROOT = "/explicit/workspace-root";
+      const roots = resolveRoots({
+        ...baseResolveOpts(),
+        projectRoot: null,
+        workspaceRoot: null,
+      });
+      expect(roots.projectRoot).toBe("/explicit/project-root");
+      expect(roots.workspaceRoot).toBe("/explicit/workspace-root");
+    } finally {
+      if (prevProject === undefined) delete process.env.ADE_PROJECT_ROOT;
+      else process.env.ADE_PROJECT_ROOT = prevProject;
+      if (prevWorkspace === undefined) delete process.env.ADE_WORKSPACE_ROOT;
+      else process.env.ADE_WORKSPACE_ROOT = prevWorkspace;
+    }
+  });
+
+  it("maps PR link arguments to the service contract", () => {
+    const plan = buildCliPlan(["prs", "link", "--lane", "lane-1", "--url", "https://github.com/acme/ade/pull/123"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "linkToLane",
+        args: {
+          laneId: "lane-1",
+          prUrlOrNumber: "https://github.com/acme/ade/pull/123",
+        },
+      },
+    });
+  });
+
+  it("shows command help from subcommand help flags", () => {
+    const prsHelp = buildCliPlan(["prs", "create", "--help"]);
+    expect(prsHelp.kind).toBe("help");
+    if (prsHelp.kind !== "help") return;
+    expect(prsHelp.text).toContain("PR identifiers may be ADE PR ids");
+    expect(prsHelp.text).toContain("prs link");
+
+    const actionsHelp = buildCliPlan(["actions", "run", "--help"]);
+    expect(actionsHelp.kind).toBe("help");
+    if (actionsHelp.kind !== "help") return;
+    expect(actionsHelp.text).toContain("Argument shapes");
+    expect(actionsHelp.text).toContain("--args-list-json");
+
+    // Regression: --text as output flag must not swallow --help.
+    const lanesHelp = buildCliPlan(["lanes", "list", "--text", "--help"]);
+    expect(lanesHelp.kind).toBe("help");
   });
 
   it("shell-escapes argv tokens after -- when building shell start commands", () => {

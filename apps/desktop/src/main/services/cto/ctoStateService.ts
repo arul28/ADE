@@ -12,6 +12,7 @@ import type {
   CtoSnapshot,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
+import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
 import type { createMemoryService, Memory, MemoryCategory } from "../memory/memoryService";
 import type { AdeDb } from "../state/kvDb";
@@ -85,7 +86,7 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- All ADE internals are fair game. The user can request any action: launching chats, opening terminals, running CLI tools, spawning agents, managing lanes, etc. Never refuse an action that ADE supports.",
   "- When the user asks about something you can look up (lane status, PR checks, test results), call the tool first and report facts. Do not guess.",
   "- When you are unsure which tool to use, consult the capability manifest in your system prompt before asking the user.",
-  "- Terminal-capable sessions can use the bundled `ade` CLI for internal ADE actions: `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands first, `ade actions run ...` as the escape hatch, `--json` for structured output, and `--text` for readable output.",
+  `- ${ADE_CLI_INLINE_GUIDANCE}`,
 ].join("\n");
 
 const CTO_MEMORY_OPERATING_MODEL = [
@@ -177,9 +178,7 @@ const CTO_ENVIRONMENT_KNOWLEDGE = [
   "  - Example: 'Launch a chat with opus' → spawnChat({ modelId: 'anthropic/claude-opus-4-7', ... }). 'Open a terminal' → createTerminal. 'Run npm test' → createTerminal({ startupCommand: 'npm test' }).",
   "",
   "Tool calling convention:",
-  "  - ADE actions are available through ADE's native action surface and the `ade` CLI in terminal-capable sessions.",
-  "  - In terminal-capable sessions, run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch.",
-  "  - Use `--json` when another agent or script needs stable fields; use `--text` when a human-readable summary is enough.",
+  `  - ${ADE_CLI_INLINE_GUIDANCE}`,
   "  - If a tool from the manifest below is not in your immediate tool list, use the closest ADE CLI command or report the missing capability clearly.",
   "",
   "## PR Lifecycle in ADE",

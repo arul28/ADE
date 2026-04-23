@@ -4005,6 +4005,10 @@ export function createOrchestratorService({
               commandPreviewParts.push("--permission-mode", shellEscapeArg(claudePermissionMode));
             }
           }
+          // ADE_CLI_AGENT_GUIDANCE is injected into the worker's system prompt
+          // via buildFullPrompt in baseOrchestratorAdapter when hasMissionTooling
+          // is true. Do not prepend it again here — that would duplicate the
+          // "## ADE CLI" block for Claude workers.
           const promptFilePath = writeWorkerPromptFile({
             projectRoot,
             attemptId: args.attempt.id,

@@ -4,6 +4,7 @@ import type {
   OrchestratorExecutorStartResult
 } from "./orchestratorService";
 import type { OrchestratorWorkerRole, OrchestratorStep, OrchestratorExecutorKind, TerminalToolType, TeamRuntimeConfig } from "../../../shared/types";
+import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import type { createMemoryService } from "../memory/memoryService";
 import { DEFAULT_CONTEXT_VIEW_POLICIES, SLASH_COMMAND_TRANSLATIONS } from "./orchestratorConstants";
 
@@ -573,7 +574,7 @@ export function buildFullPrompt(
   if (hasMissionTooling) {
     systemParts.push(
       [
-        "ADE TOOLING: In terminal-capable sessions, use the bundled `ade` CLI for internal ADE actions. Run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch. Use `--json` for structured output and `--text` for readable output.",
+        ADE_CLI_AGENT_GUIDANCE,
         "Your worker identity (mission, run, step, attempt IDs) is automatically resolved — you don't need to pass IDs to observation tools.",
         "Key actions available:",
         "- get_worker_states: See all peer workers in your run and their current status",
@@ -776,7 +777,8 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
             : null;
 
         if (startupCommandOverride) {
-          const launch = normalizeAdapterLaunch(buildOverrideCommand({ prompt: startupCommandOverride }));
+          const overridePrompt = [ADE_CLI_AGENT_GUIDANCE, startupCommandOverride].join("\n\n");
+          const launch = normalizeAdapterLaunch(buildOverrideCommand({ prompt: overridePrompt }));
           // Use the startup command directly as the prompt
           const session = await args.createTrackedSession({
             laneId: step.laneId,
@@ -793,8 +795,8 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
             metadata: {
               adapterKind: executorKind,
               startupCommandOverride: true,
-              promptLength: startupCommandOverride.length,
-              startupCommandPreview: launch.startupCommand.slice(0, 320)
+              promptLength: overridePrompt.length,
+              startupCommandPreview: overridePrompt.slice(0, 320)
             }
           };
         }

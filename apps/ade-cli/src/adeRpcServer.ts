@@ -16,9 +16,12 @@ import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPaylo
 import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/memory/memoryService";
 import {
   ADE_ACTION_ALLOWLIST,
+  ADE_ACTION_DOMAIN_NAMES,
   type AdeActionDomain,
+  callerHasRoleAtLeast,
   getAdeActionDomainServices,
   isAllowedAdeAction,
+  isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
@@ -27,10 +30,13 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
+import { ADE_CLI_INLINE_GUIDANCE } from "../../desktop/src/shared/adeCliGuidance";
 import { getPrIssueResolutionAvailability } from "../../desktop/src/shared/prIssueResolution";
 import {
   type LinearWorkflowConfig,
   type ComputerUseArtifactOwner,
+  type DockLayout,
+  type GraphPersistedState,
   type MergeMethod,
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
@@ -179,43 +185,14 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "list_ade_actions",
-    description: "List callable ADE action methods across core runtime services (lane/git/pr/tests/chat/mission/orchestrator).",
+    description: "List callable ADE service methods exposed to the CLI. Actions are returned as domain.action names with CLI usage hints.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         domain: {
           type: "string",
-          enum: [
-            "lane",
-            "git",
-            "diff",
-            "conflicts",
-            "pr",
-            "tests",
-            "chat",
-            "mission",
-            "orchestrator",
-            "orchestrator_core",
-            "memory",
-            "cto_state",
-            "worker_agent",
-            "session",
-            "operation",
-            "project_config",
-            "issue_inventory",
-            "flow_policy",
-            "linear_dispatcher",
-            "linear_issue_tracker",
-            "linear_sync",
-            "linear_ingress",
-            "linear_routing",
-            "file",
-            "process",
-            "pty",
-            "computer_use_artifacts",
-            "all"
-          ],
+          enum: [...ADE_ACTION_DOMAIN_NAMES, "all"],
           default: "all",
         },
       }
@@ -223,7 +200,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "run_ade_action",
-    description: "Invoke any ADE action by domain and action name. Use args for object-style calls, or arg for scalar-style calls.",
+    description: "Invoke an exposed ADE service method by domain and action. Use args for one object parameter, argsList for multiple positional parameters, or arg for one scalar parameter.",
     inputSchema: {
       type: "object",
       required: ["domain", "action"],
@@ -231,37 +208,7 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         domain: {
           type: "string",
-          enum: [
-            "lane",
-            "git",
-            "diff",
-            "conflicts",
-            "pr",
-            "tests",
-            "chat",
-            "mission",
-            "orchestrator",
-            "orchestrator_core",
-            "memory",
-            "cto_state",
-            "worker_agent",
-            "session",
-            "operation",
-            "project_config",
-            "issue_inventory",
-            "flow_policy",
-            "linear_dispatcher",
-            "linear_issue_tracker",
-            "linear_sync",
-            "linear_ingress",
-            "linear_routing",
-            "file",
-            "process",
-            "pty",
-            "computer_use_artifacts",
-            "automations",
-            "issue",
-          ],
+          enum: [...ADE_ACTION_DOMAIN_NAMES],
         },
         action: { type: "string", minLength: 1 },
         args: { type: "object" },
@@ -955,10 +902,10 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_pr_from_lane",
-    description: "Create a PR from a lane branch.",
+    description: "Create a PR from a lane branch. Drafts a title/body from ADE context when omitted.",
     inputSchema: {
       type: "object",
-      required: ["laneId", "baseBranch", "title"],
+      required: ["laneId"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
@@ -4142,13 +4089,18 @@ async function runTool(args: {
     const domains = domain === "all"
       ? (Object.keys(services) as AdeActionDomain[])
       : [domain as AdeActionDomain];
+    const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const actions = domains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
-      return listAllowedAdeActionNames(entry, service).map((action) => ({
-        domain: entry,
-        action,
-      }));
+      return listAllowedAdeActionNames(entry, service)
+        .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
+        .map((action) => ({
+          domain: entry,
+          action,
+          name: `${entry}.${action}`,
+          usage: `ade actions run ${entry}.${action} --input-json '{"key":"value"}' (or --scalar value / --args-list-json '[...]' for scalar or positional service methods)`,
+        }));
     });
     return {
       count: actions.length,
@@ -4170,6 +4122,9 @@ async function runTool(args: {
     }
     if (!isAllowedAdeAction(domain, action)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not exposed through ADE actions.`);
+    }
+    if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
@@ -5451,16 +5406,25 @@ async function runTool(args: {
 
   if (name === "create_pr_from_lane") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-    const baseBranch = assertNonEmptyString(toolArgs.baseBranch, "baseBranch");
-    const title = assertNonEmptyString(toolArgs.title, "title");
-    const body = asOptionalTrimmedString(toolArgs.body);
+    const baseBranch = asOptionalTrimmedString(toolArgs.baseBranch);
+    const prSvc = requirePrService(runtime);
+    let title = asOptionalTrimmedString(toolArgs.title);
+    let body = typeof toolArgs.body === "string" ? toolArgs.body : null;
+    if (!title || body == null) {
+      const draft = await prSvc.draftDescription({
+        laneId,
+        ...(baseBranch ? { baseBranch } : {}),
+      });
+      title = title || asOptionalTrimmedString(draft.title) || `PR for ${laneId}`;
+      body = body ?? asOptionalTrimmedString(draft.body) ?? "";
+    }
     const draft = asBoolean(toolArgs.draft, false);
-    const pr = await requirePrService(runtime).createFromLane({
+    const pr = await prSvc.createFromLane({
       laneId,
-      baseBranch,
       title,
-      body: body ?? "",
+      body,
       draft,
+      ...(baseBranch ? { baseBranch } : {}),
     });
     return { pr };
   }
@@ -5717,6 +5681,7 @@ async function runTool(args: {
     });
 
     const promptSegments: string[] = [];
+    promptSegments.push(ADE_CLI_INLINE_GUIDANCE);
     if (promptRunId || promptStepId || promptAttemptId) {
       promptSegments.push(
         `Mission context: run=${promptRunId ?? "n/a"} step=${promptStepId ?? "n/a"} attempt=${promptAttemptId ?? "n/a"}.`

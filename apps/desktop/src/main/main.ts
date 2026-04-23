@@ -1130,6 +1130,24 @@ app.whenReady().then(async () => {
       });
   };
 
+  // --- Auto-update service (global, not per-project) ---
+  // Created early so every `rpcRuntime` built inside `initContextForProjectRoot`
+  // captures a live reference. Previously this was assigned after all init
+  // paths were registered, which meant RPC-visible `runtime.autoUpdateService`
+  // could be null if a project context was built before the late assignment.
+  const updateLogger = createFileLogger(
+    path.join(app.getPath("userData"), "ade-update.jsonl"),
+  );
+  cleanupStaleTempArtifacts({
+    tempRoot: app.getPath("temp"),
+    logger: updateLogger,
+  });
+  const autoUpdateService = createAutoUpdateService({
+    logger: updateLogger,
+    currentVersion: app.getVersion(),
+    globalStatePath,
+  });
+
   const initContextForProjectRoot = async ({
     projectRoot,
     baseRef,
@@ -3181,7 +3199,20 @@ app.whenReady().then(async () => {
       paths: adePaths as unknown as AdeRuntimePaths,
       logger,
       db,
+      keybindingsService,
+      agentToolsService,
+      adeCliService,
+      devToolsService,
+      onboardingService,
       laneService,
+      laneEnvironmentService,
+      laneTemplateService,
+      portAllocationService,
+      laneProxyService,
+      oauthRedirectService,
+      runtimeDiagnosticsService,
+      rebaseSuggestionService,
+      autoRebaseService,
       sessionService,
       operationService,
       projectConfigService,
@@ -3189,14 +3220,24 @@ app.whenReady().then(async () => {
       gitService,
       diffService,
       missionService,
+      missionPreflightService,
       ptyService,
       testService,
+      aiIntegrationService,
       agentChatService,
       prService,
+      prSummaryService,
+      queueLandingService,
       fileService,
       memoryService,
       ctoStateService,
       workerAgentService,
+      workerBudgetService,
+      workerRevisionService,
+      workerHeartbeatService,
+      workerTaskSessionService,
+      linearCredentialService,
+      openclawBridgeService,
       flowPolicyService,
       linearDispatcherService,
       linearIssueTracker,
@@ -3210,6 +3251,16 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       orchestratorService,
       aiOrchestratorService,
+      missionBudgetService,
+      syncHostService: syncService.getHostService(),
+      syncService,
+      automationIngressService,
+      contextDocService,
+      feedbackReporterService,
+      usageTrackingService,
+      budgetCapService,
+      sessionDeltaService,
+      autoUpdateService,
       issueInventoryService,
       eventBuffer: rpcEventBuffer,
       dispose: () => {}, // desktop manages service lifecycle
@@ -3365,6 +3416,12 @@ app.whenReady().then(async () => {
         automationService,
         automationPlannerService,
         githubService,
+        keybindingsService,
+        onboardingService,
+        feedbackReporterService,
+        usageTrackingService,
+        budgetCapService,
+        autoUpdateService,
       } as unknown as AdeRuntime;
     }
 
@@ -4131,7 +4188,6 @@ app.whenReady().then(async () => {
 
   dormantContext = createDormantProjectContext();
 
-  let autoUpdateService: ReturnType<typeof createAutoUpdateService> | null = null;
   let shutdownPromise: Promise<void> | null = null;
   let shutdownRequested = false;
   let shutdownFinalized = false;
@@ -4378,19 +4434,6 @@ app.whenReady().then(async () => {
     runImmediateProcessCleanup("will_quit");
   });
 
-  // --- Auto-update service (global, not per-project) ---
-  const updateLogger = createFileLogger(
-    path.join(app.getPath("userData"), "ade-update.jsonl"),
-  );
-  cleanupStaleTempArtifacts({
-    tempRoot: app.getPath("temp"),
-    logger: updateLogger,
-  });
-  autoUpdateService = createAutoUpdateService({
-    logger: updateLogger,
-    currentVersion: app.getVersion(),
-    globalStatePath,
-  });
   try {
     const { recoverManagedOpenCodeOrphans } = require("./services/opencode/openCodeServerManager");
     await recoverManagedOpenCodeOrphans({ force: true, logger: getActiveContext().logger });

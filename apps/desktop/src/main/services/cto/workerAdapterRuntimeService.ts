@@ -5,10 +5,11 @@ import type {
   WorkerContinuationHandle,
   WorkerRuntimeSurface,
 } from "../../../shared/types";
+import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createAgentChatService } from "../chat/agentChatService";
 
-const ADE_CLI_WORKER_GUIDANCE = "ADE CLI: In terminal-capable sessions, use the bundled `ade` command for internal ADE actions. Run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch. Use `--json` for structured output and `--text` for readable output.";
+const ADE_CLI_WORKER_GUIDANCE = ADE_CLI_AGENT_GUIDANCE;
 
 type WorkerAdapterRuntimeServiceArgs = {
   fetchImpl?: typeof fetch;
