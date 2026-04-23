@@ -285,22 +285,34 @@ cd apps/web && npm run typecheck
 cd apps/desktop && npm run lint
 ```
 
-### 3e. Desktop tests (sharded — match CI exactly)
+### 3e. Desktop tests — full suite, sharded 8-way, run in PARALLEL
 
-Shard like CI (8 shards in parallel) to avoid timeout. The workspace has 3 projects (`unit-main`, `unit-renderer`, `unit-shared`) — sharding runs across all of them automatically:
+`/finalize` is the gate that runs the whole test suite. Run **all 8 shards concurrently** — not sequentially. Running them serially takes 8× longer and masks real CI wall-clock behavior.
 
-```bash
-cd apps/desktop && npx vitest run --shard=1/8
-cd apps/desktop && npx vitest run --shard=2/8
-cd apps/desktop && npx vitest run --shard=3/8
-cd apps/desktop && npx vitest run --shard=4/8
-cd apps/desktop && npx vitest run --shard=5/8
-cd apps/desktop && npx vitest run --shard=6/8
-cd apps/desktop && npx vitest run --shard=7/8
-cd apps/desktop && npx vitest run --shard=8/8
+The command must be identical to `.github/workflows/ci.yml` (job `test-desktop`, matrix shard 1–8, step at line 139):
+
+```
+- run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 ```
 
-Or run specific projects when you only need a subset:
+Locally that maps to 8 parallel Bash invocations in a single tool-call round:
+
+```bash
+cd apps/desktop && npx vitest run --shard=1/8   # shard 1 of 8
+cd apps/desktop && npx vitest run --shard=2/8   # shard 2 of 8
+cd apps/desktop && npx vitest run --shard=3/8   # shard 3 of 8
+cd apps/desktop && npx vitest run --shard=4/8   # shard 4 of 8
+cd apps/desktop && npx vitest run --shard=5/8   # shard 5 of 8
+cd apps/desktop && npx vitest run --shard=6/8   # shard 6 of 8
+cd apps/desktop && npx vitest run --shard=7/8   # shard 7 of 8
+cd apps/desktop && npx vitest run --shard=8/8   # shard 8 of 8
+```
+
+Issue these as 8 concurrent Bash tool calls in a single message (one call per shard). Do not chain them with `&&` or `;` or run them one at a time. The workspace has 3 projects (`unit-main`, `unit-renderer`, `unit-shared`) — sharding distributes across all three automatically.
+
+If a shard fails, re-run **only that shard** (or, better, only the specific failing test file inside it). Never re-run all 8 shards to verify a one-file fix.
+
+Workspace-project subsets exist for debugging only; they are NOT a substitute for the sharded run in `/finalize`:
 
 ```bash
 cd apps/desktop && npx vitest run --project unit-main       # ~150+ main-process tests
@@ -308,11 +320,15 @@ cd apps/desktop && npx vitest run --project unit-renderer    # ~85+ renderer tes
 cd apps/desktop && npx vitest run --project unit-shared      # ~7 shared/preload tests
 ```
 
-### 3f. ADE CLI tests
+### 3f. ADE CLI tests — separate CI job, run alongside the 8 shards
+
+CI runs `test-ade-cli` as its own parallel job (`.github/workflows/ci.yml:156`). Locally, include it in the same parallel tool-call round as the 8 desktop shards — it's effectively a 9th concurrent invocation, not something to run after:
 
 ```bash
 cd apps/ade-cli && npm test
 ```
+
+Do NOT run apps/mcp-server tests — the MCP server was removed; the agent-facing surface lives in `apps/ade-cli`.
 
 ### 3g. Build all apps
 

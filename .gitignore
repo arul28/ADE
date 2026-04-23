@@ -48,11 +48,13 @@ xcuserdata/
 apps/ios/.dry-run-derived-data/
 apps/ios/build/
 ios-signing/
+.asc/artifacts/
 
 # Tool configs (personal)
 .codex/
 .pnpm-store/
 /apps/desktop/.ade
+/.ade/shipLane/
 /.playwright-mcp
 /.codex-derived-data
 package-lock.json
