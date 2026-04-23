@@ -326,6 +326,23 @@ describe("githubPollingService — issue diffing", () => {
     expect(edited[0]?.summary).toContain("New title");
   });
 
+  it("does not emit github.issue_edited when updatedAt only changed because comments grew", async () => {
+    const { service, dispatchCalls } = makeHarness({
+      issuesByCall: [
+        [{ number: 10, updatedAt: "2026-04-23T10:00:00Z", comments: 0 }],
+        [{ number: 10, updatedAt: "2026-04-23T11:00:00Z", comments: 1 }],
+      ],
+      pullsByCall: [[], []],
+      commentsByCall: [[{ id: 101, body: "new comment", createdAt: "2026-04-23T10:30:00Z" }]],
+    });
+
+    await service.pollNow();
+    await service.pollNow();
+
+    expect(dispatchCalls.filter((c) => c.triggerType === "github.issue_edited")).toHaveLength(0);
+    expect(dispatchCalls.filter((c) => c.triggerType === "github.issue_commented")).toHaveLength(1);
+  });
+
   it("does not emit issue_edited when a label change already triggered issue_labeled", async () => {
     const { service, dispatchCalls } = makeHarness({
       issuesByCall: [
@@ -585,6 +602,23 @@ describe("githubPollingService — cursor format", () => {
     await service.pollNow();
 
     expect(githubService.listRepoIssues.mock.calls[0]?.[2]?.since).toBe("2026-04-23T10:00:00Z=opaque");
+  });
+
+  it("uses the repo polling cursor as the initial comment since filter", async () => {
+    const { service, githubService } = makeHarness({
+      initialCursor: "acme/ade=2026-04-23T10:00:00Z",
+      issuesByCall: [
+        [{ number: 10, updatedAt: "2026-04-23T10:15:00Z", createdAt: "2026-04-22T09:00:00Z", comments: 0 }],
+        [{ number: 10, updatedAt: "2026-04-23T10:30:00Z", createdAt: "2026-04-22T09:00:00Z", comments: 1 }],
+      ],
+      pullsByCall: [[], []],
+      commentsByCall: [[{ id: 101, body: "new comment", createdAt: "2026-04-23T10:20:00Z" }]],
+    });
+
+    await service.pollNow();
+    await service.pollNow();
+
+    expect(githubService.listIssueComments.mock.calls[0]?.[3]?.since).toBe("2026-04-23T10:15:00Z");
   });
 
   it("does not skip comments that share the same created_at timestamp", async () => {

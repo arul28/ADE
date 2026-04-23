@@ -74,6 +74,7 @@ export function RunDetailPanel({
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <MetaCard label="Run id" value={detail.run.id} />
           <MetaCard label="Billing" value={detail.run.billingCode ?? detail.rule?.billingCode ?? "none"} />
+          <MetaCard label="Spend" value={`$${(detail.run.spendUsd ?? 0).toFixed(2)}`} />
           <MetaCard label="Started" value={detail.run.startedAt} />
           <MetaCard label="Ended" value={detail.run.endedAt ?? "still running"} />
           <MetaCard label="Automation" value={detail.run.automationId} />

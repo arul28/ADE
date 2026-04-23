@@ -269,6 +269,21 @@ describe("githubService issue-domain helpers", () => {
     expect(result).toEqual([]);
   });
 
+  it("listRepoIssues follows GitHub pagination links", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, [{ number: 1 }], {
+        link: '<https://api.github.com/repos/acme/ade/issues?page=2&per_page=1>; rel="next"',
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, [{ number: 2 }]));
+    const service = makeService();
+
+    const result = await service.listRepoIssues("acme", "ade", { perPage: 1 });
+
+    expect(result.map((issue) => issue.number)).toEqual([1, 2]);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[1]?.[0]).toContain("page=2");
+  });
+
   it("listRepoPulls builds the correct URL with direction=desc", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
     const service = makeService();

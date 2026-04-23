@@ -33,7 +33,7 @@ export function LinearTriggerFilters({
         <LabeledInput
           label="State transition"
           value={trigger.stateTransition ?? ""}
-          placeholder="In Progress → Done"
+          placeholder="In Progress->Done"
           onChange={(value) => onPatch({ stateTransition: value })}
         />
       ) : (

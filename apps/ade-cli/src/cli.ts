@@ -1543,7 +1543,10 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     if (enabledRaw == null) {
       throw new CliUsageError("automations toggle requires --enabled <true|false>.");
     }
-    const enabled = enabledRaw === "true" || enabledRaw === "1";
+    if (enabledRaw !== "true" && enabledRaw !== "false") {
+      throw new CliUsageError("automations toggle --enabled must be true or false.");
+    }
+    const enabled = enabledRaw === "true";
     return {
       kind: "execute",
       label: `automations toggle ${id}`,

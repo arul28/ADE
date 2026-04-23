@@ -623,6 +623,7 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
       ? (rule as AutomationRule & { actions?: AutomationAction[] }).actions ?? []
       : [];
   const primary = triggers[0] ?? { type: "manual" as const };
+  const includeProjectContext = deriveIncludeProjectContext(rule);
   const rawExecution = rule.execution ?? (legacyActions.length > 0
     ? { kind: "built-in" as const, builtIn: { actions: legacyActions } }
     : { kind: "mission" as const });
@@ -665,10 +666,14 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
     executor: { mode: "automation-bot" },
     reviewProfile: rule.reviewProfile ?? "quick",
     toolPalette: rule.toolPalette?.length ? rule.toolPalette : ["repo", "memory", "mission"],
-    contextSources: rule.contextSources?.length ? rule.contextSources : [{ type: "project-memory" }, { type: "procedures" }],
-    memory: rule.memory ?? { mode: "automation-plus-project", ruleScopeKey: rule.id },
+    contextSources: includeProjectContext
+      ? (rule.contextSources?.length ? rule.contextSources : [{ type: "project-memory" }, { type: "procedures" }])
+      : [],
+    memory: includeProjectContext
+      ? (rule.memory ?? { mode: "automation-plus-project", ruleScopeKey: rule.id })
+      : { mode: "none" },
     guardrails: sanitizedGuardrails,
-    includeProjectContext: deriveIncludeProjectContext(rule),
+    includeProjectContext,
     outputs: {
       disposition: outputDisposition,
       createArtifact: rule.outputs?.createArtifact ?? true,
@@ -1744,7 +1749,7 @@ export function createAutomationService({
         ?? null;
       const timeoutMs = Math.max(
         15_000,
-        Math.floor((action.timeoutMs ?? rule.guardrails.maxDurationMin ?? 10) * 60_000),
+        Math.floor(action.timeoutMs ?? (rule.guardrails.maxDurationMin ?? 10) * 60_000),
       );
       try {
         const session = await agentChatServiceRef.createSession({
@@ -1903,6 +1908,7 @@ export function createAutomationService({
   };
 
   const buildBriefing = async (rule: AutomationRule, trigger: TriggerContext) => {
+    if (!rule.includeProjectContext) return null;
     if (!memoryBriefingServiceRef) return null;
     try {
       return await memoryBriefingServiceRef.buildBriefing({

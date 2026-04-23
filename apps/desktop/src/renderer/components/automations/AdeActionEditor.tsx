@@ -89,8 +89,17 @@ export function AdeActionEditor({
   };
 
   const insertPlaceholder = (placeholder: string) => {
-    const next = argsText.trim().length ? `${argsText}\n// ${placeholder}` : `{\n  "field": "${placeholder}"\n}`;
-    commitArgs(next);
+    try {
+      const parsed = argsText.trim().length ? JSON.parse(argsText) : {};
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        commitArgs(JSON.stringify({ ...parsed, field: placeholder }, null, 2));
+        return;
+      }
+    } catch {
+      // Keep the user's invalid JSON untouched until they correct it.
+      return;
+    }
+    commitArgs(`{\n  "field": "${placeholder}"\n}`);
   };
 
   return (

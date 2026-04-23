@@ -48,6 +48,15 @@ function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | nul
   return null;
 }
 
+function parseNextLink(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  for (const part of linkHeader.split(",")) {
+    const match = part.match(/<([^>]+)>;\s*rel="([^"]+)"/);
+    if (match?.[2] === "next") return match[1] ?? null;
+  }
+  return null;
+}
+
 export function createGithubService({
   logger,
   projectRoot,
@@ -302,6 +311,27 @@ export function createGithubService({
     return { data: data as T, response };
   };
 
+  const apiRequestAllPages = async <T>(args: {
+    path: string;
+    query?: Record<string, string | number | boolean | undefined | null>;
+    token?: string;
+  }): Promise<T[]> => {
+    const first = await apiRequest<T[]>({ method: "GET", ...args });
+    const out = Array.isArray(first.data) ? [...first.data] : [];
+    let nextUrl = parseNextLink(first.response?.headers.get("link") ?? null);
+    while (nextUrl) {
+      const url = new URL(nextUrl);
+      const next = await apiRequest<T[]>({
+        method: "GET",
+        path: `${url.pathname}${url.search}`,
+        token: args.token,
+      });
+      if (Array.isArray(next.data)) out.push(...next.data);
+      nextUrl = parseNextLink(next.response?.headers.get("link") ?? null);
+    }
+    return out;
+  };
+
   let cachedStatus: GitHubStatus | null = null;
   let cachedAt = 0;
 
@@ -383,8 +413,7 @@ export function createGithubService({
     name: string,
     opts: { since?: string; state?: "open" | "closed" | "all"; sort?: "created" | "updated"; perPage?: number } = {}
   ): Promise<GitHubIssue[]> => {
-    const { data } = await apiRequest<GitHubIssue[]>({
-      method: "GET",
+    const data = await apiRequestAllPages<GitHubIssue>({
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues`,
       query: {
         state: opts.state ?? "all",
@@ -418,8 +447,7 @@ export function createGithubService({
     number: number,
     opts: { since?: string } = {}
   ): Promise<GitHubIssueComment[]> => {
-    const { data } = await apiRequest<GitHubIssueComment[]>({
-      method: "GET",
+    const data = await apiRequestAllPages<GitHubIssueComment>({
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
       query: {
         per_page: 100,
@@ -434,8 +462,7 @@ export function createGithubService({
     name: string,
     opts: { state?: "open" | "closed" | "all"; sort?: "created" | "updated"; perPage?: number } = {}
   ): Promise<GitHubPullRequest[]> => {
-    const { data } = await apiRequest<GitHubPullRequest[]>({
-      method: "GET",
+    const data = await apiRequestAllPages<GitHubPullRequest>({
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
       query: {
         state: opts.state ?? "all",
@@ -452,8 +479,7 @@ export function createGithubService({
     name: string,
     number: number,
   ): Promise<GitHubPullRequestReview[]> => {
-    const { data } = await apiRequest<GitHubPullRequestReview[]>({
-      method: "GET",
+    const data = await apiRequestAllPages<GitHubPullRequestReview>({
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews`,
       query: { per_page: 100 },
     });

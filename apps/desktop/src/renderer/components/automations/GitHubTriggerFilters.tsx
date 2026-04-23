@@ -135,18 +135,26 @@ export function GitHubTriggerFilters({
 
       {isPr || isIssue ? (
         <div className="grid gap-2 md:grid-cols-2">
-          <LabelPicker
-            label="Labels"
-            value={trigger.labels ?? []}
-            options={labels}
-            loading={loadingPickers}
-            onChange={(next) => onPatch({ labels: next })}
-          />
+          {isPr ? (
+            <LabelPicker
+              label="Labels"
+              value={trigger.labels ?? []}
+              options={labels}
+              loading={loadingPickers}
+              onChange={(next) => onPatch({ labels: next })}
+            />
+          ) : null}
           <LabeledInput
             label="Title regex"
             value={trigger.titleRegex ?? ""}
             placeholder="^\\[release\\]"
             onChange={(value) => onPatch({ titleRegex: value })}
+          />
+          <LabeledInput
+            label="Body regex"
+            value={trigger.bodyRegex ?? ""}
+            placeholder="needs reproduction|security"
+            onChange={(value) => onPatch({ bodyRegex: value })}
           />
         </div>
       ) : null}

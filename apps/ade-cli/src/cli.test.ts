@@ -462,6 +462,12 @@ describe("ADE CLI", () => {
     );
   });
 
+  it("automations toggle rejects invalid --enabled values", () => {
+    expect(() => buildCliPlan(["automations", "toggle", "rule-42", "--enabled", "maybe"])).toThrow(
+      /must be true or false/,
+    );
+  });
+
   it("automations run passes dryRun only when --dry-run is set", () => {
     const plain = buildCliPlan(["automations", "run", "rule-42"]);
     expect(plain.kind).toBe("execute");

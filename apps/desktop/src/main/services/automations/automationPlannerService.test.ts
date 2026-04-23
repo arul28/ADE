@@ -230,6 +230,35 @@ describe("automationPlannerService.validateDraft", () => {
     expect(saved.rule.actions[0]?.type).toBe("run-tests");
     expect(getSnapshot().local.automations[0]?.actions?.[0]?.type).toBe("run-tests");
   });
+
+  it("accepts canonical GitHub triggers and ade-action steps without rehydrating project context", () => {
+    const { planner, getSnapshot } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Label issue",
+      triggers: [{ type: "github.issue_opened", titleRegex: "^Bug", bodyRegex: "crash", repo: "acme/ade" }],
+      trigger: { type: "github.issue_opened", titleRegex: "^Bug", bodyRegex: "crash", repo: "acme/ade" },
+      includeProjectContext: false,
+      memory: { mode: "none" },
+      contextSources: [{ type: "project-memory" }],
+      actions: [{ type: "ade-action", adeAction: { domain: "issue", action: "setLabels", args: { labels: ["triage"] } } }],
+      legacyActions: [{ type: "ade-action", adeAction: { domain: "issue", action: "setLabels", args: { labels: ["triage"] } } }],
+    });
+
+    const saved = planner.saveDraft({ draft, confirmations: [] });
+
+    expect(saved.rule.triggers[0]).toMatchObject({
+      type: "github.issue_opened",
+      titleRegex: "^Bug",
+      bodyRegex: "crash",
+      repo: "acme/ade",
+    });
+    expect(saved.rule.actions[0]).toMatchObject({
+      type: "ade-action",
+      adeAction: { domain: "issue", action: "setLabels" },
+    });
+    expect(saved.rule.includeProjectContext).toBe(false);
+    expect(getSnapshot().local.automations[0]?.includeProjectContext).toBe(false);
+  });
 });
  
 function createDraft(

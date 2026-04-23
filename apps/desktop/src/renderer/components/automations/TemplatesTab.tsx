@@ -293,22 +293,22 @@ const TEMPLATES: TemplateDefinition[] = [
   },
   {
     id: "assignee-welcome",
-    name: "Assignee welcome comment",
+    name: "Label welcome comment",
     description:
-      "When an issue is assigned to someone, post a short automated welcome with repro steps and relevant doc links.",
+      "When an issue receives a label, post a short automated welcome with repro steps and relevant doc links.",
     triggerType: "github.issue_labeled",
     actionSummary: "agent session",
     icon: UserCircle,
     draft: {
       ...BASE_DRAFT,
-      name: "Assignee welcome comment",
+      name: "Label welcome comment",
       mode: "monitor",
       triggers: [{ type: "github.issue_labeled" }],
       trigger: { type: "github.issue_labeled" },
-      execution: { kind: "agent-session", session: { title: "Assignee welcome" } },
+      execution: { kind: "agent-session", session: { title: "Label welcome" } },
       modelConfig: DEFAULT_MODEL,
       prompt:
-        "An assignee was just added to this issue. Post a short, friendly comment linking repro steps and the most relevant doc section. Keep it under 5 sentences.",
+        "A label was just added to this issue. Post a short, friendly comment linking repro steps and the most relevant doc section. Keep it under 5 sentences.",
       toolPalette: ["github", "memory"],
       guardrails: { maxDurationMin: 5 },
       billingCode: "auto:assignee-welcome",

@@ -252,6 +252,7 @@ export type AutomationRuleDraft = {
   outputs: AutomationOutputs;
   verification: AutomationVerification;
   billingCode: string;
+  includeProjectContext?: boolean;
   linkedRepoPaths?: string[];
   linkedDocPaths?: string[];
   rulePaths?: string[];

@@ -514,7 +514,13 @@ export function RulesTab({
               <Plus size={12} weight="regular" />
               New
             </Button>
-            <Button size="sm" variant="outline" onClick={onOpenTemplates}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (confirmDiscardIfDirty()) onOpenTemplates();
+              }}
+            >
               <BookOpen size={12} weight="regular" />
               Templates
             </Button>
@@ -635,7 +641,13 @@ export function RulesTab({
                     <Plus size={12} weight="regular" />
                     New rule
                   </Button>
-                  <Button size="sm" variant="outline" onClick={onOpenTemplates}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (confirmDiscardIfDirty()) onOpenTemplates();
+                    }}
+                  >
                     <BookOpen size={12} weight="regular" />
                     Browse templates
                   </Button>

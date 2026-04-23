@@ -2793,18 +2793,19 @@ app.whenReady().then(async () => {
         });
         if (event.issueId) {
           await linearSyncService.processIssueUpdate(event.issueId);
-        }
-        try {
-          const dispatched = buildLinearAutomationDispatch(event);
-          if (dispatched) {
-            await automationService.dispatchIngressTrigger(dispatched);
+        } else {
+          try {
+            const dispatched = buildLinearAutomationDispatch(event);
+            if (dispatched) {
+              await automationService.dispatchIngressTrigger(dispatched);
+            }
+          } catch (error) {
+            logger.warn("linear.automation_dispatch_failed", {
+              issueId: event.issueId,
+              eventId: event.eventId,
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
-        } catch (error) {
-          logger.warn("linear.automation_dispatch_failed", {
-            issueId: event.issueId,
-            eventId: event.eventId,
-            error: error instanceof Error ? error.message : String(error),
-          });
         }
       },
     });

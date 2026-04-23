@@ -125,6 +125,7 @@ function triggerLabel(trigger: AutomationTrigger): string {
 }
 
 function computeIncludeProjectContext(draft: AutomationRuleDraft): boolean {
+  if (typeof draft.includeProjectContext === "boolean") return draft.includeProjectContext;
   if (draft.memory?.mode && draft.memory.mode !== "none") return true;
   if ((draft.contextSources ?? []).length > 0) return true;
   return false;
@@ -509,6 +510,7 @@ export function RuleEditorPanel({
                       const next = event.target.checked;
                       setDraft({
                         ...draft,
+                        includeProjectContext: next,
                         memory: { mode: next ? "automation-plus-project" : "none" },
                         contextSources: next
                           ? (draft.contextSources?.length ? draft.contextSources : [{ type: "project-memory" }])
@@ -546,13 +548,8 @@ export function RuleEditorPanel({
                     placeholder="20"
                   />
                   <ActiveHoursFields
-                    hours={draft.guardrails.activeHours ?? null}
-                    onChange={(next) =>
-                      setDraft({
-                        ...draft,
-                        guardrails: { ...draft.guardrails, activeHours: next ?? undefined },
-                      })
-                    }
+                    hours={primaryTrigger.activeHours ?? null}
+                    onChange={(next) => patchTrigger({ activeHours: next ?? undefined })}
                   />
                 </div>
 
@@ -843,4 +840,3 @@ function ActiveHoursFields({
     </div>
   );
 }
-

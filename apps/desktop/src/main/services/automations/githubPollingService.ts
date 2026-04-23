@@ -302,7 +302,13 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
         continue;
       }
 
-      if (prev.updatedAt === issue.updated_at && prev.state === issue.state && prev.labels.join("|") === currentLabels.join("|")) {
+      const newCommentCount = issue.comments ?? prev.commentCount;
+      if (
+        prev.updatedAt === issue.updated_at &&
+        prev.state === issue.state &&
+        prev.commentCount === newCommentCount &&
+        prev.labels.join("|") === currentLabels.join("|")
+      ) {
         continue;
       }
 
@@ -325,7 +331,12 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       }
 
       // Generic edit (title/body changed without state/label change)
-      if (prev.updatedAt !== issue.updated_at && prev.state === issue.state && !addedLabels.length) {
+      if (
+        prev.updatedAt !== issue.updated_at &&
+        prev.state === issue.state &&
+        !addedLabels.length &&
+        newCommentCount === prev.commentCount
+      ) {
         await dispatch(repo, "github.issue_edited", `${repoSlug(repo)}#${issue.number}:edited:${issue.updated_at}`, {
           issue: ctx,
           summary: `Issue #${issue.number} edited: ${issue.title}`,
@@ -341,7 +352,6 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
 
       // New comments. The `issues` endpoint gives us a count; if it grew we
       // fetch comments since the last cursor.
-      const newCommentCount = issue.comments ?? 0;
       if (newCommentCount > prev.commentCount) {
         await pollComments(repo, issue.number, since, ctx, /* isPr */ false);
       }
@@ -436,14 +446,16 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
   const pollComments = async (
     repo: RepoRef,
     issueNumber: number,
-    _since: string | undefined,
+    since: string | undefined,
     ctx: AutomationTriggerIssueContext | AutomationTriggerPrContext,
     isPr: boolean,
     emit = true,
   ) => {
     const key = `${repoSlug(repo)}:${issueNumber}`;
     const cursor = parseCommentCursor(commentCursors.get(key));
-    const comments = await githubService.listIssueComments(repo.owner, repo.name, issueNumber, { since: cursor?.createdAt });
+    const comments = await githubService.listIssueComments(repo.owner, repo.name, issueNumber, {
+      since: cursor?.createdAt ?? since,
+    });
     for (const comment of comments) {
       if (cursor && isCommentAtOrBeforeCursor(comment, cursor)) continue;
       if (emit) {
