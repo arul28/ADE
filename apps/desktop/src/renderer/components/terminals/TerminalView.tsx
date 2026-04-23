@@ -78,9 +78,9 @@ type CachedRuntime = {
   fitWarningLogged: boolean;
 };
 
-const HYDRATE_TAIL_BYTES = 240_000;
-const MAX_PENDING_HYDRATION_BYTES = 400_000;
-const MAX_FRAME_WRITE_BYTES = 450_000;
+const HYDRATE_TAIL_BYTES = 2_000_000;
+const MAX_PENDING_HYDRATION_BYTES = 2_000_000;
+const MAX_FRAME_WRITE_BYTES = 1_000_000;
 const EXITED_RUNTIME_KEEPALIVE_MS = 8_000;
 const MIN_VALID_COLS = 20;
 const MIN_VALID_ROWS = 6;
@@ -972,6 +972,24 @@ export function TerminalView({
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const projectRevision = useAppStore((s) => s.projectRevision);
+  const runtimeProjectScopeRef = useRef<{
+    sessionId: string;
+    projectRoot: string | null;
+    projectRevision: number;
+  } | null>(null);
+  if (
+    !runtimeProjectScopeRef.current
+    || runtimeProjectScopeRef.current.sessionId !== sessionId
+    || (runtimeProjectScopeRef.current.projectRoot == null && projectRoot != null)
+  ) {
+    runtimeProjectScopeRef.current = {
+      sessionId,
+      projectRoot,
+      projectRevision,
+    };
+  }
+  const runtimeProjectRoot = runtimeProjectScopeRef.current.projectRoot;
+  const runtimeProjectRevision = runtimeProjectScopeRef.current.projectRevision;
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<CachedRuntime | null>(null);
@@ -1000,8 +1018,8 @@ export function TerminalView({
     const runtime = ensureRuntime({
       ptyId,
       sessionId,
-      projectRoot,
-      projectRevision,
+      projectRoot: runtimeProjectRoot,
+      projectRevision: runtimeProjectRevision,
       theme: mountConfig.theme,
       preferences: mountConfig.preferences,
     });
@@ -1177,7 +1195,7 @@ export function TerminalView({
         scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
       }
     };
-  }, [projectRevision, projectRoot, ptyId, sessionId]);
+  }, [runtimeProjectRevision, runtimeProjectRoot, ptyId, sessionId]);
 
   useEffect(() => {
     const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
@@ -1218,7 +1236,7 @@ export function TerminalView({
         // ignore
       }
     }
-  }, [isActive, isVisible, projectRoot, sessionId]);
+  }, [isActive, isVisible, runtimeProjectRoot, sessionId]);
 
   useEffect(() => {
     const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
@@ -1232,7 +1250,7 @@ export function TerminalView({
       scheduleFit(runtime, true);
     });
     return () => cancelAnimationFrame(id);
-  }, [projectRoot, resolvedPreferences, sessionId, termTheme]);
+  }, [runtimeProjectRoot, resolvedPreferences, sessionId, termTheme]);
 
   // When this terminal becomes the active tab, force fit + focus + scroll
   useEffect(() => {
@@ -1271,7 +1289,7 @@ export function TerminalView({
       cancelAnimationFrame(raf);
       clearTimeout(timer);
     };
-  }, [isActive, isVisible, projectRoot, sessionId]);
+  }, [isActive, isVisible, runtimeProjectRoot, sessionId]);
 
   return (
     <div

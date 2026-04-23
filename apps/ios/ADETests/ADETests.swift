@@ -150,6 +150,246 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(syncIsTailscaleRoute("not-ts.net.example.com"))
   }
 
+  func testSyncParsesManualRouteEndpointInputs() throws {
+    XCTAssertEqual(
+      syncParseRouteEndpoint("100.75.20.63:8788"),
+      SyncRouteEndpoint(host: "100.75.20.63", port: 8788)
+    )
+    XCTAssertEqual(
+      syncParseRouteEndpoint("ws://100.75.20.63:8788/sync"),
+      SyncRouteEndpoint(host: "100.75.20.63", port: 8788)
+    )
+    XCTAssertEqual(
+      syncParseRouteEndpoint("aruls-mac-studio.tail7497a6.ts.net:8788"),
+      SyncRouteEndpoint(host: "aruls-mac-studio.tail7497a6.ts.net", port: 8788)
+    )
+    XCTAssertEqual(
+      syncParseRouteEndpoint("[fd7a:115c:a1e0::1]:8788"),
+      SyncRouteEndpoint(host: "fd7a:115c:a1e0::1", port: 8788)
+    )
+    XCTAssertEqual(
+      syncParseRouteEndpoint("fd7a:115c:a1e0::1"),
+      SyncRouteEndpoint(host: "fd7a:115c:a1e0::1", port: nil)
+    )
+  }
+
+  func testSyncBuildsWebSocketURLFromHostPortInput() {
+    XCTAssertEqual(
+      syncWebSocketURLString(host: "100.75.20.63:8788", port: 8787),
+      "ws://100.75.20.63:8788"
+    )
+    XCTAssertEqual(
+      syncWebSocketURLString(host: "[fd7a:115c:a1e0::1]:8788", port: 8787),
+      "ws://[fd7a:115c:a1e0::1]:8788"
+    )
+  }
+
+  func testSyncConnectPortCandidatesFallbackBetweenAdeDefaultPorts() {
+    XCTAssertEqual(
+      syncConnectPortCandidates(primaryPort: 8787, addresses: ["100.75.20.63"]),
+      Array(8787...8799)
+    )
+    XCTAssertEqual(
+      syncConnectPortCandidates(primaryPort: 8788, addresses: ["192.168.1.10"]),
+      [8788, 8787] + Array(8789...8799)
+    )
+    XCTAssertEqual(
+      syncConnectPortCandidates(primaryPort: 9000, addresses: ["100.75.20.63"]),
+      [9000] + Array(8787...8799)
+    )
+    XCTAssertEqual(
+      syncConnectPortCandidates(primaryPort: 9000, addresses: ["192.168.1.10"]),
+      [9000]
+    )
+  }
+
+  func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
+    XCTAssertTrue(
+      syncShouldRoamToTailnet(
+        currentAddress: "192.168.1.8",
+        hasTailnetRoute: true,
+        usesWiFi: false,
+        usesCellular: false,
+        usesWiredEthernet: false
+      )
+    )
+    XCTAssertTrue(
+      syncShouldRoamToTailnet(
+        currentAddress: "192.168.1.8",
+        hasTailnetRoute: true,
+        usesWiFi: false,
+        usesCellular: true,
+        usesWiredEthernet: false
+      )
+    )
+    XCTAssertFalse(
+      syncShouldRoamToTailnet(
+        currentAddress: "100.75.20.63",
+        hasTailnetRoute: true,
+        usesWiFi: false,
+        usesCellular: true,
+        usesWiredEthernet: false
+      )
+    )
+    XCTAssertFalse(
+      syncShouldRoamToTailnet(
+        currentAddress: "192.168.1.8",
+        hasTailnetRoute: false,
+        usesWiFi: false,
+        usesCellular: true,
+        usesWiredEthernet: false
+      )
+    )
+  }
+
+  @MainActor
+  func testSyncAutomaticReconnectPrefersSavedTailnetDuringRoam() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let profile = HostConnectionProfile(
+      hostIdentity: "host-1",
+      hostName: "Mac Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone-1",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "host-1",
+      lastSuccessfulAddress: "192.168.1.8",
+      savedAddressCandidates: ["192.168.1.8", "100.75.20.63"],
+      discoveredLanAddresses: ["192.168.1.8"],
+      tailscaleAddress: "100.75.20.63"
+    )
+    service.applyDiscoveredHostsForTesting([
+      DiscoveredSyncHost(
+        id: "bonjour-host",
+        serviceName: "ADE Sync Mac 8787",
+        hostName: "Mac Studio",
+        hostIdentity: "host-1",
+        port: 8787,
+        addresses: ["192.168.1.8"],
+        tailscaleAddress: nil,
+        lastResolvedAt: "2026-04-23T00:00:00.000Z"
+      ),
+    ])
+
+    service.preferTailnetReconnectForTesting()
+
+    XCTAssertEqual(
+      service.automaticReconnectAddressesForTesting(profile),
+      ["100.75.20.63", "192.168.1.8"]
+    )
+  }
+
+  @MainActor
+  func testSyncUserReconnectCanPreferSavedTailnetOverStaleLanDiscovery() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let profile = HostConnectionProfile(
+      hostIdentity: "host-1",
+      hostName: "Mac Studio",
+      port: 8788,
+      authKind: "paired",
+      pairedDeviceId: "phone-1",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "host-1",
+      lastSuccessfulAddress: "192.168.1.8",
+      savedAddressCandidates: ["192.168.1.8", "100.75.20.63"],
+      discoveredLanAddresses: ["192.168.1.8"],
+      tailscaleAddress: "100.75.20.63"
+    )
+    service.applyDiscoveredHostsForTesting([
+      DiscoveredSyncHost(
+        id: "bonjour-host",
+        serviceName: "ADE Sync Mac 8788",
+        hostName: "Mac Studio",
+        hostIdentity: "host-1",
+        port: 8788,
+        addresses: ["192.168.1.8"],
+        tailscaleAddress: nil,
+        lastResolvedAt: "2026-04-23T00:00:00.000Z"
+      ),
+    ])
+
+    service.preferTailnetReconnectForTesting()
+
+    XCTAssertEqual(
+      service.prioritizedReconnectAddressesForTesting(profile),
+      ["100.75.20.63", "192.168.1.8"]
+    )
+  }
+
+  @MainActor
+  func testSyncPlaintextWebSocketAllowlistIncludesTrustedTailscaleRoutesOnly() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("100.117.237.95"))
+    XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("ws://100.117.237.95:8787"))
+    XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("ade-sync"))
+    XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("macbook.tailnet.ts.net"))
+    XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("192.168.68.102"))
+    XCTAssertTrue(service.syncCanAttemptPlaintextWebSocket("mac.local"))
+    XCTAssertFalse(service.syncCanAttemptPlaintextWebSocket("8.8.8.8"))
+    XCTAssertFalse(service.syncCanAttemptPlaintextWebSocket("example.com"))
+    XCTAssertFalse(service.syncCanAttemptPlaintextWebSocket("https://example.com"))
+  }
+
+  func testAppTransportSecurityIncludesTailscaleCidrs() {
+    let ats = Bundle.main.object(forInfoDictionaryKey: "NSAppTransportSecurity") as? [String: Any]
+    let domains = ats?["NSExceptionDomains"] as? [String: Any]
+
+    XCTAssertNotNil(domains?["100.64.0.0/10"])
+    XCTAssertNotNil(domains?["fd7a:115c:a1e0::/48"])
+    XCTAssertNil(ats?["NSAllowsArbitraryLoads"])
+  }
+
+  @MainActor
+  func testSyncSuppressesAnonymousTailnetShortcutWhenIdentifiedHostHasTailnetRoute() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let identified = DiscoveredSyncHost(
+      id: "bonjour-host",
+      serviceName: "ADE Sync Mac 8787",
+      hostName: "Mac",
+      hostIdentity: "host-1",
+      port: 8787,
+      addresses: ["192.168.1.8"],
+      tailscaleAddress: "100.100.12.4",
+      lastResolvedAt: "2026-04-23T00:00:00.000Z"
+    )
+    let anonymousTailnet = DiscoveredSyncHost(
+      id: "tailnet-ade-sync:8787",
+      serviceName: "ADE Tailnet ade-sync",
+      hostName: "ade-sync",
+      hostIdentity: nil,
+      port: 8787,
+      addresses: [],
+      tailscaleAddress: "ade-sync",
+      lastResolvedAt: "2026-04-23T00:00:01.000Z"
+    )
+
+    service.applyDiscoveredHostsForTesting([identified, anonymousTailnet])
+
+    XCTAssertEqual(service.discoveredHosts.count, 1)
+    XCTAssertEqual(service.discoveredHosts.first?.hostIdentity, "host-1")
+  }
+
+  @MainActor
+  func testSyncKeepsAnonymousTailnetShortcutWithoutIdentifiedTailnetHost() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let anonymousTailnet = DiscoveredSyncHost(
+      id: "tailnet-ade-sync:8787",
+      serviceName: "ADE Tailnet ade-sync",
+      hostName: "ade-sync",
+      hostIdentity: nil,
+      port: 8787,
+      addresses: [],
+      tailscaleAddress: "ade-sync",
+      lastResolvedAt: "2026-04-23T00:00:01.000Z"
+    )
+
+    service.applyDiscoveredHostsForTesting([anonymousTailnet])
+
+    XCTAssertEqual(service.discoveredHosts.count, 1)
+    XCTAssertEqual(service.discoveredHosts.first?.hostName, "ade-sync")
+  }
+
   func testSyncBonjourTimingMatchesReliabilityRequirements() {
     XCTAssertEqual(SyncBonjourTiming.searchRetryNanoseconds, 2_000_000_000)
     XCTAssertEqual(SyncBonjourTiming.resolveRetryNanoseconds, 2_000_000_000)

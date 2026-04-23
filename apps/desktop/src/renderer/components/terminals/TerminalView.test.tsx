@@ -531,6 +531,53 @@ describe("TerminalView", () => {
     expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
   });
 
+  it("keeps a mounted live runtime bound to its original project while the active project changes", async () => {
+    const view = render(<TerminalView ptyId="pty-mounted-switch" sessionId="session-mounted-switch" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      dispose: ReturnType<typeof vi.fn>;
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    expect(getTerminalRuntimeSnapshot("session-mounted-switch")).not.toBeNull();
+
+    terminal?.write.mockClear();
+    mockState.projectRoot = "/project/b";
+    mockState.projectRevision += 1;
+    view.rerender(<TerminalView ptyId="pty-mounted-switch" sessionId="session-mounted-switch" isActive />);
+    await flushAllTimers();
+
+    expect(mockState.terminalInstances).toHaveLength(1);
+    expect(terminal?.dispose).not.toHaveBeenCalled();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-mounted-switch",
+        sessionId: "session-mounted-switch",
+        projectRoot: "/project/b",
+        data: "wrong project output\n",
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    expect(terminal?.write).not.toHaveBeenCalledWith("wrong project output\n");
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-mounted-switch",
+        sessionId: "session-mounted-switch",
+        projectRoot: "/project/a",
+        data: "original project output\n",
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    expect(terminal?.write).toHaveBeenCalledWith("original project output\n");
+  });
+
   it("keeps parked live runtimes when the project changes without a mounted terminal view", async () => {
     const view = render(<TerminalView ptyId="pty-background" sessionId="session-background" isActive />);
     await flushAllTimers();

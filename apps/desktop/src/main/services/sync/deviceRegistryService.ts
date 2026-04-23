@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
   SyncBrainStatusPayload,
@@ -16,7 +17,7 @@ import { normalizeNotificationPreferences, type NotificationPreferences } from "
 import type { Logger } from "../logging/logger";
 import { mapPlatform } from "./syncProtocol";
 import type { AdeDb } from "../state/kvDb";
-import { nowIso, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../shared/utils";
+import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../shared/utils";
 
 type DeviceRegistryServiceArgs = {
   db: AdeDb;
@@ -52,6 +53,15 @@ type ClusterStateRow = {
 const DEVICE_ID_FILE = "sync-device-id";
 export const DEFAULT_SYNC_CLUSTER_ID = "default";
 const WORKSPACE_ACTIVITY_ID = "workspace";
+const TAILSCALE_CLI_MACOS_PATH = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+const TAILSCALE_STATUS_CACHE_MS = 30_000;
+
+let tailscaleStatusCache:
+  | {
+      expiresAt: number;
+      dnsName: string | null;
+    }
+  | null = null;
 
 function normalizeDeviceType(value: unknown): SyncPeerDeviceType {
   const raw = typeof value === "string" ? value.trim() : "";
@@ -102,6 +112,7 @@ function mapClusterStateRow(row: ClusterStateRow | null): SyncClusterState | nul
 type LocalNetworkMetadata = {
   lanIpAddresses: string[];
   tailscaleIp: string | null;
+  tailscaleDnsName: string | null;
 };
 
 function isTailscaleAddress(ipAddress: string): boolean {
@@ -130,7 +141,47 @@ function readLocalNetworkMetadata(): LocalNetworkMetadata {
   return {
     lanIpAddresses: uniqueStrings(lan),
     tailscaleIp: uniqueStrings(tailscale)[0] ?? null,
+    tailscaleDnsName: readLocalTailscaleDnsName(),
   };
+}
+
+function resolveTailscaleCli(): string {
+  const configured = process.env.ADE_TAILSCALE_CLI?.trim();
+  if (configured) return configured;
+  if (process.platform === "darwin" && fs.existsSync(TAILSCALE_CLI_MACOS_PATH)) {
+    return TAILSCALE_CLI_MACOS_PATH;
+  }
+  return "tailscale";
+}
+
+function normalizeTailscaleDnsName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replace(/\.$/, "").toLowerCase();
+  return normalized.endsWith(".ts.net") ? normalized : null;
+}
+
+function readLocalTailscaleDnsName(): string | null {
+  const now = Date.now();
+  if (tailscaleStatusCache && tailscaleStatusCache.expiresAt > now) {
+    return tailscaleStatusCache.dnsName;
+  }
+  let dnsName: string | null = null;
+  try {
+    const raw = execFileSync(resolveTailscaleCli(), ["status", "--json"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1_000,
+    });
+    const parsed = safeJsonParse<{ Self?: { DNSName?: unknown } }>(raw, {});
+    dnsName = normalizeTailscaleDnsName(parsed.Self?.DNSName);
+  } catch {
+    dnsName = null;
+  }
+  tailscaleStatusCache = {
+    expiresAt: now + TAILSCALE_STATUS_CACHE_MS,
+    dnsName,
+  };
+  return dnsName;
 }
 
 function firstPreferredHost(ipAddresses: string[]): string {
@@ -172,6 +223,12 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
 
   const getLocalDefaults = () => {
     const network = readLocalNetworkMetadata();
+    const metadata: Record<string, unknown> = {
+      hostname: os.hostname(),
+    };
+    if (network.tailscaleDnsName) {
+      metadata.tailscaleDnsName = network.tailscaleDnsName;
+    }
     return {
       name: os.hostname(),
       platform: mapPlatform(process.platform),
@@ -179,6 +236,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       ipAddresses: network.lanIpAddresses,
       tailscaleIp: network.tailscaleIp,
       lastHost: firstPreferredHost(network.lanIpAddresses),
+      metadata,
     };
   };
 
@@ -261,7 +319,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       ipAddresses: defaults.ipAddresses.length > 0 ? defaults.ipAddresses : (existing?.ipAddresses ?? []),
       metadata: {
         ...(existing?.metadata ?? {}),
-        hostname: os.hostname(),
+        ...defaults.metadata,
       },
     });
   };

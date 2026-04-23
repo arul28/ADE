@@ -155,6 +155,15 @@ function normalizeHost(host: string | null | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function tailscaleDnsNameFromDevice(
+  localDevice: SyncRoleSnapshot["localDevice"],
+): string | null {
+  const value = localDevice.metadata?.tailscaleDnsName;
+  return typeof value === "string" && value.trim().toLowerCase().endsWith(".ts.net")
+    ? value.trim().replace(/\.$/, "").toLowerCase()
+    : null;
+}
+
 function buildAddressCandidates(
   localDevice: SyncRoleSnapshot["localDevice"],
 ): SyncAddressCandidate[] {
@@ -173,6 +182,7 @@ function buildAddressCandidates(
   const preferredSavedHostIsCurrent = preferredSavedHost != null && (
     localDevice.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
     || normalizeHost(localDevice.tailscaleIp) === preferredSavedHost
+    || tailscaleDnsNameFromDevice(localDevice) === preferredSavedHost
   );
   if (preferredSavedHostIsCurrent) {
     append(localDevice.lastHost, "saved");
@@ -183,6 +193,7 @@ function buildAddressCandidates(
   if (!preferredSavedHostIsCurrent) {
     append(localDevice.lastHost, "saved");
   }
+  append(tailscaleDnsNameFromDevice(localDevice), "tailscale");
   append(localDevice.tailscaleIp, "tailscale");
   append("127.0.0.1", "loopback");
   return candidates;

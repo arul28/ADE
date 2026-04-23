@@ -35,10 +35,26 @@
   <true/>
   <key>NSAppTransportSecurity</key>
   <dict>
+    <!--
+      ADE sync uses a plaintext WebSocket only after SyncService has accepted
+      the route as loopback, LAN, link-local, or Tailscale. iOS 17+ supports
+      CIDR ATS exceptions, so keep the app-level ATS exception scoped to
+      Tailscale's reserved private address ranges.
+    -->
     <key>NSAllowsLocalNetworking</key>
     <true/>
     <key>NSExceptionDomains</key>
     <dict>
+      <key>100.64.0.0/10</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+      </dict>
+      <key>fd7a:115c:a1e0::/48</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+      </dict>
       <key>ade-sync</key>
       <dict>
         <key>NSExceptionAllowsInsecureHTTPLoads</key>

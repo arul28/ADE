@@ -380,6 +380,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
              last_host = ?,
              last_port = ?,
              tailscale_ip = ?,
+             metadata_json = ?,
              updated_at = ?,
              last_seen_at = ?
        where device_id = ?`,
@@ -388,6 +389,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         "192.168.0.20",
         8787,
         "100.100.12.4",
+        JSON.stringify({ tailscaleDnsName: "mac-studio.tail7497a6.ts.net" }),
         now,
         now,
         localDeviceId,
@@ -404,7 +406,20 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     );
     expect(addressCandidates.length).toBeGreaterThan(0);
     expect(loopbackCandidateIndex).toBe(addressCandidates.length - 1);
-    expect(addressCandidates.slice(0, Math.max(loopbackCandidateIndex, 0)).every((entry) => entry.kind !== "loopback")).toBe(true);
+    expect(
+      addressCandidates
+        .slice(0, Math.max(loopbackCandidateIndex, 0))
+        .every((entry) => entry.kind !== "loopback"),
+    ).toBe(true);
+    const tailscaleCandidates = addressCandidates.filter(
+      (entry) => entry.kind === "tailscale",
+    );
+    expect(tailscaleCandidates[0]?.host.endsWith(".ts.net")).toBe(true);
+    if (status.localDevice.tailscaleIp) {
+      expect(tailscaleCandidates.map((entry) => entry.host)).toContain(
+        status.localDevice.tailscaleIp,
+      );
+    }
 
     db.run(
       `update devices

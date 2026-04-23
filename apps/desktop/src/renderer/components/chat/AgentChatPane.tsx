@@ -82,10 +82,10 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
-const CHAT_HISTORY_READ_MAX_BYTES = 900_000;
+const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
-const MAX_SELECTED_CHAT_SESSION_EVENTS = 1_200;
-const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 240;
+const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
+const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
 
 type AiStatusSnapshot = AiSettingsStatus & {
   runtimeConnections?: Record<string, AiRuntimeConnectionStatus>;

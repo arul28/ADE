@@ -2523,21 +2523,19 @@ export function createAgentChatService(args: {
   const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
 
   // In-memory ring buffer of recent chat events per session. Populated on every
-  // emitted event (see emitChatEvent → commitChatEvent), and also lazily hydrated
-  // from the on-disk transcript when a snapshot is requested. This is the canonical
-  // source of truth for "what should the renderer see right now" on resubscribe,
-  // remount, or project switch — persisted-transcript reads can miss events that
-  // were emitted while fs.appendFile was still in flight, and a project-switch
-  // gap drops all IPC deliveries until the user returns.
-  const CHAT_EVENT_HISTORY_MAX_PER_SESSION = 2_000;
+  // emitted event (see emitChatEvent → commitChatEvent) and merged with the
+  // persisted transcript when a snapshot is requested. The transcript recovers
+  // older project/tab-switch history; the ring contributes events that may not
+  // have reached fs.appendFile yet.
+  const CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION = 4_000;
+  const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
   const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
-  const eventHistoryHydratedSessionIds = new Set<string>();
 
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
     current.push(envelope);
-    if (current.length > CHAT_EVENT_HISTORY_MAX_PER_SESSION) {
-      current.splice(0, current.length - CHAT_EVENT_HISTORY_MAX_PER_SESSION);
+    if (current.length > CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION) {
+      current.splice(0, current.length - CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION);
     }
     eventHistoryBySession.set(envelope.sessionId, current);
   };
@@ -3785,26 +3783,22 @@ export function createAgentChatService(args: {
     }
     const maxEvents = Math.max(
       1,
-      Math.min(CHAT_EVENT_HISTORY_MAX_PER_SESSION, Math.floor(options?.maxEvents ?? CHAT_EVENT_HISTORY_MAX_PER_SESSION)),
+      Math.min(
+        CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION,
+        Math.floor(options?.maxEvents ?? CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION),
+      ),
     );
 
-    // Hydrate the in-memory buffer from disk the first time we see a session,
-    // so a resubscribe after project switch or app restart has both the
-    // persisted history and any live events that arrived afterwards.
+    // Re-read disk on every snapshot. A long-running background chat can age
+    // older entries out of the live ring buffer; the persisted transcript is
+    // the durable source for project/tab switch recovery, while the buffer
+    // contributes events that fs.appendFile may not have flushed yet.
     const bufferExisting = eventHistoryBySession.get(trimmedId) ?? [];
-    let merged: AgentChatEventEnvelope[];
-    if (!eventHistoryHydratedSessionIds.has(trimmedId)) {
-      const diskEnvelopes = readTranscriptEnvelopesForSessionId(trimmedId);
-      merged = mergeEnvelopeStreams(diskEnvelopes, bufferExisting);
-      // Cap after hydration so subsequent writes don't drift past the limit.
-      if (merged.length > CHAT_EVENT_HISTORY_MAX_PER_SESSION) {
-        merged = merged.slice(-CHAT_EVENT_HISTORY_MAX_PER_SESSION);
-      }
-      eventHistoryBySession.set(trimmedId, merged.slice());
-      eventHistoryHydratedSessionIds.add(trimmedId);
-    } else {
-      merged = bufferExisting.slice();
+    let merged = mergeEnvelopeStreams(readTranscriptEnvelopesForSessionId(trimmedId), bufferExisting);
+    if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
+      merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
     }
+    eventHistoryBySession.set(trimmedId, merged.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION));
 
     const truncated = merged.length > maxEvents;
     const windowed = truncated ? merged.slice(-maxEvents) : merged;
@@ -13170,7 +13164,6 @@ export function createAgentChatService(args: {
       clearSubagentSnapshots(trimmedSessionId);
     }
     eventHistoryBySession.delete(trimmedSessionId);
-    eventHistoryHydratedSessionIds.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);

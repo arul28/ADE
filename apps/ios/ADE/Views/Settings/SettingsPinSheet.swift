@@ -150,6 +150,7 @@ struct SettingsPinSheet: View {
         )
 
       case .manual(let host, let port):
+        let tailscaleAddress = syncIsTailscaleRoute(host) ? host : nil
         await syncService.pairAndConnect(
           host: host,
           port: port,
@@ -157,7 +158,7 @@ struct SettingsPinSheet: View {
           hostIdentity: nil,
           hostName: nil,
           candidateAddresses: [host],
-          tailscaleAddress: nil
+          tailscaleAddress: tailscaleAddress
         )
       }
 

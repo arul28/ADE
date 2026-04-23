@@ -197,6 +197,108 @@ enum SyncTailnetDiscovery {
   ]
 }
 
+enum SyncDirectHostPorts {
+  static let defaultPort = 8787
+  static let retryWindow = 12
+  static let portCandidates = Array(defaultPort...(defaultPort + retryWindow))
+}
+
+struct SyncRouteEndpoint: Equatable {
+  var host: String
+  var port: Int?
+}
+
+func syncParseRouteEndpoint(_ rawValue: String) -> SyncRouteEndpoint? {
+  let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return nil }
+
+  if trimmed.range(of: "://") != nil,
+     let components = URLComponents(string: trimmed),
+     let host = components.host?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !host.isEmpty {
+    return SyncRouteEndpoint(host: host, port: syncValidRoutePort(components.port))
+  }
+
+  let authority = syncRouteAuthority(from: trimmed)
+  guard !authority.isEmpty else { return nil }
+
+  if authority.hasPrefix("["),
+     let bracketEnd = authority.firstIndex(of: "]") {
+    let host = String(authority[authority.index(after: authority.startIndex)..<bracketEnd])
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !host.isEmpty else { return nil }
+    let remainder = authority[authority.index(after: bracketEnd)...]
+    if remainder.isEmpty {
+      return SyncRouteEndpoint(host: host, port: nil)
+    }
+    guard remainder.first == ":" else {
+      return SyncRouteEndpoint(host: host, port: nil)
+    }
+    return SyncRouteEndpoint(host: host, port: syncValidRoutePort(String(remainder.dropFirst())))
+  }
+
+  let colonCount = authority.reduce(0) { $1 == ":" ? $0 + 1 : $0 }
+  if colonCount == 1, let colon = authority.lastIndex(of: ":") {
+    let host = String(authority[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+    let portText = String(authority[authority.index(after: colon)...])
+    guard !host.isEmpty else { return nil }
+    if let port = syncValidRoutePort(portText) {
+      return SyncRouteEndpoint(host: host, port: port)
+    }
+    return SyncRouteEndpoint(host: authority, port: nil)
+  }
+
+  return SyncRouteEndpoint(
+    host: authority.trimmingCharacters(in: CharacterSet(charactersIn: "[]")),
+    port: nil
+  )
+}
+
+private func syncRouteAuthority(from rawValue: String) -> String {
+  let endIndex = rawValue.firstIndex { $0 == "/" || $0 == "?" || $0 == "#" } ?? rawValue.endIndex
+  return String(rawValue[..<endIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func syncValidRoutePort(_ port: Int?) -> Int? {
+  guard let port, (1...65_535).contains(port) else { return nil }
+  return port
+}
+
+private func syncValidRoutePort(_ rawValue: String) -> Int? {
+  let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty,
+        trimmed.allSatisfy(\.isNumber),
+        let port = Int(trimmed) else {
+    return nil
+  }
+  return syncValidRoutePort(port)
+}
+
+func syncEndpointHost(_ rawValue: String) -> String? {
+  syncParseRouteEndpoint(rawValue)?.host
+}
+
+func syncConnectPortCandidates(primaryPort: Int, addresses: [String]) -> [Int] {
+  let shouldTryDefaultPair =
+    SyncDirectHostPorts.portCandidates.contains(primaryPort)
+      || addresses.contains(where: syncIsTailscaleRoute)
+  let fallbackPorts = shouldTryDefaultPair ? SyncDirectHostPorts.portCandidates : []
+  var seen = Set<Int>()
+  return ([primaryPort] + fallbackPorts)
+    .compactMap(syncValidRoutePort)
+    .filter { seen.insert($0).inserted }
+}
+
+func syncWebSocketURLString(host rawHost: String, port defaultPort: Int) -> String? {
+  guard let endpoint = syncParseRouteEndpoint(rawHost) else { return nil }
+  let port = endpoint.port ?? defaultPort
+  guard syncValidRoutePort(port) != nil else { return nil }
+  let host = endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !host.isEmpty else { return nil }
+  let urlHost = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+  return "ws://\(urlHost):\(port)"
+}
+
 func syncIsTailnetDiscoveryHost(_ host: String) -> Bool {
   SyncTailnetDiscovery.hostCandidates.contains(
     host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -217,24 +319,9 @@ func syncIsTailscaleIPv4Address(_ host: String) -> Bool {
 }
 
 func syncNormalizedRouteHost(_ address: String) -> String {
-  var host = address.trimmingCharacters(in: .whitespacesAndNewlines)
-  if let schemeRange = host.range(of: "://") {
-    host = String(host[schemeRange.upperBound...])
-  }
-  if let slash = host.firstIndex(of: "/") { host = String(host[..<slash]) }
-  if let question = host.firstIndex(of: "?") { host = String(host[..<question]) }
-  if let bracketEnd = host.lastIndex(of: "]"), host.hasPrefix("[") {
-    host = String(host[host.index(after: host.startIndex)..<bracketEnd])
-  } else {
-    // Only strip a trailing `:port` for unambiguous `host:port`. Unbracketed
-    // IPv6 literals (e.g. `::1`, `fc00::1`) contain multiple colons and must
-    // be preserved verbatim — callers bracket real IPv6+port forms above.
-    let colonCount = host.reduce(0) { $1 == ":" ? $0 + 1 : $0 }
-    if colonCount == 1, let colon = host.lastIndex(of: ":") {
-      host = String(host[..<colon])
-    }
-  }
-  return host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  syncEndpointHost(address)?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased() ?? ""
 }
 
 func syncIsTailscaleRoute(_ address: String) -> Bool {
@@ -307,6 +394,19 @@ private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
     "saved=[\(syncLogAddressList(profile.savedAddressCandidates))]",
     "lan=[\(syncLogAddressList(profile.discoveredLanAddresses))]",
   ].joined(separator: " ")
+}
+
+func syncShouldRoamToTailnet(
+  currentAddress: String?,
+  hasTailnetRoute: Bool,
+  usesWiFi: Bool,
+  usesCellular: Bool,
+  usesWiredEthernet: Bool
+) -> Bool {
+  guard hasTailnetRoute else { return false }
+  let connectedOverTailnet = currentAddress.map(syncIsTailscaleRoute) ?? false
+  guard !connectedOverTailnet else { return false }
+  return usesCellular || (!usesWiFi && !usesWiredEthernet)
 }
 
 enum SyncUserFacingError {
@@ -927,7 +1027,7 @@ final class SyncService: ObservableObject {
       keychain.saveToken(connection.token)
       saveProfile(profile)
       teardownSocket(reason: "Switching desktop project.")
-      let connectedAddress = try await connectUsingProfile(
+      let connectedEndpoint = try await connectUsingProfile(
         profile,
         token: connection.token,
         connectAttemptGeneration: connectAttemptGeneration,
@@ -935,7 +1035,7 @@ final class SyncService: ObservableObject {
         publishConnecting: true
       )
       guard isCurrentConnectAttempt(connectAttemptGeneration), isCurrentProjectSelection(selectionGeneration) else { return }
-      currentAddress = connectedAddress
+      currentAddress = connectedEndpoint.host
       projectHomePresented = false
       localStateRevision += 1
       refreshActiveSessionsAndSnapshot()
@@ -1269,7 +1369,7 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func reconnectIfPossible(userInitiated: Bool = false) async {
+  func reconnectIfPossible(userInitiated: Bool = false, preferTailnet: Bool = false) async {
     do {
       try ensureDatabaseReady()
     } catch {
@@ -1280,6 +1380,15 @@ final class SyncService: ObservableObject {
     if userInitiated {
       setAutoReconnectPausedByUser(false)
       autoReconnectAwaitingLiveDiscovery = false
+      reconnectTask?.cancel()
+      networkPathReconnectTask?.cancel()
+      reconnectState.reset()
+      if reconnectConnectInFlight {
+        syncConnectLog.info("ADE_SYNC_TRACE reconnect user override cancels in-flight attempt")
+        beginConnectAttempt()
+        teardownSocket(reason: "Reconnect restarted.")
+        reconnectConnectInFlight = false
+      }
     }
     guard userInitiated || allowAutoReconnect else {
       syncConnectLog.info("reconnect skipped: automatic reconnect disabled")
@@ -1291,6 +1400,9 @@ final class SyncService: ObservableObject {
     }
     allowAutoReconnect = true
     guard let profile = loadProfile(), let token = keychain.loadToken() else { return }
+    if preferTailnet || (userInitiated && shouldPreferTailnetForUserReconnect(profile)) {
+      preferTailnetForUpcomingReconnect()
+    }
     let automaticAddresses = automaticReconnectAddresses(for: profile)
     syncConnectLog.info(
       "ADE_SYNC_TRACE reconnect start userInitiated=\(userInitiated) state=\(self.connectionState.rawValue, privacy: .public) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) automatic=[\(syncLogAddressList(automaticAddresses), privacy: .public)]"
@@ -1308,18 +1420,23 @@ final class SyncService: ObservableObject {
       return
     }
     reconnectConnectInFlight = true
-    defer { reconnectConnectInFlight = false }
     let connectAttemptGeneration = beginConnectAttempt()
+    defer {
+      if self.connectAttemptGeneration == connectAttemptGeneration {
+        reconnectConnectInFlight = false
+      }
+    }
+    publishReconnectStarted(profile: profile)
     do {
-      let connectedAddress = try await connectUsingProfile(
+      let connectedEndpoint = try await connectUsingProfile(
         profile,
         token: token,
         connectAttemptGeneration: connectAttemptGeneration,
         preferLiveCandidatesOnly: !userInitiated,
-        publishConnecting: userInitiated
+        publishConnecting: true
       )
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
-      currentAddress = connectedAddress
+      currentAddress = connectedEndpoint.host
     } catch {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       handleReconnectFailure(
@@ -1331,11 +1448,27 @@ final class SyncService: ObservableObject {
     }
   }
 
+  private func publishReconnectStarted(profile: HostConnectionProfile) {
+    connectionState = .connecting
+    hostName = profile.hostName
+    lastError = nil
+  }
+
+  private func shouldPreferTailnetForUserReconnect(_ profile: HostConnectionProfile) -> Bool {
+    guard let snapshot = lastNetworkPathSnapshot else { return false }
+    return syncShouldRoamToTailnet(
+      currentAddress: currentAddress,
+      hasTailnetRoute: profileHasTailnetRoute(profile),
+      usesWiFi: snapshot.usesWiFi,
+      usesCellular: snapshot.usesCellular,
+      usesWiredEthernet: snapshot.usesWiredEthernet
+    )
+  }
+
   private func handleNetworkPathChange(_ snapshot: SyncNetworkPathSnapshot) {
     let previous = lastNetworkPathSnapshot
     lastNetworkPathSnapshot = snapshot
     guard previous != nil else { return }
-    guard snapshot.isSatisfied else { return }
     guard canReconnectToSavedHost,
           allowAutoReconnect,
           !autoReconnectPausedByUser,
@@ -1344,30 +1477,42 @@ final class SyncService: ObservableObject {
     }
 
     let connectedOverTailnet = currentAddress.map(syncIsTailscaleRoute) ?? false
-    let shouldRoamToTailnet =
-      !connectedOverTailnet
-      && profileHasTailnetRoute(profile)
-      && (snapshot.usesCellular || (!snapshot.usesWiFi && !snapshot.usesWiredEthernet))
+    let hasTailnetRoute = profileHasTailnetRoute(profile)
+    let shouldRoamToTailnet = syncShouldRoamToTailnet(
+      currentAddress: currentAddress,
+      hasTailnetRoute: hasTailnetRoute,
+      usesWiFi: snapshot.usesWiFi,
+      usesCellular: snapshot.usesCellular,
+      usesWiredEthernet: snapshot.usesWiredEthernet
+    )
 
     syncConnectLog.info(
-      "ADE_SYNC_TRACE path changed path=\(syncLogPathSummary(snapshot), privacy: .public) connectedOverTailnet=\(connectedOverTailnet) hasTailnet=\(self.profileHasTailnetRoute(profile)) shouldRoamToTailnet=\(shouldRoamToTailnet) current=\(self.currentAddress ?? "none", privacy: .public)"
+      "ADE_SYNC_TRACE path changed path=\(syncLogPathSummary(snapshot), privacy: .public) connectedOverTailnet=\(connectedOverTailnet) hasTailnet=\(hasTailnetRoute) shouldRoamToTailnet=\(shouldRoamToTailnet) current=\(self.currentAddress ?? "none", privacy: .public)"
     )
 
     if shouldRoamToTailnet {
       preferTailnetForUpcomingReconnect()
-      scheduleNetworkPathReconnect(forceSocketReset: true)
+      scheduleNetworkPathReconnect(
+        forceSocketReset: true,
+        delayNanoseconds: snapshot.isSatisfied ? 250_000_000 : 750_000_000
+      )
       return
     }
+
+    guard snapshot.isSatisfied else { return }
 
     if !canSendLiveRequests() {
       scheduleNetworkPathReconnect(forceSocketReset: false)
     }
   }
 
-  private func scheduleNetworkPathReconnect(forceSocketReset: Bool) {
+  private func scheduleNetworkPathReconnect(
+    forceSocketReset: Bool,
+    delayNanoseconds: UInt64 = 250_000_000
+  ) {
     networkPathReconnectTask?.cancel()
     networkPathReconnectTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: 250_000_000)
+      try? await Task.sleep(nanoseconds: delayNanoseconds)
       guard let self, !Task.isCancelled else { return }
       if forceSocketReset {
         self.teardownSocket(reason: "Network route changed.")
@@ -1417,6 +1562,11 @@ final class SyncService: ObservableObject {
       disconnect(clearCredentials: false, suspendAutoReconnect: false)
       connectAttemptGeneration = beginConnectAttempt()
       resetChatEventState(clearHistory: true)
+      let endpoint = syncParseRouteEndpoint(host)
+      let requestedHost = endpoint?.host ?? host.trimmingCharacters(in: .whitespacesAndNewlines)
+      let requestedPort = endpoint?.port ?? port
+      let normalizedCandidateAddresses = candidateAddresses.compactMap { syncEndpointHost($0) }
+      let normalizedTailscaleAddress = tailscaleAddress.flatMap(syncEndpointHost)
       let matchingDiscovery = discoveredHosts.filter { discovered in
         if let hostIdentity, !hostIdentity.isEmpty {
           return discovered.hostIdentity == hostIdentity
@@ -1428,33 +1578,35 @@ final class SyncService: ObservableObject {
       }
       let discoveryAddresses = matchingDiscovery.flatMap(\.addresses)
       let discoveryTailscaleAddresses = matchingDiscovery.compactMap(\.tailscaleAddress)
-      let explicitTailscaleAddresses = tailscaleAddress.map { [$0] } ?? []
+      let explicitTailscaleAddresses = normalizedTailscaleAddress.map { [$0] } ?? []
       let lastSuccessfulAddress = preferredPairedAddress(
-        host: host,
+        host: requestedHost,
         hostIdentity: hostIdentity,
         hostName: hostName,
         candidateAddresses: discoveryAddresses
           + discoveryTailscaleAddresses
-          + [host]
+          + [requestedHost]
           + explicitTailscaleAddresses
-          + candidateAddresses
+          + normalizedCandidateAddresses
       )
       let addressCandidates = connectableAddresses(from: deduplicatedAddresses(
         lastSuccessfulAddress +
-        [host] +
+        [requestedHost] +
         discoveryAddresses +
         discoveryTailscaleAddresses +
         explicitTailscaleAddresses +
-        candidateAddresses
+        normalizedCandidateAddresses
       ))
+      let portCandidates = syncConnectPortCandidates(primaryPort: requestedPort, addresses: addressCandidates)
       syncConnectLog.info(
-        "ADE_SYNC_TRACE pair candidates host=\(host, privacy: .public) port=\(port) discoveryLan=[\(syncLogAddressList(discoveryAddresses), privacy: .public)] discoveryTailnet=[\(syncLogAddressList(discoveryTailscaleAddresses), privacy: .public)] explicitTailnet=[\(syncLogAddressList(explicitTailscaleAddresses), privacy: .public)] provided=[\(syncLogAddressList(candidateAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addressCandidates), privacy: .public)]"
+        "ADE_SYNC_TRACE pair candidates host=\(requestedHost, privacy: .public) ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] discoveryLan=[\(syncLogAddressList(discoveryAddresses), privacy: .public)] discoveryTailnet=[\(syncLogAddressList(discoveryTailscaleAddresses), privacy: .public)] explicitTailnet=[\(syncLogAddressList(explicitTailscaleAddresses), privacy: .public)] provided=[\(syncLogAddressList(normalizedCandidateAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addressCandidates), privacy: .public)]"
       )
       // If we have multiple candidates (e.g. discovered LAN + loopback + tailscale),
       // walk them in order and only fail if every one fails to open a socket.
       // A single-address manual entry retains short-circuit behavior since the
       // loop will still surface that sole failure.
       var openedAddress: String?
+      var openedPort: Int?
       var lastOpenError: Error?
       guard !addressCandidates.isEmpty else {
         throw noConnectableAddressError()
@@ -1463,25 +1615,31 @@ final class SyncService: ObservableObject {
         guard isCurrentConnectAttempt(connectAttemptGeneration) else {
           throw CancellationError()
         }
-        let kind = addressCandidateKind(candidate, profile: nil, explicitTailscaleAddress: tailscaleAddress)
-        syncConnectLog.info("ADE_SYNC_TRACE pair attempt host=\(candidate, privacy: .public) port=\(port) kind=\(kind, privacy: .public)")
-        do {
-          try await openSocket(
-            host: candidate,
-            port: port,
-            connectAttemptGeneration: connectAttemptGeneration
-          )
-          syncConnectLog.info("ADE_SYNC_TRACE pair success host=\(candidate, privacy: .public)")
-          openedAddress = candidate
+        let kind = addressCandidateKind(candidate, profile: nil, explicitTailscaleAddress: normalizedTailscaleAddress)
+        for candidatePort in portCandidates {
+          syncConnectLog.info("ADE_SYNC_TRACE pair attempt host=\(candidate, privacy: .public) port=\(candidatePort) kind=\(kind, privacy: .public)")
+          do {
+            try await openSocket(
+              host: candidate,
+              port: candidatePort,
+              connectAttemptGeneration: connectAttemptGeneration
+            )
+            syncConnectLog.info("ADE_SYNC_TRACE pair success host=\(candidate, privacy: .public) port=\(candidatePort)")
+            openedAddress = candidate
+            openedPort = candidatePort
+            break
+          } catch {
+            syncConnectLog.info("ADE_SYNC_TRACE pair failure host=\(candidate, privacy: .public) port=\(candidatePort) error=\(syncLogErrorSummary(error), privacy: .public)")
+            lastOpenError = error
+            teardownSocket()
+            continue
+          }
+        }
+        if openedAddress != nil {
           break
-        } catch {
-          syncConnectLog.info("ADE_SYNC_TRACE pair failure host=\(candidate, privacy: .public) error=\(syncLogErrorSummary(error), privacy: .public)")
-          lastOpenError = error
-          teardownSocket()
-          continue
         }
       }
-      guard let preferredAddress = openedAddress else {
+      guard let preferredAddress = openedAddress, let preferredPort = openedPort else {
         throw lastOpenError ?? NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Unable to reach the host."])
       }
       let requestId = makeRequestId()
@@ -1507,7 +1665,7 @@ final class SyncService: ObservableObject {
       let profile = HostConnectionProfile(
         hostIdentity: hostIdentity,
         hostName: hostName,
-        port: port,
+        port: preferredPort,
         authKind: "paired",
         pairedDeviceId: pairedDeviceId,
         lastRemoteDbVersion: 0,
@@ -1519,13 +1677,13 @@ final class SyncService: ObservableObject {
           if host == "127.0.0.1" { return false }
           return !syncIsTailscaleRoute(host)
         },
-        tailscaleAddress: tailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute)
+        tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute)
       )
       saveProfile(profile)
       currentAddress = preferredAddress
       try await hello(
         host: preferredAddress,
-        port: port,
+        port: preferredPort,
         token: secret,
         authKind: "paired",
         pairedDeviceId: pairedDeviceId,
@@ -3219,7 +3377,7 @@ final class SyncService: ObservableObject {
     addresses.filter { syncCanAttemptPlaintextWebSocket($0) }
   }
 
-  private func syncCanAttemptPlaintextWebSocket(_ address: String) -> Bool {
+  func syncCanAttemptPlaintextWebSocket(_ address: String) -> Bool {
     let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty { return false }
     if let schemeRange = trimmed.range(of: "://") {
@@ -3416,22 +3574,25 @@ final class SyncService: ObservableObject {
     } ?? []
     let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleRoute)
     let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleRoute($0) }
+    let savedProfileTailnet = profile.tailscaleAddress.map { [$0] } ?? []
+    let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleRoute)
+    let savedLastSuccessfulTailnet = profile.lastSuccessfulAddress.flatMap { address in
+      syncIsTailscaleRoute(address) ? [address] : nil
+    } ?? []
+    let savedTailnetFallback = savedProfileTailnet + savedTailnet + savedLastSuccessfulTailnet
     // Prefer addresses we see RIGHT NOW on the network over anything we have
     // cached from previous sessions. If the user changed subnets, stale
     // entries would otherwise consume the first few attempts (each with its
     // own timeout) before we finally try the correct current IP. Only fall
     // back to cached saved candidates if no live discovery is available.
     let prioritizedLive = preferTailnet
-      ? liveLastSuccessfulTailnet + liveTailscale + liveLastSuccessfulLan + liveLan
+      ? liveLastSuccessfulTailnet + liveTailscale + savedTailnetFallback + liveLastSuccessfulLan + liveLan
       : liveLastSuccessful + liveLan + liveTailscale
-    let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleRoute)
     let savedLan = profile.savedAddressCandidates.filter { !syncIsTailscaleRoute($0) }
     let fallbackLastSuccessful = liveLastSuccessful.isEmpty ? (profile.lastSuccessfulAddress.map { [$0] } ?? []) : []
-    let savedProfileTailnet = profile.tailscaleAddress.map { [$0] } ?? []
     let fallbackSaved: [String]
     if preferTailnet {
-      fallbackSaved = savedProfileTailnet
-        + savedTailnet
+      fallbackSaved = savedTailnetFallback
         + fallbackLastSuccessful
         + savedLan
         + profile.discoveredLanAddresses
@@ -3471,10 +3632,16 @@ final class SyncService: ObservableObject {
     } ?? []
     let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleRoute)
     let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleRoute($0) }
+    let savedProfileTailnet = profile.tailscaleAddress.map { [$0] } ?? []
+    let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleRoute)
+    let savedLastSuccessfulTailnet = profile.lastSuccessfulAddress.flatMap { address in
+      syncIsTailscaleRoute(address) ? [address] : nil
+    } ?? []
+    let savedTailnetFallback = savedProfileTailnet + savedTailnet + savedLastSuccessfulTailnet
 
     let prioritizedLive = preferTailnet
-      ? liveLastSuccessfulTailnet + liveTailscale + liveLastSuccessfulLan + liveLan
-      : liveLastSuccessful + liveLan + liveTailscale
+      ? liveLastSuccessfulTailnet + liveTailscale + savedTailnetFallback + liveLastSuccessfulLan + liveLan
+      : liveLastSuccessful + liveLan + liveTailscale + savedTailnetFallback
     return deduplicatedAddresses(prioritizedLive)
   }
 
@@ -3484,14 +3651,15 @@ final class SyncService: ObservableObject {
     connectAttemptGeneration: UInt64,
     preferLiveCandidatesOnly: Bool,
     publishConnecting: Bool
-  ) async throws -> String {
+  ) async throws -> (host: String, port: Int) {
     var lastFailure: Error?
     let rawAddresses = preferLiveCandidatesOnly
       ? automaticReconnectAddresses(for: profile)
       : prioritizedAddresses(for: profile)
     let addresses = connectableAddresses(from: rawAddresses)
+    let portCandidates = syncConnectPortCandidates(primaryPort: profile.port, addresses: addresses)
     syncConnectLog.info(
-      "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)]"
+      "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)]"
     )
     guard !addresses.isEmpty else {
       if rawAddresses.isEmpty {
@@ -3505,39 +3673,42 @@ final class SyncService: ObservableObject {
         throw CancellationError()
       }
       let kind = addressCandidateKind(address, profile: profile, explicitTailscaleAddress: nil)
-      syncConnectLog.info("ADE_SYNC_TRACE reconnect attempt host=\(address, privacy: .public) port=\(profile.port) kind=\(kind, privacy: .public)")
-      do {
-        try await openSocket(
-          host: address,
-          port: profile.port,
-          connectAttemptGeneration: connectAttemptGeneration,
-          publishConnecting: publishConnecting
-        )
-        try await hello(
-          host: address,
-          port: profile.port,
-          token: token,
-          authKind: profile.authKind,
-          pairedDeviceId: profile.pairedDeviceId,
-          expectedHostIdentity: profile.hostIdentity,
-          connectAttemptGeneration: connectAttemptGeneration
-        )
-        guard isCurrentConnectAttempt(connectAttemptGeneration) else {
-          throw CancellationError()
+      for candidatePort in portCandidates {
+        syncConnectLog.info("ADE_SYNC_TRACE reconnect attempt host=\(address, privacy: .public) port=\(candidatePort) kind=\(kind, privacy: .public)")
+        do {
+          try await openSocket(
+            host: address,
+            port: candidatePort,
+            connectAttemptGeneration: connectAttemptGeneration,
+            publishConnecting: publishConnecting
+          )
+          try await hello(
+            host: address,
+            port: candidatePort,
+            token: token,
+            authKind: profile.authKind,
+            pairedDeviceId: profile.pairedDeviceId,
+            expectedHostIdentity: profile.hostIdentity,
+            connectAttemptGeneration: connectAttemptGeneration
+          )
+          guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+            throw CancellationError()
+          }
+          syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(address, privacy: .public) port=\(candidatePort)")
+          return (host: address, port: candidatePort)
+        } catch {
+          syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(address, privacy: .public) port=\(candidatePort) error=\(syncLogErrorSummary(error), privacy: .public)")
+          lastFailure = error
+          if shouldInvalidateSavedPairing(for: error) {
+            forgetHost()
+            throw error
+          }
+          // Tear down this attempt's socket and keep iterating through the
+          // remaining ports and addresses. Only surface an error if every
+          // candidate fails.
+          teardownSocket()
+          continue
         }
-        syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(address, privacy: .public)")
-        return address
-      } catch {
-        syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(address, privacy: .public) error=\(syncLogErrorSummary(error), privacy: .public)")
-        lastFailure = error
-        if shouldInvalidateSavedPairing(for: error) {
-          forgetHost()
-          throw error
-        }
-        // Tear down this attempt's socket and keep iterating through the
-        // remaining candidates. Only surface an error if every candidate fails.
-        teardownSocket()
-        continue
       }
     }
 
@@ -3625,7 +3796,11 @@ final class SyncService: ObservableObject {
         mergedByIdentity[identity] = tagged
       }
     }
-    let merged = Array(mergedByIdentity.values) + noIdentity
+    let identifiedHosts = Array(mergedByIdentity.values)
+    let filteredNoIdentity = noIdentity.filter { host in
+      !shouldSuppressAnonymousTailnetHost(host, identifiedHosts: identifiedHosts)
+    }
+    let merged = identifiedHosts + filteredNoIdentity
     discoveredHosts = merged.sorted { $0.hostName.localizedCaseInsensitiveCompare($1.hostName) == .orderedAscending }
     guard let profile = activeHostProfile else { return }
     let matching = discoveredHosts.filter { discovered in
@@ -3667,6 +3842,24 @@ final class SyncService: ObservableObject {
     }
   }
 
+  private func shouldSuppressAnonymousTailnetHost(
+    _ host: DiscoveredSyncHost,
+    identifiedHosts: [DiscoveredSyncHost]
+  ) -> Bool {
+    let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard identity.isEmpty else { return false }
+    guard let tailnetRoute = host.tailscaleAddress,
+          syncIsTailscaleRoute(tailnetRoute) else {
+      return false
+    }
+    return identifiedHosts.contains { identified in
+      let identifiedIdentity = identified.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard !identifiedIdentity.isEmpty else { return false }
+      if identified.tailscaleAddress.map(syncIsTailscaleRoute) == true { return true }
+      return identified.addresses.contains(where: syncIsTailscaleRoute)
+    }
+  }
+
   private func currentPeerMetadata() -> [String: Any] {
     [
       "deviceId": deviceId,
@@ -3685,20 +3878,17 @@ final class SyncService: ObservableObject {
     publishConnecting: Bool = true
   ) async throws {
     teardownSocket(closeCode: .goingAway)
+    let endpoint = syncParseRouteEndpoint(host)
+    let socketHost = endpoint?.host ?? host.trimmingCharacters(in: .whitespacesAndNewlines)
+    let socketPort = endpoint?.port ?? port
     if publishConnecting {
       connectionState = .connecting
       hostName = activeHostProfile?.hostName
-      currentAddress = host
+      currentAddress = socketHost
     }
 
-    let urlString: String
-    if host.contains(":") && !host.hasPrefix("[") {
-      urlString = "ws://[\(host)]:\(port)"
-    } else {
-      urlString = "ws://\(host):\(port)"
-    }
-
-    guard let url = URL(string: urlString) else {
+    guard let urlString = syncWebSocketURLString(host: socketHost, port: socketPort),
+          let url = URL(string: urlString) else {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid host address."])
     }
     let task = socketSession.webSocketTask(with: url)
@@ -3779,6 +3969,22 @@ final class SyncService: ObservableObject {
       expectedHostIdentity: expectedHostIdentity,
       connectAttemptGeneration: connectAttemptGeneration
     )
+  }
+
+  func applyDiscoveredHostsForTesting(_ hosts: [DiscoveredSyncHost]) {
+    applyDiscoveredHosts(hosts)
+  }
+
+  func preferTailnetReconnectForTesting() {
+    preferTailnetForUpcomingReconnect()
+  }
+
+  func automaticReconnectAddressesForTesting(_ profile: HostConnectionProfile) -> [String] {
+    automaticReconnectAddresses(for: profile)
+  }
+
+  func prioritizedReconnectAddressesForTesting(_ profile: HostConnectionProfile) -> [String] {
+    prioritizedAddresses(for: profile)
   }
   #endif
 
@@ -5406,6 +5612,14 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
     let port = service.port > 0 ? service.port : Int(txtRecord["port"] ?? "") ?? 8787
     let hostName = txtRecord["deviceName"] ?? service.hostName ?? service.name
     let hostIdentity = txtRecord["deviceId"]
+    let tailscaleDnsName = txtRecord["tailscaleDnsName"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let tailscaleIp = txtRecord["tailscaleIp"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let tailscaleAddress = [tailscaleDnsName, tailscaleIp]
+      .compactMap { value -> String? in
+        guard let value, !value.isEmpty, syncIsTailscaleRoute(value) else { return nil }
+        return value
+      }
+      .first
     let sk = serviceKey(for: service)
     // Stable unique row id for SwiftUI: same `deviceId` can appear on multiple Bonjour rows.
     let id: String
@@ -5433,7 +5647,7 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
       hostIdentity: hostIdentity,
       port: port,
       addresses: nonLoopback + loopback,
-      tailscaleAddress: txtRecord["tailscaleIp"],
+      tailscaleAddress: tailscaleAddress,
       lastResolvedAt: ISO8601DateFormatter().string(from: Date())
     )
   }

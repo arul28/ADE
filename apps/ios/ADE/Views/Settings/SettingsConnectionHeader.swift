@@ -236,7 +236,12 @@ private struct SettingsConnectionQuickAction: View {
           symbol: "arrow.clockwise",
           tint: ADEColor.purpleAccent
         ) {
-          Task { await syncService.reconnectIfPossible(userInitiated: true) }
+          Task {
+            await syncService.reconnectIfPossible(
+              userInitiated: true,
+              preferTailnet: syncService.savedReconnectHost?.tailscaleAddress != nil
+            )
+          }
         }
         .accessibilityLabel("Reconnect to saved host")
       }

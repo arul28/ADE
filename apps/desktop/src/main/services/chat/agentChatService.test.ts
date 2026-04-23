@@ -4535,6 +4535,46 @@ describe("createAgentChatService", () => {
       )).toEqual(["persisted-1", "persisted-2"]);
     });
 
+    it("re-reads the on-disk transcript on repeated history snapshots", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelope1: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "persisted-before-switch" },
+        sequence: 1,
+      };
+      const envelope2: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:01:00.000Z",
+        event: { type: "text", text: "persisted-after-switch" },
+        sequence: 2,
+      };
+
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope1)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript)
+        .mockReturnValueOnce([envelope1])
+        .mockReturnValueOnce([envelope1, envelope2]);
+
+      const firstHistory = service.getChatEventHistory(session.id);
+      expect(firstHistory.events.map((envelope) =>
+        envelope.event.type === "text" ? envelope.event.text : "",
+      )).toEqual(["persisted-before-switch"]);
+
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope1)}\n${JSON.stringify(envelope2)}\n`, "utf8");
+
+      const secondHistory = service.getChatEventHistory(session.id);
+      expect(secondHistory.events.map((envelope) =>
+        envelope.event.type === "text" ? envelope.event.text : "",
+      )).toEqual(["persisted-before-switch", "persisted-after-switch"]);
+    });
+
     it("keeps Claude streaming fragments that share a timestamp when hydrating", async () => {
       // Claude V2 emits multiple text deltas inside tight streaming loops,
       // so two legitimate envelopes with type:"text" can land on the same

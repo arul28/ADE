@@ -244,7 +244,12 @@ struct DiscoverHostsSheet: View {
             if let savedHost {
               Button {
                 dismiss()
-                Task { await syncService.reconnectIfPossible(userInitiated: true) }
+                Task {
+                  await syncService.reconnectIfPossible(
+                    userInitiated: true,
+                    preferTailnet: savedHost.tailscaleAddress != nil
+                  )
+                }
               } label: {
                 DiscoveredHostRow(
                   host: savedHost,
@@ -355,6 +360,9 @@ private struct DiscoveredHostRow: View {
     if syncIsTailscaleRoute(route) {
       return "Tailscale"
     }
+    if host.tailscaleAddress.map(syncIsTailscaleRoute) == true {
+      return "LAN + Tailscale"
+    }
     return nil
   }
 
@@ -430,7 +438,7 @@ struct ManualEntrySheet: View {
   @Environment(\.dismiss) private var dismiss
 
   @State private var host: String = ""
-  @State private var port: String = "8787"
+  @State private var port: String = String(SyncDirectHostPorts.defaultPort)
 
   let onConnect: (String, Int) -> Void
 
@@ -448,18 +456,20 @@ struct ManualEntrySheet: View {
           TextField("Host or IP address", text: $host)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-            .keyboardType(.URL)
-            .adeInsetField()
+            .keyboardType(.asciiCapable)
+            .textFieldStyle(.plain)
+            .manualEntryField()
 
           TextField("Port", text: $port)
             .keyboardType(.numberPad)
-            .adeInsetField()
+            .textFieldStyle(.plain)
+            .manualEntryField()
 
           Button {
-            let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-            let parsedPort = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 8787
-            guard !trimmedHost.isEmpty else { return }
-            onConnect(trimmedHost, parsedPort)
+            let endpoint = syncParseRouteEndpoint(host)
+            let parsedPort = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)) ?? SyncDirectHostPorts.defaultPort
+            guard let endpoint else { return }
+            onConnect(endpoint.host, endpoint.port ?? parsedPort)
           } label: {
             Text("Continue")
               .font(.subheadline.weight(.semibold))
@@ -484,6 +494,25 @@ struct ManualEntrySheet: View {
         }
       }
     }
+  }
+}
+
+private struct ManualEntryFieldModifier: ViewModifier {
+  func body(content: Content) -> some View {
+    content
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+      )
+  }
+}
+
+private extension View {
+  func manualEntryField() -> some View {
+    modifier(ManualEntryFieldModifier())
   }
 }
 

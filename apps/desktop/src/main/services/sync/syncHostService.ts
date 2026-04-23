@@ -840,6 +840,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     const localDevice = args.deviceRegistryService?.ensureLocalDevice() ?? null;
     const hostName = localDevice?.name ?? os.hostname();
+    const tailscaleDnsName =
+      typeof localDevice?.metadata?.tailscaleDnsName === "string"
+        ? localDevice.metadata.tailscaleDnsName.trim().replace(/\.$/, "").toLowerCase()
+        : "";
     const ipAddresses = uniqueStrings([
       ...(localDevice?.ipAddresses ?? []),
       localDevice?.tailscaleIp ?? null,
@@ -855,6 +859,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       host: preferredHost,
       addresses: addressesCsv,
       tailscaleIp: localDevice?.tailscaleIp ?? "",
+      tailscaleDnsName: tailscaleDnsName.endsWith(".ts.net") ? tailscaleDnsName : "",
     };
     const signature = JSON.stringify({ hostName, port, txt });
     if (bonjourAnnouncement && bonjourPort === port && bonjourSignature === signature) return;
