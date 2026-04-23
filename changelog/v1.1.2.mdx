@@ -1,0 +1,76 @@
+---
+title: "v1.1.2"
+description: "Release notes for ADE v1.1.2 — April 22, 2026"
+---
+
+v1.1.2 is a stability release focused on chat continuity. Chats no longer lose their history (or freeze) when you switch projects, close a tab, or come back hours later. It also folds in the iOS polish and App Store review prep that were originally planned for v1.1.1 — privacy page, Tailscale routing cleanup, iOS Work timeline stability, and a large pass on orphan-lane sessions.
+
+---
+
+## Chat continuity
+
+The biggest change: the desktop renderer had no snapshot-on-resubscribe path. Switching projects (or tabbing away from Work) would drop IPC events while you were gone, and on return the pane only got the transcript tail — long chats lost earlier history, and a transient read error could leave the pane frozen with no retry.
+
+- **In-memory per-session event ring buffer.** `agentChatService` now records every emitted envelope into a 2,000-event-per-session buffer alongside the on-disk transcript. A new `getChatEventHistory` IPC method merges the buffer with the disk transcript on first read so a late subscriber always sees the full history.
+- **Freeze recovery on error.** `AgentChatPane` now clears its load-gate in the catch path when a history read fails, so a transient miss no longer traps the UI in an empty state. The Work-tab single-session tile also force-reloads on mount, matching the behavior the other chat surfaces already had.
+- **Cross-run-safe dedup.** Sequence numbers restart at 0 every time a session rebuilds, so the disk-buffer merge dedupes on timestamp + event type + payload content instead — true duplicates still collapse, but streaming text fragments that land in the same millisecond stay distinct.
+- **Path validation.** `getChatEventHistory` validates the session id is a registered chat session before opening any transcript file, since the endpoint is reachable over IPC.
+
+On the Claude side:
+
+- **Resume state survives non-terminal teardowns.** When the runtime is torn down for `idle_ttl`, `budget_eviction`, `pool_compaction`, `paused_run`, `project_close`, or `shutdown`, the V2 `sdkSessionId` and lane directive are now preserved to disk so the next turn re-attaches to the same SDK session instead of cold-starting.
+- **Terminal teardowns still invalidate.** `handle_close`, `ended_session`, and `model_switch` keep the old behavior even when the runtime is already null — closing a chat invalidates its resume state so a future resume can't accidentally reattach.
+
+The iOS side had already landed the equivalent work in the sync service (`mergeChatEventHistory`, `deduplicatedChatEventHistory`, 2 MB snapshot request, 1,000-event retention); this release brings the desktop to parity and then tightens both sides further:
+
+- Raised iOS chat history window to 2 MB and up to 1,000 envelopes per session.
+- `mergeChatEventHistory` merges truncated snapshots with existing events instead of replacing.
+- Fallback to `messageId` when Claude assistant-text events are missing a non-empty `itemId`, so live-path and transcript-replay render the same number of bubbles.
+- `deduplicatedChatEventHistory` now parses ISO-8601 timestamps with a fractional-seconds formatter + fallback before comparing, so mixed-precision snapshots sort chronologically instead of lexicographically.
+- `recordChatEventEnvelope` falls back to the full sort path when a delayed envelope predates the last-recorded one, healing out-of-order live arrivals after a snapshot merge.
+
+---
+
+## Orphan lanes
+
+Sessions whose lane isn't in the current UI lane list (archived lanes, lanes hidden by filter) now render as their own collapsible groups instead of disappearing.
+
+- **Desktop `SessionListPane`** renders orphan-lane groups sorted by latest `startedAt`, with a `Number.isFinite` guard so malformed timestamps don't trigger `NaN` comparator ordering.
+- **iOS `workSessionGroupsByLane`** mirrors the same shape: per-lane groups for orphaned sessions, sorted newest-first with alphabetical name tiebreak, trimmed-`laneName` → `laneId` fallback for empty labels, and an ISO-8601 parser that handles both fractional and non-fractional variants.
+- Orphan labels use the session's preserved `laneName` when present so users still recognize which branch each belongs to.
+
+---
+
+## Sync and discovery
+
+- **Unified tailnet discovery.** `SyncTailnetDiscovery` host and port candidates are consolidated. Tailnet-address detection is centralized in `syncIsTailscaleRoute`, covering MagicDNS hostnames, `ts.net` suffixes, and `100.64/10` IPv4 literals. Port `8788` is preserved as a fallback since the desktop retries there when `8787` is busy.
+- **IPv6 route normalization.** `syncNormalizedRouteHost` only strips a trailing `:port` when there's exactly one colon, so unbracketed IPv6 literals (`::1`, `fc00::1`) survive normalization instead of being truncated before the allowlist check.
+- **Shared desktop device ID.** `deviceRegistryService` now accepts an optional `localDeviceIdPath` so the device identity can live under `userData` instead of per-project secrets. Legacy per-project `sync-device-id` files are preserved when present — opening a second project doesn't silently flip its device identity to the first project's ID.
+- **Runtime discovery toggle.** `syncHostService` exposes `setDiscoveryEnabled()` to gate LAN/Tailnet advertisement at runtime, with `unpublishLanDiscovery` called on dispose so stale entries don't linger.
+
+---
+
+## iOS polish
+
+- **App Store review prep.** The placeholder privacy page is replaced with an Apple-grade policy (effective date, data categories, third parties, retention, contact). `vercel.json` gained an SPA catch-all so `/privacy` and `/download` stop 404'ing — both required for external TestFlight review.
+- **App icon.** Full-bleed opaque export of the centered ADE artwork so the mark matches the macOS logo and satisfies App Store upload checks.
+- **Launch and root polish.** Tighter top-of-screen rhythm on the five root tabs (Work, Lanes, PRs, Files, CTO). The connection header chip meets the 44 pt hit-target minimum, and the connection-dot hover around the gear icon is consistent across tabs.
+
+---
+
+## Work transcript stability
+
+- **Shared itemId resolution policy.** `WorkTranscriptParser` and `WorkEventMapping` now share a single `workStableTimelineItemId` helper (with an optional-`itemId` overload for the raw-dict transcript path). File-change events deliberately keep the raw `itemId` rather than collapsing to `logicalItemId` — OpenCode's patch emitter produces one event per file with a shared logical ID, and collapsing was dropping all but the last file.
+- **Streaming-aware tool groups.** Tool cards that are still streaming inside a group auto-expand (`localExpanded || running`), so mid-stream progress doesn't disappear into the collapsed group hint.
+- **Assistant-text grouping.** `buildWorkChatMessages` tracks whether the previous envelope was assistant text, so nil-`itemId` streaming fragments merge into it without being pulled across intervening tool calls or user messages.
+
+---
+
+## Other
+
+- `workSessionGroupsByLane` on iOS: orphan-lane ordering tests now use distinct `startedAt` timestamps so the "latest first" sort is actually exercised.
+- `SessionListPane` on desktop: blank `laneName` now trim-falls-back to `laneId` so orphan-group headers never render empty.
+- `syncService.test.ts`: retry-test host mock stubs `setDiscoveryEnabled`.
+- `browserMock.getEventHistory` echoes the requested session id.
+- `registerIpc`: the new `agentChatGetEventHistory` handler coerces `maxEvents` to finite positive integers.
+- Internal docs updated for the new chat lifecycle, iOS companion sync story, and terminals UI surfaces.
