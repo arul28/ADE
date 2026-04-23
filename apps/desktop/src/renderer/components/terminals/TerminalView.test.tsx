@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, render, cleanup } from "@testing-library/react";
+import { act, render, cleanup, waitFor } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const MOCK_TERMINAL_FONT_FAMILY = vi.hoisted(() => "monospace");
@@ -407,28 +407,29 @@ describe("TerminalView", () => {
   });
 
   it("falls back to the DOM renderer when webgl initialization fails", async () => {
-    mockState.shouldThrowWebglAddon = true;
-    const previousFallbacks = getTerminalRuntimeSnapshot("session-dom")?.health.rendererFallbacks ?? 0;
+    // `await import("@xterm/addon-webgl")` may not settle under Vi's fake timers on CI shards.
+    vi.useRealTimers();
+    try {
+      mockState.shouldThrowWebglAddon = true;
+      const previousFallbacks = getTerminalRuntimeSnapshot("session-dom")?.health.rendererFallbacks ?? 0;
 
-    render(<TerminalView ptyId="pty-dom" sessionId="session-dom" isActive />);
-    // initRendererChain is fire-and-forget with a dynamic import inside.
-    // Multiple flush cycles are needed for the microtask chain to fully settle:
-    // 1) timer flush kicks off the render + initRendererChain
-    // 2) microtask flush lets the dynamic import resolve
-    // 3) second timer flush lets the post-import code run
-    for (let i = 0; i < 100; i++) {
+      render(<TerminalView ptyId="pty-dom" sessionId="session-dom" isActive />);
+
+      await waitFor(
+        () => {
+          const runtime = getTerminalRuntimeSnapshot("session-dom");
+          expect(runtime?.renderer).toBe("dom");
+          expect(runtime?.health.rendererFallbacks).toBeGreaterThan(previousFallbacks);
+        },
+        { timeout: 10_000 },
+      );
+
+      cleanup();
       await act(async () => {});
-      await (vi as any).dynamicImportSettled?.();
-      await flushAllTimers();
-      const runtime = getTerminalRuntimeSnapshot("session-dom");
-      if (runtime?.renderer === "dom" && runtime.health.rendererFallbacks > previousFallbacks) {
-        break;
-      }
+      await Promise.resolve();
+    } finally {
+      vi.useFakeTimers();
     }
-
-    const runtime = getTerminalRuntimeSnapshot("session-dom");
-    expect(runtime?.renderer).toBe("dom");
-    expect(runtime?.health.rendererFallbacks).toBeGreaterThan(previousFallbacks);
   });
 
   it("applies updated terminal preferences to an existing runtime", async () => {

@@ -55,8 +55,6 @@ import { createAiIntegrationService } from "../../desktop/src/main/services/ai/a
 import { createMissionBudgetService } from "../../desktop/src/main/services/orchestrator/missionBudgetService";
 import type { createSyncService } from "../../desktop/src/main/services/sync/syncService";
 import type { createSyncHostService } from "../../desktop/src/main/services/sync/syncHostService";
-import type { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
-import type { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
 import type { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
 import type { createContextDocService } from "../../desktop/src/main/services/context/contextDocService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
@@ -493,7 +491,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     githubService: headlessLinearServices.githubService as never,
     workerTaskSessionService: headlessLinearServices.workerTaskSessionService,
     workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
-    linearCredentialService: headlessLinearServices.linearCredentialService,
+    linearCredentialService: headlessLinearServices.linearCredentialService as never,
     prService: headlessLinearServices.prService,
     fileService: headlessLinearServices.fileService,
     flowPolicyService: headlessLinearServices.flowPolicyService,

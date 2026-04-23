@@ -767,7 +767,7 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
               adapterKind: executorKind,
               startupCommandOverride: true,
               promptLength: overridePrompt.length,
-              startupCommandPreview: startupCommandOverride.slice(0, 320)
+              startupCommandPreview: overridePrompt.slice(0, 320)
             }
           };
         }

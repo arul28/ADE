@@ -1859,7 +1859,37 @@ function buildCoordinatorPlan(args: string[]): CliPlan {
 function hasHelpFlag(args: string[]): boolean {
   const terminatorIndex = args.indexOf("--");
   const searchable = terminatorIndex >= 0 ? args.slice(0, terminatorIndex) : args;
-  return searchable.includes("--help") || searchable.includes("-h");
+  const valueCarrierFlags = new Set([
+    "--text",
+    "--body",
+    "--title",
+    "--question",
+    "--input-json",
+    "--json-input",
+    "--input",
+    "--arg",
+    "--set",
+    "--arg-json",
+    "--set-json",
+    "-t",
+    "-b",
+    "--lane",
+    "--session",
+    "--path",
+    "--url",
+  ]);
+  for (let i = 0; i < searchable.length; i++) {
+    const token = searchable[i]!;
+    if (token === "--help") {
+      if (valueCarrierFlags.has(searchable[i - 1] ?? "")) continue;
+      return true;
+    }
+    if (token === "-h") {
+      if (valueCarrierFlags.has(searchable[i - 1] ?? "")) continue;
+      return true;
+    }
+  }
+  return false;
 }
 
 function buildCliPlan(command: string[]): CliPlan {
@@ -1948,9 +1978,11 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "coordinator" || primary === "coord") return buildCoordinatorPlan(args);
   if (primary === "ask") return { kind: "execute", label: "ask user", steps: [actionCallStep("result", "ask_user", collectGenericObjectArgs(args, { title: readValue(args, ["--title"]) ?? "ADE question", body: readValue(args, ["--body", "--question"]) ?? args.join(" ") }))] };
   if (primary === "tests" || primary === "test") return buildTestsPlan(args);
-  if (primary === "proof" || primary === "computer-use" || primary === "artifacts") return buildProofPlan(args);
+  if (primary === "proof" || primary === "computer-use" || primary === "artifacts" || primary === "computer" || primary === "artifact") {
+    return buildProofPlan(args);
+  }
   if (primary === "memory") return buildMemoryPlan(args);
-  if (primary === "settings" || primary === "config") return buildSettingsPlan(args);
+  if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
 }

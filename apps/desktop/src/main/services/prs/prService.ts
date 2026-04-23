@@ -1157,6 +1157,9 @@ export function createPrService({
     const existing = getRowForLane(summary.laneId)
       ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber);
     if (existing) {
+      if (existing.lane_id !== summary.laneId) {
+        db.run(`delete from pr_group_members where pr_id = ?`, [existing.id]);
+      }
       db.run(
         `
           update pull_requests
@@ -2326,7 +2329,12 @@ export function createPrService({
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const existingPr = /pull request already exists|already exists|validation failed/i.test(msg)
+      const msgLower = msg.toLowerCase();
+      const duplicatePrMessage =
+        msgLower.includes("pull request already exists")
+        || msgLower.includes("a pull request already exists")
+        || /\bhead\b.*\balready exists\b/i.test(msg);
+      const existingPr = duplicatePrMessage
         ? await findExistingPrForBranch(repo, headBranch, baseBranch).catch((lookupError) => {
             logger.warn("prs.create_existing_lookup_failed", {
               headBranch,
