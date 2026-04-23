@@ -38,6 +38,7 @@ import {
   type BufferedAssistantText,
 } from "./chatTextBatching";
 import {
+  isPrimaryPinnedIdentity,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
@@ -4840,9 +4841,12 @@ export function createAgentChatService(args: {
   const resolvePrimaryIdentityLane = async (): Promise<string> => {
     await laneService.ensurePrimaryLane?.().catch(() => {});
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
-    const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
+    // Identity sessions (CTO + worker agents) must pin to the actual primary
+    // lane. Never fall back to lanes[0] — that would silently land the
+    // identity on a foreign lane, defeating the whole contract.
+    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
     if (!primary?.id) {
-      throw new Error("No lane is available to host the canonical identity chat session.");
+      throw new Error("No primary lane is available to host the canonical identity chat session.");
     }
     return primary.id;
   };
@@ -10429,11 +10433,22 @@ export function createAgentChatService(args: {
         : undefined;
     const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
+    // Identity-pinned sessions (CTO + worker agents) are locked to full-auto.
+    // Discard the native provider permission overrides supplied by callers so
+    // they cannot smuggle `plan` / `ask` / read-only sandboxes past the lock
+    // via claudePermissionMode / codexApprovalPolicy / codexSandbox /
+    // opencodePermissionMode.
+    const identityPinned = isPrimaryPinnedIdentity(identityKey);
+    const effectiveInteractionMode = identityPinned ? undefined : requestedInteractionMode;
+    const effectiveClaudePermissionMode = identityPinned ? undefined : requestedClaudePermissionMode;
+    const effectiveCodexApprovalPolicy = identityPinned ? undefined : requestedCodexApprovalPolicy;
+    const effectiveCodexSandbox = identityPinned ? undefined : requestedCodexSandbox;
+    const effectiveCodexConfigSource = identityPinned ? undefined : requestedCodexConfigSource;
     let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
       : requestedPermMode;
     const chatConfig = resolveChatConfig();
-    let requestedOpenCodePermissionMode = requestedOpenCodePermissionModeArg;
+    let requestedOpenCodePermissionMode = identityPinned ? undefined : requestedOpenCodePermissionModeArg;
     const localHarnessPermissions = applyLocalHarnessPermissionMode({
       descriptor: resolvedDescriptor,
       requestedPermissionMode: effectivePermissionMode,
@@ -10444,14 +10459,14 @@ export function createAgentChatService(args: {
 
     const nativePermissionFields = (() => {
       if (effectiveProvider === "claude") {
-        const interactionMode = requestedInteractionMode
-          ?? (requestedClaudePermissionMode === "plan" ? "plan" : undefined)
+        const interactionMode = effectiveInteractionMode
+          ?? (effectiveClaudePermissionMode === "plan" ? "plan" : undefined)
           ?? (effectivePermissionMode === "plan" ? "plan" : undefined)
           ?? (chatConfig.claudePermissionMode === "plan" ? "plan" : undefined)
           ?? "default";
-        const claudePermissionMode = requestedClaudePermissionMode
+        const claudePermissionMode = effectiveClaudePermissionMode
           ? resolveSessionClaudeAccessMode(
-              { claudePermissionMode: requestedClaudePermissionMode, permissionMode: undefined },
+              { claudePermissionMode: effectiveClaudePermissionMode, permissionMode: undefined },
               chatConfig.claudePermissionMode,
             )
           : resolveSessionClaudeAccessMode(
@@ -10461,17 +10476,17 @@ export function createAgentChatService(args: {
         return { interactionMode, claudePermissionMode };
       }
       if (effectiveProvider === "codex") {
-        const codexConfigSource = requestedCodexConfigSource
+        const codexConfigSource = effectiveCodexConfigSource
           ?? legacyPermissionModeToCodexConfigSource(effectivePermissionMode)
           ?? "flags";
         if (codexConfigSource === "config-toml") {
           return { codexConfigSource };
         }
         return {
-          codexApprovalPolicy: requestedCodexApprovalPolicy
+          codexApprovalPolicy: effectiveCodexApprovalPolicy
             ?? legacyPermissionModeToCodexApprovalPolicy(effectivePermissionMode)
             ?? chatConfig.codexApprovalPolicy,
-          codexSandbox: requestedCodexSandbox
+          codexSandbox: effectiveCodexSandbox
             ?? legacyPermissionModeToCodexSandbox(effectivePermissionMode)
             ?? chatConfig.codexSandboxMode,
           codexConfigSource,
@@ -12355,7 +12370,21 @@ export function createAgentChatService(args: {
   };
 
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
-    const managed = ensureManagedSession(sessionId);
+    let managed = ensureManagedSession(sessionId);
+
+    // Identity-pinned sessions (CTO + worker agents) must always run on the
+    // canonical primary lane. If a persisted row points at a foreign lane
+    // (e.g. pre-pinning session, or the previous primary was archived),
+    // migrate it to the canonical lane before we spin up a runtime.
+    if (isPrimaryPinnedIdentity(managed.session.identityKey) && managed.session.laneId) {
+      const canonicalLaneId = await resolvePrimaryIdentityLane();
+      if (canonicalLaneId && managed.session.laneId !== canonicalLaneId) {
+        sessionService.updateMeta({ sessionId, laneId: canonicalLaneId });
+        managedSessions.delete(sessionId);
+        managed = ensureManagedSession(sessionId);
+      }
+    }
+
     refreshManagedLaneLaunchContext(managed, { purpose: "resume this chat" });
     const persisted = readPersistedState(sessionId);
     managed.session.capabilityMode = managed.session.capabilityMode ?? inferCapabilityMode(managed.session.provider);
@@ -12626,6 +12655,14 @@ export function createAgentChatService(args: {
 
     const preferred = canonicalExisting;
     if (preferred) {
+      // Defensive guard: if the selected canonical session ever drifted onto
+      // a foreign lane (e.g. from a legacy DB write), rewrite it to the
+      // canonical lane before we hydrate/resume so identity sessions never
+      // run on a non-primary lane.
+      if (preferred.laneId !== canonicalLaneId && isPrimaryPinnedIdentity(args.identityKey)) {
+        sessionService.updateMeta({ sessionId: preferred.sessionId, laneId: canonicalLaneId });
+        managedSessions.delete(preferred.sessionId);
+      }
       const managed = ensureManagedSession(preferred.sessionId);
       managed.session.identityKey = args.identityKey;
       managed.session.capabilityMode = inferCapabilityMode(managed.session.provider);
@@ -13333,6 +13370,7 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
+    const identityPinned = isPrimaryPinnedIdentity(managed.session.identityKey);
     const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
@@ -13460,11 +13498,15 @@ export function createAgentChatService(args: {
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
     }
 
-    if (interactionMode !== undefined) {
+    // Identity-pinned sessions (CTO + worker agents) are locked to full-auto.
+    // Ignore incoming native permission overrides — applyLegacyPermissionMode-
+    // ToNativeControls() has already derived the correct native fields from
+    // full-auto, and we must not let callers layer a stricter mode on top.
+    if (interactionMode !== undefined && !identityPinned) {
       managed.session.interactionMode = interactionMode;
     }
 
-    if (claudePermissionMode !== undefined) {
+    if (claudePermissionMode !== undefined && !identityPinned) {
       if (claudePermissionMode === "plan") {
         managed.session.interactionMode = "plan";
       } else {
@@ -13472,19 +13514,19 @@ export function createAgentChatService(args: {
       }
     }
 
-    if (codexApprovalPolicy !== undefined) {
+    if (codexApprovalPolicy !== undefined && !identityPinned) {
       managed.session.codexApprovalPolicy = codexApprovalPolicy;
     }
 
-    if (codexSandbox !== undefined) {
+    if (codexSandbox !== undefined && !identityPinned) {
       managed.session.codexSandbox = codexSandbox;
     }
 
-    if (codexConfigSource !== undefined) {
+    if (codexConfigSource !== undefined && !identityPinned) {
       managed.session.codexConfigSource = codexConfigSource;
     }
 
-    if (opencodePermissionMode !== undefined) {
+    if (opencodePermissionMode !== undefined && !identityPinned) {
       managed.session.opencodePermissionMode = opencodePermissionMode;
     }
 

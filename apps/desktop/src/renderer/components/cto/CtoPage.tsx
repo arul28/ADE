@@ -681,7 +681,7 @@ export function CtoPage() {
             {error && <div className="px-1 py-2 text-xs text-error" data-testid="cto-error">{error}</div>}
             {!primaryLaneId && (
               <div className="px-1 py-2 text-xs text-muted-fg/55" data-testid="cto-no-lane">
-                ADE could not resolve the primary workspace for the persistent CTO session.
+                ADE could not resolve the primary lane for the persistent CTO session.
               </div>
             )}
 

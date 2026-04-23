@@ -1242,15 +1242,16 @@ function applyLeaseToOverrides(
   };
 }
 
-async function resolveFirstAvailableLaneIdForSync(
-  args: SyncRemoteCommandServiceArgs,
-  requestedLaneId: string | null,
-): Promise<string> {
-  const laneId = typeof requestedLaneId === "string" ? requestedLaneId.trim() : "";
-  if (laneId) return laneId;
+/**
+ * Strict resolver for identity-pinned sessions (CTO + worker agents). Never
+ * slips a foreign lane through via a `lanes[0]` fallback — if no primary lane
+ * exists, the caller must error out rather than silently host the identity on
+ * a non-primary lane.
+ */
+async function resolvePrimaryLaneIdOnlyForSync(args: SyncRemoteCommandServiceArgs): Promise<string> {
   await args.laneService.ensurePrimaryLane?.().catch(() => {});
   const lanes = await args.laneService.list({ includeArchived: false, includeStatus: false });
-  return (lanes.find((lane) => lane.laneType === "primary") ?? lanes[0])?.id ?? "";
+  return lanes.find((lane) => lane.laneType === "primary")?.id ?? "";
 }
 
 async function resolveLaneOverlayContext(args: SyncRemoteCommandServiceArgs, laneId: string) {
@@ -1720,7 +1721,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("cto.ensureSession", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-    const laneId = await resolveFirstAvailableLaneIdForSync(args, null);
+    const laneId = await resolvePrimaryLaneIdOnlyForSync(args);
     if (!laneId) throw new Error("No primary lane is available to host the CTO chat session.");
     const modelId = asTrimmedString(payload.modelId);
     const reasoningEffort = asTrimmedString(payload.reasoningEffort);
@@ -1746,7 +1747,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (!agent) {
       throw new Error(`cto.ensureAgentSession: unknown agentId '${agentId}'`);
     }
-    const laneId = await resolveFirstAvailableLaneIdForSync(args, null);
+    const laneId = await resolvePrimaryLaneIdOnlyForSync(args);
     if (!laneId) throw new Error("No primary lane is available to host the agent chat session.");
     const modelId = asTrimmedString(payload.modelId);
     const reasoningEffort = asTrimmedString(payload.reasoningEffort);

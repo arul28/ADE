@@ -2022,6 +2022,88 @@ describe("createAgentChatService", () => {
       expect(session.permissionMode).toBe("full-auto");
       expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-1-sha");
     });
+
+    it("ignores native provider permission overrides for pinned identities on create", async () => {
+      const { service } = createService();
+      // Callers over IPC could previously pass through `claudePermissionMode:
+      // "plan"` to keep a CTO session from ever running automatically — the
+      // identity pin must strip these so full-auto still wins.
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-4-7",
+        modelId: "claude-sonnet-4-7",
+        identityKey: "cto",
+        claudePermissionMode: "plan",
+        interactionMode: "plan",
+      });
+
+      // `plan` must never be persisted on the claude native fields for a
+      // pinned identity — otherwise the runtime will ignore full-auto at turn
+      // start. We do not assert on the synthesized permissionMode here because
+      // the top-level mock for mapPermissionToClaude collapses to "plan" in
+      // this test file; the native fields are the real source of truth the
+      // runtime consults.
+      expect(session.claudePermissionMode).not.toBe("plan");
+      expect(session.interactionMode).not.toBe("plan");
+    });
+
+    it("ignores native codex permission overrides for worker identities on create", async () => {
+      // Locally map modes so full-auto => danger-full-access / never and the
+      // default mapping (used when no permissionMode is passed) stays on the
+      // on-request / read-only baseline. This lets us prove the IPC-provided
+      // `codexApprovalPolicy: "untrusted"` / `codexSandbox: "read-only"` never
+      // land on the session — the full-auto derivation is used instead.
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        if (mode === "edit") return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5-codex",
+        modelId: "gpt-5-codex",
+        identityKey: "agent:worker-1",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+      });
+
+      expect(session.codexApprovalPolicy).toBe("never");
+      expect(session.codexSandbox).toBe("danger-full-access");
+    });
+
+    it("ignores native permission overrides for pinned identities on update", async () => {
+      const { service } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+      const claudeBefore = session.claudePermissionMode;
+      const opencodeBefore = session.opencodePermissionMode;
+
+      const updated = await service.updateSession({
+        sessionId: session.id,
+        claudePermissionMode: "plan",
+        interactionMode: "plan",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        opencodePermissionMode: "plan",
+      });
+
+      // None of the stricter native modes should have landed on the session.
+      expect(updated.interactionMode).not.toBe("plan");
+      if (claudeBefore !== undefined) {
+        expect(updated.claudePermissionMode).toBe(claudeBefore);
+      }
+      if (opencodeBefore !== undefined) {
+        expect(updated.opencodePermissionMode).toBe(opencodeBefore);
+      }
+      expect(updated.codexApprovalPolicy).not.toBe("untrusted");
+      expect(updated.codexSandbox).not.toBe("read-only");
+    });
   });
 
   describe("identity continuity", () => {

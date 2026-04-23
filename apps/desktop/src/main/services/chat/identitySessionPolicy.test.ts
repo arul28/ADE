@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isPrimaryPinnedIdentity,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
@@ -21,5 +22,27 @@ describe("identitySessionPolicy", () => {
     expect(normalizeIdentityPermissionMode(undefined, "plan", "claude")).toBe("plan");
     expect(normalizeIdentityPermissionMode(undefined, "full-auto", "claude")).toBe("plan");
     expect(normalizeIdentityPermissionMode(undefined, undefined, "codex")).toBe("plan");
+  });
+
+  it("treats empty or whitespace-only agent suffixes as non-pinned", () => {
+    expect(isPrimaryPinnedIdentity("cto")).toBe(true);
+    expect(isPrimaryPinnedIdentity("agent:worker-1")).toBe(true);
+    // Cast through unknown so the test can probe malformed identity keys that
+    // ideally should never reach the helper but still could arrive via IPC.
+    expect(isPrimaryPinnedIdentity("agent:" as never)).toBe(false);
+    expect(isPrimaryPinnedIdentity("agent:   " as never)).toBe(false);
+    expect(isPrimaryPinnedIdentity(undefined)).toBe(false);
+
+    // Pinned-identity pathways should fall through to the guarded default for
+    // malformed agent suffixes so a caller cannot smuggle full-auto in by
+    // passing `agent:   `.
+    expect(normalizeIdentityPermissionMode("agent:   " as never, undefined, "claude")).toBe("plan");
+    expect(normalizeIdentityPermissionMode("agent:" as never, "plan", "codex")).toBe("plan");
+  });
+
+  it("returns the canonical lane (including null) for pinned identities", () => {
+    expect(resolveIdentityExecutionLane("cto", undefined, "lane-primary")).toBe("lane-primary");
+    expect(resolveIdentityExecutionLane("cto", null, "lane-primary")).toBe("lane-primary");
+    expect(resolveIdentityExecutionLane("cto", "lane-feature", null)).toBe(null);
   });
 });
