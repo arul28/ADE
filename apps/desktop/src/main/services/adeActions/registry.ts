@@ -18,6 +18,9 @@ export type AdeActionDomain =
   | "pr"
   | "tests"
   | "chat"
+  | "keybindings"
+  | "onboarding"
+  | "automation_planner"
   | "mission"
   | "orchestrator"
   | "orchestrator_core"
@@ -29,17 +32,69 @@ export type AdeActionDomain =
   | "project_config"
   | "issue_inventory"
   | "flow_policy"
+  | "linear_credentials"
   | "linear_dispatcher"
   | "linear_issue_tracker"
   | "linear_sync"
   | "linear_ingress"
   | "linear_routing"
+  | "github"
+  | "feedback"
+  | "usage"
+  | "budget"
+  | "update"
   | "file"
   | "process"
   | "pty"
+  | "layout"
+  | "tiling_tree"
+  | "graph_state"
   | "computer_use_artifacts"
   | "automations"
   | "issue";
+
+export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "evaluator";
+
+/**
+ * Methods that require at least `cto` role when invoked via `run_ade_action`.
+ * The generic bridge has no built-in role check, so anything that mutates
+ * account-level credentials, persisted policy, or drives privileged polling
+ * must be listed here.
+ */
+export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  linear_credentials: [
+    "setToken",
+    "setOAuthToken",
+    "setOAuthClientCredentials",
+    "clearToken",
+    "clearOAuthClientCredentials",
+  ],
+  github: ["setToken", "clearToken"],
+  update: ["quitAndInstall"],
+  flow_policy: ["savePolicy", "rollbackRevision"],
+  linear_sync: ["runSyncNow", "resolveQueueItem"],
+  linear_ingress: ["ensureRelayWebhook"],
+  budget: ["updateConfig"],
+  feedback: ["submitPreparedDraft"],
+  usage: ["start", "stop", "forceRefresh"],
+};
+
+const ROLE_ORDER: Record<AdeActionRole, number> = {
+  external: 0,
+  evaluator: 1,
+  agent: 2,
+  orchestrator: 3,
+  cto: 4,
+};
+
+export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
+  return (ADE_ACTION_CTO_ONLY[domain] ?? []).includes(action);
+}
+
+export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, minRole: AdeActionRole): boolean {
+  if (!role) return false;
+  return ROLE_ORDER[role] >= ROLE_ORDER[minRole];
+}
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
   lane: [
@@ -60,24 +115,40 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   git: [
     "abortRebase",
+    "checkoutBranch",
     "cherryPickCommit",
     "commit",
     "continueRebase",
+    "discardFile",
     "fetch",
+    "generateCommitMessage",
     "getCommitMessage",
     "getConflictState",
     "getFileHistory",
     "getSyncStatus",
+    "listBranches",
     "listCommitFiles",
+    "listRecentCommits",
+    "listStashes",
     "mergeAbort",
     "mergeContinue",
     "pull",
     "push",
     "rebaseAbort",
     "rebaseContinue",
+    "restoreStagedFile",
     "revertCommit",
-    "stash",
+    "stageAll",
+    "stageFile",
     "stagePaths",
+    "stash",
+    "stashApply",
+    "stashClear",
+    "stashDrop",
+    "stashPop",
+    "stashPush",
+    "unstageAll",
+    "unstageFile",
     "unstagePaths",
   ],
   diff: ["getChanges", "getFileDiff"],
@@ -139,11 +210,72 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "resumeSession",
     "sendMessage",
   ],
+  keybindings: ["get", "set"],
+  onboarding: [
+    "complete",
+    "detectDefaults",
+    "getStatus",
+    "setDismissed",
+  ],
+  automation_planner: ["parseNaturalLanguage", "saveDraft", "simulate", "validateDraft"],
+  mission: [
+    "addIntervention",
+    "archive",
+    "create",
+    "delete",
+    "get",
+    "list",
+    "resolveIntervention",
+    "update",
+  ],
+  orchestrator: [
+    "cancelRunGracefully",
+    "finalizeRun",
+    "getMissionMetrics",
+    "getTeamMembers",
+    "getThreadMessages",
+    "getWorkerStates",
+    "listChatThreads",
+    "startMissionRun",
+    "steerMission",
+  ],
+  orchestrator_core: [
+    "addReflection",
+    "addSteps",
+    "appendRuntimeEvent",
+    "appendTimelineEvent",
+    "completeAttempt",
+    "createHandoff",
+    "emitRuntimeUpdate",
+    "getRunGraph",
+    "listAttempts",
+    "listRetrospectivePatternStats",
+    "listRetrospectiveTrends",
+    "listRetrospectives",
+    "listRuns",
+    "listTimeline",
+    "pauseRun",
+    "resumeRun",
+    "skipStep",
+    "startReadyAutopilotAttempts",
+    "supersedeStep",
+    "updateStepDependencies",
+    "updateStepMetadata",
+  ],
+  cto_state: [
+    "getIdentity",
+    "getSnapshot",
+    "updateCoreMemory",
+  ],
+  worker_agent: [
+    "updateCoreMemory",
+  ],
   memory: ["addSharedFact", "pinMemory", "searchMemories", "writeMemory"],
   session: ["get", "readTranscriptTail"],
   operation: ["finish", "list", "start"],
   project_config: ["get", "save"],
   issue_inventory: [
+    "deletePipelineSettings",
     "getConvergenceRuntime",
     "getConvergenceStatus",
     "getInventory",
@@ -154,15 +286,38 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "markFixed",
     "markSentToAgent",
     "reconcileConvergenceSessionExit",
+    "resetConvergenceRuntime",
+    "resetInventory",
+    "saveConvergenceRuntime",
     "savePipelineSettings",
     "syncFromPrData",
   ],
-  flow_policy: ["getPolicy", "savePolicy"],
+  flow_policy: [
+    "diffPolicyPaths",
+    "getPolicy",
+    "listRevisions",
+    "normalizePolicy",
+    "rollbackRevision",
+    "savePolicy",
+  ],
+  linear_credentials: [
+    "clearOAuthClientCredentials",
+    "clearToken",
+    "getStatus",
+    "setOAuthClientCredentials",
+    "setOAuthToken",
+    "setToken",
+  ],
   linear_dispatcher: ["dispatchIssue", "getDashboard", "listEmployees", "listQueue"],
   linear_issue_tracker: ["getStatus", "listIssues"],
   linear_sync: ["getDashboard", "getRunDetail", "listQueue", "resolveQueueItem", "runSyncNow"],
   linear_ingress: ["ensureRelayWebhook", "getStatus", "listRecentEvents"],
   linear_routing: ["simulateRoute"],
+  github: ["clearToken", "getRepoOrThrow", "getStatus", "setToken"],
+  feedback: ["list", "prepareDraft", "submitPreparedDraft"],
+  usage: ["forceRefresh", "getUsageSnapshot", "poll", "start", "stop"],
+  budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
+  update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [
     "createDirectory",
     "createFile",
@@ -177,6 +332,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   process: ["getLogTail", "listDefinitions", "listRuntime", "startAll", "stopAll"],
   pty: ["create", "dispose", "resize", "write"],
+  layout: ["get", "set"],
+  tiling_tree: ["get", "set"],
+  graph_state: ["get", "set"],
   computer_use_artifacts: ["ingest", "listArtifacts"],
   automations: [
     "list",
@@ -284,6 +442,105 @@ function toService(value: unknown): OpaqueService | null {
   return (value ?? null) as OpaqueService | null;
 }
 
+function requireNonEmptyString(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`Expected '${field}' to be a non-empty string.`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed.length) {
+    throw new Error(`Expected '${field}' to be a non-empty string.`);
+  }
+  return trimmed;
+}
+
+function clampDockLayout(layout: Record<string, unknown>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(layout)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    out[key] = Math.max(0, Math.min(100, value));
+  }
+  return out;
+}
+
+type LayoutService = {
+  get(args: { layoutId?: unknown }): unknown;
+  set(args: { layoutId?: unknown; layout?: unknown }): { layoutId: string; layout: Record<string, number> };
+};
+
+function buildLayoutDomainService(runtime: AdeRuntime): LayoutService | null {
+  if (!runtime.db) return null;
+  return {
+    get(args) {
+      const layoutId = requireNonEmptyString(args?.layoutId, "layoutId");
+      return runtime.db.getJson(`dock_layout:${layoutId}`);
+    },
+    set(args) {
+      const layoutId = requireNonEmptyString(args?.layoutId, "layoutId");
+      if (!args || !Object.prototype.hasOwnProperty.call(args, "layout")) {
+        throw new Error("Missing required 'layout' object. Pass an explicit null to clear.");
+      }
+      const rawLayout = args.layout;
+      const layout = rawLayout && typeof rawLayout === "object" && !Array.isArray(rawLayout)
+        ? clampDockLayout(rawLayout as Record<string, unknown>)
+        : {};
+      runtime.db.setJson(`dock_layout:${layoutId}`, layout);
+      return { layoutId, layout };
+    },
+  };
+}
+
+type TilingTreeService = {
+  get(args: { layoutId?: unknown }): unknown;
+  set(args: { layoutId?: unknown; tree?: unknown }): { layoutId: string; tree: unknown };
+};
+
+function buildTilingTreeDomainService(runtime: AdeRuntime): TilingTreeService | null {
+  if (!runtime.db) return null;
+  return {
+    get(args) {
+      const layoutId = requireNonEmptyString(args?.layoutId, "layoutId");
+      return runtime.db.getJson(`tiling_tree:${layoutId}`);
+    },
+    set(args) {
+      const layoutId = requireNonEmptyString(args?.layoutId, "layoutId");
+      if (!args || !Object.prototype.hasOwnProperty.call(args, "tree")) {
+        throw new Error("Missing required 'tree'. Pass an explicit null to clear.");
+      }
+      const tree = args.tree;
+      runtime.db.setJson(`tiling_tree:${layoutId}`, tree);
+      return { layoutId, tree };
+    },
+  };
+}
+
+type GraphStateService = {
+  get(args?: { projectId?: unknown }): unknown;
+  set(args: { projectId?: unknown; state?: unknown }): { projectId: string; state: unknown };
+};
+
+function buildGraphStateDomainService(runtime: AdeRuntime): GraphStateService | null {
+  if (!runtime.db) return null;
+  const resolveProjectId = (value: unknown): string => {
+    if (typeof value === "string" && value.trim().length) return value.trim();
+    return runtime.projectId;
+  };
+  return {
+    get(args) {
+      const projectId = resolveProjectId(args?.projectId);
+      return runtime.db.getJson(`graph_state:${projectId}`);
+    },
+    set(args) {
+      const projectId = resolveProjectId(args?.projectId);
+      if (!args || !Object.prototype.hasOwnProperty.call(args, "state")) {
+        throw new Error("Missing required 'state'. Pass an explicit null to clear.");
+      }
+      const state = args.state;
+      runtime.db.setJson(`graph_state:${projectId}`, state);
+      return { projectId, state };
+    },
+  };
+}
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -295,6 +552,9 @@ export function getAdeActionDomainServices(
     pr: toService(runtime.prService),
     tests: toService(runtime.testService),
     chat: toService(runtime.agentChatService),
+    keybindings: toService(runtime.keybindingsService),
+    onboarding: toService(runtime.onboardingService),
+    automation_planner: toService(runtime.automationPlannerService),
     mission: toService(runtime.missionService),
     orchestrator: toService(runtime.aiOrchestratorService),
     orchestrator_core: toService(runtime.orchestratorService),
@@ -306,14 +566,23 @@ export function getAdeActionDomainServices(
     project_config: toService(runtime.projectConfigService),
     issue_inventory: toService(runtime.issueInventoryService),
     flow_policy: toService(runtime.flowPolicyService),
+    linear_credentials: toService(runtime.linearCredentialService),
     linear_dispatcher: toService(runtime.linearDispatcherService),
     linear_issue_tracker: toService(runtime.linearIssueTracker),
     linear_sync: toService(runtime.linearSyncService),
     linear_ingress: toService(runtime.linearIngressService),
     linear_routing: toService(runtime.linearRoutingService),
+    github: toService(runtime.githubService),
+    feedback: toService(runtime.feedbackReporterService),
+    usage: toService(runtime.usageTrackingService),
+    budget: toService(runtime.budgetCapService),
+    update: toService(runtime.autoUpdateService),
     file: toService(runtime.fileService),
     process: toService(runtime.processService),
     pty: toService(runtime.ptyService),
+    layout: toService(buildLayoutDomainService(runtime)),
+    tiling_tree: toService(buildTilingTreeDomainService(runtime)),
+    graph_state: toService(buildGraphStateDomainService(runtime)),
     computer_use_artifacts: toService(runtime.computerUseArtifactBrokerService),
     automations: toService(buildAutomationsDomainService(runtime)),
     issue: toService(buildIssueDomainService(runtime)),

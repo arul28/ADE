@@ -253,6 +253,7 @@ export type DraftPrDescriptionArgs = {
   laneId: string;
   model?: string;
   reasoningEffort?: string | null;
+  baseBranch?: string;
 };
 
 export type UpdatePrDescriptionArgs = {

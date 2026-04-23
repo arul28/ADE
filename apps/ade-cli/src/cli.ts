@@ -1856,28 +1856,38 @@ function buildCoordinatorPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `coordinator ${toolName}`, steps: [actionCallStep("result", toolName, collectGenericObjectArgs(args))] };
 }
 
+const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
+  "-b", "-t",
+  "--additional-instructions", "--app", "--arg", "--arg-json", "--arg-value",
+  "--arg-value-json", "--args-list-json", "--attempt", "--attempt-id",
+  "--automation", "--base", "--base-branch", "--body", "--branch",
+  "--branch-name", "--branch-ref", "--category", "--color", "--cols",
+  "--command", "--comment", "--comment-id", "--commit", "--compare-ref",
+  "--compare-to", "--content", "--context-file", "--cwd", "--data",
+  "--delete-source", "--delete-source-lane", "--depth", "--desc",
+  "--description", "--domain", "--duration-sec", "--enabled", "--event",
+  "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
+  "--include-ignored", "--input", "--input-json", "--instructions",
+  "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes", "--memory",
+  "--memory-id", "--merge-method", "--message", "--method", "--mode", "--model",
+  "--model-id", "--name", "--new", "--new-path", "--number", "--old",
+  "--old-path", "--params-json", "--parent", "--parent-lane", "--parent-lane-id",
+  "--path", "--permission-mode", "--permissions", "--pr", "--pr-id",
+  "--pr-number", "--pr-url", "--process", "--process-id", "--project-root",
+  "--prompt", "--provider", "--pty", "--pty-id", "--query", "--question",
+  "--reason", "--reasoning", "--ref", "--role", "--root", "--root-lane",
+  "--round", "--rows", "--rule", "--run", "--run-id", "--scalar",
+  "--scalar-json", "--scope", "--seconds", "--session", "--session-id", "--set",
+  "--set-json", "--sha", "--source", "--source-lane", "--stack", "--stack-id",
+  "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
+  "--text", "--thread", "--thread-id", "--timeout-ms", "--title", "--tool-type",
+  "--unresolved", "--url", "--workspace", "--workspace-id", "--workspace-root",
+]);
+
 function hasHelpFlag(args: string[]): boolean {
   const terminatorIndex = args.indexOf("--");
   const searchable = terminatorIndex >= 0 ? args.slice(0, terminatorIndex) : args;
-  const valueCarrierFlags = new Set([
-    "--text",
-    "--body",
-    "--title",
-    "--question",
-    "--input-json",
-    "--json-input",
-    "--input",
-    "--arg",
-    "--set",
-    "--arg-json",
-    "--set-json",
-    "-t",
-    "-b",
-    "--lane",
-    "--session",
-    "--path",
-    "--url",
-  ]);
+  const valueCarrierFlags = VALUE_CARRIER_FLAGS;
   for (let i = 0; i < searchable.length; i++) {
     const token = searchable[i]!;
     if (token === "--help") {

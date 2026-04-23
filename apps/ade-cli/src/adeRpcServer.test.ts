@@ -3165,7 +3165,7 @@ describe("adeRpcServer", () => {
       baseBranch: "main",
     });
     expect(drafted?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.draftDescription).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(fixture.runtime.prService.draftDescription).toHaveBeenCalledWith({ laneId: "lane-1", baseBranch: "main" });
     expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
       laneId: "lane-1",
       baseBranch: "main",

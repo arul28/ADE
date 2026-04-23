@@ -17,8 +17,10 @@ import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/m
 import {
   ADE_ACTION_ALLOWLIST,
   type AdeActionDomain,
+  callerHasRoleAtLeast,
   getAdeActionDomainServices,
   isAllowedAdeAction,
+  isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
@@ -4172,15 +4174,18 @@ async function runTool(args: {
     const domains = domain === "all"
       ? (Object.keys(services) as AdeActionDomain[])
       : [domain as AdeActionDomain];
+    const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const actions = domains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
-      return listAllowedAdeActionNames(entry, service).map((action) => ({
-        domain: entry,
-        action,
-        name: `${entry}.${action}`,
-        usage: `ade actions run ${entry}.${action} --input-json '{"key":"value"}' (or --scalar value / --args-list-json '[...]' for scalar or positional service methods)`,
-      }));
+      return listAllowedAdeActionNames(entry, service)
+        .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
+        .map((action) => ({
+          domain: entry,
+          action,
+          name: `${entry}.${action}`,
+          usage: `ade actions run ${entry}.${action} --input-json '{"key":"value"}' (or --scalar value / --args-list-json '[...]' for scalar or positional service methods)`,
+        }));
     });
     return {
       count: actions.length,
@@ -4202,6 +4207,9 @@ async function runTool(args: {
     }
     if (!isAllowedAdeAction(domain, action)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not exposed through ADE actions.`);
+    }
+    if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
@@ -5488,7 +5496,10 @@ async function runTool(args: {
     let title = asOptionalTrimmedString(toolArgs.title);
     let body = typeof toolArgs.body === "string" ? toolArgs.body : null;
     if (!title || body == null) {
-      const draft = await prSvc.draftDescription({ laneId });
+      const draft = await prSvc.draftDescription({
+        laneId,
+        ...(baseBranch ? { baseBranch } : {}),
+      });
       title = title || asOptionalTrimmedString(draft.title) || `PR for ${laneId}`;
       body = body ?? asOptionalTrimmedString(draft.body) ?? "";
     }

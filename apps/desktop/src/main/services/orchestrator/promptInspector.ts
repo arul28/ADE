@@ -212,7 +212,6 @@ function buildWorkerBaseGuidance(step: OrchestratorStep, graph: OrchestratorRunG
   );
   sections.push(
     [
-      ADE_CLI_AGENT_GUIDANCE,
       "Your worker identity (mission, run, step, attempt IDs) is automatically resolved — you don't need to pass IDs to observation tools.",
       "Key actions available:",
       "- get_worker_states",

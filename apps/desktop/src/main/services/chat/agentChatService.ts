@@ -10902,6 +10902,9 @@ export function createAgentChatService(args: {
     }
     const laneDirectiveKey = executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
+    // Claude sessions already receive ADE_CLI_AGENT_GUIDANCE in their persistent system prompt
+    // (see buildClaudeV2SessionOpts). Skip the first-user-message copy to avoid duplicate guidance.
+    const providerHasPersistentGuidance = managed.session.provider === "claude";
     const promptText = providerSlashCommand
       ? trimmed
       : composeLaunchDirectives(trimmed, [
@@ -10913,7 +10916,7 @@ export function createAgentChatService(args: {
             : null,
           buildExecutionModeDirective(executionMode, managed.session.provider),
           buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
-          shouldInjectLaneDirective ? ADE_CLI_AGENT_GUIDANCE : null,
+          shouldInjectLaneDirective && !providerHasPersistentGuidance ? ADE_CLI_AGENT_GUIDANCE : null,
           buildComputerUseDirective(
             computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
           ),

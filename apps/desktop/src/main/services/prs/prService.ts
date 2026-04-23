@@ -230,12 +230,14 @@ function getIntegrationLaneOrigin(row: {
   const integrationLaneId = asString(row.integration_lane_id).trim() || null;
   if (!integrationLaneId) return null;
   const preferredIntegrationLaneId = asString(row.preferred_integration_lane_id).trim() || null;
-  // Scratch integration lanes use `laneService.createChild` only when simulation had no merge-into
-  // lane, so `preferred_integration_lane_id` stays unset. When merging into an existing lane, that
-  // lane id is stored here (and normally matches `integration_lane_id`). Inferring "adopted" from
-  // `preferred === integration` alone is unsafe because merge-into and integration ids can differ.
-  if (!preferredIntegrationLaneId) return "ade-created";
-  return "adopted";
+  // A lane is only "adopted" when the caller's chosen merge-into lane (preferred) actually became
+  // the integration lane. `commitIntegration` can persist a new preferred lane alongside an
+  // existing scratch integration lane; in that case the two ids disagree and the scratch lane is
+  // still ade-created, so we must not claim it as adopted.
+  if (preferredIntegrationLaneId && preferredIntegrationLaneId === integrationLaneId) {
+    return "adopted";
+  }
+  return "ade-created";
 }
 
 function isAdeOwnedIntegrationLane(row: {
@@ -2174,11 +2176,15 @@ export function createPrService({
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
+    const baseRefForDiff = (args.baseBranch && args.baseBranch.trim().length > 0)
+      ? args.baseBranch.trim()
+      : lane.baseRef;
+
     const template = readPrTemplate(projectRoot);
     const packBody = await (async () => {
       // W6: pack-based context removed. Provide a bounded git-native lane change summary instead.
       const diff = await runGit(
-        ["diff", "--name-status", `${lane.baseRef}...HEAD`],
+        ["diff", "--name-status", `${baseRefForDiff}...HEAD`],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
       if (diff.exitCode === 0) {
@@ -2197,7 +2203,7 @@ export function createPrService({
       laneId,
       laneName: lane.name,
       branchRef: lane.branchRef,
-      baseRef: lane.baseRef,
+      baseRef: baseRefForDiff,
       parentLaneId: lane.parentLaneId,
       commits,
       packBody,
