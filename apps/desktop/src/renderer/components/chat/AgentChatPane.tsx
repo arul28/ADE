@@ -1460,7 +1460,14 @@ export function AgentChatPane({
       }
       if (!usedSnapshotPath) {
         const summary = await window.ade.sessions.get(sessionId);
-        if (!summary || !isChatToolType(summary.toolType)) return;
+        if (!summary || !isChatToolType(summary.toolType)) {
+          // Clear the loaded flag so a subsequent remount/tab switch can retry.
+          // Without this, a transient lookup miss (e.g. session summary not yet
+          // propagated on project switch) would leave the UI permanently
+          // unable to hydrate history. Mirrors the catch-block recovery below.
+          loadedHistoryRef.current.delete(sessionId);
+          return;
+        }
         const raw = await window.ade.sessions.readTranscriptTail({
           sessionId,
           maxBytes: CHAT_HISTORY_READ_MAX_BYTES,

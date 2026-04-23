@@ -3408,27 +3408,35 @@ final class ADETests: XCTestCase {
       id: "session-primary",
       laneId: "lane-primary",
       laneName: "Primary",
-      toolType: "codex-chat"
+      toolType: "codex-chat",
+      startedAt: "2026-03-25T12:00:00.000Z"
     )
     // Two distinct soft-deleted lanes — each should render as its own group.
+    // `lane-deleted-a` wins the orphan sort because its latest session started
+    // more recently than the latest on `lane-deleted-b`.
     let orphanOldSession = makeTerminalSessionSummary(
       id: "session-orphan-old",
       laneId: "lane-deleted-a",
       laneName: "feature/cleanup",
-      toolType: "codex-chat"
+      toolType: "codex-chat",
+      startedAt: "2026-03-25T11:30:00.000Z"
     )
     let orphanNewSession = makeTerminalSessionSummary(
       id: "session-orphan-new",
       laneId: "lane-deleted-b",
       laneName: "feature/recent",
-      toolType: "codex-chat"
+      toolType: "codex-chat",
+      startedAt: "2026-03-25T10:45:00.000Z"
     )
     // Same orphan lane appearing twice — must merge into the same group.
+    // This sibling is older than `orphanOldSession` so the ordering assertion
+    // below exercises the latest-startedAt-per-lane comparison.
     let orphanNewSessionSibling = makeTerminalSessionSummary(
       id: "session-orphan-new-sibling",
       laneId: "lane-deleted-b",
       laneName: "feature/recent",
-      toolType: "codex-chat"
+      toolType: "codex-chat",
+      startedAt: "2026-03-25T10:30:00.000Z"
     )
 
     let groups = workSessionGroupsByLane(
@@ -5797,7 +5805,8 @@ final class ADETests: XCTestCase {
     runtimeState: String = "running",
     status: String = "running",
     title: String = "Codex chat",
-    lastOutputPreview: String? = nil
+    lastOutputPreview: String? = nil,
+    startedAt: String = "2026-03-25T00:00:00.000Z"
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
       id: id,
@@ -5811,7 +5820,7 @@ final class ADETests: XCTestCase {
       toolType: toolType,
       title: title,
       status: status,
-      startedAt: "2026-03-25T00:00:00.000Z",
+      startedAt: startedAt,
       endedAt: nil,
       exitCode: nil,
       transcriptPath: "",

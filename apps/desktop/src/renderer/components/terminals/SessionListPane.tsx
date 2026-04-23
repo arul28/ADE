@@ -160,14 +160,18 @@ export const SessionListPane = React.memo(function SessionListPane({
         .filter(Number.isFinite);
       return times.length > 0 ? Math.max(...times) : -Infinity;
     };
+    const orphanLabel = (name: string | null | undefined, fallback: string): string => {
+      const trimmed = (name ?? "").trim();
+      return trimmed.length > 0 ? trimmed : fallback;
+    };
     return [...sessionsGroupedByLane.entries()]
       .filter(([laneId, sessions]) => !knownLaneIds.has(laneId) && sessions.length > 0)
       .sort(([leftLaneId, leftSessions], [rightLaneId, rightSessions]) => {
         const leftLatest = latestStartedAt(leftSessions);
         const rightLatest = latestStartedAt(rightSessions);
         if (leftLatest !== rightLatest) return rightLatest - leftLatest;
-        const leftName = leftSessions[0]?.laneName ?? leftLaneId;
-        const rightName = rightSessions[0]?.laneName ?? rightLaneId;
+        const leftName = orphanLabel(leftSessions[0]?.laneName, leftLaneId);
+        const rightName = orphanLabel(rightSessions[0]?.laneName, rightLaneId);
         return leftName.localeCompare(rightName);
       });
   }, [lanes, sessionsGroupedByLane]);
@@ -267,7 +271,8 @@ export const SessionListPane = React.memo(function SessionListPane({
       })}
       {missingLaneSessionGroups.map(([laneId, list]) => {
         const collapsed = workCollapsedLaneIds.includes(laneId);
-        const label = list[0]?.laneName ?? laneId;
+        const trimmedLaneName = (list[0]?.laneName ?? "").trim();
+        const label = trimmedLaneName.length > 0 ? trimmedLaneName : laneId;
         return (
           <StickyGroupHeader
             key={laneId}

@@ -193,6 +193,7 @@ enum SyncTailnetDiscovery {
   ]
   static let portCandidates = [
     8787,
+    8788,
   ]
 }
 
@@ -224,8 +225,14 @@ func syncNormalizedRouteHost(_ address: String) -> String {
   if let question = host.firstIndex(of: "?") { host = String(host[..<question]) }
   if let bracketEnd = host.lastIndex(of: "]"), host.hasPrefix("[") {
     host = String(host[host.index(after: host.startIndex)..<bracketEnd])
-  } else if let colon = host.lastIndex(of: ":") {
-    host = String(host[..<colon])
+  } else {
+    // Only strip a trailing `:port` for unambiguous `host:port`. Unbracketed
+    // IPv6 literals (e.g. `::1`, `fc00::1`) contain multiple colons and must
+    // be preserved verbatim — callers bracket real IPv6+port forms above.
+    let colonCount = host.reduce(0) { $1 == ":" ? $0 + 1 : $0 }
+    if colonCount == 1, let colon = host.lastIndex(of: ":") {
+      host = String(host[..<colon])
+    }
   }
   return host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }

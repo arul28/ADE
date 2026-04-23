@@ -3724,26 +3724,29 @@ export function createAgentChatService(args: {
   ): AgentChatEventEnvelope[] => {
     if (!base.length) return tail.slice();
     if (!tail.length) return base.slice();
-    // Prefer sequence numbers when both sides have them; fall back to timestamps.
-    const baseBySequence = new Map<number, AgentChatEventEnvelope>();
-    const baseByTimestamp = new Map<string, AgentChatEventEnvelope>();
-    for (const entry of base) {
-      if (typeof entry.sequence === "number") {
-        baseBySequence.set(entry.sequence, entry);
-      }
-      baseByTimestamp.set(`${entry.timestamp}#${entry.event.type}`, entry);
-    }
+    // Don't dedup by sequence: `eventSequence` restarts at 0 every time a
+    // managed session is rebuilt (process restart, project switch), so the
+    // same ordinals legitimately appear in the persisted transcript (from
+    // a prior run) and in the in-memory buffer (from the current run) for
+    // totally different events. Use timestamp+type — writeTranscript and
+    // recordChatEventInHistory emit from the same envelope so true
+    // duplicates match exactly.
+    const baseKeys = new Set(base.map((entry) => `${entry.timestamp}#${entry.event.type}`));
     const merged = base.slice();
     for (const entry of tail) {
-      if (typeof entry.sequence === "number" && baseBySequence.has(entry.sequence)) continue;
-      if (baseByTimestamp.has(`${entry.timestamp}#${entry.event.type}`)) continue;
+      if (baseKeys.has(`${entry.timestamp}#${entry.event.type}`)) continue;
       merged.push(entry);
     }
     merged.sort((left, right) => {
+      // Timestamp is cross-run consistent; sequence is only a tiebreak
+      // within the same run.
+      const leftTime = Date.parse(left.timestamp);
+      const rightTime = Date.parse(right.timestamp);
+      if (leftTime !== rightTime) return leftTime - rightTime;
       if (typeof left.sequence === "number" && typeof right.sequence === "number") {
         return left.sequence - right.sequence;
       }
-      return Date.parse(left.timestamp) - Date.parse(right.timestamp);
+      return 0;
     });
     return merged;
   };
@@ -3768,6 +3771,13 @@ export function createAgentChatService(args: {
   ): { sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean } => {
     const trimmedId = sessionId.trim();
     if (!trimmedId.length) {
+      return { sessionId: trimmedId, events: [], truncated: false };
+    }
+    // Validate the session belongs to an agent chat before reading any
+    // transcript path — this function is reachable via IPC and builds
+    // filesystem paths from `trimmedId` downstream.
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) {
       return { sessionId: trimmedId, events: [], truncated: false };
     }
     const maxEvents = Math.max(
@@ -5659,23 +5669,30 @@ export function createAgentChatService(args: {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
 
-    // If a prior teardown (e.g., idle_ttl, budget_eviction) already tore this
-    // runtime down, re-running teardown on shutdown would see runtime=null,
-    // compute preserveClaudeResumeState=false, and then clobber the
-    // previously-preserved sdkSessionId/laneDirectiveKey via the reset below.
-    // Bail early so the prior teardown's resume metadata stays on disk.
-    if (!managed.runtime) return;
+    const reasonAllowsPreservation =
+      openCodeReason === "idle_ttl"
+      || openCodeReason === "budget_eviction"
+      || openCodeReason === "pool_compaction"
+      || openCodeReason === "paused_run"
+      || openCodeReason === "project_close"
+      || openCodeReason === "shutdown";
+
+    // If a prior teardown (e.g., idle_ttl) already released the runtime:
+    //  - Non-terminal reasons keep the prior teardown's preserved resume
+    //    metadata on disk (bail).
+    //  - Terminal reasons (handle_close, ended_session, model_switch) must
+    //    still invalidate so a future resume can't reattach to a session
+    //    the user actually closed.
+    if (!managed.runtime) {
+      if (!reasonAllowsPreservation) {
+        managed.runtimeInvalidated = true;
+        clearLaneDirectiveKey(managed);
+      }
+      return;
+    }
 
     const preserveClaudeResumeState =
-      managed.runtime.kind === "claude"
-      && (
-        openCodeReason === "idle_ttl"
-        || openCodeReason === "budget_eviction"
-        || openCodeReason === "pool_compaction"
-        || openCodeReason === "paused_run"
-        || openCodeReason === "project_close"
-        || openCodeReason === "shutdown"
-      );
+      managed.runtime.kind === "claude" && reasonAllowsPreservation;
     if (managed.runtime?.kind === "codex") {
       managed.runtime.suppressExitError = true;
       try { managed.runtime.reader.close(); } catch { /* ignore */ }

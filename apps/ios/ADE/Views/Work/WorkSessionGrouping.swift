@@ -143,18 +143,22 @@ func workSessionGroupsByLane(
       return parsed > acc ? parsed : acc
     }
   }
+  func orphanLabel(_ name: String?, fallback: String) -> String {
+    let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? fallback : trimmed
+  }
   let orphanEntries = byLaneId
     .filter { laneId, list in !knownLaneIds.contains(laneId) && !list.isEmpty }
     .sorted { left, right in
       let leftLatest = latestStartedAt(left.value)
       let rightLatest = latestStartedAt(right.value)
       if leftLatest != rightLatest { return leftLatest > rightLatest }
-      let leftName = left.value.first?.laneName ?? left.key
-      let rightName = right.value.first?.laneName ?? right.key
+      let leftName = orphanLabel(left.value.first?.laneName, fallback: left.key)
+      let rightName = orphanLabel(right.value.first?.laneName, fallback: right.key)
       return leftName.localizedCaseInsensitiveCompare(rightName) == .orderedAscending
     }
   for (laneId, list) in orphanEntries {
-    let label = list.first?.laneName ?? laneId
+    let label = orphanLabel(list.first?.laneName, fallback: laneId)
     groups.append(WorkSessionGroup(id: "lane:\(laneId)", label: label, icon: .laneBranch, tint: ADEColor.textMuted, sessions: list))
   }
   return groups

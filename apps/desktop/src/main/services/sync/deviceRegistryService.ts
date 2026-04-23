@@ -144,15 +144,23 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
 
   const readOrCreateLocalDeviceId = (): string => {
-    const existing = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
-    if (existing.length > 0) return existing;
+    const shared = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
     const legacy = deviceIdPath !== legacyProjectDeviceIdPath && fs.existsSync(legacyProjectDeviceIdPath)
       ? fs.readFileSync(legacyProjectDeviceIdPath, "utf8").trim()
       : "";
+    // If this project has a legacy per-project sync-device-id, always prefer
+    // it so existing iOS pairings and `sync_cluster_state.brain_device_id`
+    // references stay valid. The shared file is only written when it would
+    // agree (empty or already matching) — never overridden with a different
+    // value, so opening project B after A no longer flips B's identity to
+    // A's ID and drops B into viewer mode.
     if (legacy.length > 0) {
-      writeTextAtomic(deviceIdPath, `${legacy}\n`);
+      if (shared.length === 0 || shared === legacy) {
+        writeTextAtomic(deviceIdPath, `${legacy}\n`);
+      }
       return legacy;
     }
+    if (shared.length > 0) return shared;
     const created = randomUUID();
     writeTextAtomic(deviceIdPath, `${created}\n`);
     return created;
