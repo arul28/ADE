@@ -287,7 +287,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
-  it("retries tailnet discovery after a serve failure", async () => {
+  it("retries tailnet discovery after a serve failure only when forced", async () => {
     const previousEnv = {
       ADE_TAILSCALE_CLI: process.env.ADE_TAILSCALE_CLI,
       ADE_TAILSCALE_SERVE: process.env.ADE_TAILSCALE_SERVE,
@@ -369,8 +369,117 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     await waitFor(() => host.getTailnetDiscoveryStatus().state === "pending_approval");
 
     host.refreshLanDiscovery();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(execFileMock).toHaveBeenCalledTimes(1);
 
+    host.refreshLanDiscovery({ forceTailnet: true });
     await waitFor(() => execFileMock.mock.calls.length === 2);
+  });
+
+  it("marks missing Tailscale CLI unavailable without retry spam", async () => {
+    const previousEnv = {
+      ADE_TAILSCALE_CLI: process.env.ADE_TAILSCALE_CLI,
+      ADE_TAILSCALE_SERVE: process.env.ADE_TAILSCALE_SERVE,
+      NODE_ENV: process.env.NODE_ENV,
+      VITEST: process.env.VITEST,
+    };
+    process.env.ADE_TAILSCALE_CLI = "tailscale-missing";
+    process.env.ADE_TAILSCALE_SERVE = "1";
+    process.env.NODE_ENV = "development";
+    delete process.env.VITEST;
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      const error = Object.assign(new Error("spawn tailscale ENOENT"), {
+        code: "ENOENT",
+        stderr: "",
+      });
+      queueMicrotask(() => callback(error, "", ""));
+      return {} as never;
+    });
+
+    const projectRoot = makeProjectRoot("ade-sync-host-tailnet-missing-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const db = await openKvDb(makeDbPath("ade-sync-host-tailnet-missing-db-"), createLogger() as any);
+    const host = createSyncHostService({
+      db,
+      logger: logger as any,
+      projectRoot,
+      port: 0,
+      pinStore: createStubPinStore(),
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
+      computerUseArtifactBrokerService: {} as any,
+      onStateChanged: vi.fn(),
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      db.close();
+      if (previousEnv.ADE_TAILSCALE_CLI === undefined) {
+        delete process.env.ADE_TAILSCALE_CLI;
+      } else {
+        process.env.ADE_TAILSCALE_CLI = previousEnv.ADE_TAILSCALE_CLI;
+      }
+      if (previousEnv.ADE_TAILSCALE_SERVE === undefined) {
+        delete process.env.ADE_TAILSCALE_SERVE;
+      } else {
+        process.env.ADE_TAILSCALE_SERVE = previousEnv.ADE_TAILSCALE_SERVE;
+      }
+      if (previousEnv.NODE_ENV === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousEnv.NODE_ENV;
+      }
+      if (previousEnv.VITEST === undefined) {
+        delete process.env.VITEST;
+      } else {
+        process.env.VITEST = previousEnv.VITEST;
+      }
+    });
+
+    await host.waitUntilListening();
+    await waitFor(() => execFileMock.mock.calls.length === 1);
+    await waitFor(() => host.getTailnetDiscoveryStatus().state === "unavailable");
+    expect(host.getTailnetDiscoveryStatus().error).toBe("Tailscale CLI was not found.");
+
+    host.refreshLanDiscovery();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "sync_host.tailnet_discovery_failed",
+      expect.anything(),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      "sync_host.tailnet_discovery_unavailable",
+      expect.objectContaining({ code: "ENOENT" }),
+    );
   });
 
   it("keeps newer forced tailnet publishes when an older serve attempt fails", async () => {

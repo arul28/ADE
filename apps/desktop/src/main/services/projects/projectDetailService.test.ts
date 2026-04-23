@@ -63,6 +63,7 @@ describe("getProjectDetail", () => {
 
   it("strips repeated leading HTML comments from README excerpts", async () => {
     const root = makeTempDir("ade-project-detail-");
+    fs.mkdirSync(path.join(root, ".git"));
     fs.writeFileSync(
       path.join(root, "README.md"),
       "<!-- generated -->\n<!-- review -->\n# Hello\n\nVisible body.\n",
@@ -72,5 +73,19 @@ describe("getProjectDetail", () => {
     const detail = await getProjectDetail(root);
 
     expect(detail.readmeExcerpt).toBe("# Hello\n\nVisible body.");
+  });
+
+  it("keeps plain folder details lightweight", async () => {
+    const root = makeTempDir("ade-project-detail-");
+    fs.mkdirSync(path.join(root, "nested"));
+    fs.writeFileSync(path.join(root, "README.md"), "# Plain folder\n", "utf8");
+    fs.writeFileSync(path.join(root, "index.ts"), "export const value = 1;\n", "utf8");
+
+    const detail = await getProjectDetail(root);
+
+    expect(detail.isGitRepo).toBe(false);
+    expect(detail.readmeExcerpt).toBeNull();
+    expect(detail.languages).toEqual([]);
+    expect(detail.subdirectoryCount).toBe(1);
   });
 });

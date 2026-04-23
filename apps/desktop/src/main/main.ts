@@ -1017,8 +1017,33 @@ app.whenReady().then(async () => {
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
+    const packagedFirstOpenStabilityMode =
+      app.isPackaged
+      && !hadAdeDir
+      && process.env.ADE_DISABLE_FIRST_OPEN_STABILITY !== "1";
+    const projectStabilityMode = devStabilityMode || packagedFirstOpenStabilityMode;
 
     logger.info("project.init", { projectRoot, baseRef, ensureExclude });
+    if (projectStabilityMode) {
+      logger.info("project.startup_stability_mode", {
+        projectRoot,
+        reason: packagedFirstOpenStabilityMode ? "packaged_first_open" : "dev_stability_mode",
+        enableAllBackgroundTasks,
+      });
+    }
+
+    const isProjectBackgroundTaskEnabled = (enableFlag?: string): boolean => {
+      if (!projectStabilityMode || enableAllBackgroundTasks) {
+        return true;
+      }
+      if (!enableFlag) {
+        return false;
+      }
+      return (
+        process.env[enableFlag] === "1" ||
+        defaultEnabledBackgroundTaskFlags.has(enableFlag)
+      );
+    };
 
     const measureProjectInitStep = async <T,>(
       step: string,
@@ -1978,6 +2003,7 @@ app.whenReady().then(async () => {
       memoryBriefingService,
       ctoStateService,
       logger,
+      autoStart: false,
     });
     const automationSecretService = createAutomationSecretService({
       adeDir: adePaths.adeDir,
@@ -2266,7 +2292,7 @@ app.whenReady().then(async () => {
       delayMs = 0,
       enableFlag?: string,
     ) => {
-      if (!isBackgroundTaskEnabled(enableFlag)) {
+      if (!isProjectBackgroundTaskEnabled(enableFlag)) {
         logger.info("project.startup_task_skipped", {
           projectRoot,
           task: label,
@@ -2275,7 +2301,7 @@ app.whenReady().then(async () => {
         });
         return;
       }
-      if (devStabilityMode) {
+      if (projectStabilityMode) {
         logger.info("project.startup_task_enabled", {
           projectRoot,
           task: label,
@@ -2308,6 +2334,18 @@ app.whenReady().then(async () => {
         delayMs,
       );
     };
+
+    scheduleBackgroundProjectTask(
+      "worker_heartbeat.start",
+      () => workerHeartbeatService.start(),
+      (error) => {
+        logger.warn("worker_heartbeat.start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      30_000,
+      "ADE_ENABLE_WORKER_HEARTBEAT",
+    );
 
     scheduleBackgroundProjectTask(
       "memory.files.initial_sync",
@@ -3726,53 +3764,104 @@ app.whenReady().then(async () => {
     writeGlobalState(globalStatePath, state);
   };
 
+  const projectOpenLogger = createFileLogger(
+    path.join(app.getPath("userData"), "project-open.jsonl"),
+  );
+
   const switchProjectFromDialog = async (
     selectedPath: string,
   ): Promise<ProjectInfo> => {
-    const repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
-    const existing = projectContexts.get(repoRoot);
-    if (existing) {
-      existing.hasUserSelectedProject = true;
+    const startedAt = Date.now();
+    let repoRoot: string | null = null;
+    projectOpenLogger.info("project.open.begin", { selectedPath });
+    try {
+      const resolveStartedAt = Date.now();
+      repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+      projectOpenLogger.info("project.open.repo_resolved", {
+        selectedPath,
+        repoRoot,
+        durationMs: Date.now() - resolveStartedAt,
+      });
+      const existing = projectContexts.get(repoRoot);
+      if (existing) {
+        existing.hasUserSelectedProject = true;
+        setActiveProject(repoRoot);
+        persistRecentProject(existing.project, {
+          recordLastProject: true,
+          recordRecent: false,
+        });
+        emitProjectChanged(existing.project);
+        scheduleProjectContextRebalance();
+        projectOpenLogger.info("project.open.done", {
+          selectedPath,
+          repoRoot,
+          reusedContext: true,
+          durationMs: Date.now() - startedAt,
+        });
+        return existing.project;
+      }
+
+      let initPromise = projectInitPromises.get(repoRoot);
+      if (!initPromise) {
+        initPromise = (async () => {
+          const baseRefStartedAt = Date.now();
+          const baseRef = await detectDefaultBaseRef(repoRoot!);
+          projectOpenLogger.info("project.open.base_ref_detected", {
+            selectedPath,
+            repoRoot,
+            baseRef,
+            durationMs: Date.now() - baseRefStartedAt,
+          });
+          const initStartedAt = Date.now();
+          const ctx = await initContextForProjectRoot({
+            projectRoot: repoRoot!,
+            baseRef,
+            ensureExclude: true,
+            recordLastProject: true,
+            recordRecent: true,
+            userSelectedProject: true,
+          });
+          projectOpenLogger.info("project.open.context_initialized", {
+            selectedPath,
+            repoRoot,
+            durationMs: Date.now() - initStartedAt,
+          });
+          projectContexts.set(repoRoot!, ctx);
+          return ctx;
+        })().finally(() => {
+          if (repoRoot) {
+            projectInitPromises.delete(repoRoot);
+          }
+        }) as Promise<AppContext>;
+        projectInitPromises.set(repoRoot, initPromise);
+      }
+
+      const ctx = await initPromise;
+      ctx.hasUserSelectedProject = true;
       setActiveProject(repoRoot);
-      persistRecentProject(existing.project, {
+      persistRecentProject(ctx.project, {
         recordLastProject: true,
         recordRecent: false,
       });
-      emitProjectChanged(existing.project);
+      emitProjectChanged(ctx.project);
       scheduleProjectContextRebalance();
-      return existing.project;
+      projectOpenLogger.info("project.open.done", {
+        selectedPath,
+        repoRoot,
+        reusedContext: false,
+        durationMs: Date.now() - startedAt,
+      });
+      return ctx.project;
+    } catch (error) {
+      projectOpenLogger.error("project.open.failed", {
+        selectedPath,
+        repoRoot,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      throw error;
     }
-
-    let initPromise = projectInitPromises.get(repoRoot);
-    if (!initPromise) {
-      initPromise = (async () => {
-        const baseRef = await detectDefaultBaseRef(repoRoot);
-        const ctx = await initContextForProjectRoot({
-          projectRoot: repoRoot,
-          baseRef,
-          ensureExclude: true,
-          recordLastProject: true,
-          recordRecent: true,
-          userSelectedProject: true,
-        });
-        projectContexts.set(repoRoot, ctx);
-        return ctx;
-      })().finally(() => {
-        projectInitPromises.delete(repoRoot);
-      }) as Promise<AppContext>;
-      projectInitPromises.set(repoRoot, initPromise);
-    }
-
-    const ctx = await initPromise;
-    ctx.hasUserSelectedProject = true;
-    setActiveProject(repoRoot);
-    persistRecentProject(ctx.project, {
-      recordLastProject: true,
-      recordRecent: false,
-    });
-    emitProjectChanged(ctx.project);
-    scheduleProjectContextRebalance();
-    return ctx.project;
   };
 
   const closeProjectByPath = async (projectRoot: string): Promise<void> => {

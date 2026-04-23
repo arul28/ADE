@@ -102,6 +102,8 @@ const LANGUAGE_SWATCHES: Record<string, string> = {
   Markdown: "#A78BFA",
 };
 
+const PROJECT_BROWSER_BROWSE_DEBOUNCE_MS = 120;
+
 function withTrailingSeparator(input: string): string {
   if (input.endsWith("/") || input.endsWith("\\")) return input;
   return `${input}${input.includes("\\") ? "\\" : "/"}`;
@@ -398,27 +400,32 @@ export function CommandPalette({
     const requestId = ++browseRequestRef.current;
     setBrowseLoading(true);
     setBrowseError(null);
-    void window.ade.project
-      .browseDirectories({
-        partialPath: browseInput,
-        cwd: project?.rootPath ?? null,
-        limit: 200,
-      })
-      .then((result) => {
-        if (browseRequestRef.current !== requestId) return;
-        setBrowseResult(result);
-        setBrowseSelectedIdx(result.openableProjectRoot ? -1 : (result.parentPath || result.entries.length > 0 ? 0 : -1));
-      })
-      .catch((error) => {
-        if (browseRequestRef.current !== requestId) return;
-        setBrowseResult(null);
-        setBrowseSelectedIdx(-1);
-        setBrowseError(extractError(error));
-      })
-      .finally(() => {
-        if (browseRequestRef.current !== requestId) return;
-        setBrowseLoading(false);
-      });
+    const timeout = globalThis.setTimeout(() => {
+      void window.ade.project
+        .browseDirectories({
+          partialPath: browseInput,
+          cwd: project?.rootPath ?? null,
+          limit: 200,
+        })
+        .then((result) => {
+          if (browseRequestRef.current !== requestId) return;
+          setBrowseResult(result);
+          setBrowseSelectedIdx(result.openableProjectRoot ? -1 : (result.parentPath || result.entries.length > 0 ? 0 : -1));
+        })
+        .catch((error) => {
+          if (browseRequestRef.current !== requestId) return;
+          setBrowseResult(null);
+          setBrowseSelectedIdx(-1);
+          setBrowseError(extractError(error));
+        })
+        .finally(() => {
+          if (browseRequestRef.current !== requestId) return;
+          setBrowseLoading(false);
+        });
+    }, PROJECT_BROWSER_BROWSE_DEBOUNCE_MS);
+    return () => {
+      globalThis.clearTimeout(timeout);
+    };
   }, [browseInput, mode, open, project?.rootPath]);
 
   useEffect(() => {
@@ -436,9 +443,9 @@ export function CommandPalette({
     if (!open || mode !== "project-browse") {
       return;
     }
-    if (!detailTarget) {
+    if (!detailTarget || !highlightedIsRepo) {
       setDetail(null);
-      setDetailPath(null);
+      setDetailPath(detailTarget);
       setDetailLoading(false);
       return;
     }
@@ -467,7 +474,7 @@ export function CommandPalette({
     return () => {
       globalThis.clearTimeout(timeout);
     };
-  }, [detail, detailTarget, mode, open]);
+  }, [detail, detailTarget, highlightedIsRepo, mode, open]);
 
   useEffect(() => {
     if (mode !== "project-browse") return;

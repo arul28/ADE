@@ -135,6 +135,13 @@ describe("CommandPalette", () => {
       </MemoryRouter>
     );
 
+    await waitFor(() => {
+      expect(browseDirectories).toHaveBeenCalledWith({
+        partialPath: "../",
+        cwd: "/Users/admin/Projects/ADE",
+        limit: 200,
+      });
+    });
     const button = await screen.findByRole("button", { name: /open directory/i });
     fireEvent.click(button);
 
@@ -223,6 +230,13 @@ describe("CommandPalette", () => {
       </MemoryRouter>
     );
 
+    await waitFor(() => {
+      expect(browseDirectories).toHaveBeenCalledWith({
+        partialPath: "../",
+        cwd: "/Users/admin/Projects/ADE",
+        limit: 200,
+      });
+    });
     const inputs = await screen.findAllByPlaceholderText(/paste a path, type to filter, or drop a folder anywhere/i);
     const input = inputs.at(-1) as HTMLInputElement;
     fireEvent.drop(input, {

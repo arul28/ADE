@@ -241,18 +241,34 @@ function lookupRecentProjectEntry(globalStatePath: string | null | undefined, ro
 
 export async function getProjectDetail(rootPath: string, options: GetProjectDetailOptions = {}): Promise<ProjectDetail> {
   const { requestedRoot, scanRoot } = await resolveProjectDetailScanRoot(rootPath);
-  const [gitRepo, readmeExcerpt, languages, subdirectoryCount] = await Promise.all([
+  const [gitRepo, subdirectoryCount] = await Promise.all([
     isGitRepo(scanRoot),
-    readReadmeExcerpt(scanRoot),
-    countFilesByLanguage(scanRoot),
     countSubdirectories(scanRoot),
   ]);
 
-  const gitMeta = gitRepo
-    ? await readGitMetadata(scanRoot)
-    : { branchName: null, dirtyCount: null, lastCommit: null, aheadBehind: null };
-
   const recent = lookupRecentProjectEntry(options.globalStatePath ?? null, requestedRoot);
+
+  if (!gitRepo) {
+    return {
+      rootPath: requestedRoot,
+      isGitRepo: false,
+      branchName: null,
+      dirtyCount: null,
+      aheadBehind: null,
+      lastCommit: null,
+      readmeExcerpt: null,
+      languages: [],
+      laneCount: recent?.laneCount ?? null,
+      lastOpenedAt: recent?.lastOpenedAt ?? null,
+      subdirectoryCount,
+    };
+  }
+
+  const [readmeExcerpt, languages, gitMeta] = await Promise.all([
+    readReadmeExcerpt(scanRoot),
+    countFilesByLanguage(scanRoot),
+    readGitMetadata(scanRoot),
+  ]);
 
   return {
     rootPath: requestedRoot,

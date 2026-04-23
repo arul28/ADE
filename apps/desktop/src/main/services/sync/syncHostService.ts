@@ -698,6 +698,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let bonjourPort: number | null = null;
   let bonjourSignature: string | null = null;
   let tailnetServeSignature: string | null = null;
+  let tailnetServeLastFailureSignature: string | null = null;
   let tailnetServePublishSequence = 0;
   let tailnetServeActivePublishToken = 0;
   let discoveryEnabled = args.discoveryEnabled !== false;
@@ -949,6 +950,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const cli = resolveTailscaleCli();
     const signature = `${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}:${SYNC_TAILNET_DISCOVERY_SERVICE_PORT}->${port}`;
     if (tailnetServeSignature === signature && !options?.force) return;
+    if (tailnetServeLastFailureSignature === signature && !options?.force) return;
     const publishToken = ++tailnetServePublishSequence;
     tailnetServeActivePublishToken = publishToken;
     tailnetServeSignature = signature;
@@ -972,6 +974,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     void execFileAsync(cli, cliArgs, { timeout: 10_000 })
       .then(({ stdout, stderr }) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
+        tailnetServeLastFailureSignature = null;
         const stdoutText = stdout.trim();
         const stderrText = stderr.trim();
         const outputText = [stdoutText, stderrText].filter(Boolean).join("\n");
@@ -997,6 +1000,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (tailnetServeSignature === signature) {
           tailnetServeSignature = null;
         }
+        tailnetServeLastFailureSignature = signature;
         const errorMessage = error instanceof Error ? error.message : String(error);
         const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? null;
         const stderr = typeof (error as { stderr?: unknown })?.stderr === "string"
@@ -1016,14 +1020,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           error: code === "ENOENT" ? "Tailscale CLI was not found." : errorMessage,
           stderr,
         });
-        args.logger.warn("sync_host.tailnet_discovery_failed", {
+        const logPayload = {
           service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
           servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
           target,
           error: errorMessage,
           code,
           stderr,
-        });
+        };
+        if (code === "ENOENT") {
+          args.logger.info("sync_host.tailnet_discovery_unavailable", logPayload);
+        } else {
+          args.logger.warn("sync_host.tailnet_discovery_failed", logPayload);
+        }
       });
   };
 
