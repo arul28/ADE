@@ -34,7 +34,8 @@ import type {
 import { MonacoDiffView, type MonacoDiffHandle } from "../lanes/MonacoDiffView";
 import { useAppStore } from "../../state/appStore";
 import { clearDirtyBuffersForWorkspace, replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
-import { revealLabel } from "../../lib/platform";
+import { modifierKeyLabel, revealLabel } from "../../lib/platform";
+import { normalizePath, isPathEqualOrDescendant, remapPathForRename } from "../../lib/pathUtils";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, outlineButton, primaryButton, dangerButton, cardStyle } from "../lanes/laneDesignTokens";
 import { cn } from "../ui/cn";
@@ -300,31 +301,14 @@ function applyConflictChoice(text: string, hunk: ConflictHunk, choice: "ours" | 
 }
 
 function parentDirOfPath(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, "/");
+  const normalized = normalizePath(filePath);
+  if (!normalized) return "";
+  if (/^[A-Za-z]:\/$/.test(normalized)) return "";
+  if (/^\/\/[^/]+\/[^/]+$/.test(normalized)) return "";
+  if (/^[A-Za-z]:\/[^/]+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
   const idx = normalized.lastIndexOf("/");
   if (idx <= 0) return "";
   return normalized.slice(0, idx);
-}
-
-function normalizePath(filePath: string): string {
-  return filePath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
-}
-
-function isPathEqualOrDescendant(filePath: string, rootPath: string): boolean {
-  const normalizedPath = normalizePath(filePath);
-  const normalizedRoot = normalizePath(rootPath);
-  if (!normalizedRoot) return normalizedPath.length === 0;
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
-}
-
-function remapPathForRename(filePath: string, oldPath: string, newPath: string): string {
-  const normalizedPath = normalizePath(filePath);
-  const normalizedOld = normalizePath(oldPath);
-  const normalizedNew = normalizePath(newPath);
-  if (!normalizedOld || !normalizedNew) return normalizedPath;
-  if (normalizedPath === normalizedOld) return normalizedNew;
-  if (!normalizedPath.startsWith(`${normalizedOld}/`)) return normalizedPath;
-  return `${normalizedNew}${normalizedPath.slice(normalizedOld.length)}`;
 }
 
 const FILE_ICON_COLORS = {
@@ -2213,7 +2197,7 @@ export function FilesPage() {
 
         {/* Open in external editor */}
         <div className="relative shrink-0" ref={openInMenuRef} data-tour="files.openIn">
-          <SmartTooltip content={{ label: "Open In", description: "Open the current file in an external editor or Finder." }}>
+          <SmartTooltip content={{ label: "Open In", description: "Open the current file in an external editor or file browser." }}>
             <button
               type="button"
               style={{
@@ -2403,7 +2387,7 @@ export function FilesPage() {
                 autoFocus
                 value={quickOpen}
                 onChange={(e) => setQuickOpen(e.target.value)}
-                placeholder="Type to search files... (Cmd+P)"
+                placeholder={`Type to search files... (${modifierKeyLabel}+P)`}
                 style={{
                   height: 36, width: "100%", padding: "0 36px 0 32px",
                   fontSize: 12, fontFamily: MONO_FONT, fontWeight: 500,

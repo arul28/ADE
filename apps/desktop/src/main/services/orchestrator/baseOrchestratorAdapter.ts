@@ -25,6 +25,34 @@ export function compactText(value: string, maxChars = 220): string {
   return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
+export type AdapterLaunchCommand = {
+  /** Human-readable preview stored with the session and metadata. */
+  startupCommand: string;
+  /** Optional direct executable to launch instead of typing startupCommand into a shell. */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+};
+
+function normalizeAdapterLaunch(value: string | AdapterLaunchCommand): AdapterLaunchCommand {
+  if (typeof value === "string") return { startupCommand: value };
+  return value;
+}
+
+function ptyLaunchFields(launch: AdapterLaunchCommand): {
+  startupCommand: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+} {
+  return {
+    startupCommand: launch.startupCommand,
+    ...(launch.command ? { command: launch.command } : {}),
+    ...(launch.args ? { args: launch.args } : {}),
+    ...(launch.env ? { env: launch.env } : {}),
+  };
+}
+
 export function buildCompactPlanView(currentStep: OrchestratorStep, allSteps: OrchestratorStep[]): string {
   if (!allSteps.length) return "";
   const stepIdToKey = new Map(allSteps.map((s) => [s.id, s.stepKey]));
@@ -81,7 +109,7 @@ export interface BaseAdapterConfig {
   /** Session type for tracked sessions, e.g. "claude-orchestrated". */
   sessionType: TerminalToolType;
   /** Build the startup command for a startup-command-override case. */
-  buildOverrideCommand: (args: { prompt: string }) => string;
+  buildOverrideCommand: (args: { prompt: string }) => string | AdapterLaunchCommand;
   /** Build the full startup command from the assembled prompt + resolved config. */
   buildStartupCommand: (args: {
     prompt: string;
@@ -91,7 +119,7 @@ export interface BaseAdapterConfig {
     attempt: import("../../../shared/types").OrchestratorAttempt;
     permissionConfig: OrchestratorExecutorStartArgs["permissionConfig"];
     teamRuntime?: TeamRuntimeConfig;
-  }) => string;
+  }) => string | AdapterLaunchCommand;
   /** Build adapter-specific metadata to include in the accepted result. */
   buildAcceptedMetadata: (args: {
     model: string;
@@ -748,12 +776,13 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
             : null;
 
         if (startupCommandOverride) {
+          const launch = normalizeAdapterLaunch(buildOverrideCommand({ prompt: startupCommandOverride }));
           // Use the startup command directly as the prompt
           const session = await args.createTrackedSession({
             laneId: step.laneId,
             toolType: sessionType,
             title: `[Orchestrator] ${step.title}`,
-            startupCommand: buildOverrideCommand({ prompt: startupCommandOverride }),
+            ...ptyLaunchFields(launch),
             cols: 120,
             rows: 40
           });
@@ -765,7 +794,7 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
               adapterKind: executorKind,
               startupCommandOverride: true,
               promptLength: startupCommandOverride.length,
-              startupCommandPreview: startupCommandOverride.slice(0, 320)
+              startupCommandPreview: launch.startupCommand.slice(0, 320)
             }
           };
         }
@@ -791,7 +820,7 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
         const teamRuntime = run.metadata && typeof run.metadata === "object" && !Array.isArray(run.metadata)
           ? (run.metadata as Record<string, unknown>).teamRuntime as TeamRuntimeConfig | undefined
           : undefined;
-        const startupCommand = buildStartupCommand({
+        const launch = normalizeAdapterLaunch(buildStartupCommand({
           prompt,
           model,
           step,
@@ -799,14 +828,14 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
           attempt,
           permissionConfig: args.permissionConfig,
           teamRuntime
-        });
+        }));
 
         // 5. Create tracked session
         const session = await args.createTrackedSession({
           laneId: step.laneId,
           toolType: sessionType,
           title: `[Orchestrator] ${step.title}`,
-          startupCommand,
+          ...ptyLaunchFields(launch),
           cols: 120,
           rows: 40
         });
@@ -829,7 +858,7 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
             steeringDirectiveCount,
             promptLength: prompt.length,
             reasoningEffort,
-            startupCommandPreview: startupCommand.slice(0, 320)
+            startupCommandPreview: launch.startupCommand.slice(0, 320)
           })
         };
       } catch (error) {

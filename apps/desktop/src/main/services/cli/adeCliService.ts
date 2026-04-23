@@ -35,9 +35,46 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function pathDelimiter(): string {
+  return process.platform === "win32" ? ";" : PATH_DELIMITER;
+}
+
+function commandFileName(): "ade" | "ade.cmd" {
+  return process.platform === "win32" ? "ade.cmd" : "ade";
+}
+
+function installerFileName(): "install-path.sh" | "install-path.cmd" {
+  return process.platform === "win32" ? "install-path.cmd" : "install-path.sh";
+}
+
+function findPathEnvKey(env: NodeJS.ProcessEnv): string {
+  if (process.platform !== "win32") return "PATH";
+  const existing = Object.keys(env).find((key) => key.toLowerCase() === "path");
+  return existing ?? "Path";
+}
+
+function getPathEnvValue(env: NodeJS.ProcessEnv): string | undefined {
+  return env[findPathEnvKey(env)];
+}
+
+function setPathEnvValue(env: NodeJS.ProcessEnv, value: string): void {
+  const key = findPathEnvKey(env);
+  if (process.platform === "win32") {
+    for (const existing of Object.keys(env)) {
+      if (existing.toLowerCase() === "path" && existing !== key) {
+        delete env[existing];
+      }
+    }
+  }
+  env[key] = value;
+}
+
 function isExecutable(filePath: string | null | undefined): boolean {
   if (!filePath) return false;
   try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return false;
+    if (process.platform === "win32") return true;
     fs.accessSync(filePath, fs.constants.X_OK);
     return true;
   } catch {
@@ -46,15 +83,16 @@ function isExecutable(filePath: string | null | undefined): boolean {
 }
 
 function splitPathEntries(value: string | null | undefined): string[] {
-  return (value ?? "").split(PATH_DELIMITER).map((entry) => entry.trim()).filter(Boolean);
+  return (value ?? "").split(pathDelimiter()).map((entry) => entry.trim()).filter(Boolean);
 }
 
 function pathContainsDir(pathValue: string | null | undefined, dir: string | null): boolean {
   if (!dir) return false;
-  const resolved = path.resolve(dir);
+  const resolved = process.platform === "win32" ? path.resolve(dir).toLowerCase() : path.resolve(dir);
   return splitPathEntries(pathValue).some((entry) => {
     try {
-      return path.resolve(entry) === resolved;
+      const candidate = process.platform === "win32" ? path.resolve(entry).toLowerCase() : path.resolve(entry);
+      return candidate === resolved;
     } catch {
       return false;
     }
@@ -65,20 +103,95 @@ function prependPathDir(pathValue: string | null | undefined, dir: string | null
   if (!dir) return pathValue ?? undefined;
   if (pathContainsDir(pathValue, dir)) return pathValue ?? undefined;
   const current = pathValue?.trim();
-  return current ? `${dir}${PATH_DELIMITER}${current}` : dir;
+  return current ? `${dir}${pathDelimiter()}${current}` : dir;
 }
 
-function resolveCommandOnPath(command: string, pathValue: string | null | undefined): string | null {
-  const extensions = process.platform === "win32"
-    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+function resolveCommandOnPath(command: string, pathValue: string | null | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
+  const rawExtensions = process.platform === "win32"
+    ? (env.PATHEXT ?? env.Pathext ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
     : [""];
+  const extensions = process.platform === "win32"
+    ? Array.from(new Set(rawExtensions.flatMap((ext) => [ext, ext.toLowerCase(), ext.toUpperCase()])))
+    : rawExtensions;
+  const suffixes = process.platform === "win32" && path.extname(command) ? [""] : extensions;
   for (const entry of splitPathEntries(pathValue)) {
-    for (const ext of extensions) {
+    for (const ext of suffixes) {
       const candidate = path.join(entry, `${command}${ext}`);
       if (isExecutable(candidate)) return candidate;
     }
   }
   return null;
+}
+
+function escapeCmdSetValue(value: string): string {
+  return value.replace(/%/g, "%%").replace(/"/g, "\"\"");
+}
+
+function createWindowsShimScript(args: {
+  cliJsPath: string;
+  entryKind: "built" | "source";
+  tsxBinPath: string | null;
+  tsxImportPath: string | null;
+  appExecutablePath: string;
+}): string {
+  return [
+    "@echo off",
+    "setlocal",
+    `set "CLI_JS=${escapeCmdSetValue(args.cliJsPath)}"`,
+    `set "CLI_ENTRY_KIND=${escapeCmdSetValue(args.entryKind)}"`,
+    `set "TSX_BIN=${escapeCmdSetValue(args.tsxBinPath ?? "")}"`,
+    `set "TSX_IMPORT=${escapeCmdSetValue(args.tsxImportPath ?? "")}"`,
+    `set "APP_EXE=${escapeCmdSetValue(args.appExecutablePath)}"`,
+    "if /I \"%CLI_ENTRY_KIND%\"==\"source\" (",
+    "  if exist \"%TSX_BIN%\" (",
+    "    \"%TSX_BIN%\" \"%CLI_JS%\" %*",
+    "    exit /b %ERRORLEVEL%",
+    "  )",
+    "  if not exist \"%TSX_IMPORT%\" (",
+    "    echo ade: Local source CLI fallback requires repo-local tsx. Run npm --prefix apps/ade-cli install or npm --prefix apps/ade-cli run build. 1>&2",
+    "    exit /b 127",
+    "  )",
+    "  if defined ADE_CLI_NODE (",
+    "    \"%ADE_CLI_NODE%\" --import \"%TSX_IMPORT%\" \"%CLI_JS%\" %*",
+    "    exit /b %ERRORLEVEL%",
+    "  )",
+    "  if exist \"%APP_EXE%\" (",
+    "    set \"ELECTRON_RUN_AS_NODE=1\"",
+    "    \"%APP_EXE%\" --import \"%TSX_IMPORT%\" \"%CLI_JS%\" %*",
+    "    exit /b %ERRORLEVEL%",
+    "  )",
+    "  where node >nul 2>nul",
+    "  if not errorlevel 1 (",
+    "    node -e \"process.exit(Number(process.versions.node.split('.')[0]) >= 22 ? 0 : 1)\" >nul 2>nul",
+    "    if not errorlevel 1 (",
+    "      node --import \"%TSX_IMPORT%\" \"%CLI_JS%\" %*",
+    "      exit /b %ERRORLEVEL%",
+    "    )",
+    "  )",
+    "  echo ade: Node.js 22+ or the ADE Electron runtime is required to run this source CLI. 1>&2",
+    "  exit /b 127",
+    ")",
+    "if defined ADE_CLI_NODE (",
+    "  \"%ADE_CLI_NODE%\" \"%CLI_JS%\" %*",
+    "  exit /b %ERRORLEVEL%",
+    ")",
+    "if exist \"%APP_EXE%\" (",
+    "  set \"ELECTRON_RUN_AS_NODE=1\"",
+    "  \"%APP_EXE%\" \"%CLI_JS%\" %*",
+    "  exit /b %ERRORLEVEL%",
+    ")",
+    "where node >nul 2>nul",
+    "if not errorlevel 1 (",
+    "  node -e \"process.exit(Number(process.versions.node.split('.')[0]) >= 22 ? 0 : 1)\" >nul 2>nul",
+    "  if not errorlevel 1 (",
+    "    node \"%CLI_JS%\" %*",
+    "    exit /b %ERRORLEVEL%",
+    "  )",
+    ")",
+    "echo ade: Node.js 22+ or the ADE Electron runtime is required to run this CLI. 1>&2",
+    "exit /b 127",
+    "",
+  ].join("\r\n");
 }
 
 function findRepoRoot(startDir: string): string | null {
@@ -182,8 +295,8 @@ function writeDevShim(args: {
   logger: Logger;
 }): { commandPath: string; binDir: string } | null {
   const binDir = path.join(args.userDataPath, "ade-cli", "bin");
-  const commandPath = path.join(binDir, "ade");
-  const script = [
+  const commandPath = path.join(binDir, commandFileName());
+  const script = process.platform === "win32" ? createWindowsShimScript(args) : [
     "#!/bin/sh",
     "set -eu",
     `CLI_JS=${shellQuote(args.cliJsPath)}`,
@@ -239,8 +352,10 @@ function writeDevShim(args: {
 
   try {
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(commandPath, script, { encoding: "utf8", mode: 0o755 });
-    fs.chmodSync(commandPath, 0o755);
+    fs.writeFileSync(commandPath, script, process.platform === "win32"
+      ? { encoding: "utf8" }
+      : { encoding: "utf8", mode: 0o755 });
+    if (process.platform !== "win32") fs.chmodSync(commandPath, 0o755);
     return { commandPath, binDir };
   } catch (error) {
     args.logger.warn("ade_cli.dev_shim_failed", {
@@ -254,9 +369,9 @@ function writeDevShim(args: {
 function resolveCliPaths(args: CreateAdeCliServiceArgs): ResolvedCliPaths {
   const resourcesPath = args.resourcesPath ? path.resolve(args.resourcesPath) : null;
   const packagedBinDir = resourcesPath ? path.join(resourcesPath, "ade-cli", "bin") : null;
-  const packagedCommandPath = packagedBinDir ? path.join(packagedBinDir, "ade") : null;
+  const packagedCommandPath = packagedBinDir ? path.join(packagedBinDir, commandFileName()) : null;
   const packagedCliJsPath = resourcesPath ? path.join(resourcesPath, "ade-cli", "cli.cjs") : null;
-  const packagedInstallerPath = resourcesPath ? path.join(resourcesPath, "ade-cli", "install-path.sh") : null;
+  const packagedInstallerPath = resourcesPath ? path.join(resourcesPath, "ade-cli", installerFileName()) : null;
 
   if (args.isPackaged && isExecutable(packagedCommandPath)) {
     return {
@@ -273,7 +388,7 @@ function resolveCliPaths(args: CreateAdeCliServiceArgs): ResolvedCliPaths {
     const shim = writeDevShim({
       cliJsPath: devCli.cliPath,
       entryKind: devCli.entryKind,
-      tsxBinPath: path.join(devCli.repoRoot, "apps", "ade-cli", "node_modules", ".bin", "tsx"),
+      tsxBinPath: path.join(devCli.repoRoot, "apps", "ade-cli", "node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx"),
       tsxImportPath: path.join(devCli.repoRoot, "apps", "ade-cli", "node_modules", "tsx", "dist", "loader.mjs"),
       userDataPath: args.userDataPath,
       appExecutablePath: args.appExecutablePath,
@@ -300,6 +415,10 @@ function resolveCliPaths(args: CreateAdeCliServiceArgs): ResolvedCliPaths {
 }
 
 function installTargetPath(): string {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), "AppData", "Local");
+    return path.join(localAppData, "ADE", "bin", "ade.cmd");
+  }
   return path.join(os.homedir(), ".local", "bin", "ade");
 }
 
@@ -342,12 +461,13 @@ function statusMessage(args: {
 
 export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   const resolved = resolveCliPaths(args);
-  const hostPathSnapshot = args.env?.PATH ?? process.env.PATH;
+  const envSnapshot = args.env ?? process.env;
+  const hostPathSnapshot = getPathEnvValue(envSnapshot);
 
   const agentEnv = (baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
     const next: NodeJS.ProcessEnv = { ...baseEnv };
-    const nextPath = prependPathDir(next.PATH, resolved.binDir);
-    if (nextPath) next.PATH = nextPath;
+    const nextPath = prependPathDir(getPathEnvValue(next), resolved.binDir);
+    if (nextPath) setPathEnvValue(next, nextPath);
     if (resolved.commandPath) next.ADE_CLI_PATH = resolved.commandPath;
     if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
     return next;
@@ -355,18 +475,21 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
 
   const applyToProcessEnv = (): void => {
     const next = agentEnv(process.env);
-    process.env.PATH = next.PATH;
+    const nextPath = getPathEnvValue(next);
+    if (nextPath) setPathEnvValue(process.env, nextPath);
     if (next.ADE_CLI_PATH) process.env.ADE_CLI_PATH = next.ADE_CLI_PATH;
     if (next.ADE_CLI_BIN_DIR) process.env.ADE_CLI_BIN_DIR = next.ADE_CLI_BIN_DIR;
   };
 
   const getStatus = async (): Promise<AdeCliStatus> => {
-    const terminalCommandPath = resolveCommandOnPath("ade", hostPathSnapshot);
+    const terminalCommandPath = resolveCommandOnPath("ade", hostPathSnapshot, envSnapshot);
     const targetPath = installTargetPath();
     const targetDir = path.dirname(targetPath);
     const terminalInstalled = Boolean(terminalCommandPath);
     const bundledAvailable = Boolean(resolved.commandPath && isExecutable(resolved.commandPath));
-    const agentPathReady = bundledAvailable && pathContainsDir(agentEnv({ PATH: hostPathSnapshot }).PATH, resolved.binDir);
+    const hostPathEnv: NodeJS.ProcessEnv = {};
+    if (hostPathSnapshot) setPathEnvValue(hostPathEnv, hostPathSnapshot);
+    const agentPathReady = bundledAvailable && pathContainsDir(getPathEnvValue(agentEnv(hostPathEnv)), resolved.binDir);
     const installAvailable = resolved.source === "packaged" && isExecutable(resolved.installerPath);
     const message = statusMessage({
       terminalInstalled,

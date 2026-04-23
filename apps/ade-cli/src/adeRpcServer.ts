@@ -5684,46 +5684,63 @@ async function runTool(args: {
     }
     const finalPrompt = promptSegments.join("\n").trim();
 
-    const commandParts: string[] = [provider];
+    const commandArgs: string[] = [];
+    const commandPreviewParts: string[] = [provider];
     if (model) {
-      commandParts.push("--model", shellEscapeArg(model));
+      commandArgs.push("--model", model);
+      commandPreviewParts.push("--model", shellEscapeArg(model));
     }
     if (provider === "codex") {
       if (permissionMode === "full-auto") {
-        commandParts.push("--dangerously-bypass-approvals-and-sandbox");
+        commandArgs.push("--dangerously-bypass-approvals-and-sandbox");
+        commandPreviewParts.push("--dangerously-bypass-approvals-and-sandbox");
       } else if (permissionMode === "default") {
-        commandParts.push("--full-auto");
+        commandArgs.push("--full-auto");
+        commandPreviewParts.push("--full-auto");
       } else if (permissionMode === "config-toml") {
         // No explicit Codex permission flags; let the host config.toml decide.
       } else if (permissionMode === "plan") {
-        commandParts.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
+        commandArgs.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
+        commandPreviewParts.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
       } else {
-        commandParts.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
+        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
+        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
       }
     } else {
       const claudePermission =
         permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : permissionMode === "edit" ? "acceptEdits" : "default";
-      commandParts.push("--permission-mode", claudePermission);
+      commandArgs.push("--permission-mode", claudePermission);
+      commandPreviewParts.push("--permission-mode", shellEscapeArg(claudePermission));
 
       // ADE-owned actions are exposed through the `ade` CLI. Child agent
       // sessions receive identity env vars below instead of an attached server.
     }
     if (finalPrompt) {
-      commandParts.push(shellEscapeArg(finalPrompt));
+      commandArgs.push(finalPrompt);
+      commandPreviewParts.push(shellEscapeArg(finalPrompt));
     }
 
-    // Prepend env vars for worker identity
+    // Attach worker identity through the process environment. The startup
+    // command remains a display/resume preview only; the actual launch uses
+    // command/args/env so it works on Windows without POSIX inline assignment.
+    const workerEnv: Record<string, string> = {};
     const envPrefixParts: string[] = [];
-    if (runId) envPrefixParts.push(`ADE_RUN_ID=${shellEscapeArg(runId)}`);
-    if (stepId) envPrefixParts.push(`ADE_STEP_ID=${shellEscapeArg(stepId)}`);
-    if (attemptId) envPrefixParts.push(`ADE_ATTEMPT_ID=${shellEscapeArg(attemptId)}`);
-    if (callerCtx.missionId) envPrefixParts.push(`ADE_MISSION_ID=${shellEscapeArg(callerCtx.missionId)}`);
-    if (callerCtx.ownerId) envPrefixParts.push(`ADE_OWNER_ID=${shellEscapeArg(callerCtx.ownerId)}`);
+    const addWorkerEnv = (key: string, value: string | null | undefined) => {
+      if (!value) return;
+      workerEnv[key] = value;
+      envPrefixParts.push(`${key}=${shellEscapeArg(value)}`);
+    };
+    addWorkerEnv("ADE_RUN_ID", runId);
+    addWorkerEnv("ADE_STEP_ID", stepId);
+    addWorkerEnv("ADE_ATTEMPT_ID", attemptId);
+    addWorkerEnv("ADE_MISSION_ID", callerCtx.missionId);
+    addWorkerEnv("ADE_OWNER_ID", callerCtx.ownerId);
+    workerEnv.ADE_DEFAULT_ROLE = "agent";
     envPrefixParts.push("ADE_DEFAULT_ROLE=agent");
 
     const startupCommand = envPrefixParts.length > 0
-      ? `${envPrefixParts.join(" ")} ${commandParts.join(" ")}`
-      : commandParts.join(" ");
+      ? `${envPrefixParts.join(" ")} ${commandPreviewParts.join(" ")}`
+      : commandPreviewParts.join(" ");
 
     const created = await runtime.ptyService.create({
       laneId,
@@ -5732,6 +5749,9 @@ async function runTool(args: {
       title,
       tracked: true,
       toolType: `${provider}-orchestrated`,
+      command: provider,
+      args: commandArgs,
+      env: workerEnv,
       startupCommand
     });
 

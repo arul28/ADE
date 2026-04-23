@@ -1,7 +1,9 @@
 import { app, BrowserWindow, dialog, nativeImage, protocol, safeStorage, shell } from "electron";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type * as NodePty from "node-pty";
 type NodePtyType = typeof NodePty;
+import { isAdeMcpNamedPipePath } from "../shared/adeMcpIpc";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { openKvDb } from "./services/state/kvDb";
@@ -329,7 +331,7 @@ if (process.env.VITE_DEV_SERVER_URL) {
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) return devUrl;
-  return `file://${path.join(__dirname, "../renderer/index.html")}`;
+  return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
 }
 
 async function createWindow(args: {
@@ -640,9 +642,17 @@ app.whenReady().then(async () => {
   protocol.handle("ade-artifact", (request) => {
     const url = new URL(request.url);
     let filePath = decodeURIComponent(url.pathname);
+    if (url.hostname === "project") {
+      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
+      filePath = path.resolve(activeProjectRoot, filePath.replace(/^[/\\]+/, ""));
+    }
     // On Windows, pathname starts with /C:/... — strip leading slash
     if (process.platform === "win32" && /^\/[a-zA-Z]:/.test(filePath)) {
       filePath = filePath.slice(1);
+    }
+    if (!path.isAbsolute(filePath)) {
+      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
+      filePath = path.resolve(activeProjectRoot, filePath);
     }
     filePath = path.resolve(filePath);
     let resolvedFile: string;
@@ -3226,10 +3236,11 @@ app.whenReady().then(async () => {
       destroyActiveRpcConnections,
     );
 
-    // Clean stale socket from prior crash
-    try {
-      fs.unlinkSync(rpcSocketPath);
-    } catch {}
+    if (!isAdeMcpNamedPipePath(rpcSocketPath)) {
+      try {
+        fs.unlinkSync(rpcSocketPath);
+      } catch {}
+    }
 
     const rpcSocketServer = net.createServer((conn) => {
       activeRpcConnections.add(conn);
@@ -3567,7 +3578,9 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      if (ctx.rpcSocketPath) fs.unlinkSync(ctx.rpcSocketPath);
+      if (ctx.rpcSocketPath && !isAdeMcpNamedPipePath(ctx.rpcSocketPath)) {
+        fs.unlinkSync(ctx.rpcSocketPath);
+      }
     } catch {
       // ignore
     }

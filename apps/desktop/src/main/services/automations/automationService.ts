@@ -1573,7 +1573,9 @@ export function createAutomationService({
 
   const runCommand = async (args: { command: string; cwd: string; timeoutMs: number }): Promise<{ output: string; exitCode: number | null }> => {
     const startedAt = Date.now();
-    const child = spawn(process.platform === "win32" ? "cmd.exe" : "sh", process.platform === "win32" ? ["/c", args.command] : ["-lc", args.command], {
+    const shellFile = process.platform === "win32" ? (process.env.ComSpec?.trim() || "cmd.exe") : "sh";
+    const shellArgs = process.platform === "win32" ? ["/d", "/s", "/c", args.command] : ["-lc", args.command];
+    const child = spawn(shellFile, shellArgs, {
       cwd: args.cwd,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"]

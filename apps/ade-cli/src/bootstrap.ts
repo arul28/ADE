@@ -15,6 +15,8 @@ import { createDiffService } from "../../desktop/src/main/services/diffs/diffSer
 import { createMissionService } from "../../desktop/src/main/services/missions/missionService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
+import { createProcessService } from "../../desktop/src/main/services/processes/processService";
+import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import type { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import { createIssueInventoryService } from "../../desktop/src/main/services/prs/issueInventoryService";
@@ -37,7 +39,6 @@ import {
   type ComputerUseArtifactBrokerService,
 } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
-import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import {
   createAutomationService,
@@ -134,6 +135,17 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
     orchestratorCacheDir: paths.orchestratorCacheDir,
     missionStateDir: paths.missionStateDir,
   };
+}
+
+function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = { ...baseEnv };
+  const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
+    env: next,
+    includeInteractiveShell: true,
+    timeoutMs: 1_000,
+  });
+  if (nextPath) setPathEnvValue(next, nextPath);
+  return next;
 }
 
 export async function createAdeRuntime(args: { projectRoot: string; workspaceRoot?: string } | string): Promise<AdeRuntime> {
@@ -233,6 +245,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     broadcastData: () => {},
     broadcastExit: () => {},
     onSessionEnded: () => {},
+    getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
     loadPty: () => nodePty
   });
 
@@ -246,6 +259,22 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     broadcastEvent: () => {}
   });
   const issueInventoryService = createIssueInventoryService({ db });
+  const eventBuffer = createEventBuffer();
+
+  function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
+    eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
+  }
+
+  const processService = createProcessService({
+    db,
+    projectId,
+    logger,
+    laneService,
+    projectConfigService,
+    sessionService,
+    ptyService,
+    broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>),
+  });
 
   // Ensure evaluation tables exist for headless runtime checks.
   db.run(`
@@ -271,12 +300,6 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     CREATE INDEX IF NOT EXISTS idx_orchestrator_evaluations_run
     ON orchestrator_evaluations(run_id, evaluated_at)
   `);
-
-  const eventBuffer = createEventBuffer();
-
-  function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
-    eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
-  }
 
   const memoryService = createMemoryService(db);
   const ctoStateService = createCtoStateService({
@@ -431,7 +454,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     linearSyncService: headlessLinearServices.linearSyncService,
     linearIngressService: headlessLinearServices.linearIngressService,
     linearRoutingService: headlessLinearServices.linearRoutingService,
-    processService: headlessLinearServices.processService,
+    processService,
     automationService,
     automationPlannerService,
     computerUseArtifactBrokerService,
@@ -441,6 +464,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
       swallow(() => automationService.dispose());
+      swallow(() => processService.disposeAll());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
       swallow(() => testService.disposeAll());

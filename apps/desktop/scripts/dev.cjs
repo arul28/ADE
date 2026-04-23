@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const projectRoot = path.resolve(__dirname, "..");
 const distMainFile = path.join(projectRoot, "dist", "main", "main.cjs");
+const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -118,6 +119,22 @@ function spawnProcess(name, cmd, args, extraEnv = {}) {
   return child;
 }
 
+function terminateChild(child, signal) {
+  if (child.killed) return;
+  if (process.platform === "win32" && typeof child.pid === "number") {
+    const result = cp.spawnSync("taskkill.exe", ["/T", "/F", "/PID", String(child.pid)], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    if (!result.error && result.status === 0) return;
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // ignore
+  }
+}
+
 async function main() {
   const devPort = await choosePort(5173, 32);
   const devServerUrl = `http://localhost:${devPort}`;
@@ -138,13 +155,7 @@ async function main() {
     shuttingDown = true;
     fs.unwatchFile(distMainFile);
     for (const child of children) {
-      if (!child.killed) {
-        try {
-          child.kill(signal);
-        } catch {
-          // ignore
-        }
-      }
+      terminateChild(child, signal);
     }
   };
 
@@ -152,8 +163,8 @@ async function main() {
   process.on("SIGTERM", () => teardown("SIGTERM"));
   process.on("exit", () => teardown("SIGTERM"));
 
-  const vite = spawnProcess("renderer", "npx", ["vite", "--port", String(devPort), "--strictPort", "--force"]);
-  const main = spawnProcess("main", "npx", ["tsup", "--watch"]);
+  const vite = spawnProcess("renderer", npxCommand, ["vite", "--port", String(devPort), "--strictPort", "--force"]);
+  const main = spawnProcess("main", npxCommand, ["tsup", "--watch"]);
   children.add(vite);
   children.add(main);
 
@@ -176,7 +187,7 @@ async function main() {
 
   const electronEnv = { VITE_DEV_SERVER_URL: devServerUrl };
   const launchElectron = () => {
-    const child = spawnProcess("electron", "npx", ["electron", ".", `--remote-debugging-port=${remoteDebugPort}`], electronEnv);
+    const child = spawnProcess("electron", npxCommand, ["electron", ".", `--remote-debugging-port=${remoteDebugPort}`], electronEnv);
     electron = child;
     children.add(child);
     child.on("exit", (code, signal) => {
@@ -214,11 +225,7 @@ async function main() {
     if (electronRestartPending) return;
     electronRestartPending = true;
     process.stdout.write(`[ade] restarting electron (${reason})\n`);
-    try {
-      electron.kill("SIGTERM");
-    } catch {
-      electronRestartPending = false;
-    }
+    terminateChild(electron, "SIGTERM");
   };
 
   launchElectron();

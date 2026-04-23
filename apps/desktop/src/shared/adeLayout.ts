@@ -1,4 +1,5 @@
 import path from "node:path";
+import { resolveAdeMcpIpcPath } from "./adeMcpIpc";
 
 export type AdePathEntryDefinition = {
   relativePath: string;
@@ -113,7 +114,7 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     secretsDir,
     dbPath: path.join(adeDir, "ade.db"),
     embeddingsPath: path.join(adeDir, "embeddings.db"),
-    socketPath: path.join(adeDir, "ade.sock"),
+    socketPath: resolveAdeMcpIpcPath(projectRoot),
     apiKeysPath: path.join(secretsDir, "api-keys.v1.bin"),
     legacyApiKeysPath: path.join(secretsDir, "api-keys.json"),
     logsDir,

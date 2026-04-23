@@ -13,6 +13,7 @@ import { resolveCodexExecutable } from "./codexExecutable";
 import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
 import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
+import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -74,14 +75,17 @@ async function runCommand(args: {
   timeoutMs?: number;
 }): Promise<SpawnResult> {
   return await new Promise((resolve, reject) => {
-    const child = spawn(args.command, args.argv, {
+    const env = {
+      ...process.env,
+      NO_COLOR: "1",
+      TERM: "dumb",
+    };
+    const invocation = resolveCliSpawnInvocation(args.command, args.argv, env);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: args.cwd,
-      env: {
-        ...process.env,
-        NO_COLOR: "1",
-        TERM: "dumb",
-      },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
 
     let stdout = "";
@@ -91,7 +95,7 @@ async function runCommand(args: {
     const timeoutHandle = setTimeout(() => {
       if (settled) return;
       settled = true;
-      child.kill("SIGTERM");
+      terminateProcessTree(child, "SIGTERM");
       reject(new Error(`Provider task timed out after ${timeoutMs}ms.`));
     }, timeoutMs);
 

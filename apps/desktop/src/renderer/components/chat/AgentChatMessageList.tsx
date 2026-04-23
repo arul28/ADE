@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -43,6 +43,7 @@ import type {
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
+import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
@@ -109,17 +110,21 @@ function getEventTurnId(event: AgentChatEvent): string | null {
 }
 
 function basenamePathLabel(value: string): string {
-  const normalized = value.replace(/\\/g, "/");
+  const normalized = normalizePath(value);
   const basename = normalized.split("/").pop()?.trim();
-  return basename?.length ? basename : normalized;
+  if (!basename?.length) return normalized;
+  if (/^[A-Za-z]:$/.test(basename)) return `${basename}/`;
+  return basename;
 }
 
 function dirnamePathLabel(value: string): string | null {
-  const normalized = value.replace(/\\/g, "/");
+  const normalized = normalizePath(value);
   const basename = basenamePathLabel(normalized);
   if (basename === normalized) return null;
   const suffix = `/${basename}`;
-  return normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : null;
+  if (!normalized.endsWith(suffix)) return null;
+  const dirname = normalized.slice(0, -suffix.length);
+  return dirname.length ? normalizePath(dirname) : null;
 }
 
 function formatFileAction(kind: Extract<AgentChatEvent, { type: "file_change" }>["kind"]): string {
@@ -399,7 +404,10 @@ function statusColorClass(status: string | undefined): string {
 }
 
 function isExternalHref(href: string): boolean {
-  return /^(?:[a-z]+:)?\/\//i.test(href) || /^mailto:/i.test(href) || /^tel:/i.test(href);
+  const trimmed = href.trim();
+  if (/^file:/i.test(trimmed)) return false;
+  if (isWindowsAbsolutePath(trimmed)) return false;
+  return /^(?:[a-z]+:)?\/\//i.test(trimmed) || /^mailto:/i.test(trimmed) || /^tel:/i.test(trimmed);
 }
 
 function normalizeWorkspacePathCandidate(value: string): string | null {
@@ -408,7 +416,14 @@ function normalizeWorkspacePathCandidate(value: string): string | null {
   if (/^(?:https?|mailto|tel):/i.test(trimmed)) return null;
   if (/^#/.test(trimmed)) return null;
   const withoutScheme = trimmed.replace(/^file:\/\//i, "");
-  const withoutQuery = withoutScheme.split(/[?#]/, 1)[0]?.trim().replace(/\\/g, "/") ?? "";
+  const rawPath = withoutScheme.split(/[?#]/, 1)[0]?.trim() ?? "";
+  let decodedPath = rawPath;
+  try {
+    decodedPath = decodeURIComponent(rawPath);
+  } catch {
+    // Keep the raw path when markdown produced a partially-encoded href.
+  }
+  const withoutQuery = decodedPath.replace(/\\/g, "/");
   if (!withoutQuery.length) return null;
   // Normalize Windows drive-letter paths: /C:/... → C:/...
   if (/^\/[A-Za-z]:\//.test(withoutQuery)) return withoutQuery.slice(1);
@@ -433,10 +448,17 @@ function looksLikeWorkspacePath(value: string): boolean {
 
 function resolveWorkspacePathFromHref(href: string | undefined): string | null {
   if (!href) return null;
+  if (isExternalHref(href)) return null;
   const candidate = normalizeWorkspacePathCandidate(href);
   if (!candidate) return null;
-  if (isExternalHref(candidate)) return null;
   return looksLikeWorkspacePath(candidate) ? candidate : null;
+}
+
+function chatMarkdownUrlTransform(value: string): string {
+  if (/^file:/i.test(value) || isWindowsAbsolutePath(value)) {
+    return value;
+  }
+  return defaultUrlTransform(value);
 }
 
 function InlineDisclosureRow({
@@ -490,15 +512,6 @@ function InlineDisclosureRow({
   );
 }
 
-function normalizeFileSystemPath(value: string): string {
-  return value.replace(/\\/g, "/");
-}
-
-function trimTrailingSlashes(value: string): string {
-  if (value === "/") return value;
-  return value.replace(/\/+$/, "");
-}
-
 function resolveFilesNavigationTarget(args: {
   path: string;
   workspaces: FilesWorkspace[];
@@ -507,16 +520,14 @@ function resolveFilesNavigationTarget(args: {
   const candidate = normalizeWorkspacePathCandidate(args.path);
   if (!candidate) return null;
 
-  const normalizedCandidate = normalizeFileSystemPath(candidate);
-  if (normalizedCandidate.startsWith("/")) {
+  const normalizedCandidate = normalizePath(candidate);
+  if (normalizedCandidate.startsWith("/") || isWindowsAbsolutePath(normalizedCandidate)) {
     const matches = args.workspaces
       .map((workspace) => ({
         workspace,
-        rootPath: trimTrailingSlashes(normalizeFileSystemPath(workspace.rootPath)),
+        rootPath: normalizePath(workspace.rootPath),
       }))
-      .filter(({ rootPath }) =>
-        normalizedCandidate === rootPath || normalizedCandidate.startsWith(`${rootPath}/`),
-      )
+      .filter(({ workspace }) => isPathEqualOrDescendant(normalizedCandidate, workspace.rootPath))
       .sort((left, right) => {
         const rightMatchesLane = right.workspace.laneId != null && right.workspace.laneId === args.fallbackLaneId ? 1 : 0;
         const leftMatchesLane = left.workspace.laneId != null && left.workspace.laneId === args.fallbackLaneId ? 1 : 0;
@@ -561,6 +572,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
     <div className="ade-prose-themed prose prose-invert max-w-none text-[13px] leading-[1.8] text-fg/96 prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-3 prose-p:text-fg/88 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-blockquote:text-fg/76 prose-hr:my-5 prose-hr:border-white/[0.08]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={chatMarkdownUrlTransform}
         components={{
           h1: ({ children }) => <h1 className="text-[1rem]">{children}</h1>,
           h2: ({ children }) => <h2 className="text-[0.95rem]">{children}</h2>,
@@ -3063,7 +3075,8 @@ export function AgentChatMessageList({
       workspaces: resolvedWorkspaces,
       fallbackLaneId: currentLaneId,
     });
-    if (!target && normalizeWorkspacePathCandidate(path)?.startsWith("/")) {
+    const workspaceCandidate = normalizeWorkspacePathCandidate(path);
+    if (!target && workspaceCandidate && (workspaceCandidate.startsWith("/") || isWindowsAbsolutePath(workspaceCandidate))) {
       const listWorkspaces = window.ade?.files?.listWorkspaces;
       if (typeof listWorkspaces === "function") {
         try {

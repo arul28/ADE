@@ -22,6 +22,7 @@ import type {
   OpenCodeRuntimeSnapshot,
   ProjectConfigFile,
 } from "../../../shared/types";
+import { isAdeMcpNamedPipePath } from "../../../shared/adeMcpIpc";
 import { stableStringify } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import type { PermissionMode } from "../ai/tools/universalTools";

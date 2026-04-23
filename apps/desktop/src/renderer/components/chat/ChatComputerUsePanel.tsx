@@ -17,14 +17,15 @@ function kindLabel(kind: string): string {
 /** Convert an artifact URI to an ade-artifact:// URL that Electron's custom protocol can serve. Remote http(s) URLs return null (no automatic preview / no renderer fetch). */
 function toPreviewSrc(uri: string): string | null {
   if (/^https?:\/\//i.test(uri)) return null;
-  // Strip file:// prefix if present
   let filePath = uri;
   if (filePath.startsWith("file://")) {
-    try { filePath = decodeURIComponent(new URL(filePath).pathname); } catch { filePath = filePath.replace(/^file:\/\//i, ""); }
+    filePath = fileUriToFsPath(filePath);
   }
-  // For relative paths, we can't resolve here — the protocol handler in main will need the project root.
-  // But artifacts stored by the broker are typically absolute or relative to project root.
-  const encoded = new URL(filePath, "file://").pathname;
+  const normalized = filePath.replace(/\\/g, "/");
+  const encoded = normalized.split("/").map((part) => encodeURIComponent(part)).join("/");
+  if (!/^([a-zA-Z]:\/|\/|\/\/)/.test(normalized)) {
+    return `ade-artifact://project/${encoded.replace(/^\/+/, "")}`;
+  }
   return `ade-artifact://${encoded.startsWith("/") ? "" : "/"}${encoded}`;
 }
 
@@ -32,6 +33,9 @@ function fileUriToFsPath(uri: string): string {
   if (!uri.startsWith("file://")) return uri;
   try {
     const u = new URL(uri);
+    if (u.hostname && u.hostname !== "localhost") {
+      return `//${u.hostname}${decodeURIComponent(u.pathname)}`;
+    }
     let p = decodeURIComponent(u.pathname);
     if (/^\/[a-zA-Z]:/.test(p)) {
       p = p.slice(1);
