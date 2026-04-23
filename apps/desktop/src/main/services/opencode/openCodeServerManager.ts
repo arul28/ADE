@@ -7,6 +7,7 @@ import path from "node:path";
 import type { Config as OpenCodeConfig } from "@opencode-ai/sdk";
 import type { Logger } from "../logging/logger";
 import { stableStringify } from "../shared/utils";
+import { processOutputToString, quoteWindowsCmdArg, resolveWindowsCmdInvocation } from "../shared/processExecution";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 
 export type OpenCodeServerLeaseKind = "shared" | "dedicated";
@@ -62,6 +63,7 @@ type OpenCodeProcessController = {
   listProcesses(): OpenCodeProcessSnapshot[];
   isProcessAlive(pid: number): boolean;
   killProcess(pid: number, signal: NodeJS.Signals): void;
+  killProcessTree(pid: number): boolean;
   waitForMs(ms: number): Promise<void>;
 };
 
@@ -144,9 +146,125 @@ function readLinuxProcessEnvironment(pid: number): string[] {
   }
 }
 
+function parseOneCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let i = 0;
+  let inQuotes = false;
+  while (i < line.length) {
+    const c = line[i]!;
+    if (inQuotes) {
+      if (c === "\"") {
+        if (line[i + 1] === "\"") {
+          cur += "\"";
+          i += 2;
+          continue;
+        }
+        inQuotes = false;
+        i += 1;
+        continue;
+      }
+      cur += c;
+      i += 1;
+      continue;
+    }
+    if (c === "\"") {
+      inQuotes = true;
+      i += 1;
+      continue;
+    }
+    if (c === ",") {
+      out.push(cur);
+      cur = "";
+      i += 1;
+      continue;
+    }
+    cur += c;
+    i += 1;
+  }
+  out.push(cur);
+  return out;
+}
+
+/** Parses WMIC `process get ... /FORMAT:CSV` stdout into snapshots (exported for unit tests). */
+export function parseWindowsWmicProcessCsv(stdout: string): OpenCodeProcessSnapshot[] {
+  const rows: OpenCodeProcessSnapshot[] = [];
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length < 2) return rows;
+
+  const header = parseOneCsvLine(lines[0]!);
+  const processIdIdx = header.indexOf("ProcessId");
+  const parentProcessIdIdx = header.indexOf("ParentProcessId");
+  const commandLineIdx = header.indexOf("CommandLine");
+  if (processIdIdx < 0 || parentProcessIdIdx < 0 || commandLineIdx < 0) {
+    return rows;
+  }
+
+  const maxIdx = Math.max(processIdIdx, parentProcessIdIdx, commandLineIdx);
+  for (let li = 1; li < lines.length; li += 1) {
+    const cells = parseOneCsvLine(lines[li]!);
+    if (cells.length <= maxIdx) continue;
+    const pid = Number(cells[processIdIdx]?.trim());
+    const ppid = Number(cells[parentProcessIdIdx]?.trim());
+    if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(ppid) || ppid < 0) {
+      continue;
+    }
+    const command = (cells[commandLineIdx] ?? "").trim();
+    rows.push({ pid, ppid, command });
+  }
+  return rows;
+}
+
+function listWindowsProcessesFromWmic(): OpenCodeProcessSnapshot[] {
+  const result = spawnSync(
+    "wmic",
+    ["process", "get", "ProcessId,ParentProcessId,CommandLine", "/FORMAT:CSV"],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 50 * 1024 * 1024,
+    },
+  );
+  if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+    return [];
+  }
+  return parseWindowsWmicProcessCsv(result.stdout);
+}
+
+function listWindowsProcessesFromPowerShell(): OpenCodeProcessSnapshot[] {
+  const script =
+    "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation";
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 50 * 1024 * 1024,
+    },
+  );
+  if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+    return [];
+  }
+  return parseWindowsWmicProcessCsv(result.stdout);
+}
+
+function listWindowsProcesses(): OpenCodeProcessSnapshot[] {
+  const fromWmic = listWindowsProcessesFromWmic();
+  if (fromWmic.length > 0 && fromWmic.every((process) => process.command.trim().length > 0)) {
+    return fromWmic;
+  }
+  return listWindowsProcessesFromPowerShell();
+}
+
 const defaultOpenCodeProcessController: OpenCodeProcessController = {
   listProcesses(): OpenCodeProcessSnapshot[] {
-    if (process.platform === "win32") return [];
+    if (process.platform === "win32") {
+      return listWindowsProcesses();
+    }
     const psArgs = process.platform === "linux"
       ? ["-ww", "-axo", "pid=,ppid=,command="]
       : ["-wwE", "-axo", "pid=,ppid=,command="];
@@ -186,6 +304,47 @@ const defaultOpenCodeProcessController: OpenCodeProcessController = {
       process.kill(pid, signal);
     } catch {
       // ignore
+    }
+  },
+  killProcessTree(pid: number): boolean {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    if (process.platform === "win32") {
+      try {
+        const out = spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
+        if (!out.error && out.status === 0) {
+          return true;
+        }
+        console.error("opencode.kill_process_tree_taskkill_failed", {
+          pid,
+          status: out.status,
+          stdout: processOutputToString(out.stdout),
+          stderr: processOutputToString(out.stderr),
+          error: out.error,
+        });
+      } catch (error) {
+        console.error("opencode.kill_process_tree_taskkill_failed", { pid, error });
+      }
+      return false;
+    }
+    // Unix: best-effort tree kill. Send SIGTERM to the process group first
+    // (covers children spawned via setsid/group leader). Then walk any
+    // descendants with pkill -TERM -P as a fallback. Finally SIGTERM the pid
+    // itself so at minimum the root process terminates.
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      // Not a group leader (or no permission); fall through to child-walk.
+    }
+    try {
+      spawnSync("pkill", ["-TERM", "-P", String(pid)], { windowsHide: true });
+    } catch {
+      // pkill may be unavailable; ignore.
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+      return true;
+    } catch {
+      return false;
     }
   },
   waitForMs(ms: number): Promise<void> {
@@ -270,9 +429,8 @@ function isPortConflict(error: unknown): boolean {
 
 function stopChildProcess(proc: ChildProcess): void {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
-  if (process.platform === "win32" && proc.pid) {
-    const out = spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true });
-    if (!out.error && out.status === 0) return;
+  if (process.platform === "win32" && proc.pid && openCodeProcessController.killProcessTree(proc.pid)) {
+    return;
   }
   proc.kill();
 }
@@ -374,14 +532,23 @@ function buildManagedConfigMarkers(): string[] {
 }
 
 function isManagedOpenCodeServeCommand(command: string, configMarkers: string[]): boolean {
-  if (!/\bopencode(?:\.cmd|\.exe)?\b\s+serve\b/i.test(command)) return false;
+  // Windows: managed markers are injected into the cmd.exe command line (WMIC/CIM omit child env).
+  if (
+    /\bcmd(?:\.exe)?\b/i.test(command)
+    && command.includes(`${ADE_OPENCODE_MANAGED_ENV}=1`)
+    && /\bopencode(?:\.cmd|\.bat|\.exe)?\b/i.test(command)
+    && /\bserve\b/i.test(command)
+  ) {
+    return command.includes("OPENCODE_DISABLE_PROJECT_CONFIG=1");
+  }
+  if (!/\bopencode(?:\.cmd|\.bat|\.exe)?\b\s+serve\b/i.test(command)) return false;
   if (!command.includes("OPENCODE_DISABLE_PROJECT_CONFIG=1")) return false;
   if (command.includes(`${ADE_OPENCODE_MANAGED_ENV}=1`)) return true;
   return configMarkers.some((marker) => command.includes(marker));
 }
 
 function parseManagedOwnerPid(command: string): number | null {
-  const match = command.match(new RegExp(`\\b${ADE_OPENCODE_OWNER_PID_ENV}=(\\d+)\\b`));
+  const match = command.match(new RegExp(`${ADE_OPENCODE_OWNER_PID_ENV}=(\\d+)`, "i"));
   if (!match) return null;
   const pid = Number(match[1]);
   return Number.isInteger(pid) && pid > 0 ? pid : null;
@@ -449,19 +616,37 @@ export async function recoverManagedOpenCodeOrphans(args: {
         continue;
       }
 
-      openCodeProcessController.killProcess(proc.pid, "SIGTERM");
-      const exitedGracefully = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
-      if (!exitedGracefully && openCodeProcessController.isProcessAlive(proc.pid)) {
-        openCodeProcessController.killProcess(proc.pid, "SIGKILL");
-        const exitedAfterKill = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
-        if (!exitedAfterKill && openCodeProcessController.isProcessAlive(proc.pid)) {
-          skippedPids.push(proc.pid);
-          args.logger?.warn("opencode.server_orphan_recovery_failed", {
-            pid: proc.pid,
-            ownerPid,
-            ppid: proc.ppid,
-          });
-          continue;
+      if (process.platform === "win32") {
+        openCodeProcessController.killProcessTree(proc.pid);
+        const exitedGracefully = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
+        if (!exitedGracefully && openCodeProcessController.isProcessAlive(proc.pid)) {
+          openCodeProcessController.killProcessTree(proc.pid);
+          const exitedAfterKill = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
+          if (!exitedAfterKill && openCodeProcessController.isProcessAlive(proc.pid)) {
+            skippedPids.push(proc.pid);
+            args.logger?.warn("opencode.server_orphan_recovery_failed", {
+              pid: proc.pid,
+              ownerPid,
+              ppid: proc.ppid,
+            });
+            continue;
+          }
+        }
+      } else {
+        openCodeProcessController.killProcess(proc.pid, "SIGTERM");
+        const exitedGracefully = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
+        if (!exitedGracefully && openCodeProcessController.isProcessAlive(proc.pid)) {
+          openCodeProcessController.killProcess(proc.pid, "SIGKILL");
+          const exitedAfterKill = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
+          if (!exitedAfterKill && openCodeProcessController.isProcessAlive(proc.pid)) {
+            skippedPids.push(proc.pid);
+            args.logger?.warn("opencode.server_orphan_recovery_failed", {
+              pid: proc.pid,
+              ownerPid,
+              ppid: proc.ppid,
+            });
+            continue;
+          }
         }
       }
       recoveredPids.push(proc.pid);
@@ -490,6 +675,27 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
   }
   const xdgPaths = resolveOpenCodeIsolationPaths();
   ensureOpenCodeIsolationDirs(xdgPaths);
+  const env = buildIsolatedOpenCodeEnv(args.config, xdgPaths);
+  if (process.platform === "win32") {
+    const invocation = resolveWindowsCmdInvocation(
+      executable,
+      ["serve", "--hostname=127.0.0.1", `--port=${args.port}`],
+      env,
+    );
+    const cmdLine =
+      `set ${quoteWindowsCmdArg(`${ADE_OPENCODE_MANAGED_ENV}=1`)}`
+      + `&&set ${quoteWindowsCmdArg("OPENCODE_DISABLE_PROJECT_CONFIG=1")}`
+      + `&&set ${quoteWindowsCmdArg(`${ADE_OPENCODE_OWNER_PID_ENV}=${process.pid}`)}`
+      + `&&${invocation.args[3] ?? ""}`;
+    return {
+      executable: invocation.command,
+      args: ["/d", "/s", "/c", cmdLine],
+      env,
+      useShell: false,
+      xdgPaths,
+    };
+  }
+
   return {
     executable,
     args: [
@@ -497,8 +703,8 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
       "--hostname=127.0.0.1",
       `--port=${args.port}`,
     ],
-    env: buildIsolatedOpenCodeEnv(args.config, xdgPaths),
-    useShell: process.platform === "win32" && /\.(cmd|bat)$/i.test(executable),
+    env,
+    useShell: false,
     xdgPaths,
   };
 }
@@ -511,6 +717,7 @@ async function defaultOpenCodeServerLauncher(
     env: launchSpec.env,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    windowsVerbatimArguments: process.platform === "win32",
     shell: launchSpec.useShell,
   });
 
@@ -957,6 +1164,7 @@ export function __setOpenCodeProcessControllerForTests(
         listProcesses: controller.listProcesses ?? (() => []),
         isProcessAlive: controller.isProcessAlive ?? (() => false),
         killProcess: controller.killProcess ?? (() => {}),
+        killProcessTree: controller.killProcessTree ?? (() => false),
         waitForMs: controller.waitForMs ?? (async () => {}),
       }
     : defaultOpenCodeProcessController;
@@ -973,4 +1181,9 @@ export function __buildOpenCodeServeLaunchSpecForTests(args: {
     port: args.port ?? 4096,
     config: args.config,
   });
+}
+
+/** Test hook: whether a WMIC/CIM command line would be treated as an ADE-managed OpenCode serve. */
+export function __isManagedOpenCodeServeCommandForTests(command: string): boolean {
+  return isManagedOpenCodeServeCommand(command, buildManagedConfigMarkers());
 }

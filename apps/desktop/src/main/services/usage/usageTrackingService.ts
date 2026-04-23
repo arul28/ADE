@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { spawn } from "node:child_process";
 import type { Logger } from "../logging/logger";
 import type {
   UsageProvider,
@@ -27,8 +28,9 @@ import {
   readClaudeCredentialsWithRefresh,
   readCodexCredentials,
   refreshClaudeCredentials,
-  runShellCommand,
 } from "../ai/providerCredentialSources";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
+import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -37,6 +39,13 @@ const MIN_POLL_INTERVAL_MS = 60_000;          // 1 min
 const MAX_POLL_INTERVAL_MS = 15 * 60_000;     // 15 min
 const COST_CACHE_TTL_MS = 60_000;             // 60s
 const CODEX_TOKEN_REFRESH_DAYS = 8;
+const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
+
+function isBenignStdinCloseError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+}
 
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -347,7 +356,6 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
   const errors: string[] = [];
 
   try {
-    // Initialize the Codex CLI JSON-RPC connection.
     const initPayload = JSON.stringify({
       jsonrpc: "2.0",
       id: 0,
@@ -378,12 +386,96 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
 
     const combined = `${initPayload}\n${initializedPayload}\n${rateLimitsPayload}\n`;
 
-    const result = await runShellCommand(
-      `echo '${combined.replace(/'/g, "'\\''")}' | codex -s read-only -a untrusted app-server 2>/dev/null`,
-      10_000
+    const codexPath = resolveCodexExecutable().path;
+    const env = { ...process.env };
+    const invocation = resolveCliSpawnInvocation(
+      codexPath,
+      ["-s", "read-only", "-a", "untrusted", "app-server"],
+      env,
+    );
+
+    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number | null }>(
+      (resolve, reject) => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const finish = (callback: () => void) => {
+          if (settled) return;
+          settled = true;
+          if (timer) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          callback();
+        };
+        const child = spawn(invocation.command, invocation.args, {
+          stdio: ["pipe", "pipe", "pipe"],
+          env,
+          windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        });
+
+        let stdout = "";
+        let stderr = "";
+        const maxStdout = 50_000;
+        const maxStderr = 10_000;
+        child.stdout?.on("data", (chunk: Buffer) => {
+          if (stdout.length >= maxStdout) return;
+          const s = chunk.toString("utf8");
+          stdout += s.slice(0, maxStdout - stdout.length);
+        });
+        child.stderr?.on("data", (chunk: Buffer) => {
+          if (stderr.length >= maxStderr) return;
+          const s = chunk.toString("utf8");
+          stderr += s.slice(0, maxStderr - stderr.length);
+        });
+
+        timer = setTimeout(() => {
+          terminateProcessTree(child, "SIGKILL", (detail) => {
+            logger.warn("usage.poll.codex_cli_rpc_taskkill_failed", {
+              ...detail,
+              error: detail.error ? getErrorMessage(detail.error) : null,
+            });
+          });
+          logger.warn("usage.poll.codex_cli_rpc_timeout", {
+            timeoutMs: CODEX_CLI_RPC_TIMEOUT_MS,
+          });
+          finish(() => reject(new Error(`codex CLI RPC timed out after ${CODEX_CLI_RPC_TIMEOUT_MS}ms`)));
+        }, CODEX_CLI_RPC_TIMEOUT_MS);
+
+        child.on("error", (error) => {
+          logger.warn("usage.poll.codex_cli_rpc_spawn_failed", {
+            error: getErrorMessage(error),
+          });
+          finish(() => reject(error));
+        });
+        child.on("close", (code) => {
+          finish(() => resolve({ stdout, stderr, exitCode: code }));
+        });
+        child.stdin?.on("error", (error) => {
+          if (isBenignStdinCloseError(error)) return;
+          logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
+            error: getErrorMessage(error),
+          });
+          finish(() => reject(error));
+        });
+
+        try {
+          child.stdin?.write(combined);
+          child.stdin?.end();
+        } catch (err) {
+          if (isBenignStdinCloseError(err)) return;
+          logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
+            error: getErrorMessage(err),
+          });
+          finish(() => reject(err));
+        }
+      },
     );
 
     if (result.exitCode !== 0) {
+      logger.warn("usage.poll.codex_cli_rpc_non_zero_exit", {
+        exitCode: result.exitCode,
+        stderr: result.stderr,
+      });
       errors.push("codex: CLI RPC exited with non-zero code");
       return { windows, errors };
     }
@@ -915,4 +1007,5 @@ export const _testing = {
   fetchJson,
   findJsonlFiles,
   resolveTokenPrice,
+  pollCodexViaCliRpc,
 };

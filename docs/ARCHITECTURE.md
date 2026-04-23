@@ -84,9 +84,17 @@ A standalone Node CLI that exposes ADE actions over a private JSON-RPC
 bridge.
 
 - **Socket mode** — when ADE desktop is running, `ade` connects to the
-  project socket at `.ade/ade.sock`.
+  project IPC endpoint. On macOS/Linux that is `.ade/ade.sock`; on
+  Windows it is a named pipe under `\\.\pipe\ade-<hash>` where `<hash>`
+  is a SHA-256 prefix of the lowercased absolute project root
+  (`apps/desktop/src/shared/adeMcpIpc.ts`). Both platforms share the
+  same JSON-RPC framing.
 - **Headless mode** — with `--headless`, the CLI bootstraps the same
   project services directly from the repository.
+- **Windows packaging** — the installer lays down `ade-cli-windows-wrapper.cmd`
+  plus an `ade-cli-install-path.cmd` helper alongside the bundled Node
+  runtime so that `ade` works from a normal Windows shell without a
+  global Node install. See §14.4 for the packaging flow.
 - **Session identity** — the CLI resolves caller role from ADE context
   environment variables and command flags. Role vocabulary: `cto`,
   `orchestrator`, `agent`, `external`, `evaluator`.
@@ -867,7 +875,12 @@ ADE/
 │   ├── features/
 │   └── final-plan/
 ├── new-docs/           # This file + feature docs
-├── scripts/            # Release, validate, notarize, after-pack
+├── scripts/            # Release, validate, notarize, after-pack (per-platform)
+│                       # Platform-specific: validate-mac-artifacts.mjs,
+│                       # validate-win-artifacts.mjs, ade-cli-windows-wrapper.cmd, etc.
+├── apps/desktop/vendor/crsqlite/
+│   ├── darwin-arm64/
+│   └── win32-x64/      # Prebuilt cr-sqlite native binaries per platform
 ├── .github/workflows/
 │   ├── ci.yml
 │   ├── prepare-release.yml
@@ -919,14 +932,26 @@ Sharding is required because the desktop suite is large enough to be slow in a s
 
 ### 14.4 Packaging (Electron Builder)
 
+macOS:
+
 - `npm run dist:mac` — notarized .dmg for local distribution.
 - `npm run dist:mac:universal:signed` — universal x64+arm64 signed builds.
 - `npm run dist:mac:universal:signed:zip` — zip archive variant.
-- Post-packaging hardening (`apps/desktop/scripts/`):
-  - `runtimeBinaryPermissions.cjs` — restores exec bits on `node-pty` spawn helpers, Codex vendor binaries, Claude SDK ripgrep helpers; patches `node-pty` `unixTerminal.js` for ASAR-unpacked paths.
-  - `after-pack-runtime-fixes.cjs` — electron-builder after-pack hook.
-  - `validate-mac-artifacts.mjs` — confirms expected binaries + intact code signing.
-  - `notarize-mac-dmg.mjs` — Apple notarization.
+
+Windows:
+
+- `npm run dist:win` — x64 installer via `electron-builder --win --x64`, wrapped with `validate:win:artifacts` (preflight) and `validate:win:release` (post-build) checks in `apps/desktop/scripts/validate-win-artifacts.mjs`.
+- Windows-only wrappers for the bundled `ade` CLI ship in `apps/desktop/scripts/`: `ade-cli-windows-wrapper.cmd` (launcher) and `ade-cli-install-path.cmd` (idempotent PATH install helper). The platform-agnostic `.sh` wrapper covers macOS/Linux.
+- The Windows installer bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/` plus a Windows node-pty ConPTY worker.
+- GitHub Actions `release-core.yml` builds and validates Windows artifacts; they are not currently code-signed or notarized.
+- Ongoing Windows integration lane (rebase with `main`, smoke tests, backlog): `docs/development/windows-port-lane.md`.
+
+Post-packaging hardening (`apps/desktop/scripts/`):
+
+- `runtimeBinaryPermissions.cjs` — restores exec bits on `node-pty` spawn helpers, Codex vendor binaries, Claude SDK ripgrep helpers; patches `node-pty` `unixTerminal.js` for ASAR-unpacked paths.
+- `after-pack-runtime-fixes.cjs` — electron-builder after-pack hook. Covers both platforms: runs the permissions pass on macOS and stages CLI wrappers + runtime shims on Windows.
+- `validate-mac-artifacts.mjs` / `validate-win-artifacts.mjs` — per-platform artifact validators; confirm expected binaries and signing state.
+- `notarize-mac-dmg.mjs` — Apple notarization.
 
 ### 14.5 Documentation
 

@@ -5,6 +5,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAdeCliService } from "./adeCliService";
 
 const tmpRoots: string[] = [];
+const originalPlatform = process.platform;
+const originalLocalAppData = process.env.LOCALAPPDATA;
+
+function setPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    value,
+    configurable: true,
+  });
+}
 
 function makeTempRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-service-"));
@@ -29,6 +38,9 @@ function logger() {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  setPlatform(originalPlatform);
+  if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = originalLocalAppData;
   for (const root of tmpRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -60,6 +72,45 @@ describe("createAdeCliService", () => {
       cliJsPath: path.join(resourcesPath, "ade-cli", "cli.cjs"),
     });
     expect(service.agentEnv({ PATH: "/usr/bin:/bin" }).PATH?.split(path.delimiter)[0]).toBe(packagedBinDir);
+  });
+
+  it("uses packaged Windows cmd wrappers and Path casing", async () => {
+    setPlatform("win32");
+    const root = makeTempRoot();
+    process.env.LOCALAPPDATA = path.join(root, "LocalAppData");
+    const resourcesPath = path.join(root, "resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    const packagedCommandPath = path.join(packagedBinDir, "ade.cmd");
+    writeExecutable(packagedCommandPath, "@echo off\r\nexit /b 0\r\n");
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.cmd"), "@echo off\r\nexit /b 0\r\n");
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.exe"),
+      env: {
+        Path: `${packagedBinDir};C:\\Windows\\System32`,
+        PATHEXT: ".EXE;.CMD",
+      },
+      logger: logger() as any,
+    });
+
+    expect(service.resolved).toEqual({
+      source: "packaged",
+      binDir: packagedBinDir,
+      commandPath: packagedCommandPath,
+      installerPath: path.join(resourcesPath, "ade-cli", "install-path.cmd"),
+      cliJsPath: path.join(resourcesPath, "ade-cli", "cli.cjs"),
+    });
+    expect(service.agentEnv({ Path: "C:\\Windows\\System32" }).Path?.split(";")[0]).toBe(packagedBinDir);
+    expect(service.agentEnv({ Path: "C:\\Windows\\System32" }).PATH).toBeUndefined();
+
+    const status = await service.getStatus();
+    expect(status.terminalInstalled).toBe(true);
+    expect(status.terminalCommandPath?.toLowerCase()).toBe(packagedCommandPath.toLowerCase());
+    expect(status.installTargetPath.endsWith(path.join("ADE", "bin", "ade.cmd"))).toBe(true);
   });
 
   it("reports Terminal install status from the original host PATH after agent PATH is applied", async () => {
@@ -154,6 +205,39 @@ describe("createAdeCliService", () => {
     expect(fs.existsSync(shimPath)).toBe(true);
     expect(fs.readFileSync(shimPath, "utf8")).toContain("ELECTRON_RUN_AS_NODE=1 exec \"$APP_EXE\" \"$CLI_JS\" \"$@\"");
     expect(service.agentEnv({ PATH: "/usr/bin:/bin" }).PATH?.split(path.delimiter)[0]).toBe(path.dirname(shimPath));
+  });
+
+  it("creates a Windows dev cmd shim under userData", () => {
+    setPlatform("win32");
+    const root = makeTempRoot();
+    const repoRoot = path.join(root, "repo");
+    const userDataPath = path.join(root, "user-data");
+    const cliJsPath = path.join(repoRoot, "apps", "ade-cli", "dist", "cli.cjs");
+    fs.mkdirSync(path.dirname(cliJsPath), { recursive: true });
+    fs.writeFileSync(cliJsPath, "console.log('ade')\n");
+    fs.mkdirSync(path.join(repoRoot, "apps", "desktop"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "apps", "ade-cli", "package.json"), "{}\n");
+    fs.writeFileSync(path.join(repoRoot, "apps", "desktop", "package.json"), "{}\n");
+    vi.spyOn(process, "cwd").mockReturnValue(repoRoot);
+
+    const service = createAdeCliService({
+      isPackaged: false,
+      resourcesPath: path.join(root, "missing-resources"),
+      userDataPath,
+      appExecutablePath: path.join(root, "ADE.exe"),
+      logger: logger() as any,
+    });
+
+    const shimPath = path.join(userDataPath, "ade-cli", "bin", "ade.cmd");
+    const script = fs.readFileSync(shimPath, "utf8");
+
+    expect(service.resolved.source).toBe("dev");
+    expect(service.resolved.commandPath).toBe(shimPath);
+    expect(script).toContain("@echo off");
+    expect(script).toContain("set \"APP_EXE=");
+    expect(script).toContain("\"%APP_EXE%\" \"%CLI_JS%\" %*");
+    expect(script).toContain(path.join("node_modules", ".bin", "tsx.cmd"));
+    expect(service.agentEnv({ Path: "C:\\Windows\\System32" }).Path?.split(";")[0]).toBe(path.dirname(shimPath));
   });
 
   it("falls back to source CLI when dist/cli.cjs is missing in a dev repo", () => {

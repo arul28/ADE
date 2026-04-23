@@ -3,22 +3,76 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
   created: [] as Array<{ close: ReturnType<typeof vi.fn>; url: string }>,
+  resolveOpenCodeBinaryPath: vi.fn(() => "/Users/admin/.opencode/bin/opencode"),
 }));
 
 vi.mock("./openCodeBinaryManager", () => ({
-  resolveOpenCodeBinaryPath: vi.fn(() => "/Users/admin/.opencode/bin/opencode"),
+  resolveOpenCodeBinaryPath: mockState.resolveOpenCodeBinaryPath,
 }));
 
 import {
   __buildOpenCodeServeLaunchSpecForTests,
+  __isManagedOpenCodeServeCommandForTests,
   __resetOpenCodeServerManagerForTests,
   __setOpenCodeProcessControllerForTests,
   __setOpenCodeServerLauncherForTests,
   acquireDedicatedOpenCodeServer,
   acquireSharedOpenCodeServer,
   getOpenCodeRuntimeDiagnostics,
+  parseWindowsWmicProcessCsv,
   recoverManagedOpenCodeOrphans,
 } from "./openCodeServerManager";
+
+const originalProcessPlatform = process.platform;
+
+function setProcessPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    value: platform,
+    configurable: true,
+  });
+}
+
+describe("parseWindowsWmicProcessCsv", () => {
+  it("parses WMIC CSV rows into pid, ppid, and command", () => {
+    const csv = [
+      "Node,CommandLine,ParentProcessId,ProcessId",
+      ",C:\\\\Windows\\\\System32\\\\notepad.exe,100,200",
+    ].join("\r\n");
+    const rows = parseWindowsWmicProcessCsv(csv);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      pid: 200,
+      ppid: 100,
+      command: "C:\\\\Windows\\\\System32\\\\notepad.exe",
+    });
+  });
+
+  it("parses PowerShell ConvertTo-Csv rows", () => {
+    const csv = [
+      '"ProcessId","ParentProcessId","CommandLine"',
+      '"300","200","C:\\\\Windows\\\\System32\\\\cmd.exe /d /s /c opencode.cmd serve"',
+    ].join("\r\n");
+    const rows = parseWindowsWmicProcessCsv(csv);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.pid).toBe(300);
+    expect(rows[0]?.ppid).toBe(200);
+    expect(rows[0]?.command).toContain("opencode.cmd");
+  });
+});
+
+describe("Windows managed OpenCode command detection", () => {
+  it("detects cmd-wrapped serve with inline managed markers", () => {
+    const cmdLine =
+      'C:\\\\Windows\\\\System32\\\\cmd.exe /d /s /c set "ADE_OPENCODE_MANAGED=1"&&set "OPENCODE_DISABLE_PROJECT_CONFIG=1"&&set "ADE_OPENCODE_OWNER_PID=999"&&C:\\\\opencode\\\\opencode.cmd serve --hostname=127.0.0.1 --port=4310';
+    expect(__isManagedOpenCodeServeCommandForTests(cmdLine)).toBe(true);
+  });
+
+  it("detects cmd-wrapped .bat OpenCode serve shims", () => {
+    const cmdLine =
+      'C:\\\\Windows\\\\System32\\\\cmd.exe /d /s /c set "ADE_OPENCODE_MANAGED=1"&&set "OPENCODE_DISABLE_PROJECT_CONFIG=1"&&set "ADE_OPENCODE_OWNER_PID=999"&&"C:\\\\tools\\\\opencode.bat" serve --hostname=127.0.0.1 --port=4310';
+    expect(__isManagedOpenCodeServeCommandForTests(cmdLine)).toBe(true);
+  });
+});
 
 describe("openCodeServerManager", () => {
   const originalEnv = {
@@ -43,11 +97,13 @@ describe("openCodeServerManager", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mockState.created.length = 0;
+    mockState.resolveOpenCodeBinaryPath.mockReturnValue("/Users/admin/.opencode/bin/opencode");
     __resetOpenCodeServerManagerForTests();
     __setOpenCodeProcessControllerForTests({
       listProcesses: () => [],
       isProcessAlive: () => false,
       killProcess: () => {},
+      killProcessTree: () => false,
       waitForMs: async () => {},
     });
     __setOpenCodeServerLauncherForTests(async ({ port }) => {
@@ -63,6 +119,7 @@ describe("openCodeServerManager", () => {
 
   afterEach(() => {
     __resetOpenCodeServerManagerForTests();
+    setProcessPlatform(originalProcessPlatform as NodeJS.Platform);
     vi.useRealTimers();
     restoreEnv("PATH");
     restoreEnv("HOME");
@@ -407,35 +464,46 @@ describe("openCodeServerManager", () => {
     expect(spec.env.OPENCODE_BIN_PATH).toBeUndefined();
   });
 
-  it("reaps orphaned ADE-managed OpenCode processes and skips ones with a live owner", async () => {
+  it("quotes the OpenCode executable in Windows cmd launch specs", () => {
+    setProcessPlatform("win32");
+    process.env.ADE_OPENCODE_XDG_ROOT = "/tmp/ade-opencode-test-home";
+    mockState.resolveOpenCodeBinaryPath.mockReturnValue("C:\\Users\\100% dev\\bin\\opencode.bat");
+
+    const spec = __buildOpenCodeServeLaunchSpecForTests({
+      config: { share: "disabled" } as const,
+      port: 4310,
+    });
+
+    expect(spec.executable).toBe("cmd.exe");
+    expect(spec.args[0]).toBe("/d");
+    expect(spec.args[1]).toBe("/s");
+    expect(spec.args[2]).toBe("/c");
+    expect(spec.args[3]).toContain('&&"C:\\Users\\100%% dev\\bin\\opencode.bat" "serve" "--hostname=127.0.0.1" "--port=4310"');
+  });
+
+  it("reaps orphaned ADE-managed OpenCode processes on Windows with a tree kill and skips ones with a live owner", async () => {
+    setProcessPlatform("win32");
     let orphanAlive = true;
-    const killProcess = vi.fn((pid: number, signal: NodeJS.Signals) => {
-      if (pid === 4101 && signal === "SIGKILL") {
+    const killProcess = vi.fn();
+    const killProcessTree = vi.fn((pid: number) => {
+      if (pid === 4101) {
         orphanAlive = false;
       }
+      return true;
     });
-    const homeDir = os.homedir();
     __setOpenCodeProcessControllerForTests({
       listProcesses: () => ([
         {
           pid: 4101,
           ppid: 1,
-          command: [
-            "/Users/admin/.opencode/bin/opencode serve --hostname=127.0.0.1 --port=62298",
-            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
-            `XDG_CONFIG_HOME=${homeDir}/.ade/opencode-runtime/xdg-v1/config`,
-          ].join(" "),
+          command:
+            'C:\\Windows\\System32\\cmd.exe /d /s /c set "ADE_OPENCODE_MANAGED=1"&&set "OPENCODE_DISABLE_PROJECT_CONFIG=1"&&set "ADE_OPENCODE_OWNER_PID=999999"&&C:\\opencode\\opencode.cmd serve --hostname=127.0.0.1 --port=62298',
         },
         {
           pid: 4102,
           ppid: 1,
-          command: [
-            "/Users/admin/.opencode/bin/opencode serve --hostname=127.0.0.1 --port=62299",
-            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
-            "ADE_OPENCODE_MANAGED=1",
-            "ADE_OPENCODE_OWNER_PID=7788",
-            `XDG_CONFIG_HOME=${homeDir}/.ade/opencode-runtime/xdg-v1/config`,
-          ].join(" "),
+          command:
+            'C:\\Windows\\System32\\cmd.exe /d /s /c set "ADE_OPENCODE_MANAGED=1"&&set "OPENCODE_DISABLE_PROJECT_CONFIG=1"&&set "ADE_OPENCODE_OWNER_PID=7788"&&C:\\opencode\\opencode.cmd serve --hostname=127.0.0.1 --port=62299',
         },
       ]),
       isProcessAlive: (pid) => {
@@ -443,14 +511,15 @@ describe("openCodeServerManager", () => {
         return pid === 4102 || pid === 7788;
       },
       killProcess,
+      killProcessTree,
     });
     const result = await recoverManagedOpenCodeOrphans();
 
     expect(result.recoveredPids).toEqual([4101]);
     expect(result.skippedPids).toEqual([4102]);
-    expect(killProcess).toHaveBeenCalledWith(4101, "SIGTERM");
-    expect(killProcess).toHaveBeenCalledWith(4101, "SIGKILL");
-    expect(killProcess).not.toHaveBeenCalledWith(4102, "SIGTERM");
+    expect(killProcessTree).toHaveBeenCalledWith(4101);
+    expect(killProcessTree).not.toHaveBeenCalledWith(4102);
+    expect(killProcess).not.toHaveBeenCalled();
   });
 
   it("does not mark stubborn orphaned processes as recovered", async () => {

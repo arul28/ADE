@@ -34,6 +34,7 @@ import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
 import { describePrTargetDiff } from "../shared/laneBranchTargets";
 import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { usePrs } from "../state/PrsContext";
+import { modifierKeyLabel } from "../../../lib/platform";
 
 // ---- Sub-tab type ----
 type DetailTab = "overview" | "convergence" | "files" | "checks" | "activity";
@@ -2746,7 +2747,7 @@ function OverviewTab(props: OverviewTabProps) {
             <textarea
               value={props.commentDraft}
               onChange={(e) => props.setCommentDraft(e.target.value)}
-              placeholder="Leave a comment... Supports Markdown. Cmd+Enter to submit."
+              placeholder={`Leave a comment... Supports Markdown. ${modifierKeyLabel}+Enter to submit.`}
               onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void props.onAddComment(); }}
               style={{
                 width: "100%", minHeight: 80, resize: "vertical", padding: "14px 14px 36px",
@@ -3565,7 +3566,7 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
           <textarea
             value={commentDraft}
             onChange={(e) => setCommentDraft(e.target.value)}
-            placeholder="Write a comment... (Cmd+Enter to submit)"
+            placeholder={`Write a comment... (${modifierKeyLabel}+Enter to submit)`}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void onAddComment(); }}
             style={{
               flex: 1, minHeight: 60, resize: "vertical", padding: 12,

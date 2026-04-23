@@ -16,4 +16,50 @@ describe("shell helpers", () => {
     expect(argv).toEqual(["node", "-e", 'console.log("hello world")']);
     expect(parseCommandLine(commandArrayToLine(argv))).toEqual(argv);
   });
+
+  it("preserves Windows executable paths with backslashes", () => {
+    expect(parseCommandLine("C:\\Tools\\node.exe --version", { platform: "win32" })).toEqual([
+      "C:\\Tools\\node.exe",
+      "--version",
+    ]);
+  });
+
+  it("parses quoted Windows paths with spaces", () => {
+    expect(parseCommandLine('"C:\\Program Files\\nodejs\\node.exe" "C:\\repo path\\script.js"', { platform: "win32" })).toEqual([
+      "C:\\Program Files\\nodejs\\node.exe",
+      "C:\\repo path\\script.js",
+    ]);
+  });
+
+  it("round-trips Windows cmd and PowerShell commands", () => {
+    const cmd = ["cmd.exe", "/c", "npm run test"];
+    const powershell = ["powershell.exe", "-NoProfile", "-Command", 'Write-Output "ok"'];
+
+    expect(parseCommandLine(commandArrayToLine(cmd, { platform: "win32" }), { platform: "win32" })).toEqual(cmd);
+    expect(parseCommandLine(commandArrayToLine(powershell, { platform: "win32" }), { platform: "win32" })).toEqual(powershell);
+  });
+
+  it("round-trips Windows arguments that end with a backslash", () => {
+    const argv = ["node.exe", "C:\\repo path\\nested\\"];
+    const line = commandArrayToLine(argv, { platform: "win32" });
+
+    expect(line).toBe('node.exe "C:\\repo path\\nested\\\\"');
+    expect(parseCommandLine(line, { platform: "win32" })).toEqual(argv);
+  });
+
+  it("round-trips Windows arguments with backslashes before quotes", () => {
+    const argv = ["node.exe", 'C:\\repo path\\"quoted"'];
+    const line = commandArrayToLine(argv, { platform: "win32" });
+
+    expect(line).toBe('node.exe "C:\\repo path\\\\\"\"quoted\"\""');
+    expect(parseCommandLine(line, { platform: "win32" })).toEqual(argv);
+  });
+
+  it("parses Windows doubled quotes without treating backslashes as escapes", () => {
+    expect(parseCommandLine('"ab""c" "C:\\repo path\\\\" d', { platform: "win32" })).toEqual([
+      'ab"c',
+      "C:\\repo path\\",
+      "d",
+    ]);
+  });
 });

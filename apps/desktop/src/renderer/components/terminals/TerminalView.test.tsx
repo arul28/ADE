@@ -415,6 +415,8 @@ describe("TerminalView", () => {
 
       render(<TerminalView ptyId="pty-dom" sessionId="session-dom" isActive />);
 
+      // initRendererChain is fire-and-forget with a dynamic import inside; real
+      // timers + waitFor let the microtask chain settle reliably across shards.
       await waitFor(
         () => {
           const runtime = getTerminalRuntimeSnapshot("session-dom");
@@ -425,8 +427,6 @@ describe("TerminalView", () => {
       );
 
       cleanup();
-      await act(async () => {});
-      await Promise.resolve();
     } finally {
       vi.useFakeTimers();
     }

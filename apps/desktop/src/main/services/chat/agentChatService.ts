@@ -61,6 +61,10 @@ import {
   readFileWithinRootSecure,
   resolvePathWithinRoot,
 } from "../shared/utils";
+import {
+  resolveCliSpawnInvocation,
+  terminateProcessTree,
+} from "../shared/processExecution";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import { DEFAULT_FLUSH_PROMPT } from "../memory/compactionFlushPrompt";
 import type {
@@ -636,8 +640,12 @@ function signalChildProcessTree(
   child: ChildProcessWithoutNullStreams,
   signal: NodeJS.Signals,
 ): boolean {
+  if (process.platform === "win32") {
+    return terminateProcessTree(child, signal);
+  }
+
   const pid = child.pid ?? null;
-  if (process.platform !== "win32" && pid != null && Number.isInteger(pid) && pid > 0) {
+  if (pid != null && Number.isInteger(pid) && pid > 0) {
     try {
       process.kill(-pid, signal);
       return true;
@@ -684,12 +692,12 @@ function terminateChildProcessTree(
   }
 
   const timer = setTimeout(() => {
-    if (process.platform !== "win32") {
-      if (!isProcessGroupAlive(pid)) return;
+    if (process.platform === "win32") {
+      if (!isProcessAlive(pid)) return;
       signalChildProcessTree(child, "SIGKILL");
       return;
     }
-    if (!isProcessAlive(pid)) return;
+    if (!isProcessGroupAlive(pid)) return;
     signalChildProcessTree(child, "SIGKILL");
   }, killAfterMs);
   timer.unref?.();
@@ -9434,11 +9442,13 @@ export function createAgentChatService(args: {
       });
       throw error;
     }
-    const proc = spawn(codexExecutable, ["app-server"], {
+    const invocation = resolveCliSpawnInvocation(codexExecutable, ["app-server"]);
+    const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
       env: spawnEnv,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
 
     const reader = readline.createInterface({ input: proc.stdout });

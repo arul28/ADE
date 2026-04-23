@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const projectRoot = path.resolve(__dirname, "..");
 const distMainFile = path.join(projectRoot, "dist", "main", "main.cjs");
+const npxCommand = "npx";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -108,14 +109,72 @@ async function waitForStableFile(filePath, timeoutMs, stableWindowMs = 300) {
   }
 }
 
+function quoteWindowsCmdArg(value) {
+  let quoted = "\"";
+  let backslashes = 0;
+  for (const char of String(value).replace(/%/g, "%%")) {
+    if (char === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (char === "\"") {
+      quoted += "\\".repeat(backslashes * 2);
+      quoted += "\"\"";
+    } else {
+      quoted += "\\".repeat(backslashes);
+      quoted += char;
+    }
+    backslashes = 0;
+  }
+  quoted += "\\".repeat(backslashes * 2);
+  quoted += "\"";
+  return quoted;
+}
+
+function shouldUseWindowsCmdWrapper(cmd) {
+  if (process.platform !== "win32") return false;
+  const ext = path.win32.extname(cmd).toLowerCase();
+  return ext === "" || ext === ".cmd" || ext === ".bat";
+}
+
+function resolveSpawnInvocation(cmd, args, env) {
+  if (!shouldUseWindowsCmdWrapper(cmd)) {
+    return { command: cmd, args, windowsVerbatimArguments: false };
+  }
+  return {
+    command: env.ComSpec && env.ComSpec.trim() ? env.ComSpec.trim() : "cmd.exe",
+    args: ["/d", "/s", "/c", [cmd, ...args].map(quoteWindowsCmdArg).join(" ")],
+    windowsVerbatimArguments: true,
+  };
+}
+
 function spawnProcess(name, cmd, args, extraEnv = {}) {
-  const child = cp.spawn(cmd, args, {
+  const env = { ...process.env, ...extraEnv };
+  const invocation = resolveSpawnInvocation(cmd, args, env);
+  const child = cp.spawn(invocation.command, invocation.args, {
     cwd: projectRoot,
-    env: { ...process.env, ...extraEnv },
-    stdio: "inherit"
+    env,
+    stdio: "inherit",
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
   child.__adeName = name;
   return child;
+}
+
+function terminateChild(child, signal) {
+  if (child.killed) return;
+  if (process.platform === "win32" && typeof child.pid === "number") {
+    const result = cp.spawnSync("taskkill.exe", ["/T", "/F", "/PID", String(child.pid)], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    if (!result.error && result.status === 0) return;
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // ignore
+  }
 }
 
 async function main() {
@@ -138,13 +197,7 @@ async function main() {
     shuttingDown = true;
     fs.unwatchFile(distMainFile);
     for (const child of children) {
-      if (!child.killed) {
-        try {
-          child.kill(signal);
-        } catch {
-          // ignore
-        }
-      }
+      terminateChild(child, signal);
     }
   };
 
@@ -152,8 +205,8 @@ async function main() {
   process.on("SIGTERM", () => teardown("SIGTERM"));
   process.on("exit", () => teardown("SIGTERM"));
 
-  const vite = spawnProcess("renderer", "npx", ["vite", "--port", String(devPort), "--strictPort", "--force"]);
-  const main = spawnProcess("main", "npx", ["tsup", "--watch"]);
+  const vite = spawnProcess("renderer", npxCommand, ["vite", "--port", String(devPort), "--strictPort", "--force"]);
+  const main = spawnProcess("main", npxCommand, ["tsup", "--watch"]);
   children.add(vite);
   children.add(main);
 
@@ -176,7 +229,7 @@ async function main() {
 
   const electronEnv = { VITE_DEV_SERVER_URL: devServerUrl };
   const launchElectron = () => {
-    const child = spawnProcess("electron", "npx", ["electron", ".", `--remote-debugging-port=${remoteDebugPort}`], electronEnv);
+    const child = spawnProcess("electron", npxCommand, ["electron", ".", `--remote-debugging-port=${remoteDebugPort}`], electronEnv);
     electron = child;
     children.add(child);
     child.on("exit", (code, signal) => {
@@ -214,11 +267,7 @@ async function main() {
     if (electronRestartPending) return;
     electronRestartPending = true;
     process.stdout.write(`[ade] restarting electron (${reason})\n`);
-    try {
-      electron.kill("SIGTERM");
-    } catch {
-      electronRestartPending = false;
-    }
+    terminateChild(electron, "SIGTERM");
   };
 
   launchElectron();

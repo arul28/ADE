@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
@@ -171,6 +171,15 @@ vi.mock("../../utils/terminalSessionSignals", async () => {
 
 import { createPtyService, PTY_AI_TITLE_DEBOUNCE_MS } from "./ptyService";
 
+const originalPlatform = process.platform;
+
+function setPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    value,
+    configurable: true,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -320,6 +329,10 @@ function createHarness(overrides: {
 // ---------------------------------------------------------------------------
 
 describe("ptyService", () => {
+  afterEach(() => {
+    setPlatform(originalPlatform);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.existsSyncResults.clear();
@@ -415,6 +428,56 @@ describe("ptyService", () => {
             CUSTOM_FLAG: "1",
           }),
         }),
+      );
+    });
+
+    it("does not type startupCommand preview into direct command sessions", async () => {
+      const { service, mockPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Direct worker",
+        cols: 80,
+        rows: 24,
+        command: "codex",
+        args: ["exec", "-"],
+        startupCommand: "ADE_RUN_ID=run-1 exec codex exec - < prompt.txt",
+      });
+
+      expect(mockPty.write).not.toHaveBeenCalled();
+    });
+
+    it("wraps direct Windows command shims through cmd.exe", async () => {
+      setPlatform("win32");
+      const harness = createHarness();
+      const ptyService = createPtyService({
+        projectRoot: "/tmp/test-project",
+        transcriptsDir: "/tmp/transcripts",
+        laneService: harness.laneService as any,
+        sessionService: harness.sessionService as any,
+        logger: harness.logger as any,
+        broadcastData: vi.fn(),
+        broadcastExit: vi.fn(),
+        onSessionEnded: vi.fn(),
+        onSessionRuntimeSignal: vi.fn(),
+        loadPty: harness.loadPty as any,
+      });
+
+      await ptyService.create({
+        laneId: "lane-1",
+        title: "Direct command",
+        cols: 80,
+        rows: 24,
+        command: "npm.cmd",
+        args: ["run", "dev"],
+        env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      });
+
+      const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      expect(ptyLib.spawn).toHaveBeenCalledWith(
+        "C:\\Windows\\System32\\cmd.exe",
+        '/d /s /c "npm.cmd" "run" "dev"',
+        expect.any(Object),
       );
     });
 

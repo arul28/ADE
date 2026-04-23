@@ -72,8 +72,13 @@ import { evaluateRunCompletion, evaluateRunCompletionFromPhases, validateRunComp
 import {
   createProviderOrchestratorAdapter,
   cleanupWorkerRuntimeFiles,
+  nodeWorkerLaunch,
+  writeWorkerLaunchFile,
+  writeWorkerPromptFile,
 } from "./providerOrchestratorAdapter";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { runGit } from "../git/git";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPtyService } from "../pty/ptyService";
@@ -91,7 +96,7 @@ import type { ProceduralLearningService } from "../memory/proceduralLearningServ
 import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
 import { getMissionStateDocumentPath } from "./missionStateDoc";
-import { buildFullPrompt, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
+import { buildFullPrompt, shellEscapeArg } from "./baseOrchestratorAdapter";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { classifyWorkerExecutionPath, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import {
@@ -3955,7 +3960,8 @@ export function createOrchestratorService({
             };
           }
           const cliCommand = descriptor?.cliCommand === "codex" ? "codex" : "claude";
-          const commandParts: string[] = [cliCommand];
+          const commandArgs: string[] = [];
+          const commandPreviewParts: string[] = [cliCommand];
           const model = modelRef;
           if (model) {
             const effectiveModel = cliCommand === "claude"
@@ -3963,7 +3969,8 @@ export function createOrchestratorService({
               : cliCommand === "codex"
                 ? resolveCodexCliModel(model)
                 : model;
-            commandParts.push("--model", shellEscapeArg(effectiveModel));
+            commandArgs.push("--model", effectiveModel);
+            commandPreviewParts.push("--model", shellEscapeArg(effectiveModel));
           }
           const cliMode = args.permissionConfig?.cli?.mode ?? "full-auto";
           if (cliCommand === "codex") {
@@ -3972,24 +3979,74 @@ export function createOrchestratorService({
             if (!readOnlyExecution && codexProviderMode === "config-toml") {
               // Let Codex read its own repository/user config without forcing flags.
             } else {
-              commandParts.push(
+              const sandboxMode = readOnlyExecution || cliMode === "read-only"
+                ? "read-only"
+                : mappedCodex?.sandbox ?? args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
+              const approvalPolicy = readOnlyExecution || cliMode === "read-only" ? "on-request" : mappedCodex?.approvalPolicy ?? "untrusted";
+              commandArgs.push(
                 "--sandbox",
-                readOnlyExecution || cliMode === "read-only"
-                  ? "read-only"
-                  : mappedCodex?.sandbox ?? args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write",
+                sandboxMode,
                 "--ask-for-approval",
-                readOnlyExecution || cliMode === "read-only" ? "on-request" : mappedCodex?.approvalPolicy ?? "untrusted",
+                approvalPolicy,
+              );
+              commandPreviewParts.push(
+                "--sandbox",
+                shellEscapeArg(sandboxMode),
+                "--ask-for-approval",
+                shellEscapeArg(approvalPolicy),
               );
             }
           } else {
             if (!readOnlyExecution && cliMode === "full-auto") {
-              commandParts.push("--dangerously-skip-permissions");
+              commandArgs.push("--dangerously-skip-permissions");
+              commandPreviewParts.push("--dangerously-skip-permissions");
             } else {
-              commandParts.push("--permission-mode", readOnlyExecution || cliMode === "read-only" ? "plan" : "acceptEdits");
+              const claudePermissionMode = readOnlyExecution || cliMode === "read-only" ? "plan" : "acceptEdits";
+              commandArgs.push("--permission-mode", claudePermissionMode);
+              commandPreviewParts.push("--permission-mode", shellEscapeArg(claudePermissionMode));
             }
           }
-          commandParts.push(shellInlineDecodedArg([ADE_CLI_AGENT_GUIDANCE, prompt].join("\n\n")));
-          const startupCommand = commandParts.join(" ");
+          const augmentedPrompt = [ADE_CLI_AGENT_GUIDANCE, prompt].join("\n\n");
+          const promptFilePath = writeWorkerPromptFile({
+            projectRoot,
+            attemptId: args.attempt.id,
+            prompt: augmentedPrompt,
+          });
+
+          let launchCommand;
+          if (cliCommand === "codex") {
+            const resolvedCodex = resolveCodexExecutable();
+            commandArgs.push("exec", "-");
+            commandPreviewParts.push("exec", "-");
+            const startupCommand = `exec ${commandPreviewParts.join(" ")} < ${shellEscapeArg(promptFilePath)}`;
+            const launchFilePath = writeWorkerLaunchFile({
+              projectRoot,
+              attemptId: args.attempt.id,
+              command: resolvedCodex.path,
+              commandArgs,
+              promptFilePath,
+            });
+            launchCommand = nodeWorkerLaunch({
+              startupCommand,
+              launchFilePath,
+            });
+          } else {
+            const resolvedClaude = resolveClaudeCodeExecutable();
+            commandArgs.push("-p");
+            commandPreviewParts.push("-p");
+            const startupCommand = `exec ${commandPreviewParts.join(" ")} < ${shellEscapeArg(promptFilePath)}`;
+            const launchFilePath = writeWorkerLaunchFile({
+              projectRoot,
+              attemptId: args.attempt.id,
+              command: resolvedClaude.path,
+              commandArgs,
+              promptFilePath,
+            });
+            launchCommand = nodeWorkerLaunch({
+              startupCommand,
+              launchFilePath,
+            });
+          }
 
           const session = await args.createTrackedSession({
             laneId: args.step.laneId,
@@ -3997,7 +4054,10 @@ export function createOrchestratorService({
             rows: 36,
             title,
             toolType: `${kind}-orchestrated` as TerminalToolType,
-            startupCommand
+            command: launchCommand.command,
+            args: launchCommand.args,
+            env: launchCommand.env,
+            startupCommand: launchCommand.startupCommand,
           });
           return {
             status: "accepted",
@@ -4008,7 +4068,7 @@ export function createOrchestratorService({
               contextFilePath,
               contextDigest: sha256(JSON.stringify(contextManifest)),
               planMode: readOnlyExecution,
-              startupCommandPreview: startupCommand.slice(0, 320),
+              startupCommandPreview: launchCommand.startupCommand.slice(0, 320),
               localFirst: true
             }
           };

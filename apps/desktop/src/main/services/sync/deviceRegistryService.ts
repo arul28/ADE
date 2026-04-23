@@ -16,6 +16,7 @@ import type {
 import { normalizeNotificationPreferences, type NotificationPreferences } from "../../../shared/types/sync";
 import type { Logger } from "../logging/logger";
 import { mapPlatform } from "./syncProtocol";
+import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../shared/utils";
 
@@ -53,7 +54,6 @@ type ClusterStateRow = {
 const DEVICE_ID_FILE = "sync-device-id";
 export const DEFAULT_SYNC_CLUSTER_ID = "default";
 const WORKSPACE_ACTIVITY_ID = "workspace";
-const TAILSCALE_CLI_MACOS_PATH = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
 const TAILSCALE_STATUS_CACHE_MS = 30_000;
 
 let tailscaleStatusCache:
@@ -145,15 +145,6 @@ function readLocalNetworkMetadata(): LocalNetworkMetadata {
   };
 }
 
-function resolveTailscaleCli(): string {
-  const configured = process.env.ADE_TAILSCALE_CLI?.trim();
-  if (configured) return configured;
-  if (process.platform === "darwin" && fs.existsSync(TAILSCALE_CLI_MACOS_PATH)) {
-    return TAILSCALE_CLI_MACOS_PATH;
-  }
-  return "tailscale";
-}
-
 function normalizeTailscaleDnsName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().replace(/\.$/, "").toLowerCase();
@@ -167,7 +158,7 @@ function readLocalTailscaleDnsName(): string | null {
   }
   let dnsName: string | null = null;
   try {
-    const raw = execFileSync(resolveTailscaleCli(), ["status", "--json"], {
+    const raw = execFileSync(resolveTailscaleCliPath(), ["status", "--json"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 1_000,

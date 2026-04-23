@@ -2,7 +2,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildCliPlan, findProjectRoots, formatOutput, parseCliArgs, renderLaneGraph, resolveRoots, summarizeExecution, unwrapToolResult } from "./cli";
+import {
+  buildCliPlan,
+  findProjectRoots,
+  formatOutput,
+  parseCliArgs,
+  renderLaneGraph,
+  resolveRoots,
+  shouldAttemptDesktopSocketConnection,
+  summarizeExecution,
+  unwrapToolResult,
+} from "./cli";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
 
@@ -311,6 +321,11 @@ describe("ADE CLI", () => {
     expect(output).toContain("cli version");
     expect(output).toContain("service actions");
     expect(output).toContain("Git repository detected");
+  });
+
+  it("attempts Windows named-pipe desktop sockets without filesystem existence checks", () => {
+    expect(shouldAttemptDesktopSocketConnection("\\\\.\\pipe\\ade-123")).toBe(true);
+    expect(shouldAttemptDesktopSocketConnection("//./pipe/ade-123")).toBe(true);
   });
 
   it("renders a compact lane graph", () => {

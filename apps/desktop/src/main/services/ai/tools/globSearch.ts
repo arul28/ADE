@@ -83,7 +83,7 @@ function walkAndMatch(root: string, globPattern: string, maxFiles = 5000): strin
     for (const entry of entries) {
       if (results.length >= maxFiles) return;
       const fullPath = path.join(dir, entry.name);
-      const relativePath = path.relative(root, fullPath);
+      const relativePath = path.relative(root, fullPath).replace(/\\/g, "/");
 
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".")) {
@@ -103,7 +103,7 @@ function walkAndMatch(root: string, globPattern: string, maxFiles = 5000): strin
 
 function globPatternToRegex(glob: string): RegExp {
   // Split into segments and process
-  const segments = glob.split("/");
+  const segments = glob.replace(/\\/g, "/").split("/");
   const regexParts: string[] = [];
 
   for (const seg of segments) {

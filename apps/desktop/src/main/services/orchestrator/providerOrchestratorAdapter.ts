@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { OrchestratorExecutorAdapter } from "./orchestratorService";
-import { buildFullPrompt, createBaseOrchestratorAdapter, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
+import { buildFullPrompt, createBaseOrchestratorAdapter, shellEscapeArg, shellInlineDecodedArg, type AdapterLaunchCommand } from "./baseOrchestratorAdapter";
 import {
   classifyWorkerExecutionPath,
   getModelById,
@@ -18,7 +18,9 @@ import type {
 } from "../../../shared/types";
 import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createAgentChatService } from "../chat/agentChatService";
 import {
   mapPermissionToClaude,
@@ -26,10 +28,23 @@ import {
   normalizeMissionPermissions,
   providerPermissionsToLegacyConfig,
 } from "./permissionMapping";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
+
+const WORKER_ENV_KEYS = [
+  "ADE_MISSION_ID",
+  "ADE_RUN_ID",
+  "ADE_STEP_ID",
+  "ADE_ATTEMPT_ID",
+  "ADE_DEFAULT_ROLE",
+  "ADE_OWNER_ID",
+] as const;
+
+type WorkerEnvKey = typeof WORKER_ENV_KEYS[number];
+type WorkerEnvVars = Partial<Record<WorkerEnvKey, string>> & Record<string, string>;
 
 /**
- * Build environment variable assignments for worker identity.
- * These env vars allow ADE-aware CLIs and child processes to resolve caller context.
+ * Build worker identity env vars. ADE-aware CLIs and child processes use these
+ * to resolve caller context without POSIX-only inline assignment syntax.
  */
 function buildWorkerEnvVars(args: {
   missionId: string;
@@ -37,15 +52,25 @@ function buildWorkerEnvVars(args: {
   stepId: string;
   attemptId: string;
   ownerId?: string | null;
-}): string[] {
-  return [
-    `ADE_MISSION_ID=${shellEscapeArg(args.missionId)}`,
-    `ADE_RUN_ID=${shellEscapeArg(args.runId)}`,
-    `ADE_STEP_ID=${shellEscapeArg(args.stepId)}`,
-    `ADE_ATTEMPT_ID=${shellEscapeArg(args.attemptId)}`,
-    `ADE_DEFAULT_ROLE=agent`,
-    ...(args.ownerId ? [`ADE_OWNER_ID=${shellEscapeArg(args.ownerId)}`] : []),
-  ];
+}): WorkerEnvVars {
+  return {
+    ADE_MISSION_ID: args.missionId,
+    ADE_RUN_ID: args.runId,
+    ADE_STEP_ID: args.stepId,
+    ADE_ATTEMPT_ID: args.attemptId,
+    ADE_DEFAULT_ROLE: "agent",
+    ...(args.ownerId ? { ADE_OWNER_ID: args.ownerId } : {}),
+  };
+}
+
+function previewWorkerEnvVars(env: WorkerEnvVars): string[] {
+  const parts: string[] = [];
+  for (const key of WORKER_ENV_KEYS) {
+    const value = env[key];
+    if (!value) continue;
+    parts.push(key === "ADE_DEFAULT_ROLE" ? `${key}=agent` : `${key}=${shellEscapeArg(value)}`);
+  }
+  return parts;
 }
 
 function resolveWorkerOwnerId(metadata: Record<string, unknown> | null | undefined): string | null {
@@ -68,6 +93,77 @@ export function getProviderAdapterUnsupportedModelReason(modelRef: string): stri
 function workerPromptFilePath(projectRoot: string, attemptId: string): string {
   return path.join(resolveAdeLayout(projectRoot).workerPromptsDir, `worker-${attemptId}.txt`);
 }
+
+function workerLaunchFilePath(projectRoot: string, attemptId: string): string {
+  return path.join(resolveAdeLayout(projectRoot).workerPromptsDir, `worker-${attemptId}.launch.json`);
+}
+
+const WORKER_CLI_LAUNCHER_SCRIPT = `
+const fs = require("fs");
+const { spawn, spawnSync } = require("child_process");
+const specPath = process.argv[1];
+let done = false;
+let child = null;
+function terminateChild() {
+  if (!child || !child.pid) return;
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+    } else {
+      child.kill("SIGTERM");
+    }
+  } catch {}
+}
+function finish(code) {
+  if (done) return;
+  done = true;
+  process.exit(typeof code === "number" ? code : 1);
+}
+process.on("SIGTERM", () => {
+  terminateChild();
+  finish(143);
+});
+process.on("SIGINT", () => {
+  terminateChild();
+  finish(130);
+});
+process.on("exit", () => {
+  terminateChild();
+});
+const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+const childEnv = { ...process.env, ...(spec.env || {}) };
+delete childEnv.ELECTRON_RUN_AS_NODE;
+child = spawn(spec.command, Array.isArray(spec.args) ? spec.args : [], {
+  cwd: spec.cwd || process.cwd(),
+  env: childEnv,
+  shell: false,
+  stdio: [spec.stdinFilePath ? "pipe" : "inherit", "inherit", "inherit"],
+  windowsHide: false,
+  windowsVerbatimArguments: !!spec.windowsVerbatimArguments
+});
+child.on("error", (err) => {
+  console.error("[ADE] Failed to launch worker CLI: " + (err && err.message ? err.message : String(err)));
+  finish(127);
+});
+child.on("exit", (code, signal) => {
+  if (signal) {
+    console.error("[ADE] Worker CLI exited from signal " + signal + ".");
+    finish(1);
+    return;
+  }
+  finish(code == null ? 0 : code);
+});
+if (spec.stdinFilePath && child.stdin) {
+  child.stdin.on("error", () => {});
+  const stream = fs.createReadStream(spec.stdinFilePath);
+  stream.on("error", (err) => {
+    console.error("[ADE] Failed to read worker prompt: " + (err && err.message ? err.message : String(err)));
+    try { child.kill(); } catch {}
+    finish(1);
+  });
+  stream.pipe(child.stdin);
+}
+`;
 
 const CLAUDE_READ_ONLY_NATIVE_TOOLS = [
   "Read",
@@ -94,7 +190,7 @@ export function buildClaudeReadOnlyWorkerAllowedTools(extraToolNames: readonly s
   ]);
 }
 
-function writeWorkerPromptFile(args: {
+export function writeWorkerPromptFile(args: {
   projectRoot: string;
   attemptId: string;
   prompt: string;
@@ -103,6 +199,51 @@ function writeWorkerPromptFile(args: {
   fs.mkdirSync(path.dirname(promptPath), { recursive: true });
   fs.writeFileSync(promptPath, args.prompt, "utf8");
   return promptPath;
+}
+
+export function writeWorkerLaunchFile(args: {
+  projectRoot: string;
+  attemptId: string;
+  command: string;
+  commandArgs: string[];
+  promptFilePath: string;
+  env?: Record<string, string>;
+}): string {
+  const launchPath = workerLaunchFilePath(args.projectRoot, args.attemptId);
+  fs.mkdirSync(path.dirname(launchPath), { recursive: true });
+  const invocation = resolveCliSpawnInvocation(
+    args.command,
+    args.commandArgs,
+    { ...process.env, ...(args.env ?? {}) },
+  );
+  fs.writeFileSync(
+    launchPath,
+    JSON.stringify({
+      command: invocation.command,
+      args: invocation.args,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments ?? false,
+      stdinFilePath: args.promptFilePath,
+      env: args.env ?? {},
+    }),
+    "utf8",
+  );
+  return launchPath;
+}
+
+export function nodeWorkerLaunch(args: {
+  startupCommand: string;
+  launchFilePath: string;
+  env?: Record<string, string>;
+}): AdapterLaunchCommand {
+  return {
+    startupCommand: args.startupCommand,
+    command: process.execPath,
+    args: ["-e", WORKER_CLI_LAUNCHER_SCRIPT, args.launchFilePath],
+    env: {
+      ELECTRON_RUN_AS_NODE: "1",
+      ...(args.env ?? {}),
+    },
+  };
 }
 
 export function resolveOpenCodeRuntimeRoot(): string {
@@ -135,6 +276,11 @@ export function cleanupWorkerRuntimeFiles(projectRoot: string, attemptId: string
   } catch {
     // Ignore — prompt file may already be removed or never created.
   }
+  try {
+    fs.unlinkSync(workerLaunchFilePath(projectRoot, attemptId));
+  } catch {
+    // Ignore — launch file may already be removed or never created.
+  }
 }
 
 /**
@@ -158,6 +304,10 @@ function cleanupStaleWorkerRuntimeFiles(projectRoot: string): void {
   cleanupStaleFilesInDir(
     layout.workerPromptsDir,
     "worker-", ".txt",
+  );
+  cleanupStaleFilesInDir(
+    layout.workerPromptsDir,
+    "worker-", ".launch.json",
   );
 }
 
@@ -300,7 +450,12 @@ export function createProviderOrchestratorAdapter(options?: {
     buildOverrideCommand: ({ prompt }) => {
       // For override commands, try to detect the best CLI
       // Default to claude since it's the most common
-      return `exec claude -p ${shellInlineDecodedArg(prompt)}`;
+      const resolvedClaude = resolveClaudeCodeExecutable();
+      return {
+        startupCommand: `exec claude -p ${shellInlineDecodedArg(prompt)}`,
+        command: resolvedClaude.path,
+        args: ["-p", prompt],
+      };
     },
 
     buildStartupCommand: ({ prompt, model, step, run, attempt, permissionConfig, teamRuntime }) => {
@@ -332,16 +487,21 @@ export function createProviderOrchestratorAdapter(options?: {
           ? buildClaudeReadOnlyWorkerAllowedTools()
           : dedupeAllowedTools(configuredAllowedTools);
 
-        const parts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
+        const resolvedClaude = resolveClaudeCodeExecutable();
+        const commandArgs: string[] = ["--model", cliModel];
+        const previewParts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
 
         if (dangerouslySkip) {
-          parts.push("--dangerously-skip-permissions");
+          commandArgs.push("--dangerously-skip-permissions");
+          previewParts.push("--dangerously-skip-permissions");
         } else {
-          parts.push("--permission-mode", shellEscapeArg(permissionMode));
+          commandArgs.push("--permission-mode", permissionMode);
+          previewParts.push("--permission-mode", shellEscapeArg(permissionMode));
         }
 
         if (allowedTools.length > 0) {
-          parts.push("--allowedTools", shellEscapeArg(allowedTools.join(",")));
+          commandArgs.push("--allowedTools", allowedTools.join(","));
+          previewParts.push("--allowedTools", shellEscapeArg(allowedTools.join(",")));
         }
 
         const promptFilePath = writeWorkerPromptFile({
@@ -349,20 +509,36 @@ export function createProviderOrchestratorAdapter(options?: {
           attemptId: attempt.id,
           prompt,
         });
-        parts.push("-p", `"$(cat ${shellEscapeArg(promptFilePath)})"`);
+        commandArgs.push("-p");
+        previewParts.push("-p");
 
-        const envParts: string[] = [...workerEnv];
+        const launchEnv: Record<string, string> = { ...workerEnv };
+        const envParts = previewWorkerEnvVars(workerEnv);
         if (
           teamRuntime?.enabled
           && teamRuntime.allowClaudeAgentTeams !== false
           && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")
         ) {
+          launchEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
           envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
         }
 
-        const cmd = parts.join(" ");
-        const startup = `exec ${cmd}`;
-        return envParts.length > 0 ? `${envParts.join(" ")} ${startup}` : startup;
+        const cmd = previewParts.join(" ");
+        const startup = `exec ${cmd} < ${shellEscapeArg(promptFilePath)}`;
+        const startupCommand = envParts.length > 0 ? `${envParts.join(" ")} ${startup}` : startup;
+        const launchFilePath = writeWorkerLaunchFile({
+          projectRoot: canonicalProjectRoot,
+          attemptId: attempt.id,
+          command: resolvedClaude.path,
+          commandArgs,
+          promptFilePath,
+          env: launchEnv,
+        });
+        return nodeWorkerLaunch({
+          startupCommand,
+          launchFilePath,
+          env: launchEnv,
+        });
       }
 
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
@@ -378,37 +554,62 @@ export function createProviderOrchestratorAdapter(options?: {
             : mappedCodex?.sandbox ?? effectivePermissionConfig?._providers?.codexSandbox ?? effectivePermissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
         const writablePaths = effectivePermissionConfig?._providers?.writablePaths ?? effectivePermissionConfig?.cli?.writablePaths ?? [];
 
-        const parts: string[] = [
+        const resolvedCodex = resolveCodexExecutable();
+        const commandArgs: string[] = ["--model", resolveCodexCliModel(descriptor.providerModelId)];
+        const previewParts: string[] = [
           "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.providerModelId)),
         ];
         if (!useCodexConfig) {
-          parts.push("-a", shellEscapeArg(approvalPolicy), "-s", shellEscapeArg(sandboxMode));
+          commandArgs.push("-a", approvalPolicy, "-s", sandboxMode);
+          previewParts.push("-a", shellEscapeArg(approvalPolicy), "-s", shellEscapeArg(sandboxMode));
         }
 
-        parts.push("exec");
+        commandArgs.push("exec");
+        previewParts.push("exec");
 
         for (const wp of writablePaths) {
-          if (wp.trim().length) parts.push("--add-dir", shellEscapeArg(wp.trim()));
+          if (!wp.trim().length) continue;
+          commandArgs.push("--add-dir", wp.trim());
+          previewParts.push("--add-dir", shellEscapeArg(wp.trim()));
         }
 
-        parts.push("-");
+        commandArgs.push("-");
+        previewParts.push("-");
 
-        const envParts = [...workerEnv];
-        const cmd = parts.join(" ");
+        const launchEnv: Record<string, string> = { ...workerEnv };
+        const envParts = previewWorkerEnvVars(workerEnv);
+        const cmd = previewParts.join(" ");
         const promptFilePath = writeWorkerPromptFile({
           projectRoot: canonicalProjectRoot,
           attemptId: attempt.id,
           prompt,
         });
-        const startup = `${envParts.length > 0 ? `${envParts.join(" ")} ` : ""}exec ${cmd} < ${shellEscapeArg(promptFilePath)}`;
-        return startup;
+        const startupCommand = `${envParts.length > 0 ? `${envParts.join(" ")} ` : ""}exec ${cmd} < ${shellEscapeArg(promptFilePath)}`;
+        const launchFilePath = writeWorkerLaunchFile({
+          projectRoot: canonicalProjectRoot,
+          attemptId: attempt.id,
+          command: resolvedCodex.path,
+          commandArgs,
+          promptFilePath,
+          env: launchEnv,
+        });
+        return nodeWorkerLaunch({
+          startupCommand,
+          launchFilePath,
+          env: launchEnv,
+        });
       }
 
       // Non-CLI or unknown models can still run via the managed chat path.
       // This shell fallback only exists for CLI-wrapped workers.
       const unsupportedReason = getProviderAdapterUnsupportedModelReason(model) ?? `Model '${model}' is not supported by the provider adapter.`;
       const failureMessage = `[ADE] Shell-startup fallback for the provider adapter only supports CLI-wrapped Anthropic/OpenAI models. ${unsupportedReason}`;
-      return `printf '%s\\n' ${shellEscapeArg(failureMessage)} >&2; exit 64`;
+      return {
+        startupCommand: `printf '%s\\n' ${shellEscapeArg(failureMessage)} >&2; exit 64`,
+        command: process.execPath,
+        args: ["-e", "console.error(process.argv[1]); process.exit(64);", failureMessage],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      };
     },
 
     buildAcceptedMetadata: ({ model, filePatterns, steeringDirectiveCount, promptLength, reasoningEffort, startupCommandPreview }) => {
