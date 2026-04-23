@@ -20,7 +20,25 @@ export function processOutputToString(value: Buffer | string | null | undefined)
 }
 
 export function quoteWindowsCmdArg(value: string): string {
-  return `"${value.replace(/"/g, "\"\"").replace(/%/g, "%%")}"`;
+  let quoted = "\"";
+  let backslashes = 0;
+  for (const char of value.replace(/%/g, "%%")) {
+    if (char === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (char === "\"") {
+      quoted += "\\".repeat(backslashes * 2);
+      quoted += "\"\"";
+    } else {
+      quoted += "\\".repeat(backslashes);
+      quoted += char;
+    }
+    backslashes = 0;
+  }
+  quoted += "\\".repeat(backslashes * 2);
+  quoted += "\"";
+  return quoted;
 }
 
 export function shouldUseWindowsCmdWrapper(command: string, platform: NodeJS.Platform = process.platform): boolean {

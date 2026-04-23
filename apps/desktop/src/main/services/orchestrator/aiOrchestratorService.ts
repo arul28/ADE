@@ -4265,6 +4265,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         skippedBlockedRuns += 1;
         continue;
       }
+      let ownsHealthSweepRun = false;
       if (activeHealthSweepRuns.has(run.id)) {
         // Interval/startup sweeps are opportunistic; manual/chat/status sweeps should wait briefly
         // so explicit health checks don't get dropped due to an in-flight background sweep.
@@ -4273,9 +4274,17 @@ Check all worker statuses and continue managing the mission from here. Read work
         while (activeHealthSweepRuns.has(run.id) && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 25));
         }
-        if (activeHealthSweepRuns.has(run.id)) continue;
+        if (activeHealthSweepRuns.has(run.id)) {
+          logger.debug("ai_orchestrator.health_sweep_explicit_overlap", {
+            runId: run.id,
+            reason
+          });
+        }
       }
-      activeHealthSweepRuns.add(run.id);
+      if (!activeHealthSweepRuns.has(run.id)) {
+        activeHealthSweepRuns.add(run.id);
+        ownsHealthSweepRun = true;
+      }
       try {
         if (disposed) break;
         sweeps += 1;
@@ -4589,7 +4598,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           error: error instanceof Error ? error.message : String(error)
         });
       } finally {
-        activeHealthSweepRuns.delete(run.id);
+        if (ownsHealthSweepRun) activeHealthSweepRuns.delete(run.id);
       }
     }
 

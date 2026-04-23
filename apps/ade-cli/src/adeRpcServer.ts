@@ -83,6 +83,26 @@ const DEFAULT_PTY_ROWS = 36;
 
 const RESOURCE_MIME_JSON = "application/json";
 
+function resolveExecutableOnPath(command: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const trimmed = command.trim();
+  if (!trimmed) return null;
+  const lookup = process.platform === "win32"
+    ? { command: "where.exe", args: [trimmed] }
+    : { command: env.SHELL?.trim() || "/bin/sh", args: ["-lc", `command -v ${shellEscapeArg(trimmed)}`] };
+  const result = spawnSync(lookup.command, lookup.args, {
+    encoding: "utf8",
+    env,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (result.status !== 0 || typeof result.stdout !== "string") return null;
+  const first = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!first) return null;
+  return path.isAbsolute(first) ? first : null;
+}
+
 const TOOL_SPECS: ToolSpec[] = [
   {
     name: "spawn_agent",
@@ -5943,6 +5963,7 @@ async function runTool(args: {
     const startupCommand = envPrefixParts.length > 0
       ? `${envPrefixParts.join(" ")} ${commandPreviewParts.join(" ")}`
       : commandPreviewParts.join(" ");
+    const providerExecutable = resolveExecutableOnPath(provider);
 
     const created = await runtime.ptyService.create({
       laneId,
@@ -5951,8 +5972,7 @@ async function runTool(args: {
       title,
       tracked: true,
       toolType: `${provider}-orchestrated`,
-      command: provider,
-      args: commandArgs,
+      ...(providerExecutable ? { command: providerExecutable, args: commandArgs } : {}),
       env: workerEnv,
       startupCommand
     });

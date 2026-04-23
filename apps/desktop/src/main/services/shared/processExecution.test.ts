@@ -31,8 +31,10 @@ describe("processExecution", () => {
 
   it("quotes cmd arguments consistently", () => {
     expect(quoteWindowsCmdArg("C:\\Program Files\\tool.cmd")).toBe('"C:\\Program Files\\tool.cmd"');
+    expect(quoteWindowsCmdArg("C:\\Program Files\\")).toBe('"C:\\Program Files\\\\"');
     expect(quoteWindowsCmdArg("100% done")).toBe('"100%% done"');
     expect(quoteWindowsCmdArg('say "hi"')).toBe('"say ""hi"""');
+    expect(quoteWindowsCmdArg('C:\\path\\"quoted"')).toBe('"C:\\path\\\\\"\"quoted\"\"\"');
   });
 
   it("wraps Windows shim invocations with ComSpec", () => {
