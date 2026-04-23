@@ -1337,6 +1337,9 @@ declare global {
         getStatus: () => Promise<GitHubStatus>;
         setToken: (token: string) => Promise<GitHubStatus>;
         clearToken: () => Promise<GitHubStatus>;
+        detectRepo: () => Promise<{ owner: string; name: string } | null>;
+        listRepoLabels: (args: { owner: string; name: string }) => Promise<Array<{ name: string; color?: string }>>;
+        listRepoCollaborators: (args: { owner: string; name: string }) => Promise<Array<{ login: string; avatarUrl?: string }>>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

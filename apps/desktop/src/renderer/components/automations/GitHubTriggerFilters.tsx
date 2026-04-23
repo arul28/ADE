@@ -135,6 +135,12 @@ export function GitHubTriggerFilters({
 
       {isPr || isIssue ? (
         <div className="grid gap-2 md:grid-cols-2">
+          <LabeledInput
+            label="Repository"
+            value={trigger.repo ?? ""}
+            placeholder={repoInfo ? `${repoInfo.owner}/${repoInfo.name}` : "owner/repo"}
+            onChange={(value) => onPatch({ repo: value.trim() || undefined })}
+          />
           {isPr ? (
             <LabelPicker
               label="Labels"
@@ -161,7 +167,7 @@ export function GitHubTriggerFilters({
 
       {repoInfo ? (
         <div className="text-[10px] text-[#7E8A9A]">
-          Filters scoped to {repoInfo.owner}/{repoInfo.name}.
+          Default repo is {repoInfo.owner}/{repoInfo.name}; set Repository to scope this rule elsewhere.
         </div>
       ) : null}
     </div>

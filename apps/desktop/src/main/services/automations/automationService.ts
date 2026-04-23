@@ -679,11 +679,9 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
       createArtifact: rule.outputs?.createArtifact ?? true,
       ...(rule.outputs?.notificationChannel ? { notificationChannel: rule.outputs.notificationChannel } : {}),
     },
-    // Verification gate is retired — force a neutral no-op shape regardless of
-    // what was on disk. The YAML file retains the original for downgrades.
     verification: {
-      verifyBeforePublish: false,
-      mode: "intervention",
+      verifyBeforePublish: Boolean(rule.verification?.verifyBeforePublish),
+      mode: rule.verification?.mode ?? "intervention",
     },
     billingCode: rule.billingCode?.trim() || `auto:${rule.id}`,
     execution: normalizedExecution,
@@ -1686,6 +1684,7 @@ export function createAutomationService({
     rule: AutomationRule,
     action: AutomationAction,
     trigger: TriggerContext,
+    runId: string,
   ): Promise<{ status: AutomationActionStatus; output?: string }> => {
     const raw = (action.condition ?? "").trim();
     if (raw === "false") return { status: "skipped", output: "Condition evaluated false." };
@@ -1765,8 +1764,9 @@ export function createAutomationService({
             : {}),
           surface: "automation",
           automationId: rule.id,
-          automationRunId: null,
+          automationRunId: runId,
         });
+        updateRun(runId, { chat_session_id: session.id });
         const result = await agentChatServiceRef.runSessionTurn({
           sessionId: session.id,
           text: promptText,
@@ -1781,6 +1781,28 @@ export function createAutomationService({
       } catch (err) {
         return { status: "failed", output: err instanceof Error ? err.message : String(err) };
       }
+    }
+    if (action.type === "launch-mission") {
+      const missionRule: AutomationRule = {
+        ...rule,
+        execution: {
+          kind: "mission",
+          ...(rule.execution?.targetLaneId ? { targetLaneId: rule.execution.targetLaneId } : {}),
+          mission: { title: action.sessionTitle?.trim() || rule.execution?.mission?.title || null },
+        },
+      };
+      const missionRun = await dispatchMissionRun({
+        rule: missionRule,
+        trigger,
+        existingRunId: runId,
+        recordDispatchAction: false,
+      });
+      return {
+        status: "succeeded",
+        output: missionRun.missionId
+          ? `Mission ${missionRun.missionId} started for automation dispatch.`
+          : "Mission started for automation dispatch.",
+      };
     }
     if (action.type === "run-command") {
       const command = (action.command ?? "").trim();
@@ -1830,6 +1852,7 @@ export function createAutomationService({
     let runStatus: AutomationRunStatus = "succeeded";
     let runError: string | null = null;
     let finalQueueStatus: AutomationRunQueueStatus = "pending-review";
+    let keepRunOpen = false;
     try {
       for (let index = 0; index < actions.length; index += 1) {
         const action = actions[index]!;
@@ -1839,10 +1862,14 @@ export function createAutomationService({
           const maxRetry = Number.isFinite(action.retry) ? Math.max(0, Math.min(5, Math.floor(action.retry ?? 0))) : 0;
           for (let attempt = 0; attempt <= maxRetry; attempt += 1) {
             try {
-              const result = await runLegacyAction(rule, action, trigger);
+              const result = await runLegacyAction(rule, action, trigger, run.id);
               lastOutput = result.output ?? null;
               if (result.status === "failed") throw new Error(result.output ?? "Action failed");
               finishAction({ id: actionId, status: result.status, output: result.output ?? null });
+              if (action.type === "launch-mission") {
+                runStatus = "running";
+                keepRunOpen = true;
+              }
               break;
             } catch (error) {
               if (attempt >= maxRetry) throw error;
@@ -1870,7 +1897,7 @@ export function createAutomationService({
         summary: runError,
       });
       updateRun(run.id, {
-        ended_at: nowIso(),
+        ended_at: keepRunOpen ? null : nowIso(),
         status: runStatus,
         error_message: runError,
         queue_status: finalQueueStatus,
@@ -2147,6 +2174,7 @@ export function createAutomationService({
     existingQueueItemId?: string | null;
     queuedFromNightShift?: boolean;
     publishPhase?: boolean;
+    recordDispatchAction?: boolean;
   }): Promise<AutomationRun> => {
     if (!missionServiceRef || !aiOrchestratorServiceRef) {
       throw new Error("Mission automation services are unavailable");
@@ -2239,12 +2267,14 @@ export function createAutomationService({
       });
     }
 
-    const dispatchActionId = insertAction(run.id, 0, "launch-mission");
-    finishAction({
-      id: dispatchActionId,
-      status: "succeeded",
-      output: `Mission ${mission.id} started for automation dispatch.`,
-    });
+    if (args.recordDispatchAction !== false) {
+      const dispatchActionId = insertAction(run.id, 0, "launch-mission");
+      finishAction({
+        id: dispatchActionId,
+        status: "succeeded",
+        output: `Mission ${mission.id} started for automation dispatch.`,
+      });
+    }
     updateRun(run.id, {
       actions_completed: 1,
       mission_id: mission.id,

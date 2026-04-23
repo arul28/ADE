@@ -1960,6 +1960,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.githubSetToken, { token }),
     clearToken: async (): Promise<GitHubStatus> =>
       ipcRenderer.invoke(IPC.githubClearToken),
+    detectRepo: async (): Promise<{ owner: string; name: string } | null> => {
+      const status = await ipcRenderer.invoke(IPC.githubGetStatus) as GitHubStatus;
+      return status.repo;
+    },
+    listRepoLabels: async (args: { owner: string; name: string }): Promise<Array<{ name: string; color?: string }>> =>
+      ipcRenderer.invoke(IPC.githubListRepoLabels, args),
+    listRepoCollaborators: async (args: { owner: string; name: string }): Promise<Array<{ login: string; avatarUrl?: string }>> =>
+      ipcRenderer.invoke(IPC.githubListRepoCollaborators, args),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

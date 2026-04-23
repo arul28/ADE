@@ -2793,7 +2793,6 @@ app.whenReady().then(async () => {
         });
         if (event.issueId) {
           await linearSyncService.processIssueUpdate(event.issueId);
-        } else {
           try {
             const dispatched = buildLinearAutomationDispatch(event);
             if (dispatched) {

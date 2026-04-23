@@ -422,6 +422,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     memoryService,
     ctoStateService,
     workerAgentService,
+    githubService: headlessLinearServices.githubService as never,
     prService: headlessLinearServices.prService,
     fileService: headlessLinearServices.fileService,
     flowPolicyService: headlessLinearServices.flowPolicyService,

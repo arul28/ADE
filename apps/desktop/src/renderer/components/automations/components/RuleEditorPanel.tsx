@@ -279,7 +279,10 @@ function automationActionToDraftAction(
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
       };
     case "launch-mission":
-      return { type: "launch-mission" };
+      return {
+        type: "launch-mission",
+        ...(action.sessionTitle ? { missionTitle: action.sessionTitle } : {}),
+      };
   }
 }
 

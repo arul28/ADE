@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowClockwise } from "@phosphor-icons/react";
 import type { AutomationRun, AutomationRunDetail } from "../../../shared/types";
@@ -23,6 +23,7 @@ export function RuleHistoryPanel({
   const [detail, setDetail] = useState<AutomationRunDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const detailRequestId = useRef(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -39,16 +40,22 @@ export function RuleHistoryPanel({
   }, [automationId]);
 
   const loadDetail = useCallback(async (runId: string) => {
+    const requestId = detailRequestId.current + 1;
+    detailRequestId.current = requestId;
     setSelectedRunId(runId);
     setDetailLoading(true);
     setError(null);
     try {
       const next = await window.ade.automations.getRunDetail(runId);
+      if (detailRequestId.current !== requestId) return;
       setDetail(next);
     } catch (err) {
+      if (detailRequestId.current !== requestId) return;
       setError(extractError(err));
     } finally {
-      setDetailLoading(false);
+      if (detailRequestId.current === requestId) {
+        setDetailLoading(false);
+      }
     }
   }, []);
 

@@ -2800,6 +2800,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       getStatus: resolved({ authenticated: true, user: "arul" }),
       setToken: resolvedArg({ authenticated: true, user: "arul" }),
       clearToken: resolved({ authenticated: false, user: null }),
+      detectRepo: resolved({ owner: "arul28", name: "ADE" }),
+      listRepoLabels: resolved([]),
+      listRepoCollaborators: resolved([]),
     },
     prs: {
       createFromLane: resolvedArg(NORMAL_PRS[0]),

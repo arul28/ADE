@@ -391,21 +391,17 @@ export function createGithubService({
   };
 
   const listRepoLabels = async (owner: string, name: string): Promise<GitHubLabel[]> => {
-    const { data } = await apiRequest<GitHubLabel[]>({
-      method: "GET",
+    return await apiRequestAllPages<GitHubLabel>({
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/labels`,
       query: { per_page: 100 },
     });
-    return Array.isArray(data) ? data : [];
   };
 
   const listRepoCollaborators = async (owner: string, name: string): Promise<GitHubUser[]> => {
-    const { data } = await apiRequest<GitHubUser[]>({
-      method: "GET",
+    return await apiRequestAllPages<GitHubUser>({
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/collaborators`,
       query: { per_page: 100 },
     });
-    return Array.isArray(data) ? data : [];
   };
 
   const listRepoIssues = async (

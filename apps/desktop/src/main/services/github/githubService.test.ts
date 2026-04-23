@@ -423,15 +423,27 @@ describe("githubService issue-domain helpers", () => {
     expect(result).toEqual(payload);
   });
 
-  it("listRepoLabels and listRepoCollaborators page via per_page=100", async () => {
-    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+  it("listRepoLabels and listRepoCollaborators page through all GitHub pages", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, [{ name: "bug" }], {
+        link: '<https://api.github.com/repos/acme/ade/labels?per_page=100&page=2>; rel="next"',
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, [{ name: "triage" }]));
     const service = makeService();
-    await service.listRepoLabels("acme", "ade");
-    expect(lastFetchCall()[0]).toMatch(/per_page=100/);
+    const labels = await service.listRepoLabels("acme", "ade");
+    expect(labels.map((label) => label.name)).toEqual(["bug", "triage"]);
+    expect(mockFetch.mock.calls[0]?.[0]).toMatch(/per_page=100/);
+    expect(mockFetch.mock.calls[1]?.[0]).toMatch(/page=2/);
 
-    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
-    await service.listRepoCollaborators("acme", "ade");
-    expect(lastFetchCall()[0]).toMatch(/per_page=100/);
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, [{ login: "alice" }], {
+        link: '<https://api.github.com/repos/acme/ade/collaborators?per_page=100&page=2>; rel="next"',
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, [{ login: "bob" }]));
+    const collaborators = await service.listRepoCollaborators("acme", "ade");
+    expect(collaborators.map((user) => user.login)).toEqual(["alice", "bob"]);
+    expect(mockFetch.mock.calls[2]?.[0]).toMatch(/per_page=100/);
+    expect(lastFetchCall()[0]).toMatch(/page=2/);
   });
 
   it("URL-encodes owner/name so special characters don't break the path", async () => {
