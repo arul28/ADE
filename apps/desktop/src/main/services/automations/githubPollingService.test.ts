@@ -123,6 +123,7 @@ function makeIssue(spec: IssueSpec) {
 type PullSpec = {
   number: number;
   title?: string;
+  body?: string | null;
   state?: "open" | "closed";
   updatedAt: string;
   createdAt?: string;
@@ -132,7 +133,9 @@ type PullSpec = {
   labels?: Array<string | { name: string }>;
   user?: { login: string } | null;
   baseRef?: string;
+  baseSha?: string;
   headRef?: string;
+  headSha?: string;
   comments?: number;
 };
 
@@ -141,7 +144,7 @@ function makePull(spec: PullSpec) {
     id: 2000 + spec.number,
     number: spec.number,
     title: spec.title ?? `PR ${spec.number}`,
-    body: null,
+    body: spec.body ?? null,
     state: spec.state ?? "open",
     draft: spec.draft,
     merged: spec.merged,
@@ -150,8 +153,8 @@ function makePull(spec: PullSpec) {
     updated_at: spec.updatedAt,
     user: spec.user ?? { login: "alice" },
     labels: spec.labels ?? [],
-    base: { ref: spec.baseRef ?? "main" },
-    head: { ref: spec.headRef ?? "feat/demo" },
+    base: { ref: spec.baseRef ?? "main", sha: spec.baseSha ?? "base-sha" },
+    head: { ref: spec.headRef ?? "feat/demo", sha: spec.headSha ?? "head-sha" },
     comments: spec.comments ?? 0,
     html_url: `https://github.com/acme/ade/pull/${spec.number}`,
   };
@@ -440,12 +443,12 @@ describe("githubPollingService — PR diffing", () => {
     expect(dispatchCalls.filter((c) => c.triggerType === "github.pr_merged")).toHaveLength(0);
   });
 
-  it("emits github.pr_updated when only updatedAt changes on an open PR", async () => {
+  it("emits github.pr_updated when PR content changes on an open PR", async () => {
     const { service, dispatchCalls } = makeHarness({
       issuesByCall: [[], []],
       pullsByCall: [
-        [{ number: 42, updatedAt: "2026-04-23T10:00:00Z", state: "open" }],
-        [{ number: 42, updatedAt: "2026-04-23T11:00:00Z", state: "open" }],
+        [{ number: 42, updatedAt: "2026-04-23T10:00:00Z", state: "open", title: "Old" }],
+        [{ number: 42, updatedAt: "2026-04-23T11:00:00Z", state: "open", title: "New" }],
       ],
     });
 
@@ -460,7 +463,7 @@ describe("githubPollingService — PR diffing", () => {
       issuesByCall: [[], []],
       pullsByCall: [
         [{ number: 42, updatedAt: "2026-04-23T10:00:00Z", state: "open", draft: true }],
-        [{ number: 42, updatedAt: "2026-04-23T11:00:00Z", state: "open", draft: true }],
+        [{ number: 42, updatedAt: "2026-04-23T11:00:00Z", state: "open", draft: true, title: "Changed" }],
       ],
     });
 
@@ -494,6 +497,7 @@ describe("githubPollingService — PR diffing", () => {
     expect(commented).toHaveLength(1);
     expect(commented[0]?.pr?.number).toBe(42);
     expect(commented[0]?.rawPayload).toMatchObject({ commentId: 101, body: "new comment" });
+    expect(dispatchCalls.filter((c) => c.triggerType === "github.pr_updated")).toHaveLength(0);
   });
 
   it("emits github.pr_review_submitted for new reviews seen after the initial snapshot", async () => {
@@ -519,6 +523,7 @@ describe("githubPollingService — PR diffing", () => {
     expect(reviewed).toHaveLength(1);
     expect(reviewed[0]?.pr?.number).toBe(42);
     expect(reviewed[0]?.rawPayload).toMatchObject({ reviewId: 201, state: "APPROVED" });
+    expect(dispatchCalls.filter((c) => c.triggerType === "github.pr_updated")).toHaveLength(0);
   });
 });
 

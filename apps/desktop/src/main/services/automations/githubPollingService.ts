@@ -100,6 +100,14 @@ type PrSnapshot = {
   merged: boolean;
   mergedAt: string | null;
   commentCount: number;
+  title: string;
+  body: string | null;
+  draft: boolean | null;
+  baseRef: string | null;
+  baseSha: string | null;
+  headRef: string | null;
+  headSha: string | null;
+  labels: string[];
 };
 
 type ParsedCommentCursor = {
@@ -141,6 +149,35 @@ function isCommentAfterCursor(
   cursor: ParsedCommentCursor,
 ): boolean {
   return !isCommentAtOrBeforeCursor(comment, cursor);
+}
+
+function prSnapshot(pr: GitHubPullRequest): PrSnapshot {
+  return {
+    updatedAt: pr.updated_at,
+    state: pr.state,
+    merged: Boolean(pr.merged ?? pr.merged_at),
+    mergedAt: pr.merged_at ?? null,
+    commentCount: pr.comments ?? 0,
+    title: pr.title,
+    body: pr.body ?? null,
+    draft: typeof pr.draft === "boolean" ? pr.draft : null,
+    baseRef: pr.base?.ref ?? null,
+    baseSha: pr.base?.sha ?? null,
+    headRef: pr.head?.ref ?? null,
+    headSha: pr.head?.sha ?? null,
+    labels: labelsToStrings(pr.labels),
+  };
+}
+
+function hasPrContentChange(prev: PrSnapshot, current: PrSnapshot): boolean {
+  return prev.title !== current.title
+    || prev.body !== current.body
+    || prev.draft !== current.draft
+    || prev.baseRef !== current.baseRef
+    || prev.baseSha !== current.baseSha
+    || prev.headRef !== current.headRef
+    || prev.headSha !== current.headSha
+    || prev.labels.join("|") !== current.labels.join("|");
 }
 
 export function createGithubPollingService(args: GithubPollingServiceArgs) {
@@ -375,6 +412,7 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       if (!maxUpdatedAt || pr.updated_at > maxUpdatedAt) maxUpdatedAt = pr.updated_at;
       const prev = snapshotByRepo.get(pr.number);
       const ctx = prContext(repo, pr);
+      const currentSnapshot = prSnapshot(pr);
 
       if (!prev) {
         const isNew = pr.created_at === pr.updated_at;
@@ -384,13 +422,7 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
             summary: `PR #${pr.number} opened: ${pr.title}`,
           });
         }
-        snapshotByRepo.set(pr.number, {
-          updatedAt: pr.updated_at,
-          state: pr.state,
-          merged: Boolean(pr.merged ?? pr.merged_at),
-          mergedAt: pr.merged_at ?? null,
-          commentCount: pr.comments ?? 0,
-        });
+        snapshotByRepo.set(pr.number, currentSnapshot);
         if (since === undefined) {
           if ((pr.comments ?? 0) > 0) {
             await pollComments(repo, pr.number, since, ctx, /* isPr */ true, /* emit */ false);
@@ -419,7 +451,7 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
             summary: `PR #${pr.number} closed: ${pr.title}`,
           });
         }
-      } else if (prev.updatedAt !== pr.updated_at) {
+      } else if (prev.updatedAt !== pr.updated_at && hasPrContentChange(prev, currentSnapshot)) {
         await dispatch(repo, "github.pr_updated", `${repoSlug(repo)}#${pr.number}:pr_updated:${pr.updated_at}`, {
           pr: ctx,
           summary: `PR #${pr.number} updated: ${pr.title}`,
@@ -431,13 +463,7 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       }
       await pollReviews(repo, pr.number, ctx);
 
-      snapshotByRepo.set(pr.number, {
-        updatedAt: pr.updated_at,
-        state: pr.state,
-        merged: Boolean(pr.merged ?? pr.merged_at),
-        mergedAt: pr.merged_at ?? null,
-        commentCount: newCommentCount,
-      });
+      snapshotByRepo.set(pr.number, currentSnapshot);
     }
 
     return maxUpdatedAt;
