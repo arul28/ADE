@@ -337,10 +337,8 @@ export type CtoRollbackAgentRevisionArgs = {
 
 export type CtoEnsureAgentSessionArgs = {
   agentId: string;
-  laneId?: string | null;
   modelId?: ModelId | null;
   reasoningEffort?: string | null;
-  taskKey?: string | null;
 };
 
 export type CtoListAgentTaskSessionsArgs = {

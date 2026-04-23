@@ -37,6 +37,7 @@ import { OnboardingBanner } from "./OnboardingBanner";
 import { WorkerCreationWizard } from "./WorkerCreationWizard";
 import { shellBodyCls } from "./shared/designTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
 
 /* ── Tab types ── */
 
@@ -75,7 +76,6 @@ function statusDotCls(status: AgentStatus): string {
 
 export function CtoPage() {
   const lanes = useAppStore((s) => s.lanes);
-  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
 
   const [activeTab, setActiveTab] = useState<TabId>("chat");
   const [session, setSession] = useState<AgentChatSession | null>(null);
@@ -126,10 +126,7 @@ export function CtoPage() {
   const lastBudgetLoadAtRef = useRef(0);
   const ctoDisplayName = "CTO";
 
-  const laneId = useMemo(() => {
-    if (selectedLaneId && lanes.some((lane) => lane.id === selectedLaneId)) return selectedLaneId;
-    return lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null;
-  }, [lanes, selectedLaneId]);
+  const primaryLaneId = useMemo(() => resolveCtoPrimaryLaneId(lanes), [lanes]);
 
   const selectedWorker = useMemo(
     () => (selectedAgentId ? agents.find((a) => a.id === selectedAgentId) ?? null : null),
@@ -294,18 +291,18 @@ export function CtoPage() {
       setSession(null);
       return;
     }
-    if (!laneId) { setSession(null); return; }
+    if (!primaryLaneId) { setSession(null); return; }
     let cancelled = false;
     setLoading(true); setError(null);
     const promise = selectedAgentId
-      ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId, laneId })
-      : window.ade.cto.ensureSession({ laneId });
+      ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId })
+      : window.ade.cto.ensureSession();
     void promise
       .then((next) => { if (!cancelled) setSession(next); })
       .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : String(err)); setSession(null); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activeTab, laneId, needsOnboarding, onboardingState, selectedAgentId, showOnboarding]);
+  }, [activeTab, needsOnboarding, onboardingState, primaryLaneId, selectedAgentId, showOnboarding]);
 
   // Deep links for guided setup flows
   useEffect(() => {
@@ -333,15 +330,15 @@ export function CtoPage() {
   /* ── Callbacks ── */
 
   const refreshPersistentCtoSession = useCallback(async () => {
-    if (!window.ade?.cto || !laneId || showOnboarding || needsOnboarding) {
+    if (!window.ade?.cto || !primaryLaneId || showOnboarding || needsOnboarding) {
       return null;
     }
-    const next = await window.ade.cto.ensureSession({ laneId });
+    const next = await window.ade.cto.ensureSession();
     if (!selectedAgentId) {
       setSession(next);
     }
     return next;
-  }, [laneId, needsOnboarding, selectedAgentId, showOnboarding]);
+  }, [needsOnboarding, primaryLaneId, selectedAgentId, showOnboarding]);
 
   const handleSaveCoreMemory = useCallback(async (patch: Record<string, unknown>) => {
     if (!window.ade?.cto) throw new Error("CTO bridge unavailable.");
@@ -682,9 +679,9 @@ export function CtoPage() {
           <div className={cn("h-full min-h-0 flex-col p-4 pt-0", activeTab === "chat" ? "flex" : "hidden")}>
             {loading && <div className="px-1 py-2 text-xs text-muted-fg/55" data-testid="cto-loading">Connecting persistent session...</div>}
             {error && <div className="px-1 py-2 text-xs text-error" data-testid="cto-error">{error}</div>}
-            {!laneId && (
+            {!primaryLaneId && (
               <div className="px-1 py-2 text-xs text-muted-fg/55" data-testid="cto-no-lane">
-                Create a lane to start the persistent CTO session.
+                ADE could not resolve the primary workspace for the persistent CTO session.
               </div>
             )}
 
@@ -717,10 +714,12 @@ export function CtoPage() {
                 </div>
               ) : (
                 <AgentChatPane
-                  laneId={laneId}
+                  laneId={primaryLaneId}
                   lockSessionId={session?.id ?? null}
                   initialSessionSummary={lockedSessionSummary}
                   hideSessionTabs
+                  hideNativeControls
+                  hideWorkspaceChrome
                   presentation={persistentIdentityPresentation}
                 />
               )}
@@ -863,7 +862,7 @@ export function CtoPage() {
           {/* Linear tab */}
           {activeTab === "workflows" && (
             <div data-tour="cto.linearPanel" className="h-full min-h-0">
-              <LinearSyncPanel lanes={lanes} selectedLaneId={laneId} />
+              <LinearSyncPanel lanes={lanes} selectedLaneId={primaryLaneId} />
             </div>
           )}
 

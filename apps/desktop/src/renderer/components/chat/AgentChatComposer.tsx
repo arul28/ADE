@@ -344,6 +344,7 @@ export function AgentChatComposer({
   executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
+  hideNativeControls = false,
   messagePlaceholder,
   onModelChange,
   onReasoningEffortChange,
@@ -409,6 +410,7 @@ export function AgentChatComposer({
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
+  hideNativeControls?: boolean;
   messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
@@ -742,6 +744,9 @@ export function AgentChatComposer({
     return codexPresetOptions.find((option) => option.value === codexPreset)?.detail ?? null;
   }, [codexCustomSummary, codexPreset, codexPresetOptions, hoveredCodexPreset, sessionProvider]);
   const nativeControlPanel = useMemo(() => {
+    if (hideNativeControls) {
+      return null;
+    }
     const renderButtonGroup = <T extends string,>(
       label: string,
       value: T | undefined,
@@ -1109,6 +1114,7 @@ export function AgentChatComposer({
     hoveredClaudeMode,
     hoveredCodexPreset,
     nativeControlsDisabled,
+    hideNativeControls,
     onClaudeModeChange,
     onClaudePermissionModeChange,
     onInteractionModeChange,

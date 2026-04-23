@@ -187,6 +187,15 @@ describe("AgentChatComposer", () => {
     });
   });
 
+  it("can hide native permission controls for fixed-mode surfaces", () => {
+    renderComposer({
+      sessionProvider: "codex",
+      hideNativeControls: true,
+    });
+
+    expect(screen.queryByRole("button", { name: "Codex approval preset" })).toBeNull();
+  });
+
   it("avoids promising option chips when a pending question is freeform only", () => {
     renderComposer({
       pendingInput: {
