@@ -7,6 +7,10 @@
 - The ADE CLI lives in `apps/ade-cli` and shares core services with the desktop app.
 - State is primarily stored under `.ade/` inside the active project, with runtime metadata in SQLite and machine-local files under `.ade/secrets`, `.ade/cache`, and `.ade/artifacts`.
 
+## Playbooks
+
+- `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (automate → finalize → poll-fix loop). Any agent CLI can follow it directly; Claude Code wraps it as `/shipLane`.
+
 ## Working norms
 
 - Preserve existing desktop app patterns before introducing new abstractions.
