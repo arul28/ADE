@@ -236,6 +236,9 @@ extension FilesRootScreen {
       syncService.requestedFilesNavigation = nil
       return
     }
+    if selectedWorkspaceId != workspace.id {
+      suppressNextWorkspaceNavigationReset = true
+    }
     selectedWorkspaceId = workspace.id
     if let relativePath = request.relativePath, !relativePath.isEmpty {
       selectedFileTransitionPath = relativePath

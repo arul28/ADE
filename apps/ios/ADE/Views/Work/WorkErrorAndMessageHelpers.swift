@@ -109,6 +109,8 @@ func mergeWorkStreamingText(_ existing: String, _ incoming: String) -> String {
   let maxOverlap = min(existing.count, incoming.count)
   guard maxOverlap > 0 else { return existing + incoming }
 
+  // The hasPrefix checks above handle the common streaming-duplication cases, so this
+  // O(n*m) overlap scan only runs for rare partial-overlap chunks where n and m are small.
   for length in stride(from: maxOverlap, through: 1, by: -1) {
     let existingSuffix = existing.suffix(length)
     let incomingPrefix = incoming.prefix(length)

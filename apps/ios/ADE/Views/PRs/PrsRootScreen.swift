@@ -543,8 +543,14 @@ struct PRsTabView: View {
     if githubSnapshot != nil {
       let repoItems = filteredGitHubPrs.filter { $0.scope != "external" }
       let externalItems = filteredGitHubPrs.filter { $0.scope == "external" }
+      let repoSectionTitle: String = {
+        if let repo = githubSnapshot?.repo {
+          return "\(repo.owner)/\(repo.name)"
+        }
+        return "Repository PRs"
+      }()
       if !repoItems.isEmpty {
-        Section("Repository PRs") {
+        Section(repoSectionTitle) {
           ForEach(repoItems) { item in
             githubRowNavigation(for: item)
               .prListRow()

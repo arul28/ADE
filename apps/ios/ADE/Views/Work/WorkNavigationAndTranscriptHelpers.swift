@@ -242,7 +242,10 @@ private func collapseDuplicatedStreamPunctuation(in input: String) -> String {
       runEnd = scalars.index(after: runEnd)
     }
     let runLength = scalars.distance(from: index, to: runEnd)
-    let collapsedLength = max(1, (runLength + 1) / 2)
+    // Preserve ellipses: a 3-dot run is a legitimate "..." the user typed; only halve
+    // dot-runs of 4+, which are the ones that came from streaming duplication.
+    let shouldHalve = scalar == "." ? runLength >= 4 : runLength >= 2
+    let collapsedLength = shouldHalve ? max(1, (runLength + 1) / 2) : runLength
     collapsed.append(contentsOf: Array(repeating: scalar, count: collapsedLength))
     index = runEnd
   }

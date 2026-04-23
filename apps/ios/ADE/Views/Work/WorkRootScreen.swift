@@ -161,7 +161,7 @@ struct WorkRootScreen: View {
     mergedSessions.filter { session in
       guard !archivedSessionIds.contains(session.id) else { return false }
       let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-      return status == "active" || status == "idle" || status == "awaiting-input"
+      return status == "active" || status == "idle"
     }.count
   }
 
