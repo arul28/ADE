@@ -15,7 +15,7 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 ## Execution contract
 
 - **Autonomous.** Do not pause for user confirmation mid-loop.
-- **Bounded.** Hard cap: 5 iterations. Exit earlier if clean or blocked. At the cap, do not auto-merge; leave a handoff comment that explains why the loop stopped and what remains, if anything.
+- **Bounded.** Hard cap: 10 iterations. Exit earlier if clean or blocked. At the cap, do not auto-merge; leave a handoff comment that explains why the loop stopped and what remains, if anything.
 - **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2.
 - **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
 - **Token-idle waits.** Waiting is done by the agent's native scheduler/resume primitive, or by a shell `sleep` followed by one-shot checks. Between wake-ups, agents should be asleep, not consuming model context or tokens.
@@ -406,7 +406,7 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ### 5.2 Decide exit vs next wake
 
-- `iteration >= 5` → set `status: done-max`, `exitReason: "iteration-cap-reached"`, post a PR handoff comment explaining why the loop stopped and listing remaining unaddressed CI/review items, if any. Do not auto-merge at the cap; leave the PR open for a human to merge or rerun the lane.
+- `iteration >= 10` → set `status: done-max`, `exitReason: "iteration-cap-reached"`, post a PR handoff comment explaining why the loop stopped and listing remaining unaddressed CI/review items, if any. Do not auto-merge at the cap; leave the PR open for a human to merge or rerun the lane.
 - `merged == true` (observed during this iteration) → set `status: done-clean`, exit.
 - Otherwise → schedule next wake.
 
@@ -428,7 +428,7 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 | status | meaning | next action |
 | --- | --- | --- |
 | `done-clean` | PR merged OR green + no unaddressed comments | clear state file; print summary |
-| `done-max` | 5 iterations exhausted | leave state file; post PR handoff comment to human; do not auto-merge |
+| `done-max` | 10 iterations exhausted | leave state file; post PR handoff comment to human; do not auto-merge |
 | `blocked` | Unrecoverable conflict, gate failure, or API error | leave state file; post PR comment with reason |
 
 ## Summary output (always print on exit)
@@ -438,7 +438,7 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 
 - PR: #<number> — <title>
 - Branch: <branch>
-- Iterations: <0..5>
+- Iterations: <0..10>
 - Status: <done-clean | done-max | blocked>
 - Reason: <one line>
 
