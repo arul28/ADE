@@ -54,8 +54,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 14px;
-        padding: 22px 64px 20px;
+        gap: 12px;
+        padding: 18px 64px 16px;
         border-bottom: 1px solid var(--color-hairline);
         background: linear-gradient(
           180deg,
@@ -65,21 +65,14 @@
       }
       .strip .plus {
         font-family: "Instrument Serif", Georgia, serif;
-        font-size: 26px;
+        font-size: 24px;
         color: var(--color-cream-faint);
         line-height: 1;
       }
-      .strip .equals {
-        font-family: "Instrument Serif", Georgia, serif;
-        font-style: italic;
-        font-size: 26px;
-        color: var(--color-violet-bright);
-        margin: 0 6px;
-      }
       .strip .chip {
-        width: 38px;
-        height: 38px;
-        border-radius: 9px;
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
         border: 1px solid var(--color-hairline-strong);
         background: rgba(255, 255, 255, 0.045);
         padding: 4px;
@@ -92,36 +85,62 @@
         height: 100%;
         object-fit: contain;
       }
-      .strip .ade-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 12px 6px 8px;
-        border-radius: 999px;
-        border: 1px solid rgba(167, 139, 250, 0.45);
-        background: rgba(167, 139, 250, 0.14);
-        box-shadow: 0 0 22px -6px rgba(167, 139, 250, 0.6);
-      }
-      .strip .ade-pill img {
-        width: 24px;
-        height: 24px;
-        border-radius: 6px;
-      }
-      .strip .ade-pill span {
-        font-family: "Instrument Serif", Georgia, serif;
-        font-size: 20px;
-        color: var(--color-cream);
-        letter-spacing: 0.02em;
-      }
 
       /* ---------------- Body ---------------- */
       .body {
         flex: 1;
-        padding: 42px 64px 82px;
+        padding: 32px 64px 76px;
         display: grid;
         grid-template-columns: 0.95fr 1.05fr;
-        gap: 40px;
+        gap: 36px;
         align-items: center;
+      }
+
+      .right-col {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 14px;
+        height: 100%;
+      }
+
+      .equals-block {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        flex-shrink: 0;
+      }
+      .equals-block .equals {
+        font-family: "Instrument Serif", Georgia, serif;
+        font-style: italic;
+        font-size: 64px;
+        line-height: 1;
+        color: var(--color-violet-bright);
+      }
+      .equals-block .ade-icon {
+        position: relative;
+        width: 150px;
+        height: 150px;
+        flex-shrink: 0;
+      }
+      .equals-block .ade-icon::before {
+        content: "";
+        position: absolute;
+        inset: -30px;
+        border-radius: 30%;
+        background: radial-gradient(circle, rgba(124, 58, 237, 0.65), transparent 65%);
+        filter: blur(20px);
+        z-index: 0;
+      }
+      .equals-block .ade-icon img {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        height: 100%;
+        border-radius: 26%;
+        object-fit: contain;
+        filter: drop-shadow(0 18px 44px rgba(124, 58, 237, 0.65));
       }
 
       .lede { position: relative; }
@@ -186,7 +205,8 @@
       .stage {
         position: relative;
         width: 100%;
-        height: 420px;
+        flex: 1;
+        min-height: 0;
       }
       .halo {
         position: absolute;
@@ -359,11 +379,6 @@
         <div class="chip"><img src="../public/images/competitors/openclaw.png" alt="" /></div>
         <span class="plus">+</span>
         <div class="chip"><img src="../public/images/competitors/github.png" alt="" /></div>
-        <span class="equals">equals</span>
-        <span class="ade-pill">
-          <img src="../public/images/ade-dock-icon.png" alt="" />
-          <span>ADE</span>
-        </span>
       </div>
 
       <!-- Body -->
@@ -389,23 +404,32 @@
           </p>
         </div>
 
-        <div class="stage">
-          <div class="halo"></div>
-          <div class="mac">
-            <div class="mac-screen">
-              <div class="traffic">
-                <span class="red"></span>
-                <span class="yellow"></span>
-                <span class="green"></span>
-              </div>
-              <img src="../public/images/screenshots/lanes.png" alt="ADE on macOS" />
+        <div class="right-col">
+          <div class="equals-block">
+            <span class="equals">equals</span>
+            <div class="ade-icon">
+              <img src="../public/images/ade-dock-icon.png" alt="ADE" />
             </div>
-            <div class="mac-base"></div>
           </div>
-          <div class="phone">
-            <div class="phone-body">
-              <div class="notch"></div>
-              <img src="../public/images/screenshots/agent-chat.png" alt="ADE on iOS" />
+
+          <div class="stage">
+            <div class="halo"></div>
+            <div class="mac">
+              <div class="mac-screen">
+                <div class="traffic">
+                  <span class="red"></span>
+                  <span class="yellow"></span>
+                  <span class="green"></span>
+                </div>
+                <img src="../public/images/screenshots/lanes.png" alt="ADE on macOS" />
+              </div>
+              <div class="mac-base"></div>
+            </div>
+            <div class="phone">
+              <div class="phone-body">
+                <div class="notch"></div>
+                <img src="../public/images/screenshots/agent-chat.png" alt="ADE on iOS" />
+              </div>
             </div>
           </div>
         </div>
