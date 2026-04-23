@@ -208,6 +208,76 @@ describe("checkWorkerSandbox", () => {
     expect(result.reason).toContain("protected file pattern");
   });
 
+  it("blocks PowerShell writes to protected files", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-Content -Path .env -Value secret"',
+      sandboxWith({ protectedFiles: ["\\.env"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("protected file pattern");
+  });
+
+  it("blocks PowerShell writes outside the sandbox root", () => {
+    const result = checkWorkerSandbox(
+      'pwsh -Command "Add-Content ..\\outside.txt secret"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Path outside sandbox");
+  });
+
+  it("blocks PowerShell registry provider mutations", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Set-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar -Value 1"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("non-filesystem provider path");
+  });
+
+  it("blocks PowerShell mutations that use non-literal path arguments", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "$path = \'.env\'; Set-Content -Path $path -Value secret"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("non-literal path argument");
+  });
+
+  it("blocks opaque PowerShell encoded commands", () => {
+    const result = checkWorkerSandbox(
+      "powershell.exe -EncodedCommand not-base64!!!",
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("EncodedCommand payload is not inspectable");
+  });
+
+  it("blocks PowerShell encoded writes to protected files", () => {
+    const encoded = Buffer.from("Set-Content -Path .env -Value secret", "utf16le").toString("base64");
+    const result = checkWorkerSandbox(
+      `powershell.exe -EncodedCommand ${encoded}`,
+      sandboxWith({ protectedFiles: ["\\.env"] }),
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("protected file pattern");
+  });
+
+  it("allows read-only PowerShell file reads inside the sandbox", () => {
+    const result = checkWorkerSandbox(
+      'powershell.exe -Command "Get-Content .\\README.md"',
+      DEFAULT_WORKER_SANDBOX_CONFIG,
+      "C:\\projects\\repo",
+    );
+    expect(result.allowed).toBe(true);
+  });
+
   it("allows git.exe read-only subcommands like Unix git", () => {
     const result = checkWorkerSandbox(
       "git.exe status",
@@ -844,6 +914,26 @@ describe("createUniversalToolSet", () => {
 
     const result = await (tools.bash as any).execute({
       command: "rm -rf ./some-dir",
+      timeout: 5_000,
+    });
+
+    expect(result.exitCode).toBe(126);
+    expect(result.stderr).toContain("EXECUTION DENIED");
+  });
+
+  it("blocks mutating PowerShell commands on required turns", async () => {
+    const cwd = makeTmpDir("ade-tools-memory-guard-powershell-");
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "full-auto",
+      turnMemoryPolicyState: {
+        classification: "required",
+        orientationSatisfied: false,
+        explicitSearchPerformed: false,
+      },
+    });
+
+    const result = await (tools.bash as any).execute({
+      command: 'powershell.exe -Command "Set-Content -Path .\\blocked.txt -Value hi"',
       timeout: 5_000,
     });
 

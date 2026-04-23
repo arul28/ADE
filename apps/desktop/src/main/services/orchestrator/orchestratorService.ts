@@ -71,8 +71,13 @@ import { evaluateRunCompletion, evaluateRunCompletionFromPhases, validateRunComp
 import {
   createProviderOrchestratorAdapter,
   cleanupWorkerRuntimeFiles,
+  nodeWorkerLaunch,
+  writeWorkerLaunchFile,
+  writeWorkerPromptFile,
 } from "./providerOrchestratorAdapter";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { runGit } from "../git/git";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPtyService } from "../pty/ptyService";
@@ -90,7 +95,7 @@ import type { ProceduralLearningService } from "../memory/proceduralLearningServ
 import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
 import { getMissionStateDocumentPath } from "./missionStateDoc";
-import { buildFullPrompt, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
+import { buildFullPrompt, shellEscapeArg } from "./baseOrchestratorAdapter";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { classifyWorkerExecutionPath, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import {
@@ -4000,9 +4005,46 @@ export function createOrchestratorService({
               commandPreviewParts.push("--permission-mode", shellEscapeArg(claudePermissionMode));
             }
           }
-          commandArgs.push(prompt);
-          commandPreviewParts.push(shellInlineDecodedArg(prompt));
-          const startupCommand = commandPreviewParts.join(" ");
+          const promptFilePath = writeWorkerPromptFile({
+            projectRoot,
+            attemptId: args.attempt.id,
+            prompt,
+          });
+
+          let launchCommand;
+          if (cliCommand === "codex") {
+            const resolvedCodex = resolveCodexExecutable();
+            commandArgs.push("exec", "-");
+            commandPreviewParts.push("exec", "-");
+            const startupCommand = `exec ${commandPreviewParts.join(" ")} < ${shellEscapeArg(promptFilePath)}`;
+            const launchFilePath = writeWorkerLaunchFile({
+              projectRoot,
+              attemptId: args.attempt.id,
+              command: resolvedCodex.path,
+              commandArgs,
+              promptFilePath,
+            });
+            launchCommand = nodeWorkerLaunch({
+              startupCommand,
+              launchFilePath,
+            });
+          } else {
+            const resolvedClaude = resolveClaudeCodeExecutable();
+            commandArgs.push("-p");
+            commandPreviewParts.push("-p");
+            const startupCommand = `exec ${commandPreviewParts.join(" ")} < ${shellEscapeArg(promptFilePath)}`;
+            const launchFilePath = writeWorkerLaunchFile({
+              projectRoot,
+              attemptId: args.attempt.id,
+              command: resolvedClaude.path,
+              commandArgs,
+              promptFilePath,
+            });
+            launchCommand = nodeWorkerLaunch({
+              startupCommand,
+              launchFilePath,
+            });
+          }
 
           const session = await args.createTrackedSession({
             laneId: args.step.laneId,
@@ -4010,9 +4052,10 @@ export function createOrchestratorService({
             rows: 36,
             title,
             toolType: `${kind}-orchestrated` as TerminalToolType,
-            command: cliCommand,
-            args: commandArgs,
-            startupCommand
+            command: launchCommand.command,
+            args: launchCommand.args,
+            env: launchCommand.env,
+            startupCommand: launchCommand.startupCommand,
           });
           return {
             status: "accepted",
@@ -4023,7 +4066,7 @@ export function createOrchestratorService({
               contextFilePath,
               contextDigest: sha256(JSON.stringify(contextManifest)),
               planMode: readOnlyExecution,
-              startupCommandPreview: startupCommand.slice(0, 320),
+              startupCommandPreview: launchCommand.startupCommand.slice(0, 320),
               localFirst: true
             }
           };

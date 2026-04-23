@@ -34,6 +34,7 @@ function requireFile(filePath, label) {
 }
 
 module.exports = async function afterPack(context) {
+  const platform = context?.electronPlatformName;
   const { runtimeRoot, appBundlePath } = resolveUnpackedRuntimeRoot(context);
   if (!fs.existsSync(runtimeRoot)) {
     throw new Error(`[afterPack] Missing unpacked runtime payload: ${runtimeRoot}`);
@@ -43,25 +44,34 @@ module.exports = async function afterPack(context) {
   const bundledCliPath = path.join(resourcesRoot, "ade-cli", "cli.cjs");
   requireFile(bundledCliPath, "bundled ADE CLI entry");
 
-  const bundledCliBinPath = path.join(resourcesRoot, "ade-cli", "bin", "ade");
-  const bundledCliInstallerPath = path.join(resourcesRoot, "ade-cli", "install-path.sh");
-  requireFile(bundledCliBinPath, "bundled ADE CLI wrapper");
-  requireFile(bundledCliInstallerPath, "bundled ADE CLI PATH installer");
-  requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
-  requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
-  fs.chmodSync(bundledCliBinPath, 0o755);
-  fs.chmodSync(bundledCliInstallerPath, 0o755);
+  if (platform === "darwin") {
+    const bundledCliBinPath = path.join(resourcesRoot, "ade-cli", "bin", "ade");
+    const bundledCliInstallerPath = path.join(resourcesRoot, "ade-cli", "install-path.sh");
+    requireFile(bundledCliBinPath, "bundled ADE CLI wrapper");
+    requireFile(bundledCliInstallerPath, "bundled ADE CLI PATH installer");
+    fs.chmodSync(bundledCliBinPath, 0o755);
+    fs.chmodSync(bundledCliInstallerPath, 0o755);
+  } else if (platform === "win32") {
+    requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
+    requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
+  } else {
+    requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade"), "bundled ADE CLI wrapper");
+    requireFile(path.join(resourcesRoot, "ade-cli", "install-path.sh"), "bundled ADE CLI PATH installer");
+    requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
+    requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
+  }
 
   const normalized = normalizeDesktopRuntimeBinaries(runtimeRoot);
   for (const entry of normalized) {
     console.log(`[afterPack] Restored executable mode: ${entry.label} -> ${path.relative(runtimeRoot, entry.filePath)}`);
   }
 
-  const requiredScripts = [
-    path.join(runtimeRoot, "dist", "main", "packagedRuntimeSmoke.cjs"),
-    path.join(runtimeRoot, "vendor", "crsqlite", "darwin-arm64", "crsqlite.dylib"),
-    path.join(runtimeRoot, "vendor", "crsqlite", "win32-x64", "crsqlite.dll"),
-  ];
+  const requiredScripts = [path.join(runtimeRoot, "dist", "main", "packagedRuntimeSmoke.cjs")];
+  if (platform === "darwin") {
+    requiredScripts.push(path.join(runtimeRoot, "vendor", "crsqlite", "darwin-arm64", "crsqlite.dylib"));
+  } else if (platform === "win32") {
+    requiredScripts.push(path.join(runtimeRoot, "vendor", "crsqlite", "win32-x64", "crsqlite.dll"));
+  }
 
   for (const scriptPath of requiredScripts) {
     if (!fs.existsSync(scriptPath)) {

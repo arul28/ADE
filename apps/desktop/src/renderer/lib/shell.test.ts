@@ -33,9 +33,25 @@ describe("shell helpers", () => {
 
   it("round-trips Windows cmd and PowerShell commands", () => {
     const cmd = ["cmd.exe", "/c", "npm run test"];
-    const powershell = ["powershell.exe", "-NoProfile", "-Command", "Write-Output \"ok\""];
+    const powershell = ["powershell.exe", "-NoProfile", "-Command", 'Write-Output "ok"'];
 
     expect(parseCommandLine(commandArrayToLine(cmd, { platform: "win32" }), { platform: "win32" })).toEqual(cmd);
     expect(parseCommandLine(commandArrayToLine(powershell, { platform: "win32" }), { platform: "win32" })).toEqual(powershell);
+  });
+
+  it("round-trips Windows arguments that end with a backslash", () => {
+    const argv = ["node.exe", "C:\\repo path\\nested\\"];
+    const line = commandArrayToLine(argv, { platform: "win32" });
+
+    expect(line).toBe('node.exe "C:\\repo path\\nested\\"');
+    expect(parseCommandLine(line, { platform: "win32" })).toEqual(argv);
+  });
+
+  it("parses Windows doubled quotes without treating backslashes as escapes", () => {
+    expect(parseCommandLine('"ab""c" "C:\\repo path\\" d', { platform: "win32" })).toEqual([
+      'ab"c',
+      "C:\\repo path\\",
+      "d",
+    ]);
   });
 });

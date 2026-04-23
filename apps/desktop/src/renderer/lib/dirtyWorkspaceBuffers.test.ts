@@ -21,6 +21,21 @@ describe("dirtyWorkspaceBuffers", () => {
     expect(getDirtyFileTextForWindow("C:\\Repo\\src\\App.tsx")).toBeUndefined();
   });
 
+  it("normalizes dot segments before matching Windows dirty buffers", () => {
+    replaceDirtyBuffersForWorkspace("C:\\Repo", [
+      {
+        path: ".\\src\\nested\\..\\App.tsx",
+        content: "dirty",
+        savedContent: "saved",
+      },
+    ]);
+
+    expect(getDirtyFileTextForWindow("C:/Repo/src/App.tsx")).toBe("dirty");
+    expect(getDirtyFileTextForWindow("C:/Repo/src/./App.tsx")).toBe("dirty");
+    clearDirtyBuffersForWorkspace("C:/Repo/.");
+    expect(getDirtyFileTextForWindow("C:/Repo/src/App.tsx")).toBeUndefined();
+  });
+
   it("keeps clean buffers out of the dirty map", () => {
     replaceDirtyBuffersForWorkspace("/repo", [
       {

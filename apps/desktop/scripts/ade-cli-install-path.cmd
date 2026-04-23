@@ -24,7 +24,8 @@ if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%" >nul 2>nul
 
 (
   echo @echo off
-  echo "%ADE_BIN%" %%*
+  echo call "%ADE_BIN%" %%*
+  echo exit /b %%ERRORLEVEL%%
 ) > "%TARGET_PATH%"
 
 if errorlevel 1 (

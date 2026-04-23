@@ -340,10 +340,13 @@ async function createWindow(args: {
 } = {}): Promise<BrowserWindow> {
   // Load the app icon from the build directory.
   const iconDir = path.join(__dirname, "../../build");
+  const icoPath = path.join(iconDir, "icon.ico");
   const pngPath = path.join(iconDir, "icon.png");
   const icnsPath = path.join(iconDir, "icon.icns");
   let icon: Electron.NativeImage;
-  if (fs.existsSync(pngPath)) {
+  if (process.platform === "win32" && fs.existsSync(icoPath)) {
+    icon = nativeImage.createFromPath(icoPath);
+  } else if (fs.existsSync(pngPath)) {
     icon = nativeImage.createFromPath(pngPath);
   } else if (fs.existsSync(icnsPath)) {
     icon = nativeImage.createFromPath(icnsPath);

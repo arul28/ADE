@@ -67,6 +67,11 @@ import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
+type WorkspacePathLocation = {
+  path: string;
+  startLine?: number;
+  startColumn?: number;
+};
 
 function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSuggestion | null {
   const record = readRecord(value);
@@ -410,48 +415,91 @@ function isExternalHref(href: string): boolean {
   return /^(?:[a-z]+:)?\/\//i.test(trimmed) || /^mailto:/i.test(trimmed) || /^tel:/i.test(trimmed);
 }
 
-function normalizeWorkspacePathCandidate(value: string): string | null {
+function readWorkspacePathFragmentPosition(fragment: string): Pick<WorkspacePathLocation, "startLine" | "startColumn"> {
+  const trimmed = fragment.trim();
+  if (!trimmed.length) return {};
+
+  const lineMatch = trimmed.match(/^L(\d+)(?:C(\d+))?(?:-L?\d+)?$/i);
+  if (lineMatch) {
+    const [, startLineRaw, startColumnRaw] = lineMatch;
+    return {
+      startLine: Number(startLineRaw),
+      startColumn: startColumnRaw ? Number(startColumnRaw) : undefined,
+    };
+  }
+
+  const explicitMatch = trimmed.match(/^line=(\d+)(?:,(\d+))?$/i);
+  if (!explicitMatch) return {};
+  const [, startLineRaw, startColumnRaw] = explicitMatch;
+  return {
+    startLine: Number(startLineRaw),
+    startColumn: startColumnRaw ? Number(startColumnRaw) : undefined,
+  };
+}
+
+function splitWorkspacePathLineSuffix(path: string): WorkspacePathLocation {
+  const match = path.match(/^(.*?)(?::(\d+))(?::(\d+))?$/);
+  if (!match) return { path };
+
+  const [, candidatePath, startLineRaw, startColumnRaw] = match;
+  if (!candidatePath.length) return { path };
+  return {
+    path: candidatePath,
+    startLine: Number(startLineRaw),
+    startColumn: startColumnRaw ? Number(startColumnRaw) : undefined,
+  };
+}
+
+function parseWorkspacePathLocation(value: string): WorkspacePathLocation | null {
   const trimmed = value.trim();
   if (!trimmed.length) return null;
   if (/^(?:https?|mailto|tel):/i.test(trimmed)) return null;
   if (/^#/.test(trimmed)) return null;
+
   const withoutScheme = trimmed.replace(/^file:\/\//i, "");
-  const rawPath = withoutScheme.split(/[?#]/, 1)[0]?.trim() ?? "";
+  const [withoutFragment, rawFragment = ""] = withoutScheme.split("#", 2);
+  const rawPath = withoutFragment.split("?", 1)[0]?.trim() ?? "";
   let decodedPath = rawPath;
   try {
     decodedPath = decodeURIComponent(rawPath);
   } catch {
     // Keep the raw path when markdown produced a partially-encoded href.
   }
-  const withoutQuery = decodedPath.replace(/\\/g, "/");
-  if (!withoutQuery.length) return null;
-  // Normalize Windows drive-letter paths: /C:/... → C:/...
-  if (/^\/[A-Za-z]:\//.test(withoutQuery)) return withoutQuery.slice(1);
-  return withoutQuery;
+
+  const slashNormalized = decodedPath.replace(/\\/g, "/");
+  if (!slashNormalized.length) return null;
+
+  const normalizedDrivePath = /^\/[A-Za-z]:\//.test(slashNormalized) ? slashNormalized.slice(1) : slashNormalized;
+  const fromSuffix = splitWorkspacePathLineSuffix(normalizedDrivePath);
+  const fromFragment = readWorkspacePathFragmentPosition(rawFragment);
+  const normalizedPath = normalizePath(fromSuffix.path);
+  if (!normalizedPath.length) return null;
+
+  return {
+    path: normalizedPath,
+    startLine: fromFragment.startLine ?? fromSuffix.startLine,
+    startColumn: fromFragment.startColumn ?? fromSuffix.startColumn,
+  };
 }
 
 function looksLikeWorkspacePath(value: string): boolean {
-  const candidate = normalizeWorkspacePathCandidate(value);
+  const candidate = parseWorkspacePathLocation(value);
   if (!candidate) return false;
-  if (candidate.startsWith("./")) {
-    return true;
-  }
-  // Reject directory-traversal and home-relative paths
-  if (candidate.startsWith("../") || candidate.startsWith("~/")) {
+  if (candidate.path === ".." || candidate.path.startsWith("../") || candidate.path.startsWith("~/")) {
     return false;
   }
-  if (candidate.startsWith("/")) {
-    return candidate.slice(1).includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate);
+  if (candidate.path.startsWith("/")) {
+    return candidate.path.slice(1).includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate.path);
   }
-  return candidate.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate);
+  return candidate.path.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate.path);
 }
 
-function resolveWorkspacePathFromHref(href: string | undefined): string | null {
+function resolveWorkspacePathFromHref(href: string | undefined): WorkspacePathLocation | null {
   if (!href) return null;
   if (isExternalHref(href)) return null;
-  const candidate = normalizeWorkspacePathCandidate(href);
+  const candidate = parseWorkspacePathLocation(href);
   if (!candidate) return null;
-  return looksLikeWorkspacePath(candidate) ? candidate : null;
+  return looksLikeWorkspacePath(href) ? candidate : null;
 }
 
 function chatMarkdownUrlTransform(value: string): string {
@@ -513,21 +561,21 @@ function InlineDisclosureRow({
 }
 
 function resolveFilesNavigationTarget(args: {
-  path: string;
+  path: string | WorkspacePathLocation;
   workspaces: FilesWorkspace[];
   fallbackLaneId: string | null;
-}): { openFilePath: string; laneId: string | null } | null {
-  const candidate = normalizeWorkspacePathCandidate(args.path);
+}): { openFilePath: string; laneId: string | null; startLine?: number; startColumn?: number } | null {
+  const candidate = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
   if (!candidate) return null;
 
-  const normalizedCandidate = normalizePath(candidate);
+  const normalizedCandidate = normalizePath(candidate.path);
   if (normalizedCandidate.startsWith("/") || isWindowsAbsolutePath(normalizedCandidate)) {
     const matches = args.workspaces
       .map((workspace) => ({
         workspace,
         rootPath: normalizePath(workspace.rootPath),
       }))
-      .filter(({ workspace }) => isPathEqualOrDescendant(normalizedCandidate, workspace.rootPath))
+      .filter(({ rootPath }) => isPathEqualOrDescendant(normalizedCandidate, rootPath))
       .sort((left, right) => {
         const rightMatchesLane = right.workspace.laneId != null && right.workspace.laneId === args.fallbackLaneId ? 1 : 0;
         const leftMatchesLane = left.workspace.laneId != null && left.workspace.laneId === args.fallbackLaneId ? 1 : 0;
@@ -542,6 +590,8 @@ function resolveFilesNavigationTarget(args: {
     return {
       openFilePath,
       laneId: match.workspace.laneId ?? args.fallbackLaneId ?? null,
+      startLine: candidate.startLine,
+      startColumn: candidate.startColumn,
     };
   }
 
@@ -550,6 +600,8 @@ function resolveFilesNavigationTarget(args: {
   return {
     openFilePath,
     laneId: args.fallbackLaneId ?? null,
+    startLine: candidate.startLine,
+    startColumn: candidate.startColumn,
   };
 }
 
@@ -561,10 +613,10 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   workspaceLaneId,
 }: {
   markdown: string;
-  onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
+  onOpenWorkspacePath?: (path: string | WorkspacePathLocation, laneId?: string | null) => void;
   workspaceLaneId?: string | null;
 }) {
-  const openWorkspacePath = useCallback((path: string) => {
+  const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
     onOpenWorkspacePath?.(path, workspaceLaneId ?? null);
   }, [onOpenWorkspacePath, workspaceLaneId]);
 
@@ -611,8 +663,8 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
           code: ({ className, children }) => {
             const text = String(children ?? "");
             const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
-            const workspacePath = !isBlock ? normalizeWorkspacePathCandidate(text) : null;
-            const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(workspacePath));
+            const workspacePath = !isBlock ? parseWorkspacePathLocation(text) : null;
+            const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(text));
             return isBlock ? (
               <code className="font-mono text-[11px] text-fg/82">{children}</code>
             ) : pathIsClickable ? (
@@ -1390,7 +1442,7 @@ function renderEvent(
     assistantLabel?: string;
     turnActive?: boolean;
     sessionEnded?: boolean;
-    onOpenWorkspacePath?: (path: string) => void;
+    onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
     respondingApprovalIds?: Set<string>;
     pendingApprovalIds?: Set<string>;
     resolvedInputStates?: Map<string, PendingInputResolution>;
@@ -2755,7 +2807,7 @@ type EventRowProps = {
   turnActive?: boolean;
   sessionEnded?: boolean;
   isLatestWorkLog?: boolean;
-  onOpenWorkspacePath?: (path: string) => void;
+  onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
@@ -3068,15 +3120,15 @@ export function AgentChatMessageList({
     };
   }, []);
 
-  const openWorkspacePath = useCallback(async (path: string) => {
+  const openWorkspacePath = useCallback(async (path: string | WorkspacePathLocation) => {
     let resolvedWorkspaces = filesWorkspaces;
     let target = resolveFilesNavigationTarget({
       path,
       workspaces: resolvedWorkspaces,
       fallbackLaneId: currentLaneId,
     });
-    const workspaceCandidate = normalizeWorkspacePathCandidate(path);
-    if (!target && workspaceCandidate && (workspaceCandidate.startsWith("/") || isWindowsAbsolutePath(workspaceCandidate))) {
+    const workspaceCandidate = typeof path === "string" ? parseWorkspacePathLocation(path) : path;
+    if (!target && workspaceCandidate && (workspaceCandidate.path.startsWith("/") || isWindowsAbsolutePath(workspaceCandidate.path))) {
       const listWorkspaces = window.ade?.files?.listWorkspaces;
       if (typeof listWorkspaces === "function") {
         try {
@@ -3093,9 +3145,12 @@ export function AgentChatMessageList({
       }
     }
     if (!target) return;
-    const state = target.laneId
-      ? { openFilePath: target.openFilePath, laneId: target.laneId }
-      : { openFilePath: target.openFilePath };
+    const state = {
+      openFilePath: target.openFilePath,
+      ...(target.laneId ? { laneId: target.laneId } : {}),
+      ...(typeof target.startLine === "number" ? { startLine: target.startLine } : {}),
+      ...(typeof target.startColumn === "number" ? { startColumn: target.startColumn } : {}),
+    };
     navigate("/files", { state });
     onOpenWorkspacePath?.(target.openFilePath, target.laneId);
   }, [currentLaneId, filesWorkspaces, navigate, onOpenWorkspacePath]);

@@ -1936,13 +1936,13 @@ export function registerIpc({
     IPC.appOpenPathInEditor,
     async (
       _event,
-      arg: { rootPath: string; relativePath?: string; target: "finder" | "vscode" | "cursor" | "zed" }
+      arg: { rootPath: string; relativePath?: string; target: "default" | "finder" | "vscode" | "cursor" | "zed" }
     ): Promise<void> => {
       const rootRaw = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       const relRaw = typeof arg?.relativePath === "string" ? arg.relativePath.trim() : "";
       const target = arg?.target;
       if (!rootRaw) throw new Error("Missing root path.");
-      if (target !== "finder" && target !== "vscode" && target !== "cursor" && target !== "zed") {
+      if (target !== "default" && target !== "finder" && target !== "vscode" && target !== "cursor" && target !== "zed") {
         throw new Error("Unsupported editor target.");
       }
       const rootPath = path.resolve(rootRaw);
@@ -1972,6 +1972,14 @@ export function registerIpc({
           throw new Error("relativePath escapes rootPath.");
         }
         throw resolveError;
+      }
+
+      if (target === "default") {
+        const errorMessage = await shell.openPath(targetPath);
+        if (errorMessage) {
+          throw new Error(`Failed to open path: ${errorMessage}`);
+        }
+        return;
       }
 
       if (target === "finder") {
