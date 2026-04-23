@@ -3718,23 +3718,26 @@ export function createAgentChatService(args: {
     return [];
   };
 
+  const envelopeDedupKey = (entry: AgentChatEventEnvelope): string => {
+    // Cross-run-safe key: two envelopes are true duplicates iff timestamp,
+    // type, AND payload all match. Sequence numbers can't be trusted (they
+    // restart per run), and Claude streaming emits multiple text/reasoning
+    // fragments within the same millisecond + type — timestamp+type alone
+    // would wrongly collapse those into one. JSON.stringify is fine at our
+    // scale (≤2000 events, events typically <1KB).
+    return `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
+  };
+
   const mergeEnvelopeStreams = (
     base: AgentChatEventEnvelope[],
     tail: AgentChatEventEnvelope[],
   ): AgentChatEventEnvelope[] => {
     if (!base.length) return tail.slice();
     if (!tail.length) return base.slice();
-    // Don't dedup by sequence: `eventSequence` restarts at 0 every time a
-    // managed session is rebuilt (process restart, project switch), so the
-    // same ordinals legitimately appear in the persisted transcript (from
-    // a prior run) and in the in-memory buffer (from the current run) for
-    // totally different events. Use timestamp+type — writeTranscript and
-    // recordChatEventInHistory emit from the same envelope so true
-    // duplicates match exactly.
-    const baseKeys = new Set(base.map((entry) => `${entry.timestamp}#${entry.event.type}`));
+    const baseKeys = new Set(base.map(envelopeDedupKey));
     const merged = base.slice();
     for (const entry of tail) {
-      if (baseKeys.has(`${entry.timestamp}#${entry.event.type}`)) continue;
+      if (baseKeys.has(envelopeDedupKey(entry))) continue;
       merged.push(entry);
     }
     merged.sort((left, right) => {

@@ -4535,6 +4535,43 @@ describe("createAgentChatService", () => {
       )).toEqual(["persisted-1", "persisted-2"]);
     });
 
+    it("keeps Claude streaming fragments that share a timestamp when hydrating", async () => {
+      // Claude V2 emits multiple text deltas inside tight streaming loops,
+      // so two legitimate envelopes with type:"text" can land on the same
+      // millisecond. A naive timestamp+type dedup key would collapse these;
+      // the cross-run-safe dedup must keep distinct payloads separate.
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const sharedTimestamp = new Date().toISOString();
+      const envelope1: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: sharedTimestamp,
+        event: { type: "text", text: "fragment-a" },
+        sequence: 1,
+      };
+      const envelope2: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: sharedTimestamp,
+        event: { type: "text", text: "fragment-b" },
+        sequence: 2,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope1)}\n${JSON.stringify(envelope2)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope1, envelope2]);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.events).toHaveLength(2);
+      expect(history.events.map((e) => e.event.type === "text" ? e.event.text : "")).toEqual([
+        "fragment-a",
+        "fragment-b",
+      ]);
+    });
+
     it("drops history when the underlying session is deleted", async () => {
       // We don't rely on sendMessage emitting events (mock streams vary across
       // providers), so we seed the transcript directly to verify the cleanup
