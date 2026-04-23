@@ -15,7 +15,25 @@ function isWindowsPlatform(platform: ShellPlatform = currentShellPlatform()): bo
 function quoteWindowsArg(arg: string): string {
   if (!arg.length) return '""';
   if (!/[\s"]/.test(arg)) return arg;
-  return `"${arg.replace(/"/g, "\"\"")}"`;
+  let quoted = "\"";
+  let backslashes = 0;
+  for (const char of arg) {
+    if (char === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (char === "\"") {
+      quoted += "\\".repeat(backslashes * 2);
+      quoted += "\"\"";
+    } else {
+      quoted += "\\".repeat(backslashes);
+      quoted += char;
+    }
+    backslashes = 0;
+  }
+  quoted += "\\".repeat(backslashes * 2);
+  quoted += "\"";
+  return quoted;
 }
 
 /** Quote a single shell argument, adding double quotes if needed. */
@@ -106,6 +124,31 @@ function parseWindowsCommandLine(input: string): string[] {
 
   for (let i = 0; i < input.length; i += 1) {
     const ch = input[i]!;
+
+    if (ch === "\\") {
+      let end = i;
+      while (input[end] === "\\") end += 1;
+      const count = end - i;
+      if (input[end] === '"') {
+        current += "\\".repeat(Math.floor(count / 2));
+        if (count % 2 === 0) {
+          if (inQuotes && input[end + 1] === '"') {
+            current += '"';
+            i = end + 1;
+          } else {
+            inQuotes = !inQuotes;
+            i = end;
+          }
+        } else {
+          current += '"';
+          i = end;
+        }
+      } else {
+        current += "\\".repeat(count);
+        i = end - 1;
+      }
+      continue;
+    }
 
     if (ch === '"') {
       if (inQuotes && input[i + 1] === '"') {

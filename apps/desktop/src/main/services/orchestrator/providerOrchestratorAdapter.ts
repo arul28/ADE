@@ -132,6 +132,7 @@ child.on("exit", (code, signal) => {
   finish(code == null ? 0 : code);
 });
 if (spec.stdinFilePath && child.stdin) {
+  child.stdin.on("error", () => {});
   const stream = fs.createReadStream(spec.stdinFilePath);
   stream.on("error", (err) => {
     console.error("[ADE] Failed to read worker prompt: " + (err && err.message ? err.message : String(err)));

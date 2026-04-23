@@ -43,12 +43,20 @@ describe("shell helpers", () => {
     const argv = ["node.exe", "C:\\repo path\\nested\\"];
     const line = commandArrayToLine(argv, { platform: "win32" });
 
-    expect(line).toBe('node.exe "C:\\repo path\\nested\\"');
+    expect(line).toBe('node.exe "C:\\repo path\\nested\\\\"');
+    expect(parseCommandLine(line, { platform: "win32" })).toEqual(argv);
+  });
+
+  it("round-trips Windows arguments with backslashes before quotes", () => {
+    const argv = ["node.exe", 'C:\\repo path\\"quoted"'];
+    const line = commandArrayToLine(argv, { platform: "win32" });
+
+    expect(line).toBe('node.exe "C:\\repo path\\\\\"\"quoted\"\""');
     expect(parseCommandLine(line, { platform: "win32" })).toEqual(argv);
   });
 
   it("parses Windows doubled quotes without treating backslashes as escapes", () => {
-    expect(parseCommandLine('"ab""c" "C:\\repo path\\" d', { platform: "win32" })).toEqual([
+    expect(parseCommandLine('"ab""c" "C:\\repo path\\\\" d', { platform: "win32" })).toEqual([
       'ab"c',
       "C:\\repo path\\",
       "d",
