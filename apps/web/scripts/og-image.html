@@ -48,8 +48,8 @@
         height: 630px;
         padding: 56px 72px;
         display: grid;
-        grid-template-columns: 1.05fr 1fr;
-        gap: 48px;
+        grid-template-columns: 0.85fr 1.15fr;
+        gap: 40px;
         align-items: center;
       }
 
@@ -111,7 +111,7 @@
       h1.headline {
         font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
         font-weight: 400;
-        font-size: 104px;
+        font-size: 92px;
         line-height: 1.02;
         letter-spacing: -0.02em;
         margin: 0;
@@ -137,32 +137,35 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 28px;
+        gap: 36px;
       }
 
       .row {
         display: flex;
-        flex-wrap: wrap;
-        align-items: center;
+        flex-wrap: nowrap;
+        align-items: flex-start;
         justify-content: center;
-        gap: 8px;
-        max-width: 520px;
+        gap: 10px;
       }
 
       .chip {
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 5px;
+        gap: 7px;
         flex-shrink: 0;
+        width: 66px;
+      }
+      .chip .label {
+        white-space: nowrap;
       }
       .chip .logo {
-        width: 46px;
-        height: 46px;
-        border-radius: 11px;
+        width: 66px;
+        height: 66px;
+        border-radius: 15px;
         border: 1px solid var(--color-hairline-strong);
         background: rgba(255, 255, 255, 0.045);
-        padding: 5px;
+        padding: 7px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -174,7 +177,7 @@
         object-fit: contain;
       }
       .chip .label {
-        font-size: 10px;
+        font-size: 12px;
         text-transform: uppercase;
         letter-spacing: 0.08em;
         color: var(--color-cream-muted);
@@ -182,38 +185,38 @@
 
       .plus {
         font-family: "Instrument Serif", Georgia, serif;
-        font-size: 22px;
+        font-size: 30px;
         color: var(--color-cream-faint);
         flex-shrink: 0;
         align-self: flex-start;
-        margin-top: 12px;
+        margin-top: 16px;
       }
 
       .equals-row {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 24px;
-        margin-top: 6px;
+        gap: 32px;
+        margin-top: 10px;
       }
       .equals {
         font-family: "Instrument Serif", Georgia, serif;
         font-style: italic;
-        font-size: 46px;
+        font-size: 64px;
         color: var(--color-violet-bright);
       }
       .ade-icon {
         position: relative;
-        width: 120px;
-        height: 120px;
+        width: 170px;
+        height: 170px;
       }
       .ade-icon::before {
         content: "";
         position: absolute;
-        inset: -22px;
+        inset: -30px;
         border-radius: 30%;
-        background: radial-gradient(circle, rgba(124, 58, 237, 0.55), transparent 65%);
-        filter: blur(14px);
+        background: radial-gradient(circle, rgba(124, 58, 237, 0.6), transparent 65%);
+        filter: blur(18px);
         z-index: 0;
       }
       .ade-icon img {
@@ -223,7 +226,7 @@
         height: 100%;
         border-radius: 26%;
         object-fit: contain;
-        filter: drop-shadow(0 18px 48px rgba(124, 58, 237, 0.6));
+        filter: drop-shadow(0 22px 56px rgba(124, 58, 237, 0.65));
       }
 
       /* ---------------- Footer mark ---------------- */
