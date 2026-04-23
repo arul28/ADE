@@ -18,7 +18,7 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 - **Bounded.** Hard cap: 5 iterations. Exit earlier if clean or blocked. At the cap, do not auto-merge; leave a handoff comment that explains why the loop stopped and what remains, if anything.
 - **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2.
 - **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
-- **Token-idle waits.** Waiting is done by scheduler/resume, not by live polling loops. Between wake-ups, agents should be asleep, not consuming model context or tokens.
+- **Token-idle waits.** Waiting is done by the agent's native scheduler/resume primitive, or by a shell `sleep` followed by one-shot checks. Between wake-ups, agents should be asleep, not consuming model context or tokens.
 - **Idempotent resume.** All state lives in `.ade/shipLane/<branch>.json`. A re-invocation reads that file and picks up where it left off.
 
 ## Concurrency model
@@ -149,6 +149,14 @@ Then schedule the first wake-up (see Phase 5).
 Runs on every wake-up. Delegate to a **poll-agent** so the lead's context stays clean. The poll-agent runs these calls and returns a single structured summary.
 
 This is a one-shot poll. Do not use `gh pr checks --watch`, shell `while` loops, repeated sleeps, or minute-by-minute status checks. If CI/review is still pending, return `ciRunning: true` or no actionable comments, then let Phase 5 schedule the next wake.
+
+When a CLI has no native scheduler but can run shell commands, the best fallback is one shell sleep followed by one bounded check. For example:
+
+```bash
+sleep 720 && gh pr checks 185 && gh run list --branch ade/cli-prs-fixes-747d7096 --limit 5
+```
+
+The shell can sleep without spending model tokens. The agent resumes reasoning only when that command returns.
 
 ### 1.1 PR and CI state
 
@@ -404,14 +412,14 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ### 5.3 Self-pace the next wake
 
-Agent-CLI-agnostic guidance (Claude Code maps this to `ScheduleWakeup`; other CLIs map it to their equivalent sleep/resume):
+Agent-CLI-agnostic guidance (Claude Code maps this to `ScheduleWakeup`; Codex in a terminal should usually use shell `sleep ... && <one-shot checks>`; other CLIs map it to their native sleep/resume):
 
 - Just pushed, CI hasn't started yet → **270 seconds** (stay in prompt cache)
 - CI running → **720 seconds** (12 min — the user's spec)
 - CI done, waiting on human review → **1800 seconds** (30 min; cost-efficient)
 - Unknown → **720 seconds** default
 
-The cadence is a hint, not a live polling budget. Prefer longer sleeps over frequent checks. If the environment has a real scheduler/resume primitive, use it and end the active turn. If no scheduler exists, write the updated state file and stop with a summary that names the next intended wake time; an external runner or human can re-invoke the playbook later. Do not emulate scheduling with an active model loop.
+The cadence is a hint, not a live polling budget. Prefer longer sleeps over frequent checks. Each model or CLI may expose a different way to sleep, checkpoint, or resume; use the native one when it exists. If no native scheduler exists but shell commands can run, start a shell sleep followed by one bounded poll command, then let the shell wait without model activity. If neither scheduler nor shell sleep is available, write the updated state file and stop with a summary that names the next intended wake time; an external runner or human can re-invoke the playbook later. Do not emulate scheduling with an active model loop.
 
 ---
 
@@ -448,6 +456,6 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 ## Notes for non-Claude agent CLIs
 
 - Replace `TeamCreate` with your native team/task spawning primitive. If none exists, run phases serially and compact aggressively between phases.
-- Replace `ScheduleWakeup` with your native resume mechanism (cron, setTimeout-equivalent, agent checkpoint).
+- Replace `ScheduleWakeup` with your native resume mechanism (cron, setTimeout-equivalent, agent checkpoint). If you are operating like Codex in a terminal and have no native scheduler, use shell sleep plus one-shot checks, for example `sleep 720 && gh pr checks <PR> && gh run list --branch <branch> --limit 5`.
 - Everything else — `gh`, `git`, `npx vitest`, `eslint`, `tsc` — is shell, and should work identically.
 - This repo's shard count is **8** (`.github/workflows/ci.yml`). Always mirror that locally.
