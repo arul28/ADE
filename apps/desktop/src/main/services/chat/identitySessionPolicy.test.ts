@@ -45,4 +45,10 @@ describe("identitySessionPolicy", () => {
     expect(resolveIdentityExecutionLane("cto", null, "lane-primary")).toBe("lane-primary");
     expect(resolveIdentityExecutionLane("cto", "lane-feature", null)).toBe(null);
   });
+
+  it("passes through requested lanes for non-pinned identities", () => {
+    expect(resolveIdentityExecutionLane("assistant" as never, "lane-feature", "lane-primary")).toBe("lane-feature");
+    expect(resolveIdentityExecutionLane("assistant" as never, "  lane-feature  ", "lane-primary")).toBe("lane-feature");
+    expect(resolveIdentityExecutionLane("assistant" as never, "   ", "lane-primary")).toBe(null);
+  });
 });
