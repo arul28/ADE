@@ -335,6 +335,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
         params.push(args.manuallyNamed ? 1 : 0);
       }
 
+      if (typeof args.laneId === "string") {
+        const nextLaneId = args.laneId.trim();
+        if (nextLaneId.length) {
+          sets.push("lane_id = ?");
+          params.push(nextLaneId);
+        }
+      }
+
       if (args.title !== undefined) {
         const nextTitle = typeof args.title === "string" ? args.title.trim() : "";
         if (nextTitle.length) {

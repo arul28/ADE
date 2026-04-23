@@ -48,7 +48,7 @@ xcuserdata/
 apps/ios/.dry-run-derived-data/
 apps/ios/build/
 ios-signing/
-.asc/artifacts/
+/.asc/artifacts/
 
 # Tool configs (personal)
 .codex/

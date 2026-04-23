@@ -1795,6 +1795,18 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("No primary lane is available to host the CTO chat session.");
     });
 
+    it("cto.ensureSession refuses to fall back to lanes[0] when no primary exists", async () => {
+      // Only non-primary lanes are available; identity-pinned sessions must
+      // not silently land on a foreign lane via the lanes[0] fallback.
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-feature", laneType: "feature" },
+        { id: "lane-scratch", laneType: "feature" },
+      ]);
+      await expect(service.execute(makePayload("cto.ensureSession", {})))
+        .rejects.toThrow("No primary lane is available to host the CTO chat session.");
+      expect(agentChatService.ensureIdentitySession).not.toHaveBeenCalled();
+    });
+
     it("cto.ensureAgentSession requires agentId", async () => {
       await expect(service.execute(makePayload("cto.ensureAgentSession", {})))
         .rejects.toThrow("cto.ensureAgentSession requires agentId.");
@@ -1866,6 +1878,22 @@ describe("createSyncRemoteCommandService", () => {
       await expect(service.execute(makePayload("cto.ensureAgentSession", {
         agentId: "worker-42",
       }))).rejects.toThrow("No primary lane is available to host the agent chat session.");
+    });
+
+    it("cto.ensureAgentSession refuses to fall back to lanes[0] when no primary exists", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-feature", laneType: "feature" },
+      ]);
+      workerAgentService.getAgent.mockReturnValueOnce({
+        id: "worker-42",
+        name: "Mobile Droid",
+        slug: "mobile-droid",
+        status: "running",
+      });
+      await expect(service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "worker-42",
+      }))).rejects.toThrow("No primary lane is available to host the agent chat session.");
+      expect(agentChatService.ensureIdentitySession).not.toHaveBeenCalled();
     });
 
     it("cto.ensureSession returns the same session on repeat calls (canonical lane reuse)", async () => {

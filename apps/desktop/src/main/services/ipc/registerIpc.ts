@@ -1180,15 +1180,16 @@ function getMemoryHealthStats(ctx: AppContext) {
   return stats;
 }
 
-async function resolveFirstAvailableLaneId(
-  ctx: AppContext,
-  requestedLaneId: string | undefined | null
-): Promise<string> {
-  const laneId = typeof requestedLaneId === "string" ? requestedLaneId.trim() : "";
-  if (laneId) return laneId;
+/**
+ * Strict resolver for identity-pinned sessions (CTO + worker agents). Requires
+ * an actual primary lane and never slips a foreign lane through via a
+ * `lanes[0]` fallback — if there is no primary lane the caller must surface
+ * the error rather than silently landing the identity on a non-primary lane.
+ */
+async function resolvePrimaryLaneIdOnly(ctx: AppContext): Promise<string> {
   await ctx.laneService.ensurePrimaryLane().catch(() => {});
   const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
-  return (lanes.find((lane) => lane.laneType === "primary") ?? lanes[0])?.id ?? "";
+  return lanes.find((lane) => lane.laneType === "primary")?.id ?? "";
 }
 
 async function resolveLaneOverlayContext(ctx: AppContext, laneId: string) {
@@ -6272,7 +6273,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {
     const ctx = getCtx();
-    const laneId = await resolveFirstAvailableLaneId(ctx, null);
+    const laneId = await resolvePrimaryLaneIdOnly(ctx);
     if (!laneId) {
       throw new Error("No primary lane is available to host the CTO chat session.");
     }
@@ -6344,7 +6345,7 @@ export function registerIpc({
   ipcMain.handle(IPC.ctoEnsureAgentSession, async (_event, arg: CtoEnsureAgentSessionArgs): Promise<AgentChatSession> => {
     const ctx = getCtx();
     if (!ctx.agentChatService) throw new Error("Agent chat service is not available.");
-    const laneId = await resolveFirstAvailableLaneId(ctx, null);
+    const laneId = await resolvePrimaryLaneIdOnly(ctx);
     if (!laneId) throw new Error("No primary lane is available to host the agent chat session.");
     return ctx.agentChatService.ensureIdentitySession({
       identityKey: `agent:${arg.agentId}`,

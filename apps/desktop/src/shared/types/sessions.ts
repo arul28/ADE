@@ -144,6 +144,12 @@ export type UpdateSessionMetaArgs = {
   toolType?: TerminalToolType | null;
   resumeCommand?: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
+  /**
+   * Migrate the session to a different lane. Used by identity sessions (CTO /
+   * worker) that must remain pinned to the canonical primary lane even if
+   * they were previously persisted against a foreign lane.
+   */
+  laneId?: string;
 };
 
 export type ReadTranscriptTailArgs = {
