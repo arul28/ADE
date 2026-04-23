@@ -73,7 +73,32 @@
       }
       .strip .eq {
         color: var(--color-violet-bright);
-        margin-left: 4px;
+        margin: 0 4px;
+      }
+      .strip .ade-chip {
+        position: relative;
+        width: 56px;
+        height: 56px;
+        flex-shrink: 0;
+        margin-left: 2px;
+      }
+      .strip .ade-chip::before {
+        content: "";
+        position: absolute;
+        inset: -14px;
+        border-radius: 30%;
+        background: radial-gradient(circle, rgba(124, 58, 237, 0.7), transparent 65%);
+        filter: blur(12px);
+        z-index: 0;
+      }
+      .strip .ade-chip img {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        height: 100%;
+        border-radius: 26%;
+        object-fit: contain;
+        filter: drop-shadow(0 10px 22px rgba(124, 58, 237, 0.6));
       }
       .strip .chip {
         width: 40px;
@@ -106,43 +131,8 @@
         display: flex;
         flex-direction: column;
         align-items: stretch;
-        gap: 14px;
+        justify-content: center;
         height: 100%;
-      }
-
-      .equals-block {
-        display: flex;
-        align-items: center;
-        justify-content: flex-start;
-        flex-shrink: 0;
-        padding-left: 4%;
-        margin-bottom: -28px;
-        position: relative;
-        z-index: 3;
-      }
-      .equals-block .ade-icon {
-        position: relative;
-        width: 150px;
-        height: 150px;
-        flex-shrink: 0;
-      }
-      .equals-block .ade-icon::before {
-        content: "";
-        position: absolute;
-        inset: -36px;
-        border-radius: 30%;
-        background: radial-gradient(circle, rgba(124, 58, 237, 0.65), transparent 65%);
-        filter: blur(22px);
-        z-index: 0;
-      }
-      .equals-block .ade-icon img {
-        position: relative;
-        z-index: 1;
-        width: 100%;
-        height: 100%;
-        border-radius: 26%;
-        object-fit: contain;
-        filter: drop-shadow(0 18px 44px rgba(124, 58, 237, 0.65));
       }
 
       .lede { position: relative; }
@@ -207,8 +197,7 @@
       .stage {
         position: relative;
         width: 100%;
-        flex: 1;
-        min-height: 0;
+        aspect-ratio: 1 / 0.78;
       }
       .halo {
         position: absolute;
@@ -382,6 +371,9 @@
         <span class="plus">+</span>
         <div class="chip"><img src="../public/images/competitors/github.png" alt="" /></div>
         <span class="eq">=</span>
+        <div class="ade-chip">
+          <img src="../public/images/ade-dock-icon.png" alt="ADE" />
+        </div>
       </div>
 
       <!-- Body -->
@@ -408,12 +400,6 @@
         </div>
 
         <div class="right-col">
-          <div class="equals-block">
-            <div class="ade-icon">
-              <img src="../public/images/ade-dock-icon.png" alt="ADE" />
-            </div>
-          </div>
-
           <div class="stage">
             <div class="halo"></div>
             <div class="mac">
