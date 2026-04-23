@@ -1950,7 +1950,7 @@ describe("createAgentChatService", () => {
       });
 
       expect(session.laneId).toBe("lane-1");
-      expect(session.permissionMode).toBe("plan");
+      expect(session.permissionMode).toBe("full-auto");
     });
 
     it("does not reuse a foreign-lane identity session or auto-close it during migration", async () => {
@@ -1982,7 +1982,7 @@ describe("createAgentChatService", () => {
       expect(reused.laneId).toBe("lane-1");
     });
 
-    it("records headShaStart for the selected execution lane instead of the canonical host lane", async () => {
+    it("pins CTO execution state to the primary lane even when a foreign lane is requested", async () => {
       vi.mocked(runGit).mockImplementation(async (_args, opts) => ({
         stdout: String(opts?.cwd ?? "").includes(path.join(tmpRoot, "lane-2")) ? "lane-2-sha\n" : "lane-1-sha\n",
         stderr: "",
@@ -1995,7 +1995,25 @@ describe("createAgentChatService", () => {
         laneId: "lane-2",
       });
 
-      expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-2-sha");
+      expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-1-sha");
+    });
+
+    it("pins worker identity execution state to the primary lane", async () => {
+      vi.mocked(runGit).mockImplementation(async (_args, opts) => ({
+        stdout: String(opts?.cwd ?? "").includes(path.join(tmpRoot, "lane-2")) ? "lane-2-sha\n" : "lane-1-sha\n",
+        stderr: "",
+        exitCode: 0,
+      }));
+
+      const { service, sessionService } = createService();
+      const session = await service.ensureIdentitySession({
+        identityKey: "agent:worker-1",
+        laneId: "lane-2",
+      });
+
+      expect(session.laneId).toBe("lane-1");
+      expect(session.permissionMode).toBe("full-auto");
+      expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-1-sha");
     });
   });
 

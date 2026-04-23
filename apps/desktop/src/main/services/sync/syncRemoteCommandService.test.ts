@@ -1769,25 +1769,30 @@ describe("createSyncRemoteCommandService", () => {
         laneId: "lane-primary",
         modelId: "claude-opus-4",
         reasoningEffort: "high",
+        permissionMode: "full-auto",
       });
       expect(agentChatService.getSessionSummary).toHaveBeenCalledWith("chat-identity-1");
       expect(result).toEqual(expect.objectContaining({ sessionId: "chat-1" }));
     });
 
-    it("cto.ensureSession uses the requested laneId when provided", async () => {
+    it("cto.ensureSession ignores requested lane overrides and still uses primary", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
       await service.execute(makePayload("cto.ensureSession", { laneId: "lane-explicit" }));
       expect(agentChatService.ensureIdentitySession).toHaveBeenCalledWith({
         identityKey: "cto",
-        laneId: "lane-explicit",
+        laneId: "lane-primary",
         modelId: null,
         reasoningEffort: null,
+        permissionMode: "full-auto",
       });
     });
 
     it("cto.ensureSession throws when no lane is available", async () => {
       laneService.list.mockResolvedValueOnce([]);
       await expect(service.execute(makePayload("cto.ensureSession", {})))
-        .rejects.toThrow("No active lane is available to host the CTO chat session.");
+        .rejects.toThrow("No primary lane is available to host the CTO chat session.");
     });
 
     it("cto.ensureAgentSession requires agentId", async () => {
@@ -1795,7 +1800,7 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("cto.ensureAgentSession requires agentId.");
     });
 
-    it("cto.ensureAgentSession delegates to agentChatService with agent:<id> identityKey", async () => {
+    it("cto.ensureAgentSession delegates to agentChatService with agent:<id> identityKey on primary", async () => {
       laneService.list.mockResolvedValueOnce([
         { id: "lane-primary", laneType: "primary" },
       ]);
@@ -1813,8 +1818,32 @@ describe("createSyncRemoteCommandService", () => {
         laneId: "lane-primary",
         modelId: null,
         reasoningEffort: null,
+        permissionMode: "full-auto",
       });
       expect(result).toEqual(expect.objectContaining({ sessionId: "chat-1" }));
+    });
+
+    it("cto.ensureAgentSession ignores requested lane overrides and still uses primary", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
+      workerAgentService.getAgent.mockReturnValueOnce({
+        id: "worker-42",
+        name: "Mobile Droid",
+        slug: "mobile-droid",
+        status: "running",
+      });
+      await service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "worker-42",
+        laneId: "lane-explicit",
+      }));
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledWith({
+        identityKey: "agent:worker-42",
+        laneId: "lane-primary",
+        modelId: null,
+        reasoningEffort: null,
+        permissionMode: "full-auto",
+      });
     });
 
     it("cto.ensureAgentSession rejects unknown agentIds without creating a session", async () => {
@@ -1824,6 +1853,19 @@ describe("createSyncRemoteCommandService", () => {
         agentId: "ghost-agent",
       }))).rejects.toThrow("cto.ensureAgentSession: unknown agentId 'ghost-agent'");
       expect(agentChatService.ensureIdentitySession).not.toHaveBeenCalled();
+    });
+
+    it("cto.ensureAgentSession throws when no primary lane is available", async () => {
+      laneService.list.mockResolvedValueOnce([]);
+      workerAgentService.getAgent.mockReturnValueOnce({
+        id: "worker-42",
+        name: "Mobile Droid",
+        slug: "mobile-droid",
+        status: "running",
+      });
+      await expect(service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "worker-42",
+      }))).rejects.toThrow("No primary lane is available to host the agent chat session.");
     });
 
     it("cto.ensureSession returns the same session on repeat calls (canonical lane reuse)", async () => {

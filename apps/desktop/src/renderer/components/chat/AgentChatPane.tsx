@@ -671,6 +671,8 @@ export function AgentChatPane({
   initialSessionSummary,
   lockSessionId,
   hideSessionTabs = false,
+  hideNativeControls = false,
+  hideWorkspaceChrome = false,
   forceNewSession = false,
   forceDraftMode = false,
   availableModelIdsOverride,
@@ -691,6 +693,8 @@ export function AgentChatPane({
   initialSessionSummary?: AgentChatSessionSummary | null;
   lockSessionId?: string | null;
   hideSessionTabs?: boolean;
+  hideNativeControls?: boolean;
+  hideWorkspaceChrome?: boolean;
   forceNewSession?: boolean;
   forceDraftMode?: boolean;
   availableModelIdsOverride?: string[];
@@ -723,6 +727,7 @@ export function AgentChatPane({
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
   const surfaceProfile: ChatSurfaceProfile = presentation?.profile ?? "standard";
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
+  const showWorkspaceChrome = !hideWorkspaceChrome;
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
@@ -2606,10 +2611,10 @@ export function AgentChatPane({
           ) : null}
         </div>
 
-        {laneId ? <ChatGitToolbar laneId={laneId} /> : null}
+        {showWorkspaceChrome && laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
+          {showWorkspaceChrome && laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
           {resolvedChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -2828,6 +2833,7 @@ export function AgentChatPane({
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
+            hideNativeControls={hideNativeControls}
             messagePlaceholder={messagePlaceholder}
             onExecutionModeChange={setExecutionMode}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
@@ -3095,11 +3101,13 @@ export function AgentChatPane({
                         sessionId={selectedSessionId}
                       />
                     ) : null}
-                    <ChatTerminalDrawer
-                      open={terminalDrawerOpen}
-                      onToggle={() => setTerminalDrawerOpen((v) => !v)}
-                      laneId={laneId}
-                    />
+                    {showWorkspaceChrome ? (
+                      <ChatTerminalDrawer
+                        open={terminalDrawerOpen}
+                        onToggle={() => setTerminalDrawerOpen((v) => !v)}
+                        laneId={laneId}
+                      />
+                    ) : null}
                   </div>
 
                   {/* Proof panel (push) */}
@@ -3147,7 +3155,7 @@ export function AgentChatPane({
                     </p>
 
                     {/* Lane selector pill */}
-                    {availableLanes && availableLanes.length > 0 && onLaneChange ? (
+                    {showWorkspaceChrome && availableLanes && availableLanes.length > 0 && onLaneChange ? (
                       <motion.div
                         exit={{ opacity: 0, transition: { duration: 0.15 } }}
                       >
@@ -3172,7 +3180,7 @@ export function AgentChatPane({
                           ))}
                         </select>
                       </motion.div>
-                    ) : laneDisplayLabel ? (
+                    ) : showWorkspaceChrome && laneDisplayLabel ? (
                       <motion.div
                         className="flex items-center gap-2 rounded-full px-4 py-1.5"
                         style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}

@@ -773,7 +773,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
       "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead.",
     inputSchema: z.object({
-      laneId: z.string().optional().describe("Lane to run in. Defaults to CTO's lane. A new lane is auto-created if needed."),
+      laneId: z.string().optional().describe("Lane to run in. Defaults to the primary lane. A new lane is auto-created if needed."),
       modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-4-6'). MUST be set when user specifies a model."),
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort: 'low', 'medium', 'high', 'max' (opus), 'xhigh' (openai)."),
       title: z.string().optional().describe("Display title for the chat session."),

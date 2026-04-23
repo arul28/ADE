@@ -91,7 +91,6 @@ export type CtoGetStateArgs = {
 };
 
 export type CtoEnsureSessionArgs = {
-  laneId?: string | null;
   modelId?: ModelId | null;
   reasoningEffort?: string | null;
 };

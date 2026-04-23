@@ -1720,12 +1720,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("cto.ensureSession", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-    // When no override is given, resolve the primary lane the same way
-    // agentChatService.ensureIdentitySession does internally (it reuses a
-    // session only when session.laneId === canonicalLaneId). Passing the
-    // canonical lane guarantees the same session is returned on repeat calls.
-    const laneId = await resolveFirstAvailableLaneIdForSync(args, asTrimmedString(payload.laneId));
-    if (!laneId) throw new Error("No active lane is available to host the CTO chat session.");
+    const laneId = await resolveFirstAvailableLaneIdForSync(args, null);
+    if (!laneId) throw new Error("No primary lane is available to host the CTO chat session.");
     const modelId = asTrimmedString(payload.modelId);
     const reasoningEffort = asTrimmedString(payload.reasoningEffort);
     const session = await agentChatService.ensureIdentitySession({
@@ -1733,6 +1729,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       laneId,
       modelId: modelId ?? null,
       reasoningEffort: reasoningEffort ?? null,
+      permissionMode: "full-auto",
     });
     return summarizeChatSessionForRemote(agentChatService, session);
   });
@@ -1749,8 +1746,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (!agent) {
       throw new Error(`cto.ensureAgentSession: unknown agentId '${agentId}'`);
     }
-    const laneId = await resolveFirstAvailableLaneIdForSync(args, asTrimmedString(payload.laneId));
-    if (!laneId) throw new Error("No active lane is available to host the agent chat session.");
+    const laneId = await resolveFirstAvailableLaneIdForSync(args, null);
+    if (!laneId) throw new Error("No primary lane is available to host the agent chat session.");
     const modelId = asTrimmedString(payload.modelId);
     const reasoningEffort = asTrimmedString(payload.reasoningEffort);
     const session = await agentChatService.ensureIdentitySession({
@@ -1758,6 +1755,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       laneId,
       modelId: modelId ?? null,
       reasoningEffort: reasoningEffort ?? null,
+      permissionMode: "full-auto",
     });
     return summarizeChatSessionForRemote(agentChatService, session);
   });

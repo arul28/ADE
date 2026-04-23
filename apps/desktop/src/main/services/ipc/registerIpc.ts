@@ -6272,15 +6272,16 @@ export function registerIpc({
 
   ipcMain.handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {
     const ctx = getCtx();
-    const laneId = await resolveFirstAvailableLaneId(ctx, arg.laneId);
+    const laneId = await resolveFirstAvailableLaneId(ctx, null);
     if (!laneId) {
-      throw new Error("No active lane is available to host the CTO chat session.");
+      throw new Error("No primary lane is available to host the CTO chat session.");
     }
     return ctx.agentChatService.ensureIdentitySession({
       identityKey: "cto",
       laneId,
       modelId: arg.modelId ?? null,
       reasoningEffort: arg.reasoningEffort ?? null,
+      permissionMode: "full-auto",
     });
   });
 
@@ -6343,13 +6344,14 @@ export function registerIpc({
   ipcMain.handle(IPC.ctoEnsureAgentSession, async (_event, arg: CtoEnsureAgentSessionArgs): Promise<AgentChatSession> => {
     const ctx = getCtx();
     if (!ctx.agentChatService) throw new Error("Agent chat service is not available.");
-    const laneId = await resolveFirstAvailableLaneId(ctx, arg.laneId);
-    if (!laneId) throw new Error("No lane available for agent session.");
+    const laneId = await resolveFirstAvailableLaneId(ctx, null);
+    if (!laneId) throw new Error("No primary lane is available to host the agent chat session.");
     return ctx.agentChatService.ensureIdentitySession({
       identityKey: `agent:${arg.agentId}`,
       laneId,
       modelId: arg.modelId ?? null,
       reasoningEffort: arg.reasoningEffort ?? null,
+      permissionMode: "full-auto",
     });
   });
 

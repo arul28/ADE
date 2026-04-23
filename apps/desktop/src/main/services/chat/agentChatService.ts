@@ -37,6 +37,10 @@ import {
   shouldFlushBufferedAssistantTextForEvent,
   type BufferedAssistantText,
 } from "./chatTextBatching";
+import {
+  normalizeIdentityPermissionMode,
+  resolveIdentityExecutionLane,
+} from "./identitySessionPolicy";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
@@ -2414,17 +2418,6 @@ function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefin
 
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
   return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "opencode" ? "full_tooling" : "fallback";
-}
-
-function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
-  return "plan";
-}
-
-function normalizeIdentityPermissionMode(
-  mode: AgentChatSession["permissionMode"] | undefined,
-  provider: AgentChatProvider,
-): AgentChatSession["permissionMode"] {
-  return mode === "plan" ? "plan" : guardedIdentityPermissionModeForProvider(provider);
 }
 
 function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">): boolean {
@@ -10380,7 +10373,7 @@ export function createAgentChatService(args: {
     const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
     let effectivePermissionMode = identityKey
-      ? normalizeIdentityPermissionMode(requestedPermMode, effectiveProvider)
+      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
       : requestedPermMode;
     const chatConfig = resolveChatConfig();
     let requestedOpenCodePermissionMode = requestedOpenCodePermissionModeArg;
@@ -12554,7 +12547,11 @@ export function createAgentChatService(args: {
     }
 
     const canonicalLaneId = await resolvePrimaryIdentityLane();
-    const selectedExecutionLaneId = requestedLaneId || null;
+    const selectedExecutionLaneId = resolveIdentityExecutionLane(
+      args.identityKey,
+      requestedLaneId,
+      canonicalLaneId,
+    );
     const existing = await listSessions(undefined, { includeIdentity: true });
     const identitySessions = existing
       .filter((entry) => entry.identityKey === args.identityKey)
@@ -12573,6 +12570,7 @@ export function createAgentChatService(args: {
         managed.session.reasoningEffort = normalizeReasoningEffort(args.reasoningEffort);
       }
       managed.session.permissionMode = normalizeIdentityPermissionMode(
+        args.identityKey,
         args.permissionMode ?? managed.session.permissionMode,
         managed.session.provider,
       );
@@ -12640,7 +12638,7 @@ export function createAgentChatService(args: {
       model: preferredModel,
       ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
       reasoningEffort: args.reasoningEffort ?? pref?.reasoningEffort ?? null,
-      permissionMode: args.permissionMode ?? "plan",
+      ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
       identityKey: args.identityKey
     });
 
@@ -13338,6 +13336,7 @@ export function createAgentChatService(args: {
 
       if (isIdentitySession) {
         managed.session.permissionMode = normalizeIdentityPermissionMode(
+          managed.session.identityKey,
           managed.session.permissionMode,
           nextProvider,
         );
@@ -13393,7 +13392,7 @@ export function createAgentChatService(args: {
 
     if (permissionMode !== undefined) {
       managed.session.permissionMode = isIdentitySession
-        ? normalizeIdentityPermissionMode(permissionMode, managed.session.provider)
+        ? normalizeIdentityPermissionMode(managed.session.identityKey, permissionMode, managed.session.provider)
         : permissionMode;
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
     }
