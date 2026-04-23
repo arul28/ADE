@@ -789,6 +789,12 @@ export function AgentChatPane({
   const pendingSelectedSessionIdRef = useRef<string | null>(null);
   const submitInFlightRef = useRef(false);
   const createSessionPromiseRef = useRef<Promise<string | null> | null>(null);
+  const pendingNativeControlUpdateRef = useRef<{
+    sessionId: string;
+    updateId: number;
+    promise: Promise<void>;
+  } | null>(null);
+  const nativeControlUpdateCounterRef = useRef(0);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const eventFlushTimerRef = useRef<number | null>(null);
@@ -2273,6 +2279,16 @@ export function AgentChatPane({
     if (!modelId) return;
     const text = draft.trim();
     if (!text.length || !laneId) return;
+    const pendingNativeControlUpdate = selectedSessionId
+      ? pendingNativeControlUpdateRef.current
+      : null;
+    if (pendingNativeControlUpdate?.sessionId === selectedSessionId) {
+      try {
+        await pendingNativeControlUpdate.promise;
+      } catch {
+        return;
+      }
+    }
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
     const isLiteralSlashCommand = isProviderSlashCommandInput(text);
@@ -2519,20 +2535,63 @@ export function AgentChatPane({
       setSessionMutationKind("permission");
     }
 
-    try {
-      await window.ade.agentChat.updateSession({
-        sessionId: selectedSessionId,
-        ...nextSummary,
-      });
-      void refreshSessions().catch(() => {});
-    } catch (err) {
-      void refreshSessions().catch(() => {});
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (isPersistentIdentitySurface) {
-        setSessionMutationKind(null);
+    const previousUpdate = pendingNativeControlUpdateRef.current?.sessionId === selectedSessionId
+      ? pendingNativeControlUpdateRef.current.promise
+      : null;
+    const updateId = nativeControlUpdateCounterRef.current + 1;
+    nativeControlUpdateCounterRef.current = updateId;
+
+    const updatePromise = (async () => {
+      if (previousUpdate) {
+        try {
+          await previousUpdate;
+        } catch {
+          // The previous mutation already surfaced its error; continue so the
+          // latest picker state still gets pushed to the backend.
+        }
       }
-    }
+
+      try {
+        const updatedSession = await window.ade.agentChat.updateSession({
+          sessionId: selectedSessionId,
+          ...nextSummary,
+        });
+        patchSessionSummary(selectedSessionId, {
+          permissionMode: updatedSession.permissionMode,
+          interactionMode: updatedSession.interactionMode ?? null,
+          claudePermissionMode: updatedSession.claudePermissionMode,
+          codexApprovalPolicy: updatedSession.codexApprovalPolicy,
+          codexSandbox: updatedSession.codexSandbox,
+          codexConfigSource: updatedSession.codexConfigSource,
+          opencodePermissionMode: updatedSession.opencodePermissionMode,
+          cursorModeId: updatedSession.cursorModeId,
+          cursorModeSnapshot: updatedSession.cursorModeSnapshot,
+        });
+        void refreshSessions().catch(() => {});
+      } catch (err) {
+        void refreshSessions().catch(() => {});
+        setError(err instanceof Error ? err.message : String(err));
+        throw err;
+      } finally {
+        if (
+          pendingNativeControlUpdateRef.current?.sessionId === selectedSessionId
+          && pendingNativeControlUpdateRef.current?.updateId === updateId
+        ) {
+          pendingNativeControlUpdateRef.current = null;
+        }
+        if (isPersistentIdentitySurface) {
+          setSessionMutationKind(null);
+        }
+      }
+    })();
+
+    pendingNativeControlUpdateRef.current = {
+      sessionId: selectedSessionId,
+      updateId,
+      promise: updatePromise,
+    };
+
+    await updatePromise;
   }, [
     isPersistentIdentitySurface,
     patchSessionSummary,

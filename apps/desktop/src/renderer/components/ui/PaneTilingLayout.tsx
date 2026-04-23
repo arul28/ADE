@@ -12,6 +12,7 @@ import {
   splitPaneAtEdge,
   swapPanes,
   isValidTree,
+  reconcilePaneTree,
   type PaneLeaf,
   type PaneSplit,
   type DropEdge
@@ -27,9 +28,12 @@ export type PaneConfig = {
   icon?: PhosphorIcon;
   meta?: React.ReactNode;
   minimizable?: boolean;
+  className?: string;
   headerActions?: React.ReactNode;
   bodyClassName?: string;
   dataTour?: string;
+  onPaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onPaneContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
   children: React.ReactNode;
 };
 
@@ -67,6 +71,22 @@ export function PaneTilingLayout({
   const leafPanelRefs = useRef<Record<string, PanelImperativeHandle | null>>({});
   const leafCompactedRef = useRef<Record<string, { compacted: boolean; previousSize: number | null; parentDirection: "horizontal" | "vertical" }>>({});
 
+  const resetSavedLayout = useCallback(() => {
+    saveLayout({});
+  }, [saveLayout]);
+
+  const replaceTreeImmediately = useCallback((next: PaneSplit, resetLayout = false) => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    setLiveTree(next);
+    if (resetLayout) {
+      resetSavedLayout();
+    }
+    window.ade.tilingTree.set(layoutId, next).catch(() => {});
+  }, [layoutId, resetSavedLayout]);
+
   // Load persisted tree on mount
   useEffect(() => {
     let cancelled = false;
@@ -76,8 +96,12 @@ export function PaneTilingLayout({
         if (cancelled) return;
         if (saved && typeof saved === "object" && (saved as PaneSplit).type === "split") {
           const candidate = saved as PaneSplit;
-          if (isValidTree(candidate, expectedPaneIds)) {
-            setLiveTree(candidate);
+          const reconciled = reconcilePaneTree(candidate, expectedPaneIds, tree);
+          const changed = JSON.stringify(candidate) !== JSON.stringify(reconciled);
+          if (changed) {
+            replaceTreeImmediately(reconciled, true);
+          } else {
+            setLiveTree(reconciled);
           }
         }
         setTreeLoaded(true);
@@ -92,20 +116,22 @@ export function PaneTilingLayout({
   useEffect(() => {
     if (!treeLoaded) return;
     if (!isValidTree(liveTree, expectedPaneIds)) {
-      setLiveTree(tree);
+      const reconciled = reconcilePaneTree(liveTree, expectedPaneIds, tree);
+      replaceTreeImmediately(reconciled, true);
     }
-  }, [expectedPaneIds, treeLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [expectedPaneIds, replaceTreeImmediately, tree, treeLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist tree changes (debounced)
   const persistTree = useCallback(
     (next: PaneSplit) => {
       setLiveTree(next);
+      resetSavedLayout();
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
         window.ade.tilingTree.set(layoutId, next).catch(() => {});
       }, 300);
     },
-    [layoutId]
+    [layoutId, resetSavedLayout]
   );
 
   /* ---- Minimize state ---- */
@@ -349,6 +375,7 @@ export function PaneTilingLayout({
           onMinimizeToggle={() => toggleMinimize(paneId)}
           minimizable={config.minimizable ?? true}
           headerActions={config.headerActions}
+          className={config.className}
           bodyClassName={config.bodyClassName}
           dataTour={config.dataTour}
           draggable
@@ -360,8 +387,9 @@ export function PaneTilingLayout({
           onDragEnd={handleDragEnd}
           onDrop={handleDrop}
           onDragLeave={handleDragLeave}
+          onPaneMouseDown={config.onPaneMouseDown}
+          onPaneContextMenu={config.onPaneContextMenu}
           minimizeBehavior="css"
-          className="h-full"
         >
           {config.children}
         </FloatingPane>

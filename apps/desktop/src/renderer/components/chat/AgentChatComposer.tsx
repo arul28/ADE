@@ -1263,10 +1263,10 @@ export function AgentChatComposer({
         duration={composerBeamDuration}
         strength={composerBeamStrength}
         active={composerBeamActive}
-        borderRadius={layoutVariant === "grid-tile" ? 0 : 18}
+        borderRadius={18}
         className={cn(
           "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
-          layoutVariant === "grid-tile" ? "m-0 rounded-none" : "",
+          layoutVariant === "grid-tile" ? "m-0" : "",
         )}
         style={{ overflow: "visible" }}
       >
@@ -1274,7 +1274,7 @@ export function AgentChatComposer({
       mode={surfaceMode}
       glowColor={composerGlowColor}
       className={cn(
-        layoutVariant === "grid-tile" ? "rounded-none border-0 bg-transparent shadow-none" : "",
+        layoutVariant === "grid-tile" ? "border-0 bg-transparent shadow-none" : "",
       )}
       pendingBanner={pendingInput ? (
         pendingInput.kind === "plan_approval" ? (

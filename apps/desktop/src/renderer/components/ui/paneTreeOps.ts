@@ -83,6 +83,106 @@ export function flattenSingleChildSplits(
   return { ...node, children: simplified };
 }
 
+function coercePaneNodeToSplit(
+  node: PaneLeaf | PaneSplit,
+  direction: PaneSplit["direction"]
+): PaneSplit {
+  if (node.type === "split") return node;
+  return {
+    type: "split",
+    direction,
+    children: [{ node, defaultSize: 100, minSize: 5 }]
+  };
+}
+
+type LeafCandidate = {
+  id: string;
+  parentDirection: PaneSplit["direction"] | null;
+  weight: number;
+};
+
+function collectLeafCandidates(
+  node: PaneLeaf | PaneSplit,
+  parentDirection: PaneSplit["direction"] | null,
+  weight: number
+): LeafCandidate[] {
+  if (node.type === "pane") {
+    return [{ id: node.id, parentDirection, weight }];
+  }
+
+  const defaultWeight = weight / Math.max(1, node.children.length);
+  return node.children.flatMap((child) => {
+    const nextWeight = child.defaultSize != null ? (weight * child.defaultSize) / 100 : defaultWeight;
+    return collectLeafCandidates(child.node, node.direction, nextWeight);
+  });
+}
+
+function insertPaneIntoLargestLeaf(
+  tree: PaneSplit,
+  paneId: string,
+  fallbackDirection: PaneSplit["direction"]
+): PaneSplit {
+  const candidates = collectLeafCandidates(tree, null, 100);
+  const target = candidates.reduce<LeafCandidate | null>((largest, candidate) => {
+    if (largest == null || candidate.weight > largest.weight) return candidate;
+    return largest;
+  }, null);
+  if (!target) return tree;
+
+  const direction = target.parentDirection == null
+    ? fallbackDirection
+    : target.parentDirection === "horizontal"
+      ? "vertical"
+      : "horizontal";
+
+  return replaceLeaf(tree, target.id, {
+    type: "split",
+    direction,
+    children: [
+      { node: { type: "pane", id: target.id }, defaultSize: 50, minSize: 5 },
+      { node: { type: "pane", id: paneId }, defaultSize: 50, minSize: 5 },
+    ],
+  });
+}
+
+export function reconcilePaneTree(
+  tree: PaneLeaf | PaneSplit,
+  expectedPaneIds: string[],
+  fallback: PaneSplit
+): PaneSplit {
+  const expected = new Set(expectedPaneIds);
+  let next: PaneLeaf | PaneSplit | null = tree;
+  for (const paneId of collectLeafIds(tree)) {
+    if (next == null) break;
+    if (!expected.has(paneId)) {
+      next = removePaneFromTree(next, paneId);
+    }
+  }
+
+  if (next == null) return fallback;
+
+  const flattened = flattenSingleChildSplits(next);
+  const flattenedLeafIds = collectLeafIds(flattened);
+  const present = new Set<string>();
+  for (const paneId of flattenedLeafIds) {
+    if (!expected.has(paneId) || present.has(paneId)) {
+      return fallback;
+    }
+    present.add(paneId);
+  }
+  const missingPaneIds = expectedPaneIds.filter((paneId) => !present.has(paneId));
+  if (missingPaneIds.length === 0) {
+    return coercePaneNodeToSplit(flattened, fallback.direction);
+  }
+
+  const base = coercePaneNodeToSplit(flattened, fallback.direction);
+  const withInsertedPanes = missingPaneIds.reduce(
+    (currentTree, paneId) => insertPaneIntoLargestLeaf(currentTree, paneId, fallback.direction),
+    base,
+  );
+  return coercePaneNodeToSplit(flattenSingleChildSplits(withInsertedPanes), fallback.direction);
+}
+
 /* ---- Split a pane at an edge ---- */
 
 export function splitPaneAtEdge(
@@ -91,15 +191,15 @@ export function splitPaneAtEdge(
   draggedId: string,
   edge: Exclude<DropEdge, "center">
 ): PaneSplit {
-  // Step 1: Remove dragged pane from the tree
-  const pruned = removePaneFromTree(tree, draggedId);
-  if (pruned == null || pruned.type === "pane") return tree;
-  const cleanTree = flattenSingleChildSplits(pruned) as PaneSplit;
-
-  // Step 2: Replace target leaf with a new split containing both panes
-  const direction: "horizontal" | "vertical" =
+  const direction: PaneSplit["direction"] =
     edge === "left" || edge === "right" ? "horizontal" : "vertical";
 
+  // Step 1: Remove dragged pane from the tree
+  const pruned = removePaneFromTree(tree, draggedId);
+  if (pruned == null) return tree;
+  const cleanTree = coercePaneNodeToSplit(flattenSingleChildSplits(pruned), direction);
+
+  // Step 2: Replace target leaf with a new split containing both panes
   const draggedEntry: PaneLayoutEntry = {
     node: { type: "pane", id: draggedId },
     defaultSize: 50,
@@ -131,7 +231,13 @@ function replaceLeaf(
 ): PaneSplit {
   if (node.type === "pane") {
     // This shouldn't normally be the root call, but handle it gracefully
-    return node.id === targetId ? replacement : { type: "split", direction: "horizontal", children: [{ node }] };
+    return node.id === targetId
+      ? replacement
+      : {
+          type: "split",
+          direction: "horizontal",
+          children: [{ node, defaultSize: 100, minSize: 5 }],
+        };
   }
 
   return {

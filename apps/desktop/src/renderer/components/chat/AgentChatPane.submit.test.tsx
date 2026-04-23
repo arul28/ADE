@@ -481,6 +481,67 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("waits for Codex permission updates before sending the next turn", async () => {
+    const session = buildSession("session-1", {
+      status: "idle",
+      permissionMode: "default",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
+    const sessions = [session];
+    let resolveUpdateSession: (() => void) | null = null;
+    const updateSession = vi.fn().mockImplementation((args: any) => new Promise((resolve) => {
+      resolveUpdateSession = () => {
+        sessions[0] = {
+          ...sessions[0]!,
+          permissionMode: args.permissionMode ?? sessions[0]!.permissionMode,
+          codexApprovalPolicy: args.codexApprovalPolicy ?? sessions[0]!.codexApprovalPolicy,
+          codexSandbox: args.codexSandbox ?? sessions[0]!.codexSandbox,
+          codexConfigSource: args.codexConfigSource ?? sessions[0]!.codexConfigSource,
+        };
+        resolve(sessions[0]);
+      };
+    }));
+    const { send } = installAdeMocks({
+      sessions,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Full access" }));
+
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      }));
+    });
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Make the change now." } });
+    fireEvent.click(await screen.findByTitle("Send"));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(send).not.toHaveBeenCalled();
+
+    const flushUpdateSession = resolveUpdateSession as (() => void) | null;
+    expect(flushUpdateSession).toBeTypeOf("function");
+    flushUpdateSession?.();
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Make the change now.",
+      }));
+    });
+  });
+
   it("resyncs Claude composer permissions from refreshed session state", async () => {
     const session = buildSession("session-1", {
       status: "idle",

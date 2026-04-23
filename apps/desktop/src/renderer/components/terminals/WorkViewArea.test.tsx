@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import type { ReactNode } from "react";
-import { act, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { WorkViewArea } from "./WorkViewArea";
@@ -20,28 +20,26 @@ vi.mock("./WorkStartSurface", () => ({
   WorkStartSurface: () => <div data-testid="work-start-surface" />,
 }));
 
-vi.mock("./PackedSessionGrid", () => ({
-  PackedSessionGrid: ({
-    tiles,
-    onViewportMouseLeave,
+vi.mock("../ui/PaneTilingLayout", () => ({
+  PaneTilingLayout: ({
+    layoutId,
+    tree,
+    panes,
   }: {
-    tiles: Array<{ id: string; children: ReactNode; onHover?: () => void; onSelect?: () => void }>;
-    onViewportMouseLeave?: () => void;
+    layoutId: string;
+    tree: unknown;
+    panes: Record<string, { children: ReactNode; onPaneMouseDown?: () => void }>;
   }) => {
-    latestPackedSessionGridProps = { tiles, onViewportMouseLeave };
+    latestPaneTilingLayoutProps = { layoutId, tree, panes };
     return (
-      <div data-testid="packed-session-grid" onMouseLeave={onViewportMouseLeave}>
-        {tiles.map((tile) => (
+      <div data-testid="pane-tiling-layout">
+        {Object.entries(panes).map(([paneId, pane]) => (
           <div
-            key={tile.id}
-            data-testid={`packed-session-grid-tile:${tile.id}`}
-            onMouseOver={tile.onHover}
-            onMouseEnter={tile.onHover}
-            onPointerOver={tile.onHover}
-            onPointerEnter={tile.onHover}
-            onMouseDown={tile.onSelect}
+            key={paneId}
+            data-testid={`pane-tiling-layout-pane:${paneId}`}
+            onMouseDown={pane.onPaneMouseDown}
           >
-            {tile.children}
+            {pane.children}
           </div>
         ))}
       </div>
@@ -49,13 +47,14 @@ vi.mock("./PackedSessionGrid", () => ({
   },
 }));
 
-let latestPackedSessionGridProps: {
-  tiles: Array<{ id: string; children: ReactNode; onHover?: () => void; onSelect?: () => void }>;
-  onViewportMouseLeave?: () => void;
+let latestPaneTilingLayoutProps: {
+  layoutId: string;
+  tree: unknown;
+  panes: Record<string, { children: ReactNode; onPaneMouseDown?: () => void }>;
 } | null = null;
 
 beforeEach(() => {
-  latestPackedSessionGridProps = null;
+  latestPaneTilingLayoutProps = null;
 });
 
 vi.mock("./ToolLogos", () => ({
@@ -114,7 +113,7 @@ describe("WorkViewArea", () => {
   it("shows the draft surface when no tab is active, even if tabs are open", () => {
     const session = makeSession();
 
-    render(
+    const view = render(
       <WorkViewArea
         gridLayoutId="work:grid:test"
         lanes={[{
@@ -161,7 +160,7 @@ describe("WorkViewArea", () => {
     const first = makeRunningSession("session-1", "pty-1");
     const second = makeRunningSession("session-2", "pty-2");
 
-    render(
+    const view = render(
       <WorkViewArea
         gridLayoutId="work:grid:test"
         lanes={[{
@@ -203,12 +202,12 @@ describe("WorkViewArea", () => {
     expect(screen.getAllByTestId("terminal-view")).toHaveLength(2);
   });
 
-  it("focuses the hovered grid tile without persisting selection", async () => {
+  it("selects a tiled session when its body is clicked in grid mode", () => {
     const first = makeRunningSession("session-1", "pty-1");
     const second = makeRunningSession("session-2", "pty-2");
     const onSelectItem = vi.fn();
 
-    const { container } = render(
+    const view = render(
       <WorkViewArea
         gridLayoutId="work:grid:test"
         lanes={[{
@@ -247,20 +246,8 @@ describe("WorkViewArea", () => {
       />,
     );
 
-    expect(latestPackedSessionGridProps).not.toBeNull();
-    await act(async () => {
-      latestPackedSessionGridProps?.tiles[1].onHover?.();
-    });
-
-    expect(onSelectItem).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-session-id="session-1"]')?.getAttribute("data-active")).toBe("false");
-    expect(container.querySelector('[data-session-id="session-2"]')?.getAttribute("data-active")).toBe("true");
-
-    await act(async () => {
-      latestPackedSessionGridProps?.onViewportMouseLeave?.();
-    });
-
-    expect(container.querySelector('[data-session-id="session-1"]')?.getAttribute("data-active")).toBe("true");
-    expect(container.querySelector('[data-session-id="session-2"]')?.getAttribute("data-active")).toBe("false");
+    expect(latestPaneTilingLayoutProps?.layoutId).toBe("work:grid:test");
+    fireEvent.mouseDown(within(view.container).getByTestId("pane-tiling-layout-pane:session-2"));
+    expect(onSelectItem).toHaveBeenCalledWith("session-2");
   });
 });
