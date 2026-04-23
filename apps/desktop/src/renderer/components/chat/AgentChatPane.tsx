@@ -19,6 +19,7 @@ import {
   type AiRuntimeConnectionStatus,
   type AgentChatSession,
   type AgentChatOpenCodePermissionMode,
+  type AgentChatParallelLaunchState,
   type AgentChatSessionProfile,
   type ChatSurfaceChip,
   type ChatSurfaceProfile,
@@ -39,6 +40,7 @@ import {
   getModelById,
   getModelDescriptorForPermissionMode,
   parseLocalProviderFromModelId,
+  resolveProviderGroupForModel,
   resolveModelDescriptorForProvider,
   type LocalProviderFamily,
   type ModelDescriptor,
@@ -294,10 +296,7 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
 type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "opencode";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
-  if (!desc?.isCliWrapped) return "opencode";
-  if (desc.family === "openai") return "codex";
-  if (desc.family === "cursor") return "cursor";
-  return "claude";
+  return desc ? resolveProviderGroupForModel(desc) : "opencode";
 }
 
 function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registryModelId: string): string {
@@ -732,25 +731,97 @@ export function buildParallelLaunchPrompt(args: {
   return { sendText, displayText };
 }
 
+export type ParallelLaunchCleanupIssue = {
+  phase: "delete" | "refresh";
+  laneId: string | null;
+  error: unknown;
+};
+
+function isMissingParallelLaunchLaneError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found|no such lane|does not exist/i.test(message);
+}
+
+export function formatParallelLaunchFailureMessage(args: {
+  launchError: string;
+  cleanupIssues: ParallelLaunchCleanupIssue[];
+}): string {
+  const base = args.launchError.trim() || "Parallel launch failed.";
+  if (args.cleanupIssues.length === 0) return base;
+
+  const failedDeleteLaneIds = Array.from(new Set(
+    args.cleanupIssues
+      .filter((issue) => issue.phase === "delete" && typeof issue.laneId === "string" && issue.laneId.trim().length > 0)
+      .map((issue) => issue.laneId!.trim()),
+  ));
+  const refreshFailed = args.cleanupIssues.some((issue) => issue.phase === "refresh");
+  const cleanupSummary = [
+    failedDeleteLaneIds.length
+      ? `Cleanup could not delete lane${failedDeleteLaneIds.length === 1 ? "" : "s"} ${failedDeleteLaneIds.join(", ")}`
+      : null,
+    refreshFailed ? "lane list refresh also failed" : null,
+  ].filter((part): part is string => Boolean(part)).join("; ");
+
+  return cleanupSummary.length
+    ? `${base} ${cleanupSummary}. Check the lane list before retrying.`
+    : base;
+}
+
 export async function cleanupTransientParallelLaunchLanes(args: {
   laneIds: string[];
   deleteLane: (args: { laneId: string; force?: boolean }) => Promise<void>;
   refreshLanes: () => Promise<void>;
   onCleanupError?: (args: { phase: "delete" | "refresh"; laneId: string | null; error: unknown }) => void;
-}): Promise<void> {
-  if (args.laneIds.length === 0) return;
+}): Promise<ParallelLaunchCleanupIssue[]> {
+  const issues: ParallelLaunchCleanupIssue[] = [];
+  if (args.laneIds.length === 0) return issues;
   for (const laneId of args.laneIds) {
     try {
       await args.deleteLane({ laneId, force: true });
     } catch (error) {
-      args.onCleanupError?.({ phase: "delete", laneId, error });
+      if (isMissingParallelLaunchLaneError(error)) continue;
+      const issue: ParallelLaunchCleanupIssue = { phase: "delete", laneId, error };
+      issues.push(issue);
+      args.onCleanupError?.(issue);
     }
   }
   try {
     await args.refreshLanes();
   } catch (error) {
-    args.onCleanupError?.({ phase: "refresh", laneId: null, error });
+    const issue: ParallelLaunchCleanupIssue = { phase: "refresh", laneId: null, error };
+    issues.push(issue);
+    args.onCleanupError?.(issue);
   }
+  return issues;
+}
+
+function buildParallelLaunchState(args: {
+  parentLaneId: string;
+  createdLaneIds: string[];
+  sentLaneIds?: string[];
+  status: AgentChatParallelLaunchState["status"];
+  lastError?: string | null;
+}): AgentChatParallelLaunchState {
+  const createdLaneIds = Array.from(new Set(args.createdLaneIds.map((laneId) => laneId.trim()).filter(Boolean)));
+  const sentLaneIds = Array.from(new Set(
+    (args.sentLaneIds ?? [])
+      .map((laneId) => laneId.trim())
+      .filter((laneId) => createdLaneIds.includes(laneId)),
+  ));
+  return {
+    parentLaneId: args.parentLaneId.trim(),
+    createdLaneIds,
+    sentLaneIds,
+    status: args.status,
+    updatedAt: new Date().toISOString(),
+    lastError: args.lastError?.trim() || null,
+  };
+}
+
+function isCompletedParallelLaunchState(state: AgentChatParallelLaunchState): boolean {
+  return state.status === "completed" || (
+    state.createdLaneIds.length > 0 && state.sentLaneIds.length >= state.createdLaneIds.length
+  );
 }
 
 function chatSessionTitle(session: AgentChatSessionSummary): string {
@@ -935,6 +1006,7 @@ export function AgentChatPane({
   const handoffRef = useRef<HTMLDivElement | null>(null);
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
+  const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
@@ -963,10 +1035,108 @@ export function AgentChatPane({
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
 
+  const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
+    if (!projectRoot || !laneId) return;
+    try {
+      await window.ade.agentChat.parallelLaunchState.set({
+        projectRoot,
+        parentLaneId: laneId,
+        state,
+      });
+    } catch (persistError) {
+      console.error("parallel launch state persist failed", {
+        laneId,
+        projectRoot,
+        error: persistError instanceof Error ? persistError.message : String(persistError),
+      });
+    }
+  }, [laneId, projectRoot]);
+
   useEffect(() => {
     completionSoundPrevTurnActiveRef.current = false;
     completionSoundArmedRef.current = true;
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (!projectRoot || !laneId) return;
+    if (lockSessionId || initialSessionId) return;
+    const recoveryKey = `${projectRoot}::${laneId}`;
+    if (recoveredParallelLaunchKeyRef.current === recoveryKey) return;
+    recoveredParallelLaunchKeyRef.current = recoveryKey;
+    let cancelled = false;
+
+    void (async () => {
+      let pendingState: AgentChatParallelLaunchState | null = null;
+      try {
+        pendingState = await window.ade.agentChat.parallelLaunchState.get({
+          projectRoot,
+          parentLaneId: laneId,
+        });
+      } catch {
+        return;
+      }
+      if (!pendingState) return;
+      if (isCompletedParallelLaunchState(pendingState)) {
+        await persistParallelLaunchState(null);
+        return;
+      }
+
+      if (!pendingState.createdLaneIds.length) {
+        await persistParallelLaunchState(null);
+        return;
+      }
+
+      if (cancelled) return;
+      setParallelLaunchBusy(true);
+      setParallelLaunchStatus("Cleaning up unfinished parallel launch…");
+      const cleanupIssues = await cleanupTransientParallelLaunchLanes({
+        laneIds: pendingState.createdLaneIds,
+        deleteLane: (args) => window.ade.lanes.delete(args),
+        refreshLanes: refreshLanesStore,
+        onCleanupError: ({ phase, laneId: failedLaneId, error: cleanupError }) => {
+          console.error("parallel launch cleanup failed", {
+            phase,
+            laneId: failedLaneId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        },
+      });
+
+      if (cleanupIssues.length === 0) {
+        await persistParallelLaunchState(null);
+      } else {
+        await persistParallelLaunchState(buildParallelLaunchState({
+          parentLaneId: pendingState.parentLaneId,
+          createdLaneIds: pendingState.createdLaneIds,
+          sentLaneIds: pendingState.sentLaneIds,
+          status: "cleanup_pending",
+          lastError: pendingState.lastError,
+        }));
+        if (!cancelled) {
+          setError(formatParallelLaunchFailureMessage({
+            launchError: "Recovered an unfinished parallel launch from before ADE closed.",
+            cleanupIssues,
+          }));
+        }
+      }
+
+      if (!cancelled) {
+        setParallelLaunchBusy(false);
+        setParallelLaunchStatus(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    initialSessionId,
+    laneId,
+    lockSessionId,
+    persistParallelLaunchState,
+    projectRoot,
+    refreshLanesStore,
+  ]);
 
   useEffect(() => {
     if (agentTurnCompletionSound === "off") {
@@ -2543,6 +2713,7 @@ export function AgentChatPane({
       setParallelLaunchStatus("Naming lanes…");
       setError(null);
       const createdLaneIds: string[] = [];
+      const sentLaneIds: string[] = [];
       const sessionByLane = new Map<string, string>();
       try {
         let namingSeed = text;
@@ -2568,6 +2739,12 @@ export function AgentChatPane({
           const laneName = `${baseName}-${suffix}`;
           const childLane = await window.ade.lanes.createChild({ parentLaneId: laneId, name: laneName });
           createdLaneIds.push(childLane.id);
+          await persistParallelLaunchState(buildParallelLaunchState({
+            parentLaneId: laneId,
+            createdLaneIds,
+            sentLaneIds,
+            status: "creating_lanes",
+          }));
           const provider = resolveChatRuntimeProvider(desc);
           const model = provider === "opencode" ? slot.modelId : runtimeFacingModelId(desc, slot.modelId);
           const created = await window.ade.agentChat.create({
@@ -2591,6 +2768,12 @@ export function AgentChatPane({
         });
 
         setParallelLaunchStatus("Sending prompt to each lane…");
+        await persistParallelLaunchState(buildParallelLaunchState({
+          parentLaneId: laneId,
+          createdLaneIds,
+          sentLaneIds,
+          status: "sending",
+        }));
         for (let idx = 0; idx < parallelModelSlots.length; idx += 1) {
           const slot = parallelModelSlots[idx]!;
           const childLaneId = createdLaneIds[idx];
@@ -2598,9 +2781,6 @@ export function AgentChatPane({
           if (!sessionId) continue;
           const desc = getModelById(slot.modelId);
           const provider = resolveChatRuntimeProvider(desc);
-          const steerText = attachmentsSnapshot.length
-            ? `${sendText}\n\nAttached context:\n${attachmentsSnapshot.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
-            : sendText;
           try {
             await window.ade.agentChat.send({
               sessionId,
@@ -2615,11 +2795,22 @@ export function AgentChatPane({
             const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
             const isBusyErr = /turn is already active|already active/i.test(sendMsg);
             if (isBusyErr) {
-              await window.ade.agentChat.steer({ sessionId, text: steerText });
+              await window.ade.agentChat.steer({
+                sessionId,
+                text: sendText,
+                ...(attachmentsSnapshot.length ? { attachments: attachmentsSnapshot } : {}),
+              });
             } else {
               throw sendError;
             }
           }
+          sentLaneIds.push(childLaneId);
+          await persistParallelLaunchState(buildParallelLaunchState({
+            parentLaneId: laneId,
+            createdLaneIds,
+            sentLaneIds,
+            status: sentLaneIds.length >= createdLaneIds.length ? "completed" : "sending",
+          }));
           if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
             window.ade.agentChat.warmupModel({ sessionId, modelId: slot.modelId }).catch(() => {});
           }
@@ -2647,6 +2838,7 @@ export function AgentChatPane({
         setParallelModelSlots([]);
         setParallelConfiguringIndex(null);
         if (includeDocsSnapshot) setIncludeProjectDocs(false);
+        await persistParallelLaunchState(null);
 
         const q = new URLSearchParams();
         q.set("laneIds", createdLaneIds.join(","));
@@ -2654,7 +2846,7 @@ export function AgentChatPane({
         navigate(`/lanes?${q.toString()}`);
       } catch (submitError) {
         setParallelLaunchStatus(createdLaneIds.length > 0 ? "Cleaning up child lanes…" : null);
-        await cleanupTransientParallelLaunchLanes({
+        const cleanupIssues = await cleanupTransientParallelLaunchLanes({
           laneIds: createdLaneIds,
           deleteLane: (args) => window.ade.lanes.delete(args),
           refreshLanes: refreshLanesStore,
@@ -2667,9 +2859,23 @@ export function AgentChatPane({
           },
         });
         const message = submitError instanceof Error ? submitError.message : String(submitError);
+        if (cleanupIssues.length === 0) {
+          await persistParallelLaunchState(null);
+        } else {
+          await persistParallelLaunchState(buildParallelLaunchState({
+            parentLaneId: laneId,
+            createdLaneIds,
+            sentLaneIds,
+            status: "cleanup_pending",
+            lastError: message,
+          }));
+        }
         setDraft((current) => (current.trim().length ? current : draftSnapshot));
         setAttachments((current) => (current.length ? current : attachmentsSnapshot));
-        setError(message);
+        setError(formatParallelLaunchFailureMessage({
+          launchError: message,
+          cleanupIssues,
+        }));
       } finally {
         submitInFlightRef.current = false;
         setParallelLaunchBusy(false);
@@ -2759,17 +2965,12 @@ export function AgentChatPane({
         lastActivityAt: new Date().toISOString(),
       });
 
-      const steerSupportsAttachments = sessionProvider === "claude" || sessionProvider === "codex";
-      const steerAttachments = steerSupportsAttachments ? selectedAttachments : [];
-      const steerText = selectedAttachments.length && !steerSupportsAttachments
-        ? `${finalText}\n\nAttached context:\n${selectedAttachments.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
-        : finalText;
       if (turnActiveBySession[sessionId]) {
         setOptimisticOutgoingMessage(null);
         await window.ade.agentChat.steer({
           sessionId,
-          text: steerText,
-          ...(steerAttachments.length ? { attachments: steerAttachments } : {}),
+          text: finalText,
+          ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
         });
       } else {
         try {
@@ -2792,8 +2993,8 @@ export function AgentChatPane({
           if (isBusy) {
             await window.ade.agentChat.steer({
               sessionId,
-              text: steerText,
-              ...(steerAttachments.length ? { attachments: steerAttachments } : {}),
+              text: finalText,
+              ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
             });
           } else {
             throw sendError;
@@ -2856,6 +3057,7 @@ export function AgentChatPane({
     navigate,
     buildNativeControlPayloadForSlot,
     refreshLanesStore,
+    persistParallelLaunchState,
     setWorkViewState,
     setLaneWorkViewState,
     includeProjectDocs,
@@ -3473,6 +3675,13 @@ export function AgentChatPane({
               const tiers = desc?.reasoningTiers ?? [];
               const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
               const nextEffort = selectReasoningEffort({ tiers, preferred });
+              const previousPermissionDesc = getModelDescriptorForPermissionMode(parallelModelSlots[index]?.modelId ?? "");
+              const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
+              const nextRecommendedOpenCodeMode = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
+              const resetOpenCodePermissionToDefault = shouldResetOpenCodePermissionForModelSwitch(
+                previousPermissionDesc,
+                nextPermissionDesc,
+              );
               const nextExecOpts = getExecutionModeOptions(desc);
               patchParallelSlot(index, {
                 modelId: nextModelId,
@@ -3480,6 +3689,11 @@ export function AgentChatPane({
                 executionMode: nextExecOpts.some((o) => o.value === parallelModelSlots[index]?.executionMode)
                   ? parallelModelSlots[index]!.executionMode
                   : (nextExecOpts[0]?.value ?? "focused"),
+                ...(resetOpenCodePermissionToDefault
+                  ? {
+                    opencodePermissionMode: nextRecommendedOpenCodeMode ?? initialNativeControls.opencodePermissionMode,
+                  }
+                  : {}),
               });
             }}
             onParallelSlotReasoningChange={(index, effort) => {

@@ -38,6 +38,7 @@ export type AdeDbSyncApi = {
  *   "dock:<projectId>"            -> DockLayout
  *   "file-tree:<projectId>"       -> unknown (file tree state)
  *   "graph-state:<projectId>"     -> GraphPersistedState
+ *   "agent-chat-parallel-launch:<projectRoot>:<laneId>" -> AgentChatParallelLaunchState
  *   "auto-rebase:<laneId>"        -> StoredStatus
  *   "rebase-suggestion:<laneId>"  -> StoredSuggestionState
  */

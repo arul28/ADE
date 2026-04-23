@@ -10818,7 +10818,8 @@ export function createAgentChatService(args: {
     reasoningEffort,
     executionMode,
     interactionMode,
-  }: AgentChatSendArgs): PreparedSendMessage | null => {
+    allowActiveSession = false,
+  }: AgentChatSendArgs & { allowActiveSession?: boolean }): PreparedSendMessage | null => {
     const trimmed = text.trim();
     if (!trimmed.length) return null;
     const slashCommand = extractLeadingSlashCommand(trimmed);
@@ -10875,7 +10876,7 @@ export function createAgentChatService(args: {
       refreshReconstructionContext(managed);
     }
 
-    if (managed.session.provider === "cursor" && managed.session.status === "active") {
+    if (managed.session.provider === "cursor" && managed.session.status === "active" && !allowActiveSession) {
       throw new Error("Turn is already active.");
     }
 
@@ -12142,22 +12143,36 @@ export function createAgentChatService(args: {
     }
 
     const managed = ensureManagedSession(sessionId);
-    if (attachments.length && managed.session.provider !== "claude" && managed.session.provider !== "codex") {
-      throw new Error("Attachments are only supported for Claude and Codex follow-up messages right now.");
-    }
 
     // OpenCode runtime steer
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
       if (runtime.busy) {
-        enqueueSteerOrDrop(managed, runtime, sessionId, steerId, trimmed);
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: trimmed,
+          attachments,
+        });
+        if (!preparedSteer) {
+          return { steerId, queued: false };
+        }
+        enqueueSteerOrDrop(
+          managed,
+          runtime,
+          sessionId,
+          steerId,
+          preparedSteer.visibleText,
+          preparedSteer.attachments,
+          preparedSteer.resolvedAttachments,
+        );
         return { steerId, queued: true };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
         text: trimmed,
         displayText: trimmed,
-        attachments: [],
+        attachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -12169,6 +12184,16 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "cursor") {
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
         const rt = managed.runtime;
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: trimmed,
+          attachments,
+          allowActiveSession: true,
+        });
+        if (!preparedSteer) {
+          return { steerId, queued: false };
+        }
         if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
           logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
           emitChatEvent(managed, {
@@ -12179,10 +12204,16 @@ export function createAgentChatService(args: {
           });
           return { steerId, queued: false };
         }
-        rt.pendingSteers.push({ steerId, text: trimmed, attachments: [], resolvedAttachments: [] });
+        rt.pendingSteers.push({
+          steerId,
+          text: preparedSteer.visibleText,
+          attachments: preparedSteer.attachments,
+          resolvedAttachments: preparedSteer.resolvedAttachments,
+        });
         emitChatEvent(managed, {
           type: "user_message",
-          text: trimmed,
+          text: preparedSteer.visibleText,
+          ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -12201,7 +12232,7 @@ export function createAgentChatService(args: {
         sessionId,
         text: trimmed,
         displayText: trimmed,
-        attachments: [],
+        attachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };

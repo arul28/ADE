@@ -6569,7 +6569,97 @@ describe("createAgentChatService", () => {
           (typeof arg === "string" && arg.includes("updated text"))
           || (typeof arg === "object" && JSON.stringify(arg).includes("updated text")),
       );
-      expect(deliveredWithUpdatedText).toBeUndefined();
+    expect(deliveredWithUpdatedText).toBeUndefined();
+  });
+
+    it("delivers queued OpenCode steers with attachments after the active turn settles", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const firstTurnControl: { release?: () => void } = {};
+      let streamCallCount = 0;
+      vi.mocked(streamText).mockImplementation(() => {
+        streamCallCount += 1;
+        if (streamCallCount === 1) {
+          return {
+            fullStream: (async function* () {
+              await new Promise<void>((resolve) => {
+                firstTurnControl.release = resolve;
+              });
+              yield { type: "finish", usage: {} };
+            })(),
+          } as any;
+        }
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+      vi.mocked(buildOpenCodePromptParts).mockClear();
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Finish the active turn first.",
+      });
+      for (let attempt = 0; attempt < 20 && vi.mocked(buildOpenCodePromptParts).mock.calls.length < 1; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(vi.mocked(buildOpenCodePromptParts).mock.calls.length).toBeGreaterThanOrEqual(1);
+
+      const attachmentPath = path.join(tmpRoot, "opencode-steer-context.txt");
+      fs.writeFileSync(attachmentPath, "OpenCode steer attachment context.");
+
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "Then review the attached context.",
+        attachments: [{ path: attachmentPath, type: "file" }],
+      });
+      expect(steerResult.queued).toBe(true);
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "user_message"
+          && (event.event as any).deliveryState === "queued"
+          && event.event.text === "Then review the attached context."
+          && JSON.stringify((event.event as any).attachments ?? []).includes("opencode-steer-context.txt"),
+      );
+
+      expect(firstTurnControl.release).toBeTypeOf("function");
+      firstTurnControl.release!();
+      await firstTurn;
+
+      for (let attempt = 0; attempt < 50 && vi.mocked(buildOpenCodePromptParts).mock.calls.length < 2; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(vi.mocked(buildOpenCodePromptParts).mock.calls).toHaveLength(2);
+      expect(vi.mocked(buildOpenCodePromptParts).mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        prompt: expect.stringContaining("Then review the attached context."),
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.stringContaining("opencode-steer-context.txt"),
+            filename: "opencode-steer-context.txt",
+          }),
+        ]),
+      }));
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "user_message"
+          && event.event.text === "Then review the attached context."
+          && JSON.stringify((event.event as any).attachments ?? []).includes("opencode-steer-context.txt")
+          && (event.event as any).deliveryState !== "queued",
+      );
     });
 
     it("sends Claude image follow-ups as SDK user messages after an earlier text turn", async () => {
@@ -8201,7 +8291,7 @@ describe("createAgentChatService", () => {
     ).toHaveLength(1);
   });
 
-  it("delivers a queued Cursor message after the active turn completes", async () => {
+  it("delivers a queued Cursor message with attachments after the active turn completes", async () => {
     const events: AgentChatEventEnvelope[] = [];
     let promptCall = 0;
     let resolveFirstPrompt: ((value: { stopReason: string; usage: { inputTokens: number; outputTokens: number } }) => void) | null = null;
@@ -8284,9 +8374,13 @@ describe("createAgentChatService", () => {
     }
     expect(mockState.cursorPromptCalls).toHaveLength(1);
 
+    const attachmentPath = path.join(tmpRoot, "cursor-steer-context.txt");
+    fs.writeFileSync(attachmentPath, "Follow the attachment details.");
+
     const steerResult = await service.steer({
       sessionId: session.id,
       text: "Then send the queued follow-up.",
+      attachments: [{ path: attachmentPath, type: "file" }],
     });
     expect(steerResult.queued).toBe(true);
 
@@ -8295,7 +8389,8 @@ describe("createAgentChatService", () => {
       (event): event is AgentChatEventEnvelope =>
         event.event.type === "user_message"
         && (event.event as any).deliveryState === "queued"
-        && event.event.text === "Then send the queued follow-up.",
+        && event.event.text === "Then send the queued follow-up."
+        && JSON.stringify((event.event as any).attachments ?? []).includes("cursor-steer-context.txt"),
     );
 
     expect(resolveFirstPrompt).toBeTruthy();
@@ -8311,6 +8406,8 @@ describe("createAgentChatService", () => {
     }
     expect(mockState.cursorPromptCalls).toHaveLength(2);
     expect(JSON.stringify(mockState.cursorPromptCalls[1])).toContain("Then send the queued follow-up.");
+    expect(JSON.stringify(mockState.cursorPromptCalls[1])).toContain("cursor-steer-context.txt");
+    expect(JSON.stringify(mockState.cursorPromptCalls[1])).toContain("Follow the attachment details.");
 
     await waitForEvent(
       events,
@@ -8324,6 +8421,7 @@ describe("createAgentChatService", () => {
       (event): event is AgentChatEventEnvelope =>
         event.event.type === "user_message"
         && event.event.text === "Then send the queued follow-up."
+        && JSON.stringify((event.event as any).attachments ?? []).includes("cursor-steer-context.txt")
         && (event.event as any).deliveryState !== "queued",
     );
 

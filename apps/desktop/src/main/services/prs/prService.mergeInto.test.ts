@@ -236,6 +236,16 @@ describe("updateIntegrationProposal with new fields", () => {
     expect(params).toContain("abc123sha");
   });
 
+  it("keeps merge-into previews out of the single-source proposal cleanup query", async () => {
+    const { service, db } = buildService();
+
+    await service.listIntegrationProposals();
+
+    const [sql] = db.run.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("preferred_integration_lane_id");
+    expect(sql).toContain("merge_into_head_sha");
+  });
+
   it("trims whitespace from preferredIntegrationLaneId", () => {
     const { service, db } = buildService();
 
@@ -434,6 +444,23 @@ describe("createIntegrationPr with existingIntegrationLaneId", () => {
     ).rejects.toThrow("Integration lane not found: nonexistent-lane");
   });
 
+  it("throws when existingIntegrationLaneId points at the primary lane", async () => {
+    setupPreflight();
+    const laneService = makeLaneService([baseLane, sourceLaneA, sourceLaneB]);
+    const { service } = buildService({ laneService });
+
+    await expect(
+      service.createIntegrationPr({
+        sourceLaneIds: [SOURCE_LANE_A_ID, SOURCE_LANE_B_ID],
+        integrationLaneName: "integration/test",
+        baseBranch: "main",
+        title: "Integration PR",
+        existingIntegrationLaneId: BASE_LANE_ID,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow("Integration lane cannot be the primary lane.");
+  });
+
   it("does NOT archive integration lane on cleanup when it was adopted (not newly created)", async () => {
     setupPreflight();
     const allLanes = [baseLane, sourceLaneA, sourceLaneB, mergeIntoLane];
@@ -571,6 +598,22 @@ describe("simulateIntegration with mergeIntoLaneId", () => {
         mergeIntoLaneId: "nonexistent-lane",
       }),
     ).rejects.toThrow("Merge-into lane not found: nonexistent-lane");
+  });
+
+  it("throws when mergeIntoLaneId points at the primary lane", async () => {
+    setupSimulationPreflight();
+    const allLanes = [baseLane, sourceLaneA, sourceLaneB];
+    const laneService = makeLaneService(allLanes);
+    const { service } = buildService({ laneService });
+    setupGitShaResolution();
+
+    await expect(
+      service.simulateIntegration({
+        sourceLaneIds: [SOURCE_LANE_A_ID],
+        baseBranch: "main",
+        mergeIntoLaneId: BASE_LANE_ID,
+      }),
+    ).rejects.toThrow("Merge-into lane cannot be the primary lane.");
   });
 
   it("merge-into conflicts factor into lane outcomes", async () => {
@@ -962,6 +1005,25 @@ describe("createIntegrationLaneForProposal with preferred lane adoption", () => 
         allowDirtyWorktree: true,
       }),
     ).rejects.toThrow("Preferred integration lane cannot be one of the source lanes.");
+  });
+
+  it("throws when preferred lane points at the primary lane", async () => {
+    setupProposalPreflight();
+    const allLanes = [baseLane, sourceLaneA];
+    const laneService = makeLaneService(allLanes);
+    const db = makeMockDb();
+    db.get.mockReturnValue(makeProposalRow({
+      preferred_integration_lane_id: BASE_LANE_ID,
+    }));
+
+    const { service } = buildService({ laneService, db });
+
+    await expect(
+      service.createIntegrationLaneForProposal({
+        proposalId: "prop-1",
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow("Preferred integration lane cannot be the primary lane.");
   });
 
   it("creates child lane when no preferred lane is set", async () => {

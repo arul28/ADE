@@ -4,6 +4,7 @@ import type { AgentChatSessionSummary } from "../../../shared/types";
 import {
   buildParallelLaunchPrompt,
   cleanupTransientParallelLaunchLanes,
+  formatParallelLaunchFailureMessage,
   parallelLaneModelSuffix,
   resolveNextSelectedSessionId,
   shouldPromoteSessionForComputerUse,
@@ -92,7 +93,7 @@ describe("parallel launch helpers", () => {
     const refreshLanes = vi.fn().mockResolvedValue(undefined);
     const onCleanupError = vi.fn();
 
-    await cleanupTransientParallelLaunchLanes({
+    const issues = await cleanupTransientParallelLaunchLanes({
       laneIds: ["lane-a", "lane-b"],
       deleteLane,
       refreshLanes,
@@ -106,5 +107,41 @@ describe("parallel launch helpers", () => {
       phase: "delete",
       laneId: "lane-b",
     }));
+    expect(issues).toEqual([
+      expect.objectContaining({
+        phase: "delete",
+        laneId: "lane-b",
+      }),
+    ]);
+  });
+
+  it("treats already-deleted lanes as cleaned up during rollback retries", async () => {
+    const deleteLane = vi.fn().mockRejectedValue(new Error("Lane not found."));
+    const refreshLanes = vi.fn().mockResolvedValue(undefined);
+    const onCleanupError = vi.fn();
+
+    const issues = await cleanupTransientParallelLaunchLanes({
+      laneIds: ["lane-a"],
+      deleteLane,
+      refreshLanes,
+      onCleanupError,
+    });
+
+    expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-a", force: true });
+    expect(refreshLanes).toHaveBeenCalledTimes(1);
+    expect(onCleanupError).not.toHaveBeenCalled();
+    expect(issues).toEqual([]);
+  });
+
+  it("formats rollback failures so leaked child lanes are surfaced to the user", () => {
+    expect(formatParallelLaunchFailureMessage({
+      launchError: "Lane 2 failed to send.",
+      cleanupIssues: [
+        { phase: "delete", laneId: "lane-a", error: new Error("locked") },
+        { phase: "refresh", laneId: null, error: new Error("refresh failed") },
+      ],
+    })).toBe(
+      "Lane 2 failed to send. Cleanup could not delete lane lane-a; lane list refresh also failed. Check the lane list before retrying.",
+    );
   });
 });

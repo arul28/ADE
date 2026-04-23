@@ -45,6 +45,16 @@ const COMPACTED_HEIGHT_PER_LEAF_PX = 44;
 const LEAF_MINIMIZED_HEIGHT_PX = 44;
 const LEAF_MINIMIZED_WIDTH_PX = 44;
 
+export function resolvePaneTreeForLayout(args: {
+  savedTree: PaneSplit | null | undefined;
+  fallbackTree: PaneSplit;
+  expectedPaneIds: string[];
+}): PaneSplit {
+  return args.savedTree && isValidTree(args.savedTree, args.expectedPaneIds)
+    ? args.savedTree
+    : args.fallbackTree;
+}
+
 /* ---- Component ---- */
 
 export function PaneTilingLayout({
@@ -84,6 +94,8 @@ export function PaneTilingLayout({
   // Load persisted tree on mount
   useEffect(() => {
     let cancelled = false;
+    setTreeLoaded(false);
+    setLiveTree(tree);
     window.ade.tilingTree
       .get(layoutId)
       .then((saved) => {
@@ -99,10 +111,13 @@ export function PaneTilingLayout({
         setTreeLoaded(true);
       })
       .catch(() => {
-        if (!cancelled) setTreeLoaded(true);
+        if (!cancelled) {
+          setLiveTree(tree);
+          setTreeLoaded(true);
+        }
       });
     return () => { cancelled = true; };
-  }, [layoutId, expectedPaneIds]);
+  }, [layoutId, expectedPaneIds, tree]);
 
   // Re-sync if prop tree changes shape (e.g., panes added/removed)
   useEffect(() => {

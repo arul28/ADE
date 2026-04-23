@@ -240,6 +240,15 @@ function isAdeOwnedIntegrationLane(row: {
   return getIntegrationLaneOrigin(row) === "ade-created";
 }
 
+function assertIntegrationLaneIsNotPrimary(
+  lane: Pick<LaneSummary, "laneType"> | null | undefined,
+  label: string,
+): void {
+  if (lane?.laneType === "primary") {
+    throw new Error(`${label} cannot be the primary lane.`);
+  }
+}
+
 function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
   return {
     integrationLaneId,
@@ -2689,6 +2698,7 @@ export function createPrService({
       if (!adoptLane) {
         throw new Error(`Integration lane not found: ${existingIntegrationLaneId}`);
       }
+      assertIntegrationLaneIsNotPrimary(adoptLane, "Integration lane");
     }
     assertDirtyWorktreesAllowed({
       lanes,
@@ -3187,6 +3197,7 @@ export function createPrService({
     if (mergeIntoLaneId && !mergeIntoLane) {
       throw new Error(`Merge-into lane not found: ${mergeIntoLaneId}`);
     }
+    assertIntegrationLaneIsNotPrimary(mergeIntoLane, "Merge-into lane");
 
     // Resolve base branch SHA once, then compare each lane head against it.
     const baseSha = (await runGitOrThrow(
@@ -4193,6 +4204,8 @@ export function createPrService({
        where project_id = ?
          and status = 'proposed'
          and (integration_lane_id is null or integration_lane_id = '')
+         and (preferred_integration_lane_id is null or preferred_integration_lane_id = '')
+         and (merge_into_head_sha is null or merge_into_head_sha = '')
          and json_array_length(source_lane_ids_json) = 1
          and json_extract(source_lane_ids_json, '$[0]') in (
            select lane_id from pull_requests
@@ -4395,6 +4408,10 @@ export function createPrService({
     if (preferredIntegrationLaneId && preflight.uniqueSourceLaneIds.includes(preferredIntegrationLaneId)) {
       throw new Error("Preferred integration lane cannot be one of the source lanes.");
     }
+    assertIntegrationLaneIsNotPrimary(
+      preferredIntegrationLaneId ? laneMap.get(preferredIntegrationLaneId) ?? null : null,
+      "Preferred integration lane",
+    );
     const dirtyCheckLaneIds = [...preflight.uniqueSourceLaneIds];
     if (preferredIntegrationLaneId) dirtyCheckLaneIds.push(preferredIntegrationLaneId);
     assertDirtyWorktreesAllowed({
@@ -4406,6 +4423,7 @@ export function createPrService({
     if (existingIntegrationLaneId) {
       const existingLane = laneMap.get(existingIntegrationLaneId);
       if (existingLane) {
+        assertIntegrationLaneIsNotPrimary(existingLane, "Existing integration lane");
         const existingState = proposalRow.resolution_state_json
           ? JSON.parse(String(proposalRow.resolution_state_json)) as IntegrationResolutionState
           : null;

@@ -535,7 +535,7 @@ export function AgentChatComposer({
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileAddInProgressRef = useRef(false);
-  const canAttach = (!turnActive || sessionProvider === "claude" || sessionProvider === "codex") && (!parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS);
+  const canAttach = !parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS;
   const attachBlockedReason = parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
     ? `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`
     : null;
@@ -1352,6 +1352,11 @@ export function AgentChatComposer({
 
   const handleCommandMenuSelect = useCallback((item: ChatCommandMenuItem) => {
     if (item.type === "file" && commandMenuTrigger) {
+      if (!canAttach) {
+        setAttachError(attachBlockedReason ?? "Attachments are unavailable right now.");
+        setCommandMenuTrigger(null);
+        return;
+      }
       // Replace the @query with @filepath
       const before = draft.slice(0, commandMenuTrigger.cursorIndex);
       const after = draft.slice(commandMenuTrigger.cursorIndex + commandMenuTrigger.query.length + 1); // +1 for @
@@ -1361,7 +1366,7 @@ export function AgentChatComposer({
       onDraftChange(`/${item.name} `);
     }
     setCommandMenuTrigger(null);
-  }, [commandMenuTrigger, draft, onDraftChange, onAddAttachment]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, onDraftChange, onAddAttachment]);
 
   const submitComposerDraft = useCallback(() => {
     const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");

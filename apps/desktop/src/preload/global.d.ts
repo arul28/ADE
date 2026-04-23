@@ -77,9 +77,12 @@ import type {
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
+  AgentChatParallelLaunchState,
+  AgentChatParallelLaunchStateArgs,
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
   AgentChatFileSearchArgs,
@@ -1106,6 +1109,10 @@ declare global {
         ) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
         suggestLaneName: (args: AgentChatSuggestLaneNameArgs) => Promise<string>;
+        parallelLaunchState: {
+          get: (args: AgentChatParallelLaunchStateArgs) => Promise<AgentChatParallelLaunchState | null>;
+          set: (args: AgentChatSetParallelLaunchStateArgs) => Promise<void>;
+        };
         handoff: (
           args: AgentChatHandoffArgs,
         ) => Promise<AgentChatHandoffResult>;

@@ -632,6 +632,30 @@ export type AgentChatSuggestLaneNameArgs = {
   modelId: string;
 };
 
+export type AgentChatParallelLaunchStateStatus =
+  | "creating_lanes"
+  | "sending"
+  | "completed"
+  | "cleanup_pending";
+
+export type AgentChatParallelLaunchState = {
+  parentLaneId: string;
+  createdLaneIds: string[];
+  sentLaneIds: string[];
+  status: AgentChatParallelLaunchStateStatus;
+  updatedAt: string;
+  lastError?: string | null;
+};
+
+export type AgentChatParallelLaunchStateArgs = {
+  projectRoot: string;
+  parentLaneId: string;
+};
+
+export type AgentChatSetParallelLaunchStateArgs = AgentChatParallelLaunchStateArgs & {
+  state: AgentChatParallelLaunchState | null;
+};
+
 export type AgentChatGetSummaryArgs = {
   sessionId: string;
 };
