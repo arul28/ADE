@@ -412,7 +412,7 @@ export function FilesPage() {
     startLine?: number;
     startColumn?: number;
   } | null>(null);
-  const pendingRevealRef = useRef<{ mode: EditorViewMode; startLine: number; startColumn?: number } | null>(null);
+  const pendingRevealRef = useRef<{ mode: EditorViewMode; startLine: number; startColumn?: number; targetPath?: string } | null>(null);
   const diffViewRef = useRef<MonacoDiffHandle | null>(null);
   const treeRefreshStateRef = useRef<{
     inFlight: boolean;
@@ -465,6 +465,14 @@ export function FilesPage() {
   const revealPendingLocation = useCallback((): boolean => {
     const pendingReveal = pendingRevealRef.current;
     if (!pendingReveal) return false;
+    const activeRevealPath = activeTabPathRef.current;
+    if (
+      pendingReveal.targetPath
+      && activeRevealPath
+      && !arePathsEqual(activeRevealPath, pendingReveal.targetPath)
+    ) {
+      return false;
+    }
 
     if (pendingReveal.mode === "diff") {
       const handle = diffViewRef.current;
@@ -732,6 +740,7 @@ export function FilesPage() {
         mode: st?.mode ?? "edit",
         startLine: st.startLine,
         startColumn: st?.startColumn,
+        targetPath: openFilePath,
       };
     }
     pendingOpenRef.current = {
@@ -832,7 +841,7 @@ export function FilesPage() {
   }, [refreshTreeNow, workspaceId]);
 
   const openFile = useCallback(async (filePath: string, options: { forceReload?: boolean; preserveMode?: boolean } = {}) => {
-    if (!workspaceId) return;
+    if (!workspaceId) return null;
     const requestedPath = normalizePath(filePath);
     const normalizedPath = nodeByComparablePath.get(normalizePathForWorkspaceComparison(requestedPath, workspaceComparisonRoot))?.path ?? requestedPath;
     try {
@@ -873,8 +882,10 @@ export function FilesPage() {
       }
       setActiveTabPath(normalizedPath);
       setSelectedNodePath(normalizedPath);
+      return normalizedPath;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return null;
     }
   }, [workspaceId, nodeByComparablePath, workspaceComparisonRoot]);
 
@@ -949,7 +960,7 @@ export function FilesPage() {
     let cancelled = false;
     let pendingTimer: ReturnType<typeof setTimeout> | null = null;
     openFile(pending.filePath)
-      .then(() => {
+      .then((openedPath) => {
         if (cancelled) return;
         if (pendingMode === "diff") setMode("diff");
         if (typeof pendingStartLine === "number" && pendingStartLine > 0) {
@@ -957,6 +968,7 @@ export function FilesPage() {
             mode: pendingMode ?? "edit",
             startLine: pendingStartLine,
             startColumn: pendingStartColumn,
+            targetPath: openedPath ?? pending.filePath,
           };
           const attemptReveal = (attemptsLeft: number) => {
             if (cancelled) return;
@@ -2429,7 +2441,7 @@ export function FilesPage() {
             <>
               <div style={{ ...LABEL_STYLE, padding: "4px 12px", fontSize: 8 }}>FILE</div>
               {[
-                { label: "OPEN", action: async () => openFile(contextMenu.nodePath), color: COLORS.textSecondary },
+                { label: "OPEN", action: async () => { await openFile(contextMenu.nodePath); }, color: COLORS.textSecondary },
                 { label: "OPEN DIFF", action: async () => { await openFile(contextMenu.nodePath); setMode("diff"); }, color: COLORS.info },
               ].map((item) => (
                 <button

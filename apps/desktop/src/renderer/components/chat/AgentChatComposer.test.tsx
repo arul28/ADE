@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { AgentChatComposer } from "./AgentChatComposer";
@@ -60,6 +60,10 @@ vi.mock("@lobehub/icons", () => {
   };
 });
 
+beforeEach(() => {
+  installMatchMediaMock();
+});
+
 afterEach(cleanup);
 
 function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
@@ -107,7 +111,6 @@ function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatCo
 }
 
 function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
-  installMatchMediaMock();
   const props = buildComposerProps(overrides);
 
   const view = render(<AgentChatComposer {...props} />);
