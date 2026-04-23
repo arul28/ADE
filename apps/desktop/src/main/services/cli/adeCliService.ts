@@ -4,6 +4,11 @@ import path from "node:path";
 import type { AdeCliInstallResult, AdeCliStatus } from "../../../shared/types/adeCli";
 import type { Logger } from "../logging/logger";
 import { spawnAsync } from "../shared/utils";
+import {
+  getPathEnvKey as findPathEnvKey,
+  getPathEnvValue,
+  setPathEnvValue,
+} from "../ai/cliExecutableResolver";
 
 type CreateAdeCliServiceArgs = {
   isPackaged: boolean;
@@ -47,28 +52,6 @@ function installerFileName(): "install-path.sh" | "install-path.cmd" {
   return process.platform === "win32" ? "install-path.cmd" : "install-path.sh";
 }
 
-function findPathEnvKey(env: NodeJS.ProcessEnv): string {
-  if (process.platform !== "win32") return "PATH";
-  const existing = Object.keys(env).find((key) => key.toLowerCase() === "path");
-  return existing ?? "Path";
-}
-
-function getPathEnvValue(env: NodeJS.ProcessEnv): string | undefined {
-  return env[findPathEnvKey(env)];
-}
-
-function setPathEnvValue(env: NodeJS.ProcessEnv, value: string): void {
-  const key = findPathEnvKey(env);
-  if (process.platform === "win32") {
-    for (const existing of Object.keys(env)) {
-      if (existing.toLowerCase() === "path" && existing !== key) {
-        delete env[existing];
-      }
-    }
-  }
-  env[key] = value;
-}
-
 function isExecutable(filePath: string | null | undefined): boolean {
   if (!filePath) return false;
   try {
@@ -108,7 +91,7 @@ function prependPathDir(pathValue: string | null | undefined, dir: string | null
 
 function resolveCommandOnPath(command: string, pathValue: string | null | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
   const rawExtensions = process.platform === "win32"
-    ? (env.PATHEXT ?? env.Pathext ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+    ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
     : [""];
   const extensions = process.platform === "win32"
     ? Array.from(new Set(rawExtensions.flatMap((ext) => [ext, ext.toLowerCase(), ext.toUpperCase()])))

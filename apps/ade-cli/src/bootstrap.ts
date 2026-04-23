@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import * as nodePty from "node-pty";
@@ -265,18 +266,33 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
   }
 
+  // Headless lane runtime env. Unlike the desktop path (which leases ports via
+  // portAllocationService and builds collision-safe hostnames via
+  // laneProxyService), headless has no persistent allocator wired in — so we
+  // derive ports and hostname suffix from a stable hash of the laneId. This is
+  // (a) independent of the lane's current list position (archival/reordering
+  // no longer shifts a lane's PORT) and (b) resistant to slug collisions
+  // between lanes whose display names slugify to the same string.
+  // Range matches desktop: basePort=3000, portsPerLane=100, maxPort=9999 → 70 slots.
+  const HEADLESS_BASE_PORT = 3000;
+  const HEADLESS_PORTS_PER_LANE = 100;
+  const HEADLESS_MAX_SLOTS = 70;
   const getHeadlessLaneRuntimeEnv = async (laneId: string): Promise<Record<string, string>> => {
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
     const lane = lanes.find((entry) => entry.id === laneId);
-    const laneIndex = Math.max(0, lanes.findIndex((entry) => entry.id === laneId));
-    const portStart = 3000 + laneIndex * 100;
-    const portEnd = portStart + 99;
-    const slug = (lane?.name ?? lane?.branchRef ?? laneId)
+    const laneHash = createHash("sha256").update(laneId).digest();
+    const slotIndex = laneHash.readUInt32BE(0) % HEADLESS_MAX_SLOTS;
+    const portStart = HEADLESS_BASE_PORT + slotIndex * HEADLESS_PORTS_PER_LANE;
+    const portEnd = portStart + HEADLESS_PORTS_PER_LANE - 1;
+    const baseSlug = (lane?.name ?? lane?.branchRef ?? laneId)
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "") || "lane";
-    const hostname = `${slug}.localhost`;
+    // 6-char suffix from the laneId hash keeps hostnames readable while making
+    // two lanes with identical slugs resolve to distinct hostnames.
+    const idSuffix = laneHash.toString("hex").slice(0, 6);
+    const hostname = `${baseSlug}-${idSuffix}.localhost`;
     return {
       PORT: String(portStart),
       PORT_RANGE_START: String(portStart),

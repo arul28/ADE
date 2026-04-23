@@ -39,17 +39,46 @@ describe("resolveAdeMcpIpcPath", () => {
     expect(resolveAdeMcpIpcPath(root)).toBe(path.join(root, ".ade", "ade.sock"));
   });
 
-  it("normalizes project root casing on Windows for pipe id", () => {
+  it("uses realpath canonical casing for the pipe id on Windows", () => {
     setPlatform("win32");
+    // Windows *can* host case-sensitive trees (WSL/DrvFs interop), so we must
+    // not force-lowercase the path. Instead we rely on realpathSync.native to
+    // return canonical casing for case-insensitive filesystems — then two
+    // case-variant spellings of the same directory produce the same hash.
+    vi.spyOn(fs.realpathSync, "native").mockImplementation((value) => {
+      const raw = String(value);
+      if (raw.toLowerCase() === "c:\\repo") return "C:\\Repo";
+      throw new Error(`unexpected path: ${raw}`);
+    });
     const a = resolveAdeMcpIpcPath("C:\\Repo");
     const b = resolveAdeMcpIpcPath("c:\\repo");
     expect(a).toBe(b);
-    const id = createHash("sha256").update(path.win32.resolve("C:\\Repo").toLowerCase()).digest("hex").slice(0, 24);
+    const id = createHash("sha256").update(path.win32.resolve("C:\\Repo")).digest("hex").slice(0, 24);
     expect(a).toBe(`\\\\.\\pipe\\ade-${id}`);
+  });
+
+  it("preserves case-sensitive distinctions when realpath reports different canonical paths", () => {
+    setPlatform("win32");
+    // Case-sensitive directories (e.g. WSL DrvFs-mounted trees): realpath
+    // returns the literal casing, so the hash must differ.
+    vi.spyOn(fs.realpathSync, "native").mockImplementation((value) => {
+      const raw = String(value);
+      if (raw === "C:\\Work\\Repo") return "C:\\Work\\Repo";
+      if (raw === "C:\\Work\\repo") return "C:\\Work\\repo";
+      throw new Error(`unexpected path: ${raw}`);
+    });
+    expect(resolveAdeMcpIpcPath("C:\\Work\\Repo")).not.toBe(resolveAdeMcpIpcPath("C:\\Work\\repo"));
   });
 
   it("canonicalizes Windows path separators and dot segments before hashing", () => {
     setPlatform("win32");
+    vi.spyOn(fs.realpathSync, "native").mockImplementation((value) => {
+      const raw = String(value);
+      // realpath expands the `..` segment and returns canonical casing.
+      const normalized = path.win32.resolve(raw.replace(/\//g, "\\"));
+      if (normalized.toLowerCase() === "c:\\repo") return "C:\\Repo";
+      throw new Error(`unexpected path: ${raw}`);
+    });
     expect(resolveAdeMcpIpcPath("C:/Repo/child/..")).toBe(resolveAdeMcpIpcPath("c:\\repo"));
   });
 

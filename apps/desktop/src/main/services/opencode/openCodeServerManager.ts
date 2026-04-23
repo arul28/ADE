@@ -326,8 +326,22 @@ const defaultOpenCodeProcessController: OpenCodeProcessController = {
       }
       return false;
     }
+    // Unix: best-effort tree kill. Send SIGTERM to the process group first
+    // (covers children spawned via setsid/group leader). Then walk any
+    // descendants with pkill -TERM -P as a fallback. Finally SIGTERM the pid
+    // itself so at minimum the root process terminates.
     try {
-      process.kill(pid);
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      // Not a group leader (or no permission); fall through to child-walk.
+    }
+    try {
+      spawnSync("pkill", ["-TERM", "-P", String(pid)], { windowsHide: true });
+    } catch {
+      // pkill may be unavailable; ignore.
+    }
+    try {
+      process.kill(pid, "SIGTERM");
       return true;
     } catch {
       return false;

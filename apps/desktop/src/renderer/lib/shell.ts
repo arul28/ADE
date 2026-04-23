@@ -113,7 +113,6 @@ export function parseCommandLine(input: string, options: { platform?: ShellPlatf
   if (escaped) current += "\\";
   if (quote != null) throw new Error("Unclosed quote in command line");
   if (current.length) out.push(current);
-  if (!out.length) throw new Error("Command line must not be empty");
   return out;
 }
 
@@ -173,6 +172,5 @@ function parseWindowsCommandLine(input: string): string[] {
 
   if (inQuotes) throw new Error("Unclosed quote in command line");
   if (current.length) out.push(current);
-  if (!out.length) throw new Error("Command line must not be empty");
   return out;
 }

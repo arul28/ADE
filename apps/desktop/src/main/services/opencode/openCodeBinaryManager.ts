@@ -1,7 +1,11 @@
 // OpenCode binary resolution with bundled fallback
 import { accessSync, constants } from "node:fs";
 import { join } from "node:path";
-import { augmentProcessPathWithShellAndKnownCliDirs, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+import {
+  augmentProcessPathWithShellAndKnownCliDirs,
+  resolveExecutableFromKnownLocations,
+  setPathEnvValue,
+} from "../ai/cliExecutableResolver";
 
 export type OpenCodeBinarySource = "user-installed" | "bundled" | "missing";
 
@@ -41,8 +45,11 @@ function canRunBundledBinary(filePath: string): boolean {
 export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
   if (cachedInfo) return cachedInfo;
 
-  // Ensure PATH includes shell paths and known CLI dirs before searching
-  process.env.PATH = augmentProcessPathWithShellAndKnownCliDirs({ env: process.env });
+  // Ensure PATH includes shell paths and known CLI dirs before searching.
+  // On Windows, `process.env.PATH = …` can create a duplicate `PATH` key
+  // while the inherited `Path` key remains unchanged, so later readers see
+  // the stale value. setPathEnvValue collapses case-variant duplicates.
+  setPathEnvValue(process.env, augmentProcessPathWithShellAndKnownCliDirs({ env: process.env }));
 
   // 1. Check user-installed binary first (PATH, ~/.opencode/bin, etc.)
   const userInstalled = resolveExecutableFromKnownLocations("opencode");

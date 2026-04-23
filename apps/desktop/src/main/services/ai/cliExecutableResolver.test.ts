@@ -141,6 +141,24 @@ describe("cliExecutableResolver", () => {
     expect(env.PATH).toBeUndefined();
   });
 
+  it("prefers the canonical uppercase PATH when case-variant duplicates exist", () => {
+    setPlatform("win32");
+    // Simulates the pathological case where earlier code set
+    // `process.env.PATH = …` on a Windows process that originally inherited
+    // only `Path` — leaving both keys with different values. getPathEnvValue
+    // must read the updated `PATH` (canonical), not the stale `Path`.
+    const env: NodeJS.ProcessEnv = {
+      Path: "C:\\Stale",
+      PATH: "C:\\Updated",
+    };
+    expect(getPathEnvValue(env)).toBe("C:\\Updated");
+
+    // setPathEnvValue collapses the duplicate so readers cannot diverge.
+    setPathEnvValue(env, "C:\\NextValue");
+    expect(env.PATH).toBe("C:\\NextValue");
+    expect(env.Path).toBeUndefined();
+  });
+
   it("prefers USERPROFILE over a Git Bash-style HOME for Windows known dirs", () => {
     setPlatform("win32");
     setPathDelimiter(";");

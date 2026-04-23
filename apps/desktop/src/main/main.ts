@@ -35,7 +35,7 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
-import { augmentProcessPathWithShellAndKnownCliDirs } from "./services/ai/cliExecutableResolver";
+import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService } from "./services/chat/agentChatService";
 import { createGithubService } from "./services/github/githubService";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
@@ -159,7 +159,10 @@ function fixElectronShellPath(): void {
     timeoutMs: 1_500,
   });
   if (nextPath) {
-    process.env.PATH = nextPath;
+    // Use setPathEnvValue so Windows processes inheriting a `Path` key collapse
+    // to a single canonical entry (direct `process.env.PATH = …` can leave a
+    // stale `Path` behind that later readers pick up instead).
+    setPathEnvValue(process.env, nextPath);
   }
 }
 

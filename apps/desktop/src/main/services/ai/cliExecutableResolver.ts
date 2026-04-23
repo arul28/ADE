@@ -41,7 +41,14 @@ function pathListDelimiter(): string {
 
 export function getPathEnvKey(env: NodeJS.ProcessEnv): string {
   if (process.platform !== "win32") return "PATH";
-  return Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "Path";
+  // If multiple case-variants exist (e.g. both `PATH` and `Path` because
+  // callers mutated `process.env.PATH` directly while Windows originally
+  // set `Path`), prefer the canonical uppercase key so readers do not pick
+  // up a stale inherited value.
+  const keys = Object.keys(env).filter((key) => key.toLowerCase() === "path");
+  if (keys.length === 0) return "Path";
+  if (keys.includes("PATH")) return "PATH";
+  return keys[0]!;
 }
 
 export function getPathEnvValue(env: NodeJS.ProcessEnv): string | undefined {

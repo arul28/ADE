@@ -19,6 +19,18 @@ export function processOutputToString(value: Buffer | string | null | undefined)
   return Buffer.isBuffer(value) ? value.toString("utf8") : String(value ?? "");
 }
 
+/**
+ * Quote a single argument for a Windows `cmd.exe /s /c "..."` command line.
+ *
+ * SAFETY: this function strips `%` (variable expansion) and `\r\n` (line
+ * breaks) but does NOT escape other cmd metacharacters such as `|`, `&`,
+ * `<`, `>`, `!`, `^`. Those characters are inert only because the resulting
+ * string is embedded inside the outer `/c "…"` double-quoted block used by
+ * {@link resolveWindowsCmdInvocation} (with `/s` so cmd preserves the outer
+ * quotes). Do NOT reuse this helper outside of that context — if the caller
+ * builds a cmd line without the surrounding `/s /c "…"` wrapper, untrusted
+ * input can break out of quoting and become a shell injection vector.
+ */
 export function quoteWindowsCmdArg(value: string): string {
   let quoted = "\"";
   let backslashes = 0;

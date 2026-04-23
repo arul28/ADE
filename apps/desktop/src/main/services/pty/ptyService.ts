@@ -1323,7 +1323,11 @@ export function createPtyService({
         closeEntry(ptyId, exitCode ?? null);
       });
 
-      if (startupCommand && !directCommand) {
+      // Only type the startup command into the terminal when we launched an
+      // interactive shell (no directCommand). If directCommand is set we either
+      // already threw on spawn failure or the command is running directly — in
+      // neither case do we want to feed an extra startupCommand string.
+      if (startupCommand && !directCommand && selectedShell) {
         try {
           pty.write(`${startupCommand}\r`);
           setRuntimeState(sessionId, "running");
