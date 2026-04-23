@@ -3171,6 +3171,14 @@ describe("aiOrchestratorService", () => {
         `,
         ["2000-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z", attempt.id]
       );
+      fixture.db.run(
+        `
+          update orchestrator_claims
+          set heartbeat_at = '2000-01-01T00:00:00.000Z'
+          where attempt_id = ?
+        `,
+        [attempt.id]
+      );
 
       // A startup/interval sweep can be in flight on slower CI runners. Retry the
       // explicit sweep until this attempt is reconciled instead of racing it.

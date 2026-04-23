@@ -10,7 +10,7 @@ if "%TARGET_PATH%"=="" (
   if defined LOCALAPPDATA (
     set "TARGET_PATH=%LOCALAPPDATA%\ADE\bin\ade.cmd"
   ) else (
-    set "TARGET_PATH=%USERPROFILE%\.ade\bin\ade.cmd"
+    set "TARGET_PATH=%USERPROFILE%\AppData\Local\ADE\bin\ade.cmd"
   )
 )
 

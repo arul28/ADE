@@ -265,6 +265,27 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
   }
 
+  const getHeadlessLaneRuntimeEnv = async (laneId: string): Promise<Record<string, string>> => {
+    const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+    const lane = lanes.find((entry) => entry.id === laneId);
+    const laneIndex = Math.max(0, lanes.findIndex((entry) => entry.id === laneId));
+    const portStart = 3000 + laneIndex * 100;
+    const portEnd = portStart + 99;
+    const slug = (lane?.name ?? lane?.branchRef ?? laneId)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "lane";
+    const hostname = `${slug}.localhost`;
+    return {
+      PORT: String(portStart),
+      PORT_RANGE_START: String(portStart),
+      PORT_RANGE_END: String(portEnd),
+      HOSTNAME: hostname,
+      PROXY_HOSTNAME: hostname,
+    };
+  };
+
   const processService = createProcessService({
     db,
     projectId,
@@ -273,6 +294,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     projectConfigService,
     sessionService,
     ptyService,
+    getLaneRuntimeEnv: getHeadlessLaneRuntimeEnv,
     broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>),
   });
 

@@ -22,7 +22,7 @@ export function processOutputToString(value: Buffer | string | null | undefined)
 export function quoteWindowsCmdArg(value: string): string {
   let quoted = "\"";
   let backslashes = 0;
-  for (const char of value.replace(/%/g, "%%")) {
+  for (const char of value.replace(/%/g, "%%").replace(/[\r\n]/g, " ")) {
     if (char === "\\") {
       backslashes += 1;
       continue;

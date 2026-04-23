@@ -43,6 +43,12 @@ type SpawnResult = {
   exitCode: number | null;
 };
 
+function isBenignStdinCloseError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+}
+
 function appendStructuredOutputInstruction(prompt: string, jsonSchema?: unknown): string {
   if (!jsonSchema) return prompt;
   return `${prompt}
@@ -107,7 +113,7 @@ async function runCommand(args: {
       stderr += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
     });
     child.stdin?.on("error", (error) => {
-      if (settled) return;
+      if (settled || isBenignStdinCloseError(error)) return;
       settled = true;
       clearTimeout(timeoutHandle);
       reject(error);

@@ -2636,6 +2636,35 @@ function shellEscapeArg(value: string): string {
   return `'${sanitized.replace(/'/g, `'"'"'`)}'`;
 }
 
+function windowsShellEscapeArg(value: string): string {
+  const sanitized = stripInjectionChars(value);
+  if (!sanitized.length) return "\"\"";
+  if (/^[a-zA-Z0-9_.:/\\-]+$/.test(sanitized)) return sanitized;
+  let quoted = "\"";
+  let backslashes = 0;
+  for (const char of sanitized.replace(/%/g, "%%")) {
+    if (char === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (char === "\"") {
+      quoted += "\\".repeat(backslashes * 2);
+      quoted += "\"\"";
+    } else {
+      quoted += "\\".repeat(backslashes);
+      quoted += char;
+    }
+    backslashes = 0;
+  }
+  quoted += "\\".repeat(backslashes * 2);
+  quoted += "\"";
+  return quoted;
+}
+
+function previewShellEscapeArg(value: string): string {
+  return process.platform === "win32" ? windowsShellEscapeArg(value) : shellEscapeArg(value);
+}
+
 function clipText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, Math.max(0, maxChars - 18))}\n...<truncated>`;
@@ -5708,7 +5737,7 @@ async function runTool(args: {
     const commandPreviewParts: string[] = [provider];
     if (model) {
       commandArgs.push("--model", model);
-      commandPreviewParts.push("--model", shellEscapeArg(model));
+      commandPreviewParts.push("--model", previewShellEscapeArg(model));
     }
     if (provider === "codex") {
       if (permissionMode === "full-auto") {
@@ -5730,14 +5759,14 @@ async function runTool(args: {
       const claudePermission =
         permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : permissionMode === "edit" ? "acceptEdits" : "default";
       commandArgs.push("--permission-mode", claudePermission);
-      commandPreviewParts.push("--permission-mode", shellEscapeArg(claudePermission));
+      commandPreviewParts.push("--permission-mode", previewShellEscapeArg(claudePermission));
 
       // ADE-owned actions are exposed through the `ade` CLI. Child agent
       // sessions receive identity env vars below instead of an attached server.
     }
     if (finalPrompt) {
       commandArgs.push(finalPrompt);
-      commandPreviewParts.push(shellEscapeArg(finalPrompt));
+      commandPreviewParts.push(previewShellEscapeArg(finalPrompt));
     }
 
     // Attach worker identity through the process environment. The startup

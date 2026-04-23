@@ -456,9 +456,24 @@ function parseWorkspacePathLocation(value: string): WorkspacePathLocation | null
   if (/^(?:https?|mailto|tel):/i.test(trimmed)) return null;
   if (/^#/.test(trimmed)) return null;
 
-  const withoutScheme = trimmed.replace(/^file:\/\//i, "");
-  const [withoutFragment, rawFragment = ""] = withoutScheme.split("#", 2);
-  const rawPath = withoutFragment.split("?", 1)[0]?.trim() ?? "";
+  let rawPath: string;
+  let rawFragment = "";
+  if (/^file:/i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      rawPath = `${url.host ? `//${url.host}` : ""}${url.pathname}`.trim();
+      rawFragment = url.hash.startsWith("#") ? url.hash.slice(1) : "";
+    } catch {
+      const withoutScheme = trimmed.replace(/^file:\/\//i, "");
+      const [withoutFragment, fallbackFragment = ""] = withoutScheme.split("#", 2);
+      rawPath = withoutFragment.split("?", 1)[0]?.trim() ?? "";
+      rawFragment = fallbackFragment;
+    }
+  } else {
+    const [withoutFragment, fallbackFragment = ""] = trimmed.split("#", 2);
+    rawPath = withoutFragment.split("?", 1)[0]?.trim() ?? "";
+    rawFragment = fallbackFragment;
+  }
   let decodedPath = rawPath;
   try {
     decodedPath = decodeURIComponent(rawPath);

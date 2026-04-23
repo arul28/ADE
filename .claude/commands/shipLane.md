@@ -1,6 +1,6 @@
 ---
 name: shipLane
-description: 'Autonomously drive a lane through CI + review until ready or capped (automate → finalize → poll/fix loop, self-paced wake-ups, max 10 iterations)'
+description: 'Autonomously drive a lane through CI + review until ready or capped (automate → finalize → poll/fix loop, self-paced wake-ups, max 5 iterations)'
 ---
 
 # Ship Lane Command

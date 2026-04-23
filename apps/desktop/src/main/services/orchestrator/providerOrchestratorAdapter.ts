@@ -100,18 +100,40 @@ function workerLaunchFilePath(projectRoot: string, attemptId: string): string {
 
 const WORKER_CLI_LAUNCHER_SCRIPT = `
 const fs = require("fs");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const specPath = process.argv[1];
 let done = false;
+let child = null;
+function terminateChild() {
+  if (!child || !child.pid) return;
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+    } else {
+      child.kill("SIGTERM");
+    }
+  } catch {}
+}
 function finish(code) {
   if (done) return;
   done = true;
   process.exit(typeof code === "number" ? code : 1);
 }
+process.on("SIGTERM", () => {
+  terminateChild();
+  finish(143);
+});
+process.on("SIGINT", () => {
+  terminateChild();
+  finish(130);
+});
+process.on("exit", () => {
+  terminateChild();
+});
 const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
 const childEnv = { ...process.env, ...(spec.env || {}) };
 delete childEnv.ELECTRON_RUN_AS_NODE;
-const child = spawn(spec.command, Array.isArray(spec.args) ? spec.args : [], {
+child = spawn(spec.command, Array.isArray(spec.args) ? spec.args : [], {
   cwd: spec.cwd || process.cwd(),
   env: childEnv,
   shell: false,

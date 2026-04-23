@@ -254,7 +254,7 @@ function listWindowsProcessesFromPowerShell(): OpenCodeProcessSnapshot[] {
 
 function listWindowsProcesses(): OpenCodeProcessSnapshot[] {
   const fromWmic = listWindowsProcessesFromWmic();
-  if (fromWmic.length > 0) {
+  if (fromWmic.length > 0 && fromWmic.every((process) => process.command.trim().length > 0)) {
     return fromWmic;
   }
   return listWindowsProcessesFromPowerShell();

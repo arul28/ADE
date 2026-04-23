@@ -610,6 +610,47 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
   });
 
+  it("preserves UNC authorities in file URI references", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-unc",
+        kind: "worktree",
+        laneId: "lane-unc",
+        name: "UNC lane",
+        rootPath: "//server/share/repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `file://server/share/repo/src/main.ts#line=12`.",
+            itemId: "text-unc-file-uri",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-unc" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "file://server/share/repo/src/main.ts#line=12" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-unc\",\"startLine\":12}",
+    );
+  });
+
   it("does not coalesce text fragments across command boundaries", () => {
     const view = renderMessageList([
       {

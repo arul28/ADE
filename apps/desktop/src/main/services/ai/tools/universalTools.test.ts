@@ -281,6 +281,17 @@ describe("checkWorkerSandbox", () => {
     expect(result.reason).toContain("Path outside sandbox");
   });
 
+  it("fails closed for generic mutating cmd.exe /c payloads", () => {
+    const result = checkWorkerSandbox(
+      'cmd.exe /c "copy foo ..\\outside.txt"',
+      sandboxWith({ allowedPaths: ["./"] }),
+      "C:\\projects\\repo",
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("cmd.exe /c mutating payload");
+  });
+
   it("blocks PowerShell mutation paths hidden behind parenthesized expressions", () => {
     const result = checkWorkerSandbox(
       'powershell.exe -Command "Set-Content -Path (Join-Path .. outside.txt) -Value hi"',
