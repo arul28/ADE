@@ -204,8 +204,21 @@ type PowerShellMutationKind =
 
 const POWERSHELL_COMMAND_FLAGS = new Set(["-command", "-c"]);
 const POWERSHELL_ENCODED_COMMAND_FLAGS = new Set(["-encodedcommand", "-enc", "-e"]);
+const POWERSHELL_FILE_FLAGS = new Set(["-file"]);
 const POWERSHELL_SEGMENT_SEPARATORS = new Set(["|", "||", "&&", ";"]);
 const POWERSHELL_PUNCTUATION_TOKENS = new Set(["{", "}", "(", ")", ","]);
+const POWERSHELL_SWITCH_PARAMETERS = new Set([
+  "-append",
+  "-confirm",
+  "-debug",
+  "-force",
+  "-noclobber",
+  "-nonewline",
+  "-passthru",
+  "-recurse",
+  "-verbose",
+  "-whatif",
+]);
 const POWERSHELL_MUTATION_KIND_BY_COMMAND = new Map<string, PowerShellMutationKind>([
   ["add-content", "path-write"],
   ["ac", "path-write"],
@@ -352,6 +365,15 @@ function isPowerShellHostCommand(commandName: string): boolean {
   return baseName === "powershell" || baseName === "powershell.exe" || baseName === "pwsh" || baseName === "pwsh.exe";
 }
 
+function isCmdHostCommand(commandName: string): boolean {
+  const baseName = path.win32.basename(normalizePathToken(commandName)).toLowerCase();
+  return baseName === "cmd" || baseName === "cmd.exe";
+}
+
+function isPowerShellScriptPath(value: string): boolean {
+  return /\.ps1$/i.test(normalizePathToken(value));
+}
+
 function decodePowerShellEncodedCommand(value: string): string | null {
   const trimmed = normalizePathToken(value);
   if (!trimmed.length || !/^[a-z0-9+/=]+$/i.test(trimmed)) {
@@ -369,8 +391,25 @@ function isPowerShellParameterToken(value: string): boolean {
   return /^-[a-z]/i.test(value);
 }
 
+function isPowerShellSwitchParameterToken(value: string): boolean {
+  return POWERSHELL_SWITCH_PARAMETERS.has(value.toLowerCase());
+}
+
 function isPowerShellDynamicArgument(value: string): boolean {
   return value.startsWith("$") || value.startsWith("@(") || value.includes("$(");
+}
+
+function isPowerShellOpaquePathSyntax(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    !trimmed.length ||
+    trimmed === "@" ||
+    trimmed === "$" ||
+    POWERSHELL_PUNCTUATION_TOKENS.has(trimmed) ||
+    trimmed.startsWith("(") ||
+    trimmed.startsWith("@(") ||
+    trimmed.includes("$(")
+  );
 }
 
 function normalizePowerShellPathArgument(value: string): { path?: string; nonFilesystemProvider?: string; opaque?: string } {
@@ -414,6 +453,12 @@ function parsePowerShellArgs(args: string[]): { positional: string[]; named: Map
 
     if (isPowerShellParameterToken(raw)) {
       const key = raw.toLowerCase();
+      if (isPowerShellSwitchParameterToken(key)) {
+        const values = named.get(key) ?? [];
+        values.push("");
+        named.set(key, values);
+        continue;
+      }
       const next = normalizePathToken(args[i + 1] ?? "");
       if (next.length > 0 && !isPowerShellParameterToken(next) && !POWERSHELL_PUNCTUATION_TOKENS.has(next)) {
         const values = named.get(key) ?? [];
@@ -438,6 +483,7 @@ function inspectPowerShellInvocations(
   command: string,
   cwd: string,
   pathApi: SandboxPathApi = getSandboxPathApi(cwd, command),
+  depth = 0,
 ): PowerShellInspection {
   const refs = new Map<string, PathReference>();
   const accessPriority: Record<PathAccessMode, number> = {
@@ -447,6 +493,9 @@ function inspectPowerShellInvocations(
   };
 
   const addResolvedPath = (rawValue: string, access: PathAccessMode): { blockedReason?: string } => {
+    if (access !== "read" && isPowerShellOpaquePathSyntax(rawValue)) {
+      return { blockedReason: `PowerShell mutation uses an uninspectable path argument: ${rawValue}` };
+    }
     const normalized = normalizePathToken(rawValue);
     if (!normalized.length || normalized.includes("://")) return {};
 
@@ -488,6 +537,7 @@ function inspectPowerShellInvocations(
     flags: string[],
     positionalIndex: number | null,
     access: PathAccessMode,
+    failOnMissing = true,
   ): { blockedReason?: string } => {
     for (const flag of flags) {
       const values = parsed.named.get(flag);
@@ -498,54 +548,83 @@ function inspectPowerShellInvocations(
     if (positionalIndex !== null && parsed.positional[positionalIndex]) {
       return addResolvedPath(parsed.positional[positionalIndex]!, access);
     }
+    if (access !== "read" && failOnMissing) {
+      return { blockedReason: "PowerShell mutation path argument is not inspectable by the worker sandbox" };
+    }
     return {};
   };
 
-  const outerSegments = splitCommandSegments(tokenizeCommand(command, pathApi === path.win32));
-  let mutates = false;
-
-  for (const segment of outerSegments) {
-    const commandName = normalizePathToken(segment[0] ?? "");
-    if (!commandName.length || !isPowerShellHostCommand(commandName)) continue;
-
-    const args = segment.slice(1);
-    let script: string | null = null;
-    for (let i = 0; i < args.length; i += 1) {
-      const flag = normalizePathToken(args[i] ?? "").toLowerCase();
-      if (POWERSHELL_COMMAND_FLAGS.has(flag)) {
-        const remainder = args.slice(i + 1).join(" ").trim();
-        if (!remainder.length || remainder === "-") {
-          return {
-            mutates: true,
-            pathRefs: [...refs.values()],
-            blockedReason: "PowerShell -Command input is not inspectable by the worker sandbox",
-          };
-        }
-        script = remainder;
-        break;
-      }
-      if (POWERSHELL_ENCODED_COMMAND_FLAGS.has(flag)) {
-        const decoded = decodePowerShellEncodedCommand(args[i + 1] ?? "");
-        if (!decoded) {
-          return {
-            mutates: true,
-            pathRefs: [...refs.values()],
-            blockedReason: "PowerShell -EncodedCommand payload is not inspectable by the worker sandbox",
-          };
-        }
-        script = decoded;
-        break;
+  const mergeInspection = (inspection: PowerShellInspection) => {
+    for (const entry of inspection.pathRefs) {
+      const key = `${entry.raw}::${entry.resolved}`;
+      const existing = refs.get(key);
+      if (!existing || accessPriority[entry.access] > accessPriority[existing.access]) {
+        refs.set(key, entry);
       }
     }
+  };
 
-    if (!script) continue;
+  const inspectScriptFile = (rawScriptPath: string): PowerShellInspection => {
+    const trimmed = rawScriptPath.trim();
+    if (isPowerShellOpaquePathSyntax(trimmed) || isPowerShellDynamicArgument(trimmed)) {
+      return {
+        mutates: true,
+        pathRefs: [...refs.values()],
+        blockedReason: `PowerShell script path is not inspectable by the worker sandbox: ${trimmed}`,
+      };
+    }
 
+    const normalizedPath = normalizePowerShellPathArgument(trimmed);
+    if (normalizedPath.opaque || normalizedPath.nonFilesystemProvider || !normalizedPath.path) {
+      return {
+        mutates: true,
+        pathRefs: [...refs.values()],
+        blockedReason: `PowerShell script path is not inspectable by the worker sandbox: ${trimmed}`,
+      };
+    }
+
+    const addScriptRef = addResolvedPath(normalizedPath.path, "read");
+    if (addScriptRef.blockedReason) {
+      return { mutates: true, pathRefs: [...refs.values()], blockedReason: addScriptRef.blockedReason };
+    }
+
+    const scriptPath = pathApi.resolve(cwd, normalizedPath.path);
+    try {
+      const realCwd = canonicalizePathForContainment(cwd, pathApi);
+      const realScriptPath = canonicalizePathForContainment(scriptPath, pathApi);
+      if (!isWithinDirForPathApi(pathApi, realCwd, realScriptPath)) {
+        return {
+          mutates: true,
+          pathRefs: [...refs.values()],
+          blockedReason: `PowerShell script file is outside the inspectable sandbox root: ${normalizedPath.path}`,
+        };
+      }
+      if (!fs.existsSync(realScriptPath) || !fs.statSync(realScriptPath).isFile()) {
+        return {
+          mutates: true,
+          pathRefs: [...refs.values()],
+          blockedReason: `PowerShell script file is not inspectable by the worker sandbox: ${normalizedPath.path}`,
+        };
+      }
+      const script = fs.readFileSync(realScriptPath, "utf-8");
+      return inspectPowerShellScript(script);
+    } catch {
+      return {
+        mutates: true,
+        pathRefs: [...refs.values()],
+        blockedReason: `PowerShell script file is not inspectable by the worker sandbox: ${normalizedPath.path}`,
+      };
+    }
+  };
+
+  const inspectPowerShellScript = (script: string): PowerShellInspection => {
+    let scriptMutates = false;
     const tokens = tokenizePowerShellCommand(script);
     for (let i = 0; i < tokens.length; i += 1) {
       const token = normalizePathToken(tokens[i] ?? "");
       if (!token.length) continue;
       if (token === ">" || token === ">>" || /^\d>>?$/.test(token)) {
-        mutates = true;
+        scriptMutates = true;
         const writeTarget = addResolvedPath(tokens[i + 1] ?? "", "write");
         if (writeTarget.blockedReason) {
           return {
@@ -569,10 +648,19 @@ function inspectPowerShellInvocations(
       }
       if (innerCommandIndex >= innerSegment.length) continue;
 
-      const innerCommandName = normalizePathToken(innerSegment[innerCommandIndex] ?? "").toLowerCase();
+      const innerCommandToken = normalizePathToken(innerSegment[innerCommandIndex] ?? "");
+      const innerCommandName = innerCommandToken.toLowerCase();
+      if (isPowerShellScriptPath(innerCommandToken)) {
+        const scriptFileInspection = inspectScriptFile(innerCommandToken);
+        mergeInspection(scriptFileInspection);
+        if (scriptFileInspection.blockedReason) return { ...scriptFileInspection, pathRefs: [...refs.values()] };
+        scriptMutates = scriptMutates || scriptFileInspection.mutates;
+        continue;
+      }
+
       const mutationKind = POWERSHELL_MUTATION_KIND_BY_COMMAND.get(innerCommandName);
       if (!mutationKind) continue;
-      mutates = true;
+      scriptMutates = true;
 
       const parsed = parsePowerShellArgs(innerSegment.slice(innerCommandIndex + 1));
       let result: { blockedReason?: string } = {};
@@ -605,7 +693,7 @@ function inspectPowerShellInvocations(
           result = addFirstNamedOrPositionalPath(parsed, ["-newname"], 1, "write");
           break;
         case "new-item":
-          result = addFirstNamedOrPositionalPath(parsed, ["-path", "-literalpath", "-pspath", "-lp"], 0, "write");
+          result = addFirstNamedOrPositionalPath(parsed, ["-path", "-literalpath", "-pspath", "-lp"], 0, "write", false);
           if (result.blockedReason) break;
           if (parsed.named.get("-name")?.[0]) {
             result = addResolvedPath(parsed.named.get("-name")![0]!, "write");
@@ -624,6 +712,97 @@ function inspectPowerShellInvocations(
         };
       }
     }
+
+    return { mutates: scriptMutates, pathRefs: [...refs.values()] };
+  };
+
+  const outerSegments = splitCommandSegments(tokenizeCommand(command, pathApi === path.win32));
+  let mutates = false;
+
+  for (const segment of outerSegments) {
+    const commandName = normalizePathToken(segment[0] ?? "");
+    if (!commandName.length) continue;
+
+    if (isCmdHostCommand(commandName)) {
+      if (depth >= 4) {
+        return {
+          mutates: true,
+          pathRefs: [...refs.values()],
+          blockedReason: "Nested cmd.exe /c command is not inspectable by the worker sandbox",
+        };
+      }
+      const commandArgIndex = segment.findIndex((arg, index) => index > 0 && /^\/c$/i.test(normalizePathToken(arg)));
+      if (commandArgIndex >= 0) {
+        const nestedCommand = segment.slice(commandArgIndex + 1).join(" ").trim();
+        if (!nestedCommand.length) {
+          return {
+            mutates: true,
+            pathRefs: [...refs.values()],
+            blockedReason: "cmd.exe /c payload is not inspectable by the worker sandbox",
+          };
+        }
+        const nestedInspection = inspectPowerShellInvocations(nestedCommand, cwd, pathApi, depth + 1);
+        mergeInspection(nestedInspection);
+        if (nestedInspection.blockedReason) return { ...nestedInspection, pathRefs: [...refs.values()] };
+        mutates = mutates || nestedInspection.mutates;
+      }
+      continue;
+    }
+
+    if (isPowerShellScriptPath(commandName)) {
+      const scriptFileInspection = inspectScriptFile(commandName);
+      mergeInspection(scriptFileInspection);
+      if (scriptFileInspection.blockedReason) return { ...scriptFileInspection, pathRefs: [...refs.values()] };
+      mutates = mutates || scriptFileInspection.mutates;
+      continue;
+    }
+
+    if (!isPowerShellHostCommand(commandName)) continue;
+
+    const args = segment.slice(1);
+    let script: string | null = null;
+    for (let i = 0; i < args.length; i += 1) {
+      const flag = normalizePathToken(args[i] ?? "").toLowerCase();
+      if (POWERSHELL_COMMAND_FLAGS.has(flag)) {
+        const remainder = args.slice(i + 1).join(" ").trim();
+        if (!remainder.length || remainder === "-") {
+          return {
+            mutates: true,
+            pathRefs: [...refs.values()],
+            blockedReason: "PowerShell -Command input is not inspectable by the worker sandbox",
+          };
+        }
+        script = remainder;
+        break;
+      }
+      if (POWERSHELL_ENCODED_COMMAND_FLAGS.has(flag)) {
+        const decoded = decodePowerShellEncodedCommand(args[i + 1] ?? "");
+        if (!decoded) {
+          return {
+            mutates: true,
+            pathRefs: [...refs.values()],
+            blockedReason: "PowerShell -EncodedCommand payload is not inspectable by the worker sandbox",
+          };
+        }
+        script = decoded;
+        break;
+      }
+      if (POWERSHELL_FILE_FLAGS.has(flag)) {
+        const scriptPath = args[i + 1] ?? "";
+        const scriptFileInspection = inspectScriptFile(scriptPath);
+        mergeInspection(scriptFileInspection);
+        if (scriptFileInspection.blockedReason) return { ...scriptFileInspection, pathRefs: [...refs.values()] };
+        mutates = mutates || scriptFileInspection.mutates;
+        script = null;
+        break;
+      }
+    }
+
+    if (!script) continue;
+    const scriptInspection = inspectPowerShellScript(script);
+    mergeInspection(scriptInspection);
+    if (scriptInspection.blockedReason) return { ...scriptInspection, pathRefs: [...refs.values()] };
+    mutates = mutates || scriptInspection.mutates;
   }
 
   return { mutates, pathRefs: [...refs.values()] };

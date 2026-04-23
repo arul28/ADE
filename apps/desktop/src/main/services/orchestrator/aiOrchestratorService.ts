@@ -4279,6 +4279,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             runId: run.id,
             reason
           });
+          continue;
         }
       }
       if (!activeHealthSweepRuns.has(run.id)) {

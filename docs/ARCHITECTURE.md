@@ -943,7 +943,7 @@ Windows:
 - `npm run dist:win` — x64 installer via `electron-builder --win --x64`, wrapped with `validate:win:artifacts` (preflight) and `validate:win:release` (post-build) checks in `apps/desktop/scripts/validate-win-artifacts.mjs`.
 - Windows-only wrappers for the bundled `ade` CLI ship in `apps/desktop/scripts/`: `ade-cli-windows-wrapper.cmd` (launcher) and `ade-cli-install-path.cmd` (idempotent PATH install helper). The platform-agnostic `.sh` wrapper covers macOS/Linux.
 - The Windows installer bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/` plus a Windows node-pty ConPTY worker.
-- GitHub Actions `release-core.yml` drives signed/notarized Windows artifacts.
+- GitHub Actions `release-core.yml` builds and validates Windows artifacts; they are not currently code-signed or notarized.
 
 Post-packaging hardening (`apps/desktop/scripts/`):
 

@@ -476,7 +476,7 @@ describe("ptyService", () => {
       const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
       expect(ptyLib.spawn).toHaveBeenCalledWith(
         "C:\\Windows\\System32\\cmd.exe",
-        ["/d", "/s", "/c", '"npm.cmd" "run" "dev"'],
+        '/d /s /c "npm.cmd" "run" "dev"',
         expect.any(Object),
       );
     });

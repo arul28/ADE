@@ -3192,6 +3192,93 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("does not enter a run body while another health sweep owns it", async () => {
+    const fixture = await createFixture();
+    let releaseFirstSweep: () => void = () => {};
+    const firstSweepGate = new Promise<void>((resolve) => {
+      releaseFirstSweep = resolve;
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Verify overlapping health sweeps keep single ownership.",
+        laneId: fixture.laneId
+      });
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "implement-changes", title: "Implement requested changes", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      const sessionId = "session-ended-overlap";
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'opencode',
+              executor_session_id = ?
+          where id = ?
+        `,
+        [sessionId, attempt.id]
+      );
+      fixture.db.run(
+        `
+          insert into terminal_sessions(
+            id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code,
+            transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
+            summary, tool_type, resume_command, last_output_at
+          ) values (?, ?, null, 1, 'Worker', ?, ?, 0, '', null, null, 'ended', null, null, 'codex-orchestrated', null, ?)
+        `,
+        [
+          sessionId,
+          fixture.laneId,
+          "2000-01-01T00:00:00.000Z",
+          "2000-01-01T00:00:01.000Z",
+          "2000-01-01T00:00:00.000Z",
+        ]
+      );
+
+      const originalReconcile = fixture.orchestratorService.onTrackedSessionEnded.bind(fixture.orchestratorService);
+      let reconcileCalls = 0;
+      fixture.orchestratorService.onTrackedSessionEnded = (async (args: any) => {
+        reconcileCalls += 1;
+        await firstSweepGate;
+        return await originalReconcile(args);
+      }) as typeof fixture.orchestratorService.onTrackedSessionEnded;
+
+      const firstSweep = fixture.aiOrchestratorService.runHealthSweep("overlap-owner");
+      for (let tries = 0; tries < 40 && reconcileCalls === 0; tries += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(reconcileCalls).toBe(1);
+      const overlappedSweep = await fixture.aiOrchestratorService.runHealthSweep("overlap-contender");
+
+      expect(overlappedSweep.sweeps).toBe(0);
+      expect(reconcileCalls).toBe(1);
+
+      releaseFirstSweep();
+      await firstSweep;
+    } finally {
+      releaseFirstSweep();
+      fixture.dispose();
+    }
+  }, 10_000);
+
   it("skips background health sweeps for runs blocked on open interventions", async () => {
     const fixture = await createFixture();
     try {

@@ -1,11 +1,24 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mockState = vi.hoisted(() => ({
+  resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/mock/bin/claude", source: "path" as const })),
+}));
+
+vi.mock("../ai/claudeCodeExecutable", () => ({
+  resolveClaudeCodeExecutable: mockState.resolveClaudeCodeExecutable,
+}));
+
 import { createProviderOrchestratorAdapter } from "./providerOrchestratorAdapter";
 
 describe("providerOrchestratorAdapter", () => {
   let projectRoot: string | null = null;
+
+  beforeEach(() => {
+    mockState.resolveClaudeCodeExecutable.mockReturnValue({ path: "/mock/bin/claude", source: "path" });
+  });
 
   afterEach(() => {
     if (projectRoot) {
@@ -74,6 +87,62 @@ describe("providerOrchestratorAdapter", () => {
       modelId: "openai/gpt-5.3-codex",
       permissionMode: "config-toml",
       codexConfigSource: "config-toml",
+    }));
+  });
+
+  it("resolves the Claude executable for direct startup-command overrides", async () => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-provider-adapter-"));
+    mockState.resolveClaudeCodeExecutable.mockReturnValue({
+      path: "C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd",
+      source: "path",
+    });
+    const createTrackedSession = vi.fn(async () => ({ ptyId: "pty-override", sessionId: "session-override" }));
+    const adapter = createProviderOrchestratorAdapter({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      agentChatService: null,
+    });
+
+    const result = await adapter.start({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {},
+      },
+      step: {
+        id: "step-1",
+        runId: "run-1",
+        stepKey: "override-worker",
+        title: "Override worker",
+        stepIndex: 0,
+        dependencyStepIds: [],
+        dependencyStepKeys: [],
+        laneId: "lane-1",
+        status: "ready",
+        metadata: {
+          startupCommand: "diagnose the failing check",
+        },
+      },
+      attempt: {
+        id: "attempt-1",
+        runId: "run-1",
+        stepId: "step-1",
+      },
+      allSteps: [],
+      contextProfile: {} as any,
+      laneExport: null,
+      projectExport: { content: "", truncated: false },
+      docsRefs: [],
+      fullDocs: [],
+      createTrackedSession,
+    } as any);
+
+    expect(result.status).toBe("accepted");
+    expect(mockState.resolveClaudeCodeExecutable).toHaveBeenCalledTimes(1);
+    expect(createTrackedSession).toHaveBeenCalledWith(expect.objectContaining({
+      command: "C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd",
+      args: ["-p", "diagnose the failing check"],
+      startupCommand: expect.stringContaining("exec claude -p"),
     }));
   });
 

@@ -1121,7 +1121,10 @@ export function createPtyService({
         if (directCommand) {
           try {
             const invocation = resolveCliSpawnInvocation(directCommand, directArgs, launchEnv);
-            created = ptyLib.spawn(invocation.command, invocation.args, opts);
+            const ptyArgs = invocation.windowsVerbatimArguments
+              ? invocation.args.join(" ")
+              : invocation.args;
+            created = ptyLib.spawn(invocation.command, ptyArgs, opts);
           } catch (err) {
             lastErr = err;
           }
