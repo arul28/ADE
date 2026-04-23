@@ -457,6 +457,93 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(focusSessionSpy).not.toHaveBeenCalledWith("missing-session");
   });
 
+  it("does not keep reapplying a partially applied URL status while lanes are loading", async () => {
+    const session = {
+      id: "session-2",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "claude-chat" as const,
+      title: "Claude Chat",
+      status: "running" as const,
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "idle" as const,
+      resumeCommand: null,
+    };
+    listSessionsCachedMock.mockResolvedValue([session]);
+    useSearchParamsMock.mockReturnValue([
+      new URLSearchParams("laneId=lane-1&status=running&sessionId=missing-session"),
+      vi.fn(),
+    ]);
+
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as "all" | "running" | "completed",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [],
+      workViewByProject: {
+        "/fake/project": workState,
+      },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(workState.statusFilter).toBe("running");
+    });
+    expect(workState.laneFilter).toBe("all");
+
+    workState.statusFilter = "completed";
+    listSessionsCachedMock.mockResolvedValue([{ ...session, id: "session-3" }]);
+
+    await act(async () => {
+      await result.current.refresh({ force: true });
+    });
+
+    expect(workState.statusFilter).toBe("completed");
+    expect(workState.laneFilter).toBe("all");
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [{ id: "lane-1", name: "Lane 1" }],
+    };
+
+    act(() => {
+      rerender();
+    });
+
+    await waitFor(() => {
+      expect(workState.laneFilter).toBe("lane-1");
+    });
+    expect(workState.statusFilter).toBe("completed");
+  });
+
   it("refreshes against the newly active project before pruning that project's saved tabs", async () => {
     const sessionA = {
       id: "session-a",

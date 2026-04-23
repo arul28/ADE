@@ -279,6 +279,7 @@ export function useWorkSessions() {
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
   const appliedUrlFilterKeyRef = useRef<string | null>(null);
+  const partiallyAppliedUrlFilterKeyRef = useRef<string | null>(null);
   const hasLoadedOnceRef = useRef(false);
   const projectRootRef = useRef<string | null>(projectRoot);
 
@@ -594,6 +595,7 @@ export function useWorkSessions() {
     hasRunningSessionsRef.current = false;
     appliedQuerySessionIdRef.current = null;
     appliedUrlFilterKeyRef.current = null;
+    partiallyAppliedUrlFilterKeyRef.current = null;
     if (!projectRoot) return;
     refresh({ showLoading: true, force: true }).catch(() => {});
   }, [projectRoot, refresh]);
@@ -632,13 +634,18 @@ export function useWorkSessions() {
     // when lanes are loaded (non-empty) so "not found" is an authoritative
     // negative signal.
     const laneDeterminable = !laneParam || laneExists || lanes.length > 0;
+    const wasPartiallyApplied = partiallyAppliedUrlFilterKeyRef.current === urlKey;
+    if (!laneDeterminable && wasPartiallyApplied) return;
     if (laneDeterminable) {
       appliedUrlFilterKeyRef.current = urlKey;
+      partiallyAppliedUrlFilterKeyRef.current = null;
+    } else {
+      partiallyAppliedUrlFilterKeyRef.current = urlKey;
     }
     setProjectViewState((prev) => ({
       ...prev,
       laneFilter: laneExists ? laneParam : prev.laneFilter,
-      statusFilter: status ?? prev.statusFilter,
+      statusFilter: status && !wasPartiallyApplied ? status : prev.statusFilter,
     }));
   }, [lanes, sessions, searchParams, setProjectViewState]);
 
