@@ -1996,10 +1996,21 @@ function findProjectRoots(startDir: string): { projectRoot: string; workspaceRoo
 
 function resolveRoots(options: GlobalOptions): { projectRoot: string; workspaceRoot: string } {
   const discovered = findProjectRoots(process.cwd());
-  const projectRoot = options.projectRoot
-    ?? (process.env.ADE_PROJECT_ROOT?.trim() ? path.resolve(process.env.ADE_PROJECT_ROOT.trim()) : discovered.projectRoot);
-  const workspaceRoot = options.workspaceRoot
-    ?? (process.env.ADE_WORKSPACE_ROOT?.trim() ? path.resolve(process.env.ADE_WORKSPACE_ROOT.trim()) : discovered.workspaceRoot);
+  const projectFromEnv = process.env.ADE_PROJECT_ROOT?.trim()
+    ? path.resolve(process.env.ADE_PROJECT_ROOT.trim())
+    : null;
+  const workspaceFromEnv = process.env.ADE_WORKSPACE_ROOT?.trim()
+    ? path.resolve(process.env.ADE_WORKSPACE_ROOT.trim())
+    : null;
+
+  const projectRoot = options.projectRoot ?? projectFromEnv ?? discovered.projectRoot;
+  const projectExplicitlyOverridden = options.projectRoot != null || projectFromEnv != null;
+
+  const workspaceRoot =
+    options.workspaceRoot
+    ?? workspaceFromEnv
+    ?? (projectExplicitlyOverridden ? projectRoot : discovered.workspaceRoot);
+
   return { projectRoot, workspaceRoot };
 }
 

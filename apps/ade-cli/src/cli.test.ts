@@ -2,7 +2,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildCliPlan, findProjectRoots, formatOutput, parseCliArgs, renderLaneGraph, summarizeExecution, unwrapToolResult } from "./cli";
+import { buildCliPlan, findProjectRoots, formatOutput, parseCliArgs, renderLaneGraph, resolveRoots, summarizeExecution, unwrapToolResult } from "./cli";
+
+type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
+
+function baseResolveOpts(): Omit<ResolveRootsOptions, "projectRoot" | "workspaceRoot"> {
+  return {
+    role: "external",
+    headless: true,
+    requireSocket: false,
+    pretty: false,
+    text: false,
+    timeoutMs: 15_000,
+  };
+}
 
 describe("ADE CLI", () => {
   it("parses global options without stealing command flags", () => {
@@ -368,6 +381,58 @@ describe("ADE CLI", () => {
       projectRoot: root,
       workspaceRoot: worktree,
     });
+  });
+
+  it("defaults workspaceRoot to projectRoot when ADE_PROJECT_ROOT overrides discovery", () => {
+    const prevProject = process.env.ADE_PROJECT_ROOT;
+    const prevWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    try {
+      delete process.env.ADE_WORKSPACE_ROOT;
+      process.env.ADE_PROJECT_ROOT = "/explicit/project-root";
+      const roots = resolveRoots({
+        ...baseResolveOpts(),
+        projectRoot: null,
+        workspaceRoot: null,
+      });
+      expect(roots.projectRoot).toBe("/explicit/project-root");
+      expect(roots.workspaceRoot).toBe("/explicit/project-root");
+    } finally {
+      if (prevProject === undefined) delete process.env.ADE_PROJECT_ROOT;
+      else process.env.ADE_PROJECT_ROOT = prevProject;
+      if (prevWorkspace === undefined) delete process.env.ADE_WORKSPACE_ROOT;
+      else process.env.ADE_WORKSPACE_ROOT = prevWorkspace;
+    }
+  });
+
+  it("defaults workspaceRoot to CLI projectRoot when only --project-root is set", () => {
+    const roots = resolveRoots({
+      ...baseResolveOpts(),
+      projectRoot: "/cli/project-root",
+      workspaceRoot: null,
+    });
+    expect(roots.projectRoot).toBe("/cli/project-root");
+    expect(roots.workspaceRoot).toBe("/cli/project-root");
+  });
+
+  it("still honors ADE_WORKSPACE_ROOT when both project and workspace overrides exist", () => {
+    const prevProject = process.env.ADE_PROJECT_ROOT;
+    const prevWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    try {
+      process.env.ADE_PROJECT_ROOT = "/explicit/project-root";
+      process.env.ADE_WORKSPACE_ROOT = "/explicit/workspace-root";
+      const roots = resolveRoots({
+        ...baseResolveOpts(),
+        projectRoot: null,
+        workspaceRoot: null,
+      });
+      expect(roots.projectRoot).toBe("/explicit/project-root");
+      expect(roots.workspaceRoot).toBe("/explicit/workspace-root");
+    } finally {
+      if (prevProject === undefined) delete process.env.ADE_PROJECT_ROOT;
+      else process.env.ADE_PROJECT_ROOT = prevProject;
+      if (prevWorkspace === undefined) delete process.env.ADE_WORKSPACE_ROOT;
+      else process.env.ADE_WORKSPACE_ROOT = prevWorkspace;
+    }
   });
 
   it("maps PR link arguments to the service contract", () => {
