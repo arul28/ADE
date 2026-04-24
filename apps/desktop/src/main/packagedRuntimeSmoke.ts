@@ -122,7 +122,8 @@ void main().then(
   () => {
     // Force a clean exit even if node-pty/Claude SDK/Codex left event-loop handles open.
     // Without this, the packaged Electron-as-node child can hang forever after writing JSON to stdout.
-    process.exit(0);
+    // Flush stdout before exiting so the JSON payload isn't truncated.
+    process.stdout.write("", () => process.exit(0));
   },
   (error) => {
     process.stderr.write(error instanceof Error ? (error.stack ?? error.message) : String(error));

@@ -124,13 +124,46 @@ function resolveLegacyCommandFile(commandsDir: string, commandName: string): str
   const candidate = path.join(commandsDir, ...commandPathParts) + ".md";
   const relative = path.relative(commandsDir, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
-  if (!fs.existsSync(candidate)) return null;
-  try {
-    const stat = fs.statSync(candidate);
-    return stat.isFile() ? candidate : null;
-  } catch {
-    return null;
+  if (fs.existsSync(candidate)) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (stat.isFile()) return candidate;
+    } catch {
+      // fall through to slow-path scan
+    }
   }
+  // Slow path: discovery normalizes filenames (lowercase + slugified), so a
+  // file like `My Command.md` is exposed as `/my-command` but the literal
+  // path above won't find it. Walk the directory and match by normalized
+  // name so non-canonical filenames still resolve.
+  const targetName = commandName.toLowerCase();
+  let match: string | null = null;
+  const visit = (dir: string, prefix: string[], depth: number): void => {
+    if (match || depth > MAX_LEGACY_COMMAND_DEPTH) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (match) return;
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath, [...prefix, entry.name], depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      const commandPath = [...prefix, entry.name].join(":");
+      const normalized = normalizeSlashCommandName(commandPath);
+      if (normalized && normalized.toLowerCase() === targetName) {
+        match = entryPath;
+        return;
+      }
+    }
+  };
+  visit(commandsDir, [], 0);
+  return match;
 }
 
 function discoverSkills(skillsDir: string): DiscoveredClaudeSlashCommand[] {
@@ -214,10 +247,16 @@ export function resolveClaudeSlashCommandInvocation(
     const content = fs.readFileSync(commandFile, "utf8");
     const body = stripFrontmatter(content).trim();
     if (!body.length) return null;
+    const hasPlaceholder = /\$ARGUMENTS/.test(body);
+    const promptText = hasPlaceholder
+      ? body.replace(/\$ARGUMENTS/g, argumentsText)
+      : argumentsText.length
+        ? `${body}\n\nArguments: ${argumentsText}`
+        : body;
     return {
       name,
       argumentsText,
-      promptText: body.replace(/\$ARGUMENTS/g, argumentsText),
+      promptText,
     };
   } catch {
     return null;

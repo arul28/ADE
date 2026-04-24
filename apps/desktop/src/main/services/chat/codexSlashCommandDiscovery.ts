@@ -81,13 +81,45 @@ function resolvePromptFile(promptsDir: string, commandName: string): string | nu
   const candidate = path.join(promptsDir, ...commandPathParts) + ".md";
   const relative = path.relative(promptsDir, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
-  if (!fs.existsSync(candidate)) return null;
-  try {
-    const stat = fs.statSync(candidate);
-    return stat.isFile() ? candidate : null;
-  } catch {
-    return null;
+  if (fs.existsSync(candidate)) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (stat.isFile()) return candidate;
+    } catch {
+      // fall through to slow-path scan
+    }
   }
+  // Slow path: discovery normalizes filenames (lowercase + slugified), so a
+  // file like `My Prompt.md` is exposed as `/my-prompt`. Walk the directory
+  // and match by normalized name so non-canonical filenames still resolve.
+  const targetName = commandName.toLowerCase();
+  let match: string | null = null;
+  const visit = (dir: string, prefix: string[], depth: number): void => {
+    if (match || depth > MAX_PROMPT_DEPTH) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (match) return;
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath, [...prefix, entry.name], depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      const commandPath = [...prefix, entry.name].join(":");
+      const normalized = normalizeSlashCommandName(commandPath);
+      if (normalized && normalized.toLowerCase() === targetName) {
+        match = entryPath;
+        return;
+      }
+    }
+  };
+  visit(promptsDir, [], 0);
+  return match;
 }
 
 function codexPromptRoots(cwd: string): string[] {

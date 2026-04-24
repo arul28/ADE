@@ -84,7 +84,10 @@ const LOCAL_SLASH_COMMANDS: SlashCommandEntry[] = [
 ];
 
 /** Build the effective slash command list by merging SDK-provided commands with local ones. */
-function buildSlashCommands(sdkCommands: AgentChatSlashCommand[]): SlashCommandEntry[] {
+function buildSlashCommands(
+  sdkCommands: AgentChatSlashCommand[],
+  options: { includeLocalClear: boolean },
+): SlashCommandEntry[] {
   const result: SlashCommandEntry[] = [];
   const seen = new Set<string>();
 
@@ -102,8 +105,11 @@ function buildSlashCommands(sdkCommands: AgentChatSlashCommand[]): SlashCommandE
     });
   }
 
-  // Local commands that aren't already provided by SDK
+  // Local commands that aren't already provided by SDK. Skip /clear when no
+  // handler is wired up — otherwise selecting it falls through to the generic
+  // draft path and sends literal "/clear" text to the model.
   for (const cmd of LOCAL_SLASH_COMMANDS) {
+    if (cmd.command === "/clear" && !options.includeLocalClear) continue;
     if (!seen.has(cmd.command)) {
       result.push(cmd);
     }
@@ -534,8 +540,8 @@ export function AgentChatComposer({
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const effectiveSlashCommands = useMemo(
-    () => buildSlashCommands(sdkSlashCommands),
-    [sdkSlashCommands],
+    () => buildSlashCommands(sdkSlashCommands, { includeLocalClear: typeof onClearEvents === "function" }),
+    [sdkSlashCommands, onClearEvents],
   );
 
   /* ── Attachment picker effects ── */
@@ -1915,9 +1921,18 @@ export function AgentChatComposer({
               const rect = event.target.getBoundingClientRect();
 
               if (val.startsWith("/") && !val.slice(1).includes("\n")) {
-                const query = val.slice(1).match(/^[^\s/]*/)?.[0] ?? "";
-                setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
-                setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                // Once the user types a space after the command name they have
+                // entered the arguments section — keep the menu only while
+                // they're still typing the command name itself, so Enter/Tab
+                // submits the slash command instead of being stolen by the menu.
+                const afterSlash = val.slice(1);
+                if (!/\s/.test(afterSlash)) {
+                  const query = afterSlash.match(/^[^\s/]*/)?.[0] ?? "";
+                  setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
+                  setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                  return;
+                }
+                setCommandMenuTrigger(null);
                 return;
               }
 

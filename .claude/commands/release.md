@@ -444,7 +444,7 @@ asc builds build-beta-detail view --build-id "$BUILD_ID"          # externalBuil
 for gid in "${GROUP_IDS[@]}"; do
   count=$(asc testflight groups links view --group-id "$gid" --type betaTesters | jq -r '.meta.paging.total')
   members=$(asc testflight groups links view --group-id "$gid" --type builds | jq -r '.data[].id' | grep -Fx "$BUILD_ID" || true)
-  echo "group=$gid testers=$count build5_present=$([ -n "$members" ] && echo yes || echo no)"
+  echo "group=$gid testers=$count build_present=$([ -n "$members" ] && echo yes || echo no)"
 done
 ```
 

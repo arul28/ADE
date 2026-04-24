@@ -3223,9 +3223,17 @@ export function AgentChatMessageList({
       if (!el || !stickToBottomRef.current) return;
       const target = el.scrollHeight - el.clientHeight;
       if (target <= 0) return;
-      if (Math.abs(el.scrollTop - target) < 1) return;
-      programmaticScrollCountRef.current += 1;
+      const before = el.scrollTop;
+      if (Math.abs(before - target) < 1) return;
       el.scrollTop = target;
+      // Only register a pending programmatic scroll event if the assignment
+      // actually moved the element. Otherwise (clamped to the same value,
+      // hidden element, etc.) no scroll event will fire and the counter
+      // would stay positive forever, misclassifying the next real user
+      // scroll as programmatic.
+      if (el.scrollTop !== before) {
+        programmaticScrollCountRef.current += 1;
+      }
     });
   }, []);
 
@@ -3493,7 +3501,7 @@ export function AgentChatMessageList({
 
   // Jump-to-latest pill is only meaningful during an active turn — if nothing
   // is streaming there's no "latest" to catch up to.
-  const showJumpToLatest = !stickToBottom && Boolean(activeTurnId) && !sessionEnded;
+  const showJumpToLatest = !stickToBottom && !sessionEnded;
 
   return (
     <div className={cn("relative h-full min-h-0", className)}>

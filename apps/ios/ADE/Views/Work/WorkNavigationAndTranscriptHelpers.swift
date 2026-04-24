@@ -199,8 +199,16 @@ private final class WorkTerminalTextReplay {
     case "K":
       ensureCursor()
       if first == 1 {
-        lines[row].removeFirst(min(column, lines[row].count))
-        column = 0
+        let space: UnicodeScalar = " "
+        let endIndex = min(column + 1, lines[row].count)
+        for index in 0..<endIndex {
+          lines[row][index] = space
+        }
+        if column >= lines[row].count {
+          while lines[row].count <= column {
+            lines[row].append(space)
+          }
+        }
       } else if first == 2 {
         lines[row].removeAll()
         column = 0

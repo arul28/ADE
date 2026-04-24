@@ -287,7 +287,9 @@ extension WorkRootScreen {
           } else {
             try await syncService.archiveChatSession(sessionId: session.id)
           }
-          archivedSessionIdsStorage = archivedSessionIds.filter { $0 != session.id }.sorted().joined(separator: "\n")
+          let localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
+          let prunedLocal = localIds.subtracting([session.id])
+          archivedSessionIdsStorage = prunedLocal.sorted().joined(separator: "\n")
           await reload(refreshRemote: true)
           return
         }
@@ -389,9 +391,9 @@ extension WorkRootScreen {
     Task {
       do {
         try await syncService.deleteChatSession(sessionId: session.id)
-        var archived = archivedSessionIds
-        archived.remove(session.id)
-        archivedSessionIdsStorage = archived.sorted().joined(separator: "\n")
+        let localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
+        let prunedLocal = localIds.subtracting([session.id])
+        archivedSessionIdsStorage = prunedLocal.sorted().joined(separator: "\n")
         await reload(refreshRemote: true)
       } catch {
         ADEHaptics.error()

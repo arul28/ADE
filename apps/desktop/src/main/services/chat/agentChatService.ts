@@ -11023,16 +11023,24 @@ export function createAgentChatService(args: {
     // false (review 3134504183 / 3134403060).
     const providerHasPersistentGuidance = managed.session.provider === "claude";
     const shouldInjectGuidance = !providerHasPersistentGuidance;
+    const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
+      ? new Set(managed.runtime.slashCommands.map((command) => command.name))
+      : new Set<string>();
+    const codexRuntimeSlashCommandNames = managed.runtime?.kind === "codex"
+      ? new Set((managed.runtime as { slashCommands?: Array<{ name: string }> }).slashCommands?.map((command) => command.name) ?? [])
+      : new Set<string>();
     const expandedClaudeSlashCommand = providerSlashCommand
       && managed.session.provider === "claude"
       && slashCommand != null
       && !CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
+      && !claudeRuntimeSlashCommandNames.has(slashCommand)
       ? resolveClaudeSlashCommandInvocation(managed.laneWorktreePath, trimmed)
       : null;
     const expandedCodexSlashCommand = providerSlashCommand
       && managed.session.provider === "codex"
       && slashCommand != null
       && !CODEX_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
+      && !codexRuntimeSlashCommandNames.has(slashCommand)
       ? resolveCodexSlashCommandInvocation(managed.laneWorktreePath, trimmed)
       : null;
     const promptText = providerSlashCommand

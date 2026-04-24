@@ -91,6 +91,7 @@ create table if not exists terminal_sessions (
       summary text,
       resume_command text,
       resume_metadata_json text,
+      archived_at text,
       foreign key(lane_id) references lanes(id)
     );
 
@@ -107,6 +108,8 @@ alter table terminal_sessions add column resume_command text;
 alter table terminal_sessions add column resume_metadata_json text;
 
 alter table terminal_sessions add column manually_named integer not null default 0;
+
+alter table terminal_sessions add column archived_at text;
 
 create table if not exists process_definitions (
       id text primary key,

@@ -558,6 +558,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
     archiveSession(sessionId: string, archivedAt: string = new Date().toISOString()): boolean {
       const trimmed = sessionId.trim();
       if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
       db.run("update terminal_sessions set archived_at = coalesce(archived_at, ?) where id = ?", [archivedAt, trimmed]);
       emitChanged({ sessionId: trimmed, reason: "meta-updated" });
       return true;
@@ -566,6 +571,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
     unarchiveSession(sessionId: string): boolean {
       const trimmed = sessionId.trim();
       if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
       db.run("update terminal_sessions set archived_at = null where id = ?", [trimmed]);
       emitChanged({ sessionId: trimmed, reason: "meta-updated" });
       return true;

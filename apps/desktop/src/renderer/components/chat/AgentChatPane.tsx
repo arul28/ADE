@@ -70,6 +70,7 @@ import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { DEFAULT_CHAT_FONT_SIZE_PX, useAppStore } from "../../state/appStore";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
@@ -2681,6 +2682,19 @@ export function AgentChatPane({
       });
   }, [refreshSessions]);
 
+  const archiveConfirm = useConfirmDialog();
+  const requestArchiveChat = useCallback(
+    async (sessionId: string, title: string) => {
+      const ok = await archiveConfirm.confirmAsync({
+        title: `Archive "${title}"?`,
+        message: "Archived chats are hidden from the active chat tabs.",
+        confirmLabel: "ARCHIVE",
+      });
+      if (ok) handleArchiveChat(sessionId);
+    },
+    [archiveConfirm, handleArchiveChat],
+  );
+
   const handleUnarchiveChat = useCallback((sessionId: string) => {
     setError(null);
     void window.ade.agentChat.unarchive({ sessionId })
@@ -3428,9 +3442,7 @@ export function AgentChatPane({
                   type="button"
                   onContextMenu={(event) => {
                     event.preventDefault();
-                    if (window.confirm(`Archive "${title}"?\n\nArchived chats are hidden from the active chat tabs.`)) {
-                      handleArchiveChat(session.sessionId);
-                    }
+                    void requestArchiveChat(session.sessionId, title);
                   }}
                   className={cn(
                     "inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-1.5 font-sans text-[11px] transition-all",
@@ -3992,6 +4004,7 @@ export function AgentChatPane({
           )}
         </div>
       </ChatSurfaceShell>
+      <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
     </>
   );
 }
