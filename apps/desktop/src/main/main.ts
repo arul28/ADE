@@ -1,6 +1,9 @@
-import { app, BrowserWindow, nativeImage, protocol, shell } from "electron";
+import { app, BrowserWindow, dialog, nativeImage, protocol, safeStorage, shell } from "electron";
 import path from "node:path";
-type NodePtyType = typeof import("node-pty");
+import { pathToFileURL } from "node:url";
+import type * as NodePty from "node-pty";
+type NodePtyType = typeof NodePty;
+import { isAdeMcpNamedPipePath } from "../shared/adeMcpIpc";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { openKvDb } from "./services/state/kvDb";
@@ -32,7 +35,7 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
-import { augmentProcessPathWithShellAndKnownCliDirs } from "./services/ai/cliExecutableResolver";
+import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService } from "./services/chat/agentChatService";
 import { createGithubService } from "./services/github/githubService";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
@@ -40,43 +43,56 @@ import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createIssueInventoryService } from "./services/prs/issueInventoryService";
+import { createPrSummaryService } from "./services/prs/prSummaryService";
 import {
   detectDefaultBaseRef,
   resolveRepoRoot,
   toProjectInfo,
   upsertProjectRow,
 } from "./services/projects/projectService";
+import { toRecentProjectSummary } from "./services/projects/recentProjectSummary";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
 import { resolveAdeLayout } from "../shared/adeLayout";
-import type { PortLease, ProjectInfo } from "../shared/types";
+import type { PortLease, ProjectInfo, RecentProjectSummary, SyncMobileProjectSummary, SyncProjectSwitchRequestPayload, SyncProjectSwitchResultPayload } from "../shared/types";
+import type { AutomationTriggerType } from "../shared/types/config";
+import type { AutomationTriggerLinearIssueContext } from "../shared/types/automations";
+import type { LinearIngressEventRecord } from "../shared/types/linearSync";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
-import { createMcpRequestHandler } from "../../../mcp-server/src/mcpServer";
+import { createAdeRpcRequestHandler } from "../../../ade-cli/src/adeRpcServer";
 import {
   createEventBuffer,
-  type AdeMcpRuntime,
-  type AdeMcpPaths,
-} from "../../../mcp-server/src/bootstrap";
-import { startJsonRpcServer } from "../../../mcp-server/src/jsonrpc";
-import type { JsonRpcTransport } from "../../../mcp-server/src/transport";
+  type AdeRuntime,
+  type AdeRuntimePaths,
+} from "../../../ade-cli/src/bootstrap";
+import { startJsonRpcServer, type JsonRpcTransport } from "../../../ade-cli/src/jsonrpc";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
+import { createAdeCliService } from "./services/cli/adeCliService";
 import { createDevToolsService } from "./services/devTools/devToolsService";
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createAutomationIngressService } from "./services/automations/automationIngressService";
+import { createReviewService } from "./services/review/reviewService";
+import { createGithubPollingService } from "./services/automations/githubPollingService";
+import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
+import {
+  ADE_ACTION_ALLOWLIST,
+  type AdeActionDomain,
+  getAdeActionDomainServices,
+  isAllowedAdeAction,
+} from "./services/adeActions/registry";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
-import { createCompactionFlushService } from "./services/memory/compactionFlushService";
 import { createBatchConsolidationService } from "./services/memory/batchConsolidationService";
 import { createEmbeddingService } from "./services/memory/embeddingService";
 import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
@@ -117,10 +133,16 @@ import { createOrchestratorService } from "./services/orchestrator/orchestratorS
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
-import { createExternalMcpService } from "./services/externalMcp/externalMcpService";
-import { createExternalConnectionAuthService } from "./services/externalMcp/externalConnectionAuthService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createSyncService } from "./services/sync/syncService";
+import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
+import {
+  createNotificationEventBus,
+  type DevicePushTarget,
+  type NotificationEventBus,
+} from "./services/notifications/notificationEventBus";
+import type { SyncService } from "./services/sync/syncService";
+import type { DeviceRegistryService } from "./services/sync/deviceRegistryService";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
@@ -138,7 +160,10 @@ function fixElectronShellPath(): void {
     timeoutMs: 1_500,
   });
   if (nextPath) {
-    process.env.PATH = nextPath;
+    // Use setPathEnvValue so Windows processes inheriting a `Path` key collapse
+    // to a single canonical entry (direct `process.env.PATH = …` can leave a
+    // stale `Path` behind that later readers pick up instead).
+    setPathEnvValue(process.env, nextPath);
   }
 }
 
@@ -167,6 +192,8 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_MEMORY_STARTUP_SWEEP",
   "ADE_ENABLE_MEMORY_CONSOLIDATION",
   "ADE_ENABLE_EMBEDDING_WORKER",
+  "ADE_ENABLE_MEMORY_FILE_SYNC",
+  "ADE_ENABLE_SYNC_INIT",
 ]);
 
 function isBackgroundTaskEnabled(enableFlag?: string): boolean {
@@ -186,6 +213,115 @@ const episodicSummaryEnabled = isBackgroundTaskEnabled(
   "ADE_ENABLE_EPISODIC_SUMMARY",
 );
 
+function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
+  const value = source?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readStringArray(source: Record<string, unknown> | null | undefined, key: string): string[] | undefined {
+  const value = source?.[key];
+  if (!Array.isArray(value)) return undefined;
+  const out = value.map((entry) => {
+    if (typeof entry === "string") return entry.trim();
+    if (entry && typeof entry === "object") {
+      const rec = entry as Record<string, unknown>;
+      const name = typeof rec.name === "string" ? rec.name.trim() : null;
+      if (name) return name;
+    }
+    return "";
+  }).filter((entry) => entry.length > 0);
+  return out.length > 0 ? out : undefined;
+}
+
+function readNested(source: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
+  const value = source?.[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function mapLinearActionToTriggerType(
+  action: string | null,
+  data: Record<string, unknown> | null,
+  prevData: Record<string, unknown> | null,
+): { triggerType: AutomationTriggerType; stateTransition: string | null; previousState: string | undefined } {
+  const currentState = readString(readNested(data, "state"), "name") ?? readString(data, "stateName");
+  const previousState = readString(readNested(prevData, "state"), "name") ?? readString(prevData, "stateName");
+  if (action === "create") {
+    return { triggerType: "linear.issue_created", stateTransition: null, previousState: undefined };
+  }
+  const prevAssignee = readString(prevData, "assigneeId") ?? readString(readNested(prevData, "assignee"), "id");
+  const curAssignee = readString(data, "assigneeId") ?? readString(readNested(data, "assignee"), "id");
+  if (curAssignee && curAssignee !== prevAssignee) {
+    return { triggerType: "linear.issue_assigned", stateTransition: null, previousState };
+  }
+  if (currentState && previousState && currentState !== previousState) {
+    return {
+      triggerType: "linear.issue_status_changed",
+      stateTransition: `${previousState}->${currentState}`,
+      previousState,
+    };
+  }
+  return { triggerType: "linear.issue_updated", stateTransition: null, previousState };
+}
+
+function buildLinearAutomationDispatch(event: LinearIngressEventRecord): {
+  source: "linear-relay";
+  eventKey: string;
+  triggerType: AutomationTriggerType;
+  eventName?: string | null;
+  summary?: string | null;
+  author?: string | null;
+  labels?: string[];
+  rawPayload?: Record<string, unknown> | null;
+  linear?: { issue: AutomationTriggerLinearIssueContext } | null;
+  project?: string | null;
+  team?: string | null;
+  assignee?: string | null;
+  stateTransition?: string | null;
+  changedFields?: string[];
+} | null {
+  if (!event.issueId) return null;
+  const payload = event.payload ?? null;
+  const data = readNested(payload, "data");
+  const prevData = readNested(payload, "updatedFrom");
+  const mapping = mapLinearActionToTriggerType(event.action, data, prevData);
+
+  const teamName = readString(readNested(data, "team"), "name") ?? readString(data, "teamName");
+  const projectName = readString(readNested(data, "project"), "name") ?? readString(data, "projectName");
+  const assigneeName = readString(readNested(data, "assignee"), "name") ?? readString(data, "assigneeName");
+  const stateName = readString(readNested(data, "state"), "name") ?? readString(data, "stateName");
+  const labels = readStringArray(data, "labels") ?? readStringArray(readNested(data, "labels"), "nodes");
+  const title = readString(data, "title") ?? undefined;
+
+  const changedFields = prevData ? Object.keys(prevData) : undefined;
+
+  const linearContext: AutomationTriggerLinearIssueContext = {
+    id: event.issueId,
+    title,
+    team: teamName,
+    project: projectName,
+    assignee: assigneeName,
+    state: stateName,
+    previousState: mapping.previousState,
+    labels,
+  };
+
+  return {
+    source: "linear-relay",
+    eventKey: event.eventId,
+    triggerType: mapping.triggerType,
+    eventName: event.action,
+    summary: event.summary,
+    labels,
+    rawPayload: payload,
+    linear: { issue: linearContext },
+    project: projectName ?? null,
+    team: teamName ?? null,
+    assignee: assigneeName ?? null,
+    stateTransition: mapping.stateTransition,
+    changedFields,
+  };
+}
+
 // The Claude CLI refuses to start if it detects it is inside another Claude Code
 // session (nested session guard). ADE is a host app, not a nested session, so
 // strip the marker env var so the SDK can spawn the CLI cleanly.
@@ -199,16 +335,22 @@ if (process.env.VITE_DEV_SERVER_URL) {
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) return devUrl;
-  return `file://${path.join(__dirname, "../renderer/index.html")}`;
+  return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
 }
 
-async function createWindow(logger?: Logger): Promise<BrowserWindow> {
+async function createWindow(args: {
+  logger?: Logger;
+  onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
+} = {}): Promise<BrowserWindow> {
   // Load the app icon from the build directory.
   const iconDir = path.join(__dirname, "../../build");
+  const icoPath = path.join(iconDir, "icon.ico");
   const pngPath = path.join(iconDir, "icon.png");
   const icnsPath = path.join(iconDir, "icon.icns");
   let icon: Electron.NativeImage;
-  if (fs.existsSync(pngPath)) {
+  if (process.platform === "win32" && fs.existsSync(icoPath)) {
+    icon = nativeImage.createFromPath(icoPath);
+  } else if (fs.existsSync(pngPath)) {
     icon = nativeImage.createFromPath(pngPath);
   } else if (fs.existsSync(icnsPath)) {
     icon = nativeImage.createFromPath(icnsPath);
@@ -273,22 +415,26 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     });
   });
 
+  win.on("close", (event) => {
+    args.onCloseRequested?.(win, event);
+  });
+
   win.on("unresponsive", () => {
-    logger?.warn("window.unresponsive", {
+    args.logger?.warn("window.unresponsive", {
       windowId: win.id,
       url: win.webContents.getURL(),
     });
   });
 
   win.on("responsive", () => {
-    logger?.info("window.responsive", {
+    args.logger?.info("window.responsive", {
       windowId: win.id,
       url: win.webContents.getURL(),
     });
   });
 
   win.webContents.on("render-process-gone", (_event, details) => {
-    logger?.error("window.render_process_gone", {
+    args.logger?.error("window.render_process_gone", {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
@@ -297,7 +443,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   });
 
   win.webContents.on("preload-error", (_event, preloadPath, error) => {
-    logger?.error("window.preload_error", {
+    args.logger?.error("window.preload_error", {
       windowId: win.id,
       preloadPath,
       err: toErrorMessage(error),
@@ -307,7 +453,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   win.webContents.on(
     "did-fail-load",
     (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      logger?.error("window.did_fail_load", {
+      args.logger?.error("window.did_fail_load", {
         windowId: win.id,
         errorCode,
         errorDescription,
@@ -320,7 +466,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   win.webContents.on(
     "did-start-navigation",
     (_event, url, isInPlace, isMainFrame) => {
-      logger?.info("window.did_start_navigation", {
+      args.logger?.info("window.did_start_navigation", {
         windowId: win.id,
         url,
         isInPlace,
@@ -330,7 +476,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   );
 
   win.webContents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
-    logger?.info("window.did_navigate_in_page", {
+    args.logger?.info("window.did_navigate_in_page", {
       windowId: win.id,
       url,
       isMainFrame,
@@ -338,21 +484,21 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   });
 
   win.webContents.on("did-finish-load", () => {
-    logger?.info("window.did_finish_load", {
+    args.logger?.info("window.did_finish_load", {
       windowId: win.id,
       url: win.webContents.getURL(),
     });
   });
 
   win.webContents.on("did-stop-loading", () => {
-    logger?.info("window.did_stop_loading", {
+    args.logger?.info("window.did_stop_loading", {
       windowId: win.id,
       url: win.webContents.getURL(),
     });
   });
 
   win.webContents.on("dom-ready", () => {
-    logger?.info("window.dom_ready", {
+    args.logger?.info("window.dom_ready", {
       windowId: win.id,
       url: win.webContents.getURL(),
     });
@@ -369,14 +515,14 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
         sourceId,
       };
       if (level >= 2) {
-        logger?.error("window.console", payload);
+        args.logger?.error("window.console", payload);
         return;
       }
       if (level === 1) {
-        logger?.warn("window.console", payload);
+        args.logger?.warn("window.console", payload);
         return;
       }
-      logger?.info("window.console", payload);
+      args.logger?.info("window.console", payload);
     },
   );
 
@@ -387,7 +533,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
         storages: ["serviceworkers", "cachestorage"],
       });
     } catch (error) {
-      logger?.warn("renderer.dev_cache_clear_failed", {
+      args.logger?.warn("renderer.dev_cache_clear_failed", {
         err: error instanceof Error ? error.message : String(error),
       });
     }
@@ -420,7 +566,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
         if (!isOutdatedOptimizeDep) return;
 
         recoveredOutdatedOptimizeDep = true;
-        logger?.warn("renderer.optimize_dep_outdated", {
+        args.logger?.warn("renderer.optimize_dep_outdated", {
           statusCode: details.statusCode,
           url: details.url,
         });
@@ -430,7 +576,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   }
 
   const rendererUrl = getRendererUrl();
-  logger?.info("window.loading_url", {
+  args.logger?.info("window.loading_url", {
     windowId: win.id,
     url: rendererUrl,
   });
@@ -438,7 +584,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   try {
     await win.loadURL(rendererUrl);
   } catch (error) {
-    logger?.error("window.load_url_failed", {
+    args.logger?.error("window.load_url_failed", {
       windowId: win.id,
       url: rendererUrl,
       err: toErrorMessage(error),
@@ -503,9 +649,17 @@ app.whenReady().then(async () => {
   protocol.handle("ade-artifact", (request) => {
     const url = new URL(request.url);
     let filePath = decodeURIComponent(url.pathname);
+    if (url.hostname === "project") {
+      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
+      filePath = path.resolve(activeProjectRoot, filePath.replace(/^[/\\]+/, ""));
+    }
     // On Windows, pathname starts with /C:/... — strip leading slash
     if (process.platform === "win32" && /^\/[a-zA-Z]:/.test(filePath)) {
       filePath = filePath.slice(1);
+    }
+    if (!path.isAbsolute(filePath)) {
+      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
+      filePath = path.resolve(activeProjectRoot, filePath);
     }
     filePath = path.resolve(filePath);
     let resolvedFile: string;
@@ -729,9 +883,13 @@ app.whenReady().then(async () => {
   const projectContexts = new Map<string, AppContext>();
   const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
-  const mcpSocketCleanupByRoot = new Map<string, () => void>();
+  const rpcSocketCleanupByRoot = new Map<string, () => void>();
   const projectLastActivatedAt = new Map<string, number>();
+  const mobileSyncHandoffLeases = new Map<string, number>();
+  const mobileSyncHandoffLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const mobileSyncPreparationPromises = new Map<string, Promise<SyncProjectSwitchResultPayload>>();
   const MAX_WARM_IDLE_PROJECT_CONTEXTS = 1;
+  const MOBILE_SYNC_HANDOFF_LEASE_MS = 60_000;
   let activeProjectRoot: string | null = null;
   let dormantContext!: AppContext;
   let projectContextRebalancePromise: Promise<void> = Promise.resolve();
@@ -742,6 +900,9 @@ app.whenReady().then(async () => {
 
   const setActiveProject = (projectRoot: string | null): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+    for (const [root, ctx] of projectContexts) {
+      ctx.syncService?.setHostDiscoveryEnabled?.(activeProjectRoot != null && root === activeProjectRoot);
+    }
     if (activeProjectRoot) {
       projectLastActivatedAt.set(activeProjectRoot, Date.now());
       try {
@@ -856,14 +1017,22 @@ app.whenReady().then(async () => {
     }
 
     try {
-      if ((ctx.getActiveMcpConnectionCount?.() ?? 0) > 0) {
+      if ((ctx.getActiveRpcConnectionCount?.() ?? 0) > 0) {
         return true;
       }
     } catch (error) {
-      return keepAliveOnProbeFailure("mcp_connections", error);
+      return keepAliveOnProbeFailure("rpc_connections", error);
     }
 
     try {
+      const leaseExpiresAt = mobileSyncHandoffLeases.get(projectRoot) ?? 0;
+      if (leaseExpiresAt > Date.now()) {
+        return true;
+      }
+      if (leaseExpiresAt > 0) {
+        mobileSyncHandoffLeases.delete(projectRoot);
+      }
+
       if ((ctx.syncHostService?.getPeerStates().length ?? 0) > 0) {
         return true;
       }
@@ -962,6 +1131,24 @@ app.whenReady().then(async () => {
       });
   };
 
+  // --- Auto-update service (global, not per-project) ---
+  // Created early so every `rpcRuntime` built inside `initContextForProjectRoot`
+  // captures a live reference. Previously this was assigned after all init
+  // paths were registered, which meant RPC-visible `runtime.autoUpdateService`
+  // could be null if a project context was built before the late assignment.
+  const updateLogger = createFileLogger(
+    path.join(app.getPath("userData"), "ade-update.jsonl"),
+  );
+  cleanupStaleTempArtifacts({
+    tempRoot: app.getPath("temp"),
+    logger: updateLogger,
+  });
+  const autoUpdateService = createAutoUpdateService({
+    logger: updateLogger,
+    currentVersion: app.getVersion(),
+    globalStatePath,
+  });
+
   const initContextForProjectRoot = async ({
     projectRoot,
     baseRef,
@@ -985,12 +1172,63 @@ app.whenReady().then(async () => {
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
     initApiKeyStore(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
+    const packagedFirstOpenStabilityMode =
+      app.isPackaged
+      && !hadAdeDir
+      && process.env.ADE_DISABLE_FIRST_OPEN_STABILITY !== "1";
+    const projectStabilityMode = devStabilityMode || packagedFirstOpenStabilityMode;
 
     logger.info("project.init", { projectRoot, baseRef, ensureExclude });
+    if (projectStabilityMode) {
+      logger.info("project.startup_stability_mode", {
+        projectRoot,
+        reason: packagedFirstOpenStabilityMode ? "packaged_first_open" : "dev_stability_mode",
+        enableAllBackgroundTasks,
+      });
+    }
 
-    const db = await openKvDb(adePaths.dbPath, logger);
+    const isProjectBackgroundTaskEnabled = (enableFlag?: string): boolean => {
+      if (!projectStabilityMode || enableAllBackgroundTasks) {
+        return true;
+      }
+      if (!enableFlag) {
+        return false;
+      }
+      return (
+        process.env[enableFlag] === "1" ||
+        defaultEnabledBackgroundTaskFlags.has(enableFlag)
+      );
+    };
+
+    const measureProjectInitStep = async <T,>(
+      step: string,
+      task: () => Promise<T> | T,
+    ): Promise<T> => {
+      const startedAt = Date.now();
+      try {
+        return await task();
+      } finally {
+        logger.info("project.init_step", {
+          projectRoot,
+          step,
+          durationMs: Date.now() - startedAt,
+        });
+      }
+    };
+
+    const db = await measureProjectInitStep("db_open", () =>
+      openKvDb(adePaths.dbPath, logger),
+    );
     const keybindingsService = createKeybindingsService({ db });
     const agentToolsService = createAgentToolsService({ logger });
+    const adeCliService = createAdeCliService({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      userDataPath: app.getPath("userData"),
+      appExecutablePath: process.execPath,
+      logger,
+    });
+    adeCliService.applyToProcessEnv();
     const devToolsService = createDevToolsService({ logger });
 
     const { projectId } = upsertProjectRow({
@@ -1109,7 +1347,9 @@ app.whenReady().then(async () => {
       },
       logger,
     });
-    await laneService.ensurePrimaryLane();
+    await measureProjectInitStep("lane.ensure_primary", () =>
+      laneService.ensurePrimaryLane(),
+    );
 
     const laneEnvironmentService = createLaneEnvironmentService({
       projectRoot,
@@ -1125,7 +1365,6 @@ app.whenReady().then(async () => {
     });
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({
       status: "disposed",
-      excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor"],
     });
     if (reconciledSessions > 0) {
       logger.warn("sessions.reconciled_stale_running", {
@@ -1374,10 +1613,110 @@ app.whenReady().then(async () => {
     let knowledgeCaptureServiceRef: ReturnType<
       typeof createKnowledgeCaptureService
     > | null = null;
+
+    // --- Mobile push notifications (APNs + event bus) -----------------------
+    // ApnsService is instantiated but left unconfigured here; the Mobile Push
+    // settings panel calls into it once the user uploads a `.p8` key. The
+    // notification event bus is always wired so in-app WebSocket delivery
+    // works even when APNs is disabled.
+    let syncServiceForNotifications: SyncService | null = null;
+    const apnsService = new ApnsService({ logger });
+    const apnsKeyStore = new ApnsKeyStore({
+      encryptedKeyPath: path.join(projectRoot, ".ade", "secrets", "apns.key.enc"),
+      safeStorage,
+    });
+    // Attempt to restore a previously-stored key + config on project load so
+    // push delivery survives restarts without user intervention.
+    try {
+      const effective = projectConfigService.get().effective;
+      const apnsConfig = effective.notifications?.apns ?? null;
+      logger.info("apns.configure_on_startup_attempt", {
+        hasConfig: apnsConfig != null,
+        enabled: apnsConfig?.enabled === true,
+        keyStored: apnsKeyStore.has(),
+        hasKeyId: Boolean(apnsConfig?.keyId),
+        hasTeamId: Boolean(apnsConfig?.teamId),
+        hasBundleId: Boolean(apnsConfig?.bundleId),
+        env: apnsConfig?.env ?? null,
+      });
+      if (apnsConfig?.enabled && apnsKeyStore.has() && apnsConfig.keyId && apnsConfig.teamId && apnsConfig.bundleId) {
+        const pem = apnsKeyStore.load();
+        if (pem) {
+          apnsService.configure({
+            keyP8Pem: pem,
+            keyId: apnsConfig.keyId,
+            teamId: apnsConfig.teamId,
+            bundleId: apnsConfig.bundleId,
+            env: apnsConfig.env ?? "sandbox",
+          });
+          logger.info("apns.configure_on_startup_ok", { keyId: apnsConfig.keyId });
+        }
+      }
+    } catch (error) {
+      logger.warn("apns.configure_on_startup_failed", {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
+    const listPushTargets = (): DevicePushTarget[] => {
+      const registry: DeviceRegistryService | null =
+        syncServiceForNotifications?.getDeviceRegistryService?.() ?? null;
+      if (!registry) return [];
+      const effective = projectConfigService.get().effective;
+      const apnsConfig = effective.notifications?.apns ?? null;
+      const bundleId = apnsConfig?.bundleId?.trim() ?? "";
+      const env = apnsConfig?.env === "production" ? "production" : "sandbox";
+      return registry
+        .listDevices()
+        .filter((device) => device.deviceType === "phone" && device.platform === "iOS")
+        .map((device) => {
+          const meta = device.metadata ?? {};
+          const alertToken = typeof meta.apnsAlertToken === "string" ? meta.apnsAlertToken : null;
+          const activityStartToken = typeof meta.apnsActivityStartToken === "string" ? meta.apnsActivityStartToken : null;
+          const activityUpdateTokens =
+            meta.apnsActivityUpdateTokens && typeof meta.apnsActivityUpdateTokens === "object"
+              ? (meta.apnsActivityUpdateTokens as Record<string, string>)
+              : null;
+          const perDeviceBundleId =
+            typeof meta.apnsBundleId === "string" && meta.apnsBundleId.trim().length > 0
+              ? meta.apnsBundleId
+              : bundleId;
+          return {
+            deviceId: device.deviceId,
+            bundleId: perDeviceBundleId,
+            env: (meta.apnsEnv === "production" ? "production" : env) as "sandbox" | "production",
+            alertToken,
+            activityStartToken,
+            activityUpdateTokens,
+          } satisfies DevicePushTarget;
+        })
+        .filter((target) => target.bundleId.trim().length > 0);
+    };
+    const notificationEventBus: NotificationEventBus = createNotificationEventBus({
+      logger,
+      apnsService,
+      listPushTargets,
+      getPrefsForDevice: (deviceId) =>
+        syncServiceForNotifications?.getHostService()?.getNotificationPrefsForDevice(deviceId) ?? null,
+      sendInAppNotification: (deviceId, payload) => {
+        syncServiceForNotifications?.getHostService()?.sendInAppNotification(deviceId, payload);
+      },
+      isDeviceConnected: (deviceId) =>
+        syncServiceForNotifications?.getHostService()?.isIosPeerConnected(deviceId) ?? false,
+    });
+    // When APNs reports an invalid token, drop it from the registry so we
+    // stop fanning out to a dead device.
+    apnsService.onTokenInvalidated(({ deviceToken }) => {
+      const registry = syncServiceForNotifications?.getDeviceRegistryService?.() ?? null;
+      registry?.invalidateApnsToken?.(deviceToken);
+    });
+
     const prPollingService = createPrPollingService({
       logger,
       prService,
       projectConfigService,
+      db,
+      notificationEventBus,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
       onPullRequestsChanged: async ({ changedPrs, changes }) => {
         if (changedPrs.length > 0) {
@@ -1427,11 +1766,11 @@ app.whenReady().then(async () => {
     let linearSyncServiceRef: ReturnType<
       typeof createLinearSyncService
     > | null = null;
+    let linearIngressServiceRef: ReturnType<
+      typeof createLinearIngressService
+    > | null = null;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
-    let externalMcpServiceRef: ReturnType<
-      typeof createExternalMcpService
-    > | null = null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -1455,6 +1794,14 @@ app.whenReady().then(async () => {
     queueLandingService.init();
 
     const issueInventoryService = createIssueInventoryService({ db });
+
+    const prSummaryService = createPrSummaryService({
+      db,
+      logger,
+      projectRoot,
+      prService,
+      aiIntegrationService,
+    });
 
     const fileService = createFileService({
       laneService,
@@ -1520,20 +1867,22 @@ app.whenReady().then(async () => {
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
-      chatSessionsDir: adePaths.chatSessionsDir,
       laneService,
       sessionService,
       aiIntegrationService,
       projectConfigService,
       getLaneRuntimeEnv,
+      getAdeCliAgentEnv: adeCliService.agentEnv,
       logger,
       broadcastData: (ev) => {
-        emitProjectEvent(projectRoot, IPC.ptyData, ev);
-        syncServiceRef?.handlePtyData(ev);
+        broadcast(IPC.ptyData, ev);
+        const { projectRoot: _projectRoot, ...syncEvent } = ev;
+        syncServiceRef?.handlePtyData(syncEvent);
       },
       broadcastExit: (ev) => {
-        emitProjectEvent(projectRoot, IPC.ptyExit, ev);
-        syncServiceRef?.handlePtyExit(ev);
+        broadcast(IPC.ptyExit, ev);
+        const { projectRoot: _projectRoot, ...syncEvent } = ev;
+        syncServiceRef?.handlePtyExit(syncEvent);
       },
       onSessionEnded: onTrackedSessionEnded,
       onSessionRuntimeSignal: (signal) => {
@@ -1620,10 +1969,6 @@ app.whenReady().then(async () => {
       memoryService,
     });
     memoryFilesServiceRef = memoryFilesService;
-    const compactionFlushService = createCompactionFlushService(undefined, {
-      logger,
-    });
-    aiIntegrationService.setCompactionFlushService(compactionFlushService);
     const batchConsolidationService = createBatchConsolidationService({
       db,
       logger,
@@ -1739,14 +2084,6 @@ app.whenReady().then(async () => {
       memoryService,
     });
     ctoStateServiceRef = ctoStateService;
-    try {
-      memoryFilesService.sync();
-    } catch (err) {
-      logger.warn("memory_files.sync_failed", {
-        projectRoot,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
 
     const workerAgentService = createWorkerAgentService({
       db,
@@ -1821,6 +2158,7 @@ app.whenReady().then(async () => {
       memoryBriefingService,
       ctoStateService,
       logger,
+      autoStart: false,
     });
     const automationSecretService = createAutomationSecretService({
       adeDir: adePaths.adeDir,
@@ -1897,39 +2235,15 @@ app.whenReady().then(async () => {
       laneService,
       sessionService,
       projectConfigService,
+      aiIntegrationService,
       ctoStateService,
       logger,
       appVersion: app.getVersion(),
+      getAdeCliAgentEnv: adeCliService.agentEnv,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onAgentChatEvent(event);
         openclawBridgeServiceRef?.onAgentChatEvent(event);
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
-
-        // Compaction flush: when context compaction occurs, trigger a flush steer
-        // so the agent can save durable discoveries to memory before they are lost.
-        if (event.event.type === "context_compact") {
-          const sid = event.sessionId;
-          const compactEvt = event.event as { preTokens?: number };
-          void compactionFlushService
-            .beforeCompaction({
-              sessionId: sid,
-              boundaryId: `chat:${sid}:${Date.now()}`,
-              conversationTokenCount: compactEvt.preTokens ?? 200_000,
-              maxTokens: 200_000,
-              flushTurn: async ({ prompt }) => {
-                try {
-                  await agentChatService.steer({
-                    sessionId: sid,
-                    text: prompt,
-                  });
-                  return { status: "flushed" };
-                } catch {
-                  return { status: "budget_exceeded" };
-                }
-              },
-            })
-            .catch(() => {});
-        }
 
         // Capture agent session errors as failure gotchas for the memory system
         if (event.event.type === "error" && event.provenance?.runId) {
@@ -1948,7 +2262,6 @@ app.whenReady().then(async () => {
         }
       },
       onSessionEnded: onTrackedSessionEnded,
-      getExternalMcpConfigs: () => externalMcpServiceRef?.getRawConfigs() ?? [],
       getDirtyFileTextForPath: async (absPath: string) => {
         const trimmed = absPath.trim();
         if (!trimmed) return undefined;
@@ -2022,11 +2335,34 @@ app.whenReady().then(async () => {
       onEvent: (event) =>
         emitProjectEvent(projectRoot, IPC.automationsEvent, event),
     });
+    const reviewService = createReviewService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      projectDefaultBranch: baseRef,
+      laneService,
+      gitService,
+      agentChatService,
+      sessionService,
+      sessionDeltaService,
+      testService,
+      issueInventoryService,
+      prService,
+      embeddingService,
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
+    });
     const automationIngressService = createAutomationIngressService({
       logger,
       automationService,
       secretService: automationSecretService,
       listRules: () => projectConfigService.get().effective.automations ?? [],
+    });
+
+    const githubPollingService = createGithubPollingService({
+      logger,
+      githubService,
+      automationService,
     });
 
     let missionServiceRef: ReturnType<typeof createMissionService> | null =
@@ -2134,7 +2470,7 @@ app.whenReady().then(async () => {
       delayMs = 0,
       enableFlag?: string,
     ) => {
-      if (!isBackgroundTaskEnabled(enableFlag)) {
+      if (!isProjectBackgroundTaskEnabled(enableFlag)) {
         logger.info("project.startup_task_skipped", {
           projectRoot,
           task: label,
@@ -2143,7 +2479,7 @@ app.whenReady().then(async () => {
         });
         return;
       }
-      if (devStabilityMode) {
+      if (projectStabilityMode) {
         logger.info("project.startup_task_enabled", {
           projectRoot,
           task: label,
@@ -2176,26 +2512,35 @@ app.whenReady().then(async () => {
         delayMs,
       );
     };
-    const externalConnectionAuthService = createExternalConnectionAuthService({
-      adeDir: adePaths.adeDir,
-      logger,
-    });
-    const externalMcpService = createExternalMcpService({
-      projectRoot,
-      adeDir: adePaths.adeDir,
-      db,
-      projectId,
-      logger,
-      workerAgentService,
-      ctoStateService,
-      missionService,
-      workerBudgetService,
-      missionBudgetService,
-      authService: externalConnectionAuthService,
-      onEvent: (event) =>
-        emitProjectEvent(projectRoot, IPC.externalMcpEvent, event),
-    });
-    externalMcpServiceRef = externalMcpService;
+
+    scheduleBackgroundProjectTask(
+      "worker_heartbeat.start",
+      () => workerHeartbeatService.start(),
+      (error) => {
+        logger.warn("worker_heartbeat.start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      30_000,
+      "ADE_ENABLE_WORKER_HEARTBEAT",
+    );
+
+    scheduleBackgroundProjectTask(
+      "memory.files.initial_sync",
+      () =>
+        measureProjectInitStep("memory.files.initial_sync", () => {
+          memoryFilesService.sync();
+        }),
+      (error) => {
+        logger.warn("memory_files.sync_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      0,
+      "ADE_ENABLE_MEMORY_FILE_SYNC",
+    );
+
     scheduleBackgroundProjectTask(
       "lanes.port_allocation_recovery",
       () => recoverPortAllocations(),
@@ -2206,18 +2551,6 @@ app.whenReady().then(async () => {
       },
       8_000,
       "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
-    );
-
-    scheduleBackgroundProjectTask(
-      "external_mcp.start",
-      () => externalMcpService.start(),
-      (error) => {
-        logger.warn("external_mcp.start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_EXTERNAL_MCP",
     );
 
     const openclawBridgeService = createOpenclawBridgeService({
@@ -2262,7 +2595,6 @@ app.whenReady().then(async () => {
       episodicSummaryService,
       proceduralLearningService,
       knowledgeCaptureService,
-      externalMcpService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
         openclawBridgeServiceRef?.onOrchestratorEvent(event);
@@ -2277,7 +2609,6 @@ app.whenReady().then(async () => {
         projectRoot,
         missionService,
         orchestratorService,
-        externalMcpService,
         logger,
         onEvent: (payload) =>
           emitProjectEvent(projectRoot, IPC.computerUseEvent, payload),
@@ -2323,12 +2654,15 @@ app.whenReady().then(async () => {
       db,
       logger,
       projectRoot,
+      localDeviceIdPath: path.join(app.getPath("userData"), "sync-device-id"),
       fileService,
       laneService,
       gitService,
       diffService,
       conflictService,
       prService,
+      issueInventoryService,
+      queueLandingService,
       sessionService,
       ptyService,
       projectConfigService,
@@ -2340,8 +2674,24 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       missionService,
       agentChatService,
+      workerAgentService,
+      workerBudgetService,
+      workerHeartbeatService,
+      workerRevisionService,
+      ctoStateService,
+      flowPolicyService,
+      linearCredentialService,
+      getLinearIngressService: () => linearIngressServiceRef,
+      getLinearIssueTracker: () => linearIssueTracker,
+      getLinearSyncService: () => linearSyncServiceRef,
       processService,
       hostStartupEnabled: process.env.ADE_DISABLE_SYNC_HOST !== "1",
+      hostDiscoveryEnabled: activeProjectRoot != null && normalizeProjectRoot(projectRoot) === activeProjectRoot,
+      notificationEventBus,
+      projectCatalogProvider: {
+        listProjects: listMobileSyncProjects,
+        prepareProjectConnection: prepareMobileSyncProjectConnection,
+      },
       onStatusChanged: (snapshot) =>
         emitProjectEvent(projectRoot, IPC.syncEvent, {
           type: "sync-status",
@@ -2349,7 +2699,21 @@ app.whenReady().then(async () => {
         }),
     });
     syncServiceRef = syncService;
-    await syncService.initialize();
+    // Late-bind the sync service into the notification bus dependencies so
+    // push targets / prefs / in-app delivery are resolved at send time.
+    syncServiceForNotifications = syncService;
+    scheduleBackgroundProjectTask(
+      "sync.initialize",
+      () => measureProjectInitStep("sync.initialize", () => syncService.initialize()),
+      (error) => {
+        logger.warn("sync.initialize_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      0,
+      "ADE_ENABLE_SYNC_INIT",
+    );
     scheduleBackgroundProjectTask(
       "missions.process_queue",
       () => {
@@ -2375,6 +2739,7 @@ app.whenReady().then(async () => {
       orchestratorService,
       prService,
       computerUseArtifactBrokerService,
+      logger,
     });
     logger.info("project.init_stage", {
       projectRoot,
@@ -2480,9 +2845,22 @@ app.whenReady().then(async () => {
         });
         if (event.issueId) {
           await linearSyncService.processIssueUpdate(event.issueId);
+          try {
+            const dispatched = buildLinearAutomationDispatch(event);
+            if (dispatched) {
+              await automationService.dispatchIngressTrigger(dispatched);
+            }
+          } catch (error) {
+            logger.warn("linear.automation_dispatch_failed", {
+              issueId: event.issueId,
+              eventId: event.eventId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
       },
     });
+    linearIngressServiceRef = linearIngressService;
     scheduleBackgroundProjectTask(
       "linear.ingress_start",
       () => {
@@ -2572,6 +2950,18 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_AUTOMATION_INGRESS",
     );
 
+    scheduleBackgroundProjectTask(
+      "automations.github_polling_start",
+      () => githubPollingService.start(),
+      (error) => {
+        logger.warn("automations.github_polling_start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      0,
+      "ADE_ENABLE_AUTOMATION_INGRESS",
+    );
+
     const configReloadService = createConfigReloadService({
       paths: {
         sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -2582,7 +2972,6 @@ app.whenReady().then(async () => {
       adeProjectService,
       automationService,
       secretService: automationSecretService,
-      externalMcpService,
       logger,
       onEvent: (event) =>
         emitProjectEvent(projectRoot, IPC.projectStateEvent, event),
@@ -2818,17 +3207,30 @@ app.whenReady().then(async () => {
     );
     writeGlobalState(globalStatePath, state);
 
-    // ── MCP Socket Server (embedded mode) ─────────────────────────
-    const mcpEventBuffer = createEventBuffer();
-    const mcpRuntime: AdeMcpRuntime = {
+    // ── ADE RPC Socket Server (embedded mode) ─────────────────────
+    const rpcEventBuffer = createEventBuffer();
+    const rpcRuntime: AdeRuntime = {
       projectRoot,
       workspaceRoot: projectRoot,
       projectId,
       project,
-      paths: adePaths as unknown as AdeMcpPaths,
+      paths: adePaths as unknown as AdeRuntimePaths,
       logger,
       db,
+      keybindingsService,
+      agentToolsService,
+      adeCliService,
+      devToolsService,
+      onboardingService,
       laneService,
+      laneEnvironmentService,
+      laneTemplateService,
+      portAllocationService,
+      laneProxyService,
+      oauthRedirectService,
+      runtimeDiagnosticsService,
+      rebaseSuggestionService,
+      autoRebaseService,
       sessionService,
       operationService,
       projectConfigService,
@@ -2836,14 +3238,24 @@ app.whenReady().then(async () => {
       gitService,
       diffService,
       missionService,
+      missionPreflightService,
       ptyService,
       testService,
+      aiIntegrationService,
       agentChatService,
       prService,
+      prSummaryService,
+      queueLandingService,
       fileService,
       memoryService,
       ctoStateService,
       workerAgentService,
+      workerBudgetService,
+      workerRevisionService,
+      workerHeartbeatService,
+      workerTaskSessionService,
+      linearCredentialService,
+      openclawBridgeService,
       flowPolicyService,
       linearDispatcherService,
       linearIssueTracker,
@@ -2851,30 +3263,42 @@ app.whenReady().then(async () => {
       linearIngressService,
       linearRoutingService,
       processService,
-      externalMcpService,
+      githubService,
+      automationService,
+      automationPlannerService,
       computerUseArtifactBrokerService,
       orchestratorService,
       aiOrchestratorService,
+      missionBudgetService,
+      syncHostService: syncService.getHostService(),
+      syncService,
+      automationIngressService,
+      contextDocService,
+      feedbackReporterService,
+      usageTrackingService,
+      budgetCapService,
+      sessionDeltaService,
+      autoUpdateService,
       issueInventoryService,
-      eventBuffer: mcpEventBuffer,
+      eventBuffer: rpcEventBuffer,
       dispose: () => {}, // desktop manages service lifecycle
     };
 
-    // When ADE_MCP_SOCKET_PATH is set, derive a per-project socket path from
+    // When ADE_RPC_SOCKET_PATH is set, derive a per-project socket path from
     // the override so each project context gets its own socket and avoids
     // EADDRINUSE. The first context uses the env path as-is for compatibility;
     // subsequent contexts append a project-root hash suffix.
-    const envSocketOverride = process.env.ADE_MCP_SOCKET_PATH?.trim();
-    const mcpSocketPath = envSocketOverride
+    const envSocketOverride = process.env.ADE_RPC_SOCKET_PATH?.trim();
+    const rpcSocketPath = envSocketOverride
       ? projectContexts.size === 0
         ? envSocketOverride
         : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`
       : adePaths.socketPath;
-    const activeMcpConnections = new Set<net.Socket>();
+    const activeRpcConnections = new Set<net.Socket>();
 
-    const destroyActiveMcpConnections = (): void => {
-      for (const conn of activeMcpConnections) {
-        activeMcpConnections.delete(conn);
+    const destroyActiveRpcConnections = (): void => {
+      for (const conn of activeRpcConnections) {
+        activeRpcConnections.delete(conn);
         try {
           conn.destroy();
         } catch {
@@ -2882,18 +3306,19 @@ app.whenReady().then(async () => {
         }
       }
     };
-    mcpSocketCleanupByRoot.set(
+    rpcSocketCleanupByRoot.set(
       normalizeProjectRoot(projectRoot),
-      destroyActiveMcpConnections,
+      destroyActiveRpcConnections,
     );
 
-    // Clean stale socket from prior crash
-    try {
-      fs.unlinkSync(mcpSocketPath);
-    } catch {}
+    if (!isAdeMcpNamedPipePath(rpcSocketPath)) {
+      try {
+        fs.unlinkSync(rpcSocketPath);
+      } catch {}
+    }
 
-    const mcpSocketServer = net.createServer((conn) => {
-      activeMcpConnections.add(conn);
+    const rpcSocketServer = net.createServer((conn) => {
+      activeRpcConnections.add(conn);
       let stopped = false;
       const transport: JsonRpcTransport = {
         onData(callback) {
@@ -2907,16 +3332,16 @@ app.whenReady().then(async () => {
         },
       };
       let stop: ReturnType<typeof startJsonRpcServer> | null = null;
-      const mcpHandler = createMcpRequestHandler({
-        runtime: mcpRuntime,
+      const rpcHandler = createAdeRpcRequestHandler({
+        runtime: rpcRuntime,
         serverVersion: app.getVersion(),
-        onToolsListChanged: () => {
-          stop?.notify("notifications/tools/list_changed", {});
+        onActionsListChanged: () => {
+          stop?.notify("ade/actions/list_changed", {});
         },
       });
-      stop = startJsonRpcServer(mcpHandler, transport, { nonFatal: true });
+      stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
       const removeConnection = (): void => {
-        activeMcpConnections.delete(conn);
+        activeRpcConnections.delete(conn);
       };
       conn.once("close", removeConnection);
       conn.once("end", removeConnection);
@@ -2926,12 +3351,97 @@ app.whenReady().then(async () => {
           stopped = true;
           stop?.();
         }
-        mcpHandler.dispose();
+        rpcHandler.dispose();
       });
       conn.on("error", () => {}); // ignore connection errors
     });
-    mcpSocketServer.listen(mcpSocketPath);
-    logger.info("mcp.socket_server_started", { socketPath: mcpSocketPath });
+    await measureProjectInitStep("rpc.socket_server_start", () =>
+      new Promise<void>((resolve, reject) => {
+        const handleListening = () => {
+          rpcSocketServer.off("error", handleError);
+          resolve();
+        };
+        const handleError = (error: Error) => {
+          rpcSocketServer.off("listening", handleListening);
+          reject(error);
+        };
+        rpcSocketServer.once("listening", handleListening);
+        rpcSocketServer.once("error", handleError);
+        rpcSocketServer.listen(rpcSocketPath);
+      }),
+    );
+    logger.info("rpc.socket_server_started", { socketPath: rpcSocketPath });
+
+    // Wire the automation runtime into the shared ADE-action registry so
+    // that `ade-action` automation steps can invoke the same domain services
+    // the RPC server exposes. We do this lazily — the registry re-resolves
+    // services on every call so that runtime bindings (bindMissionRuntime,
+    // ctoStateService) that settle later are still visible.
+    {
+      const adeActionLookup: AutomationAdeActionRegistry = {
+        isAllowed(domain: string, action: string): boolean {
+          return isAllowedAdeAction(domain as AdeActionDomain, action);
+        },
+        getService(domain: string): Record<string, unknown> | null {
+          const pseudoRuntime = buildAdeActionRuntimeForAutomations();
+          const services = getAdeActionDomainServices(pseudoRuntime);
+          const service = services[domain as AdeActionDomain] ?? null;
+          return (service ?? null) as Record<string, unknown> | null;
+        },
+        listDomains(): string[] {
+          return Object.keys(ADE_ACTION_ALLOWLIST);
+        },
+        listActions(domain: string): string[] {
+          return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])];
+        },
+      };
+      automationService?.bindAdeActionRegistry(adeActionLookup);
+    }
+
+    // Helper: materialize an AdeRuntime-shaped bag from the current set of
+    // locally-created services so that the registry's service map resolves.
+    // Using a function closure means this stays reactive to late-bound refs
+    // like `ctoStateServiceRef`.
+    function buildAdeActionRuntimeForAutomations(): AdeRuntime {
+      return {
+        laneService,
+        gitService,
+        diffService,
+        conflictService,
+        prService,
+        testService,
+        agentChatService,
+        missionService,
+        aiOrchestratorService,
+        orchestratorService,
+        memoryService,
+        ctoStateService,
+        workerAgentService,
+        sessionService,
+        operationService,
+        projectConfigService,
+        issueInventoryService,
+        flowPolicyService,
+        linearDispatcherService,
+        linearIssueTracker,
+        linearSyncService,
+        linearIngressService,
+        linearRoutingService,
+        fileService,
+        processService,
+        ptyService,
+        computerUseArtifactBrokerService,
+        automationService,
+        automationPlannerService,
+        githubService,
+        keybindingsService,
+        onboardingService,
+        feedbackReporterService,
+        usageTrackingService,
+        budgetCapService,
+        autoUpdateService,
+      } as unknown as AdeRuntime;
+    }
 
     return {
       db,
@@ -2940,10 +3450,11 @@ app.whenReady().then(async () => {
       projectId,
       adeDir: adePaths.adeDir,
       hasUserSelectedProject: userSelectedProject,
-      getActiveMcpConnectionCount: () => activeMcpConnections.size,
+      getActiveRpcConnectionCount: () => activeRpcConnections.size,
       disposeHeadWatcher,
       keybindingsService,
       agentToolsService,
+      adeCliService,
       devToolsService,
       onboardingService,
       laneService,
@@ -2970,14 +3481,20 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       queueLandingService,
       issueInventoryService,
+      prSummaryService,
+      reviewService,
       jobEngine,
       automationService,
       automationPlannerService,
       automationIngressService,
+      githubPollingService,
       usageTrackingService,
       budgetCapService,
       syncHostService: syncService.getHostService(),
       syncService,
+      apnsService,
+      apnsKeyStore,
+      notificationEventBus,
       missionService,
       missionPreflightService,
       orchestratorService,
@@ -3014,11 +3531,9 @@ app.whenReady().then(async () => {
       linearRoutingService,
       linearIngressService,
       linearSyncService,
-      externalConnectionAuthService,
-      externalMcpService,
       configReloadService,
-      mcpSocketServer,
-      mcpSocketPath,
+      rpcSocketServer,
+      rpcSocketPath,
     };
   };
 
@@ -3041,10 +3556,17 @@ app.whenReady().then(async () => {
       hasUserSelectedProject: false,
       projectId: "",
       adeDir: "",
-      getActiveMcpConnectionCount: () => 0,
+      getActiveRpcConnectionCount: () => 0,
       disposeHeadWatcher: () => {},
       keybindingsService: null,
       agentToolsService: null,
+      adeCliService: createAdeCliService({
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        userDataPath: app.getPath("userData"),
+        appExecutablePath: process.execPath,
+        logger,
+      }),
       devToolsService: null,
       onboardingService: null,
       laneService: null,
@@ -3068,14 +3590,20 @@ app.whenReady().then(async () => {
       prPollingService: null,
       queueLandingService: null,
       issueInventoryService: null,
+      prSummaryService: null,
+      reviewService: null,
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,
       automationIngressService: null,
+      githubPollingService: null,
       usageTrackingService: null,
       budgetCapService: null,
       syncHostService: null,
       syncService: null,
+      apnsService: null,
+      apnsKeyStore: null,
+      notificationEventBus: null,
       missionService: null,
       missionPreflightService: null,
       orchestratorService: null,
@@ -3111,8 +3639,6 @@ app.whenReady().then(async () => {
       linearRoutingService: null,
       linearIngressService: null,
       linearSyncService: null,
-      externalConnectionAuthService: null,
-      externalMcpService: null,
       configReloadService: null,
     } as unknown as AppContext;
   };
@@ -3123,19 +3649,21 @@ app.whenReady().then(async () => {
       ctx.project.rootPath.trim().length > 0
         ? normalizeProjectRoot(ctx.project.rootPath)
         : null;
-    // Tear down MCP socket BEFORE any service disposal so in-flight MCP requests
+    // Tear down the ADE RPC socket BEFORE service disposal so in-flight requests
     // do not race with services that are being shut down.
     try {
       if (normalizedRoot) {
-        mcpSocketCleanupByRoot.get(normalizedRoot)?.();
-        mcpSocketCleanupByRoot.delete(normalizedRoot);
+        rpcSocketCleanupByRoot.get(normalizedRoot)?.();
+        rpcSocketCleanupByRoot.delete(normalizedRoot);
       }
-      ctx.mcpSocketServer?.close();
+      ctx.rpcSocketServer?.close();
     } catch {
       // ignore
     }
     try {
-      if (ctx.mcpSocketPath) fs.unlinkSync(ctx.mcpSocketPath);
+      if (ctx.rpcSocketPath && !isAdeMcpNamedPipePath(ctx.rpcSocketPath)) {
+        fs.unlinkSync(ctx.rpcSocketPath);
+      }
     } catch {
       // ignore
     }
@@ -3167,7 +3695,17 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
+      ctx.githubPollingService?.dispose();
+    } catch {
+      // ignore
+    }
+    try {
       ctx.automationService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.reviewService?.dispose?.();
     } catch {
       // ignore
     }
@@ -3192,7 +3730,7 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.workerHeartbeatService?.dispose();
+      await ctx.workerHeartbeatService?.dispose();
     } catch {
       // ignore
     }
@@ -3213,16 +3751,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.oauthRedirectService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
-      await ctx.externalMcpService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.externalConnectionAuthService?.dispose?.();
     } catch {
       // ignore
     }
@@ -3282,6 +3810,11 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
+      await ctx.apnsService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
       ctx.db.flushNow();
       ctx.db.close();
     } catch {
@@ -3303,6 +3836,12 @@ app.whenReady().then(async () => {
       await disposeContextResources(ctx);
       projectContexts.delete(normalizedRoot);
       projectLastActivatedAt.delete(normalizedRoot);
+      const leaseTimer = mobileSyncHandoffLeaseTimers.get(normalizedRoot);
+      if (leaseTimer) {
+        clearTimeout(leaseTimer);
+        mobileSyncHandoffLeaseTimers.delete(normalizedRoot);
+      }
+      mobileSyncHandoffLeases.delete(normalizedRoot);
       if (activeProjectRoot === normalizedRoot) {
         activeProjectRoot = null;
       }
@@ -3321,6 +3860,226 @@ app.whenReady().then(async () => {
     setActiveProject(null);
   };
 
+  async function mobileProjectSummaryForContext(
+    ctx: AppContext,
+    recent?: RecentProjectSummary | null,
+  ): Promise<SyncMobileProjectSummary> {
+    let laneCount = recent?.laneCount ?? 0;
+    if (!recent?.laneCount) {
+      try {
+        laneCount = (await ctx.laneService.list({ includeArchived: false })).length;
+      } catch {
+        laneCount = 0;
+      }
+    }
+    return {
+      id: `root:${normalizeProjectRoot(ctx.project.rootPath)}`,
+      displayName: ctx.project.displayName,
+      rootPath: ctx.project.rootPath,
+      defaultBaseRef: ctx.project.baseRef,
+      lastOpenedAt: recent?.lastOpenedAt ?? null,
+      laneCount,
+      isAvailable: fs.existsSync(ctx.project.rootPath),
+      isCached: false,
+      isOpen: true,
+    };
+  }
+
+  function mobileProjectSummaryForRecent(recent: RecentProjectSummary): SyncMobileProjectSummary {
+    const normalizedRoot = normalizeProjectRoot(recent.rootPath);
+    return {
+      id: `root:${normalizedRoot}`,
+      displayName: recent.displayName,
+      rootPath: recent.rootPath,
+      defaultBaseRef: null,
+      lastOpenedAt: recent.lastOpenedAt,
+      laneCount: recent.laneCount ?? 0,
+      isAvailable: recent.exists,
+      isCached: false,
+      isOpen: false,
+    };
+  }
+
+  async function listMobileSyncProjects(): Promise<{ projects: SyncMobileProjectSummary[] }> {
+    const recentProjects = (readGlobalState(globalStatePath).recentProjects ?? [])
+      .map(toRecentProjectSummary);
+    const recentByRoot = new Map(
+      recentProjects.map((entry) => [normalizeProjectRoot(entry.rootPath), entry] as const),
+    );
+    const byRoot = new Map<string, SyncMobileProjectSummary>();
+    for (const recent of recentProjects) {
+      byRoot.set(normalizeProjectRoot(recent.rootPath), mobileProjectSummaryForRecent(recent));
+    }
+    const contextSummaries = await Promise.all(
+      [...projectContexts.entries()].map(async ([root, ctx]) =>
+        [root, await mobileProjectSummaryForContext(ctx, recentByRoot.get(root) ?? null)] as const
+      ),
+    );
+    for (const [root, summary] of contextSummaries) {
+      byRoot.set(root, summary);
+    }
+    const projects = [...byRoot.entries()]
+      .sort(([leftRoot], [rightRoot]) => {
+        if (leftRoot === activeProjectRoot) return -1;
+        if (rightRoot === activeProjectRoot) return 1;
+        return 0;
+      })
+      .map(([, project]) => project);
+    return { projects };
+  }
+
+  async function ensureProjectContextForMobileSync(projectRoot: string): Promise<AppContext> {
+    const normalizedRoot = normalizeProjectRoot(projectRoot);
+    const existing = projectContexts.get(normalizedRoot);
+    if (existing) return existing;
+    if (!fs.existsSync(normalizedRoot)) {
+      throw new Error("Project is no longer available on this desktop.");
+    }
+
+    let initPromise = projectInitPromises.get(normalizedRoot);
+    if (!initPromise) {
+      initPromise = (async () => {
+        const baseRef = await detectDefaultBaseRef(normalizedRoot);
+        const ctx = await initContextForProjectRoot({
+          projectRoot: normalizedRoot,
+          baseRef,
+          ensureExclude: true,
+          recordLastProject: false,
+          recordRecent: true,
+          userSelectedProject: false,
+        });
+        projectContexts.set(normalizedRoot, ctx);
+        return ctx;
+      })().finally(() => {
+        projectInitPromises.delete(normalizedRoot);
+      }) as Promise<AppContext>;
+      projectInitPromises.set(normalizedRoot, initPromise);
+    }
+    return initPromise;
+  }
+
+  async function prepareMobileSyncProjectConnection(
+    args: SyncProjectSwitchRequestPayload,
+  ): Promise<SyncProjectSwitchResultPayload> {
+    const catalog = await listMobileSyncProjects();
+    const requestedRoot = typeof args.rootPath === "string" && args.rootPath.trim()
+      ? normalizeProjectRoot(args.rootPath)
+      : null;
+    const requestedProjectId = typeof args.projectId === "string" && args.projectId.trim()
+      ? args.projectId.trim()
+      : null;
+    let catalogEntry = catalog.projects.find((entry) => {
+      const entryRoot = entry.rootPath ? normalizeProjectRoot(entry.rootPath) : null;
+      if (requestedRoot != null && requestedProjectId != null) {
+        if (entryRoot !== requestedRoot) return false;
+        return entry.id === requestedProjectId || !requestedProjectId.startsWith("root:");
+      }
+      return (requestedRoot != null && entryRoot === requestedRoot)
+        || (requestedProjectId != null && entry.id === requestedProjectId);
+    });
+    if (!catalogEntry && requestedProjectId) {
+      for (const [root, ctx] of projectContexts) {
+        if (ctx.projectId === requestedProjectId) {
+          catalogEntry = catalog.projects.find((entry) =>
+            entry.rootPath != null && normalizeProjectRoot(entry.rootPath) === root
+          ) ?? await mobileProjectSummaryForContext(ctx, null);
+          break;
+        }
+      }
+    }
+    if (!catalogEntry || !catalogEntry.isAvailable) {
+      return {
+        ok: false,
+        message: "That project is not available from this desktop.",
+      };
+    }
+    const targetRoot = catalogEntry.rootPath ? normalizeProjectRoot(catalogEntry.rootPath) : null;
+    if (!targetRoot) {
+      return {
+        ok: false,
+        message: "Choose a desktop project first.",
+      };
+    }
+
+    const existingPreparation = mobileSyncPreparationPromises.get(targetRoot);
+    if (existingPreparation) return existingPreparation;
+
+    const preparationPromise = (async (): Promise<SyncProjectSwitchResultPayload> => {
+      const hadExistingContext = projectContexts.has(targetRoot);
+      let createdLeaseExpiresAt: number | null = null;
+      let createdLeaseTimer: ReturnType<typeof setTimeout> | null = null;
+      try {
+        const ctx = await ensureProjectContextForMobileSync(targetRoot);
+        if (!ctx.syncService) {
+          throw new Error("Sync is not available for that project.");
+        }
+        await ctx.syncService.initialize();
+        const status = await ctx.syncService.getStatus();
+        if (!status.bootstrapToken || !status.pairingConnectInfo) {
+          throw new Error("That project is not ready for phone sync yet.");
+        }
+        const recent = (readGlobalState(globalStatePath).recentProjects ?? [])
+          .map(toRecentProjectSummary)
+          .find((entry) => normalizeProjectRoot(entry.rootPath) === targetRoot) ?? null;
+        const project = await mobileProjectSummaryForContext(ctx, recent);
+        const leaseExpiresAt = Date.now() + MOBILE_SYNC_HANDOFF_LEASE_MS;
+        createdLeaseExpiresAt = leaseExpiresAt;
+        mobileSyncHandoffLeases.set(targetRoot, leaseExpiresAt);
+        const existingLeaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);
+        if (existingLeaseTimer) clearTimeout(existingLeaseTimer);
+        const leaseTimer = setTimeout(() => {
+          mobileSyncHandoffLeaseTimers.delete(targetRoot);
+          if (mobileSyncHandoffLeases.get(targetRoot) === leaseExpiresAt) {
+            mobileSyncHandoffLeases.delete(targetRoot);
+          }
+          scheduleProjectContextRebalance();
+        }, MOBILE_SYNC_HANDOFF_LEASE_MS + 100);
+        leaseTimer.unref?.();
+        createdLeaseTimer = leaseTimer;
+        mobileSyncHandoffLeaseTimers.set(targetRoot, leaseTimer);
+        projectLastActivatedAt.set(targetRoot, Date.now());
+        scheduleProjectContextRebalance();
+        return {
+          ok: true,
+          project,
+          connection: {
+            authKind: "bootstrap",
+            token: status.bootstrapToken,
+            hostIdentity: status.pairingConnectInfo.hostIdentity,
+            port: status.pairingConnectInfo.port,
+            addressCandidates: status.pairingConnectInfo.addressCandidates,
+          },
+        };
+      } catch (error) {
+        const currentLeaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);
+        if (createdLeaseTimer != null && currentLeaseTimer === createdLeaseTimer) {
+          clearTimeout(createdLeaseTimer);
+          mobileSyncHandoffLeaseTimers.delete(targetRoot);
+        }
+        if (createdLeaseExpiresAt != null && mobileSyncHandoffLeases.get(targetRoot) === createdLeaseExpiresAt) {
+          mobileSyncHandoffLeases.delete(targetRoot);
+        }
+        if (!hadExistingContext && projectContexts.has(targetRoot) && !mobileSyncHandoffLeases.has(targetRoot)) {
+          await closeProjectContext(targetRoot);
+        } else {
+          scheduleProjectContextRebalance();
+        }
+        return {
+          ok: false,
+          message: error instanceof Error ? error.message : "Unable to prepare phone sync for that project.",
+        };
+      }
+    })();
+    mobileSyncPreparationPromises.set(targetRoot, preparationPromise);
+    try {
+      return await preparationPromise;
+    } finally {
+      if (mobileSyncPreparationPromises.get(targetRoot) === preparationPromise) {
+        mobileSyncPreparationPromises.delete(targetRoot);
+      }
+    }
+  }
+
   const persistRecentProject = (
     project: ProjectInfo,
     options: { recordLastProject?: boolean; recordRecent?: boolean } = {},
@@ -3333,53 +4092,104 @@ app.whenReady().then(async () => {
     writeGlobalState(globalStatePath, state);
   };
 
+  const projectOpenLogger = createFileLogger(
+    path.join(app.getPath("userData"), "project-open.jsonl"),
+  );
+
   const switchProjectFromDialog = async (
     selectedPath: string,
   ): Promise<ProjectInfo> => {
-    const repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
-    const existing = projectContexts.get(repoRoot);
-    if (existing) {
-      existing.hasUserSelectedProject = true;
+    const startedAt = Date.now();
+    let repoRoot: string | null = null;
+    projectOpenLogger.info("project.open.begin", { selectedPath });
+    try {
+      const resolveStartedAt = Date.now();
+      repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+      projectOpenLogger.info("project.open.repo_resolved", {
+        selectedPath,
+        repoRoot,
+        durationMs: Date.now() - resolveStartedAt,
+      });
+      const existing = projectContexts.get(repoRoot);
+      if (existing) {
+        existing.hasUserSelectedProject = true;
+        setActiveProject(repoRoot);
+        persistRecentProject(existing.project, {
+          recordLastProject: true,
+          recordRecent: false,
+        });
+        emitProjectChanged(existing.project);
+        scheduleProjectContextRebalance();
+        projectOpenLogger.info("project.open.done", {
+          selectedPath,
+          repoRoot,
+          reusedContext: true,
+          durationMs: Date.now() - startedAt,
+        });
+        return existing.project;
+      }
+
+      let initPromise = projectInitPromises.get(repoRoot);
+      if (!initPromise) {
+        initPromise = (async () => {
+          const baseRefStartedAt = Date.now();
+          const baseRef = await detectDefaultBaseRef(repoRoot!);
+          projectOpenLogger.info("project.open.base_ref_detected", {
+            selectedPath,
+            repoRoot,
+            baseRef,
+            durationMs: Date.now() - baseRefStartedAt,
+          });
+          const initStartedAt = Date.now();
+          const ctx = await initContextForProjectRoot({
+            projectRoot: repoRoot!,
+            baseRef,
+            ensureExclude: true,
+            recordLastProject: true,
+            recordRecent: true,
+            userSelectedProject: true,
+          });
+          projectOpenLogger.info("project.open.context_initialized", {
+            selectedPath,
+            repoRoot,
+            durationMs: Date.now() - initStartedAt,
+          });
+          projectContexts.set(repoRoot!, ctx);
+          return ctx;
+        })().finally(() => {
+          if (repoRoot) {
+            projectInitPromises.delete(repoRoot);
+          }
+        }) as Promise<AppContext>;
+        projectInitPromises.set(repoRoot, initPromise);
+      }
+
+      const ctx = await initPromise;
+      ctx.hasUserSelectedProject = true;
       setActiveProject(repoRoot);
-      persistRecentProject(existing.project, {
+      persistRecentProject(ctx.project, {
         recordLastProject: true,
         recordRecent: false,
       });
-      emitProjectChanged(existing.project);
+      emitProjectChanged(ctx.project);
       scheduleProjectContextRebalance();
-      return existing.project;
+      projectOpenLogger.info("project.open.done", {
+        selectedPath,
+        repoRoot,
+        reusedContext: false,
+        durationMs: Date.now() - startedAt,
+      });
+      return ctx.project;
+    } catch (error) {
+      projectOpenLogger.error("project.open.failed", {
+        selectedPath,
+        repoRoot,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      throw error;
     }
-
-    let initPromise = projectInitPromises.get(repoRoot);
-    if (!initPromise) {
-      initPromise = (async () => {
-        const baseRef = await detectDefaultBaseRef(repoRoot);
-        const ctx = await initContextForProjectRoot({
-          projectRoot: repoRoot,
-          baseRef,
-          ensureExclude: true,
-          recordLastProject: true,
-          recordRecent: true,
-          userSelectedProject: true,
-        });
-        projectContexts.set(repoRoot, ctx);
-        return ctx;
-      })().finally(() => {
-        projectInitPromises.delete(repoRoot);
-      }) as Promise<AppContext>;
-      projectInitPromises.set(repoRoot, initPromise);
-    }
-
-    const ctx = await initPromise;
-    ctx.hasUserSelectedProject = true;
-    setActiveProject(repoRoot);
-    persistRecentProject(ctx.project, {
-      recordLastProject: true,
-      recordRecent: false,
-    });
-    emitProjectChanged(ctx.project);
-    scheduleProjectContextRebalance();
-    return ctx.project;
   };
 
   const closeProjectByPath = async (projectRoot: string): Promise<void> => {
@@ -3405,13 +4215,203 @@ app.whenReady().then(async () => {
 
   dormantContext = createDormantProjectContext();
 
+  let shutdownPromise: Promise<void> | null = null;
+  let shutdownRequested = false;
+  let shutdownFinalized = false;
+  let quitWarningAcknowledged = false;
+  let shutdownForceTimer: NodeJS.Timeout | null = null;
+
+  const shutdownOpenCodeServersBestEffort = (): void => {
+    try {
+      const { shutdownOpenCodeServers } = require("./services/opencode/openCodeServerManager");
+      shutdownOpenCodeServers();
+    } catch {
+      // ignore if module not loaded
+    }
+  };
+
+  const runImmediateProcessCleanup = (reason: string): void => {
+    try {
+      autoUpdateService?.dispose();
+    } catch {
+      // ignore
+    }
+
+    const contexts = new Set<AppContext>(projectContexts.values());
+    contexts.add(getActiveContext());
+
+    for (const ctx of contexts) {
+      try {
+        ctx.aiOrchestratorService?.dispose?.();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.automationService?.dispose?.();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.testService?.disposeAll?.();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.processService?.disposeAll?.();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.ptyService?.disposeAll?.();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.agentChatService?.forceDisposeAll?.();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.db?.flushNow?.();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.logger.info("app.process_cleanup_now", {
+          reason,
+          projectRoot: ctx.project?.rootPath ?? null,
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    shutdownOpenCodeServersBestEffort();
+  };
+
+  const finalizeAppExit = (exitCode: number): void => {
+    if (shutdownFinalized) return;
+    shutdownFinalized = true;
+    if (shutdownForceTimer) {
+      clearTimeout(shutdownForceTimer);
+      shutdownForceTimer = null;
+    }
+    runImmediateProcessCleanup("process_exit_finalize");
+    if (app.isReady()) {
+      app.exit(exitCode);
+      return;
+    }
+    process.exit(exitCode);
+  };
+
+  const requestAppShutdown = (args: {
+    reason: string;
+    exitCode?: number;
+    fastKillFirst?: boolean;
+    forceAfterMs?: number;
+  }): void => {
+    if (shutdownFinalized || shutdownPromise) return;
+    shutdownRequested = true;
+    quitWarningAcknowledged = true;
+
+    const exitCode = args.exitCode ?? 0;
+    const shutdownLogger = getActiveContext().logger;
+    const previousRoot = getActiveContext().project?.rootPath ?? "";
+
+    if (args.fastKillFirst) {
+      runImmediateProcessCleanup(`fast_kill:${args.reason}`);
+    }
+
+    const forceAfterMs = args.forceAfterMs ?? 8_000;
+    shutdownForceTimer = setTimeout(() => {
+      shutdownLogger.error("app.shutdown_force_exit", {
+        reason: args.reason,
+        forceAfterMs,
+      });
+      runImmediateProcessCleanup(`forced:${args.reason}`);
+      finalizeAppExit(exitCode);
+    }, forceAfterMs);
+    shutdownForceTimer.unref?.();
+
+    shutdownPromise = (async () => {
+      shutdownLogger.info("app.shutdown_start", {
+        reason: args.reason,
+        exitCode,
+        fastKillFirst: args.fastKillFirst ?? false,
+      });
+
+      try {
+        autoUpdateService?.dispose();
+      } catch {
+        // ignore
+      }
+      setActiveProject(null);
+      dormantContext = createDormantProjectContext(previousRoot);
+
+      try {
+        await closeAllProjectContexts();
+      } catch (error) {
+        shutdownLogger.error("app.shutdown_cleanup_failed", {
+          reason: args.reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        runImmediateProcessCleanup(`complete:${args.reason}`);
+      }
+    })().finally(() => {
+      finalizeAppExit(exitCode);
+    });
+  };
+
+  const confirmQuitWarning = (): boolean => {
+    if (quitWarningAcknowledged || shutdownRequested) return true;
+    const options = {
+      type: "warning" as const,
+      buttons: ["Keep ADE open", "Quit ADE"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: "Quit ADE?",
+      message: "Save your work before closing ADE.",
+      detail:
+        "Quitting ADE will end any running agents and stop background processes started by ADE, including OpenCode servers, terminal sessions, and test runs.",
+    };
+    const parentWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const response = parentWindow
+      ? dialog.showMessageBoxSync(parentWindow, options)
+      : dialog.showMessageBoxSync(options);
+    if (response !== 1) {
+      return false;
+    }
+    quitWarningAcknowledged = true;
+    return true;
+  };
+
+  const handleMainWindowCloseRequested = (
+    _win: BrowserWindow,
+    event: Electron.Event,
+  ): void => {
+    if (shutdownRequested) return;
+    if (BrowserWindow.getAllWindows().length > 1) return;
+    event.preventDefault();
+    if (!confirmQuitWarning()) return;
+    requestAppShutdown({ reason: "window_close", exitCode: 0 });
+  };
+
   const FILE_LIMIT_CODES = new Set(["EMFILE", "ENFILE"]);
   let emfileWarned = false;
   process.on("uncaughtException", (err) => {
     if (FILE_LIMIT_CODES.has((err as NodeJS.ErrnoException).code ?? "")) return;
-    getActiveContext().logger.error("process.uncaught_exception", {
+    const logger = getActiveContext().logger;
+    logger.error("process.uncaught_exception", {
       err: String(err),
       stack: err instanceof Error ? err.stack : undefined,
+    });
+    requestAppShutdown({
+      reason: "uncaught_exception",
+      exitCode: 1,
+      fastKillFirst: true,
+      forceAfterMs: 5_000,
     });
   });
   process.on("unhandledRejection", (reason) => {
@@ -3438,20 +4438,37 @@ app.whenReady().then(async () => {
       name: details.name ?? null,
     });
   });
+  process.once("SIGINT", () => {
+    requestAppShutdown({
+      reason: "signal_sigint",
+      exitCode: 130,
+      fastKillFirst: true,
+      forceAfterMs: 5_000,
+    });
+  });
+  process.once("SIGTERM", () => {
+    requestAppShutdown({
+      reason: "signal_sigterm",
+      exitCode: 143,
+      fastKillFirst: true,
+      forceAfterMs: 5_000,
+    });
+  });
+  process.once("exit", () => {
+    runImmediateProcessCleanup("process_exit");
+  });
+  app.on("will-quit", () => {
+    runImmediateProcessCleanup("will_quit");
+  });
 
-  // --- Auto-update service (global, not per-project) ---
-  const updateLogger = createFileLogger(
-    path.join(app.getPath("userData"), "ade-update.jsonl"),
-  );
-  cleanupStaleTempArtifacts({
-    tempRoot: app.getPath("temp"),
-    logger: updateLogger,
-  });
-  const autoUpdateService = createAutoUpdateService({
-    logger: updateLogger,
-    currentVersion: app.getVersion(),
-    globalStatePath,
-  });
+  try {
+    const { recoverManagedOpenCodeOrphans } = require("./services/opencode/openCodeServerManager");
+    await recoverManagedOpenCodeOrphans({ force: true, logger: getActiveContext().logger });
+  } catch (error) {
+    getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   autoUpdateService.onStateChange((snapshot) => {
     BrowserWindow.getAllWindows().forEach((win) => {
       win.webContents.send(IPC.updateEvent, snapshot);
@@ -3484,36 +4501,26 @@ app.whenReady().then(async () => {
     }
   }
 
-  await createWindow(getActiveContext().logger);
+  await createWindow({
+    logger: getActiveContext().logger,
+    onCloseRequested: handleMainWindowCloseRequested,
+  });
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      await createWindow(getActiveContext().logger);
+      await createWindow({
+        logger: getActiveContext().logger,
+        onCloseRequested: handleMainWindowCloseRequested,
+      });
     }
   });
 
-  let quitAfterCleanup = false;
   app.on("before-quit", (event) => {
-    if (quitAfterCleanup) return;
-    quitAfterCleanup = true;
+    if (shutdownFinalized) return;
     event.preventDefault();
-    const current = getActiveContext();
-    const previousRoot = current.project?.rootPath;
-    current.logger.info("app.before_quit");
-    // Kill any remaining OpenCode servers before quitting.
-    try {
-      const { shutdownOpenCodeServers } = require("./services/opencode/openCodeServerManager");
-      shutdownOpenCodeServers();
-    } catch { /* ignore if module not loaded */ }
-    setActiveProject(null);
-    dormantContext = createDormantProjectContext(previousRoot);
-    void closeAllProjectContexts()
-      .catch(() => {
-        // ignore
-      })
-      .finally(() => {
-        app.quit();
-      });
+    if (shutdownRequested) return;
+    if (!confirmQuitWarning()) return;
+    requestAppShutdown({ reason: "before_quit", exitCode: 0 });
   });
 });
 

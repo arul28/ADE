@@ -3,6 +3,7 @@ import { ArrowDown, ArrowsClockwise, Check, Stack, Trash, Upload, Warning } from
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
+import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
@@ -208,7 +209,7 @@ function getCommitHelperText(args: {
   commitMessageAi: CommitMessageAiState;
 }): string {
   if (args.commitMessage.trim().length > 0) {
-    return "Press Cmd+Enter to commit with the typed message.";
+    return `Press ${modifierKeyLabel}+Enter to commit with the typed message.`;
   }
   if (args.commitMessageAi.enabled && args.commitMessageAi.modelId) {
     return `Blank messages will be auto-generated with ${args.commitMessageAi.modelId}.`;
@@ -1546,7 +1547,7 @@ export function LaneGitActionsPane({
             onResolveRebaseConflict(laneId, rebaseConflictParentLaneId);
             return;
           }
-          const search = new URLSearchParams({ tab: "rebase", laneId });
+          const search = new URLSearchParams({ tab: "workflows", workflow: "rebase", laneId });
           if (rebaseConflictParentLaneId) search.set("parentLaneId", rebaseConflictParentLaneId);
           navigate(`/prs?${search.toString()}`);
         };
@@ -1571,8 +1572,8 @@ export function LaneGitActionsPane({
             {autoRebaseStatus.state !== "autoRebased" ? (
               isAutoRebaseFailure ? (
                 <SmartTooltip content={{
-                  label: "Open Rebase Tab",
-                  description: "View detailed rebase conflict information and resolve issues.",
+                  label: "Open Rebase/Merge Tab",
+                  description: "View detailed rebase information and resolve issues.",
                   effect: "Navigate to the rebase details view",
                 }}>
                   <button
@@ -1581,7 +1582,7 @@ export function LaneGitActionsPane({
                     disabled={!laneId || busyAction != null}
                     onClick={openRebaseTab}
                   >
-                    OPEN REBASE TAB
+                    OPEN REBASE/MERGE TAB
                   </button>
                 </SmartTooltip>
               ) : (
@@ -1676,7 +1677,7 @@ export function LaneGitActionsPane({
               effect: hasStaged
                 ? `${amendCommit ? "Amend" : "Commit"} ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}`
                 : "No staged files to commit",
-              shortcut: "\u2318+Enter",
+              shortcut: `${modifierKeyLabel}+Enter`,
             }}>
               <button
                 type="button"

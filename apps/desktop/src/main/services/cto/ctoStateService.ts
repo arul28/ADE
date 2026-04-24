@@ -5,7 +5,6 @@ import YAML from "yaml";
 import type {
   CtoCoreMemory,
   CtoIdentity,
-  ExternalMcpAccessPolicy,
   OpenclawContextPolicy,
   CtoOnboardingState,
   CtoSessionLogEntry,
@@ -13,6 +12,7 @@ import type {
   CtoSnapshot,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
+import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
 import type { createMemoryService, Memory, MemoryCategory } from "../memory/memoryService";
 import type { AdeDb } from "../state/kvDb";
@@ -35,7 +35,7 @@ type AppendCtoSessionLogArgs = {
   endedAt: string | null;
   provider: string;
   modelId: string | null;
-  capabilityMode: "full_mcp" | "fallback";
+  capabilityMode: "full_tooling" | "fallback";
 };
 
 type AppendCtoSubordinateActivityArgs = {
@@ -81,11 +81,12 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- Proactively check project health, recent events, and worker status to stay aware of the project state",
   "",
   "Precision rules:",
-  "- When the user specifies a model (e.g. 'use opus', 'use gpt-5.4'), pass the exact modelId to spawnChat or other tools. Never silently fall back to a default.",
+  "- When the user specifies a model (e.g. 'use opus', 'use gpt-5.5'), pass the exact modelId to spawnChat or other tools. Never silently fall back to a default.",
   "- When the user asks to 'start a chat' or 'launch an agent', use spawnChat with the specified model and initial prompt. If the user explicitly asks for a terminal, CLI tool, or shell command, use createTerminal instead — both are valid, just match the intent.",
   "- All ADE internals are fair game. The user can request any action: launching chats, opening terminals, running CLI tools, spawning agents, managing lanes, etc. Never refuse an action that ADE supports.",
   "- When the user asks about something you can look up (lane status, PR checks, test results), call the tool first and report facts. Do not guess.",
   "- When you are unsure which tool to use, consult the capability manifest in your system prompt before asking the user.",
+  `- ${ADE_CLI_INLINE_GUIDANCE}`,
 ].join("\n");
 
 const CTO_MEMORY_OPERATING_MODEL = [
@@ -156,29 +157,29 @@ const CTO_ENVIRONMENT_KNOWLEDGE = [
   "  /graph — Workspace dependency graph visualization showing lane relationships.",
   "  /history — Operation history timeline showing all past actions.",
   "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
-  "  /settings — App settings: AI providers, GitHub token, Linear integration, keybindings, usage budgets, MCP servers.",
+  "  /settings — App settings: AI providers, GitHub token, Linear integration, keybindings, usage budgets, and external connectors.",
   "  When an action should be opened in ADE, return a navigation suggestion. Never silently switch tabs.",
   "",
   "## Model Selection",
   "",
   "ADE supports multiple AI providers and models. When spawning chats or configuring workers, use the correct modelId:",
-  "  Anthropic models (via Claude CLI): anthropic/claude-opus-4-6 (shortId: opus), anthropic/claude-sonnet-4-6 (shortId: sonnet), anthropic/claude-haiku-4-5 (shortId: haiku).",
-  "  OpenAI models (via Codex CLI): openai/gpt-5.4-codex (shortId: gpt-5.4-codex), openai/gpt-5.4-mini-codex, openai/gpt-5.3-codex, openai/gpt-5.3-codex-spark, openai/gpt-5.2-codex, openai/gpt-5.1-codex-max, openai/gpt-5.1-codex-mini.",
+  "  Anthropic models (via Claude CLI): anthropic/claude-opus-4-7 (shortId: opus), anthropic/claude-sonnet-4-6 (shortId: sonnet), anthropic/claude-haiku-4-5 (shortId: haiku).",
+  "  OpenAI models (via Codex CLI): openai/gpt-5.5-codex (shortId: gpt-5.5-codex), openai/gpt-5.4-codex, openai/gpt-5.4-mini-codex, openai/gpt-5.3-codex, openai/gpt-5.3-codex-spark, openai/gpt-5.2-codex, openai/gpt-5.1-codex-max, openai/gpt-5.1-codex-mini.",
   "  Local models: ollama/llama-3.3, lmstudio/* (discovered at runtime).",
   "  Reasoning effort (for supported models): low, medium, high, max (opus), xhigh (openai).",
-  "  IMPORTANT: When the user says 'use opus' → modelId: 'anthropic/claude-opus-4-6'. 'Use sonnet' → 'anthropic/claude-sonnet-4-6'. 'Use gpt-5.4' → 'openai/gpt-5.4-codex'. Always pass the full modelId, never just the shortId, to spawnChat and other tools.",
+  "  IMPORTANT: When the user says 'use opus' → modelId: 'anthropic/claude-opus-4-7'. 'Use sonnet' → 'anthropic/claude-sonnet-4-6'. 'Use gpt-5.5' → 'openai/gpt-5.5-codex'. Always pass the full modelId, never just the shortId, to spawnChat and other tools.",
   "",
   "## Critical Distinctions",
   "",
   "Chats vs Terminals — both are valid, match the user's intent:",
   "  - spawnChat: Creates a native ADE chat session with AI, streaming, tool approval, and service integration. Use when the user wants an AI agent, a chat, or AI-powered work.",
   "  - createTerminal: Opens a shell (PTY) for raw CLI commands. Use when the user wants a terminal, shell, or to run a specific CLI tool.",
-  "  - spawn_agent is an MCP tool for Claude CLI subprocesses in tracked terminals. It differs from spawnChat — when the user says 'start a chat' or 'launch an agent', prefer spawnChat. But if the user explicitly wants a CLI agent or terminal-based tool, createTerminal or spawn_agent are fine.",
-  "  - Example: 'Launch a chat with opus' → spawnChat({ modelId: 'anthropic/claude-opus-4-6', ... }). 'Open a terminal' → createTerminal. 'Run npm test' → createTerminal({ startupCommand: 'npm test' }).",
+  "  - spawnChat creates ADE-managed agent chats. createTerminal opens a raw shell for CLI commands. When the user says 'start a chat' or 'launch an agent', prefer spawnChat unless they explicitly ask for a terminal.",
+  "  - Example: 'Launch a chat with opus' → spawnChat({ modelId: 'anthropic/claude-opus-4-7', ... }). 'Open a terminal' → createTerminal. 'Run npm test' → createTerminal({ startupCommand: 'npm test' }).",
   "",
   "Tool calling convention:",
-  "  - ADE tools are available as MCP tools. They may be prefixed (e.g., mcp__ade__spawnChat). Call them directly by name.",
-  "  - If a tool from the manifest below is not in your immediate tool list, try calling it directly before concluding it does not exist.",
+  `  - ${ADE_CLI_INLINE_GUIDANCE}`,
+  "  - If a tool from the manifest below is not in your immediate tool list, use the closest ADE CLI command or report the missing capability clearly.",
   "",
   "## PR Lifecycle in ADE",
   "",
@@ -234,7 +235,7 @@ const CTO_ENVIRONMENT_KNOWLEDGE = [
   "## Task Routing (intent → tool mapping)",
   "",
   "  'Start a chat' or 'launch an agent' → spawnChat({ modelId, initialPrompt, title }).",
-  "  'Start a chat with opus/sonnet/gpt-5.4/haiku' → spawnChat({ modelId: '<full-model-id>', ... }). Always map the name to the full ID.",
+  "  'Start a chat with opus/sonnet/gpt-5.5/haiku' → spawnChat({ modelId: '<full-model-id>', ... }). Always map the name to the full ID.",
   "  'Check PR status' → getPullRequestStatus or getPullRequestConvergence.",
   "  'Start work on [feature]' → create/find a lane, then spawnChat or startMission.",
   "  'Open a terminal' → createTerminal.",
@@ -524,7 +525,6 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     source.communicationStyle && typeof source.communicationStyle === "object"
       ? (source.communicationStyle as Record<string, unknown>)
       : {};
-  const externalMcpAccess = normalizeExternalMcpAccess(source.externalMcpAccess);
   const openclawContextPolicy = normalizeOpenclawContextPolicy(source.openclawContextPolicy);
   const onboardingState = normalizeOnboardingState(source.onboardingState);
   const personality = normalizePersonalityPreset(source.personality);
@@ -593,24 +593,9 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
         ? Math.max(1, Math.floor(Number(memoryPolicyRaw.temporalDecayHalfLifeDays)))
         : 30,
     },
-    ...(externalMcpAccess ? { externalMcpAccess } : {}),
     ...(openclawContextPolicy ? { openclawContextPolicy } : {}),
     ...(onboardingState ? { onboardingState } : {}),
     updatedAt,
-  };
-}
-
-function normalizeExternalMcpAccess(value: unknown): ExternalMcpAccessPolicy | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const source = value as Record<string, unknown>;
-  const toStringArray = (input: unknown): string[] =>
-    Array.isArray(input)
-      ? [...new Set(input.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))]
-      : [];
-  return {
-    allowAll: source.allowAll !== false,
-    allowedServers: toStringArray(source.allowedServers),
-    blockedServers: toStringArray(source.blockedServers),
   };
 }
 
@@ -687,7 +672,9 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
   const provider = typeof source.provider === "string" ? source.provider.trim() : "";
   if (!sessionId || !createdAt || !summary || !startedAt || !provider) return null;
 
-  const capabilityMode = source.capabilityMode === "full_mcp" ? "full_mcp" : "fallback";
+  const capabilityMode = source.capabilityMode === "full_tooling" || source.capabilityMode === "full_mcp"
+    ? "full_tooling"
+    : "fallback";
   return {
     id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
     prevHash: typeof source.prevHash === "string" && source.prevHash.trim().length ? source.prevHash.trim() : null,
@@ -741,11 +728,6 @@ function makeDefaultIdentity(): CtoIdentity {
       compactionThreshold: 0.7,
       preCompactionFlush: true,
       temporalDecayHalfLifeDays: 30,
-    },
-    externalMcpAccess: {
-      allowAll: true,
-      allowedServers: [],
-      blockedServers: [],
     },
     openclawContextPolicy: {
       shareMode: "filtered",
@@ -1380,7 +1362,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       ...patch,
       modelPreferences: { ...current.modelPreferences, ...(patch.modelPreferences ?? {}) },
       memoryPolicy: { ...current.memoryPolicy, ...(patch.memoryPolicy ?? {}) },
-      externalMcpAccess: normalizeExternalMcpAccess(patch.externalMcpAccess) ?? current.externalMcpAccess,
       openclawContextPolicy: normalizeOpenclawContextPolicy(patch.openclawContextPolicy) ?? current.openclawContextPolicy,
       version: current.version + 1,
       updatedAt: timestamp,

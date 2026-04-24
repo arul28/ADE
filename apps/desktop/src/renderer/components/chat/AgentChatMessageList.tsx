@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -43,6 +43,7 @@ import type {
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
+import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
@@ -61,9 +62,16 @@ import {
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
+import { readPendingInputRequest, buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
+import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/types";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
+type WorkspacePathLocation = {
+  path: string;
+  startLine?: number;
+  startColumn?: number;
+};
 
 function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSuggestion | null {
   const record = readRecord(value);
@@ -107,17 +115,21 @@ function getEventTurnId(event: AgentChatEvent): string | null {
 }
 
 function basenamePathLabel(value: string): string {
-  const normalized = value.replace(/\\/g, "/");
+  const normalized = normalizePath(value);
   const basename = normalized.split("/").pop()?.trim();
-  return basename?.length ? basename : normalized;
+  if (!basename?.length) return normalized;
+  if (/^[A-Za-z]:$/.test(basename)) return `${basename}/`;
+  return basename;
 }
 
 function dirnamePathLabel(value: string): string | null {
-  const normalized = value.replace(/\\/g, "/");
+  const normalized = normalizePath(value);
   const basename = basenamePathLabel(normalized);
   if (basename === normalized) return null;
   const suffix = `/${basename}`;
-  return normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : null;
+  if (!normalized.endsWith(suffix)) return null;
+  const dirname = normalized.slice(0, -suffix.length);
+  return dirname.length ? normalizePath(dirname) : null;
 }
 
 function formatFileAction(kind: Extract<AgentChatEvent, { type: "file_change" }>["kind"]): string {
@@ -241,20 +253,15 @@ function renderSubagentUsage(usage: {
 }
 
 const GLASS_CARD_CLASS =
-  "overflow-hidden rounded-[14px] border border-white/[0.06] bg-[#141220] shadow-[0_2px_12px_-4px_rgba(0,0,0,0.4)]";
+  "ade-liquid-glass overflow-hidden rounded-[14px]";
 
 const WORK_LOG_CARD_CLASS =
-  "border border-white/[0.05] bg-[#13111B]/80 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)]";
+  "ade-chat-work-card overflow-hidden rounded-[14px]";
 
 const RECESSED_BLOCK_CLASS =
-  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09080D] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
+  "ade-chat-recessed overflow-auto whitespace-pre-wrap break-words rounded-[10px] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
 
 function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
-  if (toolName.startsWith("mcp__")) {
-    const [, namespace] = toolName.split("__");
-    const label = namespace ? `${namespace.replace(/[_-]/g, " ")} MCP` : "MCP";
-    return { label, tone: "info" };
-  }
   if (toolName.startsWith("functions.")) {
     return { label: "Local tool", tone: "muted" };
   }
@@ -269,45 +276,42 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
 }
 
 const MESSAGE_CARD_STYLE: React.CSSProperties = {
-  background: "linear-gradient(135deg, #7C3AED 0%, #6D28D9 50%, #5B21B6 100%)",
-  borderColor: "rgba(167, 139, 250, 0.30)",
-  boxShadow: "0 4px 16px -4px rgba(124, 58, 237, 0.35)",
+  borderColor: "color-mix(in srgb, var(--chat-accent) 26%, rgba(255,255,255,0.14))",
+  boxShadow: "0 18px 28px -24px color-mix(in srgb, var(--chat-accent) 34%, transparent), 0 10px 26px -22px rgba(0,0,0,0.52)",
 };
 
 const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "rgba(255, 255, 255, 0.06)",
-  background: "#15131E",
+  borderColor: "color-mix(in srgb, var(--chat-glass-border) 100%, transparent)",
 };
 
 const ASSISTANT_MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "rgba(255, 255, 255, 0.06)",
-  background: "#12101A",
-  boxShadow: "0 2px 12px -4px rgba(0, 0, 0, 0.4)",
+  borderColor: "color-mix(in srgb, var(--chat-glass-border) 100%, transparent)",
+  boxShadow: "0 16px 32px -26px rgba(0, 0, 0, 0.5)",
 };
 
 function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
   if (event.deliveryState === "failed") {
     return {
       label: "failed",
-      className: "border-red-500/18 bg-red-500/[0.08] text-red-300",
+      className: "ade-chat-status-pill border-red-500/25 text-red-300",
     };
   }
   if (event.deliveryState === "queued") {
     return {
       label: "queued",
-      className: "border-violet-500/18 bg-violet-500/[0.08] text-violet-300",
+      className: "ade-chat-status-pill border-violet-500/25 text-violet-300",
     };
   }
   if (event.processed) {
     return {
       label: "processed",
-      className: "border-emerald-500/18 bg-emerald-500/[0.08] text-emerald-300",
+      className: "ade-chat-status-pill border-emerald-500/25 text-emerald-300",
     };
   }
   if (event.deliveryState === "delivered") {
     return {
       label: "sent",
-      className: "border-sky-500/18 bg-sky-500/[0.08] text-sky-300",
+      className: "ade-chat-status-pill border-sky-500/25 text-sky-300",
     };
   }
   return null;
@@ -405,44 +409,119 @@ function statusColorClass(status: string | undefined): string {
 }
 
 function isExternalHref(href: string): boolean {
-  return /^(?:[a-z]+:)?\/\//i.test(href) || /^mailto:/i.test(href) || /^tel:/i.test(href);
+  const trimmed = href.trim();
+  if (/^file:/i.test(trimmed)) return false;
+  if (isWindowsAbsolutePath(trimmed)) return false;
+  return /^(?:[a-z]+:)?\/\//i.test(trimmed) || /^mailto:/i.test(trimmed) || /^tel:/i.test(trimmed);
 }
 
-function normalizeWorkspacePathCandidate(value: string): string | null {
+function readWorkspacePathFragmentPosition(fragment: string): Pick<WorkspacePathLocation, "startLine" | "startColumn"> {
+  const trimmed = fragment.trim();
+  if (!trimmed.length) return {};
+
+  const lineMatch = trimmed.match(/^L(\d+)(?:C(\d+))?(?:-L?\d+)?$/i);
+  if (lineMatch) {
+    const [, startLineRaw, startColumnRaw] = lineMatch;
+    return {
+      startLine: Number(startLineRaw),
+      startColumn: startColumnRaw ? Number(startColumnRaw) : undefined,
+    };
+  }
+
+  const explicitMatch = trimmed.match(/^line=(\d+)(?:,(\d+))?$/i);
+  if (!explicitMatch) return {};
+  const [, startLineRaw, startColumnRaw] = explicitMatch;
+  return {
+    startLine: Number(startLineRaw),
+    startColumn: startColumnRaw ? Number(startColumnRaw) : undefined,
+  };
+}
+
+function splitWorkspacePathLineSuffix(path: string): WorkspacePathLocation {
+  const match = path.match(/^(.*?)(?::(\d+))(?::(\d+))?$/);
+  if (!match) return { path };
+
+  const [, candidatePath, startLineRaw, startColumnRaw] = match;
+  if (!candidatePath.length) return { path };
+  return {
+    path: candidatePath,
+    startLine: Number(startLineRaw),
+    startColumn: startColumnRaw ? Number(startColumnRaw) : undefined,
+  };
+}
+
+function parseWorkspacePathLocation(value: string): WorkspacePathLocation | null {
   const trimmed = value.trim();
   if (!trimmed.length) return null;
   if (/^(?:https?|mailto|tel):/i.test(trimmed)) return null;
   if (/^#/.test(trimmed)) return null;
-  const withoutScheme = trimmed.replace(/^file:\/\//i, "");
-  const withoutQuery = withoutScheme.split(/[?#]/, 1)[0]?.trim().replace(/\\/g, "/") ?? "";
-  if (!withoutQuery.length) return null;
-  // Normalize Windows drive-letter paths: /C:/... → C:/...
-  if (/^\/[A-Za-z]:\//.test(withoutQuery)) return withoutQuery.slice(1);
-  return withoutQuery;
+
+  let rawPath: string;
+  let rawFragment = "";
+  if (/^file:/i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      rawPath = `${url.host ? `//${url.host}` : ""}${url.pathname}`.trim();
+      rawFragment = url.hash.startsWith("#") ? url.hash.slice(1) : "";
+    } catch {
+      const withoutScheme = trimmed.replace(/^file:\/\//i, "");
+      const [withoutFragment, fallbackFragment = ""] = withoutScheme.split("#", 2);
+      rawPath = withoutFragment.split("?", 1)[0]?.trim() ?? "";
+      rawFragment = fallbackFragment;
+    }
+  } else {
+    const [withoutFragment, fallbackFragment = ""] = trimmed.split("#", 2);
+    rawPath = withoutFragment.split("?", 1)[0]?.trim() ?? "";
+    rawFragment = fallbackFragment;
+  }
+  let decodedPath = rawPath;
+  try {
+    decodedPath = decodeURIComponent(rawPath);
+  } catch {
+    // Keep the raw path when markdown produced a partially-encoded href.
+  }
+
+  const slashNormalized = decodedPath.replace(/\\/g, "/");
+  if (!slashNormalized.length) return null;
+
+  const normalizedDrivePath = /^\/[A-Za-z]:\//.test(slashNormalized) ? slashNormalized.slice(1) : slashNormalized;
+  const fromSuffix = splitWorkspacePathLineSuffix(normalizedDrivePath);
+  const fromFragment = readWorkspacePathFragmentPosition(rawFragment);
+  const normalizedPath = normalizePath(fromSuffix.path);
+  if (!normalizedPath.length) return null;
+
+  return {
+    path: normalizedPath,
+    startLine: fromFragment.startLine ?? fromSuffix.startLine,
+    startColumn: fromFragment.startColumn ?? fromSuffix.startColumn,
+  };
 }
 
 function looksLikeWorkspacePath(value: string): boolean {
-  const candidate = normalizeWorkspacePathCandidate(value);
+  const candidate = parseWorkspacePathLocation(value);
   if (!candidate) return false;
-  if (candidate.startsWith("./")) {
-    return true;
-  }
-  // Reject directory-traversal and home-relative paths
-  if (candidate.startsWith("../") || candidate.startsWith("~/")) {
+  if (candidate.path === ".." || candidate.path.startsWith("../") || candidate.path.startsWith("~/")) {
     return false;
   }
-  if (candidate.startsWith("/")) {
-    return candidate.slice(1).includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate);
+  if (candidate.path.startsWith("/")) {
+    return candidate.path.slice(1).includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate.path);
   }
-  return candidate.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate);
+  return candidate.path.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(candidate.path);
 }
 
-function resolveWorkspacePathFromHref(href: string | undefined): string | null {
+function resolveWorkspacePathFromHref(href: string | undefined): WorkspacePathLocation | null {
   if (!href) return null;
-  const candidate = normalizeWorkspacePathCandidate(href);
+  if (isExternalHref(href)) return null;
+  const candidate = parseWorkspacePathLocation(href);
   if (!candidate) return null;
-  if (isExternalHref(candidate)) return null;
-  return looksLikeWorkspacePath(candidate) ? candidate : null;
+  return looksLikeWorkspacePath(href) ? candidate : null;
+}
+
+function chatMarkdownUrlTransform(value: string): string {
+  if (/^file:/i.test(value) || isWindowsAbsolutePath(value)) {
+    return value;
+  }
+  return defaultUrlTransform(value);
 }
 
 function InlineDisclosureRow({
@@ -496,33 +575,22 @@ function InlineDisclosureRow({
   );
 }
 
-function normalizeFileSystemPath(value: string): string {
-  return value.replace(/\\/g, "/");
-}
-
-function trimTrailingSlashes(value: string): string {
-  if (value === "/") return value;
-  return value.replace(/\/+$/, "");
-}
-
 function resolveFilesNavigationTarget(args: {
-  path: string;
+  path: string | WorkspacePathLocation;
   workspaces: FilesWorkspace[];
   fallbackLaneId: string | null;
-}): { openFilePath: string; laneId: string | null } | null {
-  const candidate = normalizeWorkspacePathCandidate(args.path);
+}): { openFilePath: string; laneId: string | null; startLine?: number; startColumn?: number } | null {
+  const candidate = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
   if (!candidate) return null;
 
-  const normalizedCandidate = normalizeFileSystemPath(candidate);
-  if (normalizedCandidate.startsWith("/")) {
+  const normalizedCandidate = normalizePath(candidate.path);
+  if (normalizedCandidate.startsWith("/") || isWindowsAbsolutePath(normalizedCandidate)) {
     const matches = args.workspaces
       .map((workspace) => ({
         workspace,
-        rootPath: trimTrailingSlashes(normalizeFileSystemPath(workspace.rootPath)),
+        rootPath: normalizePath(workspace.rootPath),
       }))
-      .filter(({ rootPath }) =>
-        normalizedCandidate === rootPath || normalizedCandidate.startsWith(`${rootPath}/`),
-      )
+      .filter(({ rootPath }) => isPathEqualOrDescendant(normalizedCandidate, rootPath))
       .sort((left, right) => {
         const rightMatchesLane = right.workspace.laneId != null && right.workspace.laneId === args.fallbackLaneId ? 1 : 0;
         const leftMatchesLane = left.workspace.laneId != null && left.workspace.laneId === args.fallbackLaneId ? 1 : 0;
@@ -537,6 +605,8 @@ function resolveFilesNavigationTarget(args: {
     return {
       openFilePath,
       laneId: match.workspace.laneId ?? args.fallbackLaneId ?? null,
+      startLine: candidate.startLine,
+      startColumn: candidate.startColumn,
     };
   }
 
@@ -545,6 +615,8 @@ function resolveFilesNavigationTarget(args: {
   return {
     openFilePath,
     laneId: args.fallbackLaneId ?? null,
+    startLine: candidate.startLine,
+    startColumn: candidate.startColumn,
   };
 }
 
@@ -556,10 +628,10 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   workspaceLaneId,
 }: {
   markdown: string;
-  onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
+  onOpenWorkspacePath?: (path: string | WorkspacePathLocation, laneId?: string | null) => void;
   workspaceLaneId?: string | null;
 }) {
-  const openWorkspacePath = useCallback((path: string) => {
+  const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
     onOpenWorkspacePath?.(path, workspaceLaneId ?? null);
   }, [onOpenWorkspacePath, workspaceLaneId]);
 
@@ -567,6 +639,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
     <div className="ade-prose-themed prose prose-invert max-w-none text-[13px] leading-[1.8] text-fg/96 prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-3 prose-p:text-fg/88 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-blockquote:text-fg/76 prose-hr:my-5 prose-hr:border-white/[0.08]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={chatMarkdownUrlTransform}
         components={{
           h1: ({ children }) => <h1 className="text-[1rem]">{children}</h1>,
           h2: ({ children }) => <h2 className="text-[0.95rem]">{children}</h2>,
@@ -605,8 +678,8 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
           code: ({ className, children }) => {
             const text = String(children ?? "");
             const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
-            const workspacePath = !isBlock ? normalizeWorkspacePathCandidate(text) : null;
-            const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(workspacePath));
+            const workspacePath = !isBlock ? parseWorkspacePathLocation(text) : null;
+            const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(text));
             return isBlock ? (
               <code className="font-mono text-[11px] text-fg/82">{children}</code>
             ) : pathIsClickable ? (
@@ -785,15 +858,38 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
 }
 
 
-function ActivityIndicator({ activity, detail }: { activity: string; detail?: string; animate?: boolean }) {
+function ActivityIndicator({ activity, detail, animate = true }: { activity: string; detail?: string; animate?: boolean }) {
   const label = ACTIVITY_LABELS[activity] ?? activity;
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
+  const thinking = activity === "thinking";
+  const activeTextClass = thinking ? "text-violet-200/78" : "text-emerald-200/80";
+  const activeDotClass = thinking ? "bg-violet-400/70" : "bg-emerald-400/80";
+  const activePingClass = thinking ? "bg-violet-400/12" : "bg-emerald-400/10";
 
   return (
-    <div className="flex items-center gap-2.5 py-1.5 font-sans text-[12px] text-emerald-200/80">
+    <div className={cn(
+      "flex items-center gap-2.5 py-1.5 font-sans text-[12px]",
+      animate ? activeTextClass : "text-fg/35",
+    )}>
       <span className="relative flex items-center justify-center">
-        <span className="absolute h-5 w-5 animate-ping rounded-full bg-emerald-400/10" style={{ animationDuration: '2s' }} />
-        <ThinkingDots toneClass="bg-emerald-400/80" />
+        {animate ? (
+          thinking ? (
+            <span className="inline-flex items-center gap-2">
+              <span className="relative inline-flex h-7 w-7 items-center justify-center">
+                <span className={cn("absolute h-6 w-6 animate-ping rounded-full", activePingClass)} style={{ animationDuration: '2s' }} />
+                <BrainLottie loop size={28} />
+              </span>
+              <ThinkingDots toneClass={activeDotClass} />
+            </span>
+          ) : (
+            <>
+              <span className={cn("absolute h-5 w-5 animate-ping rounded-full", activePingClass)} style={{ animationDuration: '2s' }} />
+              <ThinkingDots toneClass={activeDotClass} />
+            </>
+          )
+        ) : (
+          <span className="h-1.5 w-1.5 rounded-full bg-fg/25" />
+        )}
       </span>
       <span className="truncate font-medium">{displayText}</span>
     </div>
@@ -820,9 +916,9 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
   return (
     <motion.div
       className="w-fit max-w-full"
-      initial={{ opacity: 0, y: 6, scale: 0.99 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.12, ease: "easeOut" }}
     >
     <CollapsibleCard
       summary={
@@ -830,7 +926,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           <span className={cn("inline-flex", (event.status ?? "completed") === "running" && "ade-tool-bounce")}>
             <StatusIcon status={event.status ?? "completed"} />
           </span>
-          <span className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider", meta.badgeCls)}>
+          <span className={cn("ade-chat-status-pill inline-flex items-center gap-1.5 border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider", meta.badgeCls)}>
             <ToolIcon size={11} weight="bold" />
             {meta.label}
           </span>
@@ -998,49 +1094,6 @@ function ModelGlyph({
   return <Robot size={size} weight="bold" className={className} />;
 }
 
-type AssistantPresentation = {
-  label: string;
-  glyph: React.ReactNode;
-};
-
-const KNOWN_PROVIDER_LABELS = new Set(["Claude", "Codex", "Cursor"]);
-const GENERIC_ASSISTANT_LABELS = new Set(["Agent", "Assistant", ...KNOWN_PROVIDER_LABELS]);
-
-function inferProviderLabel(meta: { family: string | null; cliCommand: string | null }): string | null {
-  if (meta.family === "anthropic" || meta.cliCommand === "claude") return "Claude";
-  if (meta.cliCommand === "codex") return "Codex";
-  if (meta.family === "cursor" || meta.cliCommand === "cursor") return "Cursor";
-  return null;
-}
-
-function providerGlyph(provider: string | null): React.ReactNode {
-  switch (provider) {
-    case "Claude": return <ClaudeLogo size={10} className="text-fg/70" />;
-    case "Codex": return <CodexLogo size={10} className="text-fg/70" />;
-    case "Cursor": return <CursorAgentLogo size={10} className="text-fg/70" />;
-    default: return <Robot size={10} weight="bold" className="text-fg/70" />;
-  }
-}
-
-function resolveAssistantPresentation({
-  assistantLabel,
-  turnModel,
-}: {
-  assistantLabel?: string;
-  turnModel?: { label: string; modelId?: string; model?: string } | null;
-}): AssistantPresentation {
-  const customLabel = assistantLabel?.trim() ?? "";
-  const modelMeta = turnModel ? resolveModelMeta(turnModel.modelId, turnModel.model) : { family: null, cliCommand: null };
-  const resolvedProviderLabel = inferProviderLabel(modelMeta)
-    ?? (KNOWN_PROVIDER_LABELS.has(customLabel) ? customLabel : null);
-  const hardOverrideLabel =
-    customLabel.length > 0 && !GENERIC_ASSISTANT_LABELS.has(customLabel)
-      ? customLabel
-      : null;
-  const label = hardOverrideLabel ?? resolvedProviderLabel ?? "Assistant";
-  return { label, glyph: providerGlyph(resolvedProviderLabel) };
-}
-
 function commandTimelineVerb(status: Extract<AgentChatEvent, { type: "command" }>["status"]): string {
   if (status === "failed") return "Command failed";
   if (status === "running") return "Running";
@@ -1135,6 +1188,265 @@ function FileChangeEventCard({
   );
 }
 
+type InlineQuestionOption = {
+  label: string;
+  value: string;
+  description?: string;
+  recommended?: boolean;
+  preview?: string;
+  previewFormat?: "markdown" | "html";
+};
+
+type InlineQuestion = {
+  id: string;
+  header: string;
+  questionText: string;
+  options: InlineQuestionOption[];
+  allowsFreeform: boolean;
+  multiSelect: boolean;
+  isSecret: boolean;
+  defaultAssumption: string;
+  impact: string;
+};
+
+function buildInlineQuestionsFromPendingRequest(request: PendingInputRequest): InlineQuestion[] {
+  const hydrateOptions = (options: PendingInputQuestion["options"] | undefined): InlineQuestionOption[] => {
+    if (!Array.isArray(options)) return [];
+    return options.flatMap((option) => {
+      if (!option) return [];
+      const label = typeof option.label === "string" ? option.label.trim() : "";
+      const value = typeof option.value === "string" && option.value.trim().length
+        ? option.value.trim()
+        : label;
+      if (!label.length || !value.length) return [];
+      const entry: InlineQuestionOption = { label, value };
+      if (typeof option.description === "string" && option.description.trim().length) {
+        entry.description = option.description.trim();
+      }
+      if (option.recommended === true) entry.recommended = true;
+      if (typeof option.preview === "string" && option.preview.trim().length) {
+        entry.preview = option.preview;
+      }
+      if (option.previewFormat === "markdown" || option.previewFormat === "html") {
+        entry.previewFormat = option.previewFormat;
+      }
+      return [entry];
+    });
+  };
+
+  const questions = Array.isArray(request.questions) ? request.questions : [];
+  if (questions.length > 0) {
+    return questions.map((question, index) => ({
+      id: typeof question.id === "string" && question.id.trim().length ? question.id.trim() : `question_${index + 1}`,
+      header: typeof question.header === "string" && question.header.trim().length
+        ? question.header.trim()
+        : `Question ${index + 1}`,
+      questionText: typeof question.question === "string" ? question.question.trim() : "",
+      options: hydrateOptions(question.options ?? null),
+      allowsFreeform: question.allowsFreeform !== false,
+      multiSelect: question.multiSelect === true,
+      isSecret: question.isSecret === true,
+      defaultAssumption: typeof question.defaultAssumption === "string" && question.defaultAssumption.trim().length
+        ? question.defaultAssumption.trim()
+        : "",
+      impact: typeof question.impact === "string" && question.impact.trim().length
+        ? question.impact.trim()
+        : "",
+    }));
+  }
+
+  const topLevelOptions = hydrateOptions(request.options ?? null);
+  if (!topLevelOptions.length && !request.allowsFreeform) return [];
+  return [{
+    id: "response",
+    header: "Question",
+    questionText: typeof request.description === "string" ? request.description : "",
+    options: topLevelOptions,
+    allowsFreeform: request.allowsFreeform !== false,
+    multiSelect: false,
+    isSecret: false,
+    defaultAssumption: "",
+    impact: "",
+  }];
+}
+
+function InlineQuestionRequestCard({
+  itemId,
+  source,
+  title,
+  description,
+  questions,
+  isResponding,
+  onApproval,
+}: {
+  itemId: string;
+  source: string;
+  title: string;
+  description: string;
+  questions: InlineQuestion[];
+  isResponding: boolean;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
+}) {
+  const [selected, setSelected] = useState<Record<string, string[]>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [focusedOption, setFocusedOption] = useState<Record<string, string>>({});
+
+  const submit = useCallback((extraAnswers?: Record<string, string | string[]>) => {
+    const answers: Record<string, string | string[]> = {};
+    for (const question of questions) {
+      const selectedValues = selected[question.id]?.filter(Boolean) ?? [];
+      const draft = drafts[question.id]?.trim() ?? "";
+      const values = [...selectedValues];
+      if (draft.length) values.push(draft);
+      if (values.length === 1) answers[question.id] = values[0]!;
+      if (values.length > 1) answers[question.id] = values;
+    }
+    onApproval?.(itemId, "accept", null, { ...answers, ...(extraAnswers ?? {}) });
+  }, [drafts, itemId, onApproval, questions, selected]);
+
+  const handleOption = useCallback((question: InlineQuestion, option: InlineQuestionOption) => {
+    if (!question.multiSelect && questions.length === 1) {
+      onApproval?.(itemId, "accept", null, { [question.id]: option.value });
+      return;
+    }
+    setFocusedOption((prev) => ({ ...prev, [question.id]: option.value }));
+    setSelected((prev) => {
+      const current = prev[question.id] ?? [];
+      let next: string[];
+      if (current.includes(option.value)) {
+        next = current.filter((value) => value !== option.value);
+      } else if (question.multiSelect) {
+        next = [...current, option.value];
+      } else {
+        next = [option.value];
+      }
+      return { ...prev, [question.id]: next };
+    });
+  }, [itemId, onApproval, questions.length]);
+
+  const hasAnswer = questions.some((question) => {
+    if ((selected[question.id]?.length ?? 0) > 0) return true;
+    return (drafts[question.id]?.trim().length ?? 0) > 0;
+  });
+
+  return (
+    <div className={cn(GLASS_CARD_CLASS, "p-4")} style={MESSAGE_CARD_STYLE}>
+      <div className="mb-3 flex items-center gap-2">
+        <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
+          <ChatStatusGlyph status="waiting" size={11} />
+        </span>
+        <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-amber-200">
+          Input needed{source ? ` · ${source}` : ""}
+        </span>
+      </div>
+      <div className="mb-3">
+        <div className="text-[13px] font-semibold text-fg/90">{title || "Question"}</div>
+        {description ? <div className="mt-1 text-[12px] leading-relaxed text-fg/62">{description}</div> : null}
+      </div>
+      <div className="space-y-3">
+        {questions.map((question) => (
+          <div key={question.id} className="rounded-[calc(var(--chat-radius-card)-6px)] border border-amber-400/14 bg-amber-400/[0.045] p-3">
+            <div className="mb-1 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/70">{question.header}</div>
+            <div className="text-[12.5px] leading-[1.6] text-fg/85">{question.questionText}</div>
+            {question.impact ? <div className="mt-1 text-[11px] leading-relaxed text-fg/45">{question.impact}</div> : null}
+            {question.options.length ? (
+              <div className="mt-3 flex flex-wrap items-stretch gap-2" data-testid={`inline-question-options-${question.id}`}>
+                {question.options.map((option) => {
+                  const active = selected[question.id]?.includes(option.value) ?? false;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      disabled={isResponding}
+                      data-testid={`inline-question-option-${question.id}-${option.value}`}
+                      className={cn(
+                        "max-w-[280px] rounded-[var(--chat-radius-pill)] border px-3 py-1.5 text-left font-mono text-[10px] font-bold uppercase tracking-wider transition-colors disabled:pointer-events-none disabled:opacity-45",
+                        active
+                          ? "border-amber-300/45 bg-amber-300/16 text-amber-100"
+                          : "border-amber-300/24 bg-transparent text-fg/70 hover:bg-amber-300/10",
+                      )}
+                      onClick={() => handleOption(question, option)}
+                      onFocus={() => setFocusedOption((prev) => ({ ...prev, [question.id]: option.value }))}
+                      onMouseEnter={() => setFocusedOption((prev) => prev[question.id] ? prev : { ...prev, [question.id]: option.value })}
+                    >
+                      <span>{option.label}{option.recommended ? " (Recommended)" : ""}</span>
+                      {option.description ? <span className="mt-0.5 block text-[9px] font-medium normal-case tracking-normal text-fg/45">{option.description}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {(() => {
+              const selectedForQuestion = selected[question.id];
+              const focusValue = focusedOption[question.id]
+                ?? selectedForQuestion?.[selectedForQuestion.length - 1]
+                ?? null;
+              const focused = focusValue
+                ? question.options.find((option) => option.value === focusValue)
+                : null;
+              if (!focused || !focused.preview) return null;
+              return (
+                <div
+                  className="mt-3 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-300/14 bg-black/20 p-3 text-[11.5px] leading-relaxed text-fg/75"
+                  data-testid={`inline-question-preview-${question.id}`}
+                >
+                  <div className="mb-1 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/60">
+                    Preview · {focused.label}
+                  </div>
+                  {focused.previewFormat === "html" ? (
+                    <div className="whitespace-pre-wrap break-words font-mono text-[11px] text-fg/70">{focused.preview}</div>
+                  ) : (
+                    <div className="prose prose-invert max-w-none text-[11.5px] [&_p]:my-1">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{focused.preview}</ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+            {question.allowsFreeform ? (
+              <input
+                type={question.isSecret ? "password" : "text"}
+                value={drafts[question.id] ?? ""}
+                disabled={isResponding}
+                placeholder={question.options.length ? "Optional response" : "Response"}
+                className="mt-3 w-full rounded-[var(--chat-radius-card)] border border-white/10 bg-black/20 px-3 py-2 text-[12px] text-fg/82 outline-none placeholder:text-fg/30 focus:border-amber-300/35"
+                onChange={(event) => setDrafts((prev) => ({ ...prev, [question.id]: event.target.value }))}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    if (hasAnswer) submit();
+                  }
+                }}
+              />
+            ) : null}
+            {question.defaultAssumption ? (
+              <div className="mt-2 text-[10px] text-fg/38">Default: {question.defaultAssumption}</div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={isResponding || !hasAnswer}
+          className="rounded-[var(--chat-radius-pill)] border border-amber-300/30 bg-amber-300/12 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-100 transition-colors hover:bg-amber-300/18 disabled:pointer-events-none disabled:opacity-40"
+          onClick={() => submit()}
+        >
+          {isResponding ? "Sending..." : "Send answer"}
+        </button>
+        <button
+          type="button"
+          disabled={isResponding}
+          className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/45 transition-colors hover:bg-border/10 disabled:pointer-events-none disabled:opacity-40"
+          onClick={() => onApproval?.(itemId, "decline")}
+        >
+          Decline
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
@@ -1144,7 +1456,8 @@ function renderEvent(
     surfaceProfile?: ChatSurfaceProfile;
     assistantLabel?: string;
     turnActive?: boolean;
-    onOpenWorkspacePath?: (path: string) => void;
+    sessionEnded?: boolean;
+    onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
     respondingApprovalIds?: Set<string>;
     pendingApprovalIds?: Set<string>;
     resolvedInputStates?: Map<string, PendingInputResolution>;
@@ -1184,16 +1497,11 @@ function renderEvent(
     return (
       <motion.div
         className="flex justify-end"
-        initial={{ opacity: 0, y: 14, scale: 1.01 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{
-          type: "spring",
-          stiffness: 320,
-          damping: 26,
-          mass: 0.7,
-        }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.14, ease: "easeOut" }}
       >
-        <div className={cn(GLASS_CARD_CLASS, "group relative max-w-[82%] px-4 py-2.5")} style={MESSAGE_CARD_STYLE}>
+        <div className={cn(GLASS_CARD_CLASS, "ade-chat-message-card-user group relative max-w-[82%] px-4 py-2.5")} style={MESSAGE_CARD_STYLE}>
           {deliveryChip ? (
             <span className={cn("mb-1 inline-flex items-center border px-1.5 py-0.5 font-sans text-[9px] font-medium", deliveryChip.className)}>
               {deliveryChip.label}
@@ -1213,22 +1521,18 @@ function renderEvent(
 
   /* ── Agent text ── */
   if (event.type === "text") {
-    const assistant = resolveAssistantPresentation({
-      assistantLabel: options?.assistantLabel,
-      turnModel: options?.turnModel,
-    });
     return (
       <motion.div
         className="flex justify-start"
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.14, ease: "easeOut" }}
       >
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "group relative max-w-[min(96ch,75%)] px-5 py-4",
-            options?.turnActive && "min-h-[5.5rem] ade-glow-pulse",
+            "ade-chat-message-card-assistant group relative max-w-[min(104ch,78%)] px-5 py-4",
+            options?.turnActive && "ade-glow-pulse",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
         >
@@ -1238,18 +1542,8 @@ function renderEvent(
               <div className="absolute inset-0 ade-streaming-shimmer" />
             </div>
           )}
-          <div className="mb-2.5 flex items-center gap-2">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-violet-400/15 bg-gradient-to-br from-violet-500/[0.12] to-violet-500/[0.04] shadow-[0_0_10px_rgba(167,139,250,0.08)]">
-              {assistant.glyph}
-            </span>
-            {options?.turnModel?.label ? (
-              <span className="inline-flex items-center rounded-full border border-violet-400/10 bg-violet-500/[0.04] px-2 py-0.5 font-sans text-[9px] font-medium text-violet-300/50">
-                {options.turnModel.label}
-              </span>
-            ) : null}
-            <div className="ml-auto flex items-center gap-2">
-              <MessageCopyButton value={event.text} className="opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100" />
-            </div>
+          <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+            <MessageCopyButton value={event.text} />
           </div>
           <div>
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
@@ -1373,9 +1667,9 @@ function renderEvent(
     const isFailed = event.status === "failed";
     return (
       <motion.div
-        initial={{ opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.25, ease: "easeOut" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.12, ease: "easeOut" }}
         className={cn(
           "group relative overflow-hidden rounded-xl border p-0",
           isFailed
@@ -1479,9 +1773,9 @@ function renderEvent(
     return (
       <motion.div
         className={cn("overflow-hidden rounded-xl border p-0", "border-violet-500/10 bg-gradient-to-br from-violet-950/20 via-[#0d0b14] to-[#0d0d10]")}
-        initial={{ opacity: 0, y: 8, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.14, ease: "easeOut" }}
       >
         <div className="h-px w-full bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
         <div className="flex items-center gap-3 px-4 py-3">
@@ -1715,46 +2009,34 @@ function renderEvent(
     const isLive = Boolean(options?.turnActive);
     const reasoningPreview = summarizeInlineText(reasoningText, 108);
 
-    // Compute duration if we have timestamps
-    const startTs = (event as any).startTimestamp ?? envelope.timestamp;
-    const endTs = envelope.timestamp;
-    const durationSec = Math.max(1, Math.round((new Date(endTs).getTime() - new Date(startTs).getTime()) / 1000));
-    const durationLabel = isLive ? null : `${durationSec}s`;
 
     return (
       <motion.div
         className="w-fit max-w-full"
-        initial={{ opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.25, ease: "easeOut" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.12, ease: "easeOut" }}
       >
         <CollapsibleCard
           defaultOpen={false}
-          forceOpen={isLive ? true : undefined}
           summary={
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-sans text-[11px] text-fg/52">
               <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center">
                 <BrainLottie loop={isLive} size={32} />
               </span>
               {isLive ? (
-                <span className="flex items-center gap-2 text-violet-200/70">
+                <span className="flex min-w-0 items-center gap-2 text-violet-200/70">
                   <ThinkingDots toneClass="bg-violet-400/60" />
-                  <span className="font-medium">Thinking...</span>
+                  <span className="min-w-0 truncate font-medium">
+                    {reasoningPreview.length ? reasoningPreview : "Thinking..."}
+                  </span>
                 </span>
               ) : (
-                <>
-                  <span className="font-medium text-fg/55">Thought</span>
-                  {durationLabel ? (
-                    <span className="rounded-full border border-violet-400/10 bg-violet-500/[0.04] px-2 py-0.5 text-[9px] text-violet-300/40">
-                      {durationLabel}
-                    </span>
-                  ) : null}
-                </>
+                <span className="font-medium text-fg/55">Thought</span>
               )}
             </div>
           }
-          className="w-fit max-w-[70ch] border-violet-400/[0.06] bg-[#141220]/50"
-          style={{ background: "rgba(20, 18, 32, 0.5)", borderColor: "rgba(167, 139, 250, 0.06)" }}
+          className="ade-chat-thinking-glass w-fit max-w-[70ch]"
         >
           <div className="text-fg/55 text-[12px] leading-relaxed">
             <MarkdownBlock markdown={reasoningText.length ? event.text : "Thinking..."} />
@@ -1902,49 +2184,19 @@ function renderEvent(
     const detail = readRecord(event.detail);
     const request = readRecord(detail?.request);
     const requestKind = typeof request?.kind === "string" ? request.kind.trim() : "";
-    const requestSource = typeof request?.source === "string" ? request.source.trim() : "";
     const requestDescription = typeof request?.description === "string" ? request.description.trim() : "";
-    const requestQuestions = Array.isArray(request?.questions)
-      ? request.questions.map((question) => readRecord(question)).filter((question): question is Record<string, unknown> => question != null)
+    // Source of truth: reuse the canonical parser so questions, options, preview, recommended,
+    // defaultAssumption, impact, and multiSelect all survive the render path. Falls back to the
+    // legacy flat-detail shape when the modern PendingInputRequest envelope isn't present.
+    const pendingRequest = readPendingInputRequest(detail?.request)
+      ?? buildLegacyPendingInputFromApprovalEvent({ event });
+    const requestSource = typeof pendingRequest?.source === "string"
+      ? pendingRequest.source
+      : typeof request?.source === "string" ? request.source.trim() : "";
+    const inlineQuestions: InlineQuestion[] = pendingRequest
+      ? buildInlineQuestionsFromPendingRequest(pendingRequest)
       : [];
-    const questionCards = requestQuestions.map((question, index) => {
-      const header = typeof question.header === "string" && question.header.trim().length
-        ? question.header.trim()
-        : `Question ${index + 1}`;
-      const questionText = typeof question.question === "string" ? question.question.trim() : "";
-      const options = Array.isArray(question.options)
-        ? question.options
-            .map((option) => readRecord(option))
-            .filter((option): option is Record<string, unknown> => option != null)
-            .map((option) => {
-              const label = typeof option.label === "string" ? option.label.trim() : "";
-              const value = typeof option.value === "string" ? option.value.trim() : label;
-              if (!label.length || !value.length) return null;
-              return {
-                label,
-                value,
-                ...(typeof option.description === "string" && option.description.trim().length ? { description: option.description.trim() } : {}),
-                ...(option.recommended === true ? { recommended: true } : {}),
-              };
-            })
-            .filter((option): option is { label: string; value: string; description?: string; recommended?: boolean } => option != null)
-        : [];
-      return {
-        id: typeof question.id === "string" && question.id.trim().length ? question.id.trim() : `question_${index + 1}`,
-        header,
-        questionText,
-        options,
-        allowsFreeform: question.allowsFreeform !== false,
-        isSecret: question.isSecret === true,
-        defaultAssumption: typeof question.defaultAssumption === "string" && question.defaultAssumption.trim().length
-          ? question.defaultAssumption.trim()
-          : "",
-        impact: typeof question.impact === "string" && question.impact.trim().length
-          ? question.impact.trim()
-          : "",
-      };
-    });
-    const primaryQuestion = questionCards[0] ?? null;
+    const primaryQuestion = inlineQuestions[0] ?? null;
     const primaryQuestionText = primaryQuestion?.questionText ?? "";
     const detailTool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
     const question = typeof detail?.question === "string" ? detail.question.trim() : "";
@@ -1970,13 +2222,27 @@ function renderEvent(
     } else {
       bodyText = event.description;
     }
-    /* Compact inline indicator — the full interactive UI lives in the composer banner.
-       This avoids duplicate approval buttons in the chat vs. above the prompt box. */
-    const resolvedLabel = isPlanApproval
-      ? (resolvedState === "accepted" ? "Plan Approved" : resolvedState === "declined" ? "Plan Rejected" : "Closed")
-      : isAskUser
-        ? (resolvedState === "accepted" ? "Answered" : resolvedState === "declined" ? "Declined" : "Closed")
-        : (resolvedState === "accepted" ? "Accepted" : resolvedState === "declined" ? "Declined" : "Closed");
+    /* Generic approvals stay compact; ask-user requests render as inline chat controls. */
+    const resolvedLabel = (() => {
+      if (resolvedState !== "accepted" && resolvedState !== "declined") return "Closed";
+      if (isPlanApproval) return resolvedState === "accepted" ? "Plan Approved" : "Plan Rejected";
+      if (isAskUser) return resolvedState === "accepted" ? "Answered" : "Declined";
+      return resolvedState === "accepted" ? "Accepted" : "Declined";
+    })();
+
+    if (isAskUser && !isResolved && inlineQuestions.length > 0) {
+      return (
+        <InlineQuestionRequestCard
+          itemId={event.itemId}
+          source={requestSource || "agent"}
+          title={typeof request?.title === "string" ? request.title : "Question"}
+          description={bodyText}
+          questions={inlineQuestions}
+          isResponding={isResponding}
+          onApproval={options?.onApproval}
+        />
+      );
+    }
 
     return (
       <div className={cn(GLASS_CARD_CLASS, "px-4 py-2.5")} style={SURFACE_INLINE_CARD_STYLE}>
@@ -2053,7 +2319,7 @@ function renderEvent(
 
   /* ── Activity ── */
   if (event.type === "activity") {
-    return <ActivityIndicator activity={event.activity} detail={event.detail} animate={options?.turnActive !== false} />;
+    return <ActivityIndicator activity={event.activity} detail={event.detail} animate={Boolean(options?.turnActive) && !options?.sessionEnded} />;
   }
 
   /* ── Status ── */
@@ -2512,7 +2778,8 @@ function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: str
     if (evt.type === "activity") {
       return { activity: evt.activity, detail: evt.detail };
     }
-    if (evt.type === "done" || evt.type === "status") return null;
+    if (evt.type === "done") return null;
+    if (evt.type === "status" && evt.turnStatus !== "started") return null;
   }
   return null;
 }
@@ -2552,7 +2819,9 @@ type EventRowProps = {
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   turnActive?: boolean;
-  onOpenWorkspacePath?: (path: string) => void;
+  sessionEnded?: boolean;
+  isLatestWorkLog?: boolean;
+  onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
@@ -2570,6 +2839,8 @@ const EventRow = React.memo(function EventRow({
   surfaceProfile = "standard",
   assistantLabel,
   turnActive,
+  sessionEnded,
+  isLatestWorkLog,
   onOpenWorkspacePath,
   onNavigateSuggestion,
   respondingApprovalIds,
@@ -2577,27 +2848,34 @@ const EventRow = React.memo(function EventRow({
   resolvedInputStates,
   sessionId,
 }: EventRowProps) {
+  const workLogAnimate = Boolean(turnActive) && !sessionEnded && Boolean(isLatestWorkLog);
   return (
     <div className="space-y-3">
       {showTurnDivider ? (
         <div className="my-3 flex items-center gap-4">
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
-          <span
-            className="inline-flex items-center gap-2.5 rounded-full border border-white/[0.06] bg-[#141220]/80 px-3.5 py-1.5 font-sans text-[10px] text-fg/40 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)]"
-            style={{ backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
-          >
+          <span className="ade-liquid-glass-pill inline-flex items-center gap-2.5 rounded-full px-3.5 py-1.5 font-sans text-[10px] text-fg/42">
             <span className="text-fg/35">{turnDividerLabel ?? "Turn"}</span>
+            {turnModel?.label ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 text-[9px] text-fg/42">
+                <ModelGlyph modelId={turnModel.modelId} model={turnModel.model} size={10} className="text-fg/36" />
+                <span>{turnModel.label}</span>
+              </span>
+            ) : null}
           </span>
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
         </div>
       ) : null}
       {envelope.event.type === "work_log_group"
         ? (
-          <ChatWorkLogBlock
-            entries={envelope.event.entries}
-            summary={envelope.event.summary}
-            onNavigateSuggestion={onNavigateSuggestion}
-          />
+          <div className="w-fit max-w-[min(100%,70ch)]">
+            <ChatWorkLogBlock
+              entries={envelope.event.entries}
+              summary={envelope.event.summary}
+              onNavigateSuggestion={onNavigateSuggestion}
+              animate={workLogAnimate}
+            />
+          </div>
         )
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
@@ -2606,6 +2884,7 @@ const EventRow = React.memo(function EventRow({
             surfaceProfile,
             assistantLabel,
             turnActive,
+            sessionEnded,
             onOpenWorkspacePath,
             respondingApprovalIds,
             pendingApprovalIds,
@@ -2657,6 +2936,13 @@ const ROW_GAP = 12;
 const OVERSCAN = 10;
 /** Minimum number of rows before virtualization kicks in. */
 const VIRTUALIZATION_THRESHOLD = 60;
+/**
+ * Distance (px) from the bottom of the scroll container within which we
+ * consider the user "stuck to bottom" and keep auto-following new content.
+ * Sized so a single wheel nudge during streaming reliably breaks free of
+ * auto-follow rather than being snapped back.
+ */
+const STICK_THRESHOLD_PX = 160;
 
 export function calculateVirtualWindow({
   rowCount,
@@ -2763,6 +3049,7 @@ export function AgentChatMessageList({
   respondingApprovalIds,
   pendingApprovalIds,
   sessionId,
+  sessionEnded = false,
   }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -2775,8 +3062,10 @@ export function AgentChatMessageList({
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   sessionId?: string | null;
+  sessionEnded?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: TranscriptRenderEnvelope[] }>({
@@ -2786,6 +3075,14 @@ export function AgentChatMessageList({
   const [stickToBottom, setStickToBottom] = useState(true);
   const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
   const stickToBottomRef = useRef(true);
+  // Track the single pending rAF handle for scroll-to-bottom writes so we
+  // coalesce every source (ResizeObserver, stick-flip effect, jump button)
+  // into at most one scrollTop assignment per frame.
+  const scrollRafRef = useRef<number | null>(null);
+  // Each programmatic scroll write increments this counter; the matching
+  // scroll event then decrements it and skips stick-state updates. Keeps
+  // user gestures as the only thing that toggles auto-follow off.
+  const programmaticScrollCountRef = useRef(0);
   const onApprovalRef = useRef(onApproval);
   const resolvedInputStates = useMemo(() => {
     const resolved = new Map<string, PendingInputResolution>();
@@ -2853,14 +3150,15 @@ export function AgentChatMessageList({
     };
   }, []);
 
-  const openWorkspacePath = useCallback(async (path: string) => {
+  const openWorkspacePath = useCallback(async (path: string | WorkspacePathLocation) => {
     let resolvedWorkspaces = filesWorkspaces;
     let target = resolveFilesNavigationTarget({
       path,
       workspaces: resolvedWorkspaces,
       fallbackLaneId: currentLaneId,
     });
-    if (!target && normalizeWorkspacePathCandidate(path)?.startsWith("/")) {
+    const workspaceCandidate = typeof path === "string" ? parseWorkspacePathLocation(path) : path;
+    if (!target && workspaceCandidate && (workspaceCandidate.path.startsWith("/") || isWindowsAbsolutePath(workspaceCandidate.path))) {
       const listWorkspaces = window.ade?.files?.listWorkspaces;
       if (typeof listWorkspaces === "function") {
         try {
@@ -2877,9 +3175,12 @@ export function AgentChatMessageList({
       }
     }
     if (!target) return;
-    const state = target.laneId
-      ? { openFilePath: target.openFilePath, laneId: target.laneId }
-      : { openFilePath: target.openFilePath };
+    const state = {
+      openFilePath: target.openFilePath,
+      ...(target.laneId ? { laneId: target.laneId } : {}),
+      ...(typeof target.startLine === "number" ? { startLine: target.startLine } : {}),
+      ...(typeof target.startColumn === "number" ? { startColumn: target.startColumn } : {}),
+    };
     navigate("/files", { state });
     onOpenWorkspacePath?.(target.openFilePath, target.laneId);
   }, [currentLaneId, filesWorkspaces, navigate, onOpenWorkspacePath]);
@@ -2906,36 +3207,66 @@ export function AgentChatMessageList({
     stickToBottomRef.current = stickToBottom;
   }, [stickToBottom]);
 
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !stickToBottom) return;
-    const raf = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [groupedRows, measurementTick, stickToBottom, showStreamingIndicator]);
-
-  // Observe scrollHeight changes via MutationObserver so streaming content
-  // (which grows existing rows without changing groupedRows identity) still
-  // triggers autoscroll.  Scoped to the live-turn window: the observer is
-  // attached only while activeTurnId is non-null and tears down when the
-  // turn ends, avoiding unnecessary scroll-forcing after streaming finishes.
-  useEffect(() => {
-    if (!activeTurnId) return;
-    const el = scrollRef.current;
-    if (!el || typeof MutationObserver === "undefined") return;
-    let prevScrollHeight = el.scrollHeight;
-    const mo = new MutationObserver(() => {
-      if (el.scrollHeight !== prevScrollHeight) {
-        prevScrollHeight = el.scrollHeight;
-        if (stickToBottomRef.current) {
-          el.scrollTop = el.scrollHeight;
-        }
+  // Unified stick-to-bottom autoscroll:
+  // - scrollToBottomSoon coalesces every scroll-to-bottom request into a
+  //   single rAF per frame so rapid streaming updates can't produce
+  //   back-to-back synchronous scrollTop writes (the classic source of
+  //   chat flicker during token streaming).
+  // - A ResizeObserver on the content wrapper picks up every size change —
+  //   new rows appearing *and* streaming tokens extending existing rows —
+  //   without the old MutationObserver's characterData firehose.
+  const scrollToBottomSoon = useCallback(() => {
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const el = scrollRef.current;
+      if (!el || !stickToBottomRef.current) return;
+      const target = el.scrollHeight - el.clientHeight;
+      if (target <= 0) return;
+      const before = el.scrollTop;
+      if (Math.abs(before - target) < 1) return;
+      el.scrollTop = target;
+      // Only register a pending programmatic scroll event if the assignment
+      // actually moved the element. Otherwise (clamped to the same value,
+      // hidden element, etc.) no scroll event will fire and the counter
+      // would stay positive forever, misclassifying the next real user
+      // scroll as programmatic.
+      if (el.scrollTop !== before) {
+        programmaticScrollCountRef.current += 1;
       }
     });
-    mo.observe(el, { childList: true, subtree: true, characterData: true });
-    return () => mo.disconnect();
-  }, [activeTurnId]);
+  }, []);
+
+  useEffect(() => () => {
+    if (scrollRafRef.current !== null) {
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = null;
+    }
+  }, []);
+
+  // When the user re-enters the sticky zone (or on first mount), snap to bottom.
+  useEffect(() => {
+    if (stickToBottom) scrollToBottomSoon();
+  }, [stickToBottom, scrollToBottomSoon]);
+
+  // Observe the content wrapper so streaming growth triggers a single
+  // rAF-coalesced scroll. The observer stays attached at all times; the
+  // rAF callback self-guards on stickToBottomRef so it's a cheap no-op
+  // when the user has scrolled up.
+  useEffect(() => {
+    const wrapper = contentWrapperRef.current;
+    if (!wrapper || typeof ResizeObserver === "undefined") {
+      // Fallback: when ResizeObserver is unavailable (test env) we still
+      // want sticky behavior as content mutates.
+      if (stickToBottomRef.current) scrollToBottomSoon();
+      return;
+    }
+    const ro = new ResizeObserver(() => {
+      if (stickToBottomRef.current) scrollToBottomSoon();
+    });
+    ro.observe(wrapper);
+    return () => ro.disconnect();
+  }, [scrollToBottomSoon]);
 
   // Observe the scroll container's size so we know the viewport height.
   useEffect(() => {
@@ -3020,8 +3351,19 @@ export function AgentChatMessageList({
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
+    // Absorb scroll events produced by our own programmatic scroll-to-bottom
+    // writes so we never flip sticky state based on them — only the user's
+    // own gesture (wheel / trackpad / keyboard) should break auto-follow.
+    if (programmaticScrollCountRef.current > 0) {
+      programmaticScrollCountRef.current -= 1;
+      if (shouldVirtualize) setScrollTop(target.scrollTop);
+      return;
+    }
     const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
-    const nextStick = distanceFromBottom < 72;
+    // Wider threshold (~1 row of assistant text) so a small wheel nudge
+    // while the turn is streaming actually breaks free instead of snapping
+    // straight back to the bottom.
+    const nextStick = distanceFromBottom < STICK_THRESHOLD_PX;
     if (nextStick !== stickToBottomRef.current) {
       stickToBottomRef.current = nextStick;
       setStickToBottom(nextStick);
@@ -3030,6 +3372,19 @@ export function AgentChatMessageList({
       setScrollTop(target.scrollTop);
     }
   }, [shouldVirtualize]);
+
+  const jumpToLatest = useCallback(() => {
+    stickToBottomRef.current = true;
+    setStickToBottom(true);
+    scrollToBottomSoon();
+  }, [scrollToBottomSoon]);
+
+  const latestWorkLogIndex = useMemo(() => {
+    for (let i = groupedRows.length - 1; i >= 0; i -= 1) {
+      if (groupedRows[i]?.event.type === "work_log_group") return i;
+    }
+    return -1;
+  }, [groupedRows]);
 
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
@@ -3042,6 +3397,9 @@ export function AgentChatMessageList({
     const turnModel = currentTurn
       ? (turnModelState.map.get(currentTurn) ?? null)
       : turnModelState.lastModel;
+    const isLatestWorkLog = index === latestWorkLogIndex;
+
+    const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
 
     if (virtualized) {
       return (
@@ -3057,7 +3415,9 @@ export function AgentChatMessageList({
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
-          turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
+          turnActive={rowTurnActive}
+          sessionEnded={sessionEnded}
+          isLatestWorkLog={isLatestWorkLog}
           onOpenWorkspacePath={openWorkspacePath}
           onNavigateSuggestion={handleNavigateSuggestion}
           respondingApprovalIds={respondingApprovalIds}
@@ -3079,7 +3439,9 @@ export function AgentChatMessageList({
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
-        turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
+        turnActive={rowTurnActive}
+        sessionEnded={sessionEnded}
+        isLatestWorkLog={isLatestWorkLog}
         onOpenWorkspacePath={openWorkspacePath}
         onNavigateSuggestion={handleNavigateSuggestion}
         respondingApprovalIds={respondingApprovalIds}
@@ -3088,7 +3450,7 @@ export function AgentChatMessageList({
         sessionId={sessionId}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId, sessionEnded]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -3104,14 +3466,14 @@ export function AgentChatMessageList({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 
-  const streamingIndicator = showStreamingIndicator ? (
+  const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
     <motion.div
-      className="pt-3 pb-2"
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
+      className="w-fit max-w-[min(100%,70ch)] pt-3 pb-2"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.12, ease: "easeOut" }}
     >
-      <div className="relative overflow-hidden rounded-xl border border-violet-400/[0.08] bg-[#141220]/60 px-4 py-3">
+      <div className="ade-liquid-glass relative overflow-hidden rounded-xl px-4 py-3">
         <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
           <div
             className="absolute inset-0"
@@ -3137,39 +3499,58 @@ export function AgentChatMessageList({
     <TurnSummaryCard summary={turnSummary} onReviewChanges={turnSummary.files.length > 0 ? handleReviewChanges : undefined} />
   ) : null;
 
+  // Jump-to-latest pill is only meaningful during an active turn — if nothing
+  // is streaming there's no "latest" to catch up to.
+  const showJumpToLatest = !stickToBottom && !sessionEnded;
+
   return (
-    <div
-      ref={scrollRef}
-      className={cn("h-full min-h-0 overflow-auto bg-[#0C0B10] px-5 pt-5 pb-8", className)}
-      onScroll={handleScroll}
-    >
-      {rows.length === 0 && !streamingIndicator ? (
-        null
-      ) : shouldVirtualize ? (
-        /* ── Virtualized path: only render rows in / near the viewport ── */
-        <div className="space-y-3">
-          <div style={{ height: totalHeight, position: "relative" }}>
-            {/* Top spacer pushes rendered rows to their correct scroll position */}
-            <div style={{ height: offsetTop }} aria-hidden />
+    <div className={cn("relative h-full min-h-0", className)}>
+      <div
+        ref={scrollRef}
+        className="ade-chat-timeline-pane h-full min-h-0 overflow-auto px-5 pt-5 pb-8"
+        onScroll={handleScroll}
+      >
+        <div ref={contentWrapperRef}>
+          {rows.length === 0 && !streamingIndicator ? (
+            null
+          ) : shouldVirtualize ? (
+            /* ── Virtualized path: only render rows in / near the viewport ── */
             <div className="space-y-3">
-              {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) =>
-                renderRow(envelope, startIndex + i, true)
-              )}
+              <div style={{ height: totalHeight, position: "relative" }}>
+                {/* Top spacer pushes rendered rows to their correct scroll position */}
+                <div style={{ height: offsetTop }} aria-hidden />
+                <div className="space-y-3">
+                  {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) =>
+                    renderRow(envelope, startIndex + i, true)
+                  )}
+                </div>
+                {/* Bottom spacer fills remaining scroll area */}
+                <div style={{ height: bottomSpacerHeight }} aria-hidden />
+              </div>
+              {streamingIndicator}
+              {turnSummaryCard}
             </div>
-            {/* Bottom spacer fills remaining scroll area */}
-            <div style={{ height: bottomSpacerHeight }} aria-hidden />
-          </div>
-          {streamingIndicator}
-          {turnSummaryCard}
+          ) : (
+            /* ── Non-virtualized path: render all rows (small conversation) ── */
+            <div className="space-y-3">
+              {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
+              {streamingIndicator}
+              {turnSummaryCard}
+            </div>
+          )}
         </div>
-      ) : (
-        /* ── Non-virtualized path: render all rows (small conversation) ── */
-        <div className="space-y-3">
-          {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
-          {streamingIndicator}
-          {turnSummaryCard}
-        </div>
-      )}
+      </div>
+      {showJumpToLatest ? (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-violet-400/30 bg-violet-500/20 px-3 py-1.5 font-sans text-[11px] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
+          aria-label="Jump to latest message"
+        >
+          <CaretDown size={11} weight="bold" />
+          <span>Jump to latest</span>
+        </button>
+      ) : null}
     </div>
   );
 }

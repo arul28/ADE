@@ -12,6 +12,14 @@ It guarantees three outcomes:
 2. Docs are current
 3. Local CI checks pass
 
+It does **not** guarantee that remote PR review is complete after a push. GitHub's
+first visible check list can look quiet before delayed checks, bot reviews, and
+inline comments arrive. After pushing a finalized branch, hand off to
+`/shipLane` or an equivalent PR poll loop. Use the ship-lane cadence: poll
+immediately after a push, wait 270s if CI has not registered, wait 720s while CI
+is running, and wait 1800s only when CI is done and the PR is just waiting on
+review.
+
 **Usage:** `/finalize`
 
 ## Execution Mode: Autonomous
@@ -29,7 +37,7 @@ The only outputs are the Phase 4 summary and any error messages for genuinely fa
 
 ```
 Phase 1: Analyze code changes and batch simplification work  (lead)
-Phase 2: Parallel execution (simplify + docs)                (agents)
+Phase 2: Parallel execution (simplify + docs + mobile parity)(agents)
 Phase 3: CI sync + local verification                        (lead)
 Phase 4: Summary                                             (lead)
 ```
@@ -157,7 +165,7 @@ Step 2: Map changed source to internal docs
 | apps/desktop/src/shared/                           | docs/ARCHITECTURE.md + touching feature's doc      |
 | apps/desktop/src/renderer/components/<area>/       | docs/features/<same-area>/                         |
 | apps/desktop/src/renderer/state/                   | docs/ARCHITECTURE.md (UI framework)                |
-| apps/mcp-server/                                   | docs/ARCHITECTURE.md + features/linear-integration/|
+| apps/ade-cli/                                      | docs/ARCHITECTURE.md (ADE CLI / Build/Test/Deploy) + docs/features/agents/ |
 | .github/workflows/                                 | docs/ARCHITECTURE.md (Build/Test/Deploy)           |
 | apps/ios/                                          | docs/features/sync-and-multi-device/ios-companion.md |
 | apps/web/                                          | docs/ARCHITECTURE.md (Apps & Processes)            |
@@ -185,6 +193,56 @@ This validator only covers the Mintlify site. For internal docs, self-check:
 Report what docs were updated and what was changed.
 ```
 
+### Mobile parity agent
+
+Spawn a general-purpose agent with this prompt:
+
+```
+You are the mobile parity reviewer for the ADE project.
+
+Analyze all work on the current branch vs main, including changes that are
+already under review and any simplifications made during `/finalize`. Determine
+whether the iOS companion app under `apps/ios/` needs matching updates.
+
+Step 1: Get branch context
+  git diff main --name-only
+  git diff main --stat | tail -30
+  git log main..HEAD --oneline
+
+Step 2: Identify cross-platform changes
+- Shared contracts: apps/desktop/src/shared/**, preload IPC types, sync payloads,
+  PR mobile snapshots, chat/session models, lane summaries, config schemas.
+- Desktop behavior with a mobile surface: PR workflows, lanes, Work chat,
+  files, sync/multi-device, settings exposed on iOS, model/session controls.
+- Renderer-only desktop preferences are only mobile-applicable when the iOS app
+  has the same user-facing concept and a native implementation path.
+
+Step 3: Inspect iOS equivalents
+- Search `apps/ios/ADE` and `apps/ios/ADETests` for the affected model, view,
+  service, or workflow names.
+- If the branch adds or changes a host/mobile contract, update Swift Codable
+  models and iOS tests as needed.
+- If the branch changes user-facing behavior that iOS already exposes, update
+  the SwiftUI view using native iOS controls and existing ADE design patterns.
+- If the change is not applicable to iOS, explain why in the report.
+
+Step 4: Apply required iOS updates
+- Keep edits scoped to `apps/ios/` unless a shared contract fix is required.
+- Prefer existing SwiftUI patterns and native controls.
+- Preserve Dynamic Type, VoiceOver labels, and 44x44 tap targets.
+- Add or update targeted tests in `apps/ios/ADETests` for contract changes.
+
+Step 5: Validate what you touched
+- At minimum: `xcrun swiftc -parse <changed swift files>` when a full Xcode
+  build/test run is unavailable.
+- Prefer an iOS build/test when the local simulator/runtime environment supports it.
+
+Report:
+- iOS files changed, or "No iOS changes required"
+- Why each desktop/shared change was applicable or not applicable to mobile
+- Validation run and any environment limitations
+```
+
 Wait for all agents to complete.
 
 ---
@@ -204,9 +262,12 @@ Run in parallel — ensures lock files are in sync with package.json (mirrors CI
 
 ```bash
 cd apps/desktop && npm install
-cd apps/mcp-server && npm install
+cd apps/ade-cli && npm install
 cd apps/web && npm install
 ```
+
+Do not run `apps/mcp-server` checks. The MCP server was removed; ADE's
+agent-facing command surface now lives in `apps/ade-cli`.
 
 After install, check for uncommitted lock file changes — if any lock file is dirty, it means package.json was modified without regenerating the lock file, which will break CI's `npm ci`:
 
@@ -218,11 +279,11 @@ If lock files changed, warn and include them in the commit.
 
 ### 3c. Typecheck all apps
 
-Run in parallel to match CI jobs (`typecheck-desktop`, `typecheck-mcp`, `typecheck-web`):
+Run in parallel to match CI jobs (`typecheck-desktop`, `typecheck-ade-cli`, `typecheck-web`):
 
 ```bash
 cd apps/desktop && npm run typecheck
-cd apps/mcp-server && npm run typecheck
+cd apps/ade-cli && npm run typecheck
 cd apps/web && npm run typecheck
 ```
 
@@ -232,22 +293,34 @@ cd apps/web && npm run typecheck
 cd apps/desktop && npm run lint
 ```
 
-### 3e. Desktop tests (sharded — match CI exactly)
+### 3e. Desktop tests — full suite, sharded 8-way, run in PARALLEL
 
-Shard like CI (8 shards in parallel) to avoid timeout. The workspace has 3 projects (`unit-main`, `unit-renderer`, `unit-shared`) — sharding runs across all of them automatically:
+`/finalize` is the gate that runs the whole test suite. Run **all 8 shards concurrently** — not sequentially. Running them serially takes 8× longer and masks real CI wall-clock behavior.
 
-```bash
-cd apps/desktop && npx vitest run --shard=1/8
-cd apps/desktop && npx vitest run --shard=2/8
-cd apps/desktop && npx vitest run --shard=3/8
-cd apps/desktop && npx vitest run --shard=4/8
-cd apps/desktop && npx vitest run --shard=5/8
-cd apps/desktop && npx vitest run --shard=6/8
-cd apps/desktop && npx vitest run --shard=7/8
-cd apps/desktop && npx vitest run --shard=8/8
+The command must be identical to `.github/workflows/ci.yml` (job `test-desktop`, matrix shard 1–8, step at line 139):
+
+```
+- run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 ```
 
-Or run specific projects when you only need a subset:
+Locally that maps to 8 parallel Bash invocations in a single tool-call round:
+
+```bash
+cd apps/desktop && npx vitest run --shard=1/8   # shard 1 of 8
+cd apps/desktop && npx vitest run --shard=2/8   # shard 2 of 8
+cd apps/desktop && npx vitest run --shard=3/8   # shard 3 of 8
+cd apps/desktop && npx vitest run --shard=4/8   # shard 4 of 8
+cd apps/desktop && npx vitest run --shard=5/8   # shard 5 of 8
+cd apps/desktop && npx vitest run --shard=6/8   # shard 6 of 8
+cd apps/desktop && npx vitest run --shard=7/8   # shard 7 of 8
+cd apps/desktop && npx vitest run --shard=8/8   # shard 8 of 8
+```
+
+Issue these as 8 concurrent Bash tool calls in a single message (one call per shard). Do not chain them with `&&` or `;` or run them one at a time. The workspace has 3 projects (`unit-main`, `unit-renderer`, `unit-shared`) — sharding distributes across all three automatically.
+
+If a shard fails, re-run **only that shard** (or, better, only the specific failing test file inside it). Never re-run all 8 shards to verify a one-file fix.
+
+Workspace-project subsets exist for debugging only; they are NOT a substitute for the sharded run in `/finalize`:
 
 ```bash
 cd apps/desktop && npx vitest run --project unit-main       # ~150+ main-process tests
@@ -255,17 +328,21 @@ cd apps/desktop && npx vitest run --project unit-renderer    # ~85+ renderer tes
 cd apps/desktop && npx vitest run --project unit-shared      # ~7 shared/preload tests
 ```
 
-### 3f. MCP server tests
+### 3f. ADE CLI tests — separate CI job, run alongside the 8 shards
+
+CI runs `test-ade-cli` as its own parallel job (`.github/workflows/ci.yml:156`). Locally, include it in the same parallel tool-call round as the 8 desktop shards — it's effectively a 9th concurrent invocation, not something to run after:
 
 ```bash
-cd apps/mcp-server && npm test
+cd apps/ade-cli && npm test
 ```
+
+Do NOT run apps/mcp-server tests — the MCP server was removed; the agent-facing surface lives in `apps/ade-cli`.
 
 ### 3g. Build all apps
 
 ```bash
 cd apps/desktop && npm run build
-cd apps/mcp-server && npm run build
+cd apps/ade-cli && npm run build
 cd apps/web && npm run build
 ```
 
@@ -343,6 +420,34 @@ Kill selectively only if the parent is clearly gone (PPID == 1 on macOS/Linux).
 
 Report killed PIDs in the Phase 4 summary under "Cleanup" so the user can see what happened.
 
+### 3k. Remote PR poll handoff
+
+If this finalize run is followed by a push or PR update, do not treat the first
+`gh pr checks` result as authoritative proof that remote review is done. Some
+checks and bot review systems appear late or post comments after the initial CI
+surface looks complete. In particular:
+
+- `gh pr checks` can omit delayed or still-registering provider checks.
+- Bot reviewers can post inline comments after CI jobs have already gone green.
+- The absence of new comments immediately after a push is not evidence that no
+  more comments are coming.
+
+Handoff rule:
+
+```bash
+# After the branch is pushed, continue with /shipLane or equivalent:
+# - poll PR checks, status rollup, review comments, issue comments, and reviews
+# - poll immediately after a push so early CI registration/failures are visible
+# - if CI has not started yet, wait 270s
+# - if any check is QUEUED/IN_PROGRESS/PENDING, wait 720s
+# - if CI is done and the PR is only waiting on review, wait 1800s
+# - poll again before declaring the PR clean or ready for human merge
+```
+
+If `/finalize` is running as a sub-step inside `/shipLane`, return a summary that
+explicitly says remote checks/comments still require the ship-lane poll loop.
+Do not report "PR clean" from `/finalize` alone.
+
 ---
 
 ## Phase 4: Summary
@@ -359,19 +464,29 @@ Report killed PIDs in the Phase 4 summary under "Cleanup" so the user can see wh
 - Docs checked but unchanged: [list]
 - Doc validation: PASS
 
+### Mobile Parity:
+- iOS changes: [list or "none required"]
+- Applicability notes: [brief list]
+- Validation: PASS / blocked with reason
+
 ### CI Verification:
 - Lock files in sync: PASS
 - Typecheck (desktop): PASS
-- Typecheck (mcp-server): PASS
+- Typecheck (ade-cli): PASS
 - Typecheck (web): PASS
 - Lint (desktop): PASS
 - Tests (desktop): PASS (X tests across 8 shards)
-- Tests (mcp-server): PASS (X tests)
+- Tests (ade-cli): PASS (X tests)
 - Build (all apps): PASS
 - Doc validation: PASS
 
 ### Cleanup:
 - Orphan processes killed: N (PIDs: [list] or "none")
+
+### Remote PR Handoff:
+- Post-push polling required: YES
+- Poll loop: `/shipLane` branch-specific cadence
+- Reason: delayed checks and bot comments may arrive after first visible green state
 
 ### Status: Ready to push / Issues found
 ```
@@ -383,11 +498,13 @@ Report killed PIDs in the Phase 4 summary under "Cleanup" so the user can see wh
 Before marking complete:
 - [ ] Code simplification completed on all batches
 - [ ] Documentation updated for all affected areas
+- [ ] Mobile parity reviewed; applicable iOS updates made and validated
 - [ ] CI workflow sync verified (no orphaned test files)
 - [ ] Lock files in sync (no dirty lock files after install)
-- [ ] Typecheck passed (desktop + mcp-server + web)
+- [ ] Typecheck passed (desktop + ade-cli + web)
 - [ ] Lint passed (desktop)
-- [ ] All tests passed (desktop sharded 8-way + mcp-server)
+- [ ] All tests passed (desktop sharded 8-way + ade-cli)
 - [ ] All apps build successfully
 - [ ] Doc validation passed
 - [ ] Orphan worker processes cleaned up (vitest/tsup/tsc) — scoped to apps/ paths only
+- [ ] Remote PR review is not declared clean by finalize alone; after push, `/shipLane` or an equivalent poll loop must use the branch-specific cadence and re-check comments/reviews

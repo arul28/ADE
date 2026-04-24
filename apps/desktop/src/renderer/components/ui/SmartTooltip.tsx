@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAppStore } from "../../state/appStore";
+import { openExternalUrl } from "../../lib/openExternal";
 
 export type SmartTooltipContent = {
   /** Button/action name */
@@ -15,6 +16,10 @@ export type SmartTooltipContent = {
   warning?: string;
   /** Keyboard shortcut hint */
   shortcut?: string;
+  /** When set, renders a "Learn more →" link opening this URL in a new tab. */
+  docUrl?: string;
+  /** Future use — identifies a glossary term for this tooltip. Currently not rendered. */
+  glossaryTermId?: string;
 };
 
 type SmartTooltipProps = {
@@ -26,6 +31,10 @@ type SmartTooltipProps = {
 };
 
 const HOVER_DELAY = 320;
+// Grace window for moving the cursor from the trigger into the tooltip portal
+// when there's an actionable link — without this the portal would unmount the
+// moment the cursor crosses the 6px gap.
+const HIDE_DELAY = 140;
 const GAP = 6;
 const VIEWPORT_PAD = 10;
 
@@ -43,11 +52,27 @@ export function SmartTooltip({
   const [coords, setCoords] = useState<{ x: number; y: number; side: "top" | "bottom" } | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearShowTimer = useCallback(() => {
+    if (showTimerRef.current) {
+      clearTimeout(showTimerRef.current);
+      showTimerRef.current = null;
+    }
+  }, []);
+
+  const clearHideTimer = useCallback(() => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
 
   const show = useCallback(() => {
     if (!enabled) return;
-    timerRef.current = setTimeout(() => {
+    clearHideTimer();
+    showTimerRef.current = setTimeout(() => {
       const el = triggerRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
@@ -65,17 +90,42 @@ export function SmartTooltip({
       });
       setVisible(true);
     }, HOVER_DELAY);
-  }, [enabled, preferredSide]);
+  }, [enabled, preferredSide, clearHideTimer]);
 
   const hide = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
+    clearShowTimer();
+    // When a link is showing, hold the tooltip open briefly so the cursor can
+    // cross the gap into the portal. Portal onMouseEnter cancels this timer.
+    if (content.docUrl) {
+      clearHideTimer();
+      hideTimerRef.current = setTimeout(() => {
+        setVisible(false);
+      }, HIDE_DELAY);
+      return;
     }
     setVisible(false);
-  }, []);
+  }, [clearShowTimer, clearHideTimer, content.docUrl]);
 
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  const isTooltipFocusTarget = useCallback((target: EventTarget | null): boolean => {
+    if (!content.docUrl || !(target instanceof Node)) return false;
+    return Boolean(triggerRef.current?.contains(target) || tooltipRef.current?.contains(target));
+  }, [content.docUrl]);
+
+  const handleBlur = useCallback((event: React.FocusEvent) => {
+    if (isTooltipFocusTarget(event.relatedTarget)) {
+      clearHideTimer();
+      return;
+    }
+    hide();
+  }, [clearHideTimer, hide, isTooltipFocusTarget]);
+
+  useEffect(
+    () => () => {
+      if (showTimerRef.current) clearTimeout(showTimerRef.current);
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    },
+    [],
+  );
 
   // Clamp horizontal position after first paint
   useEffect(() => {
@@ -106,7 +156,7 @@ export function SmartTooltip({
         onMouseEnter={show}
         onMouseLeave={hide}
         onFocus={show}
-        onBlur={hide}
+        onBlur={handleBlur}
         style={{ display: "inline-flex" }}
       >
         {trigger}
@@ -119,13 +169,37 @@ export function SmartTooltip({
               role="tooltip"
               className="ade-smart-tooltip"
               data-side={coords.side}
+              // Hover-grace: when the tooltip hosts an actionable link, cancel any pending
+              // show/hide timers so moving the cursor trigger → tooltip doesn't dismiss
+              // before the link is clicked. onMouseLeave restarts the hide timer so the
+              // tooltip still disappears if the cursor wanders off the portal entirely.
+              onMouseEnter={
+                content.docUrl
+                  ? () => {
+                      clearShowTimer();
+                      clearHideTimer();
+                    }
+                  : undefined
+              }
+              onMouseLeave={content.docUrl ? hide : undefined}
+              onFocus={
+                content.docUrl
+                  ? () => {
+                      clearShowTimer();
+                      clearHideTimer();
+                    }
+                  : undefined
+              }
+              onBlur={content.docUrl ? handleBlur : undefined}
               style={{
                 position: "fixed",
                 zIndex: 9999,
                 left: coords.x,
                 top: coords.y,
                 transform: coords.side === "top" ? "translate(-50%, -100%)" : "translate(-50%, 0)",
-                pointerEvents: "none",
+                // Only allow pointer events when there's a link to click; otherwise preserve
+                // the original click-through behaviour.
+                pointerEvents: content.docUrl ? "auto" : "none",
               }}
             >
               {/* Header row: label + optional shortcut */}
@@ -150,6 +224,19 @@ export function SmartTooltip({
                     <span className="ade-stt-warn">{content.warning}</span>
                   ) : null}
                 </div>
+              ) : null}
+
+              {content.docUrl ? (
+                <a
+                  className="ade-stt-doc"
+                  href={content.docUrl}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    openExternalUrl(content.docUrl);
+                  }}
+                >
+                  Learn more →
+                </a>
               ) : null}
             </div>,
             document.body,

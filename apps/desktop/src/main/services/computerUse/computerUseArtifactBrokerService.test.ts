@@ -60,7 +60,6 @@ describe("computerUseArtifactBrokerService", () => {
 
     const ingested = broker.ingest({
       backend: {
-        style: "external_cli",
         name: "agent-browser",
       },
       owners: [{ kind: "lane", id: "lane-1" }],
@@ -133,7 +132,6 @@ describe("computerUseArtifactBrokerService", () => {
       expect(() =>
         broker.ingest({
           backend: {
-            style: "external_cli",
             name: "agent-browser",
           },
           inputs: [
@@ -174,7 +172,6 @@ describe("computerUseArtifactBrokerService", () => {
       expect(() =>
         broker.ingest({
           backend: {
-            style: "external_cli",
             name: "agent-browser",
           },
           inputs: [

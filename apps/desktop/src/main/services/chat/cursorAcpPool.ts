@@ -23,6 +23,7 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
 import { hasNullByte, readFileWithinRootSecure, secureWriteTextAtomicWithinRoot } from "../shared/utils";
+import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
 export type CursorAcpBridge = {
   onPermission: ((req: RequestPermissionRequest) => Promise<RequestPermissionResponse>) | null;
@@ -136,11 +137,13 @@ function createCursorAcpClient(bridge: CursorAcpBridge, terminals: Map<string, T
       const limit = typeof params.outputByteLimit === "number" && params.outputByteLimit > 0
         ? params.outputByteLimit
         : 512 * 1024;
-      const proc = spawn(params.command, params.args ?? [], {
+      const env = mergeEnvVars(process.env, params.env ?? undefined);
+      const invocation = resolveCliSpawnInvocation(params.command, params.args ?? [], env);
+      const proc = spawn(invocation.command, invocation.args, {
         cwd,
-        env: mergeEnvVars(process.env, params.env ?? undefined),
-        shell: process.platform === "win32",
+        env,
         stdio: ["pipe", "pipe", "pipe"],
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       proc.on("error", (err) => {
         console.error(`[CursorAcpPool] terminal process error for termId=${termId}:`, err);
@@ -210,22 +213,14 @@ function createCursorAcpClient(bridge: CursorAcpBridge, terminals: Map<string, T
     async killTerminal(params: KillTerminalRequest): Promise<void> {
       const t = terminals.get(params.terminalId);
       if (t && !t.exited) {
-        try {
-          t.proc.kill("SIGTERM");
-        } catch {
-          // ignore
-        }
+        terminateProcessTree(t.proc, "SIGTERM");
       }
     },
 
     async releaseTerminal(params: ReleaseTerminalRequest): Promise<void> {
       const t = terminals.get(params.terminalId);
       if (t) {
-        try {
-          if (!t.exited) t.proc.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
+        if (!t.exited) terminateProcessTree(t.proc, "SIGKILL");
         const id = params.terminalId;
         terminals.delete(id);
         bridge.onTerminalDisposed?.(id);
@@ -262,7 +257,6 @@ export type CursorAcpLaunchSettings = {
   mode: "plan" | "ask" | null;
   sandbox: "enabled" | "disabled";
   force: boolean;
-  approveMcps: boolean;
 };
 
 const pool = new Map<string, { ref: number; pooled: CursorAcpPooled }>();
@@ -296,19 +290,19 @@ export async function acquireCursorAcpConnection(args: {
   if (args.launchSettings.force) {
     spawnArgs.push("--force");
   }
-  if (args.launchSettings.approveMcps) {
-    spawnArgs.push("--approve-mcps");
-  }
   const apiKey = process.env.CURSOR_API_KEY?.trim() || process.env.CURSOR_AUTH_TOKEN?.trim();
   if (apiKey) {
     spawnArgs.push("--api-key", apiKey);
   }
 
-  const proc = spawn(args.agentPath, spawnArgs, {
+  const env = { ...process.env };
+  const invocation = resolveCliSpawnInvocation(args.agentPath, spawnArgs, env);
+  const proc = spawn(invocation.command, invocation.args, {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
+    env,
     cwd: args.workspacePath,
     detached: process.platform !== "win32",
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
 
   proc.on("error", (err) => {
@@ -368,18 +362,10 @@ export async function acquireCursorAcpConnection(args: {
         bridge.onTerminalDisposed?.(termId);
       }
       for (const t of terminals.values()) {
-        try {
-          if (!t.exited) t.proc.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
+        if (!t.exited) terminateProcessTree(t.proc, "SIGKILL");
       }
       terminals.clear();
-      try {
-        proc.kill("SIGTERM");
-      } catch {
-        // ignore
-      }
+      terminateProcessTree(proc, "SIGTERM");
     },
   };
 

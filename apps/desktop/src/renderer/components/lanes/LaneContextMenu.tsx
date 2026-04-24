@@ -27,10 +27,21 @@ const menuHeaderStyle: React.CSSProperties = {
   color: COLORS.textDim,
 };
 
-function HoverButton({ style, children, onClick }: { style: React.CSSProperties; children: React.ReactNode; onClick: () => void }) {
+function HoverButton({
+  style,
+  children,
+  onClick,
+  dataTour,
+}: {
+  style: React.CSSProperties;
+  children: React.ReactNode;
+  onClick: () => void;
+  dataTour?: string;
+}) {
   return (
     <button
       role="menuitem"
+      data-tour={dataTour}
       style={style}
       onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
@@ -99,19 +110,15 @@ export function LaneContextMenu({
       ref={menuRef}
       role="menu"
       tabIndex={-1}
+      className="ade-liquid-glass-menu"
       style={{
         position: "fixed",
         zIndex: 40,
         minWidth: 200,
         maxHeight: "calc(100vh - 20px)",
         overflowY: "auto",
-        background: COLORS.cardBgSolid,
-        backdropFilter: "blur(20px)",
-        WebkitBackdropFilter: "blur(20px)",
         border: `1px solid ${COLORS.outlineBorder}`,
-        borderRadius: 12,
         padding: "4px 0",
-        boxShadow: "0 8px 32px -8px rgba(0,0,0,0.5)",
         left: laneContextMenu.x,
         top: Math.min(laneContextMenu.y, window.innerHeight - 20),
       }}
@@ -121,6 +128,7 @@ export function LaneContextMenu({
         <>
           <HoverButton
             style={menuItemStyle}
+            dataTour="lanes.manageLane"
             onClick={() => {
               onClose();
               window.ade.app.revealPath(ctxLane.worktreePath).catch(() => {});

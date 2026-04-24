@@ -51,6 +51,14 @@ struct LaneChatLaunchSheet: View {
                 .foregroundStyle(ADEColor.textSecondary)
             }
           }
+          .adeBorderBeam(
+            cornerRadius: 16,
+            duration: 18,
+            strength: 0.5,
+            lineWidth: 1.25,
+            variant: .provider(provider),
+            active: true
+          )
 
           GlassSection(title: providerTitle) {
             HStack(alignment: .center, spacing: 12) {
@@ -207,6 +215,7 @@ struct LaneChatLaunchSheet: View {
       }
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -232,6 +241,7 @@ struct LaneChatLaunchSheet: View {
       await onComplete(session)
       dismiss()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busy = false

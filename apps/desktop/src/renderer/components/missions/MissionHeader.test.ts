@@ -169,10 +169,6 @@ describe("looksLikeLowSignalNoise", () => {
     expect(looksLikeLowSignalNoise("Usage")).toBe(true);
   });
 
-  it("returns true for MCP prefixed messages", () => {
-    expect(looksLikeLowSignalNoise("mcp:tool_name")).toBe(true);
-  });
-
   it("returns false for substantive content", () => {
     expect(looksLikeLowSignalNoise("I have implemented the auth module.")).toBe(false);
     expect(looksLikeLowSignalNoise("The build failed due to a type error in utils.ts")).toBe(false);

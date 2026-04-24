@@ -17,19 +17,27 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
     getBootstrapToken() {
       return "test-bootstrap-token";
     },
-    getPairingSession() {
-      const expires = new Date(Date.now() + 600_000).toISOString();
-      return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
-    },
     revokePairedDevice() {},
     getPeerStates() {
       return [];
+    },
+    getTailnetDiscoveryStatus() {
+      return {
+        state: "disabled",
+        serviceName: "svc:ade-sync",
+        servicePort: 8787,
+        target: null,
+        updatedAt: null,
+        error: null,
+        stderr: null,
+      };
     },
     getBrainStatusSnapshot() {
       return {};
     },
     handlePtyData() {},
     handlePtyExit() {},
+    setDiscoveryEnabled: vi.fn(),
     async dispose() {},
   })),
 }));
@@ -38,6 +46,8 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
 // Tests only exercise role/transfer/pairing logic, not the sync transport.
 vi.mock("./syncHostService", () => ({
   createSyncHostService: createSyncHostServiceMock,
+  SYNC_TAILNET_DISCOVERY_SERVICE_NAME: "svc:ade-sync",
+  SYNC_TAILNET_DISCOVERY_SERVICE_PORT: 8787,
 }));
 
 function createLogger() {
@@ -370,6 +380,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
              last_host = ?,
              last_port = ?,
              tailscale_ip = ?,
+             metadata_json = ?,
              updated_at = ?,
              last_seen_at = ?
        where device_id = ?`,
@@ -378,6 +389,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         "192.168.0.20",
         8787,
         "100.100.12.4",
+        JSON.stringify({ tailscaleDnsName: "mac-studio.tail7497a6.ts.net" }),
         now,
         now,
         localDeviceId,
@@ -386,34 +398,56 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     const status = await service.getStatus();
     expect(status.mode === "brain" || status.mode === "standalone").toBe(true);
-    expect(status.pairingSession).toBeTruthy();
     expect(status.pairingConnectInfo).toBeTruthy();
     const addressCandidates =
       status.pairingConnectInfo?.addressCandidates ?? [];
-    const savedCandidateIndex = addressCandidates.findIndex(
-      (entry) => entry.kind === "saved" && entry.host === "192.168.0.20",
+    const loopbackCandidateIndex = addressCandidates.findIndex(
+      (entry) => entry.kind === "loopback" && entry.host === "127.0.0.1",
     );
-    const tailscaleCandidateIndex = addressCandidates.findIndex(
-      (entry) => entry.kind === "tailscale" && entry.host === "100.100.12.4",
-    );
-    expect(savedCandidateIndex).toBeGreaterThanOrEqual(0);
-    expect(tailscaleCandidateIndex).toBeGreaterThan(savedCandidateIndex);
+    expect(addressCandidates.length).toBeGreaterThan(0);
+    expect(loopbackCandidateIndex).toBe(addressCandidates.length - 1);
     expect(
       addressCandidates
-        .slice(0, Math.max(savedCandidateIndex, 0))
-        .every((entry) => entry.kind === "lan"),
+        .slice(0, Math.max(loopbackCandidateIndex, 0))
+        .every((entry) => entry.kind !== "loopback"),
     ).toBe(true);
+    const tailscaleCandidates = addressCandidates.filter(
+      (entry) => entry.kind === "tailscale",
+    );
+    expect(tailscaleCandidates[0]?.host.endsWith(".ts.net")).toBe(true);
+    if (status.localDevice.tailscaleIp) {
+      expect(tailscaleCandidates.map((entry) => entry.host)).toContain(
+        status.localDevice.tailscaleIp,
+      );
+    }
+
+    db.run(
+      `update devices
+         set last_host = ?,
+             updated_at = ?
+       where device_id = ?`,
+      [
+        "192.168.0.8",
+        "2026-03-17T00:05:00.000Z",
+        localDeviceId,
+      ],
+    );
+
+    const refreshedStatus = await service.getStatus();
+    const refreshedCandidates = refreshedStatus.pairingConnectInfo?.addressCandidates ?? [];
+    expect(refreshedCandidates[0]?.kind).toBe("saved");
+    expect(refreshedCandidates[0]?.host).toBe(refreshedStatus.localDevice.lastHost);
 
     const encodedPayload =
       status.pairingConnectInfo?.qrPayloadText.split("payload=")[1] ?? "";
     const parsedPayload = JSON.parse(decodeURIComponent(encodedPayload)) as {
+      version: number;
       hostIdentity: { deviceId: string };
-      pairingCode: string;
-      expiresAt: string;
+      addressCandidates: Array<{ host: string; kind: string }>;
     };
+    expect(parsedPayload.version).toBe(2);
     expect(parsedPayload.hostIdentity.deviceId).toBe(localDeviceId);
-    expect(parsedPayload.pairingCode).toBe(status.pairingSession?.code);
-    expect(parsedPayload.expiresAt).toBe(status.pairingSession?.expiresAt);
+    expect(parsedPayload.addressCandidates.some((c) => c.kind === "loopback" && c.host === "127.0.0.1")).toBe(true);
   }, 30_000);
 
   it("does not start the sync host or expose pairing details when host startup is disabled", async () => {
@@ -468,8 +502,70 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.role).toBe("brain");
     expect(status.mode).toBe("standalone");
     expect(status.bootstrapToken).toBeNull();
-    expect(status.pairingSession).toBeNull();
+    expect(status.pairingPin).toBeNull();
     expect(status.pairingConnectInfo).toBeNull();
+    await expect(service.setPin("123456")).rejects.toThrow(
+      "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+    );
+    expect(service.getPin()).toBeNull();
+  }, 30_000);
+
+  it("rejects PIN changes when CRDT sync is unavailable", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-crdt-disabled-");
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+    db.sync.isAvailable = () => false;
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    const status = await service.getStatus();
+
+    expect(status.bootstrapToken).toBeNull();
+    expect(status.pairingPinConfigured).toBe(false);
+    await expect(service.setPin("123456")).rejects.toThrow(
+      "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
+    );
+    await expect(service.clearPin()).rejects.toThrow(
+      "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
+    );
+    expect(service.getPin()).toBeNull();
   }, 30_000);
 
   it("retries the sync host on bind conflicts so another project can still initialize", async () => {
@@ -499,19 +595,27 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         getBootstrapToken() {
           return "test-bootstrap-token";
         },
-        getPairingSession() {
-          const expires = new Date(Date.now() + 600_000).toISOString();
-          return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
-        },
         revokePairedDevice() {},
         getPeerStates() {
           return [];
+        },
+        getTailnetDiscoveryStatus() {
+          return {
+            state: "disabled",
+            serviceName: "svc:ade-sync",
+            servicePort: 8787,
+            target: null,
+            updatedAt: null,
+            error: null,
+            stderr: null,
+          };
         },
         getBrainStatusSnapshot() {
           return {};
         },
         handlePtyData() {},
         handlePtyExit() {},
+        setDiscoveryEnabled: vi.fn(),
         dispose: attemptedPort === 8787 ? disposeFirstAttempt : disposeSecondAttempt,
       };
     }) as any);

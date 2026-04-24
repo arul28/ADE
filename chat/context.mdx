@@ -1,6 +1,6 @@
 ---
 title: "Context & Artifacts"
-description: "Managing context windows, compaction strategies, MCP tool visibility, working with artifacts, chat history, and troubleshooting common issues."
+description: "Managing context windows, compaction strategies, working with artifacts, chat history, and troubleshooting common issues."
 icon: "database"
 ---
 
@@ -43,22 +43,6 @@ Preferences are saved automatically and persist across sessions. Changes take ef
 
 ---
 
-## MCP Tool Visibility and Control
-
-The chat header shows a badge indicating how many MCP tools are active for the current session. Click it to open the **MCP tool panel**:
-
-- View all configured MCP servers and their available tools
-- Toggle individual tool groups on or off for this session
-- See which tools have been called in the current session and their call counts
-
-Disabling a tool group mid-session takes effect immediately — the agent will not invoke those tools in subsequent turns, though any in-flight tool calls complete normally.
-
-<Note>
-  MCP tool changes are session-scoped. They do not affect the lane's default configuration. To change defaults, go to **Settings → MCP Servers**.
-</Note>
-
----
-
 ## Working with Artifacts
 
 At the end of a session (or mid-session when the agent produces notable outputs), artifacts are surfaced for your review.
@@ -68,8 +52,8 @@ At the end of a session (or mid-session when the agent produces notable outputs)
 | Artifact | When it appears |
 |---|---|
 | File changes | After any file write tool call |
-| Screenshots | After any computer-use visual capture |
-| Browser traces | After browser automation sequences |
+| Proofs | When the agent calls `ade proof capture` or `ade proof record` (screenshots and short recordings) |
+| Ingested evidence | When the agent calls `ade proof ingest` with external traces or logs |
 | PR links | After a PR is created |
 | Test reports | After test runner tool calls |
 | Notes | When the agent explicitly attaches a note |
@@ -125,20 +109,21 @@ Click any session to open its transcript in read-only view. Click **Resume** to 
     - Ask the agent to summarize key decisions and start fresh with that summary
     - Switch to a model with a larger context window in the model selector
   </Accordion>
-  <Accordion title="Computer use panel is not appearing">
-    The computer-use monitoring panel only appears when a computer-use tool is actively being invoked. If the panel is not showing:
+  <Accordion title="Proofs captured by the agent are not showing up">
+    Proofs appear in the session artifact panel the moment `ade proof` finishes. If a proof is missing:
 
-    - Confirm the session's computer-use policy is not `CU Off`
-    - Check **Settings → Computer Use** to confirm a backend (Ghost OS, agent-browser) is connected
-    - Verify the agent's task actually requires visual interaction — the agent will not invoke computer use for purely code-based tasks even in `CU On` mode unless a visual task is present
+    - Run `ade proof list --text` in the same lane — if the artifact is listed there, the capture worked and the UI just needs a refresh.
+    - Run `ade proof status --text` to confirm the local capture pipeline is available (on macOS, `screencapture` must be on `PATH` and Screen Recording permission granted).
+    - Check the chat transcript for the `ade proof` invocation — the CLI returns an error if the capture failed, and the agent usually surfaces it inline.
+
+    See [Proof Overview](/computer-use/overview) for the full capture workflow.
   </Accordion>
-  <Accordion title="MCP tool calls are failing">
-    If an external MCP tool call fails consistently:
+  <Accordion title="ADE tool calls are failing">
+    If ADE tool calls fail consistently:
 
-    1. Open the MCP tool panel from the chat header and check the server's status indicator.
-    2. Go to **Settings → MCP Servers** and click **Test connection** for the failing server.
-    3. Check the server's logs — ADE surfaces MCP server stderr in the settings panel.
-    4. Disable the failing tool group for the session to unblock the agent while you investigate.
+    1. Run `ade doctor --project-root <path>` in a terminal to check CLI readiness and see per-domain action counts.
+    2. Confirm the desktop socket is being used — `ade doctor --json` reports whether it is operating in `desktop-socket` or `headless` mode.
+    3. Check the chat session transcript for the specific tool's error payload; ADE surfaces the RPC error message inline.
   </Accordion>
   <Accordion title="The agent created a PR on the wrong branch">
     PR creation uses the lane's current branch. If the agent created a PR on the wrong branch:

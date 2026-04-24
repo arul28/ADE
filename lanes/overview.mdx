@@ -6,9 +6,7 @@ icon: "eye"
 
 ## What is a Lane?
 
-A **Lane** wraps a git branch inside an isolated development environment. Every lane gets its own git worktree, terminal sessions, agent execution context, port allocation, and environment variables. You can run AI agents in dozens of lanes simultaneously — they will never write to each other's files, conflict over ports, or bleed context into each other's prompts.
-
-Lanes are what make parallel agentic development practical. Instead of a chaotic pile of branches, ADE gives you a structured, observable workspace where every stream of work is named, tracked, and contextually aware.
+A **Lane** wraps a git branch inside an isolated development environment. Every lane gets its own git worktree, terminal sessions, agent context, port allocation, and environment variables. Agents in separate lanes never write to each other's files, conflict over ports, or bleed context into each other's prompts.
 
 <CardGroup cols={3}>
   <Card title="Isolated by Default" icon="shield">
@@ -96,6 +94,15 @@ Each lane row in the list displays a set of health indicators beyond simple stat
 - **Conflict risk score** — a 0–100 score showing the likelihood of integration conflict with the current base branch. Computed by ADE's conflict prediction engine.
 - **Uncommitted changes count** — number of modified files in the working tree (shown as `+N` in amber).
 - **Agent token usage** — a progress bar showing the current agent session's token consumption against its budget cap.
+
+### Rebase banner
+
+When a lane has pending rebase suggestions, a compact banner appears above the lane list. It shows how many lanes are affected and surfaces two actions per suggested lane:
+
+- **View in Rebase tab** — opens the dedicated Rebase tab for that lane, where you can inspect the plan, run the rebase, and handle conflicts with the full resolver
+- **Dismiss** — removes the suggestion permanently until new parent commits arrive
+
+Rebase runs and conflict resolution live in the Rebase tab and the Conflicts view — the lane-list banner stays intentionally small so it doesn't compete with the lane information.
 
 ---
 

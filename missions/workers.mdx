@@ -1,65 +1,61 @@
 ---
-title: "Mission Workers"
-description: "How ephemeral workers operate within a Mission — context compaction, crash recovery, approval gates, intervention types, and error classification."
+title: "Workers and interventions"
+description: "How mission workers run, when a mission pauses for human input, and how ADE classifies failures."
 icon: "users"
 ---
 
-## Workers in Missions
+## Ephemeral workers
 
-Each worker spawned by a mission is **ephemeral** — it exists only for the duration of its assigned tasks and is cleaned up when the mission completes or is canceled.
+Each worker spawned by a mission is ephemeral. It exists only for its assigned tasks, runs inside a lane's worktree, carries a scoped tool palette, has its own budget allocation, and is cleaned up when the mission ends.
 
-Every worker receives:
+Workers inherit three things from the mission:
 
-- A dedicated **lane** (its own git worktree and terminal session)
-- A **tool palette** scoped to the mission's permission config
-- A **budget allocation** drawn from the mission's total budget cap
-- A **context window** seeded from the Mission Pack
+- The **lane** they are assigned to (files, ports, environment)
+- The **provider and permission mode** (Claude / Codex / OpenCode) chosen at mission creation
+- The **Mission Pack snapshot** at the current phase boundary, used to seed their context
 
-### Context Compaction
+### Context management
 
-When a worker's context window reaches **70% capacity**, ADE automatically compacts it: older messages are summarized and compressed, while key decisions, file paths, and current task state are preserved in full. This prevents context overflow mid-task without losing work.
+Workers run against the provider's native context window. When usage approaches the compaction threshold, ADE compacts older messages into a summary and preserves current task state, decisions, and file paths verbatim. This avoids mid-task context overflow without losing what was already done.
 
-### Worker Recovery
+### Recovery
 
-If a worker crashes or loses connection mid-task, ADE attempts recovery from the worker's last known state. Recoverable crashes (network blips, transient errors) are retried automatically. If recovery fails, the worker's task is marked `failed` and an intervention is raised.
+If a worker crashes or drops its connection, ADE tries to resume from its last known state. Transient errors (rate limits, network blips) retry automatically. If resume fails, the worker's step is marked failed and an intervention is raised.
 
 ---
 
-## Approval Gates and Interventions
+## Interventions
 
-Beyond the initial plan approval, missions support **mid-execution approval gates** for decisions that require your input.
-
-When an intervention fires, ADE:
-1. Pauses the relevant worker (other workers continue unaffected)
-2. Surfaces the intervention in the Plan tab activity feed as a highlighted card
-3. Sends a notification if ADE is backgrounded
-
-### Intervention types
+Beyond the approval gate, missions pause mid-run for decisions that need a human. When an intervention fires, ADE pauses the affected worker (other workers keep going), surfaces the intervention in the Plan tab, and notifies you if ADE is backgrounded.
 
 <AccordionGroup>
-  <Accordion title="approval_required — user sign-off needed">
-    The worker encountered a decision point requiring explicit authorization. Common triggers: destructive operations (deleting files, force-pushing), operations outside the worker's configured permission scope, or explicit `pause_and_ask` calls from within a custom tool.
+  <Accordion title="Approval required" icon="hand">
+    The worker hit a decision that needs explicit sign-off. Typical triggers: destructive operations, steps outside the configured permission scope, or explicit pauses from a custom tool.
   </Accordion>
-  <Accordion title="budget_limit_reached — spending cap hit">
-    The mission is approaching or has reached its configured budget cap. You can approve additional budget, reduce scope, or stop the mission and accept partial results.
+  <Accordion title="Budget limit" icon="coins">
+    The mission is near or at its cap. You can approve more budget, reduce scope, or stop cleanly and accept partial results.
   </Accordion>
-  <Accordion title="phase_approval — phase boundary gate">
-    A phase was configured to require approval before advancing. Review the phase output and decide whether to proceed to the next phase.
+  <Accordion title="Phase approval" icon="flag">
+    A phase boundary is configured to require approval. Review the phase output and decide whether to advance.
   </Accordion>
-  <Accordion title="failed_step — worker needs direction">
-    A worker's step failed and automatic retry was not successful. You can provide new instructions, tell the worker to skip the step, or cancel the mission.
+  <Accordion title="Failed step" icon="triangle-exclamation">
+    A step failed and automatic retry did not succeed. Provide new instructions, skip the step, or cancel the mission.
   </Accordion>
-  <Accordion title="orchestrator_escalation — orchestrator surfacing a question">
-    The orchestrator has a question it cannot answer from context. Respond in the mission chat or via the intervention card.
+  <Accordion title="Orchestrator escalation" icon="message">
+    The orchestrator has a question it cannot answer from context. Respond in the mission chat or in the intervention card.
   </Accordion>
 </AccordionGroup>
 
-### Error classification
+---
 
-All mission errors are classified into three categories:
+## Error classification
+
+Every mission error falls into one of three buckets:
 
 | Classification | Behavior |
 |---|---|
-| `recoverable` | Worker retries automatically with exponential backoff; no user action needed |
-| `user_action_needed` | Intervention raised; mission pauses the affected worker and waits for your response |
-| `fatal` | Mission stops immediately; a full error report is generated and attached as an artifact |
+| Recoverable | Worker retries with backoff; no human action |
+| User action needed | Intervention raised; affected worker waits |
+| Fatal | Mission stops; full error report attached as an artifact |
+
+This keeps transient noise from stalling a run and ensures genuinely blocking errors reach you quickly instead of quietly failing.

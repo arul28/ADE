@@ -14,6 +14,9 @@ type SessionContextMenuProps = {
   onClose: () => void;
   onCloseSession: (args: { ptyId: string; sessionId: string }) => void;
   onEndChat: (sessionId: string) => void;
+  onDeleteChat: (session: TerminalSessionSummary) => void;
+  onDeleteSession: (session: TerminalSessionSummary) => void;
+  deletingSessionId: string | null;
   onResume: (session: TerminalSessionSummary) => void;
   onCopyResumeCommand: (command: string) => void;
   onGoToLane: (session: TerminalSessionSummary) => void;
@@ -26,6 +29,9 @@ export function SessionContextMenu({
   onClose,
   onCloseSession,
   onEndChat,
+  onDeleteChat,
+  onDeleteSession,
+  deletingSessionId,
   onResume,
   onCopyResumeCommand,
   onGoToLane,
@@ -77,7 +83,7 @@ export function SessionContextMenu({
 
       {/* Menu */}
       <div
-        className="fixed z-50 min-w-[180px] rounded-lg bg-[--color-surface-overlay] border border-border/30 py-1 shadow-2xl backdrop-blur-md"
+        className="ade-liquid-glass-menu fixed z-50 min-w-[180px] py-1"
         style={{ left: x, top: y }}
         onPointerDown={(e) => e.stopPropagation()}
       >
@@ -124,6 +130,26 @@ export function SessionContextMenu({
             onClick={() => { onEndChat(session.id); onClose(); }}
           >
             End chat
+          </button>
+        ) : null}
+
+        {!isRunning && isChat ? (
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
+            disabled={deletingSessionId === session.id}
+            onClick={() => { onDeleteChat(session); onClose(); }}
+          >
+            {deletingSessionId === session.id ? "Deleting..." : "Delete chat"}
+          </button>
+        ) : null}
+
+        {!isRunning && !isChat ? (
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
+            disabled={deletingSessionId === session.id}
+            onClick={() => { onDeleteSession(session); onClose(); }}
+          >
+            {deletingSessionId === session.id ? "Deleting..." : "Delete session"}
           </button>
         ) : null}
 

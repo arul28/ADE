@@ -11,10 +11,6 @@ memoryPolicy:
   compactionThreshold: 0.7
   preCompactionFlush: true
   temporalDecayHalfLifeDays: 30
-externalMcpAccess:
-  allowAll: true
-  allowedServers: []
-  blockedServers: []
 openclawContextPolicy:
   shareMode: filtered
   blockedCategories:

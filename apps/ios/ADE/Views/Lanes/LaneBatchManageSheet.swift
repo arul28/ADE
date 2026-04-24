@@ -20,6 +20,41 @@ struct LaneBatchManageSheet: View {
     snapshots.map(\.lane.id)
   }
 
+  private var archivableLaneIds: [String] {
+    snapshots
+      .map(\.lane)
+      .filter { $0.archivedAt == nil && $0.laneType != "primary" }
+      .map(\.id)
+  }
+
+  private var laneIdsDescendantFirst: [String] {
+    let selectedIds = Set(laneIds)
+    let parentById = Dictionary(uniqueKeysWithValues: snapshots.compactMap { snapshot -> (String, String)? in
+      guard let parentLaneId = snapshot.lane.parentLaneId else { return nil }
+      return (snapshot.lane.id, parentLaneId)
+    })
+
+    func selectedAncestorDepth(for laneId: String, visited: Set<String> = []) -> Int {
+      guard !visited.contains(laneId),
+            let parentLaneId = parentById[laneId],
+            selectedIds.contains(parentLaneId)
+      else { return 0 }
+
+      var nextVisited = visited
+      nextVisited.insert(laneId)
+      return 1 + selectedAncestorDepth(for: parentLaneId, visited: nextVisited)
+    }
+
+    return laneIds.sorted { lhs, rhs in
+      let lhsDepth = selectedAncestorDepth(for: lhs)
+      let rhsDepth = selectedAncestorDepth(for: rhs)
+      if lhsDepth == rhsDepth {
+        return lhs < rhs
+      }
+      return lhsDepth > rhsDepth
+    }
+  }
+
   var body: some View {
     NavigationStack {
       ScrollView {
@@ -41,6 +76,9 @@ struct LaneBatchManageSheet: View {
                   if snapshot.lane.status.dirty {
                     LaneTypeBadge(text: "Dirty", tint: ADEColor.warning)
                   }
+                  if snapshot.lane.archivedAt != nil {
+                    LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+                  }
                 }
               }
             }
@@ -52,7 +90,7 @@ struct LaneBatchManageSheet: View {
             } label: {
               HStack {
                 Image(systemName: "archivebox.fill")
-                Text("Archive selected lanes")
+                Text("Archive active lanes")
                   .font(.subheadline.weight(.semibold))
                 Spacer()
               }
@@ -61,7 +99,7 @@ struct LaneBatchManageSheet: View {
               .background(ADEColor.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
-            .disabled(busy || laneIds.isEmpty)
+            .disabled(busy || archivableLaneIds.isEmpty)
           }
 
           GlassSection(title: "Delete") {
@@ -141,7 +179,7 @@ struct LaneBatchManageSheet: View {
     var archivedLaneIds: [String] = []
     var failures: [String] = []
 
-    for laneId in laneIds {
+    for laneId in archivableLaneIds {
       do {
         try await syncService.archiveLane(laneId)
         archivedLaneIds.append(laneId)
@@ -159,7 +197,7 @@ struct LaneBatchManageSheet: View {
       return
     }
 
-    errorMessage = "Archived \(archivedLaneIds.count)/\(laneIds.count) lanes. Failed: \(failures.joined(separator: "; "))"
+    errorMessage = "Archived \(archivedLaneIds.count)/\(archivableLaneIds.count) active lanes. Failed: \(failures.joined(separator: "; "))"
   }
 
   @MainActor
@@ -171,10 +209,7 @@ struct LaneBatchManageSheet: View {
     var deletedLaneIds: [String] = []
     var failures: [String] = []
 
-    // Sort descendant-first so children are deleted before parents.
-    let sortedIds = laneIds.sorted { lhs, rhs in
-      lhs.components(separatedBy: "/").count > rhs.components(separatedBy: "/").count
-    }
+    let sortedIds = laneIdsDescendantFirst
 
     for laneId in sortedIds {
       do {

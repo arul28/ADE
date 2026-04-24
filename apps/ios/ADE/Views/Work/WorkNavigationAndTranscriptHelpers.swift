@@ -1,0 +1,678 @@
+import SwiftUI
+import UIKit
+import AVKit
+
+struct WorkActivityTranscriptCacheEntry {
+  let fingerprint: String
+  let transcript: [WorkChatEnvelope]
+}
+
+struct WorkTerminalDisplay {
+  let text: String
+  let truncated: Bool
+}
+
+private let workTerminalDisplayMaxCharacters = 24_000
+
+/// Cheap, deterministic fingerprint for a terminal buffer. We intentionally avoid hashing the whole
+/// string on every `localStateRevision` tick — length + short head/tail windows give us >99% stability
+/// against spurious cache invalidations while still changing whenever new output actually arrives.
+func workActivityBufferFingerprint(_ buffer: String) -> String {
+  if buffer.isEmpty {
+    return "0:"
+  }
+  let count = buffer.utf8.count
+  let headLen = min(64, buffer.count)
+  let tailLen = min(64, buffer.count)
+  let head = buffer.prefix(headLen)
+  let tail = buffer.suffix(tailLen)
+  var hasher = Hasher()
+  hasher.combine(head)
+  hasher.combine(tail)
+  return "\(count):\(hasher.finalize())"
+}
+
+func workTerminalDisplay(raw: String?, fallback: String?) -> WorkTerminalDisplay {
+  let source = (raw?.isEmpty == false ? raw : fallback) ?? "No output yet."
+  let sanitized = sanitizeTerminalOutputForDisplay(source)
+  guard sanitized.count > workTerminalDisplayMaxCharacters else {
+    return WorkTerminalDisplay(text: sanitized, truncated: false)
+  }
+  return WorkTerminalDisplay(
+    text: String(sanitized.suffix(workTerminalDisplayMaxCharacters)),
+    truncated: true
+  )
+}
+
+func sanitizeTerminalOutputForDisplay(_ input: String) -> String {
+  let screen = WorkTerminalTextReplay()
+  screen.write(input)
+  return collapseDuplicatedWorkStreamTextIfNeeded(screen.text)
+}
+
+private final class WorkTerminalTextReplay {
+  private var lines: [[UnicodeScalar]] = [[]]
+  private var row = 0
+  private var column = 0
+
+  var text: String {
+    lines
+      .map { String(String.UnicodeScalarView($0)).trimmingTrailingTerminalPadding() }
+      .joined(separator: "\n")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  func write(_ input: String) {
+    let scalars = Array(input.unicodeScalars)
+    var index = scalars.startIndex
+
+    while index < scalars.endIndex {
+      let scalar = scalars[index]
+      index = scalars.index(after: index)
+
+      if scalar == "\u{001B}" {
+        consumeEscape(in: scalars, index: &index)
+        continue
+      }
+
+      switch scalar {
+      case "\n":
+        newline()
+      case "\r":
+        column = 0
+      case "\t":
+        let spaces = max(1, 4 - (column % 4))
+        for _ in 0..<spaces { put(" ") }
+      case "\u{0008}":
+        column = max(0, column - 1)
+      default:
+        if scalar.value >= 0x20 && scalar.value != 0x7F {
+          put(scalar)
+        }
+      }
+    }
+  }
+
+  private func put(_ scalar: UnicodeScalar) {
+    ensureCursor()
+    while lines[row].count < column {
+      lines[row].append(" ")
+    }
+    if column < lines[row].count {
+      lines[row][column] = scalar
+    } else {
+      lines[row].append(scalar)
+    }
+    column += 1
+  }
+
+  private func newline() {
+    row += 1
+    column = 0
+    ensureCursor()
+  }
+
+  private func ensureCursor() {
+    while lines.count <= row {
+      lines.append([])
+    }
+  }
+
+  private func consumeEscape(in scalars: [UnicodeScalar], index: inout Int) {
+    guard index < scalars.endIndex else { return }
+    let kind = scalars[index]
+    index = scalars.index(after: index)
+
+    switch kind {
+    case "[":
+      consumeCSI(in: scalars, index: &index)
+    case "]":
+      consumeOSC(in: scalars, index: &index)
+    case "c":
+      lines = [[]]
+      row = 0
+      column = 0
+    case "(", ")", "*", "+":
+      if index < scalars.endIndex {
+        index = scalars.index(after: index)
+      }
+    default:
+      break
+    }
+  }
+
+  private func consumeOSC(in scalars: [UnicodeScalar], index: inout Int) {
+    while index < scalars.endIndex {
+      let current = scalars[index]
+      index = scalars.index(after: index)
+      if current == "\u{0007}" {
+        break
+      }
+      if current == "\u{001B}", index < scalars.endIndex, scalars[index] == "\\" {
+        index = scalars.index(after: index)
+        break
+      }
+    }
+  }
+
+  private func consumeCSI(in scalars: [UnicodeScalar], index: inout Int) {
+    var body = String.UnicodeScalarView()
+    while index < scalars.endIndex {
+      let scalar = scalars[index]
+      index = scalars.index(after: index)
+      if scalar.value >= 0x40 && scalar.value <= 0x7E {
+        applyCSI(command: Character(scalar), body: String(body))
+        break
+      }
+      body.append(scalar)
+    }
+  }
+
+  private func applyCSI(command: Character, body: String) {
+    let params = body
+      .split(separator: ";", omittingEmptySubsequences: false)
+      .map { Int(String($0).trimmingCharacters(in: CharacterSet(charactersIn: "?"))) ?? 0 }
+    let first = params.first ?? 0
+
+    switch command {
+    case "A":
+      row = max(0, row - max(1, first))
+    case "B":
+      row += max(1, first)
+      ensureCursor()
+    case "C":
+      column += max(1, first)
+    case "D":
+      column = max(0, column - max(1, first))
+    case "G":
+      column = max(0, max(1, first) - 1)
+    case "H", "f":
+      row = max(0, max(1, first) - 1)
+      column = max(0, max(1, params.dropFirst().first ?? 1) - 1)
+      ensureCursor()
+    case "J":
+      if first == 2 || first == 3 {
+        lines = [[]]
+        row = 0
+        column = 0
+      }
+    case "K":
+      ensureCursor()
+      if first == 1 {
+        let space: UnicodeScalar = " "
+        let endIndex = min(column + 1, lines[row].count)
+        for index in 0..<endIndex {
+          lines[row][index] = space
+        }
+        if column >= lines[row].count {
+          while lines[row].count <= column {
+            lines[row].append(space)
+          }
+        }
+      } else if first == 2 {
+        lines[row].removeAll()
+        column = 0
+      } else if column < lines[row].count {
+        lines[row].removeSubrange(column..<lines[row].count)
+      }
+    default:
+      break
+    }
+  }
+}
+
+private extension String {
+  func trimmingTrailingTerminalPadding() -> String {
+    var result = self
+    while let last = result.unicodeScalars.last, CharacterSet.whitespaces.contains(last) {
+      result.removeLast()
+    }
+    return result
+  }
+}
+
+func collapseDuplicatedWorkStreamTextIfNeeded(_ input: String) -> String {
+  let scalars = Array(input.unicodeScalars)
+  guard scalars.count >= 12 else { return input }
+
+  func collapsedRun(_ run: ArraySlice<UnicodeScalar>) -> [UnicodeScalar] {
+    guard run.count >= 4 else { return Array(run) }
+    var duplicatePairs = 0
+    var segments = 0
+    var singletonSegments = 0
+    var hasLongDuplicateSegment = false
+    var previous: UnicodeScalar?
+    var currentSegmentLength = 0
+
+    func finishSegment() {
+      guard currentSegmentLength > 0 else { return }
+      segments += 1
+      if currentSegmentLength == 1 {
+        singletonSegments += 1
+      }
+      if currentSegmentLength >= 3 {
+        hasLongDuplicateSegment = true
+      }
+    }
+
+    for scalar in run {
+      if let previous, scalar != previous {
+        finishSegment()
+        currentSegmentLength = 0
+      }
+      if scalar == previous {
+        duplicatePairs += 1
+      }
+      currentSegmentLength += 1
+      previous = scalar
+    }
+    finishSegment()
+
+    let density = Double(duplicatePairs) / Double(max(run.count - 1, 1))
+    let mostlyDuplicated = singletonSegments == 0 || singletonSegments <= max(1, segments / 4)
+    guard duplicatePairs >= 2, density >= 0.3, mostlyDuplicated || hasLongDuplicateSegment else { return Array(run) }
+
+    var collapsed: [UnicodeScalar] = []
+    var index = run.startIndex
+    while index < run.endIndex {
+      let scalar = run[index]
+      var runEnd = run.index(after: index)
+      while runEnd < run.endIndex, run[runEnd] == scalar {
+        runEnd = run.index(after: runEnd)
+      }
+      let runLength = run.distance(from: index, to: runEnd)
+      let collapsedLength = max(1, (runLength + 1) / 2)
+      collapsed.append(contentsOf: Array(repeating: scalar, count: collapsedLength))
+      index = runEnd
+    }
+    return collapsed
+  }
+
+  var locallyCollapsed = String.UnicodeScalarView()
+  locallyCollapsed.reserveCapacity(input.unicodeScalars.count)
+  var runStart: Int?
+  for index in scalars.indices {
+    if CharacterSet.alphanumerics.contains(scalars[index]) {
+      if runStart == nil {
+        runStart = index
+      }
+      continue
+    }
+    if let start = runStart {
+      locallyCollapsed.append(contentsOf: collapsedRun(scalars[start..<index]))
+      runStart = nil
+    }
+    locallyCollapsed.append(scalars[index])
+  }
+  if let start = runStart {
+    locallyCollapsed.append(contentsOf: collapsedRun(scalars[start..<scalars.endIndex]))
+  }
+  let localResult = String(locallyCollapsed)
+  if localResult != input {
+    return collapseDuplicatedStreamPunctuation(in: localResult)
+  }
+
+  var comparablePairs = 0
+  var duplicatedAlphanumericPairs = 0
+  for index in scalars.indices.dropFirst() {
+    let scalar = scalars[index]
+    guard CharacterSet.alphanumerics.contains(scalar) else { continue }
+    comparablePairs += 1
+    if scalar == scalars[index - 1] {
+      duplicatedAlphanumericPairs += 1
+    }
+  }
+
+  guard duplicatedAlphanumericPairs >= 5 else { return input }
+  let density = Double(duplicatedAlphanumericPairs) / Double(max(comparablePairs, 1))
+  guard density >= 0.32 else { return input }
+
+  var collapsed = String.UnicodeScalarView()
+  collapsed.reserveCapacity(input.unicodeScalars.count)
+  var index = scalars.startIndex
+  while index < scalars.endIndex {
+    let scalar = scalars[index]
+    guard CharacterSet.alphanumerics.contains(scalar) else {
+      collapsed.append(scalar)
+      index = scalars.index(after: index)
+      continue
+    }
+
+    var runEnd = scalars.index(after: index)
+    while runEnd < scalars.endIndex, scalars[runEnd] == scalar {
+      runEnd = scalars.index(after: runEnd)
+    }
+    let runLength = scalars.distance(from: index, to: runEnd)
+    let collapsedLength = max(1, (runLength + 1) / 2)
+    for _ in 0..<collapsedLength {
+      collapsed.append(scalar)
+    }
+    index = runEnd
+  }
+  return String(collapsed)
+}
+
+private func collapseDuplicatedStreamPunctuation(in input: String) -> String {
+  let duplicatedPunctuation = CharacterSet(charactersIn: ",.;:!?")
+  let scalars = Array(input.unicodeScalars)
+  var collapsed = String.UnicodeScalarView()
+  collapsed.reserveCapacity(input.unicodeScalars.count)
+  var index = scalars.startIndex
+  while index < scalars.endIndex {
+    let scalar = scalars[index]
+    guard duplicatedPunctuation.contains(scalar) else {
+      collapsed.append(scalar)
+      index = scalars.index(after: index)
+      continue
+    }
+    var runEnd = scalars.index(after: index)
+    while runEnd < scalars.endIndex, scalars[runEnd] == scalar {
+      runEnd = scalars.index(after: runEnd)
+    }
+    let runLength = scalars.distance(from: index, to: runEnd)
+    // Preserve ellipses: a 3-dot run is a legitimate "..." the user typed; only halve
+    // dot-runs of 4+, which are the ones that came from streaming duplication.
+    let shouldHalve = scalar == "." ? runLength >= 4 : runLength >= 2
+    let collapsedLength = shouldHalve ? max(1, (runLength + 1) / 2) : runLength
+    collapsed.append(contentsOf: Array(repeating: scalar, count: collapsedLength))
+    index = runEnd
+  }
+  return String(collapsed)
+}
+
+func workSessionPreviewText(_ rawPreview: String?) -> String? {
+  guard let rawPreview else { return nil }
+  let trimmed = collapseDuplicatedWorkStreamTextIfNeeded(rawPreview)
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+func extractWorkNavigationTargets(from text: String) -> WorkNavigationTargets {
+  let filePattern = #"(?<![A-Za-z0-9_])(?:\.{1,2}/)?(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(?:swift|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|kts|json|yaml|yml|toml|md|mdx|txt|html|css|scss|sql|sh|bash|zsh|plist|png|jpg|jpeg|gif|webp|svg)(?::\d+)?"#
+  let prPattern = #"(?<![A-Za-z0-9])#(\d+)\b"#
+
+  var filePaths: [String] = []
+  var seenFiles = Set<String>()
+  for match in workRegexMatches(pattern: filePattern, in: text) {
+    guard let normalized = normalizedWorkReferenceFilePath(match), seenFiles.insert(normalized).inserted else { continue }
+    filePaths.append(normalized)
+  }
+
+  var pullRequestNumbers: [Int] = []
+  var seenPullRequests = Set<Int>()
+  for match in workRegexMatches(pattern: prPattern, in: text) {
+    guard let number = Int(match.dropFirst()), seenPullRequests.insert(number).inserted else { continue }
+    pullRequestNumbers.append(number)
+  }
+
+  return WorkNavigationTargets(filePaths: filePaths, pullRequestNumbers: pullRequestNumbers)
+}
+
+func workRegexMatches(pattern: String, in text: String) -> [String] {
+  guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+  let range = NSRange(location: 0, length: (text as NSString).length)
+  return regex.matches(in: text, range: range).compactMap { match in
+    Range(match.range, in: text).map { String(text[$0]) }
+  }
+}
+
+func normalizedWorkReferenceFilePath(_ rawPath: String) -> String? {
+  var candidate = rawPath.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`()[]{}<>,"))
+  guard !candidate.isEmpty else { return nil }
+  guard !candidate.contains("://") else { return nil }
+
+  if let lineNumberRange = candidate.range(of: #":\d+$"#, options: .regularExpression) {
+    candidate.removeSubrange(lineNumberRange)
+  }
+
+  if candidate.hasPrefix("./") {
+    candidate.removeFirst(2)
+  }
+
+  guard !candidate.hasPrefix("../") else { return nil }
+  return candidate
+}
+
+func normalizeWorkFileReference(_ rawPath: String, workspaceRoot: String, requestedCwd: String? = nil) -> String {
+  guard let normalized = normalizedWorkReferenceFilePath(rawPath) else { return "" }
+  let root = workspaceRoot.hasSuffix("/") ? String(workspaceRoot.dropLast()) : workspaceRoot
+
+  func normalizedRequestedCwdPath() -> String? {
+    guard let requestedCwd else { return nil }
+    let trimmed = requestedCwd.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    if trimmed.hasPrefix(root + "/") {
+      return String(trimmed.dropFirst(root.count + 1))
+    }
+    if trimmed.hasPrefix("/") {
+      return nil
+    }
+    return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+  }
+
+  if normalized.hasPrefix(root + "/") {
+    return String(normalized.dropFirst(root.count + 1))
+  }
+
+  if normalized.hasPrefix("/") {
+    return ""
+  }
+
+  if let requestedCwdPath = normalizedRequestedCwdPath(), !requestedCwdPath.isEmpty {
+    let baseURL = URL(fileURLWithPath: requestedCwdPath, isDirectory: true)
+    let resolvedURL = baseURL.appendingPathComponent(normalized).standardizedFileURL
+    let resolvedPath = resolvedURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    if resolvedPath.isEmpty || resolvedPath.hasPrefix("../") || resolvedPath.contains("/../") {
+      return ""
+    }
+    return resolvedPath
+  }
+
+  return normalized
+}
+
+func workReferenceLabel(for path: String) -> String {
+  let normalized = normalizedWorkReferenceFilePath(path) ?? path
+  let lastComponent = (normalized as NSString).lastPathComponent
+  return lastComponent.isEmpty ? normalized : lastComponent
+}
+
+func buildWorkToolCards(
+  from transcript: [WorkChatEnvelope],
+  suppressedPendingItemIds: Set<String> = []
+) -> [WorkToolCardModel] {
+  var cards: [String: WorkToolCardModel] = [:]
+  var orderedIds: [String] = []
+  for envelope in transcript {
+    switch envelope.event {
+    case .toolCall(let tool, let argsText, let itemId, _, _):
+      if suppressedPendingItemIds.contains(itemId) {
+        continue
+      }
+      if isQuestionInputToolName(tool),
+         pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) != nil {
+        continue
+      }
+      if cards[itemId] == nil {
+        orderedIds.append(itemId)
+      }
+      cards[itemId] = WorkToolCardModel(
+        id: itemId,
+        toolName: tool,
+        status: .running,
+        startedAt: envelope.timestamp,
+        completedAt: nil,
+        argsText: argsText,
+        resultText: cards[itemId]?.resultText
+      )
+    case .toolResult(let tool, let resultText, let itemId, _, _, let status):
+      let existing = cards[itemId]
+      if existing == nil {
+        orderedIds.append(itemId)
+      }
+      cards[itemId] = WorkToolCardModel(
+        id: itemId,
+        toolName: existing?.toolName ?? tool,
+        status: status,
+        startedAt: existing?.startedAt ?? envelope.timestamp,
+        completedAt: envelope.timestamp,
+        argsText: existing?.argsText,
+        resultText: resultText
+      )
+    default:
+      continue
+    }
+  }
+
+  return orderedIds.compactMap { cards[$0] }
+}
+
+func deriveWorkAgentActivities(from transcript: [WorkChatEnvelope], session: WorkAgentActivityContext) -> [WorkAgentActivity] {
+  var activeSubagents: [String: WorkAgentActivity] = [:]
+  let toolCards = buildWorkToolCards(from: transcript)
+  let runningTool = toolCards.last(where: { $0.status == .running })
+
+  for envelope in transcript {
+    switch envelope.event {
+    case .subagentStarted(let taskId, let description, _, _):
+      activeSubagents[taskId] = WorkAgentActivity(
+        sessionId: session.sessionId,
+        taskId: taskId,
+        agentName: description.isEmpty ? session.title : description,
+        toolName: nil,
+        laneName: session.laneName,
+        startedAt: envelope.timestamp,
+        detail: nil
+      )
+    case .subagentProgress(let taskId, let description, let summary, let toolName, _):
+      let existing = activeSubagents[taskId]
+      activeSubagents[taskId] = WorkAgentActivity(
+        sessionId: session.sessionId,
+        taskId: taskId,
+        agentName: description ?? existing?.agentName ?? session.title,
+        toolName: toolName ?? existing?.toolName,
+        laneName: session.laneName,
+        startedAt: existing?.startedAt ?? envelope.timestamp,
+        detail: summary
+      )
+    case .subagentResult(let taskId, _, _, _):
+      activeSubagents.removeValue(forKey: taskId)
+    default:
+      continue
+    }
+  }
+
+  let subagents = activeSubagents.values.sorted { $0.startedAt > $1.startedAt }
+  if !subagents.isEmpty {
+    return subagents
+  }
+
+  guard session.status == "active" else { return [] }
+  let latestActivityDetail = transcript.reversed().compactMap { envelope -> String? in
+    switch envelope.event {
+    case .activity(_, let detail, _): return detail
+    case .reasoning(let text, _, _, _): return text
+    case .status(_, let message, _): return message
+    default: return nil
+    }
+  }.first
+
+  return [WorkAgentActivity(
+    sessionId: session.sessionId,
+    taskId: nil,
+    agentName: session.title,
+    toolName: runningTool?.toolName,
+    laneName: session.laneName,
+    startedAt: runningTool?.startedAt ?? session.startedAt,
+    detail: latestActivityDetail
+  )]
+}
+
+func parseANSISegments(_ input: String) -> [ANSISegment] {
+  var segments: [ANSISegment] = []
+  var buffer = ""
+  var foreground: WorkANSIColor?
+  var bold = false
+  var index = input.startIndex
+
+  func flush() {
+    guard !buffer.isEmpty else { return }
+    segments.append(ANSISegment(text: buffer, foreground: foreground, bold: bold))
+    buffer = ""
+  }
+
+  while index < input.endIndex {
+    let character = input[index]
+    if character == "\u{001B}" {
+      let next = input.index(after: index)
+      guard next < input.endIndex, input[next] == "[" else {
+        index = next < input.endIndex ? input.index(after: next) : input.endIndex
+        continue
+      }
+      var commandIndex = input.index(after: next)
+      var finalCharacter: Character?
+      while commandIndex < input.endIndex {
+        let candidate = input[commandIndex]
+        if let scalar = candidate.unicodeScalars.first,
+           scalar.value >= 0x40 && scalar.value <= 0x7E {
+          finalCharacter = candidate
+          break
+        }
+        commandIndex = input.index(after: commandIndex)
+      }
+      guard let finalCharacter else {
+        index = input.endIndex
+        continue
+      }
+      guard finalCharacter == "m" else {
+        index = input.index(after: commandIndex)
+        continue
+      }
+      flush()
+      let codeString = String(input[input.index(after: next)..<commandIndex])
+      let codes = codeString.split(separator: ";").compactMap { Int($0) }
+      if codes.isEmpty {
+        foreground = nil
+        bold = false
+      }
+      for code in codes {
+        switch code {
+        case 0:
+          foreground = nil
+          bold = false
+        case 1:
+          bold = true
+        case 30, 90:
+          foreground = .black
+        case 31, 91:
+          foreground = .red
+        case 32, 92:
+          foreground = .green
+        case 33, 93:
+          foreground = .yellow
+        case 34, 94:
+          foreground = .blue
+        case 35, 95:
+          foreground = .magenta
+        case 36, 96:
+          foreground = .cyan
+        case 37, 97:
+          foreground = .white
+        case 39:
+          foreground = nil
+        case 22:
+          bold = false
+        default:
+          continue
+        }
+      }
+      index = input.index(after: commandIndex)
+      continue
+    }
+    buffer.append(character)
+    index = input.index(after: index)
+  }
+
+  flush()
+  return segments
+}

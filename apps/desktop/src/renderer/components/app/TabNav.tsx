@@ -7,6 +7,7 @@ import {
   Terminal,
   Graph,
   GitPullRequest,
+  MagnifyingGlass,
   ClockCounterClockwise,
   Robot,
   Strategy,
@@ -17,6 +18,7 @@ import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import type { GitHubStatus } from "../../../shared/types";
 
 const mainItems = [
   { to: "/work", label: "Work", icon: Terminal },
@@ -25,6 +27,7 @@ const mainItems = [
   { to: "/project", label: "Run", icon: PlayCircle },
   { to: "/graph", label: "Graph", icon: Graph },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
+  { to: "/review", label: "Review", icon: MagnifyingGlass },
   { to: "/history", label: "History", icon: ClockCounterClockwise },
   { to: "/automations", label: "Automations", icon: Robot },
   { to: "/missions", label: "Missions", icon: Strategy },
@@ -32,14 +35,44 @@ const mainItems = [
 ] as const;
 
 const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as const;
+const SIDEBAR_ICON_SIZE = 20;
+const SIDEBAR_AVATAR_SIZE_CLASS = "h-5 w-5";
 
-export function TabNav() {
+function primaryTabPath(pathname: string): string {
+  const match = mainItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`));
+  if (match) return match.to;
+  return pathname === settingsItem.to || pathname.startsWith(`${settingsItem.to}/`) ? settingsItem.to : pathname;
+}
+
+export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null }) {
   const project = useAppStore((s) => s.project);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const location = useLocation();
   const hasActiveProject = Boolean(project?.rootPath);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [avatarBroken, setAvatarBroken] = useState(false);
+  const [isPackaged, setIsPackaged] = useState(false);
+  const githubLogin = githubStatus?.userLogin || null;
+
+  useEffect(() => {
+    let cancelled = false;
+    window.ade.app.getInfo().then(
+      (info) => {
+        if (!cancelled) setIsPackaged(Boolean(info.isPackaged));
+      },
+      () => {
+        if (!cancelled) setIsPackaged(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setAvatarBroken(false);
+  }, [githubLogin]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -56,7 +89,7 @@ export function TabNav() {
   const renderItem = (
     it: { to: string; label: string; icon: React.ElementType },
   ) => {
-    const isActive = location.pathname === it.to;
+    const isActive = primaryTabPath(location.pathname) === it.to;
     const isActiveAllowed = (!showWelcome && hasActiveProject) || it.to === "/project";
 
     if (!isActiveAllowed) {
@@ -70,7 +103,7 @@ export function TabNav() {
           <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
             <span className="relative inline-flex items-center">
               <it.icon
-                size={18}
+                size={SIDEBAR_ICON_SIZE}
                 weight="regular"
                 className={cn("ade-shell-sidebar-icon shrink-0 transition-colors duration-150")}
               />
@@ -109,7 +142,7 @@ export function TabNav() {
         <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
           <span className="relative inline-flex items-center">
             <it.icon
-              size={18}
+              size={SIDEBAR_ICON_SIZE}
               weight="regular"
               className={cn(
                 "ade-shell-sidebar-icon shrink-0 transition-colors duration-150",
@@ -130,6 +163,14 @@ export function TabNav() {
                     : "ade-status-dot-active animate-spin",
                 )}
               />
+            ) : null}
+            {it.to === "/missions" && isPackaged ? (
+              <span
+                title="Missions are coming soon in production builds"
+                className="absolute -right-2 -top-1 rounded border border-emerald-300/40 bg-emerald-400 px-1 font-mono text-[7px] font-bold uppercase leading-[10px] text-[#07110B]"
+              >
+                Soon
+              </span>
             ) : null}
           </span>
         </span>
@@ -167,6 +208,23 @@ export function TabNav() {
 
         {/* Spacer pushes settings to bottom */}
         <div className="mt-auto" />
+
+        {/* GitHub profile avatar — only shows when token is stored, a login is known, and the image loads */}
+        {githubLogin && !avatarBroken ? (
+          <div className="ade-shell-sidebar-item group relative flex w-full items-center">
+            <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
+              <img
+                src={`https://github.com/${encodeURIComponent(githubLogin)}.png?size=64`}
+                alt=""
+                title={githubLogin}
+                onError={() => setAvatarBroken(true)}
+                className={cn(SIDEBAR_AVATAR_SIZE_CLASS, "rounded-full object-cover")}
+                draggable={false}
+              />
+            </span>
+            <span className="ade-tab-label whitespace-nowrap">{githubLogin}</span>
+          </div>
+        ) : null}
 
         {/* Divider line before settings */}
         <div className="ade-shell-sidebar-separator mx-2 mb-1 border-t" />

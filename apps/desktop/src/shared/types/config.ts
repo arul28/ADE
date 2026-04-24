@@ -6,7 +6,6 @@ import type { ProviderMode, ModelId } from "./core";
 import type { AgentChatModelInfo } from "./chat";
 import type { LaneType } from "./lanes";
 import type { MissionExecutionPolicy, MissionPermissionConfig, MissionProviderPermissions } from "./missions";
-import type { ExternalMcpMissionSelection } from "./externalMcp";
 import type { MissionModelConfig, ModelConfig } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
@@ -37,6 +36,7 @@ export type ProcessDefinition = {
   command: string[];
   cwd: string;
   env: Record<string, string>;
+  groupIds: string[];
   autostart: boolean;
   restart: ProcessRestartPolicy;
   gracefulShutdownMs: number;
@@ -49,6 +49,11 @@ export type StackButtonDefinition = {
   name: string;
   processIds: string[];
   startOrder: StackStartOrder;
+};
+
+export type ProcessGroupDefinition = {
+  id: string;
+  name: string;
 };
 
 export type TestSuiteDefinition = {
@@ -67,6 +72,7 @@ export type ConfigProcessDefinition = {
   command?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  groupIds?: string[];
   autostart?: boolean;
   restart?: ProcessRestartPolicy;
   gracefulShutdownMs?: number;
@@ -79,6 +85,11 @@ export type ConfigStackButtonDefinition = {
   name?: string;
   processIds?: string[];
   startOrder?: StackStartOrder;
+};
+
+export type ConfigProcessGroupDefinition = {
+  id: string;
+  name?: string;
 };
 
 export type ConfigTestSuiteDefinition = {
@@ -528,22 +539,10 @@ export type OpenCodeRuntimeEntry = {
   lastUsedAt: number;
 };
 
-export type OpenCodeDynamicMcpDiagnostics = {
-  registrationAttempts: number;
-  successfulRegistrations: number;
-  retryCount: number;
-  fallbackCount: number;
-  lastFallbackAt: string | null;
-  lastFallbackOwnerKind: OpenCodeRuntimeOwnerKind | null;
-  lastFallbackOwnerId: string | null;
-  lastFallbackError: string | null;
-};
-
 export type OpenCodeRuntimeSnapshot = {
   sharedCount: number;
   dedicatedCount: number;
   entries: OpenCodeRuntimeEntry[];
-  dynamicMcp: OpenCodeDynamicMcpDiagnostics;
 };
 
 export type RuntimeDiagnosticsEvent = {
@@ -563,10 +562,23 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "commit",
   "git.commit",
   "git.push",
+  // Legacy PR trigger names — kept as aliases for back-compat. New rules
+  // should prefer the `github.pr_*` canonical names below.
   "git.pr_opened",
   "git.pr_updated",
   "git.pr_merged",
   "git.pr_closed",
+  "github.pr_opened",
+  "github.pr_updated",
+  "github.pr_merged",
+  "github.pr_closed",
+  "github.pr_commented",
+  "github.pr_review_submitted",
+  "github.issue_opened",
+  "github.issue_edited",
+  "github.issue_closed",
+  "github.issue_labeled",
+  "github.issue_commented",
   "file.change",
   "lane.created",
   "lane.archived",
@@ -580,12 +592,41 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "webhook",
 ] as const;
 export type AutomationTriggerType = (typeof AUTOMATION_TRIGGER_TYPES)[number];
+
+/** Legacy GitHub PR trigger aliases → canonical `github.pr_*` names. */
+export const LEGACY_GITHUB_PR_TRIGGER_ALIASES: Readonly<Record<string, AutomationTriggerType>> = {
+  "git.pr_opened": "github.pr_opened",
+  "git.pr_updated": "github.pr_updated",
+  "git.pr_merged": "github.pr_merged",
+  "git.pr_closed": "github.pr_closed",
+};
+
 export type AutomationActionType =
   | "agent-session"
   | "launch-mission"
   | "predict-conflicts"
   | "run-tests"
-  | "run-command";
+  | "run-command"
+  | "ade-action";
+
+/**
+ * Configuration for an `ade-action` automation action. Points at a domain +
+ * action registered in the shared ADE action registry. `args` may contain
+ * `{{trigger.*}}` placeholders that are resolved from the trigger context at
+ * dispatch time.
+ */
+export type RunAdeActionConfig = {
+  domain: string;
+  action: string;
+  args?: Record<string, unknown> | unknown[];
+  /**
+   * Optional explicit mapping of placeholder keys → trigger-context paths,
+   * e.g. `{ issueNumber: "trigger.issue.number" }`. Placeholders embedded
+   * inside `args` strings (`"{{trigger.issue.number}}"`) are resolved
+   * independently.
+   */
+  resolvers?: Record<string, string>;
+};
 
 export type AutomationMode = "review" | "fix" | "monitor";
 
@@ -607,8 +648,7 @@ export type AutomationToolFamily =
   | "linear"
   | "browser"
   | "memory"
-  | "mission"
-  | "external-mcp";
+  | "mission";
 
 export type AutomationContextSourceType =
   | "project-memory"
@@ -648,9 +688,14 @@ export type AutomationTrigger = {
   targetBranch?: string;
   event?: string;
   author?: string;
+  authors?: string[];
   labels?: string[];
   paths?: string[];
   keywords?: string[];
+  /** Regex applied to the title of an issue/PR. */
+  titleRegex?: string;
+  /** Regex applied to the body of an issue/PR. */
+  bodyRegex?: string;
   namePattern?: string;
   project?: string;
   team?: string;
@@ -659,6 +704,8 @@ export type AutomationTrigger = {
   changedFields?: string[];
   draftState?: "draft" | "ready" | "any";
   secretRef?: string;
+  /** For `github.*` triggers: restrict to a specific repository. */
+  repo?: string;
   activeHours?: AutomationActiveHours;
 };
 
@@ -671,6 +718,15 @@ export type AutomationAction = {
   continueOnFailure?: boolean;
   timeoutMs?: number;
   retry?: number;
+  /** Configuration payload for actions of kind `ade-action`. */
+  adeAction?: RunAdeActionConfig;
+  /**
+   * Prompt + session title for agent-session actions embedded inside a
+   * multi-step built-in chain. Not used when the rule's `execution.kind` is
+   * `"agent-session"` (that path reads `rule.prompt` / `execution.session.title`).
+   */
+  prompt?: string;
+  sessionTitle?: string;
 };
 
 export type AutomationExecutionKind = "agent-session" | "mission" | "built-in";
@@ -741,6 +797,8 @@ export type AutomationOutputs = {
   notificationChannel?: string | null;
 };
 
+/** @deprecated Review/verification gate is no longer surfaced in the UI; kept
+ * for YAML compatibility so existing rules still load. */
 export type AutomationVerification = {
   verifyBeforePublish: boolean;
   mode?: "intervention" | "dry-run";
@@ -760,15 +818,22 @@ export type AutomationRule = {
   permissionConfig?: MissionPermissionConfig;
   templateId?: string;
   prompt?: string;
+  /** @deprecated Review profile is no longer surfaced in the UI. */
   reviewProfile: AutomationReviewProfile;
+  /** @deprecated Tool palette is no longer surfaced in the UI. */
   toolPalette: AutomationToolFamily[];
+  /** @deprecated Replaced by `includeProjectContext` in the UI. */
   contextSources: AutomationContextSource[];
+  /** @deprecated Replaced by `includeProjectContext` in the UI. */
   memory: AutomationMemoryConfig;
   guardrails: AutomationGuardrails;
   outputs: AutomationOutputs;
+  /** @deprecated Review/verification gate no longer surfaced in the UI. */
   verification: AutomationVerification;
   billingCode: string;
   queueStatus?: AutomationRunQueueStatus;
+  /** Single collapsed toggle that replaces the legacy memory/context-source knobs. */
+  includeProjectContext?: boolean;
   /** @deprecated Legacy compatibility shim for action-list surfaces. */
   actions: AutomationAction[];
   legacy?: {
@@ -799,6 +864,7 @@ export type ConfigAutomationRule = {
   verification?: AutomationVerification;
   billingCode?: string;
   queueStatus?: AutomationRunQueueStatus;
+  includeProjectContext?: boolean;
   trigger?: AutomationTrigger;
   actions?: AutomationAction[];
   enabled?: boolean;
@@ -822,6 +888,11 @@ export type AiTaskRoutingKey =
   | "narrative"
   | "pr_description"
   | "terminal_summary"
+  | "session_title"
+  | "session_summary"
+  | "handoff_summary"
+  | "continuity_summary"
+  | "context_compaction"
   | "mission_planning"
   | "initial_context";
 
@@ -1009,7 +1080,6 @@ export type AiPermissionSettings = {
   inProcess?: AiInProcessPermissionSettings;
   /** Per-provider permission config (preferred over cli/inProcess for missions). */
   providers?: MissionProviderPermissions;
-  externalMcp?: ExternalMcpMissionSelection;
 };
 
 export type WorkerSafetyPolicy = {
@@ -1088,12 +1158,6 @@ export type AiChatConfig = {
   defaultProvider?: "codex" | "claude" | "cursor" | "opencode" | "last_used";
   defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
   sendOnEnter?: boolean;
-  /** @deprecated Use ai.sessionIntelligence.titles instead */
-  autoTitleEnabled?: boolean;
-  /** @deprecated Use ai.sessionIntelligence.titles.modelId instead */
-  autoTitleModelId?: ModelId;
-  /** @deprecated Use ai.sessionIntelligence.titles.refreshOnComplete instead */
-  autoTitleRefreshOnComplete?: boolean;
   /** Reasoning effort for auto-title generation */
   autoTitleReasoningEffort?: string | null;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
@@ -1101,6 +1165,12 @@ export type AiChatConfig = {
   sessionBudgetUsd?: number;
   /** Default permission mode for new OpenCode/API-model chat sessions */
   opencodePermissionMode?: AiInProcessPermissionMode;
+  /**
+   * Auto-allow the MCP permission gate for the ADE `ask_user` tool so the
+   * inline question card surfaces immediately instead of being shadowed by an
+   * "Allow the ade MCP server to run tool ask_user?" prompt. Defaults to true.
+   */
+  autoAllowAskUser?: boolean;
 };
 export type AiConfig = {
   mode?: ProviderMode;
@@ -1117,13 +1187,38 @@ export type AiConfig = {
   apiKeys?: Record<string, string>;
   localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
-  mcpServers?: Record<string, unknown>;
   /** Per-feature model overrides, e.g. { mission_planning: "claude-sonnet-4-6" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
   /** Per-feature reasoning effort overrides */
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   /** Unified title + summary intelligence config for all session types */
   sessionIntelligence?: SessionIntelligenceConfig;
+};
+
+/**
+ * Mobile push notification configuration. The `.p8` key itself is never
+ * stored in config — it lives in an Electron `safeStorage`-encrypted blob
+ * under `userData/apns.key.enc`. Only metadata needed to reconstruct the
+ * APNs JWT sits here.
+ */
+export type NotificationApnsConfig = {
+  enabled: boolean;
+  /** Apple Developer Key ID (10-char). */
+  keyId?: string;
+  /** Apple Developer Team ID (10-char). */
+  teamId?: string;
+  /** iOS app bundle id, e.g. `com.ade.ios`. */
+  bundleId?: string;
+  env: "sandbox" | "production";
+  /**
+   * Set to `true` once a `.p8` has been saved to the encrypted blob.
+   * The config does NOT carry the key bytes themselves.
+   */
+  keyStored?: boolean;
+};
+
+export type NotificationsConfig = {
+  apns?: NotificationApnsConfig;
 };
 
 export type AiIntegrationStatus = {
@@ -1149,6 +1244,7 @@ export type ProjectConfigFile = {
   version?: number;
   processes?: ConfigProcessDefinition[];
   stackButtons?: ConfigStackButtonDefinition[];
+  processGroups?: ConfigProcessGroupDefinition[];
   testSuites?: ConfigTestSuiteDefinition[];
   laneOverlayPolicies?: ConfigLaneOverlayPolicy[];
   automations?: ConfigAutomationRule[];
@@ -1172,6 +1268,8 @@ export type ProjectConfigFile = {
   linearSync?: LinearSyncConfig;
   /** Event-based checklist for context doc auto-regeneration */
   contextRefreshEvents?: import("./packs").ContextRefreshEvents;
+  /** Mobile push notification configuration (APNs). */
+  notifications?: NotificationsConfig;
 };
 
 export type ProjectConfigCandidate = {
@@ -1183,6 +1281,7 @@ export type EffectiveProjectConfig = {
   version: number;
   processes: ProcessDefinition[];
   stackButtons: StackButtonDefinition[];
+  processGroups: ProcessGroupDefinition[];
   testSuites: TestSuiteDefinition[];
   laneOverlayPolicies: LaneOverlayPolicy[];
   automations: AutomationRule[];
@@ -1213,6 +1312,7 @@ export type EffectiveProjectConfig = {
       claudeProjectsRoot?: string;
     };
   };
+  notifications?: NotificationsConfig;
 };
 
 export type ProjectConfigValidationIssue = {
@@ -1254,6 +1354,7 @@ export type ProjectConfigDiff = {
 };
 
 export type ProcessRuntime = {
+  runId: string;
   laneId: string;
   processId: string;
   status: ProcessRuntimeStatus;
@@ -1275,6 +1376,7 @@ export type ProcessRuntime = {
 /** Not directly imported by consumers, but used structurally via the ProcessEvent union (ev.type === "log"). */
 export type ProcessLogEvent = {
   type: "log";
+  runId: string;
   laneId: string;
   processId: string;
   stream: "stdout" | "stderr";
@@ -1322,6 +1424,7 @@ export type TestEvent = TestRunEvent | TestLogEvent;
 export type ProcessActionArgs = {
   laneId: string;
   processId: string;
+  runId?: string;
 };
 
 export type ProcessStackArgs = {
@@ -1332,6 +1435,7 @@ export type ProcessStackArgs = {
 export type GetProcessLogTailArgs = {
   laneId: string;
   processId: string;
+  runId?: string;
   maxBytes?: number;
 };
 

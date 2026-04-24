@@ -135,7 +135,7 @@ describe("sessionService resume metadata", () => {
         targetId: null,
         launch: {
           permissionMode: "edit",
-          codexApprovalPolicy: "on-failure",
+          codexApprovalPolicy: "untrusted",
           codexSandbox: "workspace-write",
           codexConfigSource: "flags",
         },
@@ -144,7 +144,7 @@ describe("sessionService resume metadata", () => {
 
     const created = service.get("session-2");
     expect(created?.resumeCommand).toBe(
-      "codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume",
+      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume",
     );
 
     service.setResumeCommand("session-2", "codex resume thread-1");
@@ -156,13 +156,13 @@ describe("sessionService resume metadata", () => {
       permissionMode: "edit",
       launch: {
         permissionMode: "edit",
-        codexApprovalPolicy: "on-failure",
+        codexApprovalPolicy: "untrusted",
         codexSandbox: "workspace-write",
         codexConfigSource: "flags",
       },
     });
     expect(resumed?.resumeCommand).toBe(
-      "codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume thread-1",
+      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-1",
     );
 
     activeDisposers.push(async () => db.close());
@@ -197,7 +197,7 @@ describe("sessionService resume metadata", () => {
       },
     });
 
-    service.setResumeCommand("session-2b", "codex --no-alt-screen --full-auto resume thread-full-auto");
+    service.setResumeCommand("session-2b", "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-full-auto");
     const resumed = service.get("session-2b");
     expect(resumed?.resumeMetadata).toEqual({
       provider: "codex",
@@ -211,7 +211,33 @@ describe("sessionService resume metadata", () => {
         codexConfigSource: "flags",
       },
     });
-    expect(resumed?.resumeCommand).toBe("codex --no-alt-screen --full-auto resume thread-full-auto");
+    expect(resumed?.resumeCommand).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-full-auto");
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("hard deletes a stored session row", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-delete",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Disposable chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-delete.log",
+      toolType: "opencode-chat",
+    });
+
+    expect(service.get("session-delete")?.id).toBe("session-delete");
+    expect(service.deleteSession("session-delete")).toBe(true);
+    expect(service.get("session-delete")).toBeNull();
+    expect(service.deleteSession("session-delete")).toBe(false);
 
     activeDisposers.push(async () => db.close());
   });
@@ -297,6 +323,40 @@ describe("sessionService resume metadata", () => {
     unsubscribe();
 
     expect(events).toEqual(["meta-updated:session-4"]);
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("reconciles stale running chat sessions when no exclusions are provided", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-chat-stale",
+      laneId: "lane-1",
+      ptyId: "pty-chat-stale",
+      tracked: true,
+      title: "Claude chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-chat-stale.log",
+      toolType: "claude-chat",
+    });
+
+    const reconciled = service.reconcileStaleRunningSessions({
+      endedAt: "2026-03-17T00:20:00.000Z",
+      status: "disposed",
+    });
+
+    expect(reconciled).toBe(1);
+    expect(service.get("session-chat-stale")).toEqual(expect.objectContaining({
+      id: "session-chat-stale",
+      ptyId: null,
+      status: "disposed",
+      endedAt: "2026-03-17T00:20:00.000Z",
+    }));
 
     activeDisposers.push(async () => db.close());
   });

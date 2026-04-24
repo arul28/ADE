@@ -26,9 +26,16 @@ import type {
   AutoRebaseLaneStatus,
   AutoRebaseEventPayload,
   PrConvergenceStatePatch,
+  PrReviewThread,
+  PrDeployment,
+  PrAiSummary,
 } from "../../../../shared/types";
+import type { PrTimelineFilters } from "../shared/PrTimeline";
+import { DEFAULT_PR_TIMELINE_FILTERS } from "../shared/PrTimeline";
 import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { getModelById } from "../../../../shared/modelRegistry";
+import { parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
+import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
@@ -58,6 +65,9 @@ type PrsState = {
   detailChecks: PrCheck[];
   detailReviews: PrReview[];
   detailComments: PrComment[];
+  detailReviewThreads: PrReviewThread[];
+  detailDeployments: PrDeployment[];
+  detailAiSummary: PrAiSummary | null;
   detailBusy: boolean;
 
   // Rebase state
@@ -78,6 +88,12 @@ type PrsState = {
   resolverReasoningLevel: string;
   resolverPermissionMode: AiPermissionMode;
   resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
+
+  // Timeline + rails (PRs tab redesign)
+  prsTimelineRailsEnabled: boolean;
+  dismissedAiSummaries: Record<string, boolean>;
+  timelineFiltersByPrId: Record<string, PrTimelineFilters>;
+  viewerLogin: string | null;
 };
 
 type PrsContextValue = PrsState & {
@@ -96,6 +112,12 @@ type PrsContextValue = PrsState & {
   saveConvergenceState: (prId: string, state: PrConvergenceStatePatch) => Promise<PrConvergenceState>;
   resetConvergenceState: (prId: string) => Promise<void>;
   refresh: () => Promise<void>;
+
+  // Timeline + rails controls
+  setPrsTimelineRailsEnabled: (enabled: boolean) => void;
+  setTimelineFilters: (prId: string, filters: PrTimelineFilters) => void;
+  setAiSummaryDismissed: (prId: string, dismissed: boolean) => void;
+  regeneratePrAiSummary: (prId: string) => Promise<void>;
 };
 
 const PrsContext = createContext<PrsContextValue | null>(null);
@@ -103,6 +125,38 @@ const PrsContext = createContext<PrsContextValue | null>(null);
 const LS_MODEL_KEY = "ade:prs:resolverModel";
 const LS_REASONING_KEY = "ade:prs:resolverReasoningLevel";
 const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
+const LS_TIMELINE_RAILS_KEY = "ade:prs:timelineRailsEnabled";
+const LS_DISMISSED_SUMMARIES_KEY = "ade:prs:dismissedAiSummaries";
+const LS_TIMELINE_FILTERS_KEY = "ade:prs:timelineFiltersByPrId";
+
+function readBoolLs(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
+function readJsonLs<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonLs(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* ignore */
+  }
+}
 
 type ResolverPermissionPreferences = {
   claude: AiPermissionMode;
@@ -158,22 +212,41 @@ function readPersistedReasoningLevel(): string {
   return "medium";
 }
 
-function readInitialTab(): PrTab {
+function readInitialRouteState(): {
+  activeTab: PrTab;
+  selectedPrId: string | null;
+  selectedQueueGroupId: string | null;
+  selectedRebaseItemId: string | null;
+} {
   try {
-    const params = new URLSearchParams(window.location.search);
-    const tab = params.get("tab");
-    if (tab === "normal" || tab === "queue" || tab === "integration" || tab === "rebase") return tab;
+    const route = parsePrsRouteState({
+      search: window.location.search,
+      hash: window.location.hash,
+    });
+    const resolved = resolvePrsActiveTab(route);
+    const activeTab: PrTab = resolved.isWorkflowRoute
+      ? (resolved.effectiveWorkflow ?? "integration")
+      : "normal";
+    return {
+      activeTab,
+      selectedPrId: !resolved.isWorkflowRoute ? route.prId : null,
+      selectedQueueGroupId: resolved.effectiveWorkflow === "queue" ? route.queueGroupId : null,
+      // Mirror PRsPage's resolver so the shape of this id matches what the
+      // rebase UI later expects. rebaseNeeds are empty at provider mount, so
+      // this returns the bare lane id; PRsPage's syncFromLocation effect runs
+      // the same resolver again once needs load and upgrades it to the
+      // canonical need-item key.
+      selectedRebaseItemId: resolved.effectiveWorkflow === "rebase"
+        ? resolveRouteRebaseSelection({ rebaseNeeds: [], routeItemId: route.laneId })
+        : null,
+    };
   } catch { /* ignore */ }
-  return "normal";
-}
-
-function readInitialPrId(): string | null {
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const prId = params.get("prId");
-    if (prId && prId.trim().length > 0) return prId.trim();
-  } catch { /* ignore */ }
-  return null;
+  return {
+    activeTab: "normal",
+    selectedPrId: null,
+    selectedQueueGroupId: null,
+    selectedRebaseItemId: null,
+  };
 }
 
 function requirePrId(prId: string): string {
@@ -217,13 +290,18 @@ function diffPrIds(prev: PrWithConflicts[], next: PrWithConflicts[]): string[] {
 }
 
 export function PrsProvider({ children }: { children: React.ReactNode }) {
-  const [activeTab, setActiveTab] = useState<PrTab>(readInitialTab);
+  // Compute initial route state exactly once per provider mount. Reading
+  // window.location + running parsePrsRouteState/resolvePrsActiveTab on every
+  // render would be wasteful; useMemo with empty deps captures it once so all
+  // four useState calls below share a single computation.
+  const initialRouteState = useMemo(() => readInitialRouteState(), []);
+  const [activeTab, setActiveTab] = useState<PrTab>(initialRouteState.activeTab);
   const [prs, setPrs] = useState<PrWithConflicts[]>([]);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const [mergeContextByPrId, setMergeContextByPrId] = useState<Record<string, PrMergeContext>>({});
-  const [selectedPrId, setSelectedPrId] = useState<string | null>(readInitialPrId);
-  const [selectedQueueGroupId, setSelectedQueueGroupId] = useState<string | null>(null);
-  const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(null);
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(initialRouteState.selectedPrId);
+  const [selectedQueueGroupId, setSelectedQueueGroupId] = useState<string | null>(initialRouteState.selectedQueueGroupId);
+  const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(initialRouteState.selectedRebaseItemId);
   const [mergeMethod, setMergeMethod] = useState<MergeMethod>("squash");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -233,7 +311,62 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const [detailChecks, setDetailChecks] = useState<PrCheck[]>([]);
   const [detailReviews, setDetailReviews] = useState<PrReview[]>([]);
   const [detailComments, setDetailComments] = useState<PrComment[]>([]);
+  const [detailReviewThreads, setDetailReviewThreads] = useState<PrReviewThread[]>([]);
+  const [detailDeployments, setDetailDeployments] = useState<PrDeployment[]>([]);
+  const [detailAiSummary, setDetailAiSummary] = useState<PrAiSummary | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
+  const [viewerLogin, setViewerLogin] = useState<string | null>(null);
+
+  // Timeline + rails (new)
+  const [prsTimelineRailsEnabled, setPrsTimelineRailsEnabledRaw] = useState<boolean>(
+    () => readBoolLs(LS_TIMELINE_RAILS_KEY, true),
+  );
+  const [dismissedAiSummaries, setDismissedAiSummaries] = useState<Record<string, boolean>>(
+    () => readJsonLs<Record<string, boolean>>(LS_DISMISSED_SUMMARIES_KEY, {}),
+  );
+  const [timelineFiltersByPrId, setTimelineFiltersByPrId] = useState<Record<string, PrTimelineFilters>>(
+    () => readJsonLs<Record<string, PrTimelineFilters>>(LS_TIMELINE_FILTERS_KEY, {}),
+  );
+
+  const setPrsTimelineRailsEnabled = useCallback((enabled: boolean) => {
+    setPrsTimelineRailsEnabledRaw(enabled);
+    try {
+      localStorage.setItem(LS_TIMELINE_RAILS_KEY, enabled ? "true" : "false");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const setTimelineFilters = useCallback((prId: string, filters: PrTimelineFilters) => {
+    setTimelineFiltersByPrId((prev) => {
+      const next = { ...prev, [prId]: filters };
+      writeJsonLs(LS_TIMELINE_FILTERS_KEY, next);
+      return next;
+    });
+  }, []);
+
+  const setAiSummaryDismissed = useCallback((prId: string, dismissed: boolean) => {
+    setDismissedAiSummaries((prev) => {
+      if (Boolean(prev[prId]) === dismissed) return prev;
+      const next = { ...prev };
+      if (dismissed) next[prId] = true;
+      else delete next[prId];
+      writeJsonLs(LS_DISMISSED_SUMMARIES_KEY, next);
+      return next;
+    });
+  }, []);
+
+  const regeneratePrAiSummary = useCallback(async (prId: string) => {
+    const fn = window.ade?.prs?.regenerateAiSummary;
+    if (typeof fn !== "function") return;
+    try {
+      const summary = await fn(prId);
+      if (selectedPrIdRef.current !== prId) return;
+      setDetailAiSummary(summary);
+    } catch (err) {
+      console.warn("[PrsContext] regenerateAiSummary failed:", err);
+    }
+  }, []);
 
   // Rebase state
   const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>([]);
@@ -511,6 +644,23 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     refresh();
   }, [refresh]);
 
+  // Resolve viewer login once from the GitHub snapshot (best-effort).
+  useEffect(() => {
+    let cancelled = false;
+    const fetchSnap = window.ade?.prs?.getGitHubSnapshot;
+    if (typeof fetchSnap !== "function") return;
+    fetchSnap()
+      .then((snap) => {
+        if (!cancelled && snap?.viewerLogin) setViewerLogin(snap.viewerLogin);
+      })
+      .catch(() => {
+        /* non-fatal */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Silently refresh detail data for the given PR (no loading state).
   // Returns early if a fetch is already in progress or the PR is no longer selected.
   const rateLimitedUntilRef = React.useRef(0);
@@ -586,6 +736,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setDetailChecks([]);
       setDetailReviews([]);
       setDetailComments([]);
+      setDetailReviewThreads([]);
+      setDetailDeployments([]);
+      setDetailAiSummary(null);
       return;
     }
 
@@ -663,6 +816,50 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         detailFetchInProgress.current = false;
         if (!cancelled) setDetailBusy(false);
       });
+
+    // Progressive secondary fetch (review threads, deployments, AI summary) — yields
+    // to the main paint so the primary header + checks render first.
+    setDetailReviewThreads([]);
+    setDetailDeployments([]);
+    setDetailAiSummary(null);
+    const yieldToPaint = () =>
+      new Promise<void>((resolve) => {
+        const ric = (window as unknown as {
+          requestIdleCallback?: (cb: () => void) => void;
+        }).requestIdleCallback;
+        if (typeof ric === "function") ric(() => resolve());
+        else setTimeout(resolve, 0);
+      });
+    (async () => {
+      const api = window.ade?.prs;
+      const steps: Array<[string, () => Promise<void>]> = [
+        ["getReviewThreads", async () => {
+          if (typeof api?.getReviewThreads !== "function") return;
+          const threads = await api.getReviewThreads(prId);
+          if (!cancelled && selectedPrIdRef.current === prId) setDetailReviewThreads(threads);
+        }],
+        ["getDeployments", async () => {
+          if (typeof api?.getDeployments !== "function") return;
+          const deployments = await api.getDeployments(prId);
+          if (!cancelled && selectedPrIdRef.current === prId) setDetailDeployments(deployments);
+        }],
+        ["getAiSummary", async () => {
+          if (typeof api?.getAiSummary !== "function") return;
+          const summary = await api.getAiSummary(prId);
+          if (!cancelled && selectedPrIdRef.current === prId) setDetailAiSummary(summary);
+        }],
+      ];
+      for (const [name, step] of steps) {
+        if (cancelled) return;
+        await yieldToPaint();
+        if (cancelled) return;
+        try {
+          await step();
+        } catch (err) {
+          console.warn(`[PrsContext] ${name} failed:`, err);
+        }
+      }
+    })();
 
     // After the initial fetch, poll every 60 seconds for fresh detail data.
     // GitHub rate limit is 5000/hour (~83/min) and each detail refresh uses ~10 API calls,
@@ -808,6 +1005,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailChecks,
       detailReviews,
       detailComments,
+      detailReviewThreads,
+      detailDeployments,
+      detailAiSummary,
       detailBusy,
       rebaseNeeds,
       autoRebaseStatuses,
@@ -818,6 +1018,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       resolverReasoningLevel,
       resolverPermissionMode: resolverPermissions[resolvePermissionFamilyForModel(resolverModel)],
       resolverSessionsByContextKey,
+      prsTimelineRailsEnabled,
+      dismissedAiSummaries,
+      timelineFiltersByPrId,
+      viewerLogin,
       setActiveTab,
       setSelectedPrId,
       setSelectedQueueGroupId,
@@ -833,6 +1037,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       saveConvergenceState,
       resetConvergenceState,
       refresh,
+      setPrsTimelineRailsEnabled,
+      setTimelineFilters,
+      setAiSummaryDismissed,
+      regeneratePrAiSummary,
     }),
     // Note: setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId,
     // setMergeMethod, and setInlineTerminal are intentionally excluded from this dependency
@@ -854,6 +1062,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailChecks,
       detailReviews,
       detailComments,
+      detailReviewThreads,
+      detailDeployments,
+      detailAiSummary,
       detailBusy,
       rebaseNeeds,
       autoRebaseStatuses,
@@ -864,6 +1075,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       resolverReasoningLevel,
       resolverPermissions,
       resolverSessionsByContextKey,
+      prsTimelineRailsEnabled,
+      dismissedAiSummaries,
+      timelineFiltersByPrId,
+      viewerLogin,
       setResolverModel,
       setResolverReasoningLevel,
       setResolverPermissionMode,
@@ -873,6 +1088,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       saveConvergenceState,
       resetConvergenceState,
       refresh,
+      setPrsTimelineRailsEnabled,
+      setTimelineFilters,
+      setAiSummaryDismissed,
+      regeneratePrAiSummary,
     ],
   );
 

@@ -1,0 +1,34 @@
+{
+  "featureId": "work-mobile-session-detail-and-linked-actions",
+  "reviewedAt": "2026-04-16T15:01:25Z",
+  "commitId": "4e8b956ac75dffd8e99d91fc0107f2e4e32cd78b",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The refactor successfully decomposes the giant Work tab into focused files and preserves most existing session-detail behavior, but the newly advertised linked-navigation work is incomplete. The added lane action from session detail never opens the target lane, and file references can still jump into the wrong Files workspace instead of failing explicitly when the session lane workspace is missing.",
+    "issues": [
+      {
+        "file": "apps/ios/ADE/Views/Work/WorkSessionDestinationView+Actions.swift",
+        "line": 220,
+        "severity": "blocking",
+        "description": "The new session-detail lane action only writes `requestedLaneNavigation` (`WorkSessionDestinationView+Actions.swift:218-220`), and the root shell merely switches to the Lanes tab when that request changes (`App/ContentView.swift:67-69`). Unlike Files and PRs, which consume their navigation requests to open the requested destination (`Views/FilesTabView.swift:533-550`, `Views/PRsTabView.swift:609-616`), `LanesTabView.swift` has no corresponding handler, so tapping the new `Open lane` button from session detail just lands on the generic Lanes list instead of opening the related lane. That means the feature does not satisfy the promised linked lane action behavior from `VAL-WORK-007` / `VAL-CROSS-004`."
+      },
+      {
+        "file": "apps/ios/ADE/Views/Work/WorkSessionDestinationView+Actions.swift",
+        "line": 176,
+        "severity": "blocking",
+        "description": "When a file reference is opened, the code falls back to `workspaces.first` if there is no workspace whose `laneId` matches the session lane (`WorkSessionDestinationView+Actions.swift:175-177`). In that case the user is silently routed into an arbitrary Files workspace instead of getting the explicit failure state the mission contract requires. This can open the wrong file context and violates the expected \u201ccorrect workspace or explicit error\u201d behavior for Work\u2192Files navigation in `VAL-WORK-007` and `VAL-CROSS-003`."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The `ios-worker` skill still tells workers to run the full `xcodebuild test` suite during feature verification, which conflicts with this mission's fast-testing guidance and this feature's explicit requirement to use targeted `-only-testing:` slices for Work changes.",
+      "evidence": "`.factory/skills/ios-worker/SKILL.md:72-86` prescribes `xcodebuild test ... -quiet`, while the mission `AGENTS.md` fast testing policy and the feature description both direct iOS workers to use targeted `-only-testing:ADETests/ADETests/<TestName>` validation. The handoff's `skillFeedback.deviations` explicitly calls out this mismatch."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the Work detail refactor is structurally solid, but the newly promised linked-navigation behavior is still incomplete. Session-detail lane actions only switch tabs instead of opening the related lane, and file references can route to the wrong Files workspace instead of surfacing an explicit error when the session lane workspace is unavailable."
+}

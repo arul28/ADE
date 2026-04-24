@@ -36,6 +36,7 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
+import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 
 type CliName = "claude" | "codex" | "cursor";
 type ApiKeySource = "config" | "env" | "store";
@@ -303,7 +304,6 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   useEffect(() => {
     void refreshStatus({
       force: forceRefreshOnMount,
-      refreshOpenCodeInventory: true,
     });
   }, [forceRefreshOnMount, refreshStatus]);
 
@@ -400,6 +400,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setNotice(null);
     try {
       await window.ade.ai.storeApiKey(provider, trimmed);
+      invalidateAiDiscoveryCache();
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next[provider];
@@ -418,6 +419,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setNotice(null);
     try {
       await window.ade.ai.deleteApiKey(provider);
+      invalidateAiDiscoveryCache();
       setNotice(`${provider} key removed.`);
       if (editingProvider === provider) cancelEditing();
       setVerificationByProvider((prev) => {
@@ -488,6 +490,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
           },
         } as AiConfig["localProviders"],
       });
+      invalidateAiDiscoveryCache();
       setNotice(`${LOCAL_PROVIDER_LABELS[provider]} settings saved.`);
       setEditingLocalProvider(null);
       await refreshStatus({ force: true });

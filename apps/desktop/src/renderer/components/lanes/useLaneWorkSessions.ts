@@ -184,8 +184,9 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [laneId]);
 
   useEffect(() => {
-    const unsubscribe = window.ade.pty.onExit(() => {
+    const unsubscribe = window.ade.pty.onExit((event) => {
       if (!laneId) return;
+      if (event.projectRoot && event.projectRoot !== projectRoot) return;
       scheduleBackgroundRefresh(120);
     });
     return () => {
@@ -195,7 +196,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         // ignore
       }
     };
-  }, [laneId, scheduleBackgroundRefresh]);
+  }, [laneId, projectRoot, scheduleBackgroundRefresh]);
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
@@ -260,7 +261,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [laneOpenItemIds, sessionsById]);
 
   const gridLayoutId = useMemo(
-    () => `work:grid:v2:${projectRoot ?? "global"}::${laneId ?? "none"}`,
+    () => `work:grid:tiling:v1:${projectRoot ?? "global"}::${laneId ?? "none"}`,
     [laneId, projectRoot],
   );
 

@@ -185,4 +185,33 @@ describe("workerAgentService", () => {
 
     fixture.db.close();
   });
+
+  it("normalizes legacy full_mcp worker session logs as full tooling", async () => {
+    const fixture = await createFixture();
+    const worker = fixture.service.saveAgent({
+      name: "Legacy Worker",
+      role: "engineer",
+      adapterType: "codex-local",
+      adapterConfig: {},
+    });
+    const sessionsPath = path.join(fixture.adeDir, "agents", worker.slug, "sessions.jsonl");
+    fs.writeFileSync(
+      sessionsPath,
+      `${JSON.stringify({
+        sessionId: "legacy-session",
+        summary: "Legacy worker session",
+        startedAt: "2026-03-05T10:00:00.000Z",
+        endedAt: "2026-03-05T10:05:00.000Z",
+        provider: "codex",
+        modelId: "openai/gpt-5.3-codex",
+        capabilityMode: "full_mcp",
+        createdAt: "2026-03-05T10:06:00.000Z",
+      })}\n`,
+      "utf8"
+    );
+
+    expect(fixture.service.listSessionLogs(worker.id, 10)[0]?.capabilityMode).toBe("full_tooling");
+
+    fixture.db.close();
+  });
 });

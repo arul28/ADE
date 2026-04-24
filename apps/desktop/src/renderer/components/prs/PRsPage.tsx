@@ -6,12 +6,14 @@ import { cn } from "../ui/cn";
 import { PrsProvider, usePrs } from "./state/PrsContext";
 import { CreatePrModal } from "./CreatePrModal";
 import { useAppStore } from "../../state/appStore";
+import { useDialogBus } from "../../lib/useDialogBus";
 import { GitHubTab } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
 import { isMissionLaneHiddenByDefault } from "../lanes/laneUtils";
-import { buildPrsRouteSearch, parsePrsRouteState } from "./prsRouteState";
+import { buildPrsRouteSearch, parsePrsRouteState, resolvePrsActiveTab } from "./prsRouteState";
 import { resolveRouteRebaseSelection } from "./shared/rebaseNeedUtils";
+import type { PrSummary } from "../../../shared/types";
 
 type SurfaceMode = "github" | "workflows";
 
@@ -59,6 +61,22 @@ function PRsPageInner() {
     setIntegrationRefreshNonce((prev) => prev + 1);
   }, [refresh, refreshLanes]);
 
+  const openCreatePr = React.useCallback(() => setCreatePrOpen(true), []);
+  const closeCreatePr = React.useCallback(() => setCreatePrOpen(false), []);
+
+  useDialogBus("prs.create", {
+    onOpen: openCreatePr,
+    onClose: closeCreatePr,
+  });
+
+  const handlePrCreated = React.useCallback(async (created: PrSummary[]) => {
+    await handleRefresh();
+    const first = created[0];
+    if (!first) return;
+    setActiveTab("normal");
+    setSelectedPrId(first.id);
+  }, [handleRefresh, setActiveTab, setSelectedPrId]);
+
   React.useEffect(() => {
     const syncFromLocation = () => {
       try {
@@ -66,31 +84,21 @@ function PRsPageInner() {
           search: location.search,
           hash: window.location.hash,
         });
-        const tab = routeState.tab;
-        const workflowTab = routeState.workflowTab;
+        const resolved = resolvePrsActiveTab(routeState);
         const routeRebaseItemId = resolveRouteRebaseSelection({
           rebaseNeeds,
           routeItemId: routeState.laneId,
         });
 
-        if (tab === "github" || tab === "normal") {
-          setActiveTab("normal");
-        } else if (tab === "workflows") {
-          const nextWorkflowTab = workflowTab === "queue" || workflowTab === "integration" || workflowTab === "rebase"
-            ? workflowTab
-            : "integration";
-          setActiveTab(nextWorkflowTab);
-        } else if (tab === "queue" || tab === "integration" || tab === "rebase") {
-          setActiveTab(tab);
-        }
+        setActiveTab(resolved.activeTab);
 
-        if (tab === "normal" || tab === "github") {
+        if (!resolved.isWorkflowRoute) {
           setSelectedPrId(routeState.prId ?? null);
         }
-        if (tab === "queue" || workflowTab === "queue") {
+        if (resolved.effectiveWorkflow === "queue") {
           setSelectedQueueGroupId(routeState.queueGroupId ?? null);
         }
-        if (tab === "rebase" || workflowTab === "rebase") {
+        if (resolved.effectiveWorkflow === "rebase") {
           setSelectedRebaseItemId(routeRebaseItemId);
         }
       } catch {
@@ -108,11 +116,23 @@ function PRsPageInner() {
   }, [location.search, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId]);
 
   React.useEffect(() => {
+    const current = parsePrsRouteState({ search: location.search });
+    // Preserve per-PR deep-link params (eventId/threadId/commitSha) as long as
+    // the URL still points at the currently selected PR. When the PR changes,
+    // stale deep-link params for the old PR get dropped.
+    const preserveDeepLinks =
+      activeTab === "normal" &&
+      selectedPrId !== null &&
+      current.prId === selectedPrId;
+    const deepLinks = preserveDeepLinks
+      ? { eventId: current.eventId, threadId: current.threadId, commitSha: current.commitSha }
+      : { eventId: null, threadId: null, commitSha: null };
     const nextSearch = buildPrsRouteSearch({
       activeTab,
       selectedPrId,
       selectedQueueGroupId,
       selectedRebaseItemId,
+      ...deepLinks,
     });
     if (location.search === nextSearch) return;
     void navigate({ pathname: location.pathname, search: nextSearch }, { replace: true });
@@ -273,6 +293,7 @@ function PRsPageInner() {
         <div className="ml-auto flex items-center gap-3">
           <button
             type="button"
+            data-tour="prs.createBtn"
             onClick={() => setCreatePrOpen(true)}
             className="flex items-center gap-2 active:scale-[0.97]"
             style={{
@@ -329,7 +350,11 @@ function PRsPageInner() {
         )}
       </div>
 
-      <CreatePrModal open={createPrOpen} onOpenChange={setCreatePrOpen} />
+      <CreatePrModal
+        open={createPrOpen}
+        onOpenChange={setCreatePrOpen}
+        onCreated={handlePrCreated}
+      />
     </div>
   );
 }

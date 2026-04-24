@@ -1,0 +1,36 @@
+{
+  "name": "ade-cli",
+  "version": "0.0.0",
+  "description": "Agent-focused command-line interface for ADE",
+  "type": "module",
+  "bin": {
+    "ade": "dist/cli.cjs"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "cli:dev": "npm run build --silent && node dist/cli.cjs",
+    "dev": "tsx src/cli.ts",
+    "build": "tsup && node ./scripts/verify-built-cli.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "node-cron": "^3.0.3",
+    "node-pty": "^1.1.0",
+    "sql.js": "^1.13.0",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "tsup": "^8.3.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.7.3",
+    "vitest": "^0.34.6"
+  }
+}

@@ -7,9 +7,9 @@ This release incorporates all changes from v1.0.5 (which was not published as a 
 
 ## Added
 
-- **MCP proxy server for packaged runtime** — New stdio-to-proxy bridge enabling the bundled ADE MCP server binary to launch correctly from within the signed macOS `.app` bundle
-- **MCP binary launch service** — Resolves the correct MCP server binary path inside the packaged app, sets executable permissions, and launches with proper environment variables
-- **Packaged runtime smoke test** — Post-build diagnostic verifying that bundled Claude CLI and MCP server binaries are present, executable, and respond to health probes
+- **ADE CLI proxy server for packaged runtime** — New stdio-to-proxy bridge enabling the bundled ADE ADE CLI binary to launch correctly from within the signed macOS `.app` bundle
+- **ADE CLI binary launch service** — Resolves the correct ADE CLI binary path inside the packaged app, sets executable permissions, and launches with proper environment variables
+- **Packaged runtime smoke test** — Post-build diagnostic verifying that bundled Claude CLI and ADE CLI binaries are present, executable, and respond to health probes
 - **Runtime binary permission fixer** — Build-time script ensuring all binaries in `Resources/runtime/` have correct POSIX executable permissions after electron-builder packs the app
 - **Lane dialog shell** — Shared dialog wrapper extracted from Create/Attach lane dialogs for consistent styling and accessibility
 
@@ -19,7 +19,7 @@ This release incorporates all changes from v1.0.5 (which was not published as a 
 - **PR merge status detection** — Improved tracking with better handling of GitHub API race conditions when a PR is merged externally
 - **Refactored lane dialogs** — `CreateLaneDialog` and `AttachLaneDialog` use the new shared `LaneDialogShell`, reducing duplication
 - **Agent chat service** — Now uses `resolveUnifiedRuntimeRoot` and `resolveClaudeCodeExecutable` for reliable binary resolution in both dev and packaged modes
-- **Mac release pipeline** — Expanded universal build scripts with runtime binary staging, tightened signing credential validation, and MCP server launch verification
+- **Mac release pipeline** — Expanded universal build scripts with runtime binary staging, tightened signing credential validation, and ADE CLI launch verification
 
 ## Fixed
 

@@ -1,9 +1,23 @@
 commands:
+  install: echo 'Dependencies already present for apps/desktop and apps/ios; no extra bootstrap step required.'
   build: xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
   test: xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
+  typecheck: xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
+  lint: xcodebuild -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build analyze
+  desktop-build: npm --prefix apps/desktop run build
+  desktop-test: npm --prefix apps/desktop run test
+  desktop-typecheck: npm --prefix apps/desktop run typecheck
+  desktop-lint: npm --prefix apps/desktop run lint
+  ios-build: xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
+  ios-test: xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
+  ios-analyze: xcodebuild -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build analyze
+  ios-line-count: find apps/ios/ADE -name '*.swift' -exec wc -l {} + | sort -rn | head -20
   build-for-testing: xcodebuild build-for-testing -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
-  typecheck: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build build
-  lint: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build analyze
-  line-count: find apps/ios/ADE -name '*.swift' -exec wc -l {} + | sort -rn | head -20
 
-services: {}
+services:
+  desktop-host:
+    start: ADE_PROJECT_ROOT="$PWD" npm --prefix apps/desktop run dev
+    stop: lsof -tiTCP:8787 -sTCP:LISTEN | xargs kill
+    healthcheck: lsof -iTCP:8787 -sTCP:LISTEN
+    port: 8787
+    depends_on: []

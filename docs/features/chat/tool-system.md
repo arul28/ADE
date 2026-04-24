@@ -115,7 +115,7 @@ in `workflowTools.ts`.
 |---|---|
 | `createLane({ name, description?, parentLaneId? })` | Creates a new lane (git worktree + branch). Returns lane id, branch ref, worktree path. |
 | `createPrFromLane({ laneId, title?, body? })` | Creates a pull request from the lane's changes. |
-| `captureScreenshot()` | Screenshots the current environment. Gated by `ComputerUsePolicy` (must be enabled + allow local fallback, unless a remote backend is wired). |
+| `captureScreenshot()` | Screenshots the current environment and files the result through the proof broker. macOS-only (backed by `screencapture`); returns `blocked_by_capability` on other platforms. No policy gate. |
 | `reportCompletion({ status, summary, artifacts, blockerDescription? })` | Persists an `AgentChatCompletionReport` on the session. Renders a closeout card in the transcript. |
 | `prRefreshIssueInventory({ prNumber })` | Refreshes checks, review threads, and comments for a PR. |
 | `prRerunFailedChecks({ prNumber })` | Re-triggers failed GitHub Actions check runs. |
@@ -134,14 +134,15 @@ When a CTO spawns a chat via `launchPrIssueResolutionChat` (see
 `apps/desktop/src/main/services/prs/prIssueResolver.ts`), the spawned
 chat gets these four tools in its palette.
 
-### Computer-use gate
+### Proof capture
 
-`captureScreenshot` consults `WorkflowToolDeps.computerUsePolicy`:
-
-- `isComputerUseModeEnabled(policy.mode)` must be true.
-- `policy.allowLocalFallback` controls whether the local screenshot
-  path is allowed; otherwise the tool errors and defers to the remote
-  artifact broker.
+`captureScreenshot` files the resulting image through
+`computerUseArtifactBrokerService.ingestArtifacts()`. It is not gated by
+a policy — the proof-observer model (and `ComputerUsePolicy`) was
+removed. The tool still reports `blocked_by_capability` when it runs on
+a platform without a supported capture backend (Linux/Windows); the
+agent can fall back to `ade proof attach <path>` with a headless-browser
+or Playwright-produced PNG in that case.
 
 ## Tier 3: coordinator tools
 
@@ -175,15 +176,12 @@ renders only the sections the agent can act on.
 
 ## Standalone-chat restrictions
 
-Chat sessions connected to the ADE MCP server with a `chatSessionId` but
+Chat sessions connected to the ADE CLI with a `chatSessionId` but
 no mission/run/step/attempt context are classified as "standalone". The
-MCP proxy hides `spawn_agent` and all coordinator tools from both the
-tool-list response and the execution path. This prevents an interactive
+ADE action bridge hides `spawn_agent` and all coordinator tools from both
+the action-list response and the execution path. This prevents an interactive
 chat user from invoking orchestration primitives that only function
 inside a mission.
-
-See `apps/desktop/src/main/adeMcpProxy.ts` and
-`adeMcpProxyUtils.ts` for the filter.
 
 ## Tool exposure policy
 
@@ -210,8 +208,8 @@ Additional exposure rules:
   `TodoWrite`, `TodoRead`, and the four `pr*` tools). Renaming any of
   these tools silently strips the corresponding prompt guidance. Keep
   name changes synchronized.
-- **Tool name normalisation.** MCP-exposed tools appear as
-  `mcp__<server>__<tool>`. `normalizeToolName` in `systemPrompt.ts`
+- **Tool name normalisation.** ADE CLI-exposed tools appear as
+  `ade.<server>__<tool>`. `normalizeToolName` in `systemPrompt.ts`
   unwraps that form; new tools that should appear in the prompt must be
   detectable after normalisation.
 - **Approval callback and UI wiring.** `onApprovalRequest` is provided
@@ -226,16 +224,16 @@ Additional exposure rules:
   other categories silently fall back to `default`.
 - **Ask-user input schema.** Claude V2 `AskUserQuestion` inputs are
   coerced to `AskUserToolInput` shape inside `agentChatService`. Codex
-  MCP elicitation uses a different schema and runs through
-  `coerceCodexMcpElicitationContent()` -- do not assume a common shape.
+  elicitations arrive through the `codex app-server` JSON-RPC stream
+  and are normalized inline in the Codex adapter -- do not assume a
+  common shape across providers.
 
 ## Related docs
 
 - [Chat README](README.md) -- the service that provisions tools.
 - [Memory README](../memory/README.md) -- the memory store behind
   `memorySearch`/`memoryAdd`.
-- [Agents Tool Registration](../agents/tool-registration.md) -- MCP
-  server registration and the ADE MCP proxy that bridges agent tools
-  across processes.
+- [Agents Tool Registration](../agents/tool-registration.md) -- ADE CLI
+  action registration and the private ADE RPC bridge used by the desktop app.
 </content>
 </invoke>

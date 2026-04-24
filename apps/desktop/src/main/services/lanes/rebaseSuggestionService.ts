@@ -2,7 +2,7 @@ import { getHeadSha, runGit } from "../git/git";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
-import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload } from "../../../shared/types";
+import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload, RebaseTargetCommit } from "../../../shared/types";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { fetchQueueTargetTrackingBranches, fetchRemoteTrackingBranch, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { isRecord, nowIso } from "../shared/utils";
@@ -96,6 +96,47 @@ export function createRebaseSuggestionService(args: {
       { cwd: projectRoot, timeoutMs: 10_000 }
     );
     return result.exitCode === 0 ? Math.max(0, Number(result.stdout.trim()) || 0) : 0;
+  };
+
+  /**
+   * Read the commits on `base` that aren't on `lane` — i.e. the set of commits
+   * a rebase would pull in. Cap at 20 for payload safety; older commits are
+   * trimmed. Returns an empty array on any git failure.
+   */
+  const readBehindCommits = async (args: {
+    laneWorktreePath: string;
+    baseHeadSha: string;
+  }): Promise<RebaseTargetCommit[]> => {
+    const laneHeadSha = await getHeadSha(args.laneWorktreePath);
+    if (!laneHeadSha) return [];
+    const result = await runGit(
+      [
+        "log",
+        "-n",
+        "20",
+        "--pretty=format:%H%x1F%h%x1F%s%x1F%an%x1F%aI",
+        `${laneHeadSha}..${args.baseHeadSha}`,
+      ],
+      { cwd: projectRoot, timeoutMs: 10_000 }
+    );
+    if (result.exitCode !== 0) return [];
+    const out: RebaseTargetCommit[] = [];
+    for (const line of result.stdout.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const parts = trimmed.split("\x1F");
+      if (parts.length < 5) continue;
+      const [sha, shortSha, subject, author, committedAt] = parts;
+      if (!sha) continue;
+      out.push({
+        sha,
+        shortSha: shortSha || sha.slice(0, 7),
+        subject: subject ?? "",
+        author: author ?? "",
+        committedAt: committedAt ?? "",
+      });
+    }
+    return out;
   };
 
   const resolvePrimaryParentHeadSha = async (parent: LaneSummary): Promise<string | null> => {
@@ -251,6 +292,19 @@ export function createRebaseSuggestionService(args: {
 
       if (isSuppressed({ nowMs, state: nextState, currentParentHeadSha: base.parentHeadSha })) continue;
 
+      let targetCommits: RebaseTargetCommit[] = [];
+      try {
+        targetCommits = await readBehindCommits({
+          laneWorktreePath: lane.worktreePath,
+          baseHeadSha: base.parentHeadSha,
+        });
+      } catch (err) {
+        logger.warn("rebaseSuggestions.read_target_commits_failed", {
+          laneId: lane.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
       out.push({
         laneId: lane.id,
         parentLaneId: base.parentLaneId,
@@ -261,7 +315,8 @@ export function createRebaseSuggestionService(args: {
         lastSuggestedAt: nextState.lastSuggestedAt,
         deferredUntil: nextState.deferredUntil,
         dismissedAt: nextState.dismissedAt,
-        hasPr: prLaneIds.has(lane.id)
+        hasPr: prLaneIds.has(lane.id),
+        targetCommits
       });
     }
 
@@ -290,6 +345,16 @@ export function createRebaseSuggestionService(args: {
     const laneId = args.laneId.trim();
     if (!laneId) throw new Error("laneId is required");
 
+    const existing = loadState(laneId);
+    if (existing) {
+      saveState({
+        ...existing,
+        dismissedAt: nowIso()
+      });
+      void emit();
+      return;
+    }
+
     const lanes = await laneService.list({ includeArchived: false });
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -298,7 +363,6 @@ export function createRebaseSuggestionService(args: {
     const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to dismiss.");
 
-    const existing = loadState(laneId);
     const behindCount = await readBehindCount({
       laneWorktreePath: lane.worktreePath,
       baseHeadSha: base.parentHeadSha,
@@ -308,12 +372,12 @@ export function createRebaseSuggestionService(args: {
       parentLaneId: base.parentLaneId,
       parentHeadSha: base.parentHeadSha,
       behindCount,
-      lastSuggestedAt: existing?.lastSuggestedAt ?? nowIso(),
-      deferredUntil: existing?.deferredUntil ?? null,
+      lastSuggestedAt: nowIso(),
+      deferredUntil: null,
       dismissedAt: nowIso()
     };
     saveState(next);
-    await emit();
+    void emit();
   };
 
   const defer = async (args: { laneId: string; minutes: number }): Promise<void> => {
@@ -323,6 +387,17 @@ export function createRebaseSuggestionService(args: {
     const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(args.minutes)));
     const until = new Date(Date.now() + minutes * 60_000).toISOString();
 
+    const existing = loadState(laneId);
+    if (existing) {
+      saveState({
+        ...existing,
+        deferredUntil: until,
+        dismissedAt: null
+      });
+      void emit();
+      return;
+    }
+
     const lanes = await laneService.list({ includeArchived: false });
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -331,7 +406,6 @@ export function createRebaseSuggestionService(args: {
     const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to defer.");
 
-    const existing = loadState(laneId);
     const behindCount = await readBehindCount({
       laneWorktreePath: lane.worktreePath,
       baseHeadSha: base.parentHeadSha,
@@ -341,12 +415,12 @@ export function createRebaseSuggestionService(args: {
       parentLaneId: base.parentLaneId,
       parentHeadSha: base.parentHeadSha,
       behindCount,
-      lastSuggestedAt: existing?.lastSuggestedAt ?? nowIso(),
+      lastSuggestedAt: nowIso(),
       deferredUntil: until,
       dismissedAt: null
     };
     saveState(next);
-    await emit();
+    void emit();
   };
 
   const onParentHeadChanged = async (args: {

@@ -138,7 +138,7 @@ timer (`IDLE_WATCHER_CLOSE_MS = 15_000`) schedules a soft close.
 
 Events are debounced per file key for 140 ms, so a build tool writing
 hundreds of files gets coalesced. Volatile `.ade/` paths (transcripts,
-the SQLite DB, caches, MCP config files) are filtered out even when
+the SQLite DB, caches, ADE CLI config files) are filtered out even when
 `includeIgnored` is true — see
 [file-watcher-and-trust.md](./file-watcher-and-trust.md) for the full
 list.

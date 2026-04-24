@@ -1,14 +1,72 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { AgentChatComposer } from "./AgentChatComposer";
+import { modifierKeyLabel } from "../../lib/platform";
+
+function installMatchMediaMock(): void {
+  if (typeof window.matchMedia === "function") return;
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+}
+
+vi.mock("@emoji-mart/data", () => ({
+  default: { categories: [], emojis: {}, aliases: {}, sheet: { cols: 0, rows: 0 } },
+}));
+
+vi.mock("@emoji-mart/data/sets/15/native.json", () => ({
+  default: { categories: [], emojis: {}, aliases: {}, sheet: { cols: 0, rows: 0 } },
+}));
+
+vi.mock("@lobehub/icons", () => {
+  const brand = () => {
+    const Component = () => null;
+    Object.assign(Component, {
+      Avatar: () => null,
+      Color: () => null,
+      Combine: () => null,
+      Text: () => null,
+      colorPrimary: "#888",
+      title: "stub",
+    });
+    return Component;
+  };
+  return {
+    Anthropic: brand(),
+    Claude: brand(),
+    Codex: brand(),
+    Cursor: brand(),
+    Gemini: brand(),
+    Google: brand(),
+    Grok: brand(),
+    Groq: brand(),
+    OpenAI: brand(),
+    OpenCode: brand(),
+    OpenRouter: brand(),
+    XAI: brand(),
+  };
+});
+
+beforeEach(() => {
+  installMatchMediaMock();
+});
 
 afterEach(cleanup);
 
-function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
+function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
   const props: ComponentProps<typeof AgentChatComposer> = {
     modelId: "openai/gpt-5.4-codex",
     availableModelIds: ["openai/gpt-5.4-codex"],
@@ -27,7 +85,6 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
     codexConfigSource: "flags",
     opencodePermissionMode: "edit",
     executionMode: "focused",
-    computerUsePolicy: createDefaultComputerUsePolicy(),
     onModelChange: vi.fn(),
     onReasoningEffortChange: vi.fn(),
     onDraftChange: vi.fn(),
@@ -50,8 +107,14 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
     ...overrides,
   };
 
-  render(<AgentChatComposer {...props} />);
   return props;
+}
+
+function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
+  const props = buildComposerProps(overrides);
+
+  const view = render(<AgentChatComposer {...props} />);
+  return Object.assign(view, props) as RenderResult & ComponentProps<typeof AgentChatComposer>;
 }
 
 const executionModeOptions = [
@@ -84,14 +147,14 @@ describe("AgentChatComposer", () => {
   it("stop only interrupts the active turn", () => {
     const props = renderComposer();
 
-    const stopButtons = screen.getAllByTitle("Stop the active turn only (Cmd+.)");
+    const stopButtons = screen.getAllByTitle(`Stop the active turn only (${modifierKeyLabel}+.)`);
     fireEvent.click(stopButtons[stopButtons.length - 1]!);
 
     expect(props.onInterrupt).toHaveBeenCalledTimes(1);
     expect(props.onClearDraft).not.toHaveBeenCalled();
   });
 
-  it("renders Claude mode buttons without a Chat toggle", () => {
+  it("renders Claude mode dropdown without a Chat toggle", () => {
     renderComposer({
       sessionProvider: "claude",
       modelId: "anthropic/claude-sonnet-4-6",
@@ -99,10 +162,16 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Default" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Accept edits" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Bypass" })).toBeTruthy();
+    const trigger = screen.getByRole("button", { name: "Claude permission mode" });
+    expect(trigger.textContent).toContain("Ask permissions");
+
+    fireEvent.click(trigger);
+
+    expect(screen.getByRole("listbox", { name: "Claude permission mode" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Ask permissions/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Accept edits/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Plan mode/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Bypass permissions/ })).toBeTruthy();
   });
 
   it("routes Claude plan through both interaction and permission callbacks", () => {
@@ -116,7 +185,8 @@ describe("AgentChatComposer", () => {
       onClaudePermissionModeChange,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(screen.getByRole("option", { name: /Plan mode/ }));
 
     expect(onInteractionModeChange).toHaveBeenCalledWith("plan");
     expect(onClaudePermissionModeChange).toHaveBeenCalledWith("plan");
@@ -135,7 +205,8 @@ describe("AgentChatComposer", () => {
       onClaudePermissionModeChange,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(screen.getByRole("option", { name: /Plan mode/ }));
 
     expect(onClaudeModeChange).toHaveBeenCalledWith("plan");
     expect(onInteractionModeChange).not.toHaveBeenCalled();
@@ -150,10 +221,12 @@ describe("AgentChatComposer", () => {
       codexConfigSource: "flags",
     });
 
-    expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Guarded edit" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Full auto" })).toBeTruthy();
-    expect(screen.getByText("Custom")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+
+    expect(screen.getByRole("option", { name: "Default permissions" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Plan mode" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Full access" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Custom (config.toml)" })).toBeTruthy();
     expect(screen.queryByDisplayValue("ADE flags")).toBeNull();
     expect(screen.queryByDisplayValue("On request")).toBeNull();
     expect(screen.queryByDisplayValue("Workspace write")).toBeNull();
@@ -163,13 +236,23 @@ describe("AgentChatComposer", () => {
     const onCodexPresetChange = vi.fn();
     renderComposer({ onCodexPresetChange });
 
-    fireEvent.click(screen.getByRole("button", { name: "Full auto" }));
+    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(screen.getByRole("option", { name: "Full access" }));
 
     expect(onCodexPresetChange).toHaveBeenCalledWith({
       codexApprovalPolicy: "never",
       codexSandbox: "danger-full-access",
       codexConfigSource: "flags",
     });
+  });
+
+  it("can hide native permission controls for fixed-mode surfaces", () => {
+    renderComposer({
+      sessionProvider: "codex",
+      hideNativeControls: true,
+    });
+
+    expect(screen.queryByRole("button", { name: "Codex approval preset" })).toBeNull();
   });
 
   it("avoids promising option chips when a pending question is freeform only", () => {
@@ -194,8 +277,8 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Type your answer below.")).toBeTruthy();
-    expect(screen.queryByText("Type your answer below or pick an option above.")).toBeNull();
+    expect(screen.getByText("Answer in the inline question card, or type below.")).toBeTruthy();
+    expect(screen.queryByText("Answer in the inline question card, or pick an option there.")).toBeNull();
   });
 
   it("keeps the option hint when a pending question includes selectable options", () => {
@@ -224,7 +307,7 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Type your answer below or pick an option above.")).toBeTruthy();
+    expect(screen.getByText("Answer in the inline question card, or pick an option there.")).toBeTruthy();
   });
 
   it("keeps the option hint when any pending question includes selectable options", () => {
@@ -261,7 +344,7 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Type your answer below or pick an option above.")).toBeTruthy();
+    expect(screen.getByText("Answer in the inline question card, or pick an option there.")).toBeTruthy();
   });
 
   it("uses decline wording for native Codex structured questions", () => {
@@ -348,6 +431,30 @@ describe("AgentChatComposer", () => {
     expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("allows attachments while steering an active Cursor turn", () => {
+    renderComposer({
+      turnActive: true,
+      sessionProvider: "cursor",
+      modelId: "cursor/auto",
+      availableModelIds: ["cursor/auto"],
+    });
+
+    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("allows attachments while steering an active OpenCode turn", () => {
+    renderComposer({
+      turnActive: true,
+      sessionProvider: "opencode",
+      modelId: "opencode/openai/gpt-5.4",
+      availableModelIds: ["opencode/openai/gpt-5.4"],
+    });
+
+    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("shows inline proof toggle and wires callback", () => {
     const onToggleProof = vi.fn();
     renderComposer({
@@ -386,16 +493,96 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByTitle("Include project context (PRD + architecture) with first message")).toBeNull();
   });
 
-  it("uses a constrained resizable textarea in grid-tile mode", () => {
-    renderComposer({
+  it("marks the textarea layout variant in grid-tile mode", () => {
+    const { container } = renderComposer({
       layoutVariant: "grid-tile",
       composerMaxHeightPx: 128,
     });
 
     const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
     expect(textarea.dataset.chatLayoutVariant).toBe("grid-tile");
-    expect(textarea.style.maxHeight).toBe("128px");
-    expect(textarea.className).toContain("resize-y");
+    expect(textarea.className).toContain("resize-none");
+    const composerShell = container.querySelector("[data-chat-composer-mode]");
+    expect(composerShell?.className).not.toContain("rounded-none");
+    expect(composerShell?.parentElement?.className ?? "").not.toContain("rounded-none");
+  });
+
+  it("opts the chat textarea into native typing assistance", () => {
+    renderComposer();
+
+    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
+    expect(textarea.getAttribute("autocomplete")).toBe("on");
+    expect(textarea.getAttribute("autocorrect")).toBe("on");
+    expect(textarea.getAttribute("autocapitalize")).toBe("sentences");
+    expect(textarea.getAttribute("spellcheck")).toBe("true");
+  });
+
+  it("focuses the grid composer when the tile becomes active", () => {
+    const props = buildComposerProps({
+      layoutVariant: "grid-tile",
+      composerMaxHeightPx: 128,
+      isActive: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
+    expect(document.activeElement).not.toBe(textarea);
+
+    view.rerender(<AgentChatComposer {...props} isActive />);
+
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("does not autofocus the grid composer when only hover state changes", () => {
+    const props = buildComposerProps({
+      layoutVariant: "grid-tile",
+      composerMaxHeightPx: 128,
+      isActive: false,
+      shouldAutofocus: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
+    expect(document.activeElement).not.toBe(textarea);
+
+    view.rerender(<AgentChatComposer {...props} isActive shouldAutofocus={false} />);
+
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
+  it("shows the parallel launch entry point when the draft surface enables it", () => {
+    const onParallelChatModeChange = vi.fn();
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      showParallelChatToggle: true,
+      onParallelChatModeChange,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Parallel models/i }));
+
+    expect(onParallelChatModeChange).toHaveBeenCalledWith(true);
+  });
+
+  it("disables parallel controls while a parallel launch is running", () => {
+    renderComposer({
+      turnActive: false,
+      draft: "Ship it",
+      parallelChatMode: true,
+      parallelLaunchBusy: true,
+      parallelLaunchStatus: "Creating child lanes…",
+      parallelModelSlots: [
+        { modelId: "openai/gpt-5.4-codex", reasoningEffort: "high" },
+        { modelId: "anthropic/claude-sonnet-4-6", reasoningEffort: "medium" },
+        { modelId: "openai/gpt-5.4-mini", reasoningEffort: "low" },
+      ],
+    });
+
+    expect((screen.getByRole("button", { name: "Single model" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Add model" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getAllByRole("button", { name: "Configure" })[0] as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getAllByRole("button", { name: "Remove" })[0] as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Creating child lanes…")).toBeTruthy();
   });
 
 });

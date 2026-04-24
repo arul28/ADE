@@ -29,7 +29,7 @@ The runtime is feature-rich but the mission launcher and page shell now follow a
 - `orchestrator/recoveryService.ts` — tracked session state, recovery iterations.
 - `orchestrator/stepPolicyResolver.ts` — step-level policy merging, autopilot config, file-claim scope.
 - `orchestrator/baseOrchestratorAdapter.ts` — `buildFullPrompt` + shell escaping.
-- `orchestrator/providerOrchestratorAdapter.ts` — provider-specific worker launches (Claude CLI, Codex CLI, MCP).
+- `orchestrator/providerOrchestratorAdapter.ts` — provider-specific worker launches (Claude CLI, Codex CLI, ADE CLI).
 - `orchestrator/promptInspector.ts` — coordinator / planning / worker prompt inspectors for the mission detail UI.
 - `orchestrator/missionStateDoc.ts` — state doc and coordinator checkpoint read/write.
 - `orchestrator/teamRuntimeConfig.ts` / `teamRuntimeState.ts` — team manifest and runtime state.
@@ -55,7 +55,7 @@ Planning is the first-class initial phase. If a phase profile omits a planning p
 3. Delegates to a planning worker (`launching_planner` -> `waiting_on_planner`).
 4. Explicitly advances phases as plan steps complete.
 
-A planning-startup guard prevents non-ADE tool drift during the prep phase. If the coordinator detects tool calls that don't belong to the planning setup (e.g. arbitrary external MCP calls during context fetch), they are trapped and routed into explicit recovery rather than silent fallback.
+A planning-startup guard prevents non-ADE tool drift during the prep phase. If the coordinator detects tool calls that don't belong to the planning setup (e.g. arbitrary ADE CLI calls during context fetch), they are trapped and routed into explicit recovery rather than silent fallback.
 
 ### Planner launch reliability
 

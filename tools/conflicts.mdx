@@ -6,7 +6,7 @@ icon: "triangle-exclamation"
 
 ## What is the Conflicts View?
 
-The Conflicts view is ADE's proactive merge-safety system: every lane is continuously simulated against its base branch and against every other active lane via `git merge-tree`, and predicted conflicts are surfaced hours or days before a PR is opened. Each detected conflict produces a **Conflict Pack** and an AI-assisted resolution proposal, visible in the Conflicts tab, lane status badges, Workspace Graph edges, and PR detail view.
+ADE continuously simulates every lane against its base branch and all other active lanes via `git merge-tree`, surfacing predicted conflicts before a PR is opened. Each detected conflict produces a **Conflict Pack** and an AI-assisted resolution proposal, visible in the Conflicts tab, lane status badges, Workspace Graph edges, and PR detail view.
 
 <CardGroup cols={3}>
   <Card title="Predictive, Not Reactive" icon="eye">

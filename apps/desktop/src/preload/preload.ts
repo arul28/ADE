@@ -1,9 +1,12 @@
-import { contextBridge, ipcRenderer, webFrame } from "electron";
+import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
   AdeProjectSnapshot,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+  ProjectDetail,
 } from "../shared/types";
 import type {
   BatchAssessmentResult,
@@ -32,6 +35,15 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  ReviewEventPayload,
+  ReviewLaunchContext,
+  ReviewListRunsArgs,
+  ReviewRun,
+  ReviewRunDetail,
+  ReviewStartRunArgs,
+  AdeActionRegistryEntry,
+  AdeCliInstallResult,
+  AdeCliStatus,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -43,6 +55,11 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
+  ApnsBridgeStatus,
+  ApnsBridgeSaveConfigArgs,
+  ApnsBridgeUploadKeyArgs,
+  ApnsBridgeSendTestPushArgs,
+  ApnsBridgeSendTestPushResult,
   DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
@@ -109,16 +126,6 @@ import type {
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
   OpenclawBridgeStatus,
-  ExternalConnectionAuthRecord,
-  ExternalConnectionAuthRecordInput,
-  ExternalConnectionAuthStatus,
-  ExternalConnectionOAuthSessionResult,
-  ExternalConnectionOAuthSessionStartResult,
-  ExternalMcpEventPayload,
-  ExternalMcpManagedAuthConfig,
-  ExternalMcpServerConfig,
-  ExternalMcpServerSnapshot,
-  ExternalMcpUsageEvent,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   AutomationsEventPayload,
@@ -202,11 +209,20 @@ import type {
   AddPrCommentArgs,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
+  PrDeployment,
+  PrAiSummary,
+  PostPrReviewCommentArgs,
+  SetPrReviewThreadResolvedArgs,
+  SetPrReviewThreadResolvedResult,
+  ReactToPrCommentArgs,
+  LaunchPrIssueResolutionFromThreadArgs,
+  LaunchPrIssueResolutionFromThreadResult,
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
   RequestPrReviewersArgs,
   SubmitPrReviewArgs,
+  SubmitPrReviewResult,
   ClosePrArgs,
   ReopenPrArgs,
   RerunPrChecksArgs,
@@ -232,7 +248,10 @@ import type {
   ExportHistoryResult,
   AgentTool,
   AgentChatApproveArgs,
+  AgentChatArchiveArgs,
   AgentChatCreateArgs,
+  AgentChatDeleteArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
@@ -242,9 +261,12 @@ import type {
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
+  AgentChatParallelLaunchState,
+  AgentChatParallelLaunchStateArgs,
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
   AgentChatFileSearchArgs,
@@ -266,6 +288,8 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourProgress,
+  OnboardingTourVariant,
   LaneListSnapshot,
   LaneSummary,
   ListOverlapsArgs,
@@ -274,6 +298,7 @@ import type {
   ImportBranchLaneArgs,
   ListOperationsArgs,
   ListSessionsArgs,
+  DeleteSessionArgs,
   ListTestRunsArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
@@ -565,10 +590,11 @@ import type {
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
-  ComputerUseSettingsSnapshot,
-  FeedbackSubmitArgs,
+  FeedbackPrepareDraftArgs,
+  FeedbackPreparedDraft,
   FeedbackSubmission,
   FeedbackSubmissionEvent,
+  FeedbackSubmitDraftArgs,
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("ade", {
@@ -596,7 +622,7 @@ contextBridge.exposeInMainWorld("ade", {
     openPathInEditor: async (args: {
       rootPath: string;
       relativePath?: string;
-      target: "finder" | "vscode" | "cursor" | "zed";
+      target: "default" | "finder" | "vscode" | "cursor" | "zed";
     }): Promise<void> => ipcRenderer.invoke(IPC.appOpenPathInEditor, args),
     logDebugEvent: (event: string, payload: Record<string, unknown> = {}): void =>
       ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
@@ -608,6 +634,19 @@ contextBridge.exposeInMainWorld("ade", {
       args: { title?: string; defaultPath?: string } = {},
     ): Promise<string | null> =>
       ipcRenderer.invoke(IPC.projectChooseDirectory, args),
+    browseDirectories: async (
+      args: ProjectBrowseInput = {},
+    ): Promise<ProjectBrowseResult> =>
+      ipcRenderer.invoke(IPC.projectBrowseDirectories, args),
+    getDetail: async (rootPath: string): Promise<ProjectDetail> =>
+      ipcRenderer.invoke(IPC.projectGetDetail, { rootPath }),
+    getDroppedPath: (file: File): string => {
+      try {
+        return webUtils.getPathForFile(file);
+      } catch {
+        return "";
+      }
+    },
     openAdeFolder: async (): Promise<void> =>
       ipcRenderer.invoke(IPC.projectOpenAdeFolder),
     clearLocalData: async (
@@ -683,6 +722,8 @@ contextBridge.exposeInMainWorld("ade", {
   sync: {
     getStatus: async (): Promise<SyncRoleSnapshot> =>
       ipcRenderer.invoke(IPC.syncGetStatus),
+    refreshDiscovery: async (): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncRefreshDiscovery),
     listDevices: async (): Promise<SyncDeviceRuntimeState[]> =>
       ipcRenderer.invoke(IPC.syncListDevices),
     updateLocalDevice: async (args: {
@@ -702,6 +743,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.syncGetTransferReadiness),
     transferBrainToLocal: async (): Promise<SyncRoleSnapshot> =>
       ipcRenderer.invoke(IPC.syncTransferBrainToLocal),
+    getPin: async (): Promise<{ pin: string | null }> =>
+      ipcRenderer.invoke(IPC.syncGetPin),
+    setPin: async (pin: string): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncSetPin, pin),
+    clearPin: async (): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncClearPin),
+    setActiveLanePresence: async (args: {
+      laneIds: string[];
+    }): Promise<void> =>
+      ipcRenderer.invoke(IPC.syncSetActiveLanePresence, args),
     onEvent: (cb: (event: SyncStatusEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -711,71 +762,31 @@ contextBridge.exposeInMainWorld("ade", {
       return () => ipcRenderer.removeListener(IPC.syncEvent, listener);
     },
   },
-  externalMcp: {
-    listServers: async (): Promise<ExternalMcpServerSnapshot[]> =>
-      ipcRenderer.invoke(IPC.externalMcpListServers),
-    listConfigs: async (): Promise<ExternalMcpServerConfig[]> =>
-      ipcRenderer.invoke(IPC.externalMcpListConfigs),
-    getUsageEvents: async (
-      args: { limit?: number } = {},
-    ): Promise<ExternalMcpUsageEvent[]> =>
-      ipcRenderer.invoke(IPC.externalMcpGetUsageEvents, args),
-    listAuthRecords: async (): Promise<ExternalConnectionAuthRecord[]> =>
-      ipcRenderer.invoke(IPC.externalMcpListAuthRecords),
-    onEvent: (cb: (event: ExternalMcpEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: ExternalMcpEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.externalMcpEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.externalMcpEvent, listener);
+  notifications: {
+    apns: {
+      getStatus: async (): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsGetStatus),
+      saveConfig: async (args: ApnsBridgeSaveConfigArgs): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsSaveConfig, args),
+      uploadKey: async (args: ApnsBridgeUploadKeyArgs): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsUploadKey, args),
+      clearKey: async (): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsClearKey),
+      sendTestPush: async (
+        args: ApnsBridgeSendTestPushArgs,
+      ): Promise<ApnsBridgeSendTestPushResult> =>
+        ipcRenderer.invoke(IPC.notificationsApnsSendTestPush, args),
     },
-    connectServer: async (
-      serverName: string,
-    ): Promise<ExternalMcpServerSnapshot> =>
-      ipcRenderer.invoke(IPC.externalMcpConnectServer, { serverName }),
-    disconnectServer: async (
-      serverName: string,
-    ): Promise<ExternalMcpServerSnapshot | null> =>
-      ipcRenderer.invoke(IPC.externalMcpDisconnectServer, { serverName }),
-    testServer: async (
-      config: ExternalMcpServerConfig,
-    ): Promise<ExternalMcpServerSnapshot> =>
-      ipcRenderer.invoke(IPC.externalMcpTestServer, { config }),
-    saveServer: async (
-      config: ExternalMcpServerConfig,
-    ): Promise<ExternalMcpServerConfig[]> =>
-      ipcRenderer.invoke(IPC.externalMcpSaveServer, { config }),
-    removeServer: async (
-      serverName: string,
-    ): Promise<ExternalMcpServerConfig[]> =>
-      ipcRenderer.invoke(IPC.externalMcpRemoveServer, { serverName }),
-    saveAuthRecord: async (
-      record: ExternalConnectionAuthRecordInput,
-    ): Promise<ExternalConnectionAuthRecord> =>
-      ipcRenderer.invoke(IPC.externalMcpSaveAuthRecord, { record }),
-    removeAuthRecord: async (
-      authId: string,
-    ): Promise<ExternalConnectionAuthRecord[]> =>
-      ipcRenderer.invoke(IPC.externalMcpRemoveAuthRecord, { authId }),
-    getAuthStatus: async (
-      binding?: ExternalMcpManagedAuthConfig | null,
-    ): Promise<ExternalConnectionAuthStatus> =>
-      ipcRenderer.invoke(IPC.externalMcpGetAuthStatus, {
-        binding: binding ?? null,
-      }),
-    startOAuthSession: async (
-      authId: string,
-    ): Promise<ExternalConnectionOAuthSessionStartResult> =>
-      ipcRenderer.invoke(IPC.externalMcpStartOAuthSession, { authId }),
-    getOAuthSession: async (
-      sessionId: string,
-    ): Promise<ExternalConnectionOAuthSessionResult> =>
-      ipcRenderer.invoke(IPC.externalMcpGetOAuthSession, { sessionId }),
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> =>
       ipcRenderer.invoke(IPC.agentToolsDetect),
+  },
+  adeCli: {
+    getStatus: async (): Promise<AdeCliStatus> =>
+      ipcRenderer.invoke(IPC.adeCliGetStatus),
+    installForUser: async (): Promise<AdeCliInstallResult> =>
+      ipcRenderer.invoke(IPC.adeCliInstallForUser),
   },
   devTools: {
     detect: async (force?: boolean): Promise<DevToolsCheckResult> =>
@@ -792,6 +803,57 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.onboardingSetDismissed, { dismissed }),
     complete: async (): Promise<OnboardingStatus> =>
       ipcRenderer.invoke(IPC.onboardingComplete),
+    getTourProgress: async (): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingGetTourProgress),
+    markWizardCompleted: async (): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkWizardCompleted),
+    markWizardDismissed: async (): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkWizardDismissed),
+    markTourCompleted: async (tourId: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourCompleted, { tourId }),
+    markTourDismissed: async (tourId: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourDismissed, { tourId }),
+    updateTourStep: async (tourId: string, index: number): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingUpdateTourStep, { tourId, index }),
+    markGlossaryTermSeen: async (termId: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkGlossaryTermSeen, { termId }),
+    resetTourProgress: async (tourId?: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingResetTourProgress, { tourId }),
+    markTourCompletedVariant: async (
+      tourId: string,
+      variant: OnboardingTourVariant,
+    ): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourCompletedVariant, { tourId, variant }),
+    markTourDismissedVariant: async (
+      tourId: string,
+      variant: OnboardingTourVariant,
+    ): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourDismissedVariant, { tourId, variant }),
+    updateTourStepVariant: async (
+      tourId: string,
+      variant: OnboardingTourVariant,
+      index: number,
+    ): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingUpdateTourStepVariant, { tourId, variant, index }),
+    tutorial: {
+      start: async (): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialStart),
+      dismiss: async (permanent: boolean): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialDismiss, { permanent }),
+      complete: async (): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialComplete),
+      updateAct: async (
+        actIndex: number,
+        ctxSnapshot?: Record<string, unknown>,
+      ): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialUpdateAct, { actIndex, ctxSnapshot }),
+      setSilenced: async (silenced: boolean): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialSetSilenced, { silenced }),
+      clearSessionDismissal: async (): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialClearSessionDismissal),
+      shouldPrompt: async (): Promise<boolean> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialShouldPrompt),
+    },
   },
   automations: {
     list: async (): Promise<AutomationRuleSummary[]> =>
@@ -848,6 +910,41 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.automationsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.automationsEvent, listener);
     },
+  },
+  review: {
+    listLaunchContext: async (): Promise<ReviewLaunchContext> =>
+      ipcRenderer.invoke(IPC.reviewListLaunchContext),
+    listRuns: async (args: ReviewListRunsArgs = {}): Promise<ReviewRun[]> =>
+      ipcRenderer.invoke(IPC.reviewListRuns, args),
+    getRunDetail: async (runId: string): Promise<ReviewRunDetail | null> =>
+      ipcRenderer.invoke(IPC.reviewGetRunDetail, { runId }),
+    startRun: async (args: ReviewStartRunArgs): Promise<ReviewRun> =>
+      ipcRenderer.invoke(IPC.reviewStartRun, args),
+    rerun: async (runId: string): Promise<ReviewRun> =>
+      ipcRenderer.invoke(IPC.reviewRerun, { runId }),
+    cancelRun: async (runId: string): Promise<ReviewRun | null> =>
+      ipcRenderer.invoke(IPC.reviewCancelRun, { runId }),
+    recordFeedback: async (
+      args: import("../shared/types").ReviewRecordFeedbackArgs,
+    ): Promise<import("../shared/types").ReviewFeedbackRecord> =>
+      ipcRenderer.invoke(IPC.reviewRecordFeedback, args),
+    listSuppressions: async (
+      args: import("../shared/types").ReviewListSuppressionsArgs = {},
+    ): Promise<import("../shared/types").ReviewSuppression[]> =>
+      ipcRenderer.invoke(IPC.reviewListSuppressions, args),
+    deleteSuppression: async (suppressionId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.reviewDeleteSuppression, { suppressionId }),
+    qualityReport: async (): Promise<import("../shared/types").ReviewQualityReport> =>
+      ipcRenderer.invoke(IPC.reviewQualityReport),
+    onEvent: (cb: (ev: ReviewEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ReviewEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.reviewEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.reviewEvent, listener);
+    },
+  },
+  actions: {
+    listRegistry: async (): Promise<AdeActionRegistryEntry[]> =>
+      ipcRenderer.invoke(IPC.adeActionsListRegistry),
   },
   usage: {
     getSnapshot: async (): Promise<UsageSnapshot | null> =>
@@ -1330,6 +1427,8 @@ contextBridge.exposeInMainWorld("ade", {
     },
     listAutoRebaseStatuses: async (): Promise<AutoRebaseLaneStatus[]> =>
       ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses),
+    dismissAutoRebaseStatus: async (args: { laneId: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDismissAutoRebaseStatus, args),
     onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -1484,6 +1583,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.sessionsList, args),
     get: async (sessionId: string): Promise<TerminalSessionDetail | null> =>
       ipcRenderer.invoke(IPC.sessionsGet, { sessionId }),
+    delete: async (args: DeleteSessionArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.sessionsDelete, args),
     updateMeta: async (args: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> =>
       ipcRenderer.invoke(IPC.sessionsUpdateMeta, args),
     readTranscriptTail: async (args: ReadTranscriptTailArgs): Promise<string> =>
@@ -1510,6 +1611,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatGetSummary, args),
     create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
       ipcRenderer.invoke(IPC.agentChatCreate, args),
+    suggestLaneName: async (args: AgentChatSuggestLaneNameArgs): Promise<string> =>
+      ipcRenderer.invoke(IPC.agentChatSuggestLaneName, args),
+    parallelLaunchState: {
+      get: async (args: AgentChatParallelLaunchStateArgs): Promise<AgentChatParallelLaunchState | null> =>
+        ipcRenderer.invoke(IPC.agentChatParallelLaunchStateGet, args),
+      set: async (args: AgentChatSetParallelLaunchStateArgs): Promise<void> =>
+        ipcRenderer.invoke(IPC.agentChatParallelLaunchStateSet, args),
+    },
     handoff: async (
       args: AgentChatHandoffArgs,
     ): Promise<AgentChatHandoffResult> =>
@@ -1534,6 +1643,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatModels, args),
     dispose: async (args: AgentChatDisposeArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatDispose, args),
+    archive: async (args: AgentChatArchiveArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatArchive, args),
+    unarchive: async (args: AgentChatArchiveArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatUnarchive, args),
+    delete: async (args: AgentChatDeleteArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatDelete, args),
     updateSession: async (
       args: AgentChatUpdateSessionArgs,
     ): Promise<AgentChatSession> =>
@@ -1575,10 +1690,13 @@ contextBridge.exposeInMainWorld("ade", {
       filename: string;
     }): Promise<{ path: string }> =>
       ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
+    getEventHistory: async (args: {
+      sessionId: string;
+      maxEvents?: number;
+    }): Promise<{ sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean }> =>
+      ipcRenderer.invoke(IPC.agentChatGetEventHistory, args),
   },
   computerUse: {
-    getSettings: async (): Promise<ComputerUseSettingsSnapshot> =>
-      ipcRenderer.invoke(IPC.computerUseGetSettings),
     listArtifacts: async (
       args: ComputerUseArtifactListArgs = {},
     ): Promise<ComputerUseArtifactView[]> =>
@@ -1869,8 +1987,10 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   feedback: {
-    submit: async (args: FeedbackSubmitArgs): Promise<FeedbackSubmission> =>
-      ipcRenderer.invoke(IPC.feedbackSubmit, args),
+    prepareDraft: async (args: FeedbackPrepareDraftArgs): Promise<FeedbackPreparedDraft> =>
+      ipcRenderer.invoke(IPC.feedbackPrepareDraft, args),
+    submitDraft: async (args: FeedbackSubmitDraftArgs): Promise<FeedbackSubmission> =>
+      ipcRenderer.invoke(IPC.feedbackSubmitDraft, args),
     list: async (): Promise<FeedbackSubmission[]> =>
       ipcRenderer.invoke(IPC.feedbackList),
     onUpdate: (cb: (event: FeedbackSubmissionEvent) => void): (() => void) => {
@@ -1889,6 +2009,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.githubSetToken, { token }),
     clearToken: async (): Promise<GitHubStatus> =>
       ipcRenderer.invoke(IPC.githubClearToken),
+    detectRepo: async (): Promise<{ owner: string; name: string } | null> => {
+      const status = await ipcRenderer.invoke(IPC.githubGetStatus) as GitHubStatus;
+      return status.repo;
+    },
+    listRepoLabels: async (args: { owner: string; name: string }): Promise<Array<{ name: string; color?: string }>> =>
+      ipcRenderer.invoke(IPC.githubListRepoLabels, args),
+    listRepoCollaborators: async (args: { owner: string; name: string }): Promise<Array<{ login: string; avatarUrl?: string }>> =>
+      ipcRenderer.invoke(IPC.githubListRepoCollaborators, args),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>
@@ -2064,29 +2192,17 @@ contextBridge.exposeInMainWorld("ade", {
       args: ReplyToPrReviewThreadArgs,
     ): Promise<PrReviewThreadComment> =>
       ipcRenderer.invoke(IPC.prsReplyToReviewThread, args),
-    resolveReviewThread: async (
-      args: ResolvePrReviewThreadArgs,
-    ): Promise<void> => ipcRenderer.invoke(IPC.prsResolveReviewThread, args),
-    updateTitle: async (args: UpdatePrTitleArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsUpdateTitle, args),
-    updateBody: async (args: UpdatePrBodyArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsUpdateBody, args),
-    setLabels: async (args: SetPrLabelsArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsSetLabels, args),
-    requestReviewers: async (args: RequestPrReviewersArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsRequestReviewers, args),
-    submitReview: async (args: SubmitPrReviewArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsSubmitReview, args),
-    close: async (args: ClosePrArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsClose, args),
-    reopen: async (args: ReopenPrArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsReopen, args),
-    rerunChecks: async (args: RerunPrChecksArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsRerunChecks, args),
-    aiReviewSummary: async (
-      args: AiReviewSummaryArgs,
-    ): Promise<AiReviewSummary> =>
-      ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
+    resolveReviewThread: async (args: ResolvePrReviewThreadArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsResolveReviewThread, args),
+    updateTitle: async (args: UpdatePrTitleArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateTitle, args),
+    updateBody: async (args: UpdatePrBodyArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateBody, args),
+    setLabels: async (args: SetPrLabelsArgs): Promise<void> => ipcRenderer.invoke(IPC.prsSetLabels, args),
+    requestReviewers: async (args: RequestPrReviewersArgs): Promise<void> => ipcRenderer.invoke(IPC.prsRequestReviewers, args),
+    submitReview: async (args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> => ipcRenderer.invoke(IPC.prsSubmitReview, args),
+    close: async (args: ClosePrArgs): Promise<void> => ipcRenderer.invoke(IPC.prsClose, args),
+    reopen: async (args: ReopenPrArgs): Promise<void> => ipcRenderer.invoke(IPC.prsReopen, args),
+    rerunChecks: async (args: RerunPrChecksArgs): Promise<void> => ipcRenderer.invoke(IPC.prsRerunChecks, args),
+    aiReviewSummary: async (args: AiReviewSummaryArgs): Promise<AiReviewSummary> => ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
     issueInventorySync: async (prId: string): Promise<IssueInventorySnapshot> =>
       ipcRenderer.invoke(IPC.prsIssueInventorySync, { prId }),
     issueInventoryGet: async (prId: string): Promise<IssueInventorySnapshot> =>
@@ -2145,6 +2261,26 @@ contextBridge.exposeInMainWorld("ade", {
       args: CleanupIntegrationWorkflowArgs,
     ): Promise<CleanupIntegrationWorkflowResult> =>
       ipcRenderer.invoke(IPC.prsCleanupIntegrationWorkflow, args),
+    getDeployments: async (prId: string): Promise<PrDeployment[]> =>
+      ipcRenderer.invoke(IPC.prsGetDeployments, { prId }),
+    getAiSummary: async (prId: string): Promise<PrAiSummary | null> =>
+      ipcRenderer.invoke(IPC.prsGetAiSummary, { prId }),
+    regenerateAiSummary: async (prId: string): Promise<PrAiSummary> =>
+      ipcRenderer.invoke(IPC.prsRegenerateAiSummary, { prId }),
+    postReviewComment: async (
+      args: PostPrReviewCommentArgs,
+    ): Promise<PrReviewThreadComment> =>
+      ipcRenderer.invoke(IPC.prsPostReviewComment, args),
+    setReviewThreadResolved: async (
+      args: SetPrReviewThreadResolvedArgs,
+    ): Promise<SetPrReviewThreadResolvedResult> =>
+      ipcRenderer.invoke(IPC.prsSetReviewThreadResolved, args),
+    reactToComment: async (args: ReactToPrCommentArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsReactToComment, args),
+    launchIssueResolutionFromThread: async (
+      args: LaunchPrIssueResolutionFromThreadArgs,
+    ): Promise<LaunchPrIssueResolutionFromThreadResult> =>
+      ipcRenderer.invoke(IPC.prsLaunchIssueResolutionFromThread, args),
   },
   rebase: {
     scanNeeds: async (): Promise<RebaseNeed[]> =>
@@ -2201,11 +2337,11 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.processesListRuntime, { laneId }),
     start: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
       ipcRenderer.invoke(IPC.processesStart, args),
-    stop: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
+    stop: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> =>
       ipcRenderer.invoke(IPC.processesStop, args),
     restart: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
       ipcRenderer.invoke(IPC.processesRestart, args),
-    kill: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
+    kill: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> =>
       ipcRenderer.invoke(IPC.processesKill, args),
     startStack: async (args: ProcessStackArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.processesStartStack, args),

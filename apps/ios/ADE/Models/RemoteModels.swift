@@ -67,6 +67,59 @@ struct HostConnectionProfile: Codable, Equatable {
   }
 }
 
+struct MobileProjectSummary: Codable, Equatable, Identifiable {
+  var id: String
+  var displayName: String
+  var rootPath: String?
+  var defaultBaseRef: String?
+  var lastOpenedAt: String?
+  var laneCount: Int
+  var isAvailable: Bool
+  var isCached: Bool
+  var isOpen: Bool?
+
+  init(
+    id: String,
+    displayName: String,
+    rootPath: String? = nil,
+    defaultBaseRef: String? = nil,
+    lastOpenedAt: String? = nil,
+    laneCount: Int,
+    isAvailable: Bool,
+    isCached: Bool,
+    isOpen: Bool? = nil
+  ) {
+    self.id = id
+    self.displayName = displayName
+    self.rootPath = rootPath
+    self.defaultBaseRef = defaultBaseRef
+    self.lastOpenedAt = lastOpenedAt
+    self.laneCount = laneCount
+    self.isAvailable = isAvailable
+    self.isCached = isCached
+    self.isOpen = isOpen
+  }
+}
+
+struct MobileProjectCatalogPayload: Codable, Equatable {
+  var projects: [MobileProjectSummary]
+}
+
+struct MobileProjectConnectionPayload: Codable, Equatable {
+  var authKind: String
+  var token: String
+  var hostIdentity: SyncPairingHostIdentity
+  var port: Int
+  var addressCandidates: [SyncAddressCandidate]
+}
+
+struct MobileProjectSwitchResultPayload: Codable, Equatable {
+  var ok: Bool
+  var message: String?
+  var project: MobileProjectSummary?
+  var connection: MobileProjectConnectionPayload?
+}
+
 struct DiscoveredSyncHost: Codable, Equatable, Identifiable {
   var id: String
   var serviceName: String
@@ -96,15 +149,7 @@ struct SyncPairingQrPayload: Codable, Equatable {
   var version: Int
   var hostIdentity: SyncPairingHostIdentity
   var port: Int
-  var pairingCode: String
-  var expiresAt: String
   var addressCandidates: [SyncAddressCandidate]
-}
-
-struct SyncPairingSession: Codable, Equatable {
-  var code: String
-  var issuedAt: String
-  var expiresAt: String
 }
 
 enum SyncDomain: String, CaseIterable, Hashable {
@@ -134,6 +179,31 @@ struct SyncDomainStatus: Equatable {
   var lastHydratedAt: Date?
 
   static let disconnected = SyncDomainStatus(phase: .disconnected)
+}
+
+extension SyncDomainStatus {
+  /// Inline notice when the domain is in `.failed` but cached rows may still render (no empty-state card).
+  func inlineHydrationFailureNotice(for domain: SyncDomain) -> (title: String, message: String)? {
+    guard phase == .failed else { return nil }
+    let raw = lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let normalized = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    let message =
+      normalized.isEmpty
+      ? "Fresh data could not be loaded from the host. Cached content may be outdated until you retry or reconnect."
+      : normalized
+    let title: String
+    switch domain {
+    case .lanes:
+      title = "Lane hydration failed"
+    case .files:
+      title = "Files hydration failed"
+    case .work:
+      title = "Work hydration failed"
+    case .prs:
+      title = "PR hydration failed"
+    }
+    return (title, message)
+  }
 }
 
 struct LaneStatus: Codable, Equatable {
@@ -173,6 +243,15 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var folder: String?
   var createdAt: String
   var archivedAt: String?
+  var devicesOpen: [DeviceMarker]?
+}
+
+struct DeviceMarker: Codable, Identifiable, Equatable, Hashable {
+  var deviceId: String
+  var displayName: String
+  var platform: String
+
+  var id: String { deviceId }
 }
 
 enum RemoteJSONValue: Codable, Equatable {
@@ -224,6 +303,21 @@ enum RemoteJSONValue: Codable, Equatable {
   }
 }
 
+extension RemoteJSONValue {
+  var plainTextValue: String? {
+    switch self {
+    case .string(let value):
+      return value.isEmpty ? nil : value
+    case .number(let value):
+      return value.rounded() == value ? String(Int(value)) : String(value)
+    case .bool(let value):
+      return value ? "true" : "false"
+    case .object, .array, .null:
+      return nil
+    }
+  }
+}
+
 struct LaneRuntimeSummary: Codable, Equatable {
   var bucket: String
   var runningCount: Int
@@ -239,6 +333,23 @@ struct LaneStateSnapshotSummary: Codable, Equatable {
   var updatedAt: String?
 }
 
+public struct RebaseTargetCommit: Codable, Equatable, Identifiable {
+  public var id: String { sha }
+  public var sha: String
+  public var shortSha: String
+  public var subject: String
+  public var author: String
+  public var committedAt: String
+
+  public init(sha: String, shortSha: String, subject: String, author: String, committedAt: String) {
+    self.sha = sha
+    self.shortSha = shortSha
+    self.subject = subject
+    self.author = author
+    self.committedAt = committedAt
+  }
+}
+
 struct RebaseSuggestion: Codable, Equatable {
   var laneId: String
   var parentLaneId: String
@@ -248,6 +359,9 @@ struct RebaseSuggestion: Codable, Equatable {
   var deferredUntil: String?
   var dismissedAt: String?
   var hasPr: Bool
+  /// Commits the rebase would pull in. Optional so older hosts and legacy
+  /// snapshots continue to decode cleanly.
+  var targetCommits: [RebaseTargetCommit]? = nil
 }
 
 struct AutoRebaseLaneStatus: Codable, Equatable {
@@ -309,6 +423,18 @@ struct GitCommitSummary: Codable, Identifiable, Equatable {
   var authoredAt: String
   var subject: String
   var pushed: Bool
+}
+
+struct GitFileHistoryEntry: Codable, Identifiable, Equatable {
+  var id: String { commitSha }
+  var commitSha: String
+  var shortSha: String
+  var authorName: String
+  var authoredAt: String
+  var subject: String
+  var path: String
+  var previousPath: String?
+  var changeType: String
 }
 
 struct GitStashSummary: Codable, Identifiable, Equatable {
@@ -379,26 +505,1274 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var reasoningEffort: String?
   var executionMode: String?
   var permissionMode: String?
+  var interactionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var cursorModeSnapshot: RemoteJSONValue?
+  var cursorModeId: String?
+  var cursorConfigValues: [String: RemoteJSONValue]?
   var identityKey: String?
   var surface: String?
   var automationId: String?
   var automationRunId: String?
   var capabilityMode: String?
+  var computerUse: RemoteJSONValue?
   var completion: ChatCompletionReport?
   var status: String
+  var idleSinceAt: String?
   var startedAt: String
   var endedAt: String?
+  var archivedAt: String?
   var lastActivityAt: String
   var lastOutputPreview: String?
   var summary: String?
+  var awaitingInput: Bool?
   var threadId: String?
+  var requestedCwd: String?
+}
+
+struct CtoWorkerEntry: Codable, Identifiable, Hashable {
+  let agentId: String
+  let name: String
+  let avatarSeed: String?
+  let status: String
+  let sessionSummary: AgentChatSessionSummary?
+  var id: String { agentId }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(agentId)
+    hasher.combine(name)
+    hasher.combine(avatarSeed)
+    hasher.combine(status)
+    hasher.combine(sessionSummary?.sessionId)
+  }
+
+  static func == (lhs: CtoWorkerEntry, rhs: CtoWorkerEntry) -> Bool {
+    lhs.agentId == rhs.agentId
+      && lhs.name == rhs.name
+      && lhs.avatarSeed == rhs.avatarSeed
+      && lhs.status == rhs.status
+      && lhs.sessionSummary?.sessionId == rhs.sessionSummary?.sessionId
+  }
+}
+
+struct CtoRoster: Codable, Hashable {
+  let cto: AgentChatSessionSummary?
+  let workers: [CtoWorkerEntry]
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(cto?.sessionSummary())
+    hasher.combine(workers)
+  }
+
+  static func == (lhs: CtoRoster, rhs: CtoRoster) -> Bool {
+    lhs.cto == rhs.cto && lhs.workers == rhs.workers
+  }
+}
+
+private extension AgentChatSessionSummary {
+  /// Stable identity tuple for hashing contexts where full Hashable is unavailable
+  /// (e.g. nested `RemoteJSONValue` fields only conform to Equatable).
+  func sessionSummary() -> String {
+    "\(sessionId)|\(status)|\(lastActivityAt)"
+  }
+}
+
+// MARK: - CTO + Worker Agent Models (sync wire types)
+//
+// Field names mirror the desktop canonical types defined in
+// apps/desktop/src/shared/types/{cto,agents,linearSync}.ts. All status-ish
+// fields come through as plain `String` so unknown server values don't break
+// decoding (e.g. a future "deferred" run state).
+
+// MARK: CTO identity + memory
+
+struct CtoModelPreferences: Codable, Hashable {
+  var provider: String
+  var model: String
+  var reasoningEffort: String?
+}
+
+struct CtoCommunicationStyle: Codable, Hashable {
+  var verbosity: String
+  var proactivity: String
+  var escalationThreshold: String
+}
+
+/// Mirrors desktop `CtoIdentity`. The server has no top-level `id`; we
+/// derive one from `name` for SwiftUI Identifiable semantics.
+struct CtoIdentity: Codable, Hashable, Identifiable {
+  var id: String { name }
+  var name: String
+  var version: Int?
+  var persona: String?
+  var personality: String?
+  var customPersonality: String?
+  var communicationStyle: CtoCommunicationStyle?
+  var constraints: [String]?
+  var systemPromptExtension: String?
+  var modelPreferences: CtoModelPreferences
+  var updatedAt: String?
+
+  /// Flat accessor used by UI code.
+  var provider: String { modelPreferences.provider }
+  /// Flat accessor used by UI code.
+  var model: String { modelPreferences.model }
+  /// Flat accessor used by UI code.
+  var reasoningEffort: String? { modelPreferences.reasoningEffort }
+}
+
+/// Patch sent to `cto.updateIdentity`. Nested `modelPreferences` so the
+/// desktop can merge cleanly.
+struct CtoIdentityPatch: Codable, Hashable {
+  var name: String?
+  var personality: String?
+  var customPersonality: String?
+  var communicationStyle: CtoCommunicationStyle?
+  var constraints: [String]?
+  var systemPromptExtension: String?
+  var modelPreferences: CtoModelPreferences?
+}
+
+/// Mirrors desktop `CtoCoreMemory`.
+struct CtoCoreMemory: Codable, Hashable {
+  var version: Int?
+  var updatedAt: String?
+  var projectSummary: String
+  var criticalConventions: [String]
+  var userPreferences: [String]
+  var activeFocus: [String]
+  var notes: [String]
+}
+
+struct CtoCoreMemoryPatch: Codable, Hashable {
+  var projectSummary: String?
+  var criticalConventions: [String]?
+  var userPreferences: [String]?
+  var activeFocus: [String]?
+  var notes: [String]?
+}
+
+/// Mirrors desktop `CtoSessionLogEntry`.
+struct CtoRecentSession: Codable, Hashable, Identifiable {
+  var id: String
+  var sessionId: String
+  var summary: String
+  var startedAt: String
+  var endedAt: String?
+  var provider: String?
+  var modelId: String?
+  var capabilityMode: String?
+  var createdAt: String?
+}
+
+/// Mirrors desktop `CtoSnapshot`.
+struct CtoSnapshot: Codable, Hashable {
+  var identity: CtoIdentity
+  var coreMemory: CtoCoreMemory
+  var recentSessions: [CtoRecentSession]?
+}
+
+// MARK: Worker agents
+
+/// Subset of desktop `AgentAdapterConfig` — only the fields the mobile UI
+/// actually surfaces. Adapter-specific payloads land under free-form keys;
+/// we just pull out `provider`/`model` heuristically.
+struct AgentAdapterConfig: Codable, Hashable {
+  var provider: String?
+  var model: String?
+  var modelId: String?
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: DynamicKey.self)
+    let keyNames = Set(c.allKeys.map(\.stringValue))
+    provider = keyNames.contains("provider")
+      ? try c.decodeIfPresent(String.self, forKey: DynamicKey(stringValue: "provider")!)
+      : nil
+    model = keyNames.contains("model")
+      ? try c.decodeIfPresent(String.self, forKey: DynamicKey(stringValue: "model")!)
+      : nil
+    modelId = keyNames.contains("modelId")
+      ? try c.decodeIfPresent(String.self, forKey: DynamicKey(stringValue: "modelId")!)
+      : nil
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: DynamicKey.self)
+    if let provider { try c.encode(provider, forKey: DynamicKey(stringValue: "provider")!) }
+    if let model { try c.encode(model, forKey: DynamicKey(stringValue: "model")!) }
+    if let modelId { try c.encode(modelId, forKey: DynamicKey(stringValue: "modelId")!) }
+  }
+
+  private struct DynamicKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+  }
+}
+
+/// Mirrors desktop `AgentIdentity`. `model` and `provider` are pulled from
+/// `adapterConfig` by the computed properties below for display.
+struct AgentIdentity: Codable, Hashable, Identifiable {
+  var id: String
+  var name: String
+  var slug: String?
+  var role: String
+  var title: String?
+  var reportsTo: String?
+  var capabilities: [String]
+  /// Raw status string from the server. Validate client-side against
+  /// {"idle", "active", "paused", "running"} before acting on it.
+  var status: String
+  var adapterType: String
+  var adapterConfig: AgentAdapterConfig?
+  var personality: String?
+  var systemPromptExtension: String?
+  var budgetMonthlyCents: Int?
+  var spentMonthlyCents: Int?
+  var lastHeartbeatAt: String?
+  var createdAt: String?
+  var updatedAt: String?
+
+  /// Flat accessors used by UI. Falls back through adapterConfig so the UI
+  /// never has to know the nested shape.
+  var model: String? { adapterConfig?.model ?? adapterConfig?.modelId }
+  var provider: String? { adapterConfig?.provider }
+}
+
+/// `cto.getAgentCoreMemory` returns the same shape as `CtoCoreMemory` — the
+/// desktop service reuses the `AgentCoreMemory` type which has the same
+/// fields. Keep as a typealias so UI call sites read naturally.
+typealias AgentCoreMemory = CtoCoreMemory
+
+struct AgentConfigRevision: Codable, Hashable, Identifiable {
+  var id: String
+  var agentId: String
+  var createdAt: String
+  var changedKeys: [String]
+  var hadRedactions: Bool?
+  var actor: String?
+  var note: String?
+}
+
+/// Mirrors desktop `WorkerAgentRun`. Desktop uses `finishedAt`, not `endedAt`,
+/// and `startedAt` is nullable.
+struct WorkerAgentRun: Codable, Hashable, Identifiable {
+  var id: String
+  var agentId: String
+  /// Raw status string from the server (e.g. "queued", "deferred", "running",
+  /// "completed", "failed", "cancelled", "skipped"). Kept as `String` for
+  /// forward compatibility.
+  var status: String
+  var wakeupReason: String?
+  var taskKey: String?
+  var issueKey: String?
+  var executionRunId: String?
+  var errorMessage: String?
+  var startedAt: String?
+  var finishedAt: String?
+  var createdAt: String
+  var updatedAt: String?
+
+  /// Human-facing title. Desktop has no dedicated title field, so we derive
+  /// one from the best available context.
+  var displayTitle: String {
+    if let issueKey, !issueKey.isEmpty { return issueKey }
+    if let taskKey, !taskKey.isEmpty { return taskKey }
+    return id
+  }
+}
+
+struct AgentSessionLogEntry: Codable, Hashable, Identifiable {
+  var id: String
+  var sessionId: String?
+  var summary: String?
+  var startedAt: String?
+  var endedAt: String?
+  var provider: String?
+  var modelId: String?
+  var capabilityMode: String?
+  var createdAt: String?
+}
+
+/// Mirrors desktop `AgentBudgetSummary` (the per-worker entry).
+struct AgentBudgetSnapshotWorker: Codable, Hashable, Identifiable {
+  var id: String { agentId }
+  var agentId: String
+  var name: String
+  var budgetMonthlyCents: Int
+  var spentMonthlyCents: Int
+  var exactSpentCents: Int?
+  var estimatedSpentCents: Int?
+  var remainingCents: Int?
+  var status: String?
+}
+
+/// Mirrors desktop `AgentBudgetSnapshot`. Field name is
+/// `companyBudgetMonthlyCents`, not `companyCapMonthlyCents`.
+struct AgentBudgetSnapshot: Codable, Hashable {
+  var computedAt: String?
+  var monthKey: String?
+  var companyBudgetMonthlyCents: Int
+  var companySpentMonthlyCents: Int
+  var companyExactSpentCents: Int?
+  var companyEstimatedSpentCents: Int?
+  var companyRemainingCents: Int?
+  var workers: [AgentBudgetSnapshotWorker]
+
+  /// UI-friendly alias. Zero means "no cap tracked".
+  var companyCapMonthlyCents: Int? {
+    companyBudgetMonthlyCents > 0 ? companyBudgetMonthlyCents : nil
+  }
+}
+
+// MARK: Linear sync
+
+/// Mirrors desktop `LinearConnectionStatus` (as returned by
+/// `cto.getLinearConnectionStatus`).
+struct LinearConnectionStatus: Codable, Hashable {
+  var tokenStored: Bool?
+  var connected: Bool
+  var viewerId: String?
+  var viewerName: String?
+  var projectCount: Int?
+  var projectPreview: [String]?
+  var checkedAt: String?
+  var message: String?
+  var authMode: String?
+  var oauthAvailable: Bool?
+  var tokenExpiresAt: String?
+
+  /// Convenience for the connection strip header.
+  var lastSyncAt: String? { checkedAt }
+}
+
+/// Flattens the desktop `LinearWorkflowTrigger` / `LinearWorkflowTarget`
+/// objects into short display strings. Keeps the raw JSON around so a
+/// re-encode doesn't destroy unknown fields.
+struct LinearWorkflowDefinition: Codable, Hashable, Identifiable {
+  var id: String
+  var name: String
+  var enabled: Bool
+  var priority: Int?
+  var description: String?
+
+  /// Short display string derived from the server's nested `triggers` object.
+  var triggerDisplay: String
+  /// Short display string derived from the server's nested `target` object.
+  var targetDisplay: String
+
+  private enum CodingKeys: String, CodingKey {
+    case id, name, enabled, priority, description, triggers, target
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(String.self, forKey: .id)
+    name = try c.decode(String.self, forKey: .name)
+    enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+    priority = try c.decodeIfPresent(Int.self, forKey: .priority)
+    description = try c.decodeIfPresent(String.self, forKey: .description)
+
+    // Triggers is a structured object on desktop; flatten to a short label.
+    let triggersValue = try? c.decode(AnyDecodable.self, forKey: .triggers)
+    triggerDisplay = Self.describeTrigger(triggersValue?.value)
+
+    let targetValue = try? c.decode(AnyDecodable.self, forKey: .target)
+    targetDisplay = Self.describeTarget(targetValue?.value)
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(id, forKey: .id)
+    try c.encode(name, forKey: .name)
+    try c.encode(enabled, forKey: .enabled)
+    try c.encodeIfPresent(priority, forKey: .priority)
+    try c.encodeIfPresent(description, forKey: .description)
+  }
+
+  private static func describeTrigger(_ value: Any?) -> String {
+    guard let dict = value as? [String: Any] else { return "—" }
+    // LinearWorkflowTrigger typically has: { labels?: [], priorities?: [],
+    // assignees?: [], states?: [], ... }. Pick the first present key and
+    // summarize its values.
+    let keys = ["labels", "priorities", "assignees", "states", "projects", "teams", "cycles"]
+    for key in keys {
+      if let arr = dict[key] as? [Any], !arr.isEmpty {
+        let values = arr.compactMap { $0 as? String }
+        if !values.isEmpty {
+          return "\(key): \(values.prefix(3).joined(separator: ", "))"
+        }
+      }
+    }
+    if let any = dict["any"] as? Bool, any { return "any issue" }
+    return "custom"
+  }
+
+  private static func describeTarget(_ value: Any?) -> String {
+    guard let dict = value as? [String: Any] else { return "—" }
+    // LinearWorkflowTarget typically has: { kind: "mission" | "worker_run" | ...,
+    // workerId?, missionTemplateId?, ... }
+    if let kind = dict["kind"] as? String {
+      if let workerId = dict["workerId"] as? String, kind == "worker_run" {
+        return "worker run · \(workerId)"
+      }
+      return kind.replacingOccurrences(of: "_", with: " ")
+    }
+    return "—"
+  }
+}
+
+struct LinearWorkflowConfig: Codable, Hashable {
+  var workflows: [LinearWorkflowDefinition]
+}
+
+/// Mirrors desktop `LinearSyncDashboard`. The UI summarizes `queue.*` into
+/// flat counters via the computed properties below.
+struct LinearSyncDashboardQueue: Codable, Hashable {
+  var queued: Int
+  var retryWaiting: Int
+  var escalated: Int
+  var dispatched: Int
+  var failed: Int
+}
+
+struct LinearSyncDashboard: Codable, Hashable {
+  var enabled: Bool?
+  var running: Bool?
+  var reconciliationIntervalSec: Int?
+  var lastPollAt: String?
+  var lastSuccessAt: String?
+  var lastError: String?
+  var queue: LinearSyncDashboardQueue?
+  var claimsActive: Int?
+  var watchOnlyHits: Int?
+
+  var queuedCount: Int { queue?.queued ?? 0 }
+  /// "Running" in mobile UI = dispatched (active) + escalated (needs attention).
+  var runningCount: Int { (queue?.dispatched ?? 0) }
+  /// "Completed" isn't tracked on the dashboard; show claims-active as a
+  /// loose proxy for "work completed this cycle".
+  var completedCount: Int { claimsActive ?? 0 }
+  var failedCount: Int? { queue?.failed }
+}
+
+struct LinearSyncQueueItem: Codable, Hashable, Identifiable {
+  var id: String
+  var issueId: String
+  var title: String?
+  var status: String
+  var dispatchedAt: String?
+  var updatedAt: String?
+}
+
+struct LinearIngressEventRecord: Codable, Hashable, Identifiable {
+  var id: String
+  var issueId: String?
+  /// Raw ingress event kind (e.g. "issue.created", "issue.updated").
+  var kind: String
+  var summary: String?
+  var timestamp: String?
+  var receivedAt: String?
+
+  /// UI-friendly timestamp preferring the most explicit field available.
+  var displayTimestamp: String? { timestamp ?? receivedAt }
+  /// Issue ID is optional on desktop — fall back to "—" for display.
+  var displayIssueId: String { issueId ?? "—" }
+}
+
+struct CtoTriggerAgentWakeupResult: Codable, Hashable {
+  var ok: Bool?
+  var runId: String?
+  var message: String?
+}
+
+/// Small type-erased decoder used when we need to decode JSON values of
+/// unknown shape (currently only for LinearWorkflowDefinition's nested
+/// triggers/target trees).
+private struct AnyDecodable: Decodable {
+  let value: Any
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    if let bool = try? container.decode(Bool.self) { value = bool; return }
+    if let int = try? container.decode(Int.self) { value = int; return }
+    if let double = try? container.decode(Double.self) { value = double; return }
+    if let string = try? container.decode(String.self) { value = string; return }
+    if let array = try? container.decode([AnyDecodable].self) {
+      value = array.map { $0.value }; return
+    }
+    if let dict = try? container.decode([String: AnyDecodable].self) {
+      value = dict.mapValues { $0.value }; return
+    }
+    if container.decodeNil() { value = NSNull(); return }
+    value = NSNull()
+  }
+}
+
+struct AgentChatSession: Codable, Identifiable, Equatable {
+  var id: String { sessionId }
+  var sessionId: String
+  var laneId: String
+  var provider: String
+  var model: String
+  var modelId: String?
+  var sessionProfile: String?
+  var reasoningEffort: String?
+  var executionMode: String?
+  var permissionMode: String?
+  var interactionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var cursorModeSnapshot: RemoteJSONValue?
+  var cursorModeId: String?
+  var cursorConfigValues: [String: RemoteJSONValue]?
+  var unifiedPermissionMode: String?
+  var identityKey: String?
+  var surface: String?
+  var automationId: String?
+  var automationRunId: String?
+  var capabilityMode: String?
+  var computerUse: RemoteJSONValue?
+  var completion: ChatCompletionReport?
+  var status: String
+  var idleSinceAt: String?
+  var archivedAt: String?
+  var threadId: String?
+  var requestedCwd: String?
+  var createdAt: String
+  var lastActivityAt: String
+
+  enum CodingKeys: String, CodingKey {
+    case id
+    case sessionId
+    case laneId
+    case provider
+    case model
+    case modelId
+    case sessionProfile
+    case reasoningEffort
+    case executionMode
+    case permissionMode
+    case interactionMode
+    case claudePermissionMode
+    case codexApprovalPolicy
+    case codexSandbox
+    case codexConfigSource
+    case opencodePermissionMode
+    case cursorModeSnapshot
+    case cursorModeId
+    case cursorConfigValues
+    case unifiedPermissionMode
+    case identityKey
+    case surface
+    case automationId
+    case automationRunId
+    case capabilityMode
+    case computerUse
+    case completion
+    case status
+    case idleSinceAt
+    case archivedAt
+    case threadId
+    case requestedCwd
+    case createdAt
+    case lastActivityAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId)
+      ?? container.decode(String.self, forKey: .id)
+    laneId = try container.decode(String.self, forKey: .laneId)
+    provider = try container.decode(String.self, forKey: .provider)
+    model = try container.decode(String.self, forKey: .model)
+    modelId = try container.decodeIfPresent(String.self, forKey: .modelId)
+    sessionProfile = try container.decodeIfPresent(String.self, forKey: .sessionProfile)
+    reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+    executionMode = try container.decodeIfPresent(String.self, forKey: .executionMode)
+    permissionMode = try container.decodeIfPresent(String.self, forKey: .permissionMode)
+    interactionMode = try container.decodeIfPresent(String.self, forKey: .interactionMode)
+    claudePermissionMode = try container.decodeIfPresent(String.self, forKey: .claudePermissionMode)
+    codexApprovalPolicy = try container.decodeIfPresent(String.self, forKey: .codexApprovalPolicy)
+    codexSandbox = try container.decodeIfPresent(String.self, forKey: .codexSandbox)
+    codexConfigSource = try container.decodeIfPresent(String.self, forKey: .codexConfigSource)
+    opencodePermissionMode = try container.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
+    cursorModeSnapshot = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
+    cursorModeId = try container.decodeIfPresent(String.self, forKey: .cursorModeId)
+    cursorConfigValues = try container.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
+    unifiedPermissionMode = try container.decodeIfPresent(String.self, forKey: .unifiedPermissionMode)
+    identityKey = try container.decodeIfPresent(String.self, forKey: .identityKey)
+    surface = try container.decodeIfPresent(String.self, forKey: .surface)
+    automationId = try container.decodeIfPresent(String.self, forKey: .automationId)
+    automationRunId = try container.decodeIfPresent(String.self, forKey: .automationRunId)
+    capabilityMode = try container.decodeIfPresent(String.self, forKey: .capabilityMode)
+    computerUse = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .computerUse)
+    completion = try container.decodeIfPresent(ChatCompletionReport.self, forKey: .completion)
+    status = try container.decode(String.self, forKey: .status)
+    idleSinceAt = try container.decodeIfPresent(String.self, forKey: .idleSinceAt)
+    archivedAt = try container.decodeIfPresent(String.self, forKey: .archivedAt)
+    threadId = try container.decodeIfPresent(String.self, forKey: .threadId)
+    requestedCwd = try container.decodeIfPresent(String.self, forKey: .requestedCwd)
+    createdAt = try container.decode(String.self, forKey: .createdAt)
+    lastActivityAt = try container.decodeIfPresent(String.self, forKey: .lastActivityAt) ?? createdAt
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(sessionId, forKey: .sessionId)
+    try container.encode(laneId, forKey: .laneId)
+    try container.encode(provider, forKey: .provider)
+    try container.encode(model, forKey: .model)
+    try container.encodeIfPresent(modelId, forKey: .modelId)
+    try container.encodeIfPresent(sessionProfile, forKey: .sessionProfile)
+    try container.encodeIfPresent(reasoningEffort, forKey: .reasoningEffort)
+    try container.encodeIfPresent(executionMode, forKey: .executionMode)
+    try container.encodeIfPresent(permissionMode, forKey: .permissionMode)
+    try container.encodeIfPresent(interactionMode, forKey: .interactionMode)
+    try container.encodeIfPresent(claudePermissionMode, forKey: .claudePermissionMode)
+    try container.encodeIfPresent(codexApprovalPolicy, forKey: .codexApprovalPolicy)
+    try container.encodeIfPresent(codexSandbox, forKey: .codexSandbox)
+    try container.encodeIfPresent(codexConfigSource, forKey: .codexConfigSource)
+    try container.encodeIfPresent(opencodePermissionMode, forKey: .opencodePermissionMode)
+    try container.encodeIfPresent(cursorModeSnapshot, forKey: .cursorModeSnapshot)
+    try container.encodeIfPresent(cursorModeId, forKey: .cursorModeId)
+    try container.encodeIfPresent(cursorConfigValues, forKey: .cursorConfigValues)
+    try container.encodeIfPresent(unifiedPermissionMode, forKey: .unifiedPermissionMode)
+    try container.encodeIfPresent(identityKey, forKey: .identityKey)
+    try container.encodeIfPresent(surface, forKey: .surface)
+    try container.encodeIfPresent(automationId, forKey: .automationId)
+    try container.encodeIfPresent(automationRunId, forKey: .automationRunId)
+    try container.encodeIfPresent(capabilityMode, forKey: .capabilityMode)
+    try container.encodeIfPresent(computerUse, forKey: .computerUse)
+    try container.encodeIfPresent(completion, forKey: .completion)
+    try container.encode(status, forKey: .status)
+    try container.encodeIfPresent(idleSinceAt, forKey: .idleSinceAt)
+    try container.encodeIfPresent(threadId, forKey: .threadId)
+    try container.encodeIfPresent(requestedCwd, forKey: .requestedCwd)
+    try container.encode(createdAt, forKey: .createdAt)
+    try container.encode(lastActivityAt, forKey: .lastActivityAt)
+  }
+}
+
+struct AgentChatCompletionArtifact: Codable, Equatable {
+  var type: String
+  var description: String
+  var reference: String?
 }
 
 struct ChatCompletionReport: Codable, Equatable {
   var timestamp: String
   var summary: String
   var status: String
+  var artifacts: [AgentChatCompletionArtifact]?
   var blockerDescription: String?
+}
+
+enum AgentChatApprovalDecision: String, Codable, Equatable {
+  case accept
+  case acceptForSession = "accept_for_session"
+  case decline
+  case cancel
+}
+
+enum AgentChatFileChangeKind: String, Codable, Equatable {
+  case create
+  case modify
+  case delete
+}
+
+enum AgentChatTurnStatus: String, Codable, Equatable {
+  case started
+  case completed
+  case interrupted
+  case failed
+}
+
+enum AgentChatActivityKind: String, Codable, Equatable {
+  case thinking
+  case working
+  case editingFile = "editing_file"
+  case runningCommand = "running_command"
+  case searching
+  case reading
+  case toolCalling = "tool_calling"
+  case webSearching = "web_searching"
+  case spawningAgent = "spawning_agent"
+}
+
+enum AgentChatNoticeKind: String, Codable, Equatable {
+  case auth
+  case rateLimit = "rate_limit"
+  case hook
+  case filePersist = "file_persist"
+  case info
+  case memory
+  case providerHealth = "provider_health"
+  case threadError = "thread_error"
+}
+
+enum AgentChatApprovalRequestKind: String, Codable, Equatable {
+  case command
+  case fileChange = "file_change"
+  case toolCall = "tool_call"
+}
+
+enum AgentChatSubagentStatus: String, Codable, Equatable {
+  case completed
+  case failed
+  case stopped
+}
+
+enum AgentChatTodoStatus: String, Codable, Equatable {
+  case pending
+  case inProgress = "in_progress"
+  case completed
+}
+
+enum AgentChatAutoApprovalReviewStatus: String, Codable, Equatable {
+  case started
+  case completed
+}
+
+enum AgentChatContextCompactTrigger: String, Codable, Equatable {
+  case manual
+  case auto
+}
+
+enum AgentChatInputAnswerValue: Equatable {
+  case string(String)
+  case strings([String])
+}
+
+extension AgentChatInputAnswerValue: Codable {
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    if let string = try? container.decode(String.self) {
+      self = .string(string)
+      return
+    }
+    if let strings = try? container.decode([String].self) {
+      self = .strings(strings)
+      return
+    }
+    throw DecodingError.typeMismatch(
+      AgentChatInputAnswerValue.self,
+      DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Unsupported chat input answer value.")
+    )
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    switch self {
+    case .string(let value):
+      try container.encode(value)
+    case .strings(let value):
+      try container.encode(value)
+    }
+  }
+}
+
+struct AgentChatPlanStep: Codable, Equatable {
+  var text: String
+  var status: String
+}
+
+struct AgentChatStructuredQuestionOption: Codable, Equatable {
+  var label: String
+  var value: String
+  var description: String?
+  var recommended: Bool?
+  var preview: String?
+  var previewFormat: String?
+}
+
+struct AgentChatTodoItem: Codable, Equatable {
+  var id: String
+  var description: String
+  var status: AgentChatTodoStatus
+}
+
+struct AgentChatSubagentUsage: Codable, Equatable {
+  var totalTokens: Int?
+  var toolUses: Int?
+  var durationMs: Int?
+}
+
+struct AgentChatTurnUsage: Codable, Equatable {
+  var inputTokens: Int?
+  var outputTokens: Int?
+  var cacheReadTokens: Int?
+  var cacheCreationTokens: Int?
+}
+
+struct AgentChatEventProvenance: Decodable, Equatable {
+  var messageId: String?
+  var threadId: String?
+  var role: String?
+  var targetKind: String?
+  var sourceSessionId: String?
+  var attemptId: String?
+  var stepKey: String?
+  var laneId: String?
+  var runId: String?
+}
+
+struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
+  var id: String {
+    let sequencePart = sequence.map(String.init) ?? timestamp
+    return "\(sessionId):\(sequencePart)"
+  }
+
+  var sessionId: String
+  var timestamp: String
+  var event: AgentChatEvent
+  var sequence: Int?
+  var provenance: AgentChatEventProvenance?
+}
+
+struct AgentChatFileRef: Codable, Equatable {
+  var path: String
+  var type: String
+}
+
+enum AgentChatEvent: Decodable, Equatable {
+  case userMessage(text: String, attachments: [AgentChatFileRef]?, turnId: String?, steerId: String?, deliveryState: String?, processed: Bool?)
+  case text(text: String, messageId: String?, turnId: String?, itemId: String?)
+  case toolCall(tool: String, args: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?)
+  case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?)
+  case fileChange(path: String, diff: String, kind: AgentChatFileChangeKind, itemId: String, logicalItemId: String?, turnId: String?, status: String?)
+  case command(command: String, cwd: String, output: String, itemId: String, logicalItemId: String?, turnId: String?, exitCode: Int?, durationMs: Int?, status: String)
+  case plan(steps: [AgentChatPlanStep], turnId: String?, explanation: String?)
+  case reasoning(text: String, turnId: String?, itemId: String?, summaryIndex: Int?)
+  case approvalRequest(itemId: String, logicalItemId: String?, kind: AgentChatApprovalRequestKind, description: String, turnId: String?, detail: RemoteJSONValue?)
+  case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
+  case status(turnStatus: AgentChatTurnStatus, turnId: String?, message: String?)
+  case delegationState(contract: RemoteJSONValue, message: String?, turnId: String?)
+  case error(message: String, turnId: String?, itemId: String?, errorInfo: RemoteJSONValue?)
+  case done(turnId: String, status: AgentChatTurnStatus, model: String?, modelId: String?, usage: AgentChatTurnUsage?, costUsd: Double?)
+  case activity(activity: AgentChatActivityKind, detail: String?, turnId: String?)
+  case stepBoundary(stepNumber: Int, turnId: String?)
+  case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
+  case subagentStarted(taskId: String, description: String, background: Bool?, turnId: String?)
+  case subagentProgress(taskId: String, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, turnId: String?)
+  case subagentResult(taskId: String, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, turnId: String?)
+  case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
+  case toolUseSummary(summary: String, toolUseIds: [String], turnId: String?)
+  case contextCompact(trigger: AgentChatContextCompactTrigger, preTokens: Int?, turnId: String?)
+  case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?, steerId: String?)
+  case completionReport(report: ChatCompletionReport, turnId: String?)
+  case webSearch(query: String, action: String?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
+  case autoApprovalReview(targetItemId: String, reviewStatus: AgentChatAutoApprovalReviewStatus, action: String?, review: String?, turnId: String?)
+  case promptSuggestion(suggestion: String, turnId: String?)
+  case planText(text: String, turnId: String?, itemId: String?)
+  case unknown(type: String)
+}
+
+extension AgentChatEvent {
+  private enum CodingKeys: String, CodingKey {
+    case type
+    case text
+    case attachments
+    case turnId
+    case steerId
+    case deliveryState
+    case processed
+    case messageId
+    case itemId
+    case logicalItemId
+    case parentItemId
+    case tool
+    case args
+    case result
+    case path
+    case diff
+    case kind
+    case command
+    case cwd
+    case output
+    case exitCode
+    case durationMs
+    case steps
+    case explanation
+    case summary
+    case summaryIndex
+    case description
+    case detail
+    case turnStatus
+    case contract
+    case message
+    case errorInfo
+    case status
+    case model
+    case modelId
+    case usage
+    case costUsd
+    case activity
+    case stepNumber
+    case items
+    case taskId
+    case background
+    case lastToolName
+    case question
+    case options
+    case toolUseIds
+    case trigger
+    case preTokens
+    case noticeKind
+    case report
+    case query
+    case action
+    case reviewStatus
+    case review
+    case suggestion
+    case targetItemId
+    case resolution
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let type = try container.decode(String.self, forKey: .type)
+
+    switch type {
+    case "user_message":
+      self = .userMessage(
+        text: try container.decode(String.self, forKey: .text),
+        attachments: try container.decodeIfPresent([AgentChatFileRef].self, forKey: .attachments),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        steerId: try container.decodeIfPresent(String.self, forKey: .steerId),
+        deliveryState: try container.decodeIfPresent(String.self, forKey: .deliveryState),
+        processed: try container.decodeIfPresent(Bool.self, forKey: .processed)
+      )
+    case "text":
+      self = .text(
+        text: try container.decode(String.self, forKey: .text),
+        messageId: try container.decodeIfPresent(String.self, forKey: .messageId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId)
+      )
+    case "tool_call":
+      self = .toolCall(
+        tool: try container.decode(String.self, forKey: .tool),
+        args: try container.decode(RemoteJSONValue.self, forKey: .args),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        parentItemId: try container.decodeIfPresent(String.self, forKey: .parentItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "tool_result":
+      self = .toolResult(
+        tool: try container.decode(String.self, forKey: .tool),
+        result: try container.decode(RemoteJSONValue.self, forKey: .result),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        parentItemId: try container.decodeIfPresent(String.self, forKey: .parentItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        status: try container.decodeIfPresent(String.self, forKey: .status)
+      )
+    case "file_change":
+      self = .fileChange(
+        path: try container.decode(String.self, forKey: .path),
+        diff: try container.decode(String.self, forKey: .diff),
+        kind: try container.decode(AgentChatFileChangeKind.self, forKey: .kind),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        status: try container.decodeIfPresent(String.self, forKey: .status)
+      )
+    case "command":
+      self = .command(
+        command: try container.decode(String.self, forKey: .command),
+        cwd: try container.decode(String.self, forKey: .cwd),
+        output: try container.decode(String.self, forKey: .output),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        exitCode: try container.decodeIfPresent(Int.self, forKey: .exitCode),
+        durationMs: try container.decodeIfPresent(Int.self, forKey: .durationMs),
+        status: try container.decode(String.self, forKey: .status)
+      )
+    case "plan":
+      self = .plan(
+        steps: try container.decode([AgentChatPlanStep].self, forKey: .steps),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        explanation: try container.decodeIfPresent(String.self, forKey: .explanation)
+      )
+    case "reasoning":
+      self = .reasoning(
+        text: try container.decode(String.self, forKey: .text),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
+        summaryIndex: try container.decodeIfPresent(Int.self, forKey: .summaryIndex)
+      )
+    case "approval_request":
+      self = .approvalRequest(
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        kind: try container.decode(AgentChatApprovalRequestKind.self, forKey: .kind),
+        description: try container.decode(String.self, forKey: .description),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail)
+      )
+    case "pending_input_resolved":
+      self = .pendingInputResolved(
+        itemId: try container.decode(String.self, forKey: .itemId),
+        resolution: try container.decode(String.self, forKey: .resolution),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "status":
+      self = .status(
+        turnStatus: try container.decode(AgentChatTurnStatus.self, forKey: .turnStatus),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        message: try container.decodeIfPresent(String.self, forKey: .message)
+      )
+    case "delegation_state":
+      self = .delegationState(
+        contract: try container.decode(RemoteJSONValue.self, forKey: .contract),
+        message: try container.decodeIfPresent(String.self, forKey: .message),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "error":
+      self = .error(
+        message: try container.decode(String.self, forKey: .message),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
+        errorInfo: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .errorInfo)
+      )
+    case "done":
+      self = .done(
+        turnId: try container.decode(String.self, forKey: .turnId),
+        status: try container.decode(AgentChatTurnStatus.self, forKey: .status),
+        model: try container.decodeIfPresent(String.self, forKey: .model),
+        modelId: try container.decodeIfPresent(String.self, forKey: .modelId),
+        usage: try container.decodeIfPresent(AgentChatTurnUsage.self, forKey: .usage),
+        costUsd: try container.decodeIfPresent(Double.self, forKey: .costUsd)
+      )
+    case "activity":
+      self = .activity(
+        activity: try container.decode(AgentChatActivityKind.self, forKey: .activity),
+        detail: try container.decodeIfPresent(String.self, forKey: .detail),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "step_boundary":
+      self = .stepBoundary(
+        stepNumber: try container.decode(Int.self, forKey: .stepNumber),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "todo_update":
+      self = .todoUpdate(
+        items: try container.decode([AgentChatTodoItem].self, forKey: .items),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "subagent_started":
+      self = .subagentStarted(
+        taskId: try container.decode(String.self, forKey: .taskId),
+        description: try container.decode(String.self, forKey: .description),
+        background: try container.decodeIfPresent(Bool.self, forKey: .background),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "subagent_progress":
+      self = .subagentProgress(
+        taskId: try container.decode(String.self, forKey: .taskId),
+        description: try container.decodeIfPresent(String.self, forKey: .description),
+        summary: try container.decode(String.self, forKey: .summary),
+        usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
+        lastToolName: try container.decodeIfPresent(String.self, forKey: .lastToolName),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "subagent_result":
+      self = .subagentResult(
+        taskId: try container.decode(String.self, forKey: .taskId),
+        status: try container.decode(AgentChatSubagentStatus.self, forKey: .status),
+        summary: try container.decode(String.self, forKey: .summary),
+        usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "structured_question":
+      self = .structuredQuestion(
+        question: try container.decode(String.self, forKey: .question),
+        options: try container.decodeIfPresent([AgentChatStructuredQuestionOption].self, forKey: .options),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "tool_use_summary":
+      self = .toolUseSummary(
+        summary: try container.decode(String.self, forKey: .summary),
+        toolUseIds: try container.decode([String].self, forKey: .toolUseIds),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "context_compact":
+      self = .contextCompact(
+        trigger: try container.decode(AgentChatContextCompactTrigger.self, forKey: .trigger),
+        preTokens: try container.decodeIfPresent(Int.self, forKey: .preTokens),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "system_notice":
+      self = .systemNotice(
+        noticeKind: try container.decode(AgentChatNoticeKind.self, forKey: .noticeKind),
+        message: try container.decode(String.self, forKey: .message),
+        detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        steerId: try container.decodeIfPresent(String.self, forKey: .steerId)
+      )
+    case "completion_report":
+      self = .completionReport(
+        report: try container.decode(ChatCompletionReport.self, forKey: .report),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "web_search":
+      self = .webSearch(
+        query: try container.decode(String.self, forKey: .query),
+        action: try container.decodeIfPresent(String.self, forKey: .action),
+        itemId: try container.decode(String.self, forKey: .itemId),
+        logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        status: try container.decode(String.self, forKey: .status)
+      )
+    case "auto_approval_review":
+      self = .autoApprovalReview(
+        targetItemId: try container.decode(String.self, forKey: .targetItemId),
+        reviewStatus: try container.decode(AgentChatAutoApprovalReviewStatus.self, forKey: .reviewStatus),
+        action: try container.decodeIfPresent(String.self, forKey: .action),
+        review: try container.decodeIfPresent(String.self, forKey: .review),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "prompt_suggestion":
+      self = .promptSuggestion(
+        suggestion: try container.decode(String.self, forKey: .suggestion),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "plan_text":
+      self = .planText(
+        text: try container.decode(String.self, forKey: .text),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId)
+      )
+    default:
+      self = .unknown(type: type)
+    }
+  }
+
+  var typeName: String {
+    switch self {
+    case .userMessage: return "user_message"
+    case .text: return "text"
+    case .toolCall: return "tool_call"
+    case .toolResult: return "tool_result"
+    case .fileChange: return "file_change"
+    case .command: return "command"
+    case .plan: return "plan"
+    case .reasoning: return "reasoning"
+    case .approvalRequest: return "approval_request"
+    case .pendingInputResolved: return "pending_input_resolved"
+    case .status: return "status"
+    case .delegationState: return "delegation_state"
+    case .error: return "error"
+    case .done: return "done"
+    case .activity: return "activity"
+    case .stepBoundary: return "step_boundary"
+    case .todoUpdate: return "todo_update"
+    case .subagentStarted: return "subagent_started"
+    case .subagentProgress: return "subagent_progress"
+    case .subagentResult: return "subagent_result"
+    case .structuredQuestion: return "structured_question"
+    case .toolUseSummary: return "tool_use_summary"
+    case .contextCompact: return "context_compact"
+    case .systemNotice: return "system_notice"
+    case .completionReport: return "completion_report"
+    case .webSearch: return "web_search"
+    case .autoApprovalReview: return "auto_approval_review"
+    case .promptSuggestion: return "prompt_suggestion"
+    case .planText: return "plan_text"
+    case .unknown(let type): return type
+    }
+  }
+}
+
+extension AgentChatEvent {
+  static func decode(from raw: Any) throws -> AgentChatEvent {
+    let data = try adeJSONData(withJSONObject: raw)
+    return try JSONDecoder().decode(AgentChatEvent.self, from: data)
+  }
+}
+
+struct AgentChatSubscriptionRequest: Codable, Equatable {
+  var sessionId: String
+}
+
+struct SyncChatSubscribeSnapshotPayload: Decodable, Equatable {
+  var sessionId: String
+  var capturedAt: String
+  var truncated: Bool
+  var events: [AgentChatEventEnvelope]
+}
+
+struct AgentChatSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var text: String
+}
+
+struct AgentChatCancelSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var steerId: String
+}
+
+struct AgentChatEditSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var steerId: String
+  var text: String
+}
+
+struct AgentChatInterruptRequest: Codable, Equatable {
+  var sessionId: String
+}
+
+struct AgentChatResumeRequest: Codable, Equatable {
+  var sessionId: String
+}
+
+struct AgentChatDisposeRequest: Codable, Equatable {
+  var sessionId: String
+}
+
+struct AgentChatApproveRequest: Codable, Equatable {
+  var sessionId: String
+  var itemId: String
+  var decision: AgentChatApprovalDecision
+  var responseText: String?
+}
+
+struct AgentChatRespondToInputRequest: Codable, Equatable {
+  var sessionId: String
+  var itemId: String
+  var decision: AgentChatApprovalDecision?
+  var answers: [String: AgentChatInputAnswerValue]?
+  var responseText: String?
+}
+
+struct AgentChatUpdateSessionRequest: Codable, Equatable {
+  var sessionId: String
+  var title: String?
+  var modelId: String?
+  var reasoningEffort: String?
+  var permissionMode: String?
+  var interactionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var cursorModeId: String?
+  var cursorConfigValues: [String: RemoteJSONValue]?
+  var unifiedPermissionMode: String?
+  var computerUse: RemoteJSONValue?
+  var manuallyNamed: Bool?
 }
 
 struct AgentChatTranscriptEntry: Codable, Identifiable, Equatable {
@@ -516,6 +1890,50 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
   var name: String
   var rootPath: String
   var isReadOnlyByDefault: Bool
+  var mobileReadOnly: Bool
+
+  var readOnlyOnMobile: Bool {
+    mobileReadOnly || isReadOnlyByDefault
+  }
+
+  init(
+    id: String,
+    kind: String,
+    laneId: String?,
+    name: String,
+    rootPath: String,
+    isReadOnlyByDefault: Bool,
+    mobileReadOnly: Bool = true
+  ) {
+    self.id = id
+    self.kind = kind
+    self.laneId = laneId
+    self.name = name
+    self.rootPath = rootPath
+    self.isReadOnlyByDefault = isReadOnlyByDefault
+    self.mobileReadOnly = mobileReadOnly
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case kind
+    case laneId
+    case name
+    case rootPath
+    case isReadOnlyByDefault
+    case mobileReadOnly
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    kind = try container.decode(String.self, forKey: .kind)
+    laneId = try container.decodeIfPresent(String.self, forKey: .laneId)
+    name = try container.decode(String.self, forKey: .name)
+    rootPath = try container.decode(String.self, forKey: .rootPath)
+    isReadOnlyByDefault = try container.decode(Bool.self, forKey: .isReadOnlyByDefault)
+    mobileReadOnly = try container.decodeIfPresent(Bool.self, forKey: .mobileReadOnly) ?? true
+  }
 }
 
 struct FileTreeNode: Codable, Identifiable, Equatable {
@@ -556,6 +1974,32 @@ struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {
   var ownerKind: String
   var ownerId: String
   var relation: String
+  var reviewState: String?
+  var workflowState: String?
+  var reviewNote: String?
+}
+
+struct ComputerUseArtifactReviewMetadata: Codable, Equatable {
+  var reviewState: String?
+  var workflowState: String?
+  var reviewNote: String?
+}
+
+struct TerminalResumeLaunchConfig: Codable, Equatable {
+  var permissionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+}
+
+struct TerminalResumeMetadata: Codable, Equatable {
+  var provider: String
+  var targetKind: String
+  var targetId: String?
+  var launch: TerminalResumeLaunchConfig
+  var target: String?
+  var permissionMode: String?
 }
 
 struct FilesQuickOpenItem: Codable, Identifiable, Equatable {
@@ -579,6 +2023,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var ptyId: String?
   var tracked: Bool
   var pinned: Bool
+  var manuallyNamed: Bool?
   var goal: String?
   var toolType: String?
   var title: String
@@ -593,6 +2038,49 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var summary: String?
   var runtimeState: String
   var resumeCommand: String?
+  var resumeMetadata: TerminalResumeMetadata?
+  var chatIdleSinceAt: String?
+}
+
+struct ProcessReadinessConfig: Codable, Equatable {
+  var type: String
+  var port: Int?
+  var pattern: String?
+}
+
+struct ProcessDefinition: Codable, Identifiable, Equatable {
+  var id: String
+  var name: String
+  var command: [String]
+  var cwd: String
+  var env: [String: String]
+  var groupIds: [String]
+  var autostart: Bool
+  var restart: String
+  var gracefulShutdownMs: Int
+  var dependsOn: [String]
+  var readiness: ProcessReadinessConfig
+}
+
+struct ProcessRuntime: Codable, Identifiable, Equatable {
+  var id: String { runId }
+  var runId: String
+  var laneId: String
+  var processId: String
+  var status: String
+  var readiness: String
+  var pid: Int?
+  var sessionId: String?
+  var ptyId: String?
+  var startedAt: String?
+  var endedAt: String?
+  var exitCode: Int?
+  var lastExitCode: Int?
+  var lastEndedAt: String?
+  var uptimeMs: Int?
+  var ports: [Int]
+  var logPath: String?
+  var updatedAt: String
 }
 
 struct PrSummary: Codable, Identifiable, Equatable {
@@ -615,6 +2103,8 @@ struct PrSummary: Codable, Identifiable, Equatable {
   var lastSyncedAt: String?
   var createdAt: String
   var updatedAt: String
+  /// "pr_target" or "lane_base". Optional because legacy hosts / non-lane PRs omit it.
+  var creationStrategy: String? = nil
 }
 
 struct PullRequestListItem: Codable, Identifiable, Equatable {
@@ -752,6 +2242,79 @@ struct PrLinkedIssue: Codable, Identifiable, Equatable {
   var state: String
 }
 
+public struct PrCommit: Codable, Equatable, Identifiable {
+  public var id: String { sha }
+  public var sha: String
+  public var shortSha: String
+  public var message: String
+  public var authorLogin: String?
+  public var authorName: String?
+  public var authorEmail: String?
+  public var committedDate: String
+  /// "success" / "failure" / "pending" / "none". Optional for defensive decoding.
+  public var checkStatus: String?
+
+  private enum TopKeys: String, CodingKey {
+    case sha, shortSha, message, author, committedDate, checkStatus
+  }
+
+  private enum AuthorKeys: String, CodingKey {
+    case login, name, email
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: TopKeys.self)
+    self.sha = try container.decode(String.self, forKey: .sha)
+    self.shortSha = try container.decodeIfPresent(String.self, forKey: .shortSha) ?? String(sha.prefix(7))
+    self.message = try container.decodeIfPresent(String.self, forKey: .message) ?? ""
+    self.committedDate = try container.decodeIfPresent(String.self, forKey: .committedDate) ?? ""
+    self.checkStatus = try container.decodeIfPresent(String.self, forKey: .checkStatus)
+
+    if let authorContainer = try? container.nestedContainer(keyedBy: AuthorKeys.self, forKey: .author) {
+      self.authorLogin = try authorContainer.decodeIfPresent(String.self, forKey: .login)
+      self.authorName = try authorContainer.decodeIfPresent(String.self, forKey: .name)
+      self.authorEmail = try authorContainer.decodeIfPresent(String.self, forKey: .email)
+    } else {
+      self.authorLogin = nil
+      self.authorName = nil
+      self.authorEmail = nil
+    }
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: TopKeys.self)
+    try container.encode(sha, forKey: .sha)
+    try container.encode(shortSha, forKey: .shortSha)
+    try container.encode(message, forKey: .message)
+    try container.encode(committedDate, forKey: .committedDate)
+    try container.encodeIfPresent(checkStatus, forKey: .checkStatus)
+    var authorContainer = container.nestedContainer(keyedBy: AuthorKeys.self, forKey: .author)
+    try authorContainer.encodeIfPresent(authorLogin, forKey: .login)
+    try authorContainer.encodeIfPresent(authorName, forKey: .name)
+    try authorContainer.encodeIfPresent(authorEmail, forKey: .email)
+  }
+
+  public init(
+    sha: String,
+    shortSha: String,
+    message: String,
+    authorLogin: String?,
+    authorName: String?,
+    authorEmail: String?,
+    committedDate: String,
+    checkStatus: String?
+  ) {
+    self.sha = sha
+    self.shortSha = shortSha
+    self.message = message
+    self.authorLogin = authorLogin
+    self.authorName = authorName
+    self.authorEmail = authorEmail
+    self.committedDate = committedDate
+    self.checkStatus = checkStatus
+  }
+}
+
 struct PullRequestSnapshot: Codable, Equatable {
   var detail: PrDetail?
   var status: PrStatus?
@@ -759,6 +2322,169 @@ struct PullRequestSnapshot: Codable, Equatable {
   var reviews: [PrReview]
   var comments: [PrComment]
   var files: [PrFile]
+  /// Optional to remain defensive against older hosts that don't surface commits.
+  var commits: [PrCommit]? = nil
+}
+
+struct GitHubRepoRef: Codable, Equatable {
+  var owner: String
+  var name: String
+  var defaultBranch: String?
+}
+
+struct GitHubPrListItem: Codable, Identifiable, Equatable {
+  var id: String
+  var scope: String
+  var repoOwner: String
+  var repoName: String
+  var githubPrNumber: Int
+  var githubUrl: String
+  var title: String
+  var state: String
+  var isDraft: Bool
+  var baseBranch: String?
+  var headBranch: String?
+  var author: String?
+  var createdAt: String
+  var updatedAt: String
+  var linkedPrId: String?
+  var linkedGroupId: String?
+  var linkedLaneId: String?
+  var linkedLaneName: String?
+  var adeKind: String?
+  var workflowDisplayState: String?
+  var cleanupState: String?
+  var labels: [PrLabel]
+  var isBot: Bool
+  var commentCount: Int
+}
+
+struct GitHubPrSnapshot: Codable, Equatable {
+  var repo: GitHubRepoRef?
+  var viewerLogin: String?
+  var repoPullRequests: [GitHubPrListItem]
+  var externalPullRequests: [GitHubPrListItem]
+  var syncedAt: String
+}
+
+struct PrReviewThreadComment: Codable, Identifiable, Equatable {
+  var id: String
+  var author: String
+  var authorAvatarUrl: String?
+  var body: String?
+  var url: String?
+  var createdAt: String?
+  var updatedAt: String?
+}
+
+struct PrReviewThread: Codable, Identifiable, Equatable {
+  var id: String
+  var isResolved: Bool
+  var isOutdated: Bool
+  var path: String?
+  var line: Int?
+  var originalLine: Int?
+  var startLine: Int?
+  var originalStartLine: Int?
+  var diffSide: String?
+  var url: String?
+  var createdAt: String?
+  var updatedAt: String?
+  var comments: [PrReviewThreadComment]
+}
+
+struct PrActionStep: Codable, Identifiable, Equatable {
+  var id: String { "\(number)-\(name)" }
+  var name: String
+  var status: String
+  var conclusion: String?
+  var number: Int
+  var startedAt: String?
+  var completedAt: String?
+}
+
+struct PrActionJob: Codable, Identifiable, Equatable {
+  var id: Int
+  var name: String
+  var status: String
+  var conclusion: String?
+  var startedAt: String?
+  var completedAt: String?
+  var steps: [PrActionStep]
+}
+
+struct PrActionRun: Codable, Identifiable, Equatable {
+  var id: Int
+  var name: String
+  var status: String
+  var conclusion: String?
+  var headSha: String
+  var htmlUrl: String
+  var createdAt: String
+  var updatedAt: String
+  var jobs: [PrActionJob]
+}
+
+struct PrActivityEvent: Codable, Identifiable, Equatable {
+  var id: String
+  var type: String
+  var author: String?
+  var avatarUrl: String?
+  var body: String?
+  var timestamp: String
+  var metadata: [String: RemoteJSONValue]?
+}
+
+struct PrDeployment: Codable, Identifiable, Equatable {
+  var id: String
+  var environment: String
+  var state: String
+  var description: String?
+  var environmentUrl: String?
+  var logUrl: String?
+  var sha: String
+  var ref: String?
+  var creator: String?
+  var createdAt: String?
+  var updatedAt: String?
+}
+
+struct AiReviewSummary: Codable, Equatable {
+  var summary: String
+  var potentialIssues: [String]
+  var recommendations: [String]
+  var mergeReadiness: String
+}
+
+public struct AiResolutionState: Codable, Equatable {
+  public let prId: String?
+  public let status: String?
+  public let sessionId: String?
+  public let model: String?
+  public let reasoningEffort: String?
+  public let startedAt: String?
+  public let updatedAt: String?
+  public let lastError: String?
+
+  public init(
+    prId: String? = nil,
+    status: String? = nil,
+    sessionId: String? = nil,
+    model: String? = nil,
+    reasoningEffort: String? = nil,
+    startedAt: String? = nil,
+    updatedAt: String? = nil,
+    lastError: String? = nil
+  ) {
+    self.prId = prId
+    self.status = status
+    self.sessionId = sessionId
+    self.model = model
+    self.reasoningEffort = reasoningEffort
+    self.startedAt = startedAt
+    self.updatedAt = updatedAt
+    self.lastError = lastError
+  }
 }
 
 struct PullRequestSnapshotHydration: Codable, Equatable, Identifiable {
@@ -770,6 +2496,8 @@ struct PullRequestSnapshotHydration: Codable, Equatable, Identifiable {
   var reviews: [PrReview]
   var comments: [PrComment]
   var files: [PrFile]
+  /// Optional for defensive decoding against older hosts.
+  var commits: [PrCommit]? = nil
   var updatedAt: String?
 }
 
@@ -858,6 +2586,7 @@ struct IntegrationProposal: Codable, Identifiable, Equatable {
   var integrationLaneName: String?
   var status: String
   var integrationLaneId: String?
+  var integrationLaneOrigin: String?
   var linkedGroupId: String?
   var linkedPrId: String?
   var workflowDisplayState: String?
@@ -867,6 +2596,8 @@ struct IntegrationProposal: Codable, Identifiable, Equatable {
   var completedAt: String?
   var cleanupDeclinedAt: String?
   var cleanupCompletedAt: String?
+  var preferredIntegrationLaneId: String?
+  var mergeIntoHeadSha: String?
   var resolutionState: IntegrationResolutionState?
 }
 
@@ -1011,4 +2742,266 @@ struct ApplyRemoteChangesResult: Equatable {
   var dbVersion: Int
   var touchedTables: [String]
   var rebuiltFts: Bool
+}
+
+// MARK: - Mobile PR snapshot
+//
+// Additive mirror of the desktop `PrMobileSnapshot` contract. Decodes the
+// payload returned by the `prs.getMobileSnapshot` sync command so the iOS
+// PRs surface can render stack visibility, create eligibility, workflow
+// cards, and per-PR capability gates from a single fetch.
+
+struct PrStackMember: Codable, Identifiable, Equatable {
+  var id: String { laneId }
+  var laneId: String
+  var laneName: String
+  var parentLaneId: String?
+  var depth: Int
+  var role: String
+  var dirty: Bool
+  var prId: String?
+  var prNumber: Int?
+  var prState: String?
+  var prTitle: String?
+  var baseBranch: String?
+  var headBranch: String?
+  var checksStatus: String?
+  var reviewStatus: String?
+}
+
+struct PrStackInfo: Codable, Identifiable, Equatable {
+  var id: String { stackId }
+  var stackId: String
+  var rootLaneId: String
+  var members: [PrStackMember]
+  var size: Int
+  var prCount: Int
+}
+
+struct PrActionCapabilities: Codable, Equatable {
+  var prId: String
+  var canOpenInGithub: Bool
+  var canMerge: Bool
+  var canClose: Bool
+  var canReopen: Bool
+  var canRequestReviewers: Bool
+  var canRerunChecks: Bool
+  var canComment: Bool
+  var canUpdateDescription: Bool
+  var canDelete: Bool
+  var mergeBlockedReason: String?
+  var requiresLive: Bool
+}
+
+struct PrCreateLaneEligibility: Codable, Identifiable, Equatable {
+  var id: String { laneId }
+  var laneId: String
+  var laneName: String
+  var parentLaneId: String?
+  var repoOwner: String?
+  var repoName: String?
+  var defaultBaseBranch: String
+  var defaultTitle: String
+  var dirty: Bool
+  /// Commits on the lane branch not on `defaultBaseBranch` (same signal as desktop lane status `ahead`).
+  /// Omitted by older desktop hosts — treat as unknown/zero when decoding legacy snapshots.
+  var commitsAheadOfBase: Int?
+  var hasExistingPr: Bool
+  var canCreate: Bool
+  var blockedReason: String?
+}
+
+struct PrCreateCapabilities: Codable, Equatable {
+  var canCreateAny: Bool
+  var defaultBaseBranch: String?
+  var lanes: [PrCreateLaneEligibility]
+}
+
+struct PrIntegrationWorkflowLane: Codable, Identifiable, Equatable {
+  var id: String { laneId }
+  var laneId: String
+  var laneName: String
+  var outcome: String
+}
+
+/// Unified mobile workflow card. Exactly one of `queue`, `integration`, or
+/// `rebase` payload fields will be populated, matching the desktop
+/// discriminated union encoded as `kind`.
+struct PrWorkflowCard: Codable, Identifiable, Equatable {
+  var id: String
+  var kind: String
+  // queue
+  var queueId: String?
+  var groupId: String?
+  var groupName: String?
+  var targetBranch: String?
+  var state: String?
+  var activePrId: String?
+  var currentPosition: Int?
+  var totalEntries: Int?
+  var entries: [QueueLandingEntry]?
+  var waitReason: String?
+  var lastError: String?
+  var updatedAt: String?
+  // integration
+  var proposalId: String?
+  var title: String?
+  var baseBranch: String?
+  var overallOutcome: String?
+  var integrationStatus: String?
+  var laneCount: Int?
+  var conflictLaneCount: Int?
+  var lanes: [PrIntegrationWorkflowLane]?
+  var workflowDisplayState: String?
+  var cleanupState: String?
+  var linkedPrId: String?
+  var integrationLaneId: String?
+  var preferredIntegrationLaneId: String?
+  var mergeIntoHeadSha: String?
+  var integrationLaneOrigin: String?
+  var createdAt: String?
+  // rebase
+  var laneId: String?
+  var laneName: String?
+  var behindBy: Int?
+  var conflictPredicted: Bool?
+  var prId: String?
+  var prNumber: Int?
+  var dismissedAt: String?
+  var deferredUntil: String?
+  var targetCommits: [RebaseTargetCommit]?
+  /// Host-resolved rebase mode for the rebase card's lane: "auto" when the
+  /// linked PR (or no PR) permits auto-rebase on base advance, "manual" when
+  /// the PR carries an immutable base (lane_base strategy). Absent on older
+  /// hosts — clients should default to "auto" when missing.
+  var rebaseMode: String?
+  /// Raw creation strategy of the lane's most-recent open/draft PR
+  /// ("pr_target" | "lane_base"), or null when no PR is linked. Lets the
+  /// client render strategy-specific copy without re-deriving the mode.
+  var creationStrategy: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case kind
+    case queueId, groupId, groupName, targetBranch, state, activePrId, currentPosition, totalEntries, entries, waitReason, lastError, updatedAt
+    case proposalId, title, baseBranch, overallOutcome
+    case integrationStatus = "status"
+    case laneCount, conflictLaneCount, lanes, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, preferredIntegrationLaneId, mergeIntoHeadSha, integrationLaneOrigin, createdAt
+    case laneId, laneName, behindBy, conflictPredicted, prId, prNumber, dismissedAt, deferredUntil, targetCommits, rebaseMode, creationStrategy
+  }
+}
+
+struct PipelineSettings: Codable, Equatable {
+  var autoMerge: Bool
+  var mergeMethod: String
+  var maxRounds: Int
+  var onRebaseNeeded: String
+}
+
+struct ConvergenceRoundStat: Codable, Identifiable, Equatable {
+  var id: Int { round }
+  var round: Int
+  var newCount: Int
+  var fixedCount: Int
+  var dismissedCount: Int
+}
+
+struct ConvergenceStatus: Codable, Equatable {
+  var currentRound: Int
+  var maxRounds: Int
+  var issuesPerRound: [ConvergenceRoundStat]
+  var totalNew: Int
+  var totalFixed: Int
+  var totalDismissed: Int
+  var totalEscalated: Int
+  var totalSentToAgent: Int
+  var isConverging: Bool
+  var canAutoAdvance: Bool
+}
+
+struct ConvergenceRuntimeState: Codable, Equatable {
+  var prId: String
+  var autoConvergeEnabled: Bool
+  var status: String
+  var pollerStatus: String
+  var currentRound: Int
+  var activeSessionId: String?
+  var activeLaneId: String?
+  var activeHref: String?
+  var pauseReason: String?
+  var errorMessage: String?
+  var lastStartedAt: String?
+  var lastPolledAt: String?
+  var lastPausedAt: String?
+  var lastStoppedAt: String?
+  var createdAt: String
+  var updatedAt: String
+}
+
+struct IssueInventoryItem: Codable, Identifiable, Equatable {
+  var id: String
+  var prId: String
+  var source: String
+  var type: String
+  var externalId: String
+  var state: String
+  var round: Int
+  var filePath: String?
+  var line: Int?
+  var severity: String?
+  var headline: String
+  var body: String?
+  var author: String?
+  var url: String?
+  var dismissReason: String?
+  var agentSessionId: String?
+  var threadCommentCount: Int?
+  var threadLatestCommentId: String?
+  var threadLatestCommentAuthor: String?
+  var threadLatestCommentAt: String?
+  var threadLatestCommentSource: String?
+  var createdAt: String
+  var updatedAt: String
+}
+
+struct IssueInventorySnapshot: Codable, Equatable {
+  var prId: String
+  var items: [IssueInventoryItem]
+  var convergence: ConvergenceStatus
+  var runtime: ConvergenceRuntimeState
+}
+
+struct CreateIntegrationLaneForProposalResult: Codable, Equatable {
+  var integrationLaneId: String
+  var mergedCleanLanes: [String]
+  var conflictingLanes: [String]
+}
+
+struct StartIntegrationResolutionResult: Codable, Equatable {
+  var conflictFiles: [String]
+  var mergedClean: Bool
+  var integrationLaneId: String
+}
+
+struct RecheckIntegrationStepResult: Codable, Equatable {
+  var resolution: String
+  var remainingConflictFiles: [String]
+  var allResolved: Bool
+  var message: String?
+}
+
+struct DeleteIntegrationProposalResult: Codable, Equatable {
+  var proposalId: String
+  var integrationLaneId: String?
+  var deletedIntegrationLane: Bool
+}
+
+struct PrMobileSnapshot: Codable, Equatable {
+  var generatedAt: String
+  var prs: [PrSummary]
+  var stacks: [PrStackInfo]
+  var capabilities: [String: PrActionCapabilities]
+  var createCapabilities: PrCreateCapabilities
+  var workflowCards: [PrWorkflowCard]
+  var live: Bool
 }

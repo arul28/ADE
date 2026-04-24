@@ -20,6 +20,7 @@ import type {
   DeletePrArgs,
   DeletePrResult,
   IntegrationLaneChangeStatus,
+  IntegrationLaneOrigin,
   IntegrationLaneSnapshot,
   GitHubRepoRef,
   IntegrationLaneSummary,
@@ -41,7 +42,9 @@ import type {
   PrCheck,
   PrComment,
   PrChecksStatus,
+  PrCommit,
   PrConflictAnalysis,
+  PrCreationStrategy,
   PrGroupMemberRole,
   PrHealth,
   PrMergeContext,
@@ -51,7 +54,18 @@ import type {
   PrStatus,
   PrSummary,
   PrWithConflicts,
+  PrActionCapabilities,
+  PrCreateCapabilities,
+  PrCreateLaneEligibility,
+  PrMobileSnapshot,
+  PrStackInfo,
+  PrStackMember,
+  PrStackMemberRole,
+  PrWorkflowCard,
+  QueueLandingEntry,
   QueueLandingState,
+  QueueState,
+  QueueWaitReason,
   ReorderQueuePrsArgs,
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
@@ -66,6 +80,7 @@ import type {
   SetPrLabelsArgs,
   RequestPrReviewersArgs,
   SubmitPrReviewArgs,
+  SubmitPrReviewResult,
   ClosePrArgs,
   ReopenPrArgs,
   RerunPrChecksArgs,
@@ -75,6 +90,7 @@ import type {
   GitHubPrSnapshot,
   PrDetail,
   PrFile,
+  PrReviewSnapshot,
   PrActionRun,
   PrActionJob,
   PrActionStep,
@@ -85,6 +101,17 @@ import type {
   PrReviewThreadComment,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
+  PrDeployment,
+  PrDeploymentState,
+  PostPrReviewCommentArgs,
+  SetPrReviewThreadResolvedArgs,
+  SetPrReviewThreadResolvedResult,
+  ReactToPrCommentArgs,
+  PrReactionContent,
+  ReviewFinding,
+  ReviewPublication,
+  ReviewPublicationDestination,
+  ReviewPublicationInlineComment,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
@@ -104,6 +131,7 @@ import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationV
 import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
 import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
+import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 
 type PullRequestRow = {
   id: string;
@@ -125,6 +153,7 @@ type PullRequestRow = {
   last_synced_at: string | null;
   created_at: string;
   updated_at: string;
+  creation_strategy: string | null;
 };
 
 type PullRequestSnapshotHydration = {
@@ -135,6 +164,7 @@ type PullRequestSnapshotHydration = {
   reviews: PrReview[];
   comments: PrComment[];
   files: PrFile[];
+  commits: PrCommit[];
   updatedAt: string | null;
 };
 
@@ -151,6 +181,7 @@ type IntegrationProposalRow = {
   integration_lane_name: string | null;
   status: string;
   integration_lane_id: string | null;
+  preferred_integration_lane_id: string | null;
   resolution_state_json: string | null;
   pairwise_results_json: string | null;
   lane_summaries_json: string | null;
@@ -163,6 +194,7 @@ type IntegrationProposalRow = {
   completed_at: string | null;
   cleanup_declined_at: string | null;
   cleanup_completed_at: string | null;
+  merge_into_head_sha: string | null;
 };
 
 type PrGroupLookupRow = {
@@ -197,6 +229,39 @@ function parseCleanupState(raw: string | null | undefined): IntegrationCleanupSt
   return raw === "required" || raw === "declined" || raw === "completed" ? raw : "none";
 }
 
+function getIntegrationLaneOrigin(row: {
+  integration_lane_id: string | null;
+  preferred_integration_lane_id: string | null;
+}): IntegrationLaneOrigin | null {
+  const integrationLaneId = asString(row.integration_lane_id).trim() || null;
+  if (!integrationLaneId) return null;
+  const preferredIntegrationLaneId = asString(row.preferred_integration_lane_id).trim() || null;
+  // A lane is only "adopted" when the caller's chosen merge-into lane (preferred) actually became
+  // the integration lane. `commitIntegration` can persist a new preferred lane alongside an
+  // existing scratch integration lane; in that case the two ids disagree and the scratch lane is
+  // still ade-created, so we must not claim it as adopted.
+  if (preferredIntegrationLaneId && preferredIntegrationLaneId === integrationLaneId) {
+    return "adopted";
+  }
+  return "ade-created";
+}
+
+function isAdeOwnedIntegrationLane(row: {
+  integration_lane_id: string | null;
+  preferred_integration_lane_id: string | null;
+}): boolean {
+  return getIntegrationLaneOrigin(row) === "ade-created";
+}
+
+function assertIntegrationLaneIsNotPrimary(
+  lane: Pick<LaneSummary, "laneType"> | null | undefined,
+  label: string,
+): void {
+  if (lane?.laneType === "primary") {
+    throw new Error(`${label} cannot be the primary lane.`);
+  }
+}
+
 function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
   return {
     integrationLaneId,
@@ -208,6 +273,64 @@ function createEmptyIntegrationResolutionState(integrationLaneId: string, update
     laneChangeStatus: "unknown",
     updatedAt,
   };
+}
+
+function buildPublishedReviewCommentBody(finding: ReviewFinding): string {
+  const sections = [
+    `[${finding.severity.toUpperCase()}] ${finding.title}`,
+    "",
+    finding.body,
+    "",
+    `Confidence: ${Math.round(finding.confidence * 100)}%`,
+  ];
+  const quote = finding.evidence.find((entry) => typeof entry.quote === "string" && entry.quote.trim().length > 0)?.quote?.trim() ?? null;
+  if (quote) {
+    sections.push("", "```", quote.slice(0, 1_200), "```");
+  }
+  return sections.join("\n");
+}
+
+function formatPublishedFindingLocation(finding: ReviewFinding): string {
+  if (finding.filePath && finding.line != null) return `${finding.filePath}:${finding.line}`;
+  if (finding.filePath) return finding.filePath;
+  return "general";
+}
+
+function buildPublishedReviewSummaryBody(args: {
+  targetLabel: string;
+  summary: string | null;
+  inlineFindings: ReviewFinding[];
+  summaryFindings: ReviewFinding[];
+}): string {
+  const lines = [
+    "## ADE review",
+    "",
+    `Target: ${args.targetLabel}`,
+    "",
+    args.summary?.trim() || (args.inlineFindings.length + args.summaryFindings.length > 0
+      ? `ADE found ${args.inlineFindings.length + args.summaryFindings.length} actionable finding(s).`
+      : "ADE found no actionable findings."),
+  ];
+
+  if (args.inlineFindings.length > 0) {
+    lines.push("", `Anchored inline comments posted: ${args.inlineFindings.length}.`);
+  }
+
+  if (args.summaryFindings.length > 0) {
+    lines.push("", "### Findings kept in the summary");
+    for (const finding of args.summaryFindings) {
+      lines.push(
+        `- [${finding.severity}] ${finding.title} (${formatPublishedFindingLocation(finding)})`,
+        `  ${finding.body}`,
+      );
+    }
+  }
+
+  if (args.inlineFindings.length === 0 && args.summaryFindings.length === 0) {
+    lines.push("", "No actionable findings.");
+  }
+
+  return lines.join("\n").trim();
 }
 
 async function readIntegrationLaneSnapshot(worktreePath: string): Promise<IntegrationLaneSnapshot | null> {
@@ -377,6 +500,7 @@ function computeReviewStatus(args: { requestedReviewers: string[]; reviewStatesB
 }
 
 function rowToSummary(row: PullRequestRow): PrSummary {
+  const creationStrategy = normalizePrCreationStrategy(row.creation_strategy);
   return {
     id: row.id,
     laneId: row.lane_id,
@@ -396,7 +520,8 @@ function rowToSummary(row: PullRequestRow): PrSummary {
     deletions: Number(row.deletions ?? 0),
     lastSyncedAt: row.last_synced_at ?? null,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    creationStrategy
   };
 }
 
@@ -448,8 +573,9 @@ function hasMaterialSummaryChange(row: PullRequestRow, summary: PrSummary): bool
 function parsePrLocator(raw: string): { owner?: string; repo?: string; number: number } {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("PR URL or number is required");
-  if (/^[0-9]+$/.test(trimmed)) {
-    return { number: Number(trimmed) };
+  const numeric = trimmed.match(/^#?([0-9]+)$/);
+  if (numeric) {
+    return { number: Number(numeric[1]) };
   }
   try {
     const url = new URL(trimmed);
@@ -459,6 +585,10 @@ function parsePrLocator(raw: string): { owner?: string; repo?: string; number: n
   } catch {
     throw new Error("Invalid PR URL format");
   }
+}
+
+function repoPrKey(owner: string, repo: string, number: number): string {
+  return `${owner.trim().toLowerCase()}/${repo.trim().toLowerCase()}#${Number(number)}`;
 }
 
 function readPrTemplate(projectRoot: string): string | null {
@@ -554,6 +684,34 @@ function toFileStatus(raw: unknown): PrFile["status"] {
   return "modified";
 }
 
+const DEPLOYMENT_STATES = new Set<PrDeploymentState>([
+  "success",
+  "failure",
+  "error",
+  "pending",
+  "in_progress",
+  "queued",
+  "inactive",
+]);
+
+function toDeploymentState(raw: unknown): PrDeploymentState {
+  const s = asString(raw).toLowerCase() as PrDeploymentState;
+  return DEPLOYMENT_STATES.has(s) ? s : "unknown";
+}
+
+function reactionToGraphqlEnum(content: PrReactionContent): string {
+  switch (content) {
+    case "+1": return "THUMBS_UP";
+    case "-1": return "THUMBS_DOWN";
+    case "laugh": return "LAUGH";
+    case "confused": return "CONFUSED";
+    case "heart": return "HEART";
+    case "hooray": return "HOORAY";
+    case "rocket": return "ROCKET";
+    case "eyes": return "EYES";
+  }
+}
+
 function toUser(raw: any): PrUser {
   return {
     login: asString(raw?.login) || "",
@@ -614,13 +772,79 @@ export function createPrService({
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
-    created_at, updated_at`;
+    created_at, updated_at, creation_strategy`;
 
-  const getRow = (prId: string): PullRequestRow | null =>
+  const getRowById = (prId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
       `select ${PR_COLUMNS} from pull_requests where id = ? and project_id = ? limit 1`,
       [prId, projectId]
     );
+
+  const getRowForRepoPr = (repoOwner: string, repoName: string, prNumber: number): PullRequestRow | null =>
+    db.get<PullRequestRow>(
+      `select ${PR_COLUMNS}
+         from pull_requests
+        where project_id = ?
+          and lower(repo_owner) = lower(?)
+          and lower(repo_name) = lower(?)
+          and github_pr_number = ?
+        order by updated_at desc
+        limit 1`,
+      [projectId, repoOwner, repoName, prNumber]
+    );
+
+  const getRowByNumber = (
+    prNumber: number,
+    repoOwner?: string,
+    repoName?: string,
+  ): PullRequestRow | null => {
+    if (repoOwner && repoName) {
+      return getRowForRepoPr(repoOwner, repoName, prNumber);
+    }
+    // No repo context: check for ambiguity across repos in this project. If
+    // multiple rows match `github_pr_number`, refuse to guess — the caller
+    // must disambiguate with a full URL. If exactly one row matches, accept it.
+    const matches = db.all<PullRequestRow>(
+      `select ${PR_COLUMNS}
+         from pull_requests
+        where project_id = ?
+          and github_pr_number = ?
+        order by updated_at desc`,
+      [projectId, prNumber]
+    );
+    if (matches.length === 0) return null;
+    if (matches.length > 1) {
+      const repos = Array.from(
+        new Set(matches.map((row) => `${row.repo_owner}/${row.repo_name}`))
+      );
+      throw new Error(
+        `Ambiguous PR locator '#${prNumber}': multiple PRs with this number exist across repos in this project (${repos.join(", ")}). Specify a URL or owner/name.`
+      );
+    }
+    return matches[0] ?? null;
+  };
+
+  const getRowByLocator = (locator: string): PullRequestRow | null => {
+    const trimmed = String(locator ?? "").trim();
+    if (!trimmed) return null;
+    let parsed: ReturnType<typeof parsePrLocator>;
+    try {
+      parsed = parsePrLocator(trimmed);
+    } catch {
+      return null;
+    }
+    if (parsed.owner && parsed.repo) {
+      return getRowForRepoPr(parsed.owner, parsed.repo, parsed.number);
+    }
+    // Bare numeric locators (e.g. "#123") must not silently pick the most
+    // recently-updated match when multiple repos share a PR number. Let the
+    // ambiguity error from getRowByNumber surface to the caller so they can
+    // supply a full URL.
+    return getRowByNumber(parsed.number);
+  };
+
+  const getRow = (prIdOrLocator: string): PullRequestRow | null =>
+    getRowById(prIdOrLocator) ?? getRowByLocator(prIdOrLocator);
 
   const requireRow = (prId: string): PullRequestRow => {
     const row = getRow(prId);
@@ -789,7 +1013,7 @@ export function createPrService({
           parentHeadSha: null,
           state: "rebaseFailed",
           conflictCount: 0,
-          message: `Auto-rebase failed after '${args.landedLaneName}' merged because ADE could not find a new parent lane. Open the Rebase tab to recover this lane.`,
+          message: `Auto-rebase failed after '${args.landedLaneName}' merged because ADE could not find a new parent lane. Open the Rebase/Merge tab to recover this lane.`,
         }, child.id);
       }
       return {
@@ -897,8 +1121,8 @@ export function createPrService({
           state: "rebaseFailed",
           conflictCount: 0,
           message: rollbackError
-            ? `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. Automatic rollback also failed: ${rollbackError}. Open the Rebase tab to recover this lane.`
-            : `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. The lane was restored to its pre-rebase state. Open the Rebase tab to recover this lane.`,
+            ? `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. Automatic rollback also failed: ${rollbackError}. Open the Rebase/Merge tab to recover this lane.`
+            : `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. The lane was restored to its pre-rebase state. Open the Rebase/Merge tab to recover this lane.`,
         }, child.id);
         failedLaneIds.push(child.id);
       }
@@ -919,6 +1143,7 @@ export function createPrService({
     reviews?: PrReview[] | null;
     comments?: PrComment[] | null;
     files?: PrFile[] | null;
+    commits?: PrCommit[] | null;
     updatedAt?: string;
   }): void => {
     const existing = db.get<{
@@ -928,8 +1153,9 @@ export function createPrService({
       reviews_json: string | null;
       comments_json: string | null;
       files_json: string | null;
+      commits_json: string | null;
     }>(
-      `select detail_json, status_json, checks_json, reviews_json, comments_json, files_json
+      `select detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json
          from pull_request_snapshots
         where pr_id = ?
         limit 1`,
@@ -947,8 +1173,8 @@ export function createPrService({
     db.run(
       `
         insert into pull_request_snapshots(
-          pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+          pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
         on conflict(pr_id) do update set
           detail_json = excluded.detail_json,
           status_json = excluded.status_json,
@@ -956,6 +1182,7 @@ export function createPrService({
           reviews_json = excluded.reviews_json,
           comments_json = excluded.comments_json,
           files_json = excluded.files_json,
+          commits_json = excluded.commits_json,
           updated_at = excluded.updated_at
       `,
       [
@@ -966,6 +1193,7 @@ export function createPrService({
         jsonOrFallback(args.reviews, existing?.reviews_json),
         jsonOrFallback(args.comments, existing?.comments_json),
         jsonOrFallback(args.files, existing?.files_json),
+        jsonOrFallback(args.commits, existing?.commits_json),
         args.updatedAt ?? nowIso(),
       ],
     );
@@ -989,10 +1217,11 @@ export function createPrService({
       reviews_json: string | null;
       comments_json: string | null;
       files_json: string | null;
+      commits_json: string | null;
       updated_at: string | null;
     }>(
       `
-        select s.pr_id, s.detail_json, s.status_json, s.checks_json, s.reviews_json, s.comments_json, s.files_json, s.updated_at
+        select s.pr_id, s.detail_json, s.status_json, s.checks_json, s.reviews_json, s.comments_json, s.files_json, s.commits_json, s.updated_at
           from pull_request_snapshots s
           join pull_requests p on p.id = s.pr_id and p.project_id = ?
          ${args.prId ? "where s.pr_id = ?" : ""}
@@ -1009,18 +1238,39 @@ export function createPrService({
       reviews: decodeSnapshotJson<PrReview[]>(row.reviews_json) ?? [],
       comments: decodeSnapshotJson<PrComment[]>(row.comments_json) ?? [],
       files: decodeSnapshotJson<PrFile[]>(row.files_json) ?? [],
+      commits: decodeSnapshotJson<PrCommit[]>(row.commits_json) ?? [],
       updatedAt: row.updated_at,
     }));
   };
 
-  const upsertRow = (summary: Omit<PrSummary, "projectId"> & { projectId?: string }): void => {
+  const upsertRow = (
+    summary: Omit<PrSummary, "projectId"> & { projectId?: string },
+    options?: { allowRepoPrAdoption?: boolean },
+  ): string => {
     const now = nowIso();
-    const existing = getRowForLane(summary.laneId);
+    // By default we only adopt an existing row that is already associated with
+    // this lane. Callers like `linkToLane`/`refreshOne` must not silently
+    // reassign an existing PR row from another lane just because the repo/PR
+    // number match — that was a data-loss bug when the same PR number was
+    // reused across lanes or when users manually linked an in-flight PR.
+    // The duplicate-PR recovery path in `createFromLane` (where GitHub rejects
+    // creation because a PR already exists for the head branch) is the only
+    // legitimate use of the repo/PR-number fallback; it opts in via
+    // `allowRepoPrAdoption: true`.
+    const existing = options?.allowRepoPrAdoption
+      ? getRowForLane(summary.laneId)
+          ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
+      : getRowForLane(summary.laneId);
     if (existing) {
+      if (existing.lane_id !== summary.laneId) {
+        db.run(`delete from pr_group_members where pr_id = ?`, [existing.id]);
+        db.run(`update integration_proposals set linked_pr_id = null where linked_pr_id = ?`, [existing.id]);
+      }
       db.run(
         `
           update pull_requests
-             set repo_owner = ?,
+             set lane_id = ?,
+                 repo_owner = ?,
                  repo_name = ?,
                  github_pr_number = ?,
                  github_url = ?,
@@ -1034,10 +1284,12 @@ export function createPrService({
                  additions = ?,
                  deletions = ?,
                  last_synced_at = ?,
-                 updated_at = ?
+                 updated_at = ?,
+                 creation_strategy = coalesce(?, creation_strategy)
            where id = ? and project_id = ?
         `,
         [
+          summary.laneId,
           summary.repoOwner,
           summary.repoName,
           summary.githubPrNumber,
@@ -1053,11 +1305,12 @@ export function createPrService({
           summary.deletions,
           summary.lastSyncedAt,
           summary.updatedAt ?? now,
+          summary.creationStrategy ?? null,
           existing.id,
           projectId,
         ]
       );
-      return;
+      return existing.id;
     }
 
     db.run(
@@ -1081,8 +1334,9 @@ export function createPrService({
           deletions,
           last_synced_at,
           created_at,
-          updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          updated_at,
+          creation_strategy
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         summary.id,
@@ -1103,9 +1357,11 @@ export function createPrService({
         summary.deletions,
         summary.lastSyncedAt,
         summary.createdAt ?? now,
-        summary.updatedAt ?? now
+        summary.updatedAt ?? now,
+        summary.creationStrategy ?? null
       ]
     );
+    return summary.id;
   };
 
   const assertDirtyWorktreesAllowed = (args: {
@@ -1171,6 +1427,29 @@ export function createPrService({
       if (batch.length < pageSize) break;
     }
     return out;
+  };
+
+  const findExistingPrForBranch = async (
+    repo: GitHubRepoRef,
+    headBranch: string,
+    baseBranch?: string | null,
+  ): Promise<any | null> => {
+    const candidates = await fetchAllPages<any>({
+      path: `/repos/${repo.owner}/${repo.name}/pulls`,
+      query: {
+        state: "all",
+        head: `${repo.owner}:${headBranch}`,
+        ...(baseBranch ? { base: baseBranch } : {}),
+        sort: "updated",
+        direction: "desc",
+      },
+    });
+    if (candidates.length === 0) return null;
+    const open = candidates.find((candidate) => {
+      const state = asString(candidate?.state).toLowerCase();
+      return state === "open";
+    });
+    return open ?? candidates[0] ?? null;
   };
 
   const listIntegrationProposalRows = (args: { where?: string; params?: Array<string | number | null> } = {}): IntegrationProposalRow[] =>
@@ -1287,8 +1566,11 @@ export function createPrService({
       body: String(row.body || ""),
       draft: Boolean(row.draft),
       integrationLaneName: String(row.integration_lane_name || ""),
+      preferredIntegrationLaneId: asString(row.preferred_integration_lane_id).trim() || null,
+      mergeIntoHeadSha: asString(row.merge_into_head_sha).trim() || null,
       status: String(row.status) as IntegrationProposal["status"],
       integrationLaneId,
+      integrationLaneOrigin: getIntegrationLaneOrigin(row),
       linkedGroupId: asString(row.linked_group_id).trim() || null,
       linkedPrId: asString(row.linked_pr_id).trim() || null,
       workflowDisplayState: parseWorkflowDisplayState(row.workflow_display_state),
@@ -1562,13 +1844,27 @@ export function createPrService({
       deletions,
       lastSyncedAt: nowIso(),
       createdAt: row.created_at,
-      updatedAt: asString(pr?.updated_at) || row.updated_at || nowIso()
+      updatedAt: asString(pr?.updated_at) || row.updated_at || nowIso(),
+      creationStrategy: normalizePrCreationStrategy(row.creation_strategy)
     };
 
     if (hasMaterialSummaryChange(row, updated)) {
       invalidateGithubSnapshotCache();
     }
     upsertRow(updated);
+
+    // Keep `head_sha` in sync so downstream features (AI summary cache, deployments)
+    // can reliably reference the latest commit on the PR head branch.
+    if (headSha) {
+      try {
+        db.run("update pull_requests set head_sha = ? where id = ? and project_id = ?", [headSha, row.id, projectId]);
+      } catch (err) {
+        logger.warn("prs.head_sha_persist_failed", {
+          prId: row.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     return updated;
   };
@@ -1740,16 +2036,239 @@ export function createPrService({
     }));
   };
 
+  const getReviewSnapshot = async (prId: string): Promise<PrReviewSnapshot> => {
+    const row = requireRow(prId);
+    const repo = repoFromRow(row);
+    const [pr, files] = await Promise.all([
+      fetchPr(repo, Number(row.github_pr_number)),
+      getFilesSnapshot(prId),
+    ]);
+
+    return {
+      ...rowToSummary(row),
+      baseBranch: asString(pr?.base?.ref) || row.base_branch,
+      headBranch: asString(pr?.head?.ref) || row.head_branch,
+      githubUrl: asString(pr?.html_url) || row.github_url,
+      githubNodeId: asString(pr?.node_id) || row.github_node_id,
+      title: asString(pr?.title) || row.title || "",
+      additions: Number(pr?.additions ?? row.additions ?? 0),
+      deletions: Number(pr?.deletions ?? row.deletions ?? 0),
+      baseSha: asString(pr?.base?.sha) || null,
+      headSha: asString(pr?.head?.sha) || null,
+      files,
+    };
+  };
+
+  const submitReviewRequest = async (
+    args: SubmitPrReviewArgs,
+    options: {
+      commitSha?: string | null;
+    } = {},
+  ): Promise<SubmitPrReviewResult> => {
+    const row = requireRow(args.prId);
+    const repo = repoFromRow(row);
+    const inlineComments = Array.isArray(args.comments)
+      ? args.comments.filter((comment) => {
+          const path = asString(comment?.path).trim();
+          const body = asString(comment?.body).trim();
+          const position = Number(comment?.position);
+          return path.length > 0 && body.length > 0 && Number.isFinite(position) && position > 0;
+        })
+      : [];
+
+    let commitSha = asString(options.commitSha).trim() || null;
+    if (inlineComments.length > 0 && !commitSha) {
+      commitSha = (await getReviewSnapshot(args.prId)).headSha;
+    }
+    if (inlineComments.length > 0 && !commitSha) {
+      throw new Error("PR head commit is unavailable for inline review comments.");
+    }
+
+    const { data } = await githubService.apiRequest<any>({
+      method: "POST",
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/reviews`,
+      body: {
+        event: args.event,
+        body: args.body ?? "",
+        ...(commitSha ? { commit_id: commitSha } : {}),
+        ...(inlineComments.length > 0
+          ? {
+              comments: inlineComments.map((comment) => ({
+                path: comment.path,
+                body: comment.body,
+                position: comment.position,
+              })),
+            }
+          : {}),
+      },
+    });
+
+    markHotRefresh([args.prId]);
+    await refreshOne(args.prId);
+
+    return {
+      id: Number.isFinite(Number(data?.id)) ? String(Number(data.id)) : null,
+      nodeId: asString(data?.node_id) || null,
+      htmlUrl: asString(data?.html_url) || null,
+      state: asString(data?.state) || null,
+      submittedAt: asString(data?.submitted_at) || null,
+    };
+  };
+
+  /**
+   * Aggregate per-commit check runs into the compact `PrCommit.checkStatus`
+   * discriminator ("success" | "failure" | "pending" | "none"). Mirrors
+   * `toChecksStatusFromCheckRuns` but maps into the narrower commit-dot
+   * vocabulary:
+   *   - any terminal failure (failure/cancelled/timed_out) → "failure"
+   *   - else any non-terminal run → "pending"
+   *   - else any success → "success"
+   *   - else "none" (empty list, or only neutral/skipped/etc.)
+   */
+  const aggregateCommitCheckStatus = (
+    runs: Array<{ status?: string | null; conclusion?: string | null }>
+  ): "success" | "failure" | "pending" | "none" => {
+    if (!Array.isArray(runs) || runs.length === 0) return "none";
+    let hasPending = false;
+    let hasSuccess = false;
+    for (const run of runs) {
+      const status = asString(run?.status).toLowerCase();
+      const conclusion = asString(run?.conclusion).toLowerCase();
+      if (
+        conclusion === "failure" ||
+        conclusion === "cancelled" ||
+        conclusion === "timed_out"
+      ) {
+        return "failure";
+      }
+      if (status && status !== "completed") {
+        hasPending = true;
+        continue;
+      }
+      if (conclusion === "success") {
+        hasSuccess = true;
+      }
+    }
+    if (hasPending) return "pending";
+    if (hasSuccess) return "success";
+    return "none";
+  };
+
+  /**
+   * Run `mapper(items[i])` with at most `concurrency` in-flight promises.
+   * Preserves input order. A failed element resolves to `null` instead of
+   * rejecting the whole batch — callers handle null as "fall back to default".
+   */
+  const mapConcurrent = async <T, U>(
+    items: T[],
+    concurrency: number,
+    mapper: (item: T, index: number) => Promise<U>,
+  ): Promise<Array<U | null>> => {
+    const out: Array<U | null> = new Array(items.length).fill(null);
+    const limit = Math.max(1, Math.floor(concurrency));
+    let nextIndex = 0;
+    const workers: Promise<void>[] = [];
+    const run = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= items.length) return;
+        try {
+          out[i] = await mapper(items[i], i);
+        } catch {
+          out[i] = null;
+        }
+      }
+    };
+    for (let i = 0; i < Math.min(limit, items.length); i++) {
+      workers.push(run());
+    }
+    await Promise.all(workers);
+    return out;
+  };
+
+  /**
+   * Fetch up to 30 commits on the PR head branch from GitHub's REST
+   * `pulls/{n}/commits` endpoint. For each commit we also fetch
+   * `/repos/{owner}/{repo}/commits/{sha}/check-runs` (throttled to 5 parallel
+   * requests) and aggregate into `PrCommit.checkStatus`. 404/403 per commit
+   * (private org, rate limits) degrade gracefully to `"none"` so a single
+   * failure doesn't poison the whole snapshot.
+   *
+   * If the aggregate fetch would push total runtime past ~8s we bail on the
+   * check-status pass and return `"none"` for the remaining commits; the
+   * background snapshot refresh will pick them up on the next tick.
+   */
+  const COMMIT_CHECK_STATUS_BUDGET_MS = 8_000;
+  const COMMIT_CHECK_STATUS_CONCURRENCY = 5;
+  const getCommitsSnapshot = async (prId: string): Promise<PrCommit[]> => {
+    const row = requireRow(prId);
+    const repo = repoFromRow(row);
+    const list = await fetchAllPages<any>({
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/commits`,
+    });
+    const capped = list.slice(-30);
+    const baseCommits: PrCommit[] = capped.map((entry) => {
+      const sha = asString(entry?.sha) || "";
+      const commit = entry?.commit ?? {};
+      const commitAuthor = commit?.author ?? {};
+      const topAuthor = entry?.author ?? {};
+      const message = asString(commit?.message) || "";
+      const firstLine = message.split("\n")[0] ?? message;
+      const committedDate = asString(commitAuthor?.date) || asString(commit?.committer?.date) || "";
+      return {
+        sha,
+        shortSha: sha ? sha.slice(0, 7) : "",
+        message: firstLine,
+        author: {
+          login: asString(topAuthor?.login) || null,
+          name: asString(commitAuthor?.name) || asString(topAuthor?.login) || "",
+          email: asString(commitAuthor?.email) || null,
+        },
+        committedDate,
+        checkStatus: "none" as const,
+      };
+    });
+
+    // Fetch per-commit check-runs in parallel (capped to 5 concurrent).
+    // Each 404/403 is caught and downgraded to "none" for that commit.
+    const started = Date.now();
+    const results = await mapConcurrent(
+      baseCommits,
+      COMMIT_CHECK_STATUS_CONCURRENCY,
+      async (commit): Promise<"success" | "failure" | "pending" | "none"> => {
+        if (!commit.sha) return "none";
+        if (Date.now() - started > COMMIT_CHECK_STATUS_BUDGET_MS) return "none";
+        try {
+          const runs = await fetchCheckRuns(repo, commit.sha);
+          return aggregateCommitCheckStatus(runs);
+        } catch (err) {
+          logger.warn("prs.commit_check_runs_failed", {
+            prId,
+            sha: commit.sha,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return "none";
+        }
+      },
+    );
+
+    return baseCommits.map((commit, i) => ({
+      ...commit,
+      checkStatus: results[i] ?? "none",
+    }));
+  };
+
   const refreshSnapshotData = async (prId: string): Promise<void> => {
-    const [detail, status, checks, reviews, comments, files] = await Promise.all([
+    const [detail, status, checks, reviews, comments, files, commits] = await Promise.all([
       getDetailSnapshot(prId).catch(() => null),
       computeStatus(rowToSummary(requireRow(prId))).catch(() => null),
       getChecks(prId).catch(() => null),
       getReviews(prId).catch(() => null),
       getComments(prId).catch(() => null),
       getFilesSnapshot(prId).catch(() => null),
+      getCommitsSnapshot(prId).catch(() => null),
     ]);
-    upsertSnapshotRow({ prId, detail, status, checks, reviews, comments, files });
+    upsertSnapshotRow({ prId, detail, status, checks, reviews, comments, files, commits });
   };
 
   const updateDescription = async (args: UpdatePrDescriptionArgs): Promise<void> => {
@@ -1840,11 +2359,15 @@ export function createPrService({
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
+    const baseRefForDiff = (args.baseBranch && args.baseBranch.trim().length > 0)
+      ? args.baseBranch.trim()
+      : lane.baseRef;
+
     const template = readPrTemplate(projectRoot);
     const packBody = await (async () => {
       // W6: pack-based context removed. Provide a bounded git-native lane change summary instead.
       const diff = await runGit(
-        ["diff", "--name-status", `${lane.baseRef}...HEAD`],
+        ["diff", "--name-status", `${baseRefForDiff}...HEAD`],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
       if (diff.exitCode === 0) {
@@ -1863,7 +2386,7 @@ export function createPrService({
       laneId,
       laneName: lane.name,
       branchRef: lane.branchRef,
-      baseRef: lane.baseRef,
+      baseRef: baseRefForDiff,
       parentLaneId: lane.parentLaneId,
       commits,
       packBody,
@@ -1995,9 +2518,29 @@ export function createPrService({
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Failed to create pull request for "${headBranch}" → "${baseBranch}": ${msg}`
-      );
+      const msgLower = msg.toLowerCase();
+      const duplicatePrMessage =
+        msgLower.includes("pull request already exists")
+        || msgLower.includes("a pull request already exists")
+        || /\bhead\b.*\balready exists\b/i.test(msg);
+      const existingPr = duplicatePrMessage
+        ? await findExistingPrForBranch(repo, headBranch, baseBranch).catch((lookupError) => {
+            logger.warn("prs.create_existing_lookup_failed", {
+              headBranch,
+              baseBranch,
+              error: lookupError instanceof Error ? lookupError.message : String(lookupError),
+            });
+            return null;
+          })
+        : null;
+      if (existingPr) {
+        logger.info("prs.create_existing_mapped", { headBranch, baseBranch, prNumber: Number(existingPr?.number) || null });
+        created = { data: existingPr, response: null };
+      } else {
+        throw new Error(
+          `Failed to create pull request for "${headBranch}" → "${baseBranch}": ${msg}`
+        );
+      }
     }
 
     const pr = created.data;
@@ -2026,6 +2569,8 @@ export function createPrService({
       });
     }
 
+    const strategy: PrCreationStrategy = args.strategy ?? "pr_target";
+
     const summary: PrSummary = {
       id: randomUUID(),
       laneId: lane.id,
@@ -2045,12 +2590,17 @@ export function createPrService({
       deletions: Number(pr?.deletions ?? 0),
       lastSyncedAt: null,
       createdAt,
-      updatedAt: createdAt
+      updatedAt: createdAt,
+      creationStrategy: strategy
     };
 
-    upsertRow(summary);
+    // Allow repo/PR-number fallback here: when the GitHub create call collides
+    // with an already-existing PR for this branch, we need to adopt the row
+    // that represents that PR (regardless of prior lane attribution).
+    const prId = upsertRow(summary, { allowRepoPrAdoption: true });
+    markHotRefresh([prId]);
 
-    return await refreshOne(summary.id);
+    return await refreshOne(prId);
   };
 
   const linkToLane = async (args: LinkPrToLaneArgs): Promise<PrSummary> => {
@@ -2065,6 +2615,15 @@ export function createPrService({
     const createdAt = nowIso();
     const headBranch = asString(pr?.head?.ref) || branchNameFromRef(lane.branchRef);
     const baseBranch = asString(pr?.base?.ref) || branchNameFromRef(lane.baseRef);
+
+    // Backfill creation_strategy for imported PRs that don't have one stored yet.
+    // The wizard defaults to "pr_target" when users create via the UI; mirror
+    // that default here so linked PRs participate in strategy-aware rebase
+    // behavior (follow-up 3) instead of being treated as "unset". The
+    // upsertRow path uses COALESCE so we never clobber an existing value.
+    const existingRow = getRowForRepoPr(repo.owner, repo.name, locator.number);
+    const creationStrategy: PrCreationStrategy =
+      normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
     const summary: PrSummary = {
       id: randomUUID(),
@@ -2085,11 +2644,13 @@ export function createPrService({
       deletions: Number(pr?.deletions ?? 0),
       lastSyncedAt: null,
       createdAt,
-      updatedAt: createdAt
+      updatedAt: createdAt,
+      creationStrategy
     };
 
-    upsertRow(summary);
-    return await refreshOne(summary.id);
+    const prId = upsertRow(summary);
+    markHotRefresh([prId]);
+    return await refreshOne(prId);
   };
 
   const land = async (args: LandPrArgs): Promise<LandResult> => {
@@ -2411,13 +2972,26 @@ export function createPrService({
     if (!preflight.baseLane) {
       throw new Error(`Could not map base branch "${args.baseBranch}" to an active lane. Create or attach that lane first.`);
     }
+    const existingIntegrationLaneId = asString(args.existingIntegrationLaneId).trim();
+    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+    if (existingIntegrationLaneId) {
+      if (preflight.uniqueSourceLaneIds.includes(existingIntegrationLaneId)) {
+        throw new Error("Integration lane cannot be one of the source lanes.");
+      }
+      const adoptLane = laneMap.get(existingIntegrationLaneId);
+      if (!adoptLane) {
+        throw new Error(`Integration lane not found: ${existingIntegrationLaneId}`);
+      }
+      assertIntegrationLaneIsNotPrimary(adoptLane, "Integration lane");
+    }
     assertDirtyWorktreesAllowed({
       lanes,
-      laneIds: preflight.uniqueSourceLaneIds,
+      laneIds: existingIntegrationLaneId
+        ? [...preflight.uniqueSourceLaneIds, existingIntegrationLaneId]
+        : preflight.uniqueSourceLaneIds,
       allowDirtyWorktree: args.allowDirtyWorktree
     });
 
-    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
     const sourceLaneNames = preflight.uniqueSourceLaneIds.map((laneId) => laneMap.get(laneId)?.name ?? laneId);
     const groupId = randomUUID();
     const now = nowIso();
@@ -2425,6 +2999,7 @@ export function createPrService({
     // Track resources created during this operation for cleanup on failure.
     let groupInserted = false;
     let integrationLane: LaneSummary | null = null;
+    let createdNewIntegrationLane = false;
 
     try {
       db.run(
@@ -2433,11 +3008,17 @@ export function createPrService({
       );
       groupInserted = true;
 
-      integrationLane = await laneService.createChild({
-        parentLaneId: preflight.baseLane.id,
-        name: integrationLaneName,
-        description: `Integration lane for merging: ${sourceLaneNames.join(", ")}`
-      });
+      if (existingIntegrationLaneId) {
+        // Already validated in the guard above; safe to assert non-null.
+        integrationLane = laneMap.get(existingIntegrationLaneId)!;
+      } else {
+        integrationLane = await laneService.createChild({
+          parentLaneId: preflight.baseLane.id,
+          name: integrationLaneName,
+          description: `Integration lane for merging: ${sourceLaneNames.join(", ")}`
+        });
+        createdNewIntegrationLane = true;
+      }
 
       const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
 
@@ -2515,9 +3096,8 @@ export function createPrService({
           });
         }
       }
-      // Archive the integration lane if we created one (best-effort; deletion
-      // could fail if the worktree has uncommitted state, so archive is safer).
-      if (integrationLane) {
+      // Archive the integration lane only if we created it (best-effort).
+      if (integrationLane && createdNewIntegrationLane) {
         try {
           await laneService.archive({ laneId: integrationLane.id });
         } catch (cleanupError) {
@@ -2893,11 +3473,30 @@ export function createPrService({
     const laneOrder = new Map(sourceLaneIds.map((laneId, index) => [laneId, index]));
     const zeroDiffStat: IntegrationProposalStep["diffStat"] = { insertions: 0, deletions: 0, filesChanged: 0 };
 
+    const mergeIntoLaneId = asString(args.mergeIntoLaneId).trim();
+    if (mergeIntoLaneId && sourceLaneIds.includes(mergeIntoLaneId)) {
+      throw new Error("Merge-into lane cannot be one of the source lanes.");
+    }
+    const mergeIntoLane = mergeIntoLaneId ? laneMap.get(mergeIntoLaneId) ?? null : null;
+    if (mergeIntoLaneId && !mergeIntoLane) {
+      throw new Error(`Merge-into lane not found: ${mergeIntoLaneId}`);
+    }
+    assertIntegrationLaneIsNotPrimary(mergeIntoLane, "Merge-into lane");
+
     // Resolve base branch SHA once, then compare each lane head against it.
     const baseSha = (await runGitOrThrow(
       ["rev-parse", args.baseBranch],
       { cwd: projectRoot, timeoutMs: 10_000 }
     )).trim();
+
+    let mergeIntoHeadSha: string | null = null;
+    if (mergeIntoLane) {
+      mergeIntoHeadSha = (await runGitOrThrow(
+        ["rev-parse", branchNameFromRef(mergeIntoLane.branchRef)],
+        { cwd: projectRoot, timeoutMs: 10_000 }
+      )).trim();
+    }
+    const sequentialStartSha = mergeIntoHeadSha ?? baseSha;
 
     const laneSummariesById = new Map<
       string,
@@ -3096,6 +3695,64 @@ export function createPrService({
       }))
     });
 
+    const mergeIntoConflictLaneIds = new Set<string>();
+    const mergeIntoFilesByLaneId = new Map<string, Map<string, IntegrationProposalStep["conflictingFiles"][number]>>();
+    if (mergeIntoHeadSha) {
+      for (const laneId of sourceLaneIds) {
+        const laneSummary = laneSummariesById.get(laneId);
+        if (!laneSummary?.headSha) continue;
+        const mergeTreeResult = await runGitMergeTree({
+          cwd: projectRoot,
+          mergeBase: baseSha,
+          branchA: mergeIntoHeadSha,
+          branchB: laneSummary.headSha,
+          timeoutMs: 30_000
+        });
+        if (mergeTreeResult.exitCode === 128 || (!mergeTreeResult.conflicts.length && mergeTreeResult.exitCode !== 0)) {
+          mergeIntoConflictLaneIds.add(laneId);
+          continue;
+        }
+        if (mergeTreeResult.conflicts.length === 0) continue;
+        mergeIntoConflictLaneIds.add(laneId);
+        const fileMap = mergeIntoFilesByLaneId.get(laneId) ?? new Map<string, IntegrationProposalStep["conflictingFiles"][number]>();
+        const treeOid = mergeTreeResult.treeOid;
+        for (const filePath of mergeTreeResult.conflicts.map((c) => c.path)) {
+          if (fileMap.has(filePath)) continue;
+          if (treeOid) {
+            const detail = await extractConflictDetail(treeOid, filePath, projectRoot);
+            fileMap.set(filePath, {
+              path: filePath,
+              conflictType: detail.conflictType,
+              conflictMarkers: detail.conflictMarkers,
+              oursExcerpt: detail.oursExcerpt || null,
+              theirsExcerpt: detail.theirsExcerpt || null,
+              diffHunk: detail.diffHunk || null
+            });
+          } else {
+            let oursExcerpt: string | null = null;
+            let theirsExcerpt: string | null = null;
+            try {
+              const [diffI, diffS] = await Promise.all([
+                runGit(["diff", `${baseSha}..${mergeIntoHeadSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
+                runGit(["diff", `${baseSha}..${laneSummary.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
+              ]);
+              if (diffI.exitCode === 0 && diffI.stdout.trim()) oursExcerpt = diffI.stdout.slice(0, 500);
+              if (diffS.exitCode === 0 && diffS.stdout.trim()) theirsExcerpt = diffS.stdout.slice(0, 500);
+            } catch { /* best-effort */ }
+            fileMap.set(filePath, {
+              path: filePath,
+              conflictType: null,
+              conflictMarkers: "",
+              oursExcerpt,
+              theirsExcerpt,
+              diffHunk: null
+            });
+          }
+        }
+        mergeIntoFilesByLaneId.set(laneId, fileMap);
+      }
+    }
+
     const sequentialConflictLaneIds = new Set<string>();
     const sequentialBlockedLaneIds = new Set<string>();
     const sequentialFilesByLaneId = new Map<string, Map<string, IntegrationProposalStep["conflictingFiles"][number]>>();
@@ -3103,7 +3760,7 @@ export function createPrService({
     const sequentialWorktreePath = path.join(sequentialTempRoot, "worktree");
 
     try {
-      await runGitOrThrow(["worktree", "add", "--detach", sequentialWorktreePath, baseSha], {
+      await runGitOrThrow(["worktree", "add", "--detach", sequentialWorktreePath, sequentialStartSha], {
         cwd: projectRoot,
         timeoutMs: 60_000,
       });
@@ -3197,6 +3854,14 @@ export function createPrService({
       conflictingFilesByLaneId.set(laneId, laneFiles);
     }
 
+    for (const [laneId, files] of mergeIntoFilesByLaneId.entries()) {
+      const laneFiles = conflictingFilesByLaneId.get(laneId) ?? new Map<string, IntegrationProposalStep["conflictingFiles"][number]>();
+      for (const [filePath, file] of files.entries()) {
+        if (!laneFiles.has(filePath)) laneFiles.set(filePath, file);
+      }
+      conflictingFilesByLaneId.set(laneId, laneFiles);
+    }
+
     const laneSummaries: IntegrationLaneSummary[] = sourceLaneIds.map((laneId) => {
       const laneSummary = laneSummariesById.get(laneId);
       const laneName = laneSummary?.laneName ?? laneId;
@@ -3206,7 +3871,7 @@ export function createPrService({
       let outcome: IntegrationLaneSummary["outcome"] = "clean";
       if (!laneSummary?.headSha || blockedLaneIds.has(laneId) || sequentialBlockedLaneIds.has(laneId)) {
         outcome = "blocked";
-      } else if (conflictsWith.length > 0 || sequentialConflictLaneIds.has(laneId)) {
+      } else if (conflictsWith.length > 0 || sequentialConflictLaneIds.has(laneId) || mergeIntoConflictLaneIds.has(laneId)) {
         outcome = "conflict";
       }
 
@@ -3248,8 +3913,11 @@ export function createPrService({
       overallOutcome,
       createdAt: now,
       status: "proposed",
+      preferredIntegrationLaneId: mergeIntoLaneId || null,
+      mergeIntoHeadSha: mergeIntoHeadSha ?? null,
       linkedGroupId: null,
       linkedPrId: null,
+      integrationLaneOrigin: null,
       workflowDisplayState: "active",
       cleanupState: "none",
       closedAt: null,
@@ -3261,7 +3929,7 @@ export function createPrService({
 
     if (args.persist !== false) {
       db.run(
-        `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json, lane_summaries_json, overall_outcome, created_at, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json, lane_summaries_json, overall_outcome, created_at, status, preferred_integration_lane_id, merge_into_head_sha) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           proposalId,
           projectId,
@@ -3272,7 +3940,9 @@ export function createPrService({
           JSON.stringify(laneSummaries),
           overallOutcome,
           now,
-          "proposed"
+          "proposed",
+          mergeIntoLaneId || null,
+          mergeIntoHeadSha ?? null,
         ]
       );
     }
@@ -3352,14 +4022,23 @@ export function createPrService({
       steps_json: string;
       integration_lane_id: string | null;
       integration_lane_name: string | null;
+      preferred_integration_lane_id: string | null;
     }>(
-      `select id, source_lane_ids_json, base_branch, steps_json, integration_lane_id, integration_lane_name from integration_proposals where id = ?`,
+      `select id, source_lane_ids_json, base_branch, steps_json, integration_lane_id, integration_lane_name, preferred_integration_lane_id from integration_proposals where id = ?`,
       [args.proposalId]
     );
     if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
 
     const sourceLaneIds = JSON.parse(String(proposalRow.source_lane_ids_json)) as string[];
     const existingIntegrationLaneId = asString(proposalRow.integration_lane_id).trim();
+    const preferredFromRow = asString(proposalRow.preferred_integration_lane_id).trim() || null;
+    const preferredIntegrationLaneId =
+      args.preferredIntegrationLaneId !== undefined
+        ? (asString(args.preferredIntegrationLaneId).trim() || null)
+        : preferredFromRow;
+    if (preferredIntegrationLaneId && sourceLaneIds.includes(preferredIntegrationLaneId)) {
+      throw new Error("Preferred integration lane cannot be one of the source lanes.");
+    }
 
     let result: CreateIntegrationPrResult;
     if (existingIntegrationLaneId) {
@@ -3374,14 +4053,17 @@ export function createPrService({
       });
     } else {
       const availableLanes = await laneService.list({ includeArchived: false });
+      const dirtyCheckLaneIds = [...sourceLaneIds];
+      if (preferredIntegrationLaneId) dirtyCheckLaneIds.push(preferredIntegrationLaneId);
       assertDirtyWorktreesAllowed({
         lanes: availableLanes,
-        laneIds: sourceLaneIds,
+        laneIds: dirtyCheckLaneIds,
         allowDirtyWorktree: args.allowDirtyWorktree,
       });
 
       const preparedLane = await createIntegrationLaneForProposal({
         proposalId: args.proposalId,
+        allowDirtyWorktree: args.allowDirtyWorktree,
       });
 
       if (preparedLane.conflictingLanes.length > 0) {
@@ -3423,6 +4105,9 @@ export function createPrService({
               || null
             )
           : null,
+      ...(args.preferredIntegrationLaneId !== undefined
+        ? { preferred_integration_lane_id: preferredIntegrationLaneId }
+        : {}),
       integration_lane_id: result.integrationLaneId,
       linked_group_id: result.groupId,
       linked_pr_id: result.pr.id,
@@ -3467,7 +4152,7 @@ export function createPrService({
     const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
     const pullRequestRows = listRows();
     const linkedPrByRepoKey = new Map(
-      pullRequestRows.map((row) => [`${row.repo_owner}/${row.repo_name}#${row.github_pr_number}`, row] as const)
+      pullRequestRows.map((row) => [repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)), row] as const)
     );
     const groupRows = db.all<{ pr_id: string; group_id: string; group_type: "queue" | "integration" }>(
       `select gm.pr_id, gm.group_id, g.group_type
@@ -3512,7 +4197,7 @@ export function createPrService({
       const repoOwner = asString(rawRepo?.owner?.login) || repositoryParts[0] || repo.owner;
       const repoName = asString(rawRepo?.name) || repositoryParts[1] || repo.name;
       const githubPrNumber = Number(rawPr?.number) || 0;
-      const linkedPrRow = linkedPrByRepoKey.get(`${repoOwner}/${repoName}#${githubPrNumber}`) ?? null;
+      const linkedPrRow = linkedPrByRepoKey.get(repoPrKey(repoOwner, repoName, githubPrNumber)) ?? null;
       const workflowRow = linkedPrRow ? workflowByPrId.get(linkedPrRow.id) ?? null : null;
       const groupRow = linkedPrRow ? groupByPrId.get(linkedPrRow.id) ?? null : null;
 
@@ -3803,6 +4488,8 @@ export function createPrService({
        where project_id = ?
          and status = 'proposed'
          and (integration_lane_id is null or integration_lane_id = '')
+         and (preferred_integration_lane_id is null or preferred_integration_lane_id = '')
+         and (merge_into_head_sha is null or merge_into_head_sha = '')
          and json_array_length(source_lane_ids_json) = 1
          and json_extract(source_lane_ids_json, '$[0]') in (
            select lane_id from pull_requests
@@ -3864,9 +4551,13 @@ export function createPrService({
       ? args.archiveSourceLaneIds.filter((laneId): laneId is string => typeof laneId === "string" && laneId.trim().length > 0)
       : [];
     const targetLaneIds = new Set<string>();
+    const skippedLaneIds: string[] = [];
     if (args.archiveIntegrationLane !== false) {
       const integrationLaneId = asString(row.integration_lane_id).trim();
-      if (integrationLaneId) targetLaneIds.add(integrationLaneId);
+      if (integrationLaneId) {
+        if (isAdeOwnedIntegrationLane(row)) targetLaneIds.add(integrationLaneId);
+        else skippedLaneIds.push(integrationLaneId);
+      }
     }
     for (const laneId of requestedSourceLaneIds) {
       if (sourceLaneIds.includes(laneId)) targetLaneIds.add(laneId);
@@ -3881,7 +4572,6 @@ export function createPrService({
     const laneList = await laneService.list({ includeArchived: true, includeStatus: false });
     const laneById = new Map(laneList.map((lane) => [lane.id, lane]));
     const archivedLaneIds: string[] = [];
-    const skippedLaneIds: string[] = [];
 
     for (const laneId of targetLaneIds) {
       const lane = laneById.get(laneId);
@@ -3920,6 +4610,20 @@ export function createPrService({
     if (args.body !== undefined) { sets.push("body = ?"); params.push(args.body); }
     if (args.draft !== undefined) { sets.push("draft = ?"); params.push(args.draft ? 1 : 0); }
     if (args.integrationLaneName !== undefined) { sets.push("integration_lane_name = ?"); params.push(args.integrationLaneName); }
+    if (args.preferredIntegrationLaneId !== undefined) {
+      sets.push("preferred_integration_lane_id = ?");
+      params.push(args.preferredIntegrationLaneId?.trim() || null);
+    }
+    if (args.mergeIntoHeadSha !== undefined) {
+      sets.push("merge_into_head_sha = ?");
+      params.push(args.mergeIntoHeadSha?.trim() || null);
+    }
+    if (args.clearIntegrationBinding) {
+      sets.push("integration_lane_id = ?");
+      params.push(null);
+      sets.push("resolution_state_json = ?");
+      params.push(null);
+    }
     if (sets.length === 0) return;
     params.push(args.proposalId);
     db.run(`update integration_proposals set ${sets.join(", ")} where id = ?`, params);
@@ -3929,14 +4633,15 @@ export function createPrService({
     const proposalRow = db.get<{
       id: string;
       integration_lane_id: string | null;
+      preferred_integration_lane_id: string | null;
     }>(
-      `select id, integration_lane_id from integration_proposals where id = ?`,
+      `select id, integration_lane_id, preferred_integration_lane_id from integration_proposals where id = ?`,
       [args.proposalId]
     );
     if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
     let deletedIntegrationLane = false;
     const integrationLaneId = asString(proposalRow.integration_lane_id).trim() || null;
-    if (args.deleteIntegrationLane && integrationLaneId) {
+    if (args.deleteIntegrationLane && integrationLaneId && isAdeOwnedIntegrationLane(proposalRow)) {
       try {
         await laneService.delete({
           laneId: integrationLaneId,
@@ -3963,9 +4668,11 @@ export function createPrService({
     const proposalRow = db.get<{
       id: string; source_lane_ids_json: string; base_branch: string;
       steps_json: string; overall_outcome: string; integration_lane_name: string | null;
-      integration_lane_id: string | null; resolution_state_json: string | null; created_at: string;
+      integration_lane_id: string | null; preferred_integration_lane_id: string | null;
+      merge_into_head_sha: string | null;
+      resolution_state_json: string | null; created_at: string;
     }>(
-      `select id, source_lane_ids_json, base_branch, steps_json, overall_outcome, integration_lane_name, integration_lane_id, resolution_state_json, created_at from integration_proposals where id = ?`,
+      `select id, source_lane_ids_json, base_branch, steps_json, overall_outcome, integration_lane_name, integration_lane_id, preferred_integration_lane_id, merge_into_head_sha, resolution_state_json, created_at from integration_proposals where id = ?`,
       [args.proposalId]
     );
     if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
@@ -3981,10 +4688,26 @@ export function createPrService({
       throw new Error(`Could not map base branch "${String(proposalRow.base_branch)}" to an active lane. Create or attach that lane first.`);
     }
     const laneMap = new Map(allLanes.map((l) => [l.id, l]));
+    const preferredIntegrationLaneId = asString(proposalRow.preferred_integration_lane_id).trim();
+    if (preferredIntegrationLaneId && preflight.uniqueSourceLaneIds.includes(preferredIntegrationLaneId)) {
+      throw new Error("Preferred integration lane cannot be one of the source lanes.");
+    }
+    assertIntegrationLaneIsNotPrimary(
+      preferredIntegrationLaneId ? laneMap.get(preferredIntegrationLaneId) ?? null : null,
+      "Preferred integration lane",
+    );
+    const dirtyCheckLaneIds = [...preflight.uniqueSourceLaneIds];
+    if (preferredIntegrationLaneId) dirtyCheckLaneIds.push(preferredIntegrationLaneId);
+    assertDirtyWorktreesAllowed({
+      lanes: allLanes,
+      laneIds: dirtyCheckLaneIds,
+      allowDirtyWorktree: args.allowDirtyWorktree,
+    });
     const existingIntegrationLaneId = asString(proposalRow.integration_lane_id).trim();
     if (existingIntegrationLaneId) {
       const existingLane = laneMap.get(existingIntegrationLaneId);
       if (existingLane) {
+        assertIntegrationLaneIsNotPrimary(existingLane, "Existing integration lane");
         const existingState = proposalRow.resolution_state_json
           ? JSON.parse(String(proposalRow.resolution_state_json)) as IntegrationResolutionState
           : null;
@@ -4007,11 +4730,39 @@ export function createPrService({
     }
     const shortId = args.proposalId.slice(0, 8);
     const integrationLaneName = String(proposalRow.integration_lane_name ?? "").trim() || `integration/${shortId}`;
-    const integrationLane = await laneService.createChild({
-      parentLaneId: preflight.baseLane.id,
-      name: integrationLaneName,
-      description: `Integration lane for proposal ${args.proposalId}`
-    });
+    let integrationLane: LaneSummary;
+    if (preferredIntegrationLaneId) {
+      const adopt = laneMap.get(preferredIntegrationLaneId);
+      if (!adopt) throw new Error(`Preferred integration lane not found: ${preferredIntegrationLaneId}`);
+      const storedMergeHead = asString(proposalRow.merge_into_head_sha).trim();
+      try {
+        const currentHead = (await runGitOrThrow(
+          ["rev-parse", "HEAD"],
+          { cwd: adopt.worktreePath, timeoutMs: 10_000 }
+        )).trim();
+        if (storedMergeHead && currentHead && storedMergeHead !== currentHead) {
+          logger.warn("prs.integration_merge_into_head_drift", {
+            proposalId: args.proposalId,
+            preferredIntegrationLaneId,
+            storedHead: storedMergeHead,
+            currentHead,
+          });
+        }
+      } catch (error) {
+        logger.warn("prs.integration_merge_into_head_read_failed", {
+          proposalId: args.proposalId,
+          preferredIntegrationLaneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      integrationLane = adopt;
+    } else {
+      integrationLane = await laneService.createChild({
+        parentLaneId: preflight.baseLane.id,
+        name: integrationLaneName,
+        description: `Integration lane for proposal ${args.proposalId}`
+      });
+    }
 
     const mergedCleanLanes: string[] = [];
     const conflictingLanes: string[] = [];
@@ -4288,9 +5039,13 @@ export function createPrService({
       return row ? rowToSummary(row) : null;
     },
 
-    listAll(): PrSummary[] {
-      return listRows().map(rowToSummary);
+    listAll(args: { laneId?: string } = {}): PrSummary[] {
+      const laneId = String(args.laneId ?? "").trim();
+      const summaries = listRows().map(rowToSummary);
+      return laneId ? summaries.filter((pr) => pr.laneId === laneId) : summaries;
     },
+
+    getReviewSnapshot,
 
     async refresh(args: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> {
       const requestedPrIds = [
@@ -4893,6 +5648,178 @@ export function createPrService({
       );
     },
 
+    async postReviewComment(args: PostPrReviewCommentArgs): Promise<PrReviewThreadComment> {
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
+      if (!threads.some((t) => t.id === args.threadId)) {
+        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
+      }
+      const data = await graphqlRequest<{
+        addPullRequestReviewThreadReply?: {
+          comment?: {
+            id?: unknown;
+            body?: unknown;
+            url?: unknown;
+            createdAt?: unknown;
+            updatedAt?: unknown;
+            author?: { login?: unknown; avatarUrl?: unknown } | null;
+          } | null;
+        } | null;
+      }>(
+        `
+          mutation AdePostReviewComment($threadId: ID!, $body: String!) {
+            addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+              comment {
+                id
+                body
+                url
+                createdAt
+                updatedAt
+                author { login avatarUrl }
+              }
+            }
+          }
+        `,
+        { threadId: args.threadId, body: args.body },
+      );
+      const comment = data.addPullRequestReviewThreadReply?.comment;
+      if (!comment) {
+        throw new Error("GitHub did not return the review-thread reply.");
+      }
+      return {
+        id: asString(comment.id) || String(randomUUID()),
+        author: asString(comment.author?.login) || "unknown",
+        authorAvatarUrl: asString(comment.author?.avatarUrl) || null,
+        body: asString(comment.body) || null,
+        url: asString(comment.url) || null,
+        createdAt: asString(comment.createdAt) || null,
+        updatedAt: asString(comment.updatedAt) || null,
+      };
+    },
+
+    async setReviewThreadResolved(args: SetPrReviewThreadResolvedArgs): Promise<SetPrReviewThreadResolvedResult> {
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
+      if (!threads.some((t) => t.id === args.threadId)) {
+        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
+      }
+      if (args.resolved) {
+        const data = await graphqlRequest<{
+          resolveReviewThread?: { thread?: { id?: unknown; isResolved?: unknown } | null } | null;
+        }>(
+          `
+            mutation AdeResolveReviewThread($threadId: ID!) {
+              resolveReviewThread(input: { threadId: $threadId }) {
+                thread { id isResolved }
+              }
+            }
+          `,
+          { threadId: args.threadId },
+        );
+        const thread = data.resolveReviewThread?.thread ?? null;
+        return {
+          threadId: asString(thread?.id) || args.threadId,
+          isResolved: thread?.isResolved === true,
+        };
+      }
+      const data = await graphqlRequest<{
+        unresolveReviewThread?: { thread?: { id?: unknown; isResolved?: unknown } | null } | null;
+      }>(
+        `
+          mutation AdeUnresolveReviewThread($threadId: ID!) {
+            unresolveReviewThread(input: { threadId: $threadId }) {
+              thread { id isResolved }
+            }
+          }
+        `,
+        { threadId: args.threadId },
+      );
+      const thread = data.unresolveReviewThread?.thread ?? null;
+      return {
+        threadId: asString(thread?.id) || args.threadId,
+        isResolved: thread?.isResolved === true,
+      };
+    },
+
+    async reactToComment(args: ReactToPrCommentArgs): Promise<void> {
+      // requireRow gates the caller's access to the PR, but the commentId is
+      // trusted from the UI: reactions can target review comments, issue
+      // comments, or review threads — validating ownership for every node type
+      // would require an extra GraphQL round-trip per click and offers little
+      // defense given the user already has write access to the PR's comments.
+      requireRow(args.prId);
+      const contentEnum = reactionToGraphqlEnum(args.content);
+      await graphqlRequest(
+        `
+          mutation AdeReactToComment($subjectId: ID!, $content: ReactionContent!) {
+            addReaction(input: { subjectId: $subjectId, content: $content }) {
+              reaction { id content }
+            }
+          }
+        `,
+        { subjectId: args.commentId, content: contentEnum },
+      );
+    },
+
+    async getDeployments(prId: string): Promise<PrDeployment[]> {
+      const row = requireRow(prId);
+      const repo = repoFromRow(row);
+      const pr = await fetchPr(repo, Number(row.github_pr_number));
+      const headSha = asString(pr?.head?.sha);
+      if (!headSha) return [];
+      const { data } = await githubService.apiRequest<any[]>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/deployments`,
+        query: { sha: headSha, per_page: 100 },
+      });
+      const list = Array.isArray(data) ? data : [];
+      const deployments: PrDeployment[] = await Promise.all(
+        list.map(async (d): Promise<PrDeployment> => {
+          const deploymentId = String(asNumber(d?.id) ?? asString(d?.id) ?? "");
+          let state: PrDeploymentState = "unknown";
+          let environmentUrl: string | null = asString(d?.payload?.web_url) || null;
+          let logUrl: string | null = null;
+          let updatedAt: string | null = asString(d?.updated_at) || null;
+          try {
+            const { data: statuses } = await githubService.apiRequest<any[]>({
+              method: "GET",
+              path: `/repos/${repo.owner}/${repo.name}/deployments/${deploymentId}/statuses`,
+              query: { per_page: 1 },
+            });
+            const latest = Array.isArray(statuses) && statuses.length > 0 ? statuses[0] : null;
+            if (latest) {
+              state = toDeploymentState(latest.state);
+              environmentUrl = asString(latest.environment_url) || environmentUrl;
+              logUrl = asString(latest.log_url) || asString(latest.target_url) || null;
+              updatedAt = asString(latest.updated_at) || updatedAt;
+            }
+          } catch (err) {
+            logger.warn("prs.get_deployments_status_failed", {
+              prId,
+              deploymentId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return {
+            id: deploymentId || randomUUID(),
+            environment: asString(d?.environment) || "unknown",
+            state,
+            description: asString(d?.description) || null,
+            environmentUrl,
+            logUrl,
+            sha: asString(d?.sha) || headSha,
+            ref: asString(d?.ref) || null,
+            creator: asString(d?.creator?.login) || null,
+            createdAt: asString(d?.created_at) || null,
+            updatedAt,
+          };
+        }),
+      );
+      return deployments;
+    },
+
     async updateTitle(args: UpdatePrTitleArgs): Promise<void> {
       const row = requireRow(args.prId);
       const repo = repoFromRow(row);
@@ -4938,16 +5865,117 @@ export function createPrService({
       await refreshOne(args.prId);
     },
 
-    async submitReview(args: SubmitPrReviewArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
-      await githubService.apiRequest({
-        method: "POST",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/reviews`,
-        body: { event: args.event, body: args.body ?? "" }
+    async submitReview(args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> {
+      return await submitReviewRequest(args);
+    },
+
+    async publishReviewPublication(args: {
+      runId: string;
+      destination: ReviewPublicationDestination;
+      targetLabel: string;
+      summary: string | null;
+      findings: ReviewFinding[];
+      changedFiles: Array<{ filePath: string; diffPositionsByLine: Record<number, number> }>;
+    }): Promise<ReviewPublication> {
+      if (args.destination.kind !== "github_pr_review") {
+        throw new Error(`Unsupported review publication destination: ${args.destination.kind}`);
+      }
+
+      const snapshot = await getReviewSnapshot(args.destination.prId);
+      const requestedAt = nowIso();
+      const changedFilesByPath = new Map(
+        args.changedFiles.map((file) => [file.filePath, file.diffPositionsByLine] as const),
+      );
+      const inlineFindings: ReviewFinding[] = [];
+      const summaryFindings: ReviewFinding[] = [];
+      const inlineComments: ReviewPublicationInlineComment[] = [];
+
+      for (const finding of args.findings) {
+        const linePositions = finding.filePath ? changedFilesByPath.get(finding.filePath) : null;
+        const diffPosition = finding.line != null && linePositions
+          ? Number(linePositions[finding.line] ?? NaN)
+          : Number.NaN;
+
+        if (
+          finding.anchorState === "anchored"
+          && finding.filePath
+          && finding.line != null
+          && Number.isFinite(diffPosition)
+          && diffPosition > 0
+        ) {
+          inlineFindings.push(finding);
+          inlineComments.push({
+            findingId: finding.id,
+            path: finding.filePath,
+            line: finding.line,
+            position: diffPosition,
+            body: buildPublishedReviewCommentBody(finding),
+          });
+          continue;
+        }
+        summaryFindings.push(finding);
+      }
+
+      const summaryBody = buildPublishedReviewSummaryBody({
+        targetLabel: args.targetLabel,
+        summary: args.summary,
+        inlineFindings,
+        summaryFindings,
       });
-      markHotRefresh([args.prId]);
-      await refreshOne(args.prId);
+
+      try {
+        const result = await submitReviewRequest(
+          {
+            prId: args.destination.prId,
+            event: "COMMENT",
+            body: summaryBody,
+            comments: inlineComments.map((comment) => ({
+              path: comment.path,
+              position: comment.position,
+              body: comment.body,
+            })),
+          },
+          {
+            commitSha: snapshot.headSha,
+          },
+        );
+
+        const completedAt = nowIso();
+        return {
+          id: randomUUID(),
+          runId: args.runId,
+          destination: args.destination,
+          reviewEvent: "COMMENT",
+          status: "published",
+          reviewUrl: result.htmlUrl,
+          remoteReviewId: result.id || result.nodeId,
+          summaryBody,
+          inlineComments,
+          summaryFindingIds: summaryFindings.map((finding) => finding.id),
+          errorMessage: null,
+          createdAt: requestedAt,
+          updatedAt: completedAt,
+          completedAt,
+        };
+      } catch (error) {
+        const completedAt = nowIso();
+        return {
+          id: randomUUID(),
+          runId: args.runId,
+          destination: args.destination,
+          reviewEvent: "COMMENT",
+          status: "failed",
+          reviewUrl: null,
+          remoteReviewId: null,
+          summaryBody,
+          inlineComments,
+          summaryFindingIds: summaryFindings.map((finding) => finding.id),
+          errorMessage: getErrorMessage(error),
+          createdAt: requestedAt,
+          updatedAt: completedAt,
+          completedAt,
+        };
+      }
     },
 
     async closePr(args: ClosePrArgs): Promise<void> {
@@ -5106,6 +6134,370 @@ export function createPrService({
         recommendations: ["Review the changes manually for a detailed assessment."],
         mergeReadiness: "needs_work"
       };
+    },
+
+    async getMobileSnapshot(): Promise<PrMobileSnapshot> {
+      return await buildMobileSnapshot();
     }
   };
+
+  async function buildMobileSnapshot(): Promise<PrMobileSnapshot> {
+    const prRows = listRows();
+    const prSummaries = prRows.map(rowToSummary);
+    const prByLaneId = new Map(prSummaries.map((pr) => [pr.laneId, pr] as const));
+
+    let lanes: LaneSummary[] = [];
+    try {
+      lanes = await laneService.list({ includeArchived: false, includeStatus: true });
+    } catch (error) {
+      logger.warn("prs.mobile_snapshot.lanes_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    const primaryBranch = primaryLane ? branchNameFromRef(primaryLane.branchRef) : null;
+
+    const stacks = buildStackInfos(lanes, prByLaneId);
+    const capabilities = buildCapabilities(prSummaries);
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const createCapabilities = buildCreateCapabilities(lanes, prByLaneId, laneById, primaryLane, primaryBranch);
+    const workflowCards = await buildWorkflowCards();
+
+    return {
+      generatedAt: nowIso(),
+      prs: prSummaries,
+      stacks,
+      capabilities,
+      createCapabilities,
+      workflowCards,
+      live: true,
+    };
+  }
+
+  function buildStackInfos(
+    lanes: LaneSummary[],
+    prByLaneId: Map<string, PrSummary>,
+  ): PrStackInfo[] {
+    if (lanes.length === 0) return [];
+
+    const childrenByParent = new Map<string, LaneSummary[]>();
+    for (const lane of lanes) {
+      if (!lane.parentLaneId) continue;
+      const arr = childrenByParent.get(lane.parentLaneId) ?? [];
+      arr.push(lane);
+      childrenByParent.set(lane.parentLaneId, arr);
+    }
+
+    const stacks: PrStackInfo[] = [];
+    const emitted = new Set<string>();
+
+    for (const lane of lanes) {
+      if (lane.parentLaneId) continue;
+      const member = collectStackMembers(lane, childrenByParent, prByLaneId, 0);
+      const prCount = member.filter((m) => m.prId !== null).length;
+      if (prCount === 0) continue;
+      const stackKey = `stack:${lane.id}`;
+      if (emitted.has(stackKey)) continue;
+      emitted.add(stackKey);
+      stacks.push({
+        stackId: stackKey,
+        rootLaneId: lane.id,
+        members: member,
+        size: member.length,
+        prCount,
+      });
+    }
+
+    return stacks;
+  }
+
+  function collectStackMembers(
+    lane: LaneSummary,
+    childrenByParent: Map<string, LaneSummary[]>,
+    prByLaneId: Map<string, PrSummary>,
+    depth: number,
+  ): PrStackMember[] {
+    const children = childrenByParent.get(lane.id) ?? [];
+    let laneRole: PrStackMemberRole;
+    if (depth === 0) {
+      laneRole = "root";
+    } else if (children.length === 0) {
+      laneRole = "leaf";
+    } else {
+      laneRole = "middle";
+    }
+    const pr = prByLaneId.get(lane.id) ?? null;
+    const self: PrStackMember = {
+      laneId: lane.id,
+      laneName: lane.name,
+      parentLaneId: lane.parentLaneId,
+      depth,
+      role: laneRole,
+      dirty: lane.status?.dirty === true,
+      prId: pr?.id ?? null,
+      prNumber: pr ? Number(pr.githubPrNumber) : null,
+      prState: pr?.state ?? null,
+      prTitle: pr?.title ?? null,
+      baseBranch: pr?.baseBranch ?? null,
+      headBranch: pr?.headBranch ?? null,
+      checksStatus: pr?.checksStatus ?? null,
+      reviewStatus: pr?.reviewStatus ?? null,
+    };
+    const result: PrStackMember[] = [self];
+    for (const child of children) {
+      result.push(...collectStackMembers(child, childrenByParent, prByLaneId, depth + 1));
+    }
+    return result;
+  }
+
+  function buildCapabilities(prs: PrSummary[]): Record<string, PrActionCapabilities> {
+    const out: Record<string, PrActionCapabilities> = {};
+    for (const pr of prs) {
+      out[pr.id] = capabilitiesForPr(pr);
+    }
+    return out;
+  }
+
+  function capabilitiesForPr(pr: PrSummary): PrActionCapabilities {
+    const state = pr.state;
+    const isOpen = state === "open";
+    const isDraft = state === "draft";
+    const isClosedOrMerged = state === "closed" || state === "merged";
+    const checksFailing = pr.checksStatus === "failing";
+    let mergeBlockedReason: string | null = null;
+    if (isDraft) {
+      mergeBlockedReason = "Draft PRs cannot be merged until marked ready for review.";
+    } else if (checksFailing) {
+      mergeBlockedReason = "Required checks are failing.";
+    } else if (isClosedOrMerged) {
+      mergeBlockedReason = `PR is already ${state}.`;
+    }
+    return {
+      prId: pr.id,
+      canOpenInGithub: true,
+      canMerge: isOpen && !checksFailing,
+      canClose: isOpen || isDraft,
+      canReopen: state === "closed",
+      canRequestReviewers: isOpen || isDraft,
+      canRerunChecks: isOpen || isDraft,
+      canComment: state !== "merged",
+      canUpdateDescription: state !== "merged",
+      canDelete: true,
+      mergeBlockedReason,
+      requiresLive: true,
+    };
+  }
+
+  function buildCreateCapabilities(
+    lanes: LaneSummary[],
+    prByLaneId: Map<string, PrSummary>,
+    laneById: Map<string, LaneSummary>,
+    primaryLane: LaneSummary | null,
+    primaryBranch: string | null,
+  ): PrCreateCapabilities {
+    const eligibleLanes: PrCreateLaneEligibility[] = [];
+    for (const lane of lanes) {
+      if (lane.laneType === "primary") continue;
+      if (lane.archivedAt) continue;
+      const existingPr = prByLaneId.get(lane.id) ?? null;
+      const parent = lane.parentLaneId ? laneById.get(lane.parentLaneId) ?? null : null;
+      const defaultBaseBranch = resolveStableLaneBaseBranch({
+        lane,
+        parent,
+        primaryBranchRef: primaryLane?.branchRef ?? null,
+      });
+      const dirty = lane.status?.dirty === true;
+      // Same `ahead` count the lane list already shows vs the lane's configured base
+      // (`resolveStableLaneBaseBranch`); keep wording aligned with that UI signal.
+      const commitsAheadOfBase = Math.max(0, Number(lane.status?.ahead ?? 0) || 0);
+      const hasExistingPr = existingPr !== null && (existingPr.state === "open" || existingPr.state === "draft");
+      const canCreate = !hasExistingPr;
+      const blockedReason = hasExistingPr
+        ? `Lane already has an ${existingPr?.state ?? "existing"} PR (#${existingPr?.githubPrNumber ?? "?"}).`
+        : null;
+      eligibleLanes.push({
+        laneId: lane.id,
+        laneName: lane.name,
+        parentLaneId: lane.parentLaneId,
+        repoOwner: null,
+        repoName: null,
+        defaultBaseBranch,
+        defaultTitle: lane.name,
+        dirty,
+        commitsAheadOfBase,
+        hasExistingPr,
+        canCreate,
+        blockedReason,
+      });
+    }
+    return {
+      canCreateAny: eligibleLanes.some((lane) => lane.canCreate),
+      defaultBaseBranch: primaryBranch,
+      lanes: eligibleLanes,
+    };
+  }
+
+  async function buildWorkflowCards(): Promise<PrWorkflowCard[]> {
+    const cards: PrWorkflowCard[] = [];
+
+    const queueRows = db.all<{
+      id: string;
+      group_id: string;
+      group_name: string | null;
+      target_branch: string | null;
+      state: string;
+      entries_json: string;
+      current_position: number | null;
+      started_at: string;
+      completed_at: string | null;
+      active_pr_id: string | null;
+      wait_reason: string | null;
+      last_error: string | null;
+      updated_at: string | null;
+    }>(
+      `select q.id, q.group_id, g.name as group_name, g.target_branch, q.state, q.entries_json, q.current_position,
+              q.started_at, q.completed_at, q.active_pr_id, q.wait_reason, q.last_error, q.updated_at
+       from queue_landing_state q
+       left join pr_groups g on g.id = q.group_id
+       where q.project_id = ?
+       order by q.updated_at desc, q.started_at desc`,
+      [projectId],
+    );
+    for (const row of queueRows) {
+      if (row.state === "completed" || row.state === "cancelled") continue;
+      let entries: QueueLandingEntry[] = [];
+      try {
+        const parsed = JSON.parse(String(row.entries_json ?? "[]"));
+        if (Array.isArray(parsed)) entries = parsed as QueueLandingEntry[];
+      } catch {
+        entries = [];
+      }
+      cards.push({
+        kind: "queue",
+        id: `queue:${row.id}`,
+        queueId: String(row.id),
+        groupId: String(row.group_id),
+        groupName: row.group_name ?? null,
+        targetBranch: row.target_branch ?? null,
+        state: String(row.state) as QueueState,
+        activePrId: row.active_pr_id,
+        currentPosition: Number(row.current_position ?? 0),
+        totalEntries: entries.length,
+        entries,
+        waitReason: (row.wait_reason ?? null) as QueueWaitReason | null,
+        lastError: row.last_error,
+        updatedAt: row.updated_at ?? row.started_at,
+      });
+    }
+
+    try {
+      const proposals = await listIntegrationWorkflows({ view: "active" });
+      for (const proposal of proposals) {
+        const conflictLanes = proposal.laneSummaries.filter((summary) => summary.outcome !== "clean").length;
+        cards.push({
+          kind: "integration",
+          id: `integration:${proposal.proposalId}`,
+          proposalId: proposal.proposalId,
+          title: proposal.title ?? proposal.integrationLaneName ?? null,
+          baseBranch: proposal.baseBranch,
+          overallOutcome: proposal.overallOutcome,
+          status: proposal.status,
+          laneCount: proposal.laneSummaries.length,
+          conflictLaneCount: conflictLanes,
+          lanes: proposal.laneSummaries.map((summary) => ({
+            laneId: summary.laneId,
+            laneName: summary.laneName,
+            outcome: summary.outcome,
+          })),
+          workflowDisplayState: proposal.workflowDisplayState ?? "active",
+          cleanupState: proposal.cleanupState ?? "none",
+          linkedPrId: proposal.linkedPrId ?? null,
+          integrationLaneId: proposal.integrationLaneId ?? null,
+          preferredIntegrationLaneId: proposal.preferredIntegrationLaneId ?? null,
+          mergeIntoHeadSha: proposal.mergeIntoHeadSha ?? null,
+          integrationLaneOrigin: proposal.integrationLaneOrigin ?? null,
+          createdAt: proposal.createdAt,
+        });
+      }
+    } catch (error) {
+      logger.warn("prs.mobile_snapshot.integration_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (rebaseSuggestionService) {
+      try {
+        const suggestions = await rebaseSuggestionService.listSuggestions();
+        for (const suggestion of suggestions) {
+          if (suggestion.dismissedAt) continue;
+          const parentLaneId = suggestion.parentLaneId;
+          const parentLane = parentLaneId
+            ? db.get<{ name: string }>(
+                `select name from lanes where id = ? and project_id = ? limit 1`,
+                [parentLaneId, projectId],
+              )
+            : null;
+          const parentName = parentLane?.name ?? suggestion.baseLabel ?? null;
+          const laneRow = db.get<{ name: string }>(
+            `select name from lanes where id = ? and project_id = ? limit 1`,
+            [suggestion.laneId, projectId],
+          );
+          const linkedPr = prSummariesForLane(suggestion.laneId);
+          // Resolve rebase mode from the lane's most-recent open/draft PR. Mirrors
+          // `autoRebaseService.resolveLaneRebaseMode` so desktop drift classification,
+          // auto-rebase gating, and mobile copy all agree on the same source of truth.
+          let creationStrategy: PrCreationStrategy | null = null;
+          try {
+            const strategyRow = db.get<{ creation_strategy: string | null }>(
+              `
+                select creation_strategy
+                from pull_requests
+                where lane_id = ?
+                  and state in ('open', 'draft')
+                order by updated_at desc, created_at desc
+                limit 1
+              `,
+              [suggestion.laneId],
+            );
+            creationStrategy = normalizePrCreationStrategy(strategyRow?.creation_strategy);
+          } catch (error) {
+            logger.warn("prs.mobile_snapshot.rebase_strategy_lookup_failed", {
+              laneId: suggestion.laneId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          const rebaseMode = resolvePrRebaseMode(creationStrategy);
+          cards.push({
+            kind: "rebase",
+            id: `rebase:${suggestion.laneId}`,
+            laneId: suggestion.laneId,
+            laneName: laneRow?.name ?? suggestion.laneId,
+            baseBranch: parentName ?? "",
+            behindBy: suggestion.behindCount,
+            conflictPredicted: false,
+            prId: linkedPr?.id ?? null,
+            prNumber: linkedPr ? Number(linkedPr.githubPrNumber) : null,
+            dismissedAt: suggestion.dismissedAt,
+            deferredUntil: suggestion.deferredUntil,
+            rebaseMode,
+            creationStrategy,
+            ...(suggestion.targetCommits && suggestion.targetCommits.length > 0
+              ? { targetCommits: suggestion.targetCommits }
+              : {}),
+          });
+        }
+      } catch (error) {
+        logger.warn("prs.mobile_snapshot.rebase_suggestions_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return cards;
+  }
+
+  function prSummariesForLane(laneId: string): PrSummary | null {
+    const row = getRowForLane(laneId);
+    return row ? rowToSummary(row) : null;
+  }
 }

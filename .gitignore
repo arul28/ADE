@@ -19,7 +19,7 @@ __pycache__/
 *.db
 
 # Build outputs
-/apps/mcp-server/dist/
+/apps/ade-cli/dist/
 /apps/desktop/release/
 /apps/desktop/dist/
 /apps/desktop/vendor/crsqlite/darwin-x64/
@@ -42,15 +42,19 @@ release-stable/
 # Docs / binary assets
 *.pdf
 
-# Xcode user data
+# Xcode user data & derived data
 xcuserdata/
 *.xcuserstate
+apps/ios/.dry-run-derived-data/
+apps/ios/build/
+ios-signing/
+/.asc/artifacts/
 
 # Tool configs (personal)
-.factory/
 .codex/
 .pnpm-store/
 /apps/desktop/.ade
+/.ade/shipLane/
 /.playwright-mcp
 /.codex-derived-data
 package-lock.json

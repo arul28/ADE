@@ -11,9 +11,9 @@ stream plus session metadata.
 
 | Path | Role |
 |---|---|
-| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, mounting of sub-panels and composer. |
+| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers. |
-| `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering. |
+| `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, and parallel model-slot controls. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
 | `ChatComposerShell.tsx` | Input container chrome reused by the composer. |
 | `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. |
@@ -25,10 +25,11 @@ stream plus session metadata.
 | `ChatTerminalDrawer.tsx` | Collapsible terminal drawer at the bottom of the chat. |
 | `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. |
 | `ChatProposedPlanCard.tsx` | Plan approval card inline in the transcript. |
-| `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). |
+| `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. |
 | `AgentQuestionModal.tsx` | Pending input modal for question-type requests. |
-| `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. |
+| `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping Brain lottie for `thinking` once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
+| `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS` and parallel launch state types. |
 
 ## Pane layout
 
@@ -65,16 +66,32 @@ and a footer that contains the composer.
 
 `AgentChatComposer` supports:
 
-- **Text input** with auto-grow up to `composerMaxHeightPx` (constrained
-  for grid-tile layouts).
+- **Text input** with auto-grow up to `composerMaxHeightPx`. Grid tiles
+  pass a fixed 144 px ceiling (computed statically from `layoutVariant`)
+  rather than the old `ResizeObserver`-based 28 %-of-height formula;
+  that eliminated the observer churn without changing the visible
+  ceiling for normal tile sizes.
+- **Focus-on-active.** The composer receives focus whenever the
+  enclosing `AgentChatPane` reports `isTileActive: true` (for packed
+  grid tiles) or any equivalent active state — typing in the grid
+  immediately targets the focused tile's composer.
 - **Attachments** via drag-drop, paste, and an inline picker. Images are
   written through `ade.agentChat.saveTempAttachment` (10 MB cap; MIME
   validated per provider).
 - **File attach picker** opened with the `@` key. Runs a debounced
   `ade.agentChat.fileSearch` and discards stale results.
 - **Slash commands.** Local commands (`/clear`, `/login`) are always
-  available. Once the provider SDK is ready, its slash commands merge
-  into the picker (`ade.agentChat.slashCommands`).
+  available and resolved renderer-side. SDK commands and project-local
+  Claude commands discovered by `claudeSlashCommandDiscovery` (from
+  `.claude/commands/**` and `~/.claude/commands/**`, including
+  `user-invocable: true` skills) merge in through
+  `ade.agentChat.slashCommands`. Only `/clear` with `source: "local"` is
+  intercepted client-side — every other command is sent to the agent
+  verbatim so provider-native commands still flow. The composer also
+  decides whether a leading-slash draft is a command or just a sentence
+  via `isProviderSlashCommandInput` (heuristics in
+  `shared/chatSlashCommands.ts`): `"/rebase the lane?"` is treated as
+  chat text, `"/plan"` is treated as a command.
 - **Model selection.** `ProviderModelSelector` is embedded and filters
   the registry via `filterChatModelIdsForSession`. Switching within the
   allowed family is a normal update; crossing families triggers a
@@ -85,12 +102,46 @@ and a footer that contains the composer.
   (PRD, ARCHITECTURE, mission pack) to the next turn.
 - **Permission controls.** Inline with the composer:
   - Interaction mode selector (`default` / `plan`).
-  - Claude permission mode selector.
-  - Codex preset modes (Plan / Guarded Edit / Full Auto); custom and
-    `config-toml` state shown as a summary row rather than raw
-    inline dropdowns.
+  - Claude permission mode — a trigger button that opens a popover
+    picker with four tone-coded options: **Ask permissions** (default,
+    green), **Accept edits** (blue), **Plan mode** (purple, read-only
+    turns), **Bypass permissions** (red). Tone styles live in
+    `CLAUDE_MODE_TONE_STYLES`.
+  - Codex preset modes (Plan / Guarded Edit / Full Auto) — trigger
+    button + popover list. Custom and `config-toml` configurations
+    appear as a non-selectable "Custom" row with the active summary
+    tooltip, so the trigger can always show the effective preset.
   - OpenCode permission mode selector.
   - Cursor mode snapshot + config options when on Cursor.
+
+  Both the Claude and Codex popovers render via `createPortal` into
+  `document.body` and are positioned with `getBoundingClientRect` +
+  `window.innerHeight`. That keeps them visible when the composer is
+  inside an overflow-hidden container (grid tiles, shells). Clicking
+  outside or pressing Escape closes them; the outside-click handler
+  checks both the anchor ref and a `data-*-picker-dropdown` attribute
+  on the portalized list so clicks inside the popover don't self-close.
+
+- **Parallel launch controls.** When the Work pane mounts an empty,
+  embedded draft composer with no locked or initial session, the
+  composer can switch into parallel mode. Parallel mode shows a slot
+  list instead of the single-session model selector; each slot captures
+  the model, reasoning effort, execution mode, and provider-specific
+  permission controls that will be copied into that child session.
+  The first two slots are cloned from the current composer defaults.
+  Users can add/remove slots and open one slot at a time for detailed
+  controls. Send is enabled only when the draft is non-empty and at
+  least two model slots are configured.
+
+  Attachments in parallel mode are capped by
+  `PARALLEL_CHAT_MAX_ATTACHMENTS = 12`. The same attachment list is
+  sent to every child lane, so the cap is enforced both when toggling
+  parallel mode and when adding files.
+
+- **Border beam.** On standard (non-grid-tile) layout the composer
+  shell is wrapped in `BorderBeam` (`colorVariant="colorful"` at rest,
+  `"ocean"` with a slower duration while a turn is active). `active`
+  toggles off for quiet, mid-conversation states.
 - **Pending steers.** When steers are queued during an active turn, the
   composer renders a pending-steers section above the input area with
   per-message edit and cancel controls. Each `PendingSteerItem`
@@ -122,6 +173,10 @@ and a footer that contains the composer.
 - MIME-type validation happens per provider. Claude enforces
   `image/jpeg | image/png | image/gif | image/webp`; Codex uses local
   path references; OpenCode uses runtime content blocks.
+- Parallel launches reuse this same attachment path after the renderer
+  validates the 12-file cap. Every child session receives identical
+  attachment refs; provider-specific handling still happens inside
+  `agentChatService.sendMessage`.
 
 ## Message list
 
@@ -225,7 +280,7 @@ surface's visual treatment:
 | `title`, `subtitle`, `assistantLabel`, `messagePlaceholder` | Text overrides. |
 | `accentColor` | Accent color used in header, chips, and active-turn indicators. |
 | `chips` | List of `{ label, tone }` chips shown in the header. |
-| `showMcpStatus` | Whether to render the MCP status indicator. |
+| `showMcpStatus` | Whether to render the ADE CLI status indicator. |
 
 CTO and resolver surfaces set `profile: "persistent_identity"` and
 override the chips.
@@ -275,6 +330,19 @@ These modules are pure and unit-testable:
   sensitive to changing row heights (plan approval cards, work-log
   expansion). Measurement caching uses stable keys; rolling back to an
   unstable key causes the list to "jump" on updates.
+- **Native permission picker updates serialize before submit.**
+  `AgentChatPane` tracks the in-flight native-control update through
+  `pendingNativeControlUpdateRef` (sessionId + monotonic `updateId` +
+  promise). Every `updateSession` dispatched from the permission
+  popovers chains onto the previous promise so the backend always sees
+  the final picker state, and `submit()` awaits that chain for the
+  active session before dispatching the turn. The handler also
+  optimistically patches the renderer session summary with the fields
+  returned from `updateSession` (`permissionMode`,
+  `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy`,
+  `codexSandbox`, `codexConfigSource`, `opencodePermissionMode`,
+  `cursorModeId`, `cursorModeSnapshot`) so the chip state reflects the
+  server's normalized values before the list refresh lands.
 
 ## Related docs
 
@@ -282,5 +350,3 @@ These modules are pure and unit-testable:
 - [Transcript and Turns](transcript-and-turns.md) -- the data the UI
   renders.
 - [Tool System](tool-system.md) -- tool tiers surfaced in the composer.
-</content>
-</invoke>

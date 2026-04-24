@@ -49,11 +49,17 @@ import {
   listActionableContextDocs,
   listContextDocsByHealth,
 } from "../context/contextShared";
+import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
 
 type PrToast = {
   id: string;
   event: Extract<PrEventPayload, { type: "pr-notification" }>;
 };
+
+function primaryTabPath(pathname: string): string {
+  const roots = ["/project", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/missions", "/settings"];
+  return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
+}
 
 type AiBannerState = {
   laneId: string | null;
@@ -143,6 +149,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
   const project = useAppStore((s) => s.project);
+  const projectRevision = useAppStore((s) => s.projectRevision);
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const openRepo = useAppStore((s) => s.openRepo);
@@ -178,12 +185,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(
     null,
   );
-  const [dismissedContextBannerRoots, setDismissedContextBannerRoots] =
-    useState<Record<string, true>>({});
+  // Banner dismissals live in the store so they can be pruned when projects close/switch
+  // — AppShell used to own these as local state, which leaked entries across a long session.
+  const dismissedContextBannerRoots = useAppStore((s) => s.dismissedContextBannerRoots);
+  const dismissedMissingAiBannerRoots = useAppStore((s) => s.dismissedMissingAiBannerRoots);
+  const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
+  const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
+  const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
+  const dismissContextBanner = useAppStore((s) => s.dismissContextBanner);
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
   const isOnboardingRoute = location.pathname === "/onboarding";
+  const isLanesRoute = location.pathname.startsWith("/lanes");
   const shouldTrackTerminalAttention =
     Boolean(project?.rootPath) &&
     !showWelcome &&
@@ -203,6 +217,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       })}`,
     );
   }, [location.pathname, project?.rootPath, showWelcome]);
+
+  useEffect(() => {
+    disposeTerminalRuntimesForProjectChange(project?.rootPath ?? null, projectRevision);
+  }, [project?.rootPath, projectRevision]);
+
+  useEffect(() => {
+    const syncApi = window.ade.sync;
+    if (!syncApi?.onEvent || !project?.rootPath || !isLanesRoute) {
+      return;
+    }
+    let cancelled = false;
+    let refreshTimer: number | null = null;
+
+    const scheduleLaneRefresh = () => {
+      if (refreshTimer != null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        if (cancelled) return;
+        void refreshLanes({ includeStatus: false }).catch(() => {});
+      }, 200);
+    };
+
+    const dispose = syncApi.onEvent((event) => {
+      if (event.type !== "sync-status") return;
+      scheduleLaneRefresh();
+    });
+
+    return () => {
+      cancelled = true;
+      if (refreshTimer != null) {
+        window.clearTimeout(refreshTimer);
+      }
+      dispose();
+    };
+  }, [isLanesRoute, project?.rootPath, refreshLanes]);
 
   useEffect(() => {
     let cancelled = false;
@@ -340,8 +389,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     scheduleRefresh(2_500);
 
-    const unsubData = window.ade.pty.onData(() => scheduleRefresh());
-    const unsubExit = window.ade.pty.onExit(() => scheduleRefresh());
+    const isCurrentProjectEvent = (event: { projectRoot?: string | null }) => {
+      const currentRoot = useAppStore.getState().project?.rootPath ?? null;
+      return !event.projectRoot || event.projectRoot === currentRoot;
+    };
+
+    const unsubData = window.ade.pty.onData((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
+    const unsubExit = window.ade.pty.onExit((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       scheduleRefresh();
@@ -556,6 +614,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [missingContextDocs],
   );
   const currentProjectRoot = project?.rootPath ?? null;
+  const missingAiBannerDismissed = Boolean(
+    currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
+  );
+  const githubBannerDismissed = Boolean(
+    currentProjectRoot && dismissedGithubBannerRoots[currentProjectRoot],
+  );
   const contextBannerDismissed = Boolean(
     currentProjectRoot && dismissedContextBannerRoots[currentProjectRoot],
   );
@@ -661,7 +725,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/missions": "tab-tint-missions",
       "/settings": "tab-tint-settings",
     };
-    return tintMap[location.pathname] ?? "";
+    return tintMap[primaryTabPath(location.pathname)] ?? "";
   }, [location.pathname]);
 
   const shouldHoldProjectRouteForOnboarding =
@@ -744,12 +808,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       !showWelcome &&
       aiStatusLoaded &&
       aiStatus !== null &&
-      !hasAnyAiProvider ? (
+      !hasAnyAiProvider &&
+      !missingAiBannerDismissed ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          No AI provider is configured yet.{" "}
-          <Link to="/settings?tab=ai" className="underline">
-            Set up AI
-          </Link>
+          <span>
+            No AI provider is configured yet.{" "}
+            <Link to="/settings?tab=ai" className="underline">
+              Set up AI
+            </Link>
+          </span>
+          <button
+            type="button"
+            data-testid="dismiss-missing-ai-banner"
+            className="ml-2 text-amber-900/70 hover:text-amber-900"
+            onClick={() => {
+              if (!currentProjectRoot) return;
+              dismissMissingAiBanner(currentProjectRoot);
+            }}
+            title="Dismiss for this session"
+            aria-label="Dismiss missing AI provider banner for this session"
+          >
+            ×
+          </button>
         </div>
       ) : null}
 
@@ -758,12 +838,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       !showWelcome &&
       !isOnboardingRoute &&
       githubStatus !== null &&
-      !githubStatus.tokenStored ? (
+      !githubStatus.tokenStored &&
+      !githubBannerDismissed ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          GitHub is not connected for this ADE app yet.{" "}
-          <Link to="/settings?tab=integrations" className="underline">
-            Connect GitHub
-          </Link>
+          <span>
+            GitHub is not connected for this ADE app yet.{" "}
+            <Link to="/settings?tab=integrations" className="underline">
+              Connect GitHub
+            </Link>
+          </span>
+          <button
+            type="button"
+            data-testid="dismiss-github-banner"
+            className="ml-2 text-amber-900/70 hover:text-amber-900"
+            onClick={() => {
+              if (!currentProjectRoot) return;
+              dismissGithubBanner(currentProjectRoot);
+            }}
+            title="Dismiss for this session"
+            aria-label="Dismiss GitHub not connected banner for this session"
+          >
+            ×
+          </button>
         </div>
       ) : null}
 
@@ -859,10 +955,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="ml-2 text-amber-900/70 hover:text-amber-900"
             onClick={() => {
               if (!currentProjectRoot) return;
-              setDismissedContextBannerRoots((prev) => ({
-                ...prev,
-                [currentProjectRoot]: true,
-              }));
+              dismissContextBanner(currentProjectRoot);
             }}
             title="Dismiss for this session"
           >
@@ -873,9 +966,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex-1 flex min-h-0">
         {hideSidebar ? null : (
-          <aside className="ade-sidebar-clip shrink-0 z-10 border-r">
+          <aside className="ade-sidebar-clip shrink-0 z-10 border-r" data-tour="app.sidebar">
             <div className="ade-sidebar flex flex-col py-2 h-full">
-              <TabNav />
+              <TabNav githubStatus={githubStatus} />
             </div>
           </aside>
         )}

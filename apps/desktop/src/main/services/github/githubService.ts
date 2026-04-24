@@ -11,6 +11,12 @@ import { nowIso, asString } from "../shared/utils";
 
 const AUTH_STORE_FILE_NAME = "github-token.v1.bin";
 
+function detectGitHubTokenType(token: string): GitHubStatus["tokenType"] {
+  if (token.startsWith("github_pat_")) return "fine-grained";
+  if (token.startsWith("ghp_")) return "classic";
+  return "unknown";
+}
+
 function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | null {
   const remoteUrl = remoteUrlRaw.trim();
   if (!remoteUrl) return null;
@@ -39,6 +45,15 @@ function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | nul
     }
   }
 
+  return null;
+}
+
+function parseNextLink(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  for (const part of linkHeader.split(",")) {
+    const match = part.match(/<([^>]+)>;\s*rel="([^"]+)"/);
+    if (match?.[2] === "next") return match[1] ?? null;
+  }
   return null;
 }
 
@@ -167,7 +182,7 @@ export function createGithubService({
     return parseGitHubRepoFromRemoteUrl(res.stdout);
   };
 
-  const validateToken = async (token: string): Promise<{ userLogin: string | null; scopes: string[] }> => {
+  const validateToken = async (token: string): Promise<{ userLogin: string | null; scopes: string[]; tokenType: GitHubStatus["tokenType"] }> => {
     const response = await fetch("https://api.github.com/user", {
       method: "GET",
       headers: {
@@ -187,13 +202,14 @@ export function createGithubService({
 
     return {
       userLogin: asString(payload.login) || null,
-      scopes
+      scopes,
+      tokenType: detectGitHubTokenType(token),
     };
   };
 
   // ETag cache for conditional GET requests. Responses that return 304 Not Modified
   // don't count against GitHub's rate limit, so this dramatically reduces API usage.
-  const etagCache = new Map<string, { etag: string; data: unknown }>();
+  const etagCache = new Map<string, { etag: string; data: unknown; linkHeader: string | null }>();
   const ETAG_CACHE_MAX_SIZE = 200;
 
   const apiRequest = async <T>(args: {
@@ -202,7 +218,7 @@ export function createGithubService({
     query?: Record<string, string | number | boolean | undefined | null>;
     body?: unknown;
     token?: string;
-  }): Promise<{ data: T; response: Response | null }> => {
+  }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const token = (args.token ?? readStoredToken() ?? "").trim();
     if (!token) {
       throw new Error("GitHub token missing. Set it in Settings.");
@@ -242,7 +258,7 @@ export function createGithubService({
     if (response.status === 304) {
       const cached = etagCache.get(urlKey);
       if (cached) {
-        return { data: cached.data as T, response };
+        return { data: cached.data as T, response, linkHeader: cached.linkHeader };
       }
     }
 
@@ -279,6 +295,8 @@ export function createGithubService({
       throw new Error(message + detail);
     }
 
+    const linkHeader = response.headers.get("link");
+
     // Cache ETag for future conditional requests
     if (args.method === "GET") {
       const etag = response.headers.get("etag");
@@ -288,11 +306,32 @@ export function createGithubService({
           const firstKey = etagCache.keys().next().value;
           if (firstKey) etagCache.delete(firstKey);
         }
-        etagCache.set(urlKey, { etag, data });
+        etagCache.set(urlKey, { etag, data, linkHeader });
       }
     }
 
-    return { data: data as T, response };
+    return { data: data as T, response, linkHeader };
+  };
+
+  const apiRequestAllPages = async <T>(args: {
+    path: string;
+    query?: Record<string, string | number | boolean | undefined | null>;
+    token?: string;
+  }): Promise<T[]> => {
+    const first = await apiRequest<T[]>({ method: "GET", ...args });
+    const out = Array.isArray(first.data) ? [...first.data] : [];
+    let nextUrl = parseNextLink(first.linkHeader ?? first.response?.headers.get("link") ?? null);
+    while (nextUrl) {
+      const url = new URL(nextUrl);
+      const next = await apiRequest<T[]>({
+        method: "GET",
+        path: `${url.pathname}${url.search}`,
+        token: args.token,
+      });
+      if (Array.isArray(next.data)) out.push(...next.data);
+      nextUrl = parseNextLink(next.linkHeader ?? next.response?.headers.get("link") ?? null);
+    }
+    return out;
   };
 
   let cachedStatus: GitHubStatus | null = null;
@@ -306,6 +345,7 @@ export function createGithubService({
         tokenStored: false,
         tokenDecryptionFailed,
         storageScope: "app",
+        tokenType: "unknown",
         repo,
         userLogin: null,
         scopes: [],
@@ -327,6 +367,7 @@ export function createGithubService({
         tokenStored: true,
         tokenDecryptionFailed: false,
         storageScope: "app",
+        tokenType: validated.tokenType,
         repo,
         userLogin: validated.userLogin,
         scopes: validated.scopes,
@@ -340,6 +381,7 @@ export function createGithubService({
         tokenStored: true,
         tokenDecryptionFailed: false,
         storageScope: "app",
+        tokenType: detectGitHubTokenType(token),
         repo,
         userLogin: null,
         scopes: [],
@@ -348,6 +390,153 @@ export function createGithubService({
       cachedAt = now;
       return cachedStatus;
     }
+  };
+
+  const listRepoLabels = async (owner: string, name: string): Promise<GitHubLabel[]> => {
+    return await apiRequestAllPages<GitHubLabel>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/labels`,
+      query: { per_page: 100 },
+    });
+  };
+
+  const listRepoCollaborators = async (owner: string, name: string): Promise<GitHubUser[]> => {
+    return await apiRequestAllPages<GitHubUser>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/collaborators`,
+      query: { per_page: 100 },
+    });
+  };
+
+  const listRepoIssues = async (
+    owner: string,
+    name: string,
+    opts: { since?: string; state?: "open" | "closed" | "all"; sort?: "created" | "updated"; perPage?: number } = {}
+  ): Promise<GitHubIssue[]> => {
+    const data = await apiRequestAllPages<GitHubIssue>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues`,
+      query: {
+        state: opts.state ?? "all",
+        sort: opts.sort ?? "updated",
+        per_page: opts.perPage ?? 50,
+        ...(opts.since ? { since: opts.since } : {}),
+      },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const getIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {
+    try {
+      const { data } = await apiRequest<GitHubIssue>({
+        method: "GET",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      });
+      return data ?? null;
+    } catch (error) {
+      logger.warn("github.get_issue_failed", {
+        owner, name, number,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const listIssueComments = async (
+    owner: string,
+    name: string,
+    number: number,
+    opts: { since?: string } = {}
+  ): Promise<GitHubIssueComment[]> => {
+    const data = await apiRequestAllPages<GitHubIssueComment>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
+      query: {
+        per_page: 100,
+        ...(opts.since ? { since: opts.since } : {}),
+      },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const listRepoPulls = async (
+    owner: string,
+    name: string,
+    opts: { state?: "open" | "closed" | "all"; sort?: "created" | "updated"; perPage?: number } = {}
+  ): Promise<GitHubPullRequest[]> => {
+    const data = await apiRequestAllPages<GitHubPullRequest>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
+      query: {
+        state: opts.state ?? "all",
+        sort: opts.sort ?? "updated",
+        direction: "desc",
+        per_page: opts.perPage ?? 50,
+      },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const listPullRequestReviews = async (
+    owner: string,
+    name: string,
+    number: number,
+  ): Promise<GitHubPullRequestReview[]> => {
+    const data = await apiRequestAllPages<GitHubPullRequestReview>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews`,
+      query: { per_page: 100 },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  // Issue-domain action helpers (used by the automations `issue` domain).
+  const addIssueComment = async (owner: string, name: string, number: number, body: string): Promise<GitHubIssueComment | null> => {
+    const { data } = await apiRequest<GitHubIssueComment>({
+      method: "POST",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
+      body: { body },
+    });
+    return data ?? null;
+  };
+
+  const setIssueLabels = async (owner: string, name: string, number: number, labels: string[]): Promise<GitHubLabel[]> => {
+    const { data } = await apiRequest<GitHubLabel[]>({
+      method: "PUT",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/labels`,
+      body: { labels },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const closeIssue = async (owner: string, name: string, number: number, reason?: "completed" | "not_planned"): Promise<GitHubIssue | null> => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "PATCH",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      body: { state: "closed", ...(reason ? { state_reason: reason } : {}) },
+    });
+    return data ?? null;
+  };
+
+  const reopenIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "PATCH",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      body: { state: "open" },
+    });
+    return data ?? null;
+  };
+
+  const assignIssue = async (owner: string, name: string, number: number, assignees: string[]): Promise<GitHubIssue | null> => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "POST",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/assignees`,
+      body: { assignees },
+    });
+    return data ?? null;
+  };
+
+  const setIssueTitle = async (owner: string, name: string, number: number, title: string): Promise<GitHubIssue | null> => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "PATCH",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      body: { title },
+    });
+    return data ?? null;
   };
 
   return {
@@ -379,6 +568,106 @@ export function createGithubService({
       return token;
     },
 
-    apiRequest
+    detectRepo,
+    apiRequest,
+
+    // Polling/picker read helpers
+    listRepoLabels,
+    listRepoCollaborators,
+    listRepoIssues,
+    getIssue,
+    listIssueComments,
+    listRepoPulls,
+    listPullRequestReviews,
+
+    // Issue-domain action helpers (exposed via `issue` domain in the
+    // automations action registry).
+    addIssueComment,
+    setIssueLabels,
+    closeIssue,
+    reopenIssue,
+    assignIssue,
+    setIssueTitle,
   };
 }
+
+export type GitHubLabel = {
+  id?: number;
+  node_id?: string;
+  url?: string;
+  name: string;
+  color?: string;
+  default?: boolean;
+  description?: string | null;
+};
+
+export type GitHubUser = {
+  id?: number;
+  login: string;
+  avatar_url?: string;
+  html_url?: string;
+  type?: string;
+};
+
+export type GitHubIssueComment = {
+  id: number;
+  body: string;
+  user?: GitHubUser | null;
+  created_at: string;
+  updated_at: string;
+  html_url?: string;
+};
+
+export type GitHubIssue = {
+  id?: number;
+  number: number;
+  title: string;
+  body?: string | null;
+  state: "open" | "closed";
+  state_reason?: string | null;
+  user?: GitHubUser | null;
+  labels?: Array<string | { name: string }>;
+  assignees?: GitHubUser[];
+  created_at: string;
+  updated_at: string;
+  closed_at?: string | null;
+  html_url?: string;
+  comments?: number;
+  /**
+   * GitHub returns a `pull_request` sub-object on issue rows when the row is
+   * actually a PR. Callers should filter those out when fetching issues.
+   */
+  pull_request?: unknown;
+};
+
+export type GitHubPullRequest = {
+  id?: number;
+  number: number;
+  title: string;
+  body?: string | null;
+  state: "open" | "closed";
+  draft?: boolean;
+  merged?: boolean;
+  merged_at?: string | null;
+  closed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  user?: GitHubUser | null;
+  labels?: Array<string | { name: string }>;
+  assignees?: GitHubUser[];
+  base?: { ref?: string; sha?: string };
+  head?: { ref?: string; sha?: string };
+  html_url?: string;
+  comments?: number;
+};
+
+export type GitHubPullRequestReview = {
+  id: number;
+  body?: string | null;
+  state?: string;
+  user?: GitHubUser | null;
+  submitted_at?: string | null;
+  html_url?: string;
+};
+
+export type GithubService = ReturnType<typeof createGithubService>;

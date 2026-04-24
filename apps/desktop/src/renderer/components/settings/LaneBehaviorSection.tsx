@@ -224,15 +224,15 @@ export function LaneBehaviorSection() {
           )}
         </div>
 
-        {/* Save + Open Rebase tab */}
+        {/* Save + Open Rebase/Merge tab */}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button
             type="button"
             style={outlineButton({ height: 32 })}
             disabled={busy}
-            onClick={() => navigate("/prs?tab=rebase")}
+            onClick={() => navigate("/prs?tab=workflows&workflow=rebase")}
           >
-            Open Rebase tab
+            Open Rebase/Merge tab
           </button>
           <button type="button" style={primaryButton({ height: 32 })} disabled={busy} onClick={() => void saveSettings()}>
             {busy ? "Saving..." : "Save"}

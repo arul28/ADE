@@ -10,6 +10,7 @@ import type {
   ExternalConflictResolverProvider,
 } from "./conflicts";
 import type { GitHubRepoRef } from "./git";
+import type { RebaseTargetCommit } from "./lanes";
 
 export type PrState = "draft" | "open" | "merged" | "closed";
 export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
@@ -37,6 +38,8 @@ export type PrSummary = {
   lastSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** "pr_target" (default): PR tracks upstream base; "lane_base": PR carries immutable lane base. */
+  creationStrategy?: PrCreationStrategy | null;
 };
 
 export type PrStatus = {
@@ -227,6 +230,8 @@ export type LandResult = {
   error: string | null;
 };
 
+export type PrCreationStrategy = "pr_target" | "lane_base";
+
 export type CreatePrFromLaneArgs = {
   laneId: string;
   title: string;
@@ -236,6 +241,7 @@ export type CreatePrFromLaneArgs = {
   labels?: string[];
   reviewers?: string[];
   allowDirtyWorktree?: boolean;
+  strategy?: PrCreationStrategy;
 };
 
 export type LinkPrToLaneArgs = {
@@ -247,6 +253,7 @@ export type DraftPrDescriptionArgs = {
   laneId: string;
   model?: string;
   reasoningEffort?: string | null;
+  baseBranch?: string;
 };
 
 export type UpdatePrDescriptionArgs = {
@@ -347,6 +354,8 @@ export type CreateIntegrationPrArgs = {
   body?: string;
   draft?: boolean;
   allowDirtyWorktree?: boolean;
+  /** When set, merges sources into this existing lane instead of creating a new child lane. */
+  existingIntegrationLaneId?: string | null;
 };
 
 export type CreateIntegrationPrResult = {
@@ -408,6 +417,7 @@ export type IntegrationLaneSummary = {
   diffStat: { insertions: number; deletions: number; filesChanged: number };
 };
 
+export type IntegrationLaneOrigin = "ade-created" | "adopted";
 export type IntegrationWorkflowDisplayState = "active" | "history";
 export type IntegrationCleanupState = "none" | "required" | "declined" | "completed";
 
@@ -425,8 +435,13 @@ export type IntegrationProposal = {
   body?: string;
   draft?: boolean;
   integrationLaneName?: string;
+  /** Preferred integration lane when none exists yet (merge sources here instead of a new lane). */
+  preferredIntegrationLaneId?: string | null;
+  /** Git HEAD of preferred merge-into lane at last simulation (for drift warnings). */
+  mergeIntoHeadSha?: string | null;
   status: "proposed" | "committed";
   integrationLaneId?: string | null;
+  integrationLaneOrigin?: IntegrationLaneOrigin | null;
   linkedGroupId?: string | null;
   linkedPrId?: string | null;
   workflowDisplayState?: IntegrationWorkflowDisplayState;
@@ -452,6 +467,14 @@ export type UpdateIntegrationProposalArgs = {
   body?: string;
   draft?: boolean;
   integrationLaneName?: string;
+  preferredIntegrationLaneId?: string | null;
+  /** When clearing preferred lane, also clears stored simulation HEAD (optional; omit to leave unchanged). */
+  mergeIntoHeadSha?: string | null;
+  /**
+   * Clears integration_lane_id and resolution_state_json so the next prepare step can use a new or different lane.
+   * Does not delete lanes in Git.
+   */
+  clearIntegrationBinding?: boolean;
 };
 
 export type ListIntegrationWorkflowsArgs = {
@@ -462,6 +485,11 @@ export type SimulateIntegrationArgs = {
   sourceLaneIds: string[];
   baseBranch: string;
   persist?: boolean;
+  /**
+   * When set, sequential merge preview starts at this lane's current HEAD and extra merge-tree checks run
+   * (integration head vs each source). Child-vs-child pairwise simulation still uses `baseBranch` as the merge base.
+   */
+  mergeIntoLaneId?: string | null;
 };
 
 export type CommitIntegrationArgs = {
@@ -472,6 +500,8 @@ export type CommitIntegrationArgs = {
   draft?: boolean;
   pauseOnConflict?: boolean;
   allowDirtyWorktree?: boolean;
+  /** Override stored preference; omit to use the proposal row. */
+  preferredIntegrationLaneId?: string | null;
 };
 
 export type IntegrationStepResolution = "pending" | "merged-clean" | "resolving" | "resolved" | "failed";
@@ -518,6 +548,7 @@ export type CleanupIntegrationWorkflowResult = {
 
 export type CreateIntegrationLaneForProposalArgs = {
   proposalId: string;
+  allowDirtyWorktree?: boolean;
 };
 
 export type CreateIntegrationLaneForProposalResult = {
@@ -569,6 +600,8 @@ export type PrAiResolutionStartArgs = {
   model: string;
   reasoning?: string | null;
   permissionMode?: AiPermissionMode;
+  /** Appended to the generated resolver prompt (integration, merge conflicts, etc.). */
+  additionalInstructions?: string | null;
 };
 
 export type PrAiResolutionStartResult = {
@@ -941,6 +974,26 @@ export type PrFile = {
   previousFilename: string | null;
 };
 
+export type PrReviewSnapshot = PrSummary & {
+  baseSha: string | null;
+  headSha: string | null;
+  files: PrFile[];
+};
+
+/** A commit on the PR head branch. `checkStatus` aggregates per-commit check runs when available. */
+export type PrCommit = {
+  sha: string;
+  shortSha: string;
+  message: string;
+  author: {
+    login: string | null;
+    name: string;
+    email: string | null;
+  };
+  committedDate: string;
+  checkStatus?: "success" | "failure" | "pending" | "none";
+};
+
 /** GitHub Actions workflow run. */
 export type PrActionRun = {
   id: number;
@@ -1016,6 +1069,19 @@ export type SubmitPrReviewArgs = {
   prId: string;
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
   body?: string;
+  comments?: Array<{
+    path: string;
+    body: string;
+    position: number;
+  }>;
+};
+
+export type SubmitPrReviewResult = {
+  id: string | null;
+  nodeId: string | null;
+  htmlUrl: string | null;
+  state: string | null;
+  submittedAt: string | null;
 };
 
 export type ClosePrArgs = {
@@ -1192,4 +1258,359 @@ export type IssueInventorySnapshot = {
   items: IssueInventoryItem[];
   convergence: ConvergenceStatus;
   runtime: ConvergenceRuntimeState;
+};
+
+// ---------------------------------------------------------------------------
+// PRs Tab — Timeline + Rails redesign (new)
+// ---------------------------------------------------------------------------
+
+export type PrDeploymentState =
+  | "pending"
+  | "in_progress"
+  | "queued"
+  | "success"
+  | "failure"
+  | "error"
+  | "inactive"
+  | "unknown";
+
+export type PrDeployment = {
+  id: string;
+  environment: string;
+  state: PrDeploymentState;
+  description: string | null;
+  /** The environment URL exposed by GitHub (public preview link, when available). */
+  environmentUrl: string | null;
+  /** GitHub log URL for the latest status update. */
+  logUrl: string | null;
+  sha: string | null;
+  ref: string | null;
+  creator: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type PrTimelineEventBase = {
+  id: string;
+  timestamp: string;
+  author: string | null;
+  avatarUrl: string | null;
+};
+
+export type PrTimelineEvent =
+  | (PrTimelineEventBase & {
+      type: "description";
+      body: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "commit_push";
+      sha: string;
+      shortSha: string;
+      subject: string;
+      commitCount: number;
+      forcePushed: boolean;
+    })
+  | (PrTimelineEventBase & {
+      type: "review";
+      reviewId: string;
+      state: "pending" | "approved" | "changes_requested" | "commented" | "dismissed";
+      body: string | null;
+      isBot: boolean;
+    })
+  | (PrTimelineEventBase & {
+      type: "review_thread";
+      threadId: string;
+      path: string | null;
+      line: number | null;
+      startLine: number | null;
+      isResolved: boolean;
+      isOutdated: boolean;
+      commentCount: number;
+      firstCommentBody: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "issue_comment";
+      commentId: string;
+      body: string | null;
+      isBot: boolean;
+    })
+  | (PrTimelineEventBase & {
+      type: "check_update";
+      checkName: string;
+      status: "queued" | "in_progress" | "completed";
+      conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
+      detailsUrl: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "deployment";
+      deploymentId: string;
+      environment: string;
+      state: PrDeploymentState;
+      environmentUrl: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "label_change";
+      action: "added" | "removed";
+      label: string;
+      color: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "merge";
+      mergeCommitSha: string | null;
+      method: MergeMethod | null;
+    });
+
+export type PrTimelineEventType = PrTimelineEvent["type"];
+
+/** AI-generated summary of a PR. Cached per (prId, headSha). */
+export type PrAiSummary = {
+  prId: string;
+  summary: string;
+  riskAreas: string[];
+  reviewerHotspots: string[];
+  unresolvedConcerns: string[];
+  generatedAt: string;
+  headSha: string;
+};
+
+export type PrReviewThreadReaction = {
+  id: string;
+  content: PrReactionContent;
+  user: string;
+};
+
+export type PrReactionContent =
+  | "+1"
+  | "-1"
+  | "laugh"
+  | "confused"
+  | "heart"
+  | "hooray"
+  | "rocket"
+  | "eyes";
+
+export type PostPrReviewCommentArgs = {
+  prId: string;
+  threadId: string;
+  body: string;
+};
+
+export type SetPrReviewThreadResolvedArgs = {
+  prId: string;
+  threadId: string;
+  resolved: boolean;
+};
+
+export type SetPrReviewThreadResolvedResult = {
+  threadId: string;
+  isResolved: boolean;
+};
+
+export type ReactToPrCommentArgs = {
+  prId: string;
+  commentId: string;
+  content: PrReactionContent;
+};
+
+export type LaunchPrIssueResolutionFromThreadArgs = {
+  prId: string;
+  threadId: string;
+  commentId?: string | null;
+  modelId?: string | null;
+  reasoning?: string | null;
+  permissionMode?: AiPermissionMode;
+  additionalInstructions?: string | null;
+  fileContext?: {
+    path: string | null;
+    line?: number | null;
+    startLine?: number | null;
+  } | null;
+};
+
+export type LaunchPrIssueResolutionFromThreadResult = PrIssueResolutionStartResult;
+
+// ---------------------------------------------------------------------------
+// Mobile PR snapshot (additive — consumed by iOS PRs tab)
+//
+// All mobile-focused fields are collected into a single snapshot so the
+// iOS PRs surface can render stack visibility, create-PR eligibility,
+// workflow cards (queue/integration/rebase), and per-PR action gates
+// from one command. Desktop consumers are not affected; existing PR
+// contracts remain the source of truth.
+// ---------------------------------------------------------------------------
+
+/** Role of a PR member inside a stack (lane chain). */
+export type PrStackMemberRole = "root" | "middle" | "leaf";
+
+/** Single lane/PR inside a PR stack. */
+export type PrStackMember = {
+  laneId: string;
+  laneName: string;
+  parentLaneId: string | null;
+  depth: number;
+  role: PrStackMemberRole;
+  dirty: boolean;
+  /** Null when the lane has no PR yet. */
+  prId: string | null;
+  prNumber: number | null;
+  prState: PrState | null;
+  prTitle: string | null;
+  baseBranch: string | null;
+  headBranch: string | null;
+  checksStatus: PrChecksStatus | null;
+  reviewStatus: PrReviewStatus | null;
+};
+
+/** An ordered lane chain that contains at least one PR. */
+export type PrStackInfo = {
+  stackId: string;
+  rootLaneId: string;
+  members: PrStackMember[];
+  size: number;
+  prCount: number;
+};
+
+/** Per-PR action availability. Actions are live-only unless otherwise noted. */
+export type PrActionCapabilities = {
+  prId: string;
+  canOpenInGithub: boolean;
+  canMerge: boolean;
+  canClose: boolean;
+  canReopen: boolean;
+  canRequestReviewers: boolean;
+  canRerunChecks: boolean;
+  canComment: boolean;
+  canUpdateDescription: boolean;
+  canDelete: boolean;
+  /** Reason the PR cannot be merged right now. Null when merge is allowed. */
+  mergeBlockedReason: string | null;
+  /** True when any live-only action is offered — lets mobile gate in offline mode. */
+  requiresLive: boolean;
+};
+
+/** A single lane eligible for PR creation from the mobile "Create PR" surface. */
+export type PrCreateLaneEligibility = {
+  laneId: string;
+  laneName: string;
+  parentLaneId: string | null;
+  repoOwner: string | null;
+  repoName: string | null;
+  defaultBaseBranch: string;
+  defaultTitle: string;
+  dirty: boolean;
+  /**
+   * Commits on this lane branch not present on `defaultBaseBranch` (merge-base diff).
+   * Lets mobile show "already pushed, open PR" when the worktree is clean but ahead.
+   */
+  commitsAheadOfBase: number;
+  hasExistingPr: boolean;
+  canCreate: boolean;
+  /** Why creation is not allowed. Null when canCreate is true. */
+  blockedReason: string | null;
+};
+
+/** Mobile create-PR capabilities for the whole project. */
+export type PrCreateCapabilities = {
+  /** True when at least one lane is eligible right now. */
+  canCreateAny: boolean;
+  defaultBaseBranch: string | null;
+  lanes: PrCreateLaneEligibility[];
+};
+
+/** Workflow card rendered on the mobile PRs surface. */
+export type PrWorkflowCardKind = "queue" | "integration" | "rebase";
+
+export type PrQueueWorkflowCard = {
+  kind: "queue";
+  id: string;
+  queueId: string;
+  groupId: string;
+  groupName: string | null;
+  targetBranch: string | null;
+  state: QueueState;
+  activePrId: string | null;
+  currentPosition: number;
+  totalEntries: number;
+  entries: QueueLandingEntry[];
+  waitReason: QueueWaitReason | null;
+  lastError: string | null;
+  updatedAt: string;
+};
+
+export type PrIntegrationWorkflowCard = {
+  kind: "integration";
+  id: string;
+  proposalId: string;
+  title: string | null;
+  baseBranch: string;
+  overallOutcome: "clean" | "conflict" | "blocked";
+  status: "proposed" | "committed";
+  laneCount: number;
+  conflictLaneCount: number;
+  lanes: Array<{
+    laneId: string;
+    laneName: string;
+    outcome: "clean" | "conflict" | "blocked";
+  }>;
+  workflowDisplayState: IntegrationWorkflowDisplayState;
+  cleanupState: IntegrationCleanupState;
+  linkedPrId: string | null;
+  integrationLaneId: string | null;
+  preferredIntegrationLaneId?: string | null;
+  mergeIntoHeadSha?: string | null;
+  integrationLaneOrigin?: IntegrationLaneOrigin | null;
+  createdAt: string;
+};
+
+export type PrRebaseWorkflowCard = {
+  kind: "rebase";
+  id: string;
+  laneId: string;
+  laneName: string;
+  baseBranch: string;
+  behindBy: number;
+  conflictPredicted: boolean;
+  prId: string | null;
+  prNumber: number | null;
+  /** Null when the suggestion has not been dismissed. */
+  dismissedAt: string | null;
+  /** Null when the suggestion has not been deferred. */
+  deferredUntil: string | null;
+  /** Commits the rebase would pull in. Undefined when unavailable or computed by an older host. */
+  targetCommits?: RebaseTargetCommit[];
+  /**
+   * Rebase mode for the lane's most-recent open/draft PR. "auto" means drift
+   * can be fixed by auto-rebase (`pr_target` strategy or no linked PR);
+   * "manual" means the PR carries an immutable base (`lane_base` strategy) so
+   * drift must be surfaced and rebased manually. Undefined on older hosts
+   * (treat as "auto").
+   */
+  rebaseMode?: "auto" | "manual";
+  /**
+   * The stored `creation_strategy` for the lane's most-recent open/draft PR,
+   * or null when no PR is linked. Lets the client render strategy-specific
+   * copy without re-deriving the mode.
+   */
+  creationStrategy?: PrCreationStrategy | null;
+};
+
+export type PrWorkflowCard =
+  | PrQueueWorkflowCard
+  | PrIntegrationWorkflowCard
+  | PrRebaseWorkflowCard;
+
+/**
+ * One-shot mobile snapshot that aggregates the data the iOS PRs tab
+ * needs to render list, detail, workflow cards, stack visibility, and
+ * per-PR capability gates in a single payload.
+ */
+export type PrMobileSnapshot = {
+  generatedAt: string;
+  prs: PrSummary[];
+  stacks: PrStackInfo[];
+  capabilities: Record<string, PrActionCapabilities>;
+  createCapabilities: PrCreateCapabilities;
+  workflowCards: PrWorkflowCard[];
+  /** Mobile clients should surface a "host offline" banner when this is false. */
+  live: boolean;
 };

@@ -1,7 +1,7 @@
 create virtual table if not exists unified_memories_fts using fts4(
-        content,
-        content='unified_memories'
-      );
+      content,
+      content='unified_memories'
+    );
 
 create table if not exists kv (key text primary key, value text not null);
 
@@ -91,6 +91,7 @@ create table if not exists terminal_sessions (
       summary text,
       resume_command text,
       resume_metadata_json text,
+      archived_at text,
       foreign key(lane_id) references lanes(id)
     );
 
@@ -107,6 +108,8 @@ alter table terminal_sessions add column resume_command text;
 alter table terminal_sessions add column resume_metadata_json text;
 
 alter table terminal_sessions add column manually_named integer not null default 0;
+
+alter table terminal_sessions add column archived_at text;
 
 create table if not exists process_definitions (
       id text primary key,
@@ -373,6 +376,23 @@ create index if not exists idx_pull_requests_lane_id on pull_requests(lane_id);
 
 create index if not exists idx_pull_requests_project_id on pull_requests(project_id);
 
+alter table pull_requests add column last_polled_at text;
+
+alter table pull_requests add column head_sha text;
+
+alter table pull_requests add column creation_strategy text;
+
+create table if not exists pull_request_ai_summaries (
+      pr_id text not null,
+      head_sha text not null,
+      summary_json text not null,
+      generated_at text not null,
+      primary key(pr_id, head_sha),
+      foreign key(pr_id) references pull_requests(id)
+    );
+
+create index if not exists idx_pr_ai_summaries_pr_id on pull_request_ai_summaries(pr_id);
+
 create table if not exists pull_request_snapshots (
       pr_id text primary key,
       detail_json text,
@@ -386,6 +406,65 @@ create table if not exists pull_request_snapshots (
     );
 
 create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at);
+
+alter table pull_request_snapshots add column commits_json text;
+
+create table if not exists files_workspaces (
+      id text primary key,
+      kind text not null,
+      lane_id text,
+      name text not null,
+      root_path text not null,
+      is_read_only_by_default integer not null default 1,
+      mobile_read_only integer not null default 1,
+      updated_at text not null
+    );
+
+create table if not exists file_directory_snapshots (
+      workspace_id text not null,
+      parent_path text not null default '',
+      include_hidden integer not null default 0,
+      nodes_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, parent_path, include_hidden),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create table if not exists file_content_snapshots (
+      workspace_id text not null,
+      relative_path text not null,
+      blob_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, relative_path),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create table if not exists file_diff_snapshots (
+      workspace_id text not null,
+      relative_path text not null,
+      mode text not null,
+      diff_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, relative_path, mode),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create table if not exists file_history_snapshots (
+      workspace_id text not null,
+      relative_path text not null,
+      entries_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, relative_path),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create index if not exists idx_file_directory_snapshots_workspace on file_directory_snapshots(workspace_id, updated_at desc);
+
+create index if not exists idx_file_content_snapshots_workspace on file_content_snapshots(workspace_id, updated_at desc);
+
+create index if not exists idx_file_diff_snapshots_workspace on file_diff_snapshots(workspace_id, updated_at desc);
+
+create index if not exists idx_file_history_snapshots_workspace on file_history_snapshots(workspace_id, updated_at desc);
 
 create table if not exists checkpoints (
       id text primary key,
@@ -550,6 +629,10 @@ alter table integration_proposals add column completed_at text;
 alter table integration_proposals add column cleanup_declined_at text;
 
 alter table integration_proposals add column cleanup_completed_at text;
+
+alter table integration_proposals add column preferred_integration_lane_id text;
+
+alter table integration_proposals add column merge_into_head_sha text;
 
 create table if not exists queue_landing_state (
       id text primary key,
@@ -2260,37 +2343,6 @@ create table if not exists cto_flow_policy_revisions (
 
 create index if not exists idx_cto_flow_policy_revisions_project_created on cto_flow_policy_revisions(project_id, created_at);
 
-create table if not exists external_mcp_usage_events (
-      id text primary key,
-      project_id text not null,
-      server_name text not null,
-      tool_name text not null,
-      namespaced_tool_name text not null,
-      safety text not null,
-      caller_role text not null,
-      caller_id text not null,
-      chat_session_id text,
-      mission_id text,
-      run_id text,
-      step_id text,
-      attempt_id text,
-      owner_id text,
-      cost_cents integer not null default 0,
-      estimated integer not null default 0,
-      occurred_at text not null,
-      created_at text not null
-    );
-
-alter table external_mcp_usage_events add column chat_session_id text;
-
-create index if not exists idx_external_mcp_usage_events_project_occurred on external_mcp_usage_events(project_id, occurred_at);
-
-create index if not exists idx_external_mcp_usage_events_chat on external_mcp_usage_events(project_id, chat_session_id, occurred_at);
-
-create index if not exists idx_external_mcp_usage_events_mission on external_mcp_usage_events(project_id, mission_id, occurred_at);
-
-create index if not exists idx_external_mcp_usage_events_run on external_mcp_usage_events(project_id, run_id, occurred_at);
-
 create table if not exists budget_usage_records (
       id text primary key,
       scope text not null,
@@ -2307,6 +2359,141 @@ create index if not exists idx_budget_usage_records_scope_week on budget_usage_r
 create index if not exists idx_budget_usage_records_week on budget_usage_records(week_key);
 
 create index if not exists idx_budget_usage_records_provider_week on budget_usage_records(provider, week_key);
+
+create table if not exists review_runs (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      target_json text not null,
+      config_json text not null,
+      target_label text not null,
+      compare_target_json text,
+      status text not null,
+      summary text,
+      error_message text,
+      finding_count integer not null default 0,
+      severity_summary_json text,
+      chat_session_id text,
+      created_at text not null,
+      started_at text not null,
+      ended_at text,
+      updated_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    );
+
+create index if not exists idx_review_runs_project_created on review_runs(project_id, created_at desc);
+
+create index if not exists idx_review_runs_lane_created on review_runs(lane_id, created_at desc);
+
+create index if not exists idx_review_runs_project_status on review_runs(project_id, status);
+
+create table if not exists review_findings (
+      id text primary key,
+      run_id text not null,
+      title text not null,
+      severity text not null,
+      finding_class text,
+      body text not null,
+      confidence real not null default 0.5,
+      evidence_json text,
+      file_path text,
+      line integer,
+      anchor_state text not null,
+      source_pass text not null,
+      publication_state text not null,
+      originating_passes_json text,
+      adjudication_json text,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    );
+
+create index if not exists idx_review_findings_run on review_findings(run_id);
+
+create index if not exists idx_review_findings_run_file on review_findings(run_id, file_path, line);
+
+create table if not exists review_run_publications (
+      id text primary key,
+      run_id text not null,
+      destination_json text not null,
+      review_event text not null,
+      status text not null,
+      review_url text,
+      remote_review_id text,
+      summary_body text not null,
+      inline_comments_json text not null default '[]',
+      summary_finding_ids_json text not null default '[]',
+      error_message text,
+      created_at text not null,
+      updated_at text not null,
+      completed_at text,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    );
+
+create index if not exists idx_review_run_publications_run on review_run_publications(run_id, created_at);
+
+create table if not exists review_run_artifacts (
+      id text primary key,
+      run_id text not null,
+      artifact_type text not null,
+      title text not null,
+      mime_type text not null,
+      content_text text,
+      metadata_json text,
+      created_at text not null,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    );
+
+create index if not exists idx_review_run_artifacts_run on review_run_artifacts(run_id, created_at);
+
+alter table review_findings add column finding_class text;
+
+alter table review_findings add column originating_passes_json text;
+
+alter table review_findings add column adjudication_json text;
+
+alter table review_findings add column diff_context_json text;
+
+alter table review_findings add column suppression_match_json text;
+
+create table if not exists review_finding_feedback (
+      id text primary key,
+      finding_id text not null,
+      run_id text not null,
+      project_id text not null,
+      kind text not null,
+      reason text,
+      note text,
+      snooze_until text,
+      created_at text not null,
+      foreign key(finding_id) references review_findings(id) on delete cascade
+    );
+
+create index if not exists idx_review_feedback_finding on review_finding_feedback(finding_id);
+
+create index if not exists idx_review_feedback_project_created on review_finding_feedback(project_id, created_at desc);
+
+create table if not exists review_suppressions (
+      id text primary key,
+      project_id text not null,
+      scope text not null,
+      repo_key text,
+      path_pattern text,
+      title text not null,
+      title_norm text not null,
+      finding_class text,
+      severity text,
+      reason text,
+      note text,
+      embedding_json text,
+      source_finding_id text,
+      hit_count integer not null default 0,
+      created_at text not null,
+      last_matched_at text
+    );
+
+create index if not exists idx_review_suppressions_project on review_suppressions(project_id, created_at desc);
+
+create index if not exists idx_review_suppressions_repo on review_suppressions(project_id, repo_key);
 
 create table if not exists pr_issue_inventory (
       id text primary key,

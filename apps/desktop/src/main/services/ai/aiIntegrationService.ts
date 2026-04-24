@@ -46,7 +46,6 @@ import { isRecord } from "../shared/utils";
 import { parseStructuredOutput } from "./utils";
 import { getApiKeyStoreStatus } from "./apiKeyStore";
 import type { createMemoryService } from "../memory/memoryService";
-import type { CompactionFlushService } from "../memory/compactionFlushService";
 import { inspectLocalProvider } from "./localModelDiscovery";
 import { discoverCursorCliModelDescriptors, clearCursorCliModelsCache } from "../chat/cursorModelsDiscovery";
 import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
@@ -65,6 +64,11 @@ export type AiTaskType =
   | "narrative"
   | "pr_description"
   | "terminal_summary"
+  | "session_title"
+  | "session_summary"
+  | "handoff_summary"
+  | "continuity_summary"
+  | "context_compaction"
   | "mission_planning"
   | "initial_context";
 
@@ -175,7 +179,7 @@ const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
 };
 
 const DEFAULT_CLAUDE_TASK_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
-const DEFAULT_CODEX_TASK_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+const DEFAULT_CODEX_TASK_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
 
 const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   planning: {
@@ -213,6 +217,26 @@ const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   terminal_summary: {
     modelId: "anthropic/claude-haiku-4-5",
     timeoutMs: 20_000
+  },
+  session_title: {
+    modelId: "anthropic/claude-haiku-4-5",
+    timeoutMs: 20_000
+  },
+  session_summary: {
+    modelId: "anthropic/claude-haiku-4-5",
+    timeoutMs: 45_000
+  },
+  handoff_summary: {
+    modelId: "anthropic/claude-haiku-4-5",
+    timeoutMs: 45_000
+  },
+  continuity_summary: {
+    modelId: "anthropic/claude-haiku-4-5",
+    timeoutMs: 45_000
+  },
+  context_compaction: {
+    modelId: "anthropic/claude-haiku-4-5",
+    timeoutMs: 120_000
   },
   mission_planning: {
     modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
@@ -653,12 +677,14 @@ export function createAiIntegrationService(args: {
   logger: Logger;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   projectRoot: string;
+  enableDynamicModelMetadata?: boolean;
 }) {
   const { db, logger, projectConfigService, projectRoot } = args;
-  let compactionFlushService: CompactionFlushService | null = null;
 
-  // Non-blocking: fetch models.dev data and enrich pricing + registry
-  initModelsDevService().then((modelData) => {
+  // Non-blocking: fetch models.dev data and enrich pricing + registry.
+  // Headless CLI readiness commands disable this so default doctor/auth runs
+  // remain local-only and do not touch provider/model networks.
+  if (args.enableDynamicModelMetadata !== false) initModelsDevService().then((modelData) => {
     if (modelData.size === 0) return;
 
     // Update MODEL_PRICING with fresh cost data
@@ -1136,6 +1162,7 @@ export function createAiIntegrationService(args: {
     taskType: AiTaskType;
     cwd: string;
     prompt: string;
+    systemPrompt?: string;
     timeoutMs?: number;
     model?: string;
     jsonSchema?: unknown;
@@ -1145,6 +1172,7 @@ export function createAiIntegrationService(args: {
       feature: args.feature,
       taskType: args.taskType,
       prompt: args.prompt,
+      systemPrompt: args.systemPrompt,
       cwd: args.cwd,
       timeoutMs: args.timeoutMs,
       model: args.model,
@@ -1257,17 +1285,6 @@ export function createAiIntegrationService(args: {
             opencodeInventoryError = peeked.error;
             opencodeModelIds = peeked.modelIds;
             opencodeProviders = peeked.providers;
-          } else {
-            // No cache yet — auto-probe on first getStatus so free/connected models appear immediately.
-            const probed = await probeOpenCodeProviderInventory({
-              projectRoot,
-              projectConfig: effectiveConfig,
-              logger,
-              discoveredLocalModels,
-            });
-            opencodeInventoryError = probed.error;
-            opencodeModelIds = probed.modelIds;
-            opencodeProviders = probed.providers;
           }
         }
 
@@ -1338,9 +1355,6 @@ export function createAiIntegrationService(args: {
 
     getAvailabilityAsync,
     resolveModelForTask,
-    setCompactionFlushService(service: CompactionFlushService | null) {
-      compactionFlushService = service;
-    },
 
     // Backward-compatible convenience methods used by migrated services.
     async generateNarrative(args: {
@@ -1424,15 +1438,18 @@ export function createAiIntegrationService(args: {
       timeoutMs?: number;
       model?: string;
       jsonSchema?: unknown;
+      systemPrompt?: string;
+      taskType?: Extract<AiTaskType, "terminal_summary" | "session_title" | "session_summary" | "handoff_summary" | "continuity_summary" | "context_compaction">;
     }): Promise<ExecuteAiTaskResult> {
       return await executeReadOnlyOneShotTask({
         feature: "terminal_summaries",
-        taskType: "terminal_summary",
+        taskType: args.taskType ?? "terminal_summary",
         cwd: args.cwd,
         prompt: args.prompt,
         timeoutMs: args.timeoutMs,
         model: args.model,
-        jsonSchema: args.jsonSchema
+        jsonSchema: args.jsonSchema,
+        systemPrompt: args.systemPrompt
       });
     },
 

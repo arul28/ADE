@@ -7,6 +7,9 @@ export type ParsedPrsRouteState = {
   laneId: string | null;
   prId: string | null;
   queueGroupId: string | null;
+  eventId: string | null;
+  threadId: string | null;
+  commitSha: string | null;
 };
 
 function parseSearch(search: string): URLSearchParams {
@@ -41,13 +44,62 @@ function parseOptionalId(value: string | null): string | null {
 export function parsePrsRouteState(args: { search?: string | null; hash?: string | null }): ParsedPrsRouteState {
   const searchParams = parseSearch(args.search ?? "");
   const hashParams = parseHashParams(args.hash ?? "");
+  const hashHasRouteSignal =
+    parseTab(hashParams.get("tab")) !== null || parseWorkflowTab(hashParams.get("workflow")) !== null;
+  const routeParams = hashHasRouteSignal ? hashParams : searchParams;
+
+  const pick = (key: string): string | null => parseOptionalId(routeParams.get(key));
+
+  // In BrowserRouter mock mode the inner hash is the current in-app location,
+  // while the outer search may be stale from a previous view. Once the hash
+  // carries any PR route signal, treat it as authoritative for the whole route.
+  const workflowTab = parseWorkflowTab(routeParams.get("workflow"));
 
   return {
-    tab: parseTab(searchParams.get("tab") ?? hashParams.get("tab")),
-    workflowTab: parseWorkflowTab(searchParams.get("workflow") ?? hashParams.get("workflow")),
-    laneId: parseOptionalId(searchParams.get("laneId")) ?? parseOptionalId(hashParams.get("laneId")),
-    prId: parseOptionalId(searchParams.get("prId")) ?? parseOptionalId(hashParams.get("prId")),
-    queueGroupId: parseOptionalId(searchParams.get("queueGroupId")) ?? parseOptionalId(hashParams.get("queueGroupId")),
+    tab: parseTab(routeParams.get("tab")),
+    workflowTab,
+    laneId: pick("laneId"),
+    prId: pick("prId"),
+    queueGroupId: pick("queueGroupId"),
+    eventId: pick("eventId"),
+    threadId: pick("threadId"),
+    commitSha: pick("commitSha"),
+  };
+}
+
+export type ResolvedPrsRoute = {
+  isWorkflowRoute: boolean;
+  effectiveWorkflow: PrWorkflowTab | null;
+  activeTab: "normal" | PrWorkflowTab;
+};
+
+/**
+ * Collapse a parsed route into a single activeTab decision.
+ *
+ * Routing bounce-back guard: the presence of a `workflow=` param, or a
+ * workflow-alias `tab=` value (queue/integration/rebase), is treated as
+ * authoritative evidence of a workflow route. This prevents a stale
+ * `?tab=normal` in the outer search (BrowserRouter mock mode) from shadowing
+ * a hash-based workflow URL.
+ */
+export function resolvePrsActiveTab(route: ParsedPrsRouteState): ResolvedPrsRoute {
+  const workflowAlias: PrWorkflowTab | null =
+    route.tab === "queue" || route.tab === "integration" || route.tab === "rebase"
+      ? route.tab
+      : null;
+  const effectiveWorkflow = route.workflowTab ?? workflowAlias;
+  const isWorkflowRoute = Boolean(effectiveWorkflow) || route.tab === "workflows";
+  if (isWorkflowRoute) {
+    return {
+      isWorkflowRoute: true,
+      effectiveWorkflow,
+      activeTab: effectiveWorkflow ?? "integration",
+    };
+  }
+  return {
+    isWorkflowRoute: false,
+    effectiveWorkflow: null,
+    activeTab: "normal",
   };
 }
 
@@ -56,12 +108,18 @@ export function buildPrsRouteSearch(args: {
   selectedPrId: string | null;
   selectedQueueGroupId: string | null;
   selectedRebaseItemId: string | null;
+  eventId?: string | null;
+  threadId?: string | null;
+  commitSha?: string | null;
 }): string {
   const params = new URLSearchParams();
 
   if (args.activeTab === "normal" || args.activeTab === "github") {
     params.set("tab", args.activeTab);
     if (args.selectedPrId) params.set("prId", args.selectedPrId);
+    if (args.eventId) params.set("eventId", args.eventId);
+    if (args.threadId) params.set("threadId", args.threadId);
+    if (args.commitSha) params.set("commitSha", args.commitSha);
   } else {
     params.set("tab", "workflows");
     params.set("workflow", args.activeTab);

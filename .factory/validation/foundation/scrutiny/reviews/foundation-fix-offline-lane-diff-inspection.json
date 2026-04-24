@@ -1,0 +1,15 @@
+{
+  "featureId": "foundation-fix-offline-lane-diff-inspection",
+  "reviewedAt": "2026-04-16T11:00:16Z",
+  "commitId": "9f3c04b12a7d8b6e3eed75ad761de4b81ac8bfed",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The fix adequately resolves the prior regression. The original polish commit over-gated cached diff entry behind live connectivity, while this follow-up restores cached unstaged/staged diff entry and lets recent-commit diff pickers reopen whenever their file targets are already cached, without reopening any live-only git mutations or diff editing.",
+    "issues": []
+  },
+  "sharedStateObservations": [],
+  "addressesFailureFrom": "/Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/.factory/validation/foundation/scrutiny/reviews/foundation-lanes-benchmark-polish.json",
+  "summary": "Pass: reviewed both the original failing diff and the fix diff. The regression is addressed because lane detail no longer treats cached diff inspection as a live-only action, while stage/discard/revert/cherry-pick flows and unstaged diff editing remain gated behind the existing live-action checks."
+}

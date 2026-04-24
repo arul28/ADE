@@ -3,7 +3,7 @@ title: "v1.0.16"
 description: "Release notes for ADE v1.0.16 — April 11, 2026"
 ---
 
-OpenAI key verification improvements, scoped OpenCode tool selection, isolated server launches, provider UI polish, and MCP schema sanitization.
+OpenAI key verification improvements, scoped OpenCode tool selection, isolated server launches, provider UI polish, and ADE CLI schema sanitization.
 
 ---
 
@@ -21,13 +21,13 @@ Auth detection now separates "key is invalid" from "key is valid but the request
 
 ## OpenCode Tool Selection
 
-### Scoped MCP tool resolution
+### Scoped ADE CLI tool resolution
 
-New tool selection pipeline for OpenCode sessions: `buildFallbackToolSelection`, `buildScopedMcpToolSelection`, and `resolveScopedMcpToolSelection` ensure each session gets exactly the tools it needs based on the current MCP server configuration.
+New tool selection pipeline for OpenCode sessions: `buildFallbackToolSelection`, `buildScopedMcpToolSelection`, and `resolveScopedMcpToolSelection` ensure each session gets exactly the tools it needs based on the current ADE CLI configuration.
 
 ### Automatic tool refresh
 
-`refreshOpenCodeSessionToolSelection` is now called before every prompt — both streaming sessions and one-shot `runOpenCodeTextPrompt` calls — ensuring tool availability stays current as MCP servers connect and disconnect.
+`refreshOpenCodeSessionToolSelection` is now called before every prompt — both streaming sessions and one-shot `runOpenCodeTextPrompt` calls — ensuring tool availability stays current as ADE CLI connect and disconnect.
 
 ### Agent and coordinator integration
 
@@ -63,16 +63,16 @@ Provider keys now show verification badges on successful validation and failure 
 
 ---
 
-## MCP Schema Sanitization
+## ADE CLI Schema Sanitization
 
 ### Recursive schema normalization
 
-A new `sanitizeToolSchema` function in the MCP server recursively fixes and normalizes tool JSON Schemas before they're sent to providers. The sanitizer:
+A new `sanitizeToolSchema` function in the ADE CLI recursively fixes and normalizes tool JSON Schemas before they're sent to providers. The sanitizer:
 - Adds missing `items` on array types and `properties` on object types
 - Ensures `required` arrays include all declared properties
 - Recurses through `anyOf`, `oneOf`, and `allOf` branches
 
-This prevents strict-provider rejections (notably OpenAI) when MCP tools expose schemas with missing required fields.
+This prevents strict-provider rejections (notably OpenAI) when ADE CLI tools expose schemas with missing required fields.
 
 ---
 

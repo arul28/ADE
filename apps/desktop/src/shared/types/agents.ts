@@ -1,6 +1,5 @@
 import type { ModelId } from "./core";
 import type { AgentChatProvider } from "./chat";
-import type { ExternalMcpAccessPolicy } from "./externalMcp";
 
 export type AgentRole =
   | "cto"
@@ -92,7 +91,6 @@ export type AgentIdentity = {
   adapterConfig: AgentAdapterConfig;
   runtimeConfig: AgentRuntimeConfig;
   linearIdentity?: AgentLinearIdentity;
-  externalMcpAccess?: ExternalMcpAccessPolicy;
   personality?: string;
   communicationStyle?: string;
   constraints?: string[];
@@ -135,7 +133,7 @@ export type AgentSessionLogEntry = {
   endedAt: string | null;
   provider: string;
   modelId: string | null;
-  capabilityMode: "full_mcp" | "fallback";
+  capabilityMode: "full_tooling" | "fallback";
   createdAt: string;
 };
 
@@ -304,7 +302,6 @@ export type AgentUpsertInput = {
   adapterConfig?: Record<string, unknown>;
   runtimeConfig?: AgentRuntimeConfig;
   linearIdentity?: AgentLinearIdentity;
-  externalMcpAccess?: ExternalMcpAccessPolicy;
   budgetMonthlyCents?: number;
 };
 
@@ -340,10 +337,8 @@ export type CtoRollbackAgentRevisionArgs = {
 
 export type CtoEnsureAgentSessionArgs = {
   agentId: string;
-  laneId?: string | null;
   modelId?: ModelId | null;
   reasoningEffort?: string | null;
-  taskKey?: string | null;
 };
 
 export type CtoListAgentTaskSessionsArgs = {

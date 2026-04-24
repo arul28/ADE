@@ -54,22 +54,6 @@ Think of ADE the way you think about a CI/CD dashboard — except instead of wat
 
 ---
 
-## Core principles
-
-<CardGroup cols={3}>
-  <Card title="Parallel by default" icon="arrows-left-right" color="#7C3AED">
-    Every task gets its own git worktree. Agents never block each other or step on shared files.
-  </Card>
-  <Card title="Context-aware" icon="brain" color="#2563EB">
-    Durable context packs carry project knowledge into every agent session so agents start informed, not cold.
-  </Card>
-  <Card title="Local-first" icon="shield-check" color="#059669">
-    Source code, API keys, and artifacts stay on your machine. Nothing leaves through ADE's infrastructure.
-  </Card>
-</CardGroup>
-
----
-
 ## The app at a glance
 
 ADE's sidebar mirrors this documentation. Each tab in the app has a matching section in the **App Guide**:
@@ -91,6 +75,10 @@ ADE's sidebar mirrors this documentation. Each tab in the app has a matching sec
 
 <Tip>
 Press **`⌘K`** anywhere in ADE to open the **Command Palette** — a fuzzy-searchable jump-to for every tab, lane, and recent action. Use `G` followed by a letter (e.g. `G L` for Lanes, `G R` for PRs) to jump between sections by keyboard alone.
+</Tip>
+
+<Tip>
+Click the **Help** icon in the top bar to open the Help menu. The first entry — **Start Full Tutorial** — runs the in-app guided tour of every tab (Lanes, Graph, Files, Work, Git actions, PRs, History, Run, Automations, CTO, Settings) and hands off to shorter per-tab tours as it goes. Below the full tutorial, the menu also lists focused tours for each tab so you can jump straight to one.
 </Tip>
 
 ---

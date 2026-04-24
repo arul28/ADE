@@ -1,7 +1,24 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+const mockState = vi.hoisted(() => ({
+  spawn: vi.fn(),
+  spawnSync: vi.fn(),
+  resolveCodexExecutable: vi.fn(),
+}));
+
+vi.mock("node:child_process", () => ({
+  spawn: (...args: unknown[]) => mockState.spawn(...args),
+  spawnSync: (...args: unknown[]) => mockState.spawnSync(...args),
+}));
+
+vi.mock("../ai/codexExecutable", () => ({
+  resolveCodexExecutable: (...args: unknown[]) => mockState.resolveCodexExecutable(...args),
+}));
+
 import { createUsageTrackingService, _testing } from "./usageTrackingService";
 
 const {
@@ -11,6 +28,7 @@ const {
   isTokenExpiredOrExpiring,
   parseClaudeWindows,
   parseCodexRateLimitWindows,
+  pollCodexViaCliRpc,
   resolveTokenPrice,
 } = _testing;
 
@@ -28,6 +46,61 @@ function createLogger() {
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-test-"));
 }
+
+function setPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    value,
+    configurable: true,
+  });
+}
+
+function createFakeCodexChild({
+  closeCode = 0,
+  stdout = "",
+  stderr = "",
+  stdinError = null,
+}: {
+  closeCode?: number | null;
+  stdout?: string;
+  stderr?: string;
+  stdinError?: Error | null;
+}) {
+  const child = new EventEmitter() as any;
+  const stdoutEmitter = new EventEmitter();
+  const stderrEmitter = new EventEmitter();
+  const stdinEmitter = new EventEmitter() as any;
+  const written: string[] = [];
+
+  stdinEmitter.write = vi.fn((chunk: string) => {
+    written.push(chunk);
+    return true;
+  });
+  stdinEmitter.end = vi.fn(() => {
+    queueMicrotask(() => {
+      if (stdinError) {
+        stdinEmitter.emit("error", stdinError);
+        return;
+      }
+      if (stdout) stdoutEmitter.emit("data", Buffer.from(stdout));
+      if (stderr) stderrEmitter.emit("data", Buffer.from(stderr));
+      child.emit("close", closeCode);
+    });
+  });
+
+  child.stdout = stdoutEmitter;
+  child.stderr = stderrEmitter;
+  child.stdin = stdinEmitter;
+  child.kill = vi.fn();
+
+  return { child, written, stdinEmitter, stdoutEmitter, stderrEmitter };
+}
+
+beforeEach(() => {
+  mockState.spawn.mockReset();
+  mockState.spawnSync.mockReset();
+  mockState.spawnSync.mockReturnValue({ status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
+  mockState.resolveCodexExecutable.mockReset();
+});
 
 // ── calculatePacing ──────────────────────────────────────────────
 
@@ -371,6 +444,142 @@ describe("parseCodexRateLimitWindows", () => {
     expect(result).toHaveLength(2);
     expect(result.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
     expect(result.find((window) => window.windowType === "weekly")?.percentUsed).toBe(64);
+  });
+});
+
+describe("pollCodexViaCliRpc", () => {
+  const originalPlatform = process.platform;
+  const originalComSpec = process.env.ComSpec;
+
+  beforeEach(() => {
+    setPlatform("win32");
+    process.env.ComSpec = "cmd.exe";
+  });
+
+  afterEach(() => {
+    setPlatform(originalPlatform);
+    if (originalComSpec === undefined) {
+      delete process.env.ComSpec;
+    } else {
+      process.env.ComSpec = originalComSpec;
+    }
+  });
+
+  it("wraps extensionless Windows codex paths with cmd.exe and writes the combined JSONL payload once", async () => {
+    const fake = createFakeCodexChild({
+      stdout: `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          rateLimits: {
+            primary: { usedPercent: 17, resetsAt: 1773446952 },
+            secondary: { usedPercent: 64, resetsAt: 1773853354 },
+          },
+        },
+      })}\n`,
+    });
+
+    mockState.resolveCodexExecutable.mockReturnValue({
+      path: "C:\\Users\\me\\AppData\\Local\\Programs\\codex",
+      source: "path",
+    });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    const logger = createLogger();
+    const result = await pollCodexViaCliRpc(logger as any);
+
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    expect(mockState.spawn).toHaveBeenCalledWith(
+      "cmd.exe",
+      ["/d", "/s", "/c", '"C:\\Users\\me\\AppData\\Local\\Programs\\codex" "-s" "read-only" "-a" "untrusted" "app-server"'],
+      expect.objectContaining({ windowsVerbatimArguments: true }),
+    );
+    expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
+    expect(fake.written[0]).toMatch(/\n$/);
+    expect(fake.written[0]).not.toMatch(/\n\n$/);
+    expect(result.errors).toEqual([]);
+    expect(result.windows).toHaveLength(2);
+    expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
+  });
+
+  it("spawns codex directly on POSIX without Windows shell options", async () => {
+    setPlatform("linux");
+    const fake = createFakeCodexChild({
+      stdout: `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          rateLimits: {
+            primary: { usedPercent: 17, resetsAt: 1773446952 },
+            secondary: { usedPercent: 64, resetsAt: 1773853354 },
+          },
+        },
+      })}\n`,
+    });
+
+    mockState.resolveCodexExecutable.mockReturnValue({
+      path: "codex",
+      source: "path",
+    });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    const logger = createLogger();
+    const result = await pollCodexViaCliRpc(logger as any);
+
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    const [spawnFile, spawnArgs, spawnOptions] = mockState.spawn.mock.calls[0]!;
+    expect(spawnFile).toBe("codex");
+    expect(spawnArgs).toEqual(["-s", "read-only", "-a", "untrusted", "app-server"]);
+    expect(spawnOptions).toEqual(expect.objectContaining({ windowsVerbatimArguments: false }));
+    expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
+    expect(fake.written[0]).toMatch(/\n$/);
+    expect(fake.written[0]).not.toMatch(/\n\n$/);
+    expect(result.errors).toEqual([]);
+    expect(result.windows).toHaveLength(2);
+    expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
+  });
+
+  it("routes stdin EPIPE errors through cleanup and reports a CLI RPC failure", async () => {
+    const stdinError = new Error("EPIPE");
+    const fake = createFakeCodexChild({ stdinError });
+
+    mockState.resolveCodexExecutable.mockReturnValue({
+      path: "codex.exe",
+      source: "path",
+    });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    const logger = createLogger();
+    const result = await pollCodexViaCliRpc(logger as any);
+
+    expect(result.windows).toEqual([]);
+    expect(result.errors[0]).toContain("codex: CLI RPC error:");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "usage.poll.codex_cli_rpc_stdin_failed",
+      expect.objectContaining({ error: "EPIPE" }),
+    );
+  });
+
+  it("logs non-zero exits after parsing close output", async () => {
+    const fake = createFakeCodexChild({
+      closeCode: 1,
+      stderr: "codex said no\n",
+    });
+
+    mockState.resolveCodexExecutable.mockReturnValue({
+      path: "codex.exe",
+      source: "path",
+    });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    const logger = createLogger();
+    const result = await pollCodexViaCliRpc(logger as any);
+
+    expect(result.errors).toContain("codex: CLI RPC exited with non-zero code");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "usage.poll.codex_cli_rpc_non_zero_exit",
+      expect.objectContaining({ exitCode: 1, stderr: "codex said no\n" }),
+    );
   });
 });
 

@@ -1,17 +1,9 @@
-import type { ExternalMcpConnectionState } from "./externalMcp";
-
 export type ComputerUseArtifactKind =
   | "screenshot"
   | "video_recording"
   | "browser_trace"
   | "browser_verification"
   | "console_logs";
-
-export type ComputerUseBackendStyle =
-  | "external_mcp"
-  | "external_cli"
-  | "manual"
-  | "local_fallback";
 
 export type ComputerUseArtifactOwnerKind =
   | "lane"
@@ -30,7 +22,6 @@ export type ComputerUseArtifactLinkRelation =
   | "published_to";
 
 export type ComputerUseBackendDescriptor = {
-  style: ComputerUseBackendStyle;
   name: string;
   toolName?: string | null;
   command?: string | null;
@@ -60,7 +51,6 @@ export type ComputerUseArtifactInput = {
 export type ComputerUseArtifactRecord = {
   id: string;
   kind: ComputerUseArtifactKind;
-  backendStyle: ComputerUseBackendStyle;
   backendName: string;
   sourceToolName: string | null;
   originalType: string | null;
@@ -94,26 +84,11 @@ export type ComputerUseArtifactIngestionResult = {
   links: ComputerUseArtifactLink[];
 };
 
-export type ComputerUsePolicyMode = "auto" | "enabled";
-
-export type ComputerUsePolicy = {
-  mode: ComputerUsePolicyMode;
-  allowLocalFallback: boolean;
-  retainArtifacts: boolean;
-  preferredBackend: string | null;
-};
-
 export type ComputerUseArtifactReviewState =
   | "pending"
   | "accepted"
   | "needs_more"
   | "dismissed";
-
-export type GhostDoctorProcessHealth = {
-  state: "healthy" | "stale" | "unknown";
-  processCount: number | null;
-  detail: string;
-};
 
 export type ComputerUseArtifactWorkflowState =
   | "evidence_only"
@@ -151,9 +126,8 @@ export type ComputerUseArtifactReviewArgs = {
 
 export type ComputerUseExternalBackendStatus = {
   name: string;
-  style: Extract<ComputerUseBackendStyle, "external_mcp" | "external_cli">;
   available: boolean;
-  state?: ExternalMcpConnectionState | "installed" | "missing";
+  state?: "installed" | "missing";
   detail: string;
   supportedKinds: ComputerUseArtifactKind[];
 };
@@ -162,36 +136,9 @@ export type ComputerUseBackendStatus = {
   backends: ComputerUseExternalBackendStatus[];
   localFallback: {
     available: boolean;
+    state?: "present" | "missing" | "blocked_by_capability";
     detail: string;
     supportedKinds: ComputerUseArtifactKind[];
-  };
-};
-
-export type ComputerUseCapabilityMatrixRow = {
-  kind: ComputerUseArtifactKind;
-  externalBackends: string[];
-  localFallbackAvailable: boolean;
-};
-
-export type ComputerUseSettingsSnapshot = {
-  backendStatus: ComputerUseBackendStatus;
-  preferredBackend: string | null;
-  capabilityMatrix: ComputerUseCapabilityMatrixRow[];
-  ghostOsCheck: {
-    repoUrl: string;
-    cliInstalled: boolean;
-    setupState: "ready" | "needs_setup" | "not_installed" | "unknown";
-    adeConfigured: boolean;
-    adeConnected: boolean;
-    processHealth?: GhostDoctorProcessHealth;
-    summary: string;
-    details: string[];
-  };
-  guidance: {
-    overview: string;
-    ghostOs: string;
-    agentBrowser: string;
-    fallback: string;
   };
 };
 
@@ -214,34 +161,22 @@ export type ComputerUseActivityItem = {
   severity: "info" | "warning" | "success";
 };
 
-export type ComputerUseProofCoverage = {
-  requiredKinds: ComputerUseArtifactKind[];
-  presentKinds: ComputerUseArtifactKind[];
-  missingKinds: ComputerUseArtifactKind[];
-};
-
 export type ComputerUseOwnerSnapshot = {
   owner: ComputerUseArtifactOwner;
-  policy: ComputerUsePolicy | null;
   backendStatus: ComputerUseBackendStatus;
   summary: string;
   activeBackend: {
     name: string;
-    style: ComputerUseBackendStyle;
     detail: string;
-    source: "artifact" | "policy" | "available";
+    source: "artifact" | "available";
   } | null;
   artifacts: ComputerUseArtifactView[];
   recentArtifacts: ComputerUseArtifactView[];
   activity: ComputerUseActivityItem[];
-  proofCoverage: ComputerUseProofCoverage;
-  usingLocalFallback: boolean;
 };
 
 export type ComputerUseOwnerSnapshotArgs = {
   owner: ComputerUseArtifactOwner;
-  policy?: ComputerUsePolicy | null;
-  requiredKinds?: ComputerUseArtifactKind[];
   limit?: number;
 };
 
@@ -251,54 +186,3 @@ export type ComputerUseEventPayload = {
   at: string;
   owner?: ComputerUseArtifactOwner | null;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value != null && typeof value === "object" && !Array.isArray(value);
-}
-
-function toOptionalString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-export function normalizeComputerUsePolicy(value: unknown, fallback: Partial<ComputerUsePolicy> = {}): ComputerUsePolicy {
-  const record = isRecord(value) ? value : {};
-  // Migrate persisted "off" mode to "auto" — "off" is no longer a valid mode.
-  // If record.mode is explicitly "auto" or legacy "off", respect it as "auto"
-  // instead of letting fallback.mode override it back to "enabled".
-  const mode: ComputerUsePolicyMode =
-    record.mode === "enabled"
-      ? "enabled"
-      : record.mode === "auto" || record.mode === "off"
-        ? "auto"
-        : fallback.mode === "enabled"
-          ? "enabled"
-          : "auto";
-  const allowLocalFallback = typeof record.allowLocalFallback === "boolean"
-    ? record.allowLocalFallback
-    : fallback.allowLocalFallback ?? true;
-  const retainArtifacts = typeof record.retainArtifacts === "boolean"
-    ? record.retainArtifacts
-    : fallback.retainArtifacts ?? true;
-  return {
-    mode,
-    allowLocalFallback,
-    retainArtifacts,
-    preferredBackend: toOptionalString(record.preferredBackend) ?? fallback.preferredBackend ?? null,
-  };
-}
-
-export function createDefaultComputerUsePolicy(overrides: Partial<ComputerUsePolicy> = {}): ComputerUsePolicy {
-  return normalizeComputerUsePolicy(overrides, {
-    mode: overrides.mode ?? "auto",
-    allowLocalFallback: overrides.allowLocalFallback ?? true,
-    retainArtifacts: overrides.retainArtifacts ?? true,
-    preferredBackend: overrides.preferredBackend ?? null,
-  });
-}
-
-/** Shim kept for call-site compatibility — always returns true now that "off" mode is removed. */
-export function isComputerUseModeEnabled(_mode: ComputerUsePolicyMode | null | undefined): boolean {
-  return true;
-}

@@ -20,8 +20,17 @@ the app is interactive.
 Main process:
 
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
-  status, stack detection, suggested config, existing lane detection.
-  ~340 lines.
+  status, stack detection, suggested config, existing lane detection,
+  and tour progress tracking. `OnboardingTourProgress` carries the
+  legacy flat per-tour map (`tours: Record<string, OnboardingTourEntry>`)
+  plus a new variant-aware `tourVariants: Record<string,
+  OnboardingTourEntryV2>` keyed by base tour id with a `full` +
+  `highlights` pair. A separate `tutorial: OnboardingTutorialState`
+  slab tracks the 13-act first-session tutorial
+  (`completedAt`/`dismissedAt`/`silenced`/`inProgress`/`lastActIndex`/
+  `ctxSnapshot`). Glossary terms seen are tracked in
+  `glossaryTermsSeen[]`. Persisted to `kvDb` under
+  `onboarding:tourProgress`.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
   Linear sync resolver. ~2,870 lines, the largest service.
@@ -59,6 +68,42 @@ Renderer — onboarding:
   — dev tool detection (git, gh).
 - `apps/desktop/src/renderer/components/onboarding/EmbeddingsSection.tsx`
   — local embedding model setup.
+- `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
+  — top-level orchestrator: mounts the `TourHost`, auto-fires per-tab
+  tours on route change, renders `DidYouKnow`, and pops the
+  `TutorialPromptCard` when the first-session tutorial is available.
+- `apps/desktop/src/renderer/components/onboarding/TutorialPromptCard.tsx`
+  — Start / Not now / Don't show again gate for the 13-act tutorial.
+- `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
+  — persistent help menu in the top bar: tour replay, glossary, docs
+  links, restart tutorial.
+- `apps/desktop/src/renderer/components/onboarding/tour/TourHost.tsx`,
+  `TourOverlay.tsx`, `TourStep.tsx` — rendered overlay and per-step card.
+- `apps/desktop/src/renderer/components/onboarding/fx/*` — motion-FX
+  primitives (`ActIntro`, `AnimatedField`, `Confetti`, `GhostCursor`,
+  `MorphingTree`, `Spotlight`, `StaggeredText`, `TourIllustration`)
+  plus a `useReducedMotion` hook. Used by the tutorial and per-tab tours.
+- `apps/desktop/src/renderer/onboarding/TourController.ts` — imperative
+  driver (advance/skip/complete/dismiss); source of truth for the
+  Zustand `onboardingStore`.
+- `apps/desktop/src/renderer/onboarding/waitForTarget.ts` — polls for a
+  DOM target (ref or `data-onboarding-target`) with a visibility check
+  so tour steps anchor reliably to async-mounted elements.
+- `apps/desktop/src/renderer/onboarding/docsLinks.ts` — typed registry
+  of internal/public doc URLs that tour steps and `HelpMenu` link to.
+- `apps/desktop/src/renderer/onboarding/registry.ts` — tour registry.
+- `apps/desktop/src/renderer/onboarding/tourGuards.ts` — per-step guard
+  predicates (route, selection, and element-presence checks) that decide
+  whether a step can advance, skip, or must pause for the user.
+- `apps/desktop/src/renderer/onboarding/stepBuilders/*.ts` — factories
+  for per-dialog tour steps (`createLaneDialog`, `manageLaneDialog`,
+  `prCreateModal`); kept separate from the per-surface tour files so
+  dialog-scoped steps can be composed from multiple tours.
+- `apps/desktop/src/renderer/onboarding/tours/*.ts` — per-surface tours:
+  `lanesTour`, `laneWorkPaneTour` (new), `workTour`, `filesTour`,
+  `runTour`, `missionsTour`, `prsTour`, `graphTour`, `historyTour`,
+  `automationsTour`, `ctoTour`, `settingsTour`, plus the first-session
+  `firstJourney` tour.
 - `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
   separate lightweight wizard covering identity, project context, and
   optional Linear (see `apps/desktop/src/renderer/components/cto/`).
@@ -79,14 +124,24 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
   — provider CLIs and models.
 - `apps/desktop/src/renderer/components/settings/IntegrationsSettingsSection.tsx`
-  — GitHub, Linear, computer use integrations.
+  — GitHub, Linear, and computer-use backend readiness. The old
+  dedicated `ComputerUseSection.tsx` was removed; its content folded
+  in here.
 - `apps/desktop/src/renderer/components/settings/MemoryHealthTab.tsx`
   — memory system overview and browser.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
+- `apps/desktop/src/renderer/components/settings/OnboardingSection.tsx`
+  — surfaces the first-session tutorial and per-tab tour progress,
+  plus replay controls.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
-  — multi-device sync management.
+  — multi-device sync management. Surfaces the phone-pairing PIN (set
+  / clear / reveal), the QR payload (v2) with its LAN / Tailscale /
+  loopback address candidates, the bootstrap token for desktop peers,
+  the Tailscale MagicDNS discovery status (`svc:ade-sync` publication
+  via `tailscale serve`), and the per-device connection panel used to
+  forget paired phones.
 - `apps/desktop/src/renderer/components/settings/SettingsUsageSection.tsx`
   and `UsageGuardrailsSection.tsx` — cost and usage.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
@@ -146,11 +201,12 @@ is changing rather than which service backs it:
 |---|---|---|
 | General | `GeneralSection.tsx` | Theme, AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link |
 | Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx`, `ContextSection.tsx` | Project identity, context docs, skill files |
-| AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx`, `ComputerUseSection.tsx` | Provider CLIs, models, AI feature flags |
-| Sync | `SyncDevicesSection.tsx` | Multi-device sync (Phase 6), host-role transfer, peer status |
-| Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx`, `ExternalMcpSection.tsx` | GitHub, Linear, external MCP servers |
+| AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, AI feature flags |
+| Sync | `SyncDevicesSection.tsx` | Multi-device sync, host-role transfer, peer status, pairing PIN, Tailscale tailnet discovery |
+| Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness |
 | Memory | `MemoryHealthTab.tsx` | Memory health, browser, embedding health |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
+| Onboarding | `OnboardingSection.tsx` | First-session tutorial + per-tab tour progress and replay controls |
 | Usage | `SettingsUsageSection.tsx`, `UsageGuardrailsSection.tsx` | Cost visibility and guardrails |
 
 The Settings page itself (`SettingsPage.tsx`) has a legacy alias

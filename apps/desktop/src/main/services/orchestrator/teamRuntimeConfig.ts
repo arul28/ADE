@@ -102,7 +102,7 @@ export function normalizeAgentRuntimeFlags(
 
 export function toClampedToolProfileMap(value: unknown): TeamRuntimeConfig["toolProfiles"] {
   if (!isRecord(value)) return undefined;
-  const out: Record<string, { allowedTools: string[]; blockedTools?: string[]; mcpServers?: string[]; notes?: string }> = {};
+  const out: Record<string, { allowedTools: string[]; blockedTools?: string[]; notes?: string }> = {};
   for (const [key, raw] of Object.entries(value)) {
     if (!isRecord(raw)) continue;
     const allowedTools = Array.isArray(raw.allowedTools)
@@ -112,13 +112,9 @@ export function toClampedToolProfileMap(value: unknown): TeamRuntimeConfig["tool
     const blockedTools = Array.isArray(raw.blockedTools)
       ? raw.blockedTools.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
       : undefined;
-    const mcpServers = Array.isArray(raw.mcpServers)
-      ? raw.mcpServers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-      : undefined;
     out[key] = {
       allowedTools,
       ...(blockedTools && blockedTools.length > 0 ? { blockedTools } : {}),
-      ...(mcpServers && mcpServers.length > 0 ? { mcpServers } : {}),
       ...(typeof raw.notes === "string" && raw.notes.trim().length > 0 ? { notes: raw.notes.trim() } : {})
     };
   }
@@ -251,11 +247,6 @@ export function resolveMissionTeamRuntime(
           ...normalizeAgentRuntimeFlags(teamRuntime as Partial<MissionAgentRuntimeConfig>),
           template,
           toolProfiles: toClampedToolProfileMap(teamRuntime.toolProfiles),
-          mcpServerAllowlist: Array.isArray(teamRuntime.mcpServerAllowlist)
-            ? (teamRuntime.mcpServerAllowlist as unknown[])
-                .map((entry: unknown) => String(entry ?? "").trim())
-                .filter((entry) => entry.length > 0)
-            : undefined,
           policyOverrides: parsePolicyFlags(teamRuntime.policyOverrides)
         };
       }

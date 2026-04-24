@@ -29,6 +29,7 @@ import type {
   ConfigLaneOverlayPolicy,
   ConfigLaneTemplate,
   ConfigProcessDefinition,
+  ConfigProcessGroupDefinition,
   ConfigProcessReadiness,
   ConfigStackButtonDefinition,
   ConfigTestSuiteDefinition,
@@ -45,6 +46,7 @@ import type {
   LaneTemplate,
   LaneType,
   ProcessDefinition,
+  ProcessGroupDefinition,
   ProcessReadinessConfig,
   ProjectConfigCandidate,
   ProjectConfigDiff,
@@ -58,11 +60,13 @@ import type {
   LinearSyncConfig,
   MissionModelConfig,
   MissionPermissionConfig,
+  NotificationsConfig,
+  NotificationApnsConfig,
   StackButtonDefinition,
   TestSuiteDefinition,
   TestSuiteTag
 } from "../../../shared/types";
-import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
+import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { isRecord, resolvePathWithinRoot } from "../shared/utils";
@@ -80,8 +84,16 @@ const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
   "browser",
   "memory",
   "mission",
-  "external-mcp",
 ];
+const AUTOMATION_TRIGGER_TYPE_SET = new Set<string>(AUTOMATION_TRIGGER_TYPES);
+const AUTOMATION_ACTION_TYPE_SET = new Set<string>([
+  "agent-session",
+  "launch-mission",
+  "predict-conflicts",
+  "run-tests",
+  "run-command",
+  "ade-action",
+]);
 
 function isPathWithinProjectRoot(projectRoot: string, candidate: string, opts: { allowMissing?: boolean } = {}): boolean {
   try {
@@ -146,6 +158,125 @@ function asStringMap(value: unknown): Record<string, string> | undefined {
   return out;
 }
 
+function normalizeConfigPath(value: string): string {
+  return value.trim().replace(/\\/g, "/");
+}
+
+function isAbsoluteOnAnyPlatform(value: string): boolean {
+  return path.isAbsolute(value) || path.win32.isAbsolute(value) || path.posix.isAbsolute(value);
+}
+
+function isLikelyForeignAbsolutePath(value: string): boolean {
+  const normalized = normalizeConfigPath(value);
+  if (path.sep === "/") {
+    return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//");
+  }
+  return normalized.startsWith("/") && !/^[A-Za-z]:\//.test(normalized);
+}
+
+function normalizedPathSegments(value: string): string[] {
+  return normalizeConfigPath(value)
+    .replace(/^[A-Za-z]:\/?/, "")
+    .replace(/^\/\/[^/]+\/[^/]+\/?/, "")
+    .split("/")
+    .filter(Boolean);
+}
+
+function inferProjectRelativePath(projectRoot: string, candidate: string): string | null {
+  const rootSegments = normalizedPathSegments(projectRoot);
+  const candidateSegments = normalizedPathSegments(candidate);
+  if (!rootSegments.length || !candidateSegments.length) return null;
+
+  if (candidateSegments.length >= rootSegments.length) {
+    for (let i = 0; i <= candidateSegments.length - rootSegments.length; i += 1) {
+      const matchesRoot = rootSegments.every((segment, offset) => candidateSegments[i + offset] === segment);
+      if (matchesRoot) {
+        return candidateSegments.slice(i + rootSegments.length).join("/") || ".";
+      }
+    }
+  }
+
+  const projectDirName = rootSegments[rootSegments.length - 1];
+  const projectDirIndex = candidateSegments.lastIndexOf(projectDirName);
+  if (projectDirIndex === -1) return null;
+  return candidateSegments.slice(projectDirIndex + 1).join("/") || ".";
+}
+
+function projectRelativePath(projectRoot: string, absolutePath: string, basePath: string): string | null {
+  if (!isAbsoluteOnAnyPlatform(absolutePath)) return null;
+  const nativeAbsolute = path.isAbsolute(absolutePath);
+  if (!nativeAbsolute || isLikelyForeignAbsolutePath(absolutePath)) {
+    const projectRelative = inferProjectRelativePath(projectRoot, absolutePath);
+    const baseRelative = inferProjectRelativePath(projectRoot, basePath);
+    if (projectRelative == null || baseRelative == null) return null;
+    const relative = path.posix.relative(baseRelative === "." ? "" : baseRelative, projectRelative);
+    return relative || ".";
+  }
+  try {
+    const resolved = resolvePathWithinRoot(projectRoot, absolutePath, { allowMissing: true });
+    const resolvedBase = resolvePathWithinRoot(projectRoot, basePath, { allowMissing: true });
+    const relative = path.relative(resolvedBase, resolved).replace(/\\/g, "/");
+    return relative || ".";
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProjectCwd(projectRoot: string, cwd: string | undefined): string | undefined {
+  if (cwd == null) return undefined;
+  const normalized = normalizeConfigPath(cwd);
+  if (!normalized) return normalized;
+  return projectRelativePath(projectRoot, normalized, projectRoot) ?? normalized;
+}
+
+function normalizeProjectCommand(projectRoot: string, command: string[] | undefined, cwd: string | undefined): string[] | undefined {
+  if (!command) return undefined;
+  const normalizedCommand = command.map((part) => part.trim()).filter(Boolean);
+  const executable = normalizedCommand[0];
+  if (!executable) return normalizedCommand;
+
+  const normalizedExecutable = normalizeConfigPath(executable);
+  const normalizedCwd = normalizeProjectCwd(projectRoot, cwd) ?? ".";
+  const absoluteCwd = path.isAbsolute(normalizedCwd)
+    ? normalizedCwd
+    : path.join(projectRoot, normalizedCwd);
+  const portableExecutable = projectRelativePath(projectRoot, normalizedExecutable, absoluteCwd);
+  if (portableExecutable == null) return [normalizedExecutable, ...normalizedCommand.slice(1)];
+
+  const executablePath = portableExecutable.includes("/") || portableExecutable.startsWith(".")
+    ? portableExecutable
+    : `./${portableExecutable}`;
+  return [executablePath, ...normalizedCommand.slice(1)];
+}
+
+function normalizeConfigFilePaths(config: ProjectConfigFile, projectRoot: string): ProjectConfigFile {
+  return {
+    ...config,
+    processes: (config.processes ?? []).map((proc) => {
+      const cwd = normalizeProjectCwd(projectRoot, proc.cwd);
+      return {
+        ...proc,
+        ...(proc.command ? { command: normalizeProjectCommand(projectRoot, proc.command, cwd) } : {}),
+        ...(cwd != null ? { cwd } : {})
+      };
+    }),
+    testSuites: (config.testSuites ?? []).map((suite) => {
+      const cwd = normalizeProjectCwd(projectRoot, suite.cwd);
+      return {
+        ...suite,
+        ...(suite.command ? { command: normalizeProjectCommand(projectRoot, suite.command, cwd) } : {}),
+        ...(cwd != null ? { cwd } : {})
+      };
+    }),
+    laneOverlayPolicies: (config.laneOverlayPolicies ?? []).map((policy) => ({
+      ...policy,
+      ...(policy.overrides?.cwd
+        ? { overrides: { ...policy.overrides, cwd: normalizeProjectCwd(projectRoot, policy.overrides.cwd) } }
+        : {})
+    }))
+  };
+}
+
 function coerceWorkerSafetyPolicy(value: unknown): AiConfig["workerSafety"] {
   if (!isRecord(value)) return undefined;
   const permissionLevel = asString(value.permissionLevel)?.trim();
@@ -187,12 +318,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   }
   const sendOnEnter = asBool(value.sendOnEnter);
   if (sendOnEnter != null) chat.sendOnEnter = sendOnEnter;
-  const autoTitleEnabled = asBool(value.autoTitleEnabled);
-  if (autoTitleEnabled != null) chat.autoTitleEnabled = autoTitleEnabled;
-  const autoTitleModelId = asString(value.autoTitleModelId)?.trim();
-  if (autoTitleModelId) chat.autoTitleModelId = autoTitleModelId;
-  const autoTitleRefreshOnComplete = asBool(value.autoTitleRefreshOnComplete);
-  if (autoTitleRefreshOnComplete != null) chat.autoTitleRefreshOnComplete = autoTitleRefreshOnComplete;
+  const autoAllowAskUser = asBool(value.autoAllowAskUser);
+  if (autoAllowAskUser != null) chat.autoAllowAskUser = autoAllowAskUser;
   const codexSandbox = asString(value.codexSandbox)?.trim();
   if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
     chat.codexSandbox = codexSandbox;
@@ -208,6 +335,35 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
     chat.opencodePermissionMode = opencodePermissionMode;
   }
   return Object.keys(chat).length ? chat : undefined;
+}
+
+function coerceSessionIntelligenceConfig(value: unknown): AiConfig["sessionIntelligence"] {
+  if (!isRecord(value)) return undefined;
+  const out: NonNullable<AiConfig["sessionIntelligence"]> = {};
+
+  const titlesRaw = isRecord(value.titles) ? value.titles : null;
+  if (titlesRaw) {
+    const titles: NonNullable<NonNullable<AiConfig["sessionIntelligence"]>["titles"]> = {};
+    const enabled = asBool(titlesRaw.enabled);
+    if (enabled != null) titles.enabled = enabled;
+    const modelId = asString(titlesRaw.modelId)?.trim();
+    if (modelId) titles.modelId = modelId;
+    const refreshOnComplete = asBool(titlesRaw.refreshOnComplete);
+    if (refreshOnComplete != null) titles.refreshOnComplete = refreshOnComplete;
+    if (Object.keys(titles).length) out.titles = titles;
+  }
+
+  const summariesRaw = isRecord(value.summaries) ? value.summaries : null;
+  if (summariesRaw) {
+    const summaries: NonNullable<NonNullable<AiConfig["sessionIntelligence"]>["summaries"]> = {};
+    const enabled = asBool(summariesRaw.enabled);
+    if (enabled != null) summaries.enabled = enabled;
+    const modelId = asString(summariesRaw.modelId)?.trim();
+    if (modelId) summaries.modelId = modelId;
+    if (Object.keys(summaries).length) out.summaries = summaries;
+  }
+
+  return Object.keys(out).length ? out : undefined;
 }
 
 function coerceFeatureModelOverrides(value: unknown): AiConfig["featureModelOverrides"] {
@@ -238,28 +394,9 @@ function parseReadiness(value: unknown): ConfigProcessReadiness | undefined {
 function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined {
   if (!isRecord(value)) return undefined;
   const typeRaw = asString(value.type)?.trim() ?? "";
-  const type: AutomationTriggerType | null =
-    typeRaw === "session-end" ||
-    typeRaw === "commit" ||
-    typeRaw === "git.commit" ||
-    typeRaw === "git.push" ||
-    typeRaw === "git.pr_opened" ||
-    typeRaw === "git.pr_updated" ||
-    typeRaw === "git.pr_merged" ||
-    typeRaw === "git.pr_closed" ||
-    typeRaw === "file.change" ||
-    typeRaw === "lane.created" ||
-    typeRaw === "lane.archived" ||
-    typeRaw === "schedule" ||
-    typeRaw === "manual" ||
-    typeRaw === "linear.issue_created" ||
-    typeRaw === "linear.issue_updated" ||
-    typeRaw === "linear.issue_assigned" ||
-    typeRaw === "linear.issue_status_changed" ||
-    typeRaw === "github-webhook" ||
-    typeRaw === "webhook"
-      ? (typeRaw as AutomationTriggerType)
-      : null;
+  const type: AutomationTriggerType | null = AUTOMATION_TRIGGER_TYPE_SET.has(typeRaw)
+    ? (typeRaw as AutomationTriggerType)
+    : null;
   if (!type) return undefined;
 
   const out: AutomationTrigger = { type };
@@ -268,9 +405,12 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const targetBranch = asString(value.targetBranch);
   const event = asString(value.event);
   const author = asString(value.author);
+  const authors = asStringArray(value.authors);
   const labels = asStringArray(value.labels);
   const paths = asStringArray(value.paths);
   const keywords = asStringArray(value.keywords);
+  const titleRegex = asString(value.titleRegex);
+  const bodyRegex = asString(value.bodyRegex);
   const namePattern = asString(value.namePattern);
   const project = asString(value.project);
   const team = asString(value.team);
@@ -278,6 +418,7 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const stateTransition = asString(value.stateTransition);
   const changedFields = asStringArray(value.changedFields);
   const secretRef = asString(value.secretRef);
+  const repo = asString(value.repo);
   const draftStateRaw = asString(value.draftState)?.trim();
   const activeHours = coerceAutomationActiveHours(value.activeHours);
   if (cron != null) out.cron = cron;
@@ -285,9 +426,12 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   if (targetBranch != null) out.targetBranch = targetBranch;
   if (event != null) out.event = event;
   if (author != null) out.author = author;
+  if (authors != null) out.authors = authors;
   if (labels != null) out.labels = labels;
   if (paths != null) out.paths = paths;
   if (keywords != null) out.keywords = keywords;
+  if (titleRegex != null) out.titleRegex = titleRegex;
+  if (bodyRegex != null) out.bodyRegex = bodyRegex;
   if (namePattern != null) out.namePattern = namePattern;
   if (project != null) out.project = project;
   if (team != null) out.team = team;
@@ -295,6 +439,7 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   if (stateTransition != null) out.stateTransition = stateTransition;
   if (changedFields != null) out.changedFields = changedFields;
   if (secretRef != null) out.secretRef = secretRef;
+  if (repo != null) out.repo = repo;
   if (draftStateRaw === "draft" || draftStateRaw === "ready" || draftStateRaw === "any") out.draftState = draftStateRaw;
   if (activeHours) out.activeHours = activeHours;
   return out;
@@ -324,13 +469,9 @@ function coerceAutomationActiveHours(value: unknown): AutomationActiveHours | un
 function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (!isRecord(value)) return null;
   const typeRaw = asString(value.type)?.trim() ?? "";
-  const type: AutomationActionType | null =
-    typeRaw === "update-packs" ||
-    typeRaw === "predict-conflicts" ||
-    typeRaw === "run-tests" ||
-    typeRaw === "run-command"
-      ? (typeRaw as AutomationActionType)
-      : null;
+  const type: AutomationActionType | null = AUTOMATION_ACTION_TYPE_SET.has(typeRaw)
+    ? (typeRaw as AutomationActionType)
+    : null;
   if (!type) return null;
 
   const out: AutomationAction = { type };
@@ -341,6 +482,9 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const continueOnFailure = asBool(value.continueOnFailure);
   const timeoutMs = asNumber(value.timeoutMs);
   const retry = asNumber(value.retry);
+  const adeAction = coerceRunAdeActionConfig(value.adeAction);
+  const prompt = asString(value.prompt);
+  const sessionTitle = asString(value.sessionTitle);
 
   if (suiteId != null) out.suiteId = suiteId;
   if (command != null) out.command = command;
@@ -349,8 +493,26 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (continueOnFailure != null) out.continueOnFailure = continueOnFailure;
   if (timeoutMs != null) out.timeoutMs = timeoutMs;
   if (retry != null) out.retry = retry;
+  if (adeAction != null) out.adeAction = adeAction;
+  if (prompt != null) out.prompt = prompt;
+  if (sessionTitle != null) out.sessionTitle = sessionTitle;
 
   return out;
+}
+
+function coerceRunAdeActionConfig(value: unknown): AutomationAction["adeAction"] | undefined {
+  if (!isRecord(value)) return undefined;
+  const domain = asString(value.domain)?.trim();
+  const action = asString(value.action)?.trim();
+  if (!domain || !action) return undefined;
+  const args = Array.isArray(value.args) || isRecord(value.args) ? value.args : undefined;
+  const resolvers = asStringMap(value.resolvers);
+  return {
+    domain,
+    action,
+    ...(args !== undefined ? { args } : {}),
+    ...(resolvers ? { resolvers } : {}),
+  };
 }
 
 function coerceAutomationExecution(value: unknown): AutomationExecution | undefined {
@@ -482,24 +644,15 @@ function coerceMissionPermissionConfig(value: unknown): MissionPermissionConfig 
         ...(asStringArray(value.providers.allowedTools)?.length ? { allowedTools: asStringArray(value.providers.allowedTools) } : {}),
       }
     : undefined;
-  const externalMcp = isRecord(value.externalMcp)
-    ? {
-        ...(asBool(value.externalMcp.enabled) != null ? { enabled: asBool(value.externalMcp.enabled)! } : {}),
-        ...(asStringArray(value.externalMcp.selectedServers)?.length ? { selectedServers: asStringArray(value.externalMcp.selectedServers) } : {}),
-        ...(asStringArray(value.externalMcp.selectedTools)?.length ? { selectedTools: asStringArray(value.externalMcp.selectedTools) } : {}),
-      }
-    : undefined;
   if (
     !(cli && Object.keys(cli).length)
     && !inProcess
     && !(providers && Object.keys(providers).length)
-    && !(externalMcp && Object.keys(externalMcp).length)
   ) return undefined;
   return {
     ...(cli && Object.keys(cli).length ? { cli } : {}),
     ...(inProcess ? { inProcess } : {}),
     ...(providers && Object.keys(providers).length ? { providers } : {}),
-    ...(externalMcp && Object.keys(externalMcp).length ? { externalMcp } : {}),
   };
 }
 
@@ -648,6 +801,7 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   const outputs = coerceAutomationOutputs(value.outputs);
   const verification = coerceAutomationVerification(value.verification);
   const billingCode = asString(value.billingCode);
+  const includeProjectContext = asBool(value.includeProjectContext);
   const queueStatusRaw = asString(value.queueStatus)?.trim();
   const queueStatus: AutomationRunQueueStatus | undefined =
     queueStatusRaw === "pending-review" ||
@@ -681,6 +835,7 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (verification != null) out.verification = verification;
   if (billingCode != null) out.billingCode = billingCode;
   if (queueStatus != null) out.queueStatus = queueStatus;
+  if (includeProjectContext != null) out.includeProjectContext = includeProjectContext;
 
   return out;
 }
@@ -694,6 +849,7 @@ function coerceProcessDef(value: unknown): ConfigProcessDefinition | null {
   const command = asStringArray(value.command);
   const cwd = asString(value.cwd);
   const env = asStringMap(value.env);
+  const groupIds = asStringArray(value.groupIds);
   const autostart = asBool(value.autostart);
   const restart = asString(value.restart);
   const gracefulShutdownMs = asNumber(value.gracefulShutdownMs);
@@ -704,12 +860,22 @@ function coerceProcessDef(value: unknown): ConfigProcessDefinition | null {
   if (command != null) out.command = command;
   if (cwd != null) out.cwd = cwd;
   if (env != null) out.env = env;
+  if (groupIds != null) out.groupIds = groupIds;
   if (autostart != null) out.autostart = autostart;
   if (restart === "never" || restart === "on_crash" || restart === "on-failure" || restart === "always") out.restart = restart;
   if (gracefulShutdownMs != null) out.gracefulShutdownMs = gracefulShutdownMs;
   if (dependsOn != null) out.dependsOn = dependsOn;
   if (readiness != null) out.readiness = readiness;
 
+  return out;
+}
+
+function coerceProcessGroup(value: unknown): ConfigProcessGroupDefinition | null {
+  if (!isRecord(value)) return null;
+  const id = asString(value.id)?.trim() ?? "";
+  const out: ConfigProcessGroupDefinition = { id };
+  const name = asString(value.name);
+  if (name != null) out.name = name;
   return out;
 }
 
@@ -985,6 +1151,11 @@ const AI_TASK_KEYS: AiTaskRoutingKey[] = [
   "narrative",
   "pr_description",
   "terminal_summary",
+  "session_title",
+  "session_summary",
+  "handoff_summary",
+  "continuity_summary",
+  "context_compaction",
   "mission_planning",
   "initial_context"
 ];
@@ -1143,6 +1314,30 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       if (Object.keys(entry).length) permissions.inProcess = entry;
     }
 
+    const providersRaw = isRecord(permissionsRaw.providers) ? permissionsRaw.providers : null;
+    if (providersRaw) {
+      const providers: NonNullable<NonNullable<AiConfig["permissions"]>["providers"]> = {};
+      const providerMode = (key: "claude" | "codex" | "cursor" | "opencode") => {
+        const mode = asString(providersRaw[key])?.trim();
+        if (mode === "default" || mode === "plan" || mode === "edit" || mode === "full-auto" || mode === "config-toml") {
+          providers[key] = mode;
+        }
+      };
+      providerMode("claude");
+      providerMode("codex");
+      providerMode("cursor");
+      providerMode("opencode");
+      const codexSandbox = asString(providersRaw.codexSandbox)?.trim();
+      if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
+        providers.codexSandbox = codexSandbox;
+      }
+      const writablePaths = asStringArray(providersRaw.writablePaths);
+      if (writablePaths?.length) providers.writablePaths = writablePaths;
+      const allowedTools = asStringArray(providersRaw.allowedTools);
+      if (allowedTools?.length) providers.allowedTools = allowedTools;
+      if (Object.keys(providers).length) permissions.providers = providers;
+    }
+
     if (Object.keys(permissions).length) out.permissions = permissions;
   }
 
@@ -1257,8 +1452,35 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (Object.keys(orchestrator).length) out.orchestrator = orchestrator;
   }
 
+  const chatRaw = isRecord(value.chat) ? value.chat : null;
   const chat = coerceAiChatConfig(value.chat);
   if (chat) out.chat = chat;
+
+  const legacySessionIntelligence: AiConfig["sessionIntelligence"] = (() => {
+    const titles: NonNullable<NonNullable<AiConfig["sessionIntelligence"]>["titles"]> = {};
+    const autoTitleEnabled = asBool(chatRaw?.autoTitleEnabled);
+    if (autoTitleEnabled != null) titles.enabled = autoTitleEnabled;
+    const autoTitleModelId = asString(chatRaw?.autoTitleModelId)?.trim();
+    if (autoTitleModelId) titles.modelId = autoTitleModelId;
+    const autoTitleRefreshOnComplete = asBool(chatRaw?.autoTitleRefreshOnComplete);
+    if (autoTitleRefreshOnComplete != null) titles.refreshOnComplete = autoTitleRefreshOnComplete;
+
+    const summaries: NonNullable<NonNullable<AiConfig["sessionIntelligence"]>["summaries"]> = {};
+    if (featureModelOverrides?.terminal_summaries) {
+      summaries.modelId = featureModelOverrides.terminal_summaries;
+    }
+
+    const migrated: NonNullable<AiConfig["sessionIntelligence"]> = {
+      ...(Object.keys(titles).length ? { titles } : {}),
+      ...(Object.keys(summaries).length ? { summaries } : {}),
+    };
+    return Object.keys(migrated).length ? migrated : undefined;
+  })();
+  const sessionIntelligence = mergeSessionIntelligenceConfig(
+    legacySessionIntelligence,
+    coerceSessionIntelligenceConfig(value.sessionIntelligence),
+  );
+  if (sessionIntelligence) out.sessionIntelligence = sessionIntelligence;
 
   const defaultModel = asString(value.defaultModel)?.trim();
   if (defaultModel) out.defaultModel = defaultModel;
@@ -1271,10 +1493,6 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
 
   const workerSafety = coerceWorkerSafetyPolicy(value.workerSafety);
   if (workerSafety) out.workerSafety = workerSafety;
-
-  if (isRecord(value.mcpServers) && Object.keys(value.mcpServers).length) {
-    out.mcpServers = { ...value.mcpServers };
-  }
 
   return Object.keys(out).length ? out : undefined;
 }
@@ -1311,6 +1529,28 @@ function normalizeIssueStateKey(value: unknown):
     return state;
   }
   return null;
+}
+
+function coerceNotificationsConfig(value: unknown): NotificationsConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: NotificationsConfig = {};
+  if (isRecord(value.apns)) {
+    const raw = value.apns;
+    const apns = {} as NotificationApnsConfig;
+    const enabled = asBool(raw.enabled);
+    if (enabled != null) apns.enabled = enabled;
+    if (raw.env === "production" || raw.env === "sandbox") apns.env = raw.env;
+    const keyId = asString(raw.keyId)?.trim();
+    if (keyId) apns.keyId = keyId;
+    const teamId = asString(raw.teamId)?.trim();
+    if (teamId) apns.teamId = teamId;
+    const bundleId = asString(raw.bundleId)?.trim();
+    if (bundleId) apns.bundleId = bundleId;
+    const keyStored = asBool(raw.keyStored);
+    if (keyStored != null) apns.keyStored = keyStored;
+    out.apns = apns;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function coerceLinearSync(value: unknown): LinearSyncConfig | undefined {
@@ -1553,6 +1793,26 @@ function mergeAiOrchestrator(
   return Object.keys(orchestrator).length ? orchestrator : undefined;
 }
 
+function mergeSessionIntelligenceConfig(
+  sharedSessionIntelligence?: AiConfig["sessionIntelligence"],
+  localSessionIntelligence?: AiConfig["sessionIntelligence"],
+): AiConfig["sessionIntelligence"] {
+  if (!sharedSessionIntelligence && !localSessionIntelligence) return undefined;
+  const titles = {
+    ...(sharedSessionIntelligence?.titles ?? {}),
+    ...(localSessionIntelligence?.titles ?? {}),
+  };
+  const summaries = {
+    ...(sharedSessionIntelligence?.summaries ?? {}),
+    ...(localSessionIntelligence?.summaries ?? {}),
+  };
+  const sessionIntelligence: NonNullable<AiConfig["sessionIntelligence"]> = {
+    ...(Object.keys(titles).length ? { titles } : {}),
+    ...(Object.keys(summaries).length ? { summaries } : {}),
+  };
+  return Object.keys(sessionIntelligence).length ? sessionIntelligence : undefined;
+}
+
 export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>): AiConfig | undefined {
   if (!sharedAi && !localAi) return undefined;
   const taskRouting: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>> = {
@@ -1577,6 +1837,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.chat ?? {}),
     ...(localAi?.chat ?? {})
   };
+  const sessionIntelligence = mergeSessionIntelligenceConfig(sharedAi?.sessionIntelligence, localAi?.sessionIntelligence);
   const featureModelOverrides = {
     ...(sharedAi?.featureModelOverrides ?? {}),
     ...(localAi?.featureModelOverrides ?? {})
@@ -1596,10 +1857,6 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     .filter((entry): entry is readonly ["ollama" | "lmstudio", Record<string, unknown>] => entry != null);
   const localProviders = Object.fromEntries(localProvidersEntries) as AiConfig["localProviders"];
   const workerSafety = mergeWorkerSafetyPolicy(sharedAi?.workerSafety, localAi?.workerSafety);
-  const mcpServers = {
-    ...(sharedAi?.mcpServers ?? {}),
-    ...(localAi?.mcpServers ?? {})
-  };
   const out: AiConfig = {
     mode: localAi?.mode ?? sharedAi?.mode,
     defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
@@ -1611,23 +1868,34 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(conflictResolution).length ? { conflictResolution } : {}),
     ...(orchestrator ? { orchestrator } : {}),
     ...(Object.keys(chat).length ? { chat } : {}),
+    ...(sessionIntelligence ? { sessionIntelligence } : {}),
     ...(Object.keys(featureModelOverrides).length ? { featureModelOverrides } : {}),
     ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
     ...(localProvidersEntries.length ? { localProviders } : {}),
     ...(workerSafety ? { workerSafety } : {}),
-    ...(Object.keys(mcpServers).length ? { mcpServers } : {})
   };
   return Object.keys(out).length ? out : undefined;
 }
 
 function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
-    return { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [], automations: [] };
+    return {
+      version: VERSION,
+      processes: [],
+      processGroups: [],
+      stackButtons: [],
+      testSuites: [],
+      laneOverlayPolicies: [],
+      automations: [],
+    };
   }
 
   const version = asNumber(value.version) ?? VERSION;
   const processes = Array.isArray(value.processes)
     ? value.processes.map(coerceProcessDef).filter((x): x is ConfigProcessDefinition => x != null)
+    : [];
+  const processGroups = Array.isArray(value.processGroups)
+    ? value.processGroups.map(coerceProcessGroup).filter((x): x is ConfigProcessGroupDefinition => x != null)
     : [];
   const stackButtons = Array.isArray(value.stackButtons)
     ? value.stackButtons.map(coerceStackButton).filter((x): x is ConfigStackButtonDefinition => x != null)
@@ -1671,9 +1939,12 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     delete providersRaw.ai;
   }
 
+  const notifications = coerceNotificationsConfig(value.notifications);
+
   return {
     version,
     processes,
+    processGroups,
     stackButtons,
     testSuites,
     laneOverlayPolicies,
@@ -1686,7 +1957,8 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(git ? { git } : {}),
     ...(ai ? { ai } : {}),
     ...(providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {}),
-    ...(linearSync ? { linearSync } : {})
+    ...(linearSync ? { linearSync } : {}),
+    ...(notifications ? { notifications } : {})
   };
 }
 
@@ -1712,6 +1984,32 @@ function readConfigFile(filePath: string): { config: ProjectConfigFile; raw: str
   }
 }
 
+function mergeNotificationsConfig(
+  shared: NotificationsConfig | undefined,
+  local: NotificationsConfig | undefined
+): NotificationsConfig | undefined {
+  if (!shared && !local) return undefined;
+  const keyId = local?.apns?.keyId ?? shared?.apns?.keyId;
+  const teamId = local?.apns?.teamId ?? shared?.apns?.teamId;
+  const bundleId = local?.apns?.bundleId ?? shared?.apns?.bundleId;
+  const keyStored = local?.apns?.keyStored ?? shared?.apns?.keyStored;
+  const apns: NotificationApnsConfig | undefined = shared?.apns || local?.apns
+    ? {
+        enabled: local?.apns?.enabled ?? shared?.apns?.enabled ?? false,
+        env: local?.apns?.env ?? shared?.apns?.env ?? "sandbox",
+        ...(keyId ? { keyId } : {}),
+        ...(teamId ? { teamId } : {}),
+        ...(bundleId ? { bundleId } : {}),
+        ...(keyStored != null ? { keyStored } : {})
+      }
+    : undefined;
+  return {
+    ...(shared ?? {}),
+    ...(local ?? {}),
+    ...(apns ? { apns } : {})
+  };
+}
+
 function toCanonicalYaml(config: ProjectConfigFile): string {
   const normalized: ProjectConfigFile = {
     version: VERSION,
@@ -1728,7 +2026,8 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.git ? { git: config.git } : {}),
     ...(config.ai ? { ai: config.ai } : {}),
     ...(config.providers ? { providers: config.providers } : {}),
-    ...(config.linearSync ? { linearSync: config.linearSync } : {})
+    ...(config.linearSync ? { linearSync: config.linearSync } : {}),
+    ...(config.notifications ? { notifications: config.notifications } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
 }
@@ -1780,9 +2079,16 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...base,
     ...over,
     ...(base.env || over.env ? { env: { ...(base.env ?? {}), ...(over.env ?? {}) } } : {}),
+    ...(over.groupIds != null ? { groupIds: over.groupIds } : base.groupIds != null ? { groupIds: base.groupIds } : {}),
     ...(over.readiness != null ? { readiness: over.readiness } : base.readiness != null ? { readiness: base.readiness } : {}),
     ...(over.dependsOn != null ? { dependsOn: over.dependsOn } : base.dependsOn != null ? { dependsOn: base.dependsOn } : {})
   }));
+
+  const mergedProcessGroups = mergeById(
+    shared.processGroups ?? [],
+    local.processGroups ?? [],
+    (base, over) => ({ ...base, ...over }),
+  );
 
   const mergedStackButtons = mergeById(shared.stackButtons ?? [], local.stackButtons ?? [], (base, over) => ({
     ...base,
@@ -1854,11 +2160,17 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     command: (entry.command ?? []).map((c) => c.trim()).filter(Boolean),
     cwd: entry.cwd?.trim() ?? "",
     env: entry.env ?? {},
+    groupIds: (entry.groupIds ?? []).map((id) => id.trim()).filter(Boolean),
     autostart: entry.autostart ?? false,
     restart: entry.restart ?? "never",
     gracefulShutdownMs: entry.gracefulShutdownMs ?? DEFAULT_GRACEFUL_MS,
     dependsOn: (entry.dependsOn ?? []).map((d) => d.trim()).filter(Boolean),
     readiness: resolveReadiness(entry.readiness)
+  }));
+
+  const processGroups: ProcessGroupDefinition[] = mergedProcessGroups.map((entry) => ({
+    id: entry.id.trim(),
+    name: entry.name?.trim() ?? entry.id.trim(),
   }));
 
   const stackButtons: StackButtonDefinition[] = mergedStackButtons.map((entry) => ({
@@ -1920,9 +2232,12 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.targetBranch ? { targetBranch: trigger.targetBranch.trim() } : {}),
         ...(trigger.event ? { event: trigger.event.trim() } : {}),
         ...(trigger.author ? { author: trigger.author.trim() } : {}),
+        ...(trigger.authors?.length ? { authors: trigger.authors.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.labels?.length ? { labels: trigger.labels.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.paths?.length ? { paths: trigger.paths.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.keywords?.length ? { keywords: trigger.keywords.map((value) => value.trim()).filter(Boolean) } : {}),
+        ...(trigger.titleRegex ? { titleRegex: trigger.titleRegex.trim() } : {}),
+        ...(trigger.bodyRegex ? { bodyRegex: trigger.bodyRegex.trim() } : {}),
         ...(trigger.namePattern ? { namePattern: trigger.namePattern.trim() } : {}),
         ...(trigger.project ? { project: trigger.project.trim() } : {}),
         ...(trigger.team ? { team: trigger.team.trim() } : {}),
@@ -1931,6 +2246,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.changedFields?.length ? { changedFields: trigger.changedFields.map((value) => value.trim()).filter(Boolean) } : {}),
         ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
         ...(trigger.secretRef ? { secretRef: trigger.secretRef.trim() } : {}),
+        ...(trigger.repo ? { repo: trigger.repo.trim() } : {}),
         ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
       })),
       trigger: legacyTrigger ?? triggers[0] ?? { type: "manual" },
@@ -1949,6 +2265,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       verification: entry.verification ?? { verifyBeforePublish: false, mode: "intervention" },
       billingCode: entry.billingCode?.trim() || `auto:${entry.id.trim()}`,
       ...(entry.queueStatus ? { queueStatus: entry.queueStatus } : {}),
+      ...(typeof entry.includeProjectContext === "boolean" ? { includeProjectContext: entry.includeProjectContext } : {}),
       actions: (entry.actions ?? []).map((action) => ({
         type: action.type,
         ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
@@ -1958,6 +2275,9 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
         ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
         ...(action.retry != null ? { retry: action.retry } : {}),
+        ...(action.adeAction ? { adeAction: action.adeAction } : {}),
+        ...(action.prompt ? { prompt: action.prompt } : {}),
+        ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
       })),
       legacy: {
         ...(legacyTrigger ? { trigger: legacyTrigger } : {}),
@@ -1971,6 +2291,9 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
             ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
             ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
             ...(action.retry != null ? { retry: action.retry } : {}),
+            ...(action.adeAction ? { adeAction: action.adeAction } : {}),
+            ...(action.prompt ? { prompt: action.prompt } : {}),
+            ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
           })),
         } : {}),
       },
@@ -2001,6 +2324,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
 
   const mergedAi = mergeAiConfig(shared.ai, local.ai);
   const mergedLinearSync = mergeLinearSync(shared.linearSync, local.linearSync);
+  const mergedNotifications = mergeNotificationsConfig(shared.notifications, local.notifications);
 
   const environments = [...(shared.environments ?? []), ...(local.environments ?? [])];
 
@@ -2021,6 +2345,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     version: VERSION,
     processes,
     stackButtons,
+    processGroups,
     testSuites,
     laneOverlayPolicies,
     automations,
@@ -2049,7 +2374,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     },
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),
-    ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {})
+    ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {}),
+    ...(mergedNotifications ? { notifications: mergedNotifications } : {})
   };
 }
 
@@ -2176,6 +2502,8 @@ function validateEffectiveConfig(
 
   validateDuplicateIds(shared.processes ?? [], "processes", issues, "shared");
   validateDuplicateIds(local.processes ?? [], "processes", issues, "local");
+  validateDuplicateIds(shared.processGroups ?? [], "processGroups", issues, "shared");
+  validateDuplicateIds(local.processGroups ?? [], "processGroups", issues, "local");
   validateDuplicateIds(shared.stackButtons ?? [], "stackButtons", issues, "shared");
   validateDuplicateIds(local.stackButtons ?? [], "stackButtons", issues, "local");
   validateDuplicateIds(shared.testSuites ?? [], "testSuites", issues, "shared");
@@ -2209,6 +2537,22 @@ function validateEffectiveConfig(
   }
 
   const processIds = new Set<string>();
+  const processGroupIds = new Set<string>();
+  for (const [idx, group] of effective.processGroups.entries()) {
+    const p = `effective.processGroups[${idx}]`;
+    if (!group.id) {
+      issues.push({ path: `${p}.id`, message: "Process group id is required" });
+    } else if (processGroupIds.has(group.id)) {
+      issues.push({ path: `${p}.id`, message: `Duplicate process group id '${group.id}'` });
+    } else {
+      processGroupIds.add(group.id);
+    }
+
+    if (!group.name) {
+      issues.push({ path: `${p}.name`, message: "Process group name is required" });
+    }
+  }
+
   for (const [idx, proc] of effective.processes.entries()) {
     const p = `effective.processes[${idx}]`;
 
@@ -2251,6 +2595,12 @@ function validateEffectiveConfig(
         } catch {
           issues.push({ path: `${p}.readiness.pattern`, message: "Invalid readiness regex pattern" });
         }
+      }
+    }
+
+    for (const groupId of proc.groupIds) {
+      if (!processGroupIds.has(groupId)) {
+        issues.push({ path: `${p}.groupIds`, message: `Unknown process group id '${groupId}'` });
       }
     }
   }
@@ -2450,27 +2800,7 @@ function validateEffectiveConfig(
     for (let triggerIdx = 0; triggerIdx < rule.triggers.length; triggerIdx += 1) {
       const trigger = rule.triggers[triggerIdx]!;
       const tp = `${p}.triggers[${triggerIdx}]`;
-      if (
-        trigger.type !== "session-end" &&
-        trigger.type !== "commit" &&
-        trigger.type !== "git.commit" &&
-        trigger.type !== "git.push" &&
-        trigger.type !== "git.pr_opened" &&
-        trigger.type !== "git.pr_updated" &&
-        trigger.type !== "git.pr_merged" &&
-        trigger.type !== "git.pr_closed" &&
-        trigger.type !== "file.change" &&
-        trigger.type !== "lane.created" &&
-        trigger.type !== "lane.archived" &&
-        trigger.type !== "schedule" &&
-        trigger.type !== "manual" &&
-        trigger.type !== "linear.issue_created" &&
-        trigger.type !== "linear.issue_updated" &&
-        trigger.type !== "linear.issue_assigned" &&
-        trigger.type !== "linear.issue_status_changed" &&
-        trigger.type !== "github-webhook" &&
-        trigger.type !== "webhook"
-      ) {
+      if (!AUTOMATION_TRIGGER_TYPE_SET.has(trigger.type)) {
         issues.push({ path: `${tp}.type`, message: "Invalid trigger type" });
       }
       if (trigger.type === "schedule") {
@@ -2531,11 +2861,7 @@ function validateEffectiveConfig(
         const action = rule.legacy.actions[actionIdx]!;
         const ap = `${p}.legacy.actions[${actionIdx}]`;
         const type = action.type as AutomationActionType;
-        if (
-          type !== "predict-conflicts" &&
-          type !== "run-tests" &&
-          type !== "run-command"
-        ) {
+        if (!AUTOMATION_ACTION_TYPE_SET.has(type)) {
           issues.push({ path: `${ap}.type`, message: `Unknown action type '${String((action as any).type)}'` });
           continue;
         }
@@ -2546,6 +2872,9 @@ function validateEffectiveConfig(
           } else if (!suiteIds.has(suiteId)) {
             issues.push({ path: `${ap}.suiteId`, message: `Unknown suiteId '${suiteId}'` });
           }
+        }
+        if (type === "ade-action" && (!(action.adeAction?.domain ?? "").trim() || !(action.adeAction?.action ?? "").trim())) {
+          issues.push({ path: `${ap}.adeAction`, message: "ade-action requires domain and action" });
         }
       }
     }
@@ -2736,8 +3065,10 @@ export function createProjectConfigService({
     hashes: { sharedHash: string; localHash: string },
     options: { persistSnapshots: boolean }
   ): ProjectConfigSnapshot => {
-    const effective = resolveEffectiveConfig(shared, local);
-    const validation = validateEffectiveConfig(effective, projectRoot, shared, local);
+    const normalizedShared = normalizeConfigFilePaths(shared, projectRoot);
+    const normalizedLocal = normalizeConfigFilePaths(local, projectRoot);
+    const effective = resolveEffectiveConfig(normalizedShared, normalizedLocal);
+    const validation = validateEffectiveConfig(effective, projectRoot, normalizedShared, normalizedLocal);
     const trust = buildTrust(hashes);
 
     if (options.persistSnapshots && validation.ok) {
@@ -2745,8 +3076,8 @@ export function createProjectConfigService({
     }
 
     return {
-      shared,
-      local,
+      shared: normalizedShared,
+      local: normalizedLocal,
       effective,
       validation,
       trust,
@@ -2782,14 +3113,14 @@ export function createProjectConfigService({
     },
 
     validate(candidate: ProjectConfigCandidate): ProjectConfigValidationResult {
-      const shared = coerceConfigFile(candidate.shared);
-      const local = coerceConfigFile(candidate.local);
+      const shared = normalizeConfigFilePaths(coerceConfigFile(candidate.shared), projectRoot);
+      const local = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
       return validateCandidate(shared, local);
     },
 
     save(candidate: ProjectConfigCandidate): ProjectConfigSnapshot {
-      const shared = coerceConfigFile(candidate.shared);
-      const local = coerceConfigFile(candidate.local);
+      const shared = normalizeConfigFilePaths(coerceConfigFile(candidate.shared), projectRoot);
+      const local = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
       const validation = validateCandidate(shared, local);
       if (!validation.ok) {
         throw invalidConfigError(validation);

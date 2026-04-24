@@ -9,6 +9,10 @@ Missions are ADE's structured execution unit for complex, multi-step AI work. Th
 
 <Info>Before starting, make sure you have at least one AI provider configured in **Settings → AI** and a project open with a valid `ade.yaml`.</Info>
 
+<Note>
+If you are running a packaged (production) build, the Missions tab will show a "Coming soon" preview and the New Mission button is disabled. Mission creation and live runs are currently only available in dev and internal builds — this guide applies as-is there. The shipping version will use the same flow.
+</Note>
+
 ---
 
 ## 1. Create a Mission
@@ -63,7 +67,7 @@ Click any step in the step list to open its detail panel. The panel shows:
 
 - **Agent terminal** — live-streaming output from the worker agent
 - **File changes** — a diff view of files modified by this step
-- **Tool calls** — a log of every MCP tool the agent invoked, with parameters and results
+- **Tool calls** — a log of every ADE CLI tool the agent invoked, with parameters and results
 - **Timing** — start time, elapsed duration, and token usage
 
 If a step is running in parallel with others, each step has its own independent terminal view. Switch between running steps by clicking their rows in the step list.

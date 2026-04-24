@@ -68,8 +68,9 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       ? {
           host: connectionDraft.host,
           port: connectionDraft.port,
+          authKind: connectionDraft.authKind ?? "bootstrap",
+          pairedDeviceId: connectionDraft.pairedDeviceId ?? null,
           lastRemoteDbVersion: connectionDraft.lastRemoteDbVersion ?? latestRemoteDbVersion,
-          lastBrainDeviceId: connectionDraft.lastBrainDeviceId ?? latestBrainMetadata?.deviceId ?? null,
         }
       : null;
     args.onStatusChange?.({ ...status });
@@ -103,7 +104,6 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
           authKind: draft.authKind ?? "bootstrap",
           pairedDeviceId: draft.pairedDeviceId ?? null,
           lastRemoteDbVersion: Math.max(0, Math.floor(draft.lastRemoteDbVersion ?? 0)),
-          lastBrainDeviceId: draft.lastBrainDeviceId ?? null,
         }
       : null;
     emitStatus();
@@ -219,7 +219,6 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         status.hostName = payload.brain.deviceName;
         if (connectionDraft) {
           connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
-          connectionDraft.lastBrainDeviceId = payload.brain.deviceId;
         }
         outboundLocalDbVersion = args.db.sync.getDbVersion();
         emitStatus();

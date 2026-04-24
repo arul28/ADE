@@ -12,6 +12,7 @@ import {
   splitPaneAtEdge,
   swapPanes,
   isValidTree,
+  reconcilePaneTree,
   type PaneLeaf,
   type PaneSplit,
   type DropEdge
@@ -27,8 +28,12 @@ export type PaneConfig = {
   icon?: PhosphorIcon;
   meta?: React.ReactNode;
   minimizable?: boolean;
+  className?: string;
   headerActions?: React.ReactNode;
   bodyClassName?: string;
+  dataTour?: string;
+  onPaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onPaneContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
   children: React.ReactNode;
 };
 
@@ -39,6 +44,16 @@ const COMPACTED_WIDTH_PX = 180;
 const COMPACTED_HEIGHT_PER_LEAF_PX = 44;
 const LEAF_MINIMIZED_HEIGHT_PX = 44;
 const LEAF_MINIMIZED_WIDTH_PX = 44;
+
+export function resolvePaneTreeForLayout(args: {
+  savedTree: PaneSplit | null | undefined;
+  fallbackTree: PaneSplit;
+  expectedPaneIds: string[];
+}): PaneSplit {
+  return args.savedTree && isValidTree(args.savedTree, args.expectedPaneIds)
+    ? args.savedTree
+    : args.fallbackTree;
+}
 
 /* ---- Component ---- */
 
@@ -66,9 +81,21 @@ export function PaneTilingLayout({
   const leafPanelRefs = useRef<Record<string, PanelImperativeHandle | null>>({});
   const leafCompactedRef = useRef<Record<string, { compacted: boolean; previousSize: number | null; parentDirection: "horizontal" | "vertical" }>>({});
 
+  const replaceTreeImmediately = useCallback((next: PaneSplit, resetLayout = false) => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    setLiveTree(next);
+    if (resetLayout) saveLayout({});
+    window.ade.tilingTree.set(layoutId, next).catch(() => {});
+  }, [layoutId, saveLayout]);
+
   // Load persisted tree on mount
   useEffect(() => {
     let cancelled = false;
+    setTreeLoaded(false);
+    setLiveTree(tree);
     window.ade.tilingTree
       .get(layoutId)
       .then((saved) => {
@@ -77,34 +104,40 @@ export function PaneTilingLayout({
           const candidate = saved as PaneSplit;
           if (isValidTree(candidate, expectedPaneIds)) {
             setLiveTree(candidate);
+          } else {
+            replaceTreeImmediately(reconcilePaneTree(candidate, expectedPaneIds, tree), true);
           }
         }
         setTreeLoaded(true);
       })
       .catch(() => {
-        if (!cancelled) setTreeLoaded(true);
+        if (!cancelled) {
+          setLiveTree(tree);
+          setTreeLoaded(true);
+        }
       });
     return () => { cancelled = true; };
-  }, [layoutId, expectedPaneIds]);
+  }, [layoutId, expectedPaneIds, tree]);
 
   // Re-sync if prop tree changes shape (e.g., panes added/removed)
   useEffect(() => {
     if (!treeLoaded) return;
     if (!isValidTree(liveTree, expectedPaneIds)) {
-      setLiveTree(tree);
+      replaceTreeImmediately(reconcilePaneTree(liveTree, expectedPaneIds, tree), true);
     }
-  }, [expectedPaneIds, treeLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [expectedPaneIds, replaceTreeImmediately, tree, treeLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist tree changes (debounced)
   const persistTree = useCallback(
     (next: PaneSplit) => {
       setLiveTree(next);
+      saveLayout({});
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
         window.ade.tilingTree.set(layoutId, next).catch(() => {});
       }, 300);
     },
-    [layoutId]
+    [layoutId, saveLayout]
   );
 
   /* ---- Minimize state ---- */
@@ -348,7 +381,9 @@ export function PaneTilingLayout({
           onMinimizeToggle={() => toggleMinimize(paneId)}
           minimizable={config.minimizable ?? true}
           headerActions={config.headerActions}
+          className={config.className}
           bodyClassName={config.bodyClassName}
+          dataTour={config.dataTour}
           draggable
           isDragging={dragSourceId === paneId}
           isDropTarget={dropTargetId === paneId}
@@ -358,8 +393,9 @@ export function PaneTilingLayout({
           onDragEnd={handleDragEnd}
           onDrop={handleDrop}
           onDragLeave={handleDragLeave}
+          onPaneMouseDown={config.onPaneMouseDown}
+          onPaneContextMenu={config.onPaneContextMenu}
           minimizeBehavior="css"
-          className="h-full"
         >
           {config.children}
         </FloatingPane>

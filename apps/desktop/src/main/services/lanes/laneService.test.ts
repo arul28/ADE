@@ -1961,6 +1961,80 @@ describe("laneService missionId and laneRole", () => {
     }
   });
 
+  it("createChild with baseBranchRef tracks remote-only branch and bases lane on it", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-child-base-override-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-child-base-override", repoRoot });
+
+    const trackCalls: string[][] = [];
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "branch" && args[1] === "--track") {
+        trackCalls.push([...args]);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        // worktree add -b <new-branch> <path> <startPoint>
+        expect(args[2]).toBe("-b");
+        expect(args[5]).toBe("sha-feature-remote");
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/remote-only") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "fetch" && args[1] === "--prune" && args[2] === "--all") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/remotes/origin/feature/remote-only") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/feature/remote-only") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "feature/remote-only") {
+        return { exitCode: 0, stdout: "sha-feature-remote\n", stderr: "" };
+      }
+      if (args[0] === "push" && args[1] === "-u") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-child-base-override",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const lane = await service.createChild({
+      parentLaneId: "lane-parent",
+      name: "Override base child",
+      baseBranchRef: "origin/feature/remote-only",
+    });
+
+    expect(trackCalls).toEqual([["branch", "--track", "feature/remote-only", "origin/feature/remote-only"]]);
+    expect(lane.baseRef).toBe("feature/remote-only");
+    expect(lane.parentLaneId).toBe("lane-parent");
+  });
+
   it("setMissionOwnership updates missionId and laneRole on an existing lane", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-set-ownership-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

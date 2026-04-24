@@ -3,8 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   isValidResolutionKind,
-  createDefaultComputerUsePolicy,
-  normalizeComputerUsePolicy,
   TERMINAL_MISSION_STATUSES,
 } from "../../../shared/types";
 import type {
@@ -49,6 +47,8 @@ import type {
   ThinkingLevel,
   PhaseCard,
   PhaseProfile,
+  ValidationCapabilityFallbackPolicy,
+  ValidationEvidenceRequirement,
   SavePhaseItemArgs,
   SavePhaseProfileArgs,
   ExportPhaseProfileArgs,
@@ -326,6 +326,33 @@ function coerceBoolean(value: unknown, fallback = false): boolean {
   return fallback;
 }
 
+const VALID_EVIDENCE_REQUIREMENTS = new Set<ValidationEvidenceRequirement>([
+  "planning_document",
+  "research_summary",
+  "changed_files_summary",
+  "test_report",
+  "review_summary",
+  "risk_notes",
+  "final_outcome_summary",
+  "screenshot",
+  "browser_verification",
+  "video_recording",
+  "browser_trace",
+  "console_logs",
+]);
+
+function toEvidenceRequirements(value: unknown): ValidationEvidenceRequirement[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const requirements = value.filter((entry): entry is ValidationEvidenceRequirement =>
+    typeof entry === "string" && VALID_EVIDENCE_REQUIREMENTS.has(entry as ValidationEvidenceRequirement)
+  );
+  return requirements.length > 0 ? Array.from(new Set(requirements)) : undefined;
+}
+
+function toCapabilityFallback(value: unknown): ValidationCapabilityFallbackPolicy | undefined {
+  return value === "block" || value === "warn" ? value : undefined;
+}
+
 function normalizePlannerClarifyingQuestion(value: unknown): PlannerClarifyingQuestion | null {
   if (!isRecord(value)) return null;
   const question = String(value.question ?? "").trim();
@@ -470,6 +497,8 @@ function toPhaseCard(value: unknown, fallbackPosition = 0): PhaseCard | null {
       tier,
       required: coerceBoolean(validationGate.required, tier !== "none"),
       criteria: typeof validationGate.criteria === "string" ? validationGate.criteria : undefined,
+      evidenceRequirements: toEvidenceRequirements(validationGate.evidenceRequirements),
+      capabilityFallback: toCapabilityFallback(validationGate.capabilityFallback),
     },
     isBuiltIn: coerceBoolean(value.isBuiltIn),
     isCustom: coerceBoolean(value.isCustom, true),
@@ -665,12 +694,6 @@ function coerceNullableString(value: unknown): string | null {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
 }
-
-function normalizeMissionComputerUse(value: unknown) {
-  return normalizeComputerUsePolicy(value, createDefaultComputerUsePolicy());
-}
-
-
 
 function toMissionSummary(row: MissionRow): MissionSummary {
   return {
@@ -2289,7 +2312,6 @@ export function createMissionService({
         warnings,
         plannerPlan,
         phaseConfiguration: resolveMissionPhaseConfiguration(id),
-        computerUse: launchMetadata ? normalizeMissionComputerUse(launchMetadata.computerUse) : null,
       };
     },
 
@@ -2885,7 +2907,6 @@ export function createMissionService({
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
       const autopilotExecutor = args.autopilotExecutor ?? "opencode";
-      const computerUse = normalizeMissionComputerUse(args.computerUse);
       const launchAgentRuntime = normalizeAgentRuntimeFlags(
         isRecord(args.agentRuntime) ? (args.agentRuntime as Record<string, unknown>) : {}
       );
@@ -2998,7 +3019,6 @@ export function createMissionService({
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
           ...(launchTeamRuntime ? { teamRuntime: launchTeamRuntime } : {}),
           ...(args.permissionConfig ? { permissionConfig: args.permissionConfig } : {}),
-          computerUse,
           phaseProfileId: selectedProfile?.id ?? null,
           hasPhaseOverride: hasExplicitOverride
         },

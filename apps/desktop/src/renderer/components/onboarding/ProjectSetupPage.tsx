@@ -23,7 +23,7 @@ const STEP_ORDER: SetupStep[] = ["tools", "ai", "helpers", "github", "embeddings
 const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
   tools: {
     title: "Dev tools",
-    subtitle: "Verify git and GitHub CLI are ready",
+    subtitle: "Verify git and the ADE command are ready",
   },
   ai: {
     title: "AI connections",
@@ -53,7 +53,7 @@ const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
 
 /* Step header — short title on top, subtitle below */
 const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
-  tools: { heading: "Developer Tools", sub: "ADE needs git for version control. GitHub CLI unlocks PR creation, review requests, and CI checks." },
+  tools: { heading: "Developer tools", sub: "ADE needs git for version control. The bundled ade command is added to agent sessions; installing it here also makes it available in your Terminal." },
   ai: {
     heading: "Runtime providers",
     sub: "Set up the four ADE runtime providers: Claude, Codex, and Cursor use their native CLIs. OpenCode powers API-backed and local model chats (LM Studio, Ollama). After a CLI is installed and signed in, its models appear automatically.",

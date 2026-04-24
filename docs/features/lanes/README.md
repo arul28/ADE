@@ -18,8 +18,8 @@ Core services (`apps/desktop/src/main/services/lanes/`):
 | File | Responsibility |
 |------|---------------|
 | `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, mission role tagging, startup repair routines |
-| `autoRebaseService.ts` | Auto-rebase worker for stacked lanes, attention state, head-change handlers |
-| `rebaseSuggestionService.ts` | Emits rebase suggestions when a parent lane advances, dismiss/defer lifecycle |
+| `autoRebaseService.ts` | Auto-rebase worker for stacked lanes, attention state, head-change handlers. Consults `resolvePrRebaseMode` to determine whether a lane with a linked PR should auto-rebase (`pr_target` strategy) or only surface manual attention (`lane_base` strategy). |
+| `rebaseSuggestionService.ts` | Emits rebase suggestions when a parent lane advances, dismiss/defer lifecycle. Each suggestion may include up to 20 `RebaseTargetCommit` entries showing the behind commits the rebase would pull in. |
 | `laneEnvironmentService.ts` | Environment init pipeline: env files, docker services, dependencies, mount points, copy paths (Phase 5 W1) |
 | `laneTemplateService.ts` | Reusable lane init templates (Phase 5 W2) |
 | `portAllocationService.ts` | Lease-based per-lane port ranges (Phase 5 W3) |
@@ -33,22 +33,26 @@ Renderer components:
 | File | Responsibility |
 |------|---------------|
 | `renderer/components/lanes/LanesPage.tsx` | 3-pane cockpit, tab management, dialog coordination |
+| `renderer/components/lanes/laneUtils.ts` | Pure lane list/filter helpers plus default pane trees, including the work-focused tiling tree used by parallel chat launch deep links. |
 | `renderer/components/lanes/LaneStackPane.tsx` | Stack graph sidebar, integration source chips, canvas jump |
 | `renderer/components/lanes/LaneDiffPane.tsx` | Diff viewer, per-file stage/unstage/discard |
 | `renderer/components/lanes/LaneGitActionsPane.tsx` | Commit, stash, fetch, sync, push, recent commits |
 | `renderer/components/lanes/LaneWorkPane.tsx` | Terminal/chat toggle work surface |
 | `renderer/components/lanes/LaneRebaseBanner.tsx` | Inline banner driven by `rebaseSuggestionService` |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Env init step progress inside create dialog |
-| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `ManageLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation/attach/edit dialogs |
+| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation / attach dialogs and shared dialog chrome |
+| `renderer/components/lanes/ManageLaneDialog.tsx` | Unified delete / archive / adopt-attached dialog. Supports single-lane and batch (multi-select) modes, three delete modes (`worktree`, `local_branch`, `remote_branch`) with a typed confirmation phrase, remote-branch name input, dirty-state warnings, and a busy/status/error triplet threaded through from `LanesPage`. Covered by `ManageLaneDialog.test.tsx`. |
 | `renderer/components/lanes/MonacoDiffView.tsx` | Monaco-based side-by-side file diff |
 | `renderer/components/run/LaneRuntimeBar.tsx` | Compact lane runtime status bar (health, preview, port, proxy, oauth) |
 | `renderer/components/run/RunPage.tsx`, `RunNetworkPanel.tsx` | Runtime dashboards that consume lane runtime services |
+| `renderer/components/ui/PaneTilingLayout.tsx` | Persisted split-pane layout engine for lane panes. Validates saved pane trees against expected pane ids and falls back to the supplied tree when the saved layout is stale. |
 | `renderer/components/settings/ProxyAndPreviewSection.tsx`, `DiagnosticsDashboardSection.tsx`, `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Settings-side management UIs |
 
 Shared code:
 
 - `src/shared/laneBaseResolution.ts` — `shouldLaneTrackParent`, `branchNameFromLaneRef`, `resolveStableLaneBaseBranch`. Used by `laneService`, `conflictService`, `autoRebaseService`, `rebaseSuggestionService`, `prService`, and renderer helpers so base-ref resolution stays consistent.
-- `src/shared/types.ts` — `LaneSummary`, `LaneStatus`, `StackChainItem`, `CreateLaneArgs`, rebase args/results, overlay types, port/proxy/OAuth/diagnostics types.
+- `src/shared/prStrategy.ts` — `resolvePrRebaseMode(creationStrategy)` maps a PR's `PrCreationStrategy` to `"auto" | "manual"`. Used by `autoRebaseService` and `conflictService` to decide whether drift against a linked PR's base branch should trigger auto-rebase (`pr_target`) or only surface as manual attention (`lane_base`).
+- `src/shared/types.ts` — `LaneSummary`, `LaneStatus`, `StackChainItem`, `CreateLaneArgs`, rebase args/results, `RebaseTargetCommit`, overlay types, port/proxy/OAuth/diagnostics types.
 - `src/shared/laneOverlayMatcher.ts` — last-wins/deep-merge evaluator for per-lane overlay policies.
 
 Detail docs in this folder:
@@ -109,6 +113,15 @@ a lane parented to primary would always show zero behind.
 - `childCount: number`
 - `tags: string[]`, `color`, `icon`, `folder`
 - `missionId`, `laneRole` (nullable; see mission roles)
+- `devicesOpen?: LaneDevicePresence[]` — decoration added by
+  `syncHostService` on response paths (`lanes.list`, `lanes.getDetail`,
+  `lanes.create`, `lanes.attach`, etc.) from the in-memory lane
+  presence map. Each entry carries `{ deviceId, displayName,
+  deviceType }` and expires 60 s after the last
+  `lanes.presence.announce`. Controllers announce on a 30 s
+  heartbeat; the desktop host calls `ade.sync.setActiveLanePresence`
+  from `LanesPage` whenever the visible lane list changes and clears
+  it on unmount.
 
 ## Mission lane roles
 
@@ -134,7 +147,10 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
    worktree path under `.ade/worktrees/<slug>/`, runs `git worktree
    add`, inserts the lane row, and returns a `LaneSummary`.
 2. **Create child** — same as create but with `parentLaneId`. Child's
-   base ref defaults to the parent's branch ref.
+   base ref defaults to the parent's branch ref. Callers can override
+   with `baseBranchRef` on `CreateChildLaneArgs` to fork from any local
+   or remote branch (the service resolves/tracks remote refs via
+   `resolveImportBranchTarget` before creating the worktree).
 3. **Create from unstaged** — `createFromUnstaged` rescues uncommitted
    work into a new child lane via `git stash` in the source worktree
    plus `git stash apply` in the child. Rolls back the child if apply
@@ -203,6 +219,15 @@ open lanes; primary lanes render with a home icon.
   proxy/preview status, OAuth callback URL, active processes. It
   parallelizes six IPC calls and debounces via an in-flight sequence
   counter to ignore out-of-order responses.
+- Multi-lane deep links can pass `laneIds=<id,id,...>` and
+  `inspectorTab=<tab>`. `LanesPage` waits until all referenced lanes
+  exist before consuming the link, selects the first lane, opens the
+  lane set side-by-side, and clears pinned lanes for that focused view.
+  This is used after parallel chat launch to open every newly-created
+  model lane in the Work inspector.
+- Parallel chat launch links use `LANES_TILING_WORK_FOCUS_TREE` and a
+  `layoutId` suffix so newly-created comparison lanes emphasize the
+  Work pane without overwriting the user's normal lane cockpit layout.
 
 ## Gotchas and fragile areas
 

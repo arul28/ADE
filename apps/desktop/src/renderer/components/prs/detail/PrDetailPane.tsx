@@ -18,6 +18,10 @@ import type {
   PrConvergenceState,
   PrConvergenceStatePatch,
 } from "../../../../shared/types";
+import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
+import type { PaletteKind } from "../shared/PrCommandPalettes";
+import { parsePrsRouteState } from "../prsRouteState";
+import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef } from "./PrDetailTimelineRails";
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
@@ -30,6 +34,7 @@ import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
 import { describePrTargetDiff } from "../shared/laneBranchTargets";
 import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { usePrs } from "../state/PrsContext";
+import { modifierKeyLabel } from "../../../lib/platform";
 
 // ---- Sub-tab type ----
 type DetailTab = "overview" | "convergence" | "files" | "checks" | "activity";
@@ -414,6 +419,16 @@ export function PrDetailPane({
     setResolverModel,
     setResolverReasoningLevel,
     setResolverPermissionMode,
+    prsTimelineRailsEnabled,
+    dismissedAiSummaries,
+    timelineFiltersByPrId,
+    detailAiSummary,
+    detailReviewThreads: ctxReviewThreads,
+    detailDeployments,
+    viewerLogin,
+    setTimelineFilters,
+    setAiSummaryDismissed,
+    regeneratePrAiSummary,
   } = usePrs();
   const [activeTab, setActiveTab] = React.useState<DetailTab>("overview");
   const [detail, setDetail] = React.useState<PrDetail | null>(null);
@@ -421,6 +436,99 @@ export function PrDetailPane({
   const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>([]);
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
+  const timelineRailsRef = React.useRef<PrDetailTimelineRailsRef | null>(null);
+
+  React.useEffect(() => {
+    const onTourTab = (event: Event) => {
+      const tab = (event as CustomEvent<DetailTab>).detail;
+      if (tab === "overview" || tab === "convergence" || tab === "files" || tab === "checks" || tab === "activity") {
+        setActiveTab(tab);
+      }
+    };
+    window.addEventListener("ade:tour-pr-detail-tab", onTourTab);
+    return () => window.removeEventListener("ade:tour-pr-detail-tab", onTourTab);
+  }, []);
+
+  const deepLinkState = React.useMemo(() => {
+    try {
+      const parsed = parsePrsRouteState({ search: window.location.search, hash: window.location.hash });
+      return { eventId: parsed.eventId, threadId: parsed.threadId, commitSha: parsed.commitSha };
+    } catch {
+      return { eventId: null, threadId: null, commitSha: null };
+    }
+  }, [pr.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const timelineFilters: PrTimelineFilters = React.useMemo(
+    () => timelineFiltersByPrId?.[pr.id] ?? DEFAULT_PR_TIMELINE_FILTERS,
+    [timelineFiltersByPrId, pr.id],
+  );
+  const handleTimelineFiltersChange = React.useCallback(
+    (next: PrTimelineFilters) => setTimelineFilters?.(pr.id, next),
+    [pr.id, setTimelineFilters],
+  );
+  const reviewThreadsForTimeline = React.useMemo(
+    () => ((ctxReviewThreads?.length ?? 0) > 0 ? ctxReviewThreads! : reviewThreads),
+    [ctxReviewThreads, reviewThreads],
+  );
+  const aiSummaryDismissedForPr = Boolean(dismissedAiSummaries?.[pr.id]);
+  const handleDismissAiSummary = React.useCallback(() => {
+    setAiSummaryDismissed?.(pr.id, true);
+  }, [pr.id, setAiSummaryDismissed]);
+  const handleRegenerateAiSummary = React.useCallback(() => {
+    void regeneratePrAiSummary?.(pr.id);
+  }, [pr.id, regeneratePrAiSummary]);
+
+  // Page-level keyboard shortcuts scoped to the Timeline+Rails overview.
+  // Only attach listeners when the flag is on AND the overview tab is active.
+  React.useEffect(() => {
+    if (!prsTimelineRailsEnabled) return;
+    const CHORD_WINDOW_MS = 800;
+    const chordPalettes: Record<string, PaletteKind> = { c: "commit", t: "thread", f: "file" };
+    let lastKey = "";
+    let lastKeyAt = 0;
+    const handler = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (activeTab !== "overview") return;
+
+      const rails = timelineRailsRef.current;
+      if (!rails) return;
+
+      const now = Date.now();
+      const inChord = lastKey === "g" && now - lastKeyAt < CHORD_WINDOW_MS;
+
+      if (inChord) {
+        const palette = chordPalettes[event.key];
+        if (palette) {
+          event.preventDefault();
+          rails.openPalette(palette);
+        }
+        lastKey = "";
+        lastKeyAt = 0;
+        return;
+      }
+
+      if (event.key === "g") {
+        lastKey = "g";
+        lastKeyAt = now;
+        return;
+      }
+
+      if (event.key === "[") {
+        event.preventDefault();
+        rails.prevUnresolvedThread();
+      } else if (event.key === "]") {
+        event.preventDefault();
+        rails.nextUnresolvedThread();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [prsTimelineRailsEnabled, activeTab]);
   const [aiSummary, setAiSummary] = React.useState<AiReviewSummary | null>(null);
   const [aiSummaryBusy, setAiSummaryBusy] = React.useState(false);
   const [showIssueResolverModal, setShowIssueResolverModal] = React.useState(false);
@@ -1833,6 +1941,7 @@ export function PrDetailPane({
             {queueContext && onOpenQueueView ? (
               <button
                 type="button"
+                data-tour="prs.stackingIndicator"
                 onClick={() => onOpenQueueView(queueContext.groupId)}
                 style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}
                 title={queueContext.label ?? "Open queue"}
@@ -1878,7 +1987,30 @@ export function PrDetailPane({
 
       {/* ===== TAB CONTENT ===== */}
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-        {activeTab === "overview" && (
+        {activeTab === "overview" && prsTimelineRailsEnabled && (
+          <TimelineRailsOverview
+            ref={timelineRailsRef}
+            pr={pr}
+            detail={detail}
+            status={status}
+            checks={checks}
+            reviews={reviews}
+            comments={comments}
+            activity={activity}
+            files={files}
+            reviewThreads={reviewThreadsForTimeline}
+            deployments={detailDeployments}
+            viewerLogin={viewerLogin}
+            filters={timelineFilters}
+            onFiltersChange={handleTimelineFiltersChange}
+            aiSummary={detailAiSummary}
+            aiSummaryDismissed={aiSummaryDismissedForPr}
+            onDismissAiSummary={handleDismissAiSummary}
+            onRegenerateAiSummary={handleRegenerateAiSummary}
+            deepLink={deepLinkState}
+          />
+        )}
+        {activeTab === "overview" && !prsTimelineRailsEnabled && (
           <OverviewTab
             pr={pr} detail={detail} status={status} checks={checks} actionRuns={actionRuns} reviews={reviews} comments={comments}
             detailBusy={detailBusy} aiSummary={aiSummary} aiSummaryBusy={aiSummaryBusy}
@@ -1908,6 +2040,8 @@ export function PrDetailPane({
           />
         )}
         {activeTab === "convergence" && (
+          // tour anchor — closest viable: PrConvergencePanel surfaces the rebase/conflict simulation UI.
+          <div data-tour="prs.conflictSim" style={{ display: "contents" }}>
           <PrConvergencePanel
             prNumber={pr.githubPrNumber}
             prTitle={pr.title}
@@ -1988,11 +2122,13 @@ export function PrDetailPane({
               });
             }}
           />
+          </div>
         )}
         {activeTab === "files" && (
           <FilesTab files={files} expandedFile={expandedFile} setExpandedFile={setExpandedFile} />
         )}
         {activeTab === "checks" && (
+          <div data-tour="prs.checksPanel" style={{ display: "contents" }}>
           <ChecksTab
             checks={checks} actionRuns={actionRuns}
             actionBusy={actionBusy}
@@ -2000,6 +2136,7 @@ export function PrDetailPane({
             showIssueResolverAction={issueResolutionAvailability.hasAnyActionableIssues}
             onOpenIssueResolver={handleOpenIssueResolver}
           />
+          </div>
         )}
         {activeTab === "activity" && (
           <ActivityTab
@@ -2121,12 +2258,13 @@ function CommentMenu({ url }: { url: string | null }) {
         <DotsThreeVertical size={16} weight="bold" />
       </button>
       {open && (
-        <div style={{
-          position: "absolute", top: "100%", right: 0, marginTop: 4,
-          background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}`,
-          borderRadius: 10, padding: 4, minWidth: 160, zIndex: 20,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-        }}>
+        <div
+          className="ade-liquid-glass-menu"
+          style={{
+            position: "absolute", top: "100%", right: 0, marginTop: 4,
+            padding: 4, minWidth: 160, zIndex: 20,
+          }}
+        >
           <button
             type="button"
             onClick={() => { void window.ade.app.openExternal(url); setOpen(false); }}
@@ -2609,7 +2747,7 @@ function OverviewTab(props: OverviewTabProps) {
             <textarea
               value={props.commentDraft}
               onChange={(e) => props.setCommentDraft(e.target.value)}
-              placeholder="Leave a comment... Supports Markdown. Cmd+Enter to submit."
+              placeholder={`Leave a comment... Supports Markdown. ${modifierKeyLabel}+Enter to submit.`}
               onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void props.onAddComment(); }}
               style={{
                 width: "100%", minHeight: 80, resize: "vertical", padding: "14px 14px 36px",
@@ -2824,7 +2962,7 @@ function OverviewTab(props: OverviewTabProps) {
                 </button>
 
                 {pr.state === "open" && (
-                  <button type="button" disabled={actionBusy} onClick={() => void props.onClose()} style={dangerButton({ height: 40, opacity: actionBusy ? 0.4 : 1, padding: "0 16px" })}>
+                  <button type="button" data-tour="prs.closeBtn" disabled={actionBusy} onClick={() => void props.onClose()} style={dangerButton({ height: 40, opacity: actionBusy ? 0.4 : 1, padding: "0 16px" })}>
                     <XCircle size={14} /> Close
                   </button>
                 )}
@@ -3428,7 +3566,7 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
           <textarea
             value={commentDraft}
             onChange={(e) => setCommentDraft(e.target.value)}
-            placeholder="Write a comment... (Cmd+Enter to submit)"
+            placeholder={`Write a comment... (${modifierKeyLabel}+Enter to submit)`}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void onAddComment(); }}
             style={{
               flex: 1, minHeight: 60, resize: "vertical", padding: 12,

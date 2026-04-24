@@ -6,7 +6,7 @@ behavior is delivered through three runtime surfaces: the **CTO**
 employees with their own identity and adapters), and **regular chat
 sessions** (ephemeral agents bound to a lane). This feature folder
 documents the agent identity model, persona system, and the tool
-registry / MCP integration that all three share.
+registry / ADE CLI integration that all three share.
 
 ## Source file map
 
@@ -21,9 +21,8 @@ registry / MCP integration that all three share.
 | `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker adapter configs: Claude-local, Codex-local, OpenClaw webhook, raw process. |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only tools (spawnChat, mission control, worker management, Linear dispatch). |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools (Claude Code, Codex, Cursor, Aider, Continue) on PATH. |
-| `apps/desktop/src/main/adeMcpProxy.ts` / `adeMcpProxyUtils.ts` | Bundled stdio proxy forwarded to the in-process MCP server. Injects identity into the MCP `initialize` payload. |
-| `apps/desktop/src/main/services/runtime/adeMcpLaunch.ts` | Resolves the MCP launch mode (bundled proxy, headless-built, headless-source) and builds the command + env. |
-| `apps/mcp-server/src/mcpServer.ts` | Main-process MCP server: registers tools, handles JSON-RPC, applies session-identity-based tool filtering. |
+| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. |
+| `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC: registers actions, handles JSON-RPC, applies session-identity-based filtering. |
 | `apps/desktop/src/shared/ctoPersonalityPresets.ts` | CTO personality overlays (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`). |
 | `apps/desktop/src/shared/types/agents.ts` | `AgentIdentity`, `AgentCoreMemory`, `AgentRole`, `AdapterType`, adapter configs. |
 | `apps/desktop/src/shared/types/cto.ts` | `CtoIdentity`, `CtoCoreMemory`, `CtoCapabilityMode`, `CtoPersonalityPreset`. |
@@ -79,7 +78,6 @@ type CtoIdentity = {
   };
   constraints?: string[];
   systemPromptExtension?: string;
-  externalMcpAccess?: ExternalMcpAccessPolicy;
   openclawContextPolicy?: OpenclawContextPolicy;
   onboardingState?: CtoOnboardingState;
   modelPreferences: {
@@ -142,7 +140,6 @@ type AgentIdentity = {
     maxConcurrentRuns?: number;
   };
   linearIdentity?: AgentLinearIdentity;     // optional Linear user mapping
-  externalMcpAccess?: ExternalMcpAccessPolicy;
   personality?: string;
   communicationStyle?: string;
   constraints?: string[];
@@ -193,10 +190,10 @@ orchestrator when the worker is activated.
 `CtoCapabilityMode` (also applies to workers via `capabilityMode` on
 session logs):
 
-- `full_mcp` -- the session connects to the ADE MCP server over the
-  bundled stdio proxy and has full tool access.
-- `fallback` -- MCP is unavailable (proxy failed to spawn, no socket,
-  offline); the session gets only its adapter's built-in tool set.
+- `full_tooling` -- the session connects to the ADE CLI over the
+  ADE CLI/action bridge and has full action access.
+- `fallback` -- the ADE CLI/action bridge is unavailable; the session
+  gets only its adapter's built-in tool set.
 
 `capabilityMode` is persisted per session log so history shows which
 mode the agent actually ran in.
@@ -217,7 +214,7 @@ Each agent type gets a distinct tool palette. The full breakdown is in
 
 Standalone chat sessions (sessions without mission/run/step/attempt
 context) additionally get `spawn_agent` and all coordinator tools
-hidden from both tool listing and tool execution, enforced at the MCP
+hidden from both tool listing and tool execution, enforced at the ADE CLI
 server boundary. See [tool-registration](tool-registration.md#standalone-chat-restrictions).
 
 ## System prompt composition
@@ -355,12 +352,12 @@ Representative channels:
   row from the table breaks the chain; `logIntegrityService` will
   detect the break on next verification but won't rebuild the chain.
 - **Adapter type ↔ capability mode.** `claude-local` and `codex-local`
-  can run in `full_mcp` mode only when the MCP socket server is
+  can run in `full_tooling` mode only when the ADE CLI socket server is
   running; if the socket fails, workers silently fall back to
   `fallback` mode. Surface this via capability mode in the session
   log entry.
-- **Standalone-chat tool filtering at MCP boundary.** The filter is
-  applied in `apps/mcp-server/src/mcpServer.ts` based on the
+- **Standalone-chat tool filtering at ADE CLI boundary.** The filter is
+  applied in `apps/ade-cli/src/adeRpcServer.ts` based on the
   `initialize` payload's identity. A client that omits identity
   falls back to `external` role with minimal tool access; a client
   that forges a mission id could theoretically get elevated access,
@@ -372,7 +369,7 @@ Representative channels:
 - [Identity and Personas](identity-and-personas.md) -- how CTO and
   worker identity is stored, reconciled, and injected into sessions,
   including the personality preset system and immutable doctrine.
-- [Tool Registration](tool-registration.md) -- MCP integration,
+- [Tool Registration](tool-registration.md) -- ADE CLI integration,
   bundled proxy, tool registry, role-based filtering, capability
   mode fallback.
 
