@@ -7082,8 +7082,18 @@ export function createAgentChatService(args: {
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               if (block.type === "text") {
+                // Check both the real-id key AND the id-less fallback key. When
+                // content_block_delta fires before message_start (or the SDK
+                // omits message_start entirely), streamed deltas record fallback
+                // keys `${turnId}:b${N}:${idx}` into the set. The snapshot then
+                // arrives with a real id and would otherwise miss the dedup,
+                // re-emitting the same text and producing a doubled bubble.
                 const textKey = claudeDedupeKey(assistantMessageId, blockIndex);
-                if (!textKey || !streamedClaudeTextContentKeys.has(textKey)) {
+                const fallbackTextKey = assistantMessageId ? claudeDedupeKey(null, blockIndex) : null;
+                const alreadyStreamed =
+                  (textKey ? streamedClaudeTextContentKeys.has(textKey) : false)
+                  || (fallbackTextKey ? streamedClaudeTextContentKeys.has(fallbackTextKey) : false);
+                if (!textKey || !alreadyStreamed) {
                   assistantText += block.text ?? "";
                   emitChatEvent(managed, {
                     type: "text",
@@ -7095,8 +7105,13 @@ export function createAgentChatService(args: {
               } else if (block.type === "thinking") {
                 const thinkingText = block.thinking ?? block.text ?? "";
                 const reasoningItemId = buildClaudeContentItemId("thinking", blockIndex);
+                // Same snapshot-vs-delta dedup race as the text branch above.
                 const thinkingKey = claudeDedupeKey(assistantMessageId, blockIndex);
-                if (thinkingText.trim().length > 0 && (!thinkingKey || !streamedClaudeThinkingContentKeys.has(thinkingKey))) {
+                const fallbackThinkingKey = assistantMessageId ? claudeDedupeKey(null, blockIndex) : null;
+                const alreadyStreamedThinking =
+                  (thinkingKey ? streamedClaudeThinkingContentKeys.has(thinkingKey) : false)
+                  || (fallbackThinkingKey ? streamedClaudeThinkingContentKeys.has(fallbackThinkingKey) : false);
+                if (thinkingText.trim().length > 0 && (!thinkingKey || !alreadyStreamedThinking)) {
                   emitChatEvent(managed, {
                     type: "activity",
                     activity: "thinking",
