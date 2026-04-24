@@ -258,7 +258,7 @@ RELEASE_SHA=$(git rev-parse origin/main)
 3. Once the draft release appears (the workflow creates it), make sure the release body links to the Mintlify changelog page:
 
    ```bash
-   gh release view "v<VERSION>" --json body,isDraft,url
+   gh release view "v<VERSION>" --json body,isDraft,url,assets
    gh release edit "v<VERSION>" --notes "$(cat <<EOF
    ADE v<VERSION>
 
@@ -270,6 +270,10 @@ RELEASE_SHA=$(git rev-parse origin/main)
    ```
 
    Leave `isDraft=true`. Do not publish.
+
+   Expect the draft to carry both macOS and Windows assets once `publish-release` runs:
+   - macOS: `ADE-<version>-universal.dmg`, `ADE-<version>-universal-mac.zip`, `ADE-<version>-universal-mac.zip.blockmap`, `latest-mac.yml`
+   - Windows: `ADE-<version>-win-x64.exe`, `ADE-<version>-win-x64.exe.blockmap`, `latest.yml`
 
 ---
 
@@ -455,13 +459,32 @@ If any fails, fix it explicitly and re-verify. Do not trust `autoNotifyEnabled=t
 
 ## Phase 8 — Summary
 
-Print a single final block and stop. Example:
+Before printing the summary, verify the draft release carries every expected asset. Do not flip the draft and do not report `done` if anything is missing — surface the gap.
+
+```bash
+gh release view "v<VERSION>" --json assets --jq '.assets[].name' | sort
+```
+
+Expected asset set when `scope.desktop=true`:
+- `ADE-<version>-universal.dmg`
+- `ADE-<version>-universal-mac.zip`
+- `ADE-<version>-universal-mac.zip.blockmap`
+- `latest-mac.yml`
+- `ADE-<version>-win-x64.exe`
+- `ADE-<version>-win-x64.exe.blockmap`
+- `latest.yml`
+
+If any macOS asset is missing → mac build or upload broke; re-inspect the `build-mac-release` job.
+If any Windows asset is missing → `build-win-release` broke or its artifact upload failed; re-inspect that job. Do not flip the draft if Windows artifacts are missing — shipping an asymmetric desktop release will confuse electron-updater consumers on the missing platform.
+
+Then print a single final block and stop:
 
 ```
 Release v<VERSION> — summary
 
 - Changelog:     https://www.ade-app.dev/docs/changelog/v<VERSION>
 - Draft release: <gh release url>  (still draft — flip manually)
+- Desktop assets: mac=<present|MISSING>, windows=<present|MISSING>
 - Workflow run:  <gh run url>      (conclusion: success)
 - iOS TestFlight build <BUILD_NUMBER>: <VALID | processing | skipped>
 - Beta group:    <group name | n/a>
