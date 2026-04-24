@@ -96,15 +96,19 @@ export function buildDiffContextForFinding(args: {
   if (hunks.length === 0) return null;
 
   let chosen: ParsedHunk | null = null;
+  let anchorInHunk = false;
   if (args.anchoredLine != null) {
     chosen =
       hunks.find((hunk) => args.anchoredLine! >= hunk.newStart && args.anchoredLine! < hunk.newStart + hunk.newLength) ??
       null;
+    anchorInHunk = chosen != null;
   }
   if (!chosen) chosen = hunks[0] ?? null;
   if (!chosen) return null;
 
-  const sliced = args.anchoredLine != null ? sliceAroundAnchor(chosen, args.anchoredLine) : chosen;
+  const sliced = anchorInHunk && args.anchoredLine != null
+    ? sliceAroundAnchor(chosen, args.anchoredLine)
+    : chosen;
   const lineNumbers = sliced.lines.filter((entry) => entry.line != null).map((entry) => entry.line!);
   const startLine = lineNumbers.length ? Math.min(...lineNumbers) : chosen.newStart;
   const endLine = lineNumbers.length ? Math.max(...lineNumbers) : chosen.newStart + chosen.newLength - 1;
@@ -113,7 +117,7 @@ export function buildDiffContextForFinding(args: {
     filePath: args.filePath,
     startLine,
     endLine,
-    anchoredLine: args.anchoredLine,
+    anchoredLine: anchorInHunk ? args.anchoredLine : null,
     lines: sliced.lines,
   };
 }

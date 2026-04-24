@@ -44,6 +44,18 @@ describe("buildDiffContextForFinding", () => {
     expect(result!.lines.some((line) => line.kind === "add")).toBe(true);
   });
 
+  it("shows full first hunk (no highlight) when anchor falls outside every hunk", () => {
+    const result = buildDiffContextForFinding({
+      filePath: "src/auth.ts",
+      anchoredLine: 5000,
+      patches: [{ filePath: "src/auth.ts", excerpt: SAMPLE_PATCH }],
+    });
+    expect(result).not.toBeNull();
+    expect(result!.anchoredLine).toBeNull();
+    expect(result!.lines.some((line) => line.highlighted)).toBe(false);
+    expect(result!.lines.some((line) => line.kind === "add" || line.kind === "context")).toBe(true);
+  });
+
   it("falls back to the first hunk when no anchor is provided", () => {
     const result = buildDiffContextForFinding({
       filePath: "src/auth.ts",

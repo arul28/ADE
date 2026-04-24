@@ -58,10 +58,11 @@ function titleMatchesSignal(findingTitle: string, findingBody: string, summary: 
     .split(/[^a-z0-9]+/)
     .filter((token) => token.length >= 4);
   if (tokens.length === 0) return false;
+  const required = Math.min(2, tokens.length);
   let hits = 0;
   for (const token of tokens) {
     if (haystack.includes(token)) hits += 1;
-    if (hits >= 2) return true;
+    if (hits >= required) return true;
   }
   return false;
 }
@@ -102,7 +103,7 @@ export function buildToolBackedEvidence(args: {
     const kind = classifyCheck(check.name);
     const detail = `${check.name} (${check.status}${check.conclusion ? ` / ${check.conclusion}` : ""})`;
     const matchesTitle = titleMatchesSignal(args.finding.title, args.finding.body, check.name);
-    if (!matchesTitle && out.length > 0) continue;
+    if (!matchesTitle) continue;
     out.push({
       kind: "tool_signal",
       summary: `CI check ${detail}`,
@@ -125,7 +126,7 @@ export function buildToolBackedEvidence(args: {
     const hitLog = testRun.logExcerpt
       ? titleMatchesSignal(args.finding.title, args.finding.body, testRun.logExcerpt)
       : false;
-    if (!hitLog && out.length > 0) continue;
+    if (!hitLog) continue;
     out.push({
       kind: "tool_signal",
       summary: `Test run ${testRun.suiteName} — ${testRun.status}${testRun.exitCode != null ? ` (exit ${testRun.exitCode})` : ""}`,

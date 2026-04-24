@@ -1763,6 +1763,20 @@ export function createReviewService({
       if (!row) return;
       const run = mapRunRow(row);
       if (disposed) return;
+      if (cancelledRuns.has(runId)) {
+        cancelledRuns.delete(runId);
+        const endedAt = nowIso();
+        updateRun(runId, {
+          status: "cancelled",
+          summary: "Run cancelled before execution began.",
+          error_message: null,
+          ended_at: endedAt,
+          updated_at: endedAt,
+        });
+        emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
+        emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
+        return;
+      }
       updateRun(runId, {
         status: "running",
         updated_at: nowIso(),
@@ -2062,8 +2076,10 @@ export function createReviewService({
       if (disposed) return;
       const severitySummary = tallySeveritySummary(findings);
       const endedAt = nowIso();
+      const cancelledDuringPublish = cancelledRuns.has(runId);
+      if (cancelledDuringPublish) cancelledRuns.delete(runId);
       updateRun(runId, {
-        status: "completed",
+        status: cancelledDuringPublish ? "cancelled" : "completed",
         summary: adjudication.summary,
         error_message: null,
         finding_count: findings.length,
@@ -2071,8 +2087,9 @@ export function createReviewService({
         ended_at: endedAt,
         updated_at: endedAt,
       });
-      emit({ type: "run-completed", runId, laneId: run.laneId, status: "completed" });
-      emit({ type: "runs-updated", runId, laneId: run.laneId, status: "completed" });
+      const finalStatus = cancelledDuringPublish ? "cancelled" : "completed";
+      emit({ type: "run-completed", runId, laneId: run.laneId, status: finalStatus });
+      emit({ type: "runs-updated", runId, laneId: run.laneId, status: finalStatus });
     } catch (error) {
       if (disposed) return;
       const endedAt = nowIso();
@@ -2097,6 +2114,7 @@ export function createReviewService({
       emit({ type: "runs-updated", runId, laneId: row?.lane_id ?? "", status: "failed" });
     } finally {
       activeRuns.delete(runId);
+      cancelledRuns.delete(runId);
     }
   }
 
@@ -2288,8 +2306,14 @@ export function createReviewService({
     );
 
     if (args.kind === "suppress") {
-      const scope: ReviewSuppressionScope = args.suppression?.scope ?? "repo";
-      const pathPattern = args.suppression?.pathPattern ?? (scope === "path" ? findingRow.file_path : null);
+      const requestedScope: ReviewSuppressionScope = args.suppression?.scope ?? "repo";
+      const requestedPathPattern = args.suppression?.pathPattern
+        ?? (requestedScope === "path" ? findingRow.file_path : null);
+      const hasUsablePathPattern = typeof requestedPathPattern === "string" && requestedPathPattern.trim().length > 0;
+      const scope: ReviewSuppressionScope = requestedScope === "path" && !hasUsablePathPattern
+        ? "repo"
+        : requestedScope;
+      const pathPattern = scope === "path" ? requestedPathPattern : null;
       const finding = mapFindingRow(findingRow);
       const publicationRow = db.get<ReviewRunPublicationRow>(
         "select * from review_run_publications where run_id = ? order by created_at desc limit 1",
