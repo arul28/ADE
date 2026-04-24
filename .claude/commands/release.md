@@ -21,6 +21,7 @@ Drive a full ADE release end-to-end: figure out what needs to ship (desktop, iOS
 Mostly autonomous, but **pause for explicit user input** on:
 - The new version number (if not passed in `$ARGUMENTS`).
 - The iOS build number (if iOS is in scope and not passed in `$ARGUMENTS`).
+- **The iOS target TestFlight group(s)** (always — enumerate groups + tester counts first; never assume a default). See Phase 7a.
 - Any step that would force-push `main`, bypass a ruleset in a surprising way, or publish a release that is still in `draft=false`.
 
 Do NOT publish the GitHub draft release automatically. Leave it as a draft for a human to flip.
@@ -321,13 +322,35 @@ Do not loop in-turn. One poll per wake-up.
 
 Skip entirely if `scope.ios=false`.
 
-If `scope.ios=true` and you do not have a build number:
+### 7a. Ask the user: build number + target group(s)
 
-> What build number should this TestFlight build use? The last one uploaded was `<N>` (run `asc builds list --app <APP_ID> --limit 5` to confirm).
+Always pause for these two inputs (even if build number came in via `$ARGUMENTS`, confirm the group choice). Ask together so the user answers once:
 
-Validate: must be a positive integer strictly greater than the last build number on record.
+> 1. **Build number.** The last one uploaded for `<MARKETING_VERSION>` was `<N>`. New build will be `<N+1>`. Override if you want a different number.
+> 2. **Target TestFlight group(s).** The workspace has the groups below. Which should receive this build? (comma-separated names or IDs; default = `Internal Testers` if only you will be testing.)
 
-### Pre-flight
+Before asking, enumerate the groups and their tester counts so the user can pick knowingly:
+
+```bash
+# List all groups (note isInternal)
+asc testflight groups list --app "$APP_ID"
+
+# For each group ID, count actual testers
+for gid in <group-ids>; do
+  count=$(asc testflight groups links view --group-id "$gid" --type betaTesters \
+    | jq -r '.meta.paging.total')
+  echo "$gid testers=$count"
+done
+```
+
+**Rules of thumb:**
+- **Internal** groups (`isInternalGroup=true`): builds appear for testers as soon as the build is `VALID` and added to the group. No beta app review needed. Use this for dev-only testing.
+- **External** groups (`isInternalGroup=false` or `None`): need beta app review (usually auto-approved for subsequent builds of the same marketing version). Use for wider-audience betas.
+- **A group with zero testers is invisible.** If you add a build only to an empty group, nobody sees it and no emails go out. Verify tester counts before choosing.
+
+Validate build number: strictly greater than the last recorded for that marketing version — confirm with `asc builds next-build-number --app "$APP_ID" --version "$MARKETING_VERSION" --platform IOS`.
+
+### 7b. Pre-flight
 
 `AGENTS.md` and the `asc-*` skills are the source of truth. Re-read before every release; the gotchas below are stable but the skill contents may change:
 
@@ -345,9 +368,9 @@ asc doctor
 
 Fail fast if keychain auth is broken.
 
-### iOS signing gotchas (mirrored from AGENTS.md — keep in sync)
+### 7c. iOS signing gotchas (mirrored from AGENTS.md — keep in sync)
 
-- Project uses **automatic** signing (`CODE_SIGN_STYLE = Automatic`, `DEVELOPMENT_TEAM = VQ372F39G6`). `apps/ios/ExportOptions.plist` ships with `signingStyle = manual` + named profiles for CI determinism. Local ad-hoc exports need `signingStyle = automatic` instead (drop the per-bundle profile map).
+- Project uses **automatic** signing (`CODE_SIGN_STYLE = Automatic`, `DEVELOPMENT_TEAM = VQ372F39G6`). `apps/ios/ExportOptions.plist` ships with `signingStyle = manual` + named profiles for CI determinism. Local ad-hoc exports need `signingStyle = automatic` instead (drop the per-bundle profile map). `apps/ios/ExportOptions.auto.plist` is the ready-to-use auto-signing variant.
 - `asc signing fetch` only downloads provisioning profiles and the `.cer` — it does **not** include the private key. Don't expect it to make local signing work on its own.
 - Local exports need the ASC API key passed to `xcodebuild`. In addition to `-allowProvisioningUpdates`:
   ```
@@ -356,42 +379,77 @@ Fail fast if keychain auth is broken.
   -authenticationKeyIssuerID 4d523a6c-e68c-49b2-8560-34e59786d8e3
   ```
   Pull current values from `~/.asc/config.json`; do not hard-code.
-- After upload, `processingState = VALID` is not enough for TestFlight distribution. Also set `usesNonExemptEncryption` and assign to a group:
-  ```bash
-  asc builds update --build-id <ID> --uses-non-exempt-encryption=false
-  asc publish testflight --build <ID> --group "<Beta Group>"
-  ```
+- Override the build number at archive time via `--archive-xcodebuild-flag "CURRENT_PROJECT_VERSION=<N>"` so you do not need to commit a `pbxproj` bump just to ship a build.
 
-### One-shot publish
+### 7d. Do NOT use the one-shot `asc publish testflight --group ... --wait` in local-build mode
 
-Full flow (archive + export + upload + distribute):
+That form races: `--wait` returns as soon as `processingState=VALID`, but the build's `usesNonExemptEncryption` is still `None` at that instant. The subsequent `add-groups` then fails with `Build is not in an externally assignable state` because Apple blocks group attachment until the encryption question is answered. Seen on asc 1.2.x.
+
+### 7e. Safe sequenced flow
+
+Split the publish into explicit steps so encryption is answered before any group attachment:
 
 ```bash
+# 1) Archive + export + upload + wait for VALID (no --group here)
 asc publish testflight \
-  --app <APP_ID> \
+  --app "$APP_ID" \
   --project apps/ios/ADE.xcodeproj \
   --scheme ADE \
-  --version <VERSION-without-v> \
-  --build-number <BUILD_NUMBER> \
-  --export-options <auto-plist> \
-  --group "<Beta Group>" \
-  --wait
+  --version "$MARKETING_VERSION" \
+  --export-options apps/ios/ExportOptions.auto.plist \
+  --initial-build-number "$BUILD_NUMBER" \
+  --archive-path "/tmp/ade-ios-build${BUILD_NUMBER}/ADE.xcarchive" \
+  --ipa-path "/tmp/ade-ios-build${BUILD_NUMBER}/ADE.ipa" \
+  --wait \
+  --timeout 60m \
+  --pretty \
+  --archive-xcodebuild-flag "-allowProvisioningUpdates" \
+  --archive-xcodebuild-flag "-authenticationKeyPath" \
+  --archive-xcodebuild-flag "$ASC_KEY_PATH" \
+  --archive-xcodebuild-flag "-authenticationKeyID" \
+  --archive-xcodebuild-flag "$ASC_KEY_ID" \
+  --archive-xcodebuild-flag "-authenticationKeyIssuerID" \
+  --archive-xcodebuild-flag "$ASC_ISSUER_ID" \
+  --archive-xcodebuild-flag "CURRENT_PROJECT_VERSION=$BUILD_NUMBER" \
+  --archive-xcodebuild-flag "MARKETING_VERSION=$MARKETING_VERSION"
+
+# 2) Resolve the build ID by build number
+BUILD_ID=$(asc builds list --app "$APP_ID" --limit 5 \
+  | jq -r --arg v "$BUILD_NUMBER" '.data[] | select(.attributes.version == $v) | .id' \
+  | head -n 1)
+
+# 3) Answer encryption BEFORE any group attachment
+asc builds update --build-id "$BUILD_ID" --uses-non-exempt-encryption=false
+
+# 4) Distribute to chosen group(s). --submit --confirm is a no-op if the group is internal
+#    or if Apple already auto-approved the marketing version.
+for gid in "${GROUP_IDS[@]}"; do
+  asc builds add-groups --build-id "$BUILD_ID" --group "$gid" --submit --confirm
+done
 ```
 
-If `--wait` times out, fall back to polling via `asc builds get` every 5 minutes using the same `ScheduleWakeup` pattern as Phase 6. Update `.ade/release/v<VERSION>.json` with `status=ios-running` so a re-invocation resumes here.
+If `--wait` times out, fall back to polling via `asc builds info --build-id "$BUILD_ID"` every 5 minutes using the `ScheduleWakeup` pattern from Phase 6. Update `.ade/release/v<VERSION>.json` with `status=ios-running`.
 
-### Post-upload checks
+### 7f. Post-upload verification (always run this)
+
+Do not declare iOS done based on `BETA_APPROVED` alone. Verify the build is in a **non-empty** group:
 
 ```bash
-asc builds get --build-id <ID> --json
+asc builds info --build-id "$BUILD_ID"                            # processingState=VALID, usesNonExemptEncryption=false
+asc builds build-beta-detail view --build-id "$BUILD_ID"          # externalBuildState=BETA_APPROVED, internalBuildState=READY_FOR_BETA_TESTING
+for gid in "${GROUP_IDS[@]}"; do
+  count=$(asc testflight groups links view --group-id "$gid" --type betaTesters | jq -r '.meta.paging.total')
+  members=$(asc testflight groups links view --group-id "$gid" --type builds | jq -r '.data[].id' | grep -Fx "$BUILD_ID" || true)
+  echo "group=$gid testers=$count build5_present=$([ -n "$members" ] && echo yes || echo no)"
+done
 ```
 
-Confirm:
-- `processingState = VALID`
-- `usesNonExemptEncryption` is answered
-- Build is in the intended beta group
+All three must be true for a given group:
+- `testers > 0` (otherwise no humans see the build)
+- build appears in the group's builds list
+- internal → `READY_FOR_BETA_TESTING`; external → `BETA_APPROVED`
 
-If any check fails, run it explicitly (see gotchas above) and re-verify.
+If any fails, fix it explicitly and re-verify. Do not trust `autoNotifyEnabled=true` alone — it only controls push notifications, not distribution.
 
 ---
 
