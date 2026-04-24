@@ -124,6 +124,8 @@ function parseDiffFiles(patchText: string, fallbackPaths: string[]): ReviewMater
     const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunkMatch) {
       currentNewLine = Number(hunkMatch[1] ?? "0");
+      // GitHub: "the line just below the '@@' line is position 1". The first hunk header
+      // anchors position 0 (not counted); later '@@' headers each consume one position.
       if (currentDiffPosition > 0) currentDiffPosition += 1;
       continue;
     }
