@@ -863,6 +863,9 @@ final class SyncService: ObservableObject {
     projects = mergedById.values.sorted { left, right in
       if isActiveProject(left) { return true }
       if isActiveProject(right) { return false }
+      let leftOpen = left.isOpen ?? true
+      let rightOpen = right.isOpen ?? true
+      if leftOpen != rightOpen { return leftOpen }
       return (left.lastOpenedAt ?? "") > (right.lastOpenedAt ?? "")
     }
     if preferRemoteSelection {

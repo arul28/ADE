@@ -675,6 +675,15 @@ final class DatabaseService {
             lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress,
             agent_summary_json, mission_summary_json, updated_at
           ) values (?, ?, ?, ?, ?, ?, null, null, ?)
+          on conflict(lane_id) do update set
+            dirty = excluded.dirty,
+            ahead = excluded.ahead,
+            behind = excluded.behind,
+            remote_behind = excluded.remote_behind,
+            rebase_in_progress = excluded.rebase_in_progress,
+            agent_summary_json = excluded.agent_summary_json,
+            mission_summary_json = excluded.mission_summary_json,
+            updated_at = excluded.updated_at
         """) { statement in
           try bindText(lane.id, to: statement, index: 1)
           sqlite3_bind_int(statement, 2, lane.status.dirty ? 1 : 0)

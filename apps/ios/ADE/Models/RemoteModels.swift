@@ -76,6 +76,29 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
   var laneCount: Int
   var isAvailable: Bool
   var isCached: Bool
+  var isOpen: Bool?
+
+  init(
+    id: String,
+    displayName: String,
+    rootPath: String? = nil,
+    defaultBaseRef: String? = nil,
+    lastOpenedAt: String? = nil,
+    laneCount: Int,
+    isAvailable: Bool,
+    isCached: Bool,
+    isOpen: Bool? = nil
+  ) {
+    self.id = id
+    self.displayName = displayName
+    self.rootPath = rootPath
+    self.defaultBaseRef = defaultBaseRef
+    self.lastOpenedAt = lastOpenedAt
+    self.laneCount = laneCount
+    self.isAvailable = isAvailable
+    self.isCached = isCached
+    self.isOpen = isOpen
+  }
 }
 
 struct MobileProjectCatalogPayload: Codable, Equatable {

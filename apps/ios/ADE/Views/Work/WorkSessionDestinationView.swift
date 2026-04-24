@@ -66,7 +66,7 @@ struct WorkSessionDestinationView: View {
           Label("Go to lane", systemImage: "arrow.triangle.branch")
         }
       } label: {
-        Image(systemName: "arrow.triangle.branch.circle")
+        Image(systemName: "arrow.triangle.branch")
           .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
           .frame(width: 28, height: 28)

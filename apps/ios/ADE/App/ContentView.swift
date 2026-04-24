@@ -367,12 +367,21 @@ private struct ProjectHomeRow: View {
             .controlSize(.small)
         } else {
           VStack(alignment: .trailing, spacing: 6) {
-            Text("\(project.laneCount) lane\(project.laneCount == 1 ? "" : "s")")
-              .font(.system(.caption2, design: .rounded).weight(.semibold))
-              .foregroundStyle(ADEColor.accent)
-              .padding(.horizontal, 8)
-              .padding(.vertical, 4)
-              .background(ADEColor.accent.opacity(0.16), in: Capsule())
+            if project.isOpen == false {
+              Text("Closed")
+                .font(.system(.caption2, design: .rounded).weight(.semibold))
+                .foregroundStyle(ADEColor.textMuted)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(ADEColor.textMuted.opacity(0.14), in: Capsule())
+            } else {
+              Text("\(project.laneCount) lane\(project.laneCount == 1 ? "" : "s")")
+                .font(.system(.caption2, design: .rounded).weight(.semibold))
+                .foregroundStyle(ADEColor.accent)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(ADEColor.accent.opacity(0.16), in: Capsule())
+            }
             if let lastOpened = projectHomeRelativeTimestamp(project.lastOpenedAt) {
               Text(lastOpened)
                 .font(.system(.caption2, design: .monospaced))
