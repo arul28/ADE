@@ -656,7 +656,7 @@ export function AddCommandDialog({
               }}
             >
               {showAdvanced ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
-              Launch options
+              Advanced runtime options
             </button>
 
             {showAdvanced ? (

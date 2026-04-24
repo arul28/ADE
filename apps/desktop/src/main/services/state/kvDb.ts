@@ -3108,6 +3108,140 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_budget_usage_records_week on budget_usage_records(week_key)");
   db.run("create index if not exists idx_budget_usage_records_provider_week on budget_usage_records(provider, week_key)");
 
+  // Local review history for Review tab runs.
+  db.run(`
+    create table if not exists review_runs (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      target_json text not null,
+      config_json text not null,
+      target_label text not null,
+      compare_target_json text,
+      status text not null,
+      summary text,
+      error_message text,
+      finding_count integer not null default 0,
+      severity_summary_json text,
+      chat_session_id text,
+      created_at text not null,
+      started_at text not null,
+      ended_at text,
+      updated_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_review_runs_project_created on review_runs(project_id, created_at desc)");
+  db.run("create index if not exists idx_review_runs_lane_created on review_runs(lane_id, created_at desc)");
+  db.run("create index if not exists idx_review_runs_project_status on review_runs(project_id, status)");
+
+  db.run(`
+    create table if not exists review_findings (
+      id text primary key,
+      run_id text not null,
+      title text not null,
+      severity text not null,
+      finding_class text,
+      body text not null,
+      confidence real not null default 0.5,
+      evidence_json text,
+      file_path text,
+      line integer,
+      anchor_state text not null,
+      source_pass text not null,
+      publication_state text not null,
+      originating_passes_json text,
+      adjudication_json text,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_findings_run on review_findings(run_id)");
+  db.run("create index if not exists idx_review_findings_run_file on review_findings(run_id, file_path, line)");
+
+  db.run(`
+    create table if not exists review_run_publications (
+      id text primary key,
+      run_id text not null,
+      destination_json text not null,
+      review_event text not null,
+      status text not null,
+      review_url text,
+      remote_review_id text,
+      summary_body text not null,
+      inline_comments_json text not null default '[]',
+      summary_finding_ids_json text not null default '[]',
+      error_message text,
+      created_at text not null,
+      updated_at text not null,
+      completed_at text,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_run_publications_run on review_run_publications(run_id, created_at)");
+
+  db.run(`
+    create table if not exists review_run_artifacts (
+      id text primary key,
+      run_id text not null,
+      artifact_type text not null,
+      title text not null,
+      mime_type text not null,
+      content_text text,
+      metadata_json text,
+      created_at text not null,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_run_artifacts_run on review_run_artifacts(run_id, created_at)");
+  try { db.run("alter table review_findings add column finding_class text"); } catch {}
+  try { db.run("alter table review_findings add column originating_passes_json text"); } catch {}
+  try { db.run("alter table review_findings add column adjudication_json text"); } catch {}
+  try { db.run("alter table review_findings add column diff_context_json text"); } catch {}
+  try { db.run("alter table review_findings add column suppression_match_json text"); } catch {}
+
+  // Per-finding feedback — powers the learning loop.
+  db.run(`
+    create table if not exists review_finding_feedback (
+      id text primary key,
+      finding_id text not null,
+      run_id text not null,
+      project_id text not null,
+      kind text not null,
+      reason text,
+      note text,
+      snooze_until text,
+      created_at text not null,
+      foreign key(finding_id) references review_findings(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_feedback_finding on review_finding_feedback(finding_id)");
+  db.run("create index if not exists idx_review_feedback_project_created on review_finding_feedback(project_id, created_at desc)");
+
+  // Durable suppressions — Greptile-style learned filter.
+  db.run(`
+    create table if not exists review_suppressions (
+      id text primary key,
+      project_id text not null,
+      scope text not null,
+      repo_key text,
+      path_pattern text,
+      title text not null,
+      title_norm text not null,
+      finding_class text,
+      severity text,
+      reason text,
+      note text,
+      embedding_json text,
+      source_finding_id text,
+      hit_count integer not null default 0,
+      created_at text not null,
+      last_matched_at text
+    )
+  `);
+  db.run("create index if not exists idx_review_suppressions_project on review_suppressions(project_id, created_at desc)");
+  db.run("create index if not exists idx_review_suppressions_repo on review_suppressions(project_id, repo_key)");
+
   // PR convergence loop: issue inventory tracking
   db.run(`
     create table if not exists pr_issue_inventory (

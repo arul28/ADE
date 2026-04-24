@@ -212,6 +212,7 @@ describe("processService PTY-backed run commands", () => {
     try {
       await service.start({ laneId: "lane-env", processId: "print-env" });
       expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
+        allowNewSessionId: true,
         env: expect.objectContaining({
           PORT: "3001",
           PORT_RANGE_START: "3001",
@@ -224,6 +225,65 @@ describe("processService PTY-backed run commands", () => {
       service.disposeAll();
       db.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a managed process to use an explicit absolute cwd outside the lane worktree", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-absolute-cwd-"));
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-absolute");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    const dbPath = path.join(projectRoot, "kv.sqlite");
+    const projectId = "proj-absolute-cwd";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(projectRoot);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, projectRoot, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-absolute", projectId, "Lane Absolute", null, "worktree", "main", "feature/absolute", laneRoot, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "absolute-proc", command: ["scripts/dogfood.sh", "code-review"], cwd: projectRoot },
+    ]);
+
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => laneRoot,
+        list: async () => [makeLaneSummary(laneRoot, "lane-absolute")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const resolvedProjectRoot = fs.realpathSync(projectRoot);
+      await service.start({ laneId: "lane-absolute", processId: "absolute-proc" });
+      expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
+        allowExternalCwd: true,
+        cwd: resolvedProjectRoot,
+      }));
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 

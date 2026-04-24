@@ -35,6 +35,12 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  ReviewEventPayload,
+  ReviewLaunchContext,
+  ReviewListRunsArgs,
+  ReviewRun,
+  ReviewRunDetail,
+  ReviewStartRunArgs,
   AdeActionRegistryEntry,
   AdeCliInstallResult,
   AdeCliStatus,
@@ -216,6 +222,7 @@ import type {
   SetPrLabelsArgs,
   RequestPrReviewersArgs,
   SubmitPrReviewArgs,
+  SubmitPrReviewResult,
   ClosePrArgs,
   ReopenPrArgs,
   RerunPrChecksArgs,
@@ -896,6 +903,37 @@ contextBridge.exposeInMainWorld("ade", {
       ) => cb(payload);
       ipcRenderer.on(IPC.automationsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.automationsEvent, listener);
+    },
+  },
+  review: {
+    listLaunchContext: async (): Promise<ReviewLaunchContext> =>
+      ipcRenderer.invoke(IPC.reviewListLaunchContext),
+    listRuns: async (args: ReviewListRunsArgs = {}): Promise<ReviewRun[]> =>
+      ipcRenderer.invoke(IPC.reviewListRuns, args),
+    getRunDetail: async (runId: string): Promise<ReviewRunDetail | null> =>
+      ipcRenderer.invoke(IPC.reviewGetRunDetail, { runId }),
+    startRun: async (args: ReviewStartRunArgs): Promise<ReviewRun> =>
+      ipcRenderer.invoke(IPC.reviewStartRun, args),
+    rerun: async (runId: string): Promise<ReviewRun> =>
+      ipcRenderer.invoke(IPC.reviewRerun, { runId }),
+    cancelRun: async (runId: string): Promise<ReviewRun | null> =>
+      ipcRenderer.invoke(IPC.reviewCancelRun, { runId }),
+    recordFeedback: async (
+      args: import("../shared/types").ReviewRecordFeedbackArgs,
+    ): Promise<import("../shared/types").ReviewFeedbackRecord> =>
+      ipcRenderer.invoke(IPC.reviewRecordFeedback, args),
+    listSuppressions: async (
+      args: import("../shared/types").ReviewListSuppressionsArgs = {},
+    ): Promise<import("../shared/types").ReviewSuppression[]> =>
+      ipcRenderer.invoke(IPC.reviewListSuppressions, args),
+    deleteSuppression: async (suppressionId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.reviewDeleteSuppression, { suppressionId }),
+    qualityReport: async (): Promise<import("../shared/types").ReviewQualityReport> =>
+      ipcRenderer.invoke(IPC.reviewQualityReport),
+    onEvent: (cb: (ev: ReviewEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ReviewEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.reviewEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.reviewEvent, listener);
     },
   },
   actions: {
@@ -2148,29 +2186,17 @@ contextBridge.exposeInMainWorld("ade", {
       args: ReplyToPrReviewThreadArgs,
     ): Promise<PrReviewThreadComment> =>
       ipcRenderer.invoke(IPC.prsReplyToReviewThread, args),
-    resolveReviewThread: async (
-      args: ResolvePrReviewThreadArgs,
-    ): Promise<void> => ipcRenderer.invoke(IPC.prsResolveReviewThread, args),
-    updateTitle: async (args: UpdatePrTitleArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsUpdateTitle, args),
-    updateBody: async (args: UpdatePrBodyArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsUpdateBody, args),
-    setLabels: async (args: SetPrLabelsArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsSetLabels, args),
-    requestReviewers: async (args: RequestPrReviewersArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsRequestReviewers, args),
-    submitReview: async (args: SubmitPrReviewArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsSubmitReview, args),
-    close: async (args: ClosePrArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsClose, args),
-    reopen: async (args: ReopenPrArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsReopen, args),
-    rerunChecks: async (args: RerunPrChecksArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsRerunChecks, args),
-    aiReviewSummary: async (
-      args: AiReviewSummaryArgs,
-    ): Promise<AiReviewSummary> =>
-      ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
+    resolveReviewThread: async (args: ResolvePrReviewThreadArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsResolveReviewThread, args),
+    updateTitle: async (args: UpdatePrTitleArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateTitle, args),
+    updateBody: async (args: UpdatePrBodyArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateBody, args),
+    setLabels: async (args: SetPrLabelsArgs): Promise<void> => ipcRenderer.invoke(IPC.prsSetLabels, args),
+    requestReviewers: async (args: RequestPrReviewersArgs): Promise<void> => ipcRenderer.invoke(IPC.prsRequestReviewers, args),
+    submitReview: async (args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> => ipcRenderer.invoke(IPC.prsSubmitReview, args),
+    close: async (args: ClosePrArgs): Promise<void> => ipcRenderer.invoke(IPC.prsClose, args),
+    reopen: async (args: ReopenPrArgs): Promise<void> => ipcRenderer.invoke(IPC.prsReopen, args),
+    rerunChecks: async (args: RerunPrChecksArgs): Promise<void> => ipcRenderer.invoke(IPC.prsRerunChecks, args),
+    aiReviewSummary: async (args: AiReviewSummaryArgs): Promise<AiReviewSummary> => ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
     issueInventorySync: async (prId: string): Promise<IssueInventorySnapshot> =>
       ipcRenderer.invoke(IPC.prsIssueInventorySync, { prId }),
     issueInventoryGet: async (prId: string): Promise<IssueInventorySnapshot> =>

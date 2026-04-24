@@ -325,17 +325,28 @@ describe("TerminalView", () => {
   });
 
   it("fits to the container and resizes the PTY when the fit result is valid", async () => {
-    render(<TerminalView ptyId="pty-valid" sessionId="session-valid" isActive />);
-    await flushAllTimers();
+    // `await import("@xterm/addon-webgl")` may not settle under Vi's fake timers on CI shards,
+    // so use real timers + waitFor to let the microtask chain drain reliably.
+    vi.useRealTimers();
+    try {
+      render(<TerminalView ptyId="pty-valid" sessionId="session-valid" isActive />);
 
-    const runtime = getTerminalRuntimeSnapshot("session-valid");
-    expect(runtime?.renderer).toBe("webgl");
-    expect(runtime?.health.fitRecoveries).toBe(0);
-    expect((window as any).ade.pty.resize).toHaveBeenCalledWith({
-      ptyId: "pty-valid",
-      cols: 120,
-      rows: 40,
-    });
+      await waitFor(
+        () => {
+          const runtime = getTerminalRuntimeSnapshot("session-valid");
+          expect(runtime?.renderer).toBe("webgl");
+          expect(runtime?.health.fitRecoveries).toBe(0);
+          expect((window as any).ade.pty.resize).toHaveBeenCalledWith({
+            ptyId: "pty-valid",
+            cols: 120,
+            rows: 40,
+          });
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      vi.useFakeTimers();
+    }
   });
 
   it("rejects implausible fit results, restores the last good size, and skips PTY resize", async () => {

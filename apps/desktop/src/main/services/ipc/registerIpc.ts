@@ -41,6 +41,11 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  ReviewLaunchContext,
+  ReviewListRunsArgs,
+  ReviewRun,
+  ReviewRunDetail,
+  ReviewStartRunArgs,
   AdeActionRegistryEntry,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
@@ -534,6 +539,7 @@ import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
+import type { createReviewService } from "../review/reviewService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
@@ -631,6 +637,7 @@ export type AppContext = {
   queueLandingService: ReturnType<typeof createQueueLandingService>;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
   prSummaryService: ReturnType<typeof createPrSummaryService>;
+  reviewService: ReturnType<typeof createReviewService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
@@ -2783,6 +2790,56 @@ export function registerIpc({
   ipcMain.handle(IPC.automationsSimulate, async (_event, arg: AutomationSimulateRequest): Promise<AutomationSimulateResult> => {
     const ctx = getCtx();
     return ctx.automationPlannerService.simulate(arg);
+  });
+
+  ipcMain.handle(IPC.reviewListLaunchContext, async (): Promise<ReviewLaunchContext> => {
+    const ctx = getCtx();
+    return ctx.reviewService.listLaunchContext();
+  });
+
+  ipcMain.handle(IPC.reviewListRuns, async (_event, arg: ReviewListRunsArgs = {}): Promise<ReviewRun[]> => {
+    const ctx = getCtx();
+    return ctx.reviewService.listRuns(arg);
+  });
+
+  ipcMain.handle(IPC.reviewGetRunDetail, async (_event, arg: { runId: string }): Promise<ReviewRunDetail | null> => {
+    const ctx = getCtx();
+    return ctx.reviewService.getRunDetail({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.reviewStartRun, async (_event, arg: ReviewStartRunArgs): Promise<ReviewRun> => {
+    const ctx = getCtx();
+    return ctx.reviewService.startRun(arg);
+  });
+
+  ipcMain.handle(IPC.reviewRerun, async (_event, arg: { runId: string }): Promise<ReviewRun> => {
+    const ctx = getCtx();
+    return ctx.reviewService.rerun(arg?.runId ?? "");
+  });
+
+  ipcMain.handle(IPC.reviewCancelRun, async (_event, arg: { runId: string }) => {
+    const ctx = getCtx();
+    return ctx.reviewService.cancelRun({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.reviewRecordFeedback, async (_event, arg: import("../../../shared/types").ReviewRecordFeedbackArgs) => {
+    const ctx = getCtx();
+    return ctx.reviewService.recordFeedback(arg);
+  });
+
+  ipcMain.handle(IPC.reviewListSuppressions, async (_event, arg: import("../../../shared/types").ReviewListSuppressionsArgs | undefined) => {
+    const ctx = getCtx();
+    return ctx.reviewService.listSuppressions(arg ?? {});
+  });
+
+  ipcMain.handle(IPC.reviewDeleteSuppression, async (_event, arg: { suppressionId: string }) => {
+    const ctx = getCtx();
+    return ctx.reviewService.deleteSuppression({ suppressionId: arg?.suppressionId ?? "" });
+  });
+
+  ipcMain.handle(IPC.reviewQualityReport, async () => {
+    const ctx = getCtx();
+    return ctx.reviewService.qualityReport();
   });
 
   ipcMain.handle(IPC.adeActionsListRegistry, async (): Promise<AdeActionRegistryEntry[]> => {

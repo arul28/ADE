@@ -32,6 +32,9 @@ const TerminalsPage = React.lazy(() =>
 const PRsPage = React.lazy(() =>
   import("../prs/PRsPage").then((m) => ({ default: m.PRsPage }))
 );
+const ReviewPage = React.lazy(() =>
+  import("../review/ReviewPage").then((m) => ({ default: m.ReviewPage }))
+);
 const HistoryPage = React.lazy(() =>
   import("../history/HistoryPage").then((m) => ({ default: m.HistoryPage }))
 );
@@ -220,6 +223,7 @@ export function App() {
             <Route path="/work" element={guardedLazy(<TerminalsPage />)} />
             <Route path="/graph" element={guardedLazy(<WorkspaceGraphPage />)} />
             <Route path="/prs" element={guardedLazy(<PRsPage />)} />
+            <Route path="/review" element={guardedLazy(<ReviewPage />)} />
             <Route path="/history" element={guardedLazy(<HistoryPage />)} />
             <Route path="/automations" element={guardedLazy(<AutomationsPage />)} />
             <Route path="/automations/templates" element={guardedLazy(<AutomationsTemplatesPage />)} />

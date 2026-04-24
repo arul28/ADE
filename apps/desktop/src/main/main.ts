@@ -78,6 +78,7 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createAutomationIngressService } from "./services/automations/automationIngressService";
+import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
 import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
 import {
@@ -2334,6 +2335,23 @@ app.whenReady().then(async () => {
       onEvent: (event) =>
         emitProjectEvent(projectRoot, IPC.automationsEvent, event),
     });
+    const reviewService = createReviewService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      projectDefaultBranch: baseRef,
+      laneService,
+      gitService,
+      agentChatService,
+      sessionService,
+      sessionDeltaService,
+      testService,
+      issueInventoryService,
+      prService,
+      embeddingService,
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
+    });
     const automationIngressService = createAutomationIngressService({
       logger,
       automationService,
@@ -3464,6 +3482,7 @@ app.whenReady().then(async () => {
       queueLandingService,
       issueInventoryService,
       prSummaryService,
+      reviewService,
       jobEngine,
       automationService,
       automationPlannerService,
@@ -3572,6 +3591,7 @@ app.whenReady().then(async () => {
       queueLandingService: null,
       issueInventoryService: null,
       prSummaryService: null,
+      reviewService: null,
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,
@@ -3681,6 +3701,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.automationService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.reviewService?.dispose?.();
     } catch {
       // ignore
     }

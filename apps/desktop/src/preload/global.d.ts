@@ -114,6 +114,12 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  ReviewEventPayload,
+  ReviewLaunchContext,
+  ReviewListRunsArgs,
+  ReviewRun,
+  ReviewRunDetail,
+  ReviewStartRunArgs,
   AdeActionRegistryEntry,
   UsageSnapshot,
   BudgetCheckResult,
@@ -771,6 +777,23 @@ declare global {
           req: AutomationSimulateRequest,
         ) => Promise<AutomationSimulateResult>;
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
+      };
+      review: {
+        listLaunchContext: () => Promise<ReviewLaunchContext>;
+        listRuns: (args?: ReviewListRunsArgs) => Promise<ReviewRun[]>;
+        getRunDetail: (runId: string) => Promise<ReviewRunDetail | null>;
+        startRun: (args: ReviewStartRunArgs) => Promise<ReviewRun>;
+        rerun: (runId: string) => Promise<ReviewRun>;
+        cancelRun: (runId: string) => Promise<ReviewRun | null>;
+        recordFeedback: (
+          args: import("../shared/types").ReviewRecordFeedbackArgs,
+        ) => Promise<import("../shared/types").ReviewFeedbackRecord>;
+        listSuppressions: (
+          args?: import("../shared/types").ReviewListSuppressionsArgs,
+        ) => Promise<import("../shared/types").ReviewSuppression[]>;
+        deleteSuppression: (suppressionId: string) => Promise<boolean>;
+        qualityReport: () => Promise<import("../shared/types").ReviewQualityReport>;
+        onEvent: (cb: (ev: ReviewEventPayload) => void) => () => void;
       };
       actions: {
         listRegistry: () => Promise<AdeActionRegistryEntry[]>;
@@ -1461,7 +1484,7 @@ declare global {
         updateBody: (args: UpdatePrBodyArgs) => Promise<void>;
         setLabels: (args: SetPrLabelsArgs) => Promise<void>;
         requestReviewers: (args: RequestPrReviewersArgs) => Promise<void>;
-        submitReview: (args: SubmitPrReviewArgs) => Promise<void>;
+        submitReview: (args: SubmitPrReviewArgs) => Promise<SubmitPrReviewResult>;
         close: (args: ClosePrArgs) => Promise<void>;
         reopen: (args: ReopenPrArgs) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;

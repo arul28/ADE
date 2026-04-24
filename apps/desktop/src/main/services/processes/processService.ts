@@ -582,17 +582,32 @@ export function createProcessService({
     }
 
     const laneRoot = laneService.getLaneWorktreePath(laneId);
-    const configuredCwd = opts.overlay?.cwd?.trim() ? opts.overlay.cwd : definition.cwd;
-    const cwdCandidate = path.isAbsolute(configuredCwd) ? configuredCwd : path.join(laneRoot, configuredCwd);
+    const configuredCwd = opts.overlay?.cwd?.trim() ? opts.overlay.cwd.trim() : definition.cwd.trim();
+    // Absolute cwd is intentionally allowed: ProcessDefinition.cwd and LaneOverlayOverrides.cwd
+    // originate from the trusted project config (same file that already declares the command
+    // to execute), not from UI/IPC input. Relative paths remain sandboxed to the lane worktree.
+    const allowExternalCwd = path.isAbsolute(configuredCwd);
     let cwd: string;
-    try {
-      cwd = resolvePathWithinRoot(laneRoot, cwdCandidate);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("Path does not exist")) {
+    if (allowExternalCwd) {
+      try {
+        const resolved = path.resolve(configuredCwd);
+        const stat = fs.statSync(resolved);
+        if (!stat.isDirectory()) throw new Error("Path is not a directory");
+        cwd = fs.realpathSync(resolved);
+      } catch {
         throw new Error(`Process '${definition.id}' cwd does not exist: ${configuredCwd}`);
       }
-      throw new Error(`Process '${definition.id}' cwd must stay within the lane workspace`);
+    } else {
+      const cwdCandidate = path.join(laneRoot, configuredCwd);
+      try {
+        cwd = resolvePathWithinRoot(laneRoot, cwdCandidate);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("Path does not exist")) {
+          throw new Error(`Process '${definition.id}' cwd does not exist: ${configuredCwd}`);
+        }
+        throw new Error(`Process '${definition.id}' cwd must stay within the lane workspace`);
+      }
     }
 
     const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
@@ -614,6 +629,8 @@ export function createProcessService({
     try {
       const result = await ptyService.create({
         sessionId,
+        allowNewSessionId: true,
+        allowExternalCwd,
         laneId,
         cwd,
         cols: 120,

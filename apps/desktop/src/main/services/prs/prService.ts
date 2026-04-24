@@ -80,6 +80,7 @@ import type {
   SetPrLabelsArgs,
   RequestPrReviewersArgs,
   SubmitPrReviewArgs,
+  SubmitPrReviewResult,
   ClosePrArgs,
   ReopenPrArgs,
   RerunPrChecksArgs,
@@ -89,6 +90,7 @@ import type {
   GitHubPrSnapshot,
   PrDetail,
   PrFile,
+  PrReviewSnapshot,
   PrActionRun,
   PrActionJob,
   PrActionStep,
@@ -106,6 +108,10 @@ import type {
   SetPrReviewThreadResolvedResult,
   ReactToPrCommentArgs,
   PrReactionContent,
+  ReviewFinding,
+  ReviewPublication,
+  ReviewPublicationDestination,
+  ReviewPublicationInlineComment,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
@@ -267,6 +273,64 @@ function createEmptyIntegrationResolutionState(integrationLaneId: string, update
     laneChangeStatus: "unknown",
     updatedAt,
   };
+}
+
+function buildPublishedReviewCommentBody(finding: ReviewFinding): string {
+  const sections = [
+    `[${finding.severity.toUpperCase()}] ${finding.title}`,
+    "",
+    finding.body,
+    "",
+    `Confidence: ${Math.round(finding.confidence * 100)}%`,
+  ];
+  const quote = finding.evidence.find((entry) => typeof entry.quote === "string" && entry.quote.trim().length > 0)?.quote?.trim() ?? null;
+  if (quote) {
+    sections.push("", "```", quote.slice(0, 1_200), "```");
+  }
+  return sections.join("\n");
+}
+
+function formatPublishedFindingLocation(finding: ReviewFinding): string {
+  if (finding.filePath && finding.line != null) return `${finding.filePath}:${finding.line}`;
+  if (finding.filePath) return finding.filePath;
+  return "general";
+}
+
+function buildPublishedReviewSummaryBody(args: {
+  targetLabel: string;
+  summary: string | null;
+  inlineFindings: ReviewFinding[];
+  summaryFindings: ReviewFinding[];
+}): string {
+  const lines = [
+    "## ADE review",
+    "",
+    `Target: ${args.targetLabel}`,
+    "",
+    args.summary?.trim() || (args.inlineFindings.length + args.summaryFindings.length > 0
+      ? `ADE found ${args.inlineFindings.length + args.summaryFindings.length} actionable finding(s).`
+      : "ADE found no actionable findings."),
+  ];
+
+  if (args.inlineFindings.length > 0) {
+    lines.push("", `Anchored inline comments posted: ${args.inlineFindings.length}.`);
+  }
+
+  if (args.summaryFindings.length > 0) {
+    lines.push("", "### Findings kept in the summary");
+    for (const finding of args.summaryFindings) {
+      lines.push(
+        `- [${finding.severity}] ${finding.title} (${formatPublishedFindingLocation(finding)})`,
+        `  ${finding.body}`,
+      );
+    }
+  }
+
+  if (args.inlineFindings.length === 0 && args.summaryFindings.length === 0) {
+    lines.push("", "No actionable findings.");
+  }
+
+  return lines.join("\n").trim();
 }
 
 async function readIntegrationLaneSnapshot(worktreePath: string): Promise<IntegrationLaneSnapshot | null> {
@@ -1970,6 +2034,85 @@ export function createPrService({
       patch: asString(f?.patch) || null,
       previousFilename: asString(f?.previous_filename) || null
     }));
+  };
+
+  const getReviewSnapshot = async (prId: string): Promise<PrReviewSnapshot> => {
+    const row = requireRow(prId);
+    const repo = repoFromRow(row);
+    const [pr, files] = await Promise.all([
+      fetchPr(repo, Number(row.github_pr_number)),
+      getFilesSnapshot(prId),
+    ]);
+
+    return {
+      ...rowToSummary(row),
+      baseBranch: asString(pr?.base?.ref) || row.base_branch,
+      headBranch: asString(pr?.head?.ref) || row.head_branch,
+      githubUrl: asString(pr?.html_url) || row.github_url,
+      githubNodeId: asString(pr?.node_id) || row.github_node_id,
+      title: asString(pr?.title) || row.title || "",
+      additions: Number(pr?.additions ?? row.additions ?? 0),
+      deletions: Number(pr?.deletions ?? row.deletions ?? 0),
+      baseSha: asString(pr?.base?.sha) || null,
+      headSha: asString(pr?.head?.sha) || null,
+      files,
+    };
+  };
+
+  const submitReviewRequest = async (
+    args: SubmitPrReviewArgs,
+    options: {
+      commitSha?: string | null;
+    } = {},
+  ): Promise<SubmitPrReviewResult> => {
+    const row = requireRow(args.prId);
+    const repo = repoFromRow(row);
+    const inlineComments = Array.isArray(args.comments)
+      ? args.comments.filter((comment) => {
+          const path = asString(comment?.path).trim();
+          const body = asString(comment?.body).trim();
+          const position = Number(comment?.position);
+          return path.length > 0 && body.length > 0 && Number.isFinite(position) && position > 0;
+        })
+      : [];
+
+    let commitSha = asString(options.commitSha).trim() || null;
+    if (inlineComments.length > 0 && !commitSha) {
+      commitSha = (await getReviewSnapshot(args.prId)).headSha;
+    }
+    if (inlineComments.length > 0 && !commitSha) {
+      throw new Error("PR head commit is unavailable for inline review comments.");
+    }
+
+    const { data } = await githubService.apiRequest<any>({
+      method: "POST",
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/reviews`,
+      body: {
+        event: args.event,
+        body: args.body ?? "",
+        ...(commitSha ? { commit_id: commitSha } : {}),
+        ...(inlineComments.length > 0
+          ? {
+              comments: inlineComments.map((comment) => ({
+                path: comment.path,
+                body: comment.body,
+                position: comment.position,
+              })),
+            }
+          : {}),
+      },
+    });
+
+    markHotRefresh([args.prId]);
+    await refreshOne(args.prId);
+
+    return {
+      id: Number.isFinite(Number(data?.id)) ? String(Number(data.id)) : null,
+      nodeId: asString(data?.node_id) || null,
+      htmlUrl: asString(data?.html_url) || null,
+      state: asString(data?.state) || null,
+      submittedAt: asString(data?.submitted_at) || null,
+    };
   };
 
   /**
@@ -4902,6 +5045,8 @@ export function createPrService({
       return laneId ? summaries.filter((pr) => pr.laneId === laneId) : summaries;
     },
 
+    getReviewSnapshot,
+
     async refresh(args: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> {
       const requestedPrIds = [
         ...(args.prId ? [args.prId] : []),
@@ -5720,16 +5865,117 @@ export function createPrService({
       await refreshOne(args.prId);
     },
 
-    async submitReview(args: SubmitPrReviewArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
-      await githubService.apiRequest({
-        method: "POST",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/reviews`,
-        body: { event: args.event, body: args.body ?? "" }
+    async submitReview(args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> {
+      return await submitReviewRequest(args);
+    },
+
+    async publishReviewPublication(args: {
+      runId: string;
+      destination: ReviewPublicationDestination;
+      targetLabel: string;
+      summary: string | null;
+      findings: ReviewFinding[];
+      changedFiles: Array<{ filePath: string; diffPositionsByLine: Record<number, number> }>;
+    }): Promise<ReviewPublication> {
+      if (args.destination.kind !== "github_pr_review") {
+        throw new Error(`Unsupported review publication destination: ${args.destination.kind}`);
+      }
+
+      const snapshot = await getReviewSnapshot(args.destination.prId);
+      const requestedAt = nowIso();
+      const changedFilesByPath = new Map(
+        args.changedFiles.map((file) => [file.filePath, file.diffPositionsByLine] as const),
+      );
+      const inlineFindings: ReviewFinding[] = [];
+      const summaryFindings: ReviewFinding[] = [];
+      const inlineComments: ReviewPublicationInlineComment[] = [];
+
+      for (const finding of args.findings) {
+        const linePositions = finding.filePath ? changedFilesByPath.get(finding.filePath) : null;
+        const diffPosition = finding.line != null && linePositions
+          ? Number(linePositions[finding.line] ?? NaN)
+          : Number.NaN;
+
+        if (
+          finding.anchorState === "anchored"
+          && finding.filePath
+          && finding.line != null
+          && Number.isFinite(diffPosition)
+          && diffPosition > 0
+        ) {
+          inlineFindings.push(finding);
+          inlineComments.push({
+            findingId: finding.id,
+            path: finding.filePath,
+            line: finding.line,
+            position: diffPosition,
+            body: buildPublishedReviewCommentBody(finding),
+          });
+          continue;
+        }
+        summaryFindings.push(finding);
+      }
+
+      const summaryBody = buildPublishedReviewSummaryBody({
+        targetLabel: args.targetLabel,
+        summary: args.summary,
+        inlineFindings,
+        summaryFindings,
       });
-      markHotRefresh([args.prId]);
-      await refreshOne(args.prId);
+
+      try {
+        const result = await submitReviewRequest(
+          {
+            prId: args.destination.prId,
+            event: "COMMENT",
+            body: summaryBody,
+            comments: inlineComments.map((comment) => ({
+              path: comment.path,
+              position: comment.position,
+              body: comment.body,
+            })),
+          },
+          {
+            commitSha: snapshot.headSha,
+          },
+        );
+
+        const completedAt = nowIso();
+        return {
+          id: randomUUID(),
+          runId: args.runId,
+          destination: args.destination,
+          reviewEvent: "COMMENT",
+          status: "published",
+          reviewUrl: result.htmlUrl,
+          remoteReviewId: result.id || result.nodeId,
+          summaryBody,
+          inlineComments,
+          summaryFindingIds: summaryFindings.map((finding) => finding.id),
+          errorMessage: null,
+          createdAt: requestedAt,
+          updatedAt: completedAt,
+          completedAt,
+        };
+      } catch (error) {
+        const completedAt = nowIso();
+        return {
+          id: randomUUID(),
+          runId: args.runId,
+          destination: args.destination,
+          reviewEvent: "COMMENT",
+          status: "failed",
+          reviewUrl: null,
+          remoteReviewId: null,
+          summaryBody,
+          inlineComments,
+          summaryFindingIds: summaryFindings.map((finding) => finding.id),
+          errorMessage: getErrorMessage(error),
+          createdAt: requestedAt,
+          updatedAt: completedAt,
+          completedAt,
+        };
+      }
     },
 
     async closePr(args: ClosePrArgs): Promise<void> {

@@ -541,6 +541,25 @@ describe("ptyService", () => {
       expect(loadPty).not.toHaveBeenCalled();
     });
 
+    it("allows an explicit absolute cwd outside the selected lane when opted in", async () => {
+      mocks.existsSyncResults.set("/tmp/outside", true);
+      const { service, loadPty } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        cwd: "/tmp/outside",
+        allowExternalCwd: true,
+        title: "External cwd terminal",
+        cols: 80,
+        rows: 24,
+      });
+      const spawnCall = loadPty.mock.results[0].value.spawn;
+      expect(spawnCall).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Array),
+        expect.objectContaining({ cwd: "/tmp/outside" }),
+      );
+    });
+
     it("rejects a cwd whose realpath hops outside the lane worktree", async () => {
       const childPath = "/tmp/test-worktree/hop-child";
       mocks.existsSyncResults.set(childPath, true);
@@ -710,6 +729,46 @@ describe("ptyService", () => {
         startedAt: expect.any(String),
       });
       expect(sessionService.create).toHaveBeenCalledTimes(createCallsBeforeResume);
+    });
+
+    it("preserves the strict resume path when a requested session id does not exist", async () => {
+      const { service } = createHarness();
+
+      await expect(service.create({
+        sessionId: "session-missing",
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-existing",
+      })).rejects.toThrow(/was not found/i);
+    });
+
+    it("creates a new tracked session when the caller explicitly pre-assigns a fresh session id", async () => {
+      const { service, sessionService } = createHarness();
+
+      const result = await service.create({
+        sessionId: "session-process-1",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Run process",
+        cols: 80,
+        rows: 24,
+        toolType: "run-shell",
+        command: "npm",
+        args: ["run", "dev"],
+      });
+
+      expect(result.sessionId).toBe("session-process-1");
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-process-1",
+          title: "Run process",
+          toolType: "run-shell",
+        }),
+      );
+      expect(sessionService.reattach).not.toHaveBeenCalled();
     });
 
     it("reuses an already-live PTY when resume is requested twice for the same tracked session", async () => {

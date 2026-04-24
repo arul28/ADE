@@ -88,6 +88,10 @@ export type TerminalSessionDetail = TerminalSessionSummary & {
 
 export type PtyCreateArgs = {
   sessionId?: string;
+  /** Allow callers to pre-assign a new session id instead of only resuming an existing tracked session. */
+  allowNewSessionId?: boolean;
+  /** Allow an explicit absolute cwd outside the selected lane worktree. */
+  allowExternalCwd?: boolean;
   laneId: string;
   cwd?: string;
   cols: number;

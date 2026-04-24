@@ -156,6 +156,29 @@ describe("resolveLaneLaunchContext", () => {
     });
   });
 
+  describe("happy path: explicit absolute cwd outside worktree", () => {
+    it("allows an external absolute cwd when the caller opts in", () => {
+      mocks.statSync.mockReturnValue({ isDirectory: () => true });
+      mocks.realpathSync
+        .mockReturnValueOnce("/real/lane/root")
+        .mockReturnValueOnce("/real/project/root");
+
+      const result = resolveLaneLaunchContext({
+        laneService: makeLaneService("/projects/my-lane"),
+        laneId: "lane-1",
+        requestedCwd: "/real/project/root",
+        allowExternalCwd: true,
+        purpose: "start agent",
+      });
+
+      expect(result).toEqual({
+        laneWorktreePath: "/real/lane/root",
+        cwd: "/real/project/root",
+      });
+      expect(mocks.resolvePathWithinRoot).not.toHaveBeenCalled();
+    });
+  });
+
   describe("error: lane has no worktree configured", () => {
     it("throws when worktreePath is empty string", () => {
       expect(() =>
