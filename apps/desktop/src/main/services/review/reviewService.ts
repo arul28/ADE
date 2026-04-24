@@ -2406,18 +2406,20 @@ export function createReviewService({
     );
     const kindMap = new Map(feedbackCounts.map((row) => [row.kind, Number(row.n ?? 0)]));
     const byClassRows = db.all<{ finding_class: string | null; total: number; addressed: number }>(
-      `with latest as (
-         select finding_id, kind,
-                row_number() over (partition by finding_id order by created_at desc) as rn
-           from review_finding_feedback
-          where project_id = ?
+      `with latest_only as (
+         select finding_id, kind from (
+           select finding_id, kind,
+                  row_number() over (partition by finding_id order by created_at desc) as rn
+             from review_finding_feedback
+            where project_id = ?
+         ) where rn = 1
        )
        select rf.finding_class as finding_class,
               count(*) as total,
-              sum(case when fb.kind = 'acknowledge' and fb.rn = 1 then 1 else 0 end) as addressed
+              sum(case when fb.kind = 'acknowledge' then 1 else 0 end) as addressed
          from review_findings rf
          join review_runs rr on rr.id = rf.run_id
-         left join latest fb on fb.finding_id = rf.id
+         left join latest_only fb on fb.finding_id = rf.id
          where rr.project_id = ?
          group by rf.finding_class
          order by total desc

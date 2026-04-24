@@ -51,6 +51,10 @@ function pathMatchesFinding(paths: string[], findingPath: string | null): boolea
   });
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function titleMatchesSignal(findingTitle: string, findingBody: string, summary: string): boolean {
   const haystack = `${findingTitle} ${findingBody}`.toLowerCase();
   const tokens = summary
@@ -65,7 +69,7 @@ function titleMatchesSignal(findingTitle: string, findingBody: string, summary: 
     if (seen.has(token)) continue;
     seen.add(token);
     // Word-boundary match so "test" doesn't hit "latest" or "tested".
-    if (new RegExp(`\\b${token}\\b`).test(haystack)) hits += 1;
+    if (new RegExp(`\\b${escapeRegex(token)}\\b`).test(haystack)) hits += 1;
     if (hits >= required) return true;
   }
   return false;
