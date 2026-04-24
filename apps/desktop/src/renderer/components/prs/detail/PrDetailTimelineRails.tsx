@@ -5,6 +5,7 @@ import type {
   PrActivityEvent,
   PrAiSummary,
   PrCheck,
+  PrCommit,
   PrComment,
   PrDeployment,
   PrDetail,
@@ -38,6 +39,7 @@ type Props = {
   reviews: PrReview[];
   comments: PrComment[];
   activity: PrActivityEvent[];
+  commits: PrCommit[];
   files: Array<{ filename: string; additions: number; deletions: number }>;
   reviewThreads: PrReviewThread[];
   deployments: PrDeployment[];
@@ -102,6 +104,7 @@ export function buildTimelineEvents(args: {
   comments: PrComment[];
   checks: PrCheck[];
   deployments: PrDeployment[];
+  commits?: PrCommit[];
 }): PrTimelineEvent[] {
   const events: PrTimelineEvent[] = [];
 
@@ -175,6 +178,28 @@ export function buildTimelineEvents(args: {
         });
       }
     }
+  }
+
+  const seenCommitShas = new Set(
+    events
+      .filter((event): event is Extract<PrTimelineEvent, { type: "commit_push" }> => event.type === "commit_push")
+      .map((event) => event.sha),
+  );
+  for (const commit of args.commits ?? []) {
+    if (!commit.sha || seenCommitShas.has(commit.sha)) continue;
+    seenCommitShas.add(commit.sha);
+    events.push({
+      id: `commit:${commit.sha}`,
+      type: "commit_push",
+      timestamp: commit.committedDate || args.pr.updatedAt || new Date(0).toISOString(),
+      author: commit.author.login ?? commit.author.name ?? null,
+      avatarUrl: null,
+      sha: commit.sha,
+      shortSha: commit.shortSha || shortenSha(commit.sha),
+      subject: commit.message,
+      commitCount: 1,
+      forcePushed: false,
+    });
   }
 
   // Reviews
@@ -263,6 +288,7 @@ export function buildTimelineEvents(args: {
 
 function buildCommitRailCommits(
   activity: PrActivityEvent[],
+  commitSnapshots: PrCommit[],
   reviewThreads: PrReviewThread[],
 ): PrCommitRailCommit[] {
   const commits: PrCommitRailCommit[] = [];
@@ -276,6 +302,20 @@ function buildCommitRailCommits(
       subject,
       author: act.author ?? "unknown",
       authoredAt: act.timestamp,
+      threadCount: 0,
+      resolvedCount: 0,
+    });
+  }
+  const seen = new Set(commits.map((commit) => commit.sha));
+  for (const commit of commitSnapshots) {
+    if (!commit.sha || seen.has(commit.sha)) continue;
+    seen.add(commit.sha);
+    commits.push({
+      sha: commit.sha,
+      shortSha: commit.shortSha || shortenSha(commit.sha),
+      subject: commit.message,
+      author: commit.author.login ?? commit.author.name ?? "unknown",
+      authoredAt: commit.committedDate,
       threadCount: 0,
       resolvedCount: 0,
     });
@@ -330,6 +370,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       reviews,
       comments,
       activity,
+      commits: commitSnapshots,
       files,
       reviewThreads,
       deployments,
@@ -356,18 +397,19 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           pr,
           detail,
           activity,
+          commits: commitSnapshots,
           reviews,
           reviewThreads,
           comments,
           checks,
           deployments,
         }),
-      [pr, detail, activity, reviews, reviewThreads, comments, checks, deployments],
+      [pr, detail, activity, commitSnapshots, reviews, reviewThreads, comments, checks, deployments],
     );
 
     const commits = useMemo(
-      () => buildCommitRailCommits(activity, reviewThreads),
-      [activity, reviewThreads],
+      () => buildCommitRailCommits(activity, commitSnapshots, reviewThreads),
+      [activity, commitSnapshots, reviewThreads],
     );
 
     const mergeState = useMemo(

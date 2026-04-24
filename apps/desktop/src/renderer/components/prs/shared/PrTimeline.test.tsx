@@ -357,4 +357,43 @@ describe("PrTimeline", () => {
     );
     expect(screen.getByTestId("ai-summary-card")).toBeTruthy();
   });
+
+  it("renders commit pushes as prominent dividers without unresolved floating chip", () => {
+    render(
+      <PrTimeline
+        events={[
+          makeEvent({
+            type: "commit_push",
+            id: "commit:abc1234",
+            sha: "abc1234",
+            shortSha: "abc1234",
+            subject: "Fix scroll behavior",
+            commitCount: 1,
+            forcePushed: false,
+          }),
+          makeEvent({
+            type: "review_thread",
+            id: "thread:t1",
+            threadId: "t1",
+            path: "src/app.ts",
+            line: 12,
+            startLine: null,
+            isResolved: false,
+            isOutdated: false,
+            commentCount: 1,
+            firstCommentBody: "Please fix",
+          }),
+        ]}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("pr-timeline-commit-divider").textContent).toContain("Fix scroll behavior");
+    expect(screen.queryByTestId("pr-timeline-unresolved-fab")).toBeNull();
+  });
 });

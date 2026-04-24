@@ -16,6 +16,10 @@ const NOISY_BODY_PATTERNS = [
   /<!-- internal state/i,
   /walkthrough/i,
   /@codex review/i,
+  /^@(copilot|coderabbitai|greptile|codex)\s+review\b/i,
+  /\bship-lane handoff\b/i,
+  /\bclear-to-merge\b/i,
+  /\bci green\b/i,
 ];
 
 export function isNoisyIssueComment(comment: PrComment): boolean {
@@ -24,6 +28,28 @@ export function isNoisyIssueComment(comment: PrComment): boolean {
   if (!body) return true;
   if (NOISY_BOT_AUTHORS.has(author)) return true;
   return NOISY_BODY_PATTERNS.some((pattern) => pattern.test(body));
+}
+
+const RESOLUTION_NEGATION_PATTERNS = [
+  /\bnot\s+(fixed|addressed|resolved|done|handled)\b/i,
+  /\b(still|isn'?t|is not|not yet)\s+(an issue|fixed|addressed|resolved|done|handled|working)\b/i,
+  /\b(no|doesn'?t|does not)\s+(fix|address|resolve|handle)\b/i,
+];
+
+const RESOLUTION_ACK_PATTERNS = [
+  /\b(fixed|addressed|resolved|done|handled)\b/i,
+  /\bshould be (good|fixed|resolved)\b/i,
+  /\bno longer (an issue|applies|reproduces)\b/i,
+  /\bthanks[,! ]+(fixed|addressed|resolved)\b/i,
+  /\bclear-to-merge\b/i,
+  /\bci green\b/i,
+];
+
+export function looksLikeResolutionAck(body: string | null | undefined): boolean {
+  const text = (body ?? "").trim();
+  if (!text) return false;
+  if (RESOLUTION_NEGATION_PATTERNS.some((pattern) => pattern.test(text))) return false;
+  return RESOLUTION_ACK_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 /**

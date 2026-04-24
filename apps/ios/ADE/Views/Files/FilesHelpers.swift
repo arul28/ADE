@@ -92,7 +92,7 @@ func relativeDateDescription(from isoTimestamp: String?) -> String? {
 
 extension View {
   func filesListRow() -> some View {
-    listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+    listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
       .listRowBackground(Color.clear)
       .listRowSeparator(.hidden)
   }

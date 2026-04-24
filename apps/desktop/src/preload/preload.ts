@@ -204,8 +204,11 @@ import type {
   PrSummary,
   PrDetail,
   PrFile,
+  PrCommit,
   PrActionRun,
   PrActivityEvent,
+  CleanupPrBranchArgs,
+  CleanupPrBranchResult,
   AddPrCommentArgs,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
@@ -2176,6 +2179,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsGetDetail, { prId }),
     getFiles: async (prId: string): Promise<PrFile[]> =>
       ipcRenderer.invoke(IPC.prsGetFiles, { prId }),
+    getCommits: async (prId: string): Promise<PrCommit[]> =>
+      ipcRenderer.invoke(IPC.prsGetCommits, { prId }),
     getActionRuns: async (prId: string): Promise<PrActionRun[]> =>
       ipcRenderer.invoke(IPC.prsGetActionRuns, { prId }),
     getActivity: async (prId: string): Promise<PrActivityEvent[]> =>
@@ -2275,6 +2280,10 @@ contextBridge.exposeInMainWorld("ade", {
       args: LaunchPrIssueResolutionFromThreadArgs,
     ): Promise<LaunchPrIssueResolutionFromThreadResult> =>
       ipcRenderer.invoke(IPC.prsLaunchIssueResolutionFromThread, args),
+    cleanupBranch: async (
+      args: CleanupPrBranchArgs,
+    ): Promise<CleanupPrBranchResult> =>
+      ipcRenderer.invoke(IPC.prsCleanupBranch, args),
   },
   rebase: {
     scanNeeds: async (): Promise<RebaseNeed[]> =>

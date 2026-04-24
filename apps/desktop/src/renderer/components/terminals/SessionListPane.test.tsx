@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -108,5 +108,53 @@ describe("SessionListPane", () => {
 
     expect(screen.getAllByText("Mobile-created lane")).toHaveLength(2);
     expect(screen.getByText("Mobile Tool Streaming UI")).toBeTruthy();
+  });
+
+  it("marks old running CLI and shell sessions", () => {
+    const staleSession = makeSession({
+      id: "session-stale-shell",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "shell",
+      title: "Old shell",
+      startedAt: "2026-04-20T10:00:00.000Z",
+      status: "running",
+      runtimeState: "waiting-input",
+    });
+    renderPane({
+      runningFiltered: [staleSession],
+      sessionsGroupedByLane: new Map([[staleSession.laneId, [staleSession]]]),
+    });
+
+    expect(screen.getByLabelText("Old running session")).toBeTruthy();
+  });
+
+  it("reports rendered session order for range selection", () => {
+    const onSelectSession = vi.fn();
+    const first = makeSession({
+      id: "session-first",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "First session",
+    });
+    const second = makeSession({
+      id: "session-second",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Second session",
+    });
+    renderPane({
+      runningFiltered: [first, second],
+      sessionsGroupedByLane: new Map([[first.laneId, [first, second]]]),
+      onSelectSession,
+    });
+
+    fireEvent.click(screen.getByText("Second session"), { shiftKey: true });
+
+    expect(onSelectSession).toHaveBeenCalledWith(
+      "session-second",
+      expect.objectContaining({ shiftKey: true }),
+      ["session-first", "session-second"],
+    );
   });
 });

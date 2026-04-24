@@ -37,26 +37,6 @@ struct PrActionAvailability: Equatable {
   }
 }
 
-enum PrListStateFilter: String, CaseIterable, Identifiable {
-  case all
-  case open
-  case draft
-  case closed
-  case merged
-
-  var id: String { rawValue }
-
-  var title: String {
-    switch self {
-    case .all: return "All"
-    case .open: return "Open"
-    case .draft: return "Draft"
-    case .closed: return "Closed"
-    case .merged: return "Merged"
-    }
-  }
-}
-
 enum PrRootSurface: String, CaseIterable, Identifiable {
   case github
   case workflows

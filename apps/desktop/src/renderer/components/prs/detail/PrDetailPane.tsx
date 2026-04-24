@@ -11,7 +11,7 @@ import {
 } from "@phosphor-icons/react";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
-  PrFile, PrActionRun, PrActivityEvent, AiReviewSummary, PrReviewThread,
+  PrFile, PrCommit, PrActionRun, PrActivityEvent, AiReviewSummary, PrReviewThread,
   LaneSummary, MergeMethod, LandResult,
   IssueInventorySnapshot,
   PipelineSettings,
@@ -20,7 +20,7 @@ import type {
 } from "../../../../shared/types";
 import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
 import type { PaletteKind } from "../shared/PrCommandPalettes";
-import { parsePrsRouteState } from "../prsRouteState";
+import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef } from "./PrDetailTimelineRails";
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
@@ -37,7 +37,45 @@ import { usePrs } from "../state/PrsContext";
 import { modifierKeyLabel } from "../../../lib/platform";
 
 // ---- Sub-tab type ----
-type DetailTab = "overview" | "convergence" | "files" | "checks" | "activity";
+type DetailTab = PrDetailRouteTab;
+const DETAIL_TAB_STORAGE_KEY = "ade:prs:detailTabs:v1";
+
+function isDetailTab(value: unknown): value is DetailTab {
+  return value === "overview" || value === "convergence" || value === "files" || value === "checks" || value === "activity";
+}
+
+function isPrsRouteRuntime(): boolean {
+  try {
+    return window.location.pathname === "/prs" || window.location.hash.startsWith("#/prs");
+  } catch {
+    return false;
+  }
+}
+
+function readStoredDetailTab(prId: string): DetailTab | null {
+  if (!isPrsRouteRuntime()) return null;
+  try {
+    const raw = window.localStorage.getItem(DETAIL_TAB_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const value = parsed?.[prId];
+    return isDetailTab(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredDetailTab(prId: string, tab: DetailTab): void {
+  if (!isPrsRouteRuntime()) return;
+  try {
+    const raw = window.localStorage.getItem(DETAIL_TAB_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    parsed[prId] = tab;
+    window.localStorage.setItem(DETAIL_TAB_STORAGE_KEY, JSON.stringify(parsed));
+  } catch {
+    // localStorage can be unavailable in private/test environments.
+  }
+}
 
 // ---- Avatar component ----
 function Avatar({ user, size = 20 }: { user: { login: string; avatarUrl?: string | null }; size?: number }) {
@@ -389,6 +427,8 @@ type PrDetailPaneProps = {
   onOpenRebaseTab?: (laneId?: string) => void;
   queueContext?: { groupId: string; label?: string | null } | null;
   onOpenQueueView?: (groupId: string) => void;
+  initialDetailTab?: DetailTab | null;
+  onDetailTabChange?: (tab: DetailTab) => void;
 };
 
 export function PrDetailPane({
@@ -406,6 +446,8 @@ export function PrDetailPane({
   onOpenRebaseTab,
   queueContext,
   onOpenQueueView,
+  initialDetailTab,
+  onDetailTabChange,
 }: PrDetailPaneProps) {
   const {
     convergenceStatesByPrId,
@@ -430,13 +472,30 @@ export function PrDetailPane({
     setAiSummaryDismissed,
     regeneratePrAiSummary,
   } = usePrs();
-  const [activeTab, setActiveTab] = React.useState<DetailTab>("overview");
+  const [activeTab, setActiveTabState] = React.useState<DetailTab>(
+    () => initialDetailTab ?? readStoredDetailTab(pr.id) ?? "overview",
+  );
   const [detail, setDetail] = React.useState<PrDetail | null>(null);
   const [files, setFiles] = React.useState<PrFile[]>([]);
+  const [commits, setCommits] = React.useState<PrCommit[]>([]);
   const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>([]);
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
   const timelineRailsRef = React.useRef<PrDetailTimelineRailsRef | null>(null);
+
+  const setActiveTab = React.useCallback((tab: DetailTab) => {
+    setActiveTabState(tab);
+    writeStoredDetailTab(pr.id, tab);
+    onDetailTabChange?.(tab);
+  }, [onDetailTabChange, pr.id]);
+
+  React.useEffect(() => {
+    const next = initialDetailTab ?? readStoredDetailTab(pr.id) ?? "overview";
+    setActiveTabState(next);
+    if (initialDetailTab) {
+      writeStoredDetailTab(pr.id, initialDetailTab);
+    }
+  }, [initialDetailTab, pr.id]);
 
   React.useEffect(() => {
     const onTourTab = (event: Event) => {
@@ -447,7 +506,7 @@ export function PrDetailPane({
     };
     window.addEventListener("ade:tour-pr-detail-tab", onTourTab);
     return () => window.removeEventListener("ade:tour-pr-detail-tab", onTourTab);
-  }, []);
+  }, [setActiveTab]);
 
   const deepLinkState = React.useMemo(() => {
     try {
@@ -675,9 +734,10 @@ export function PrDetailPane({
   const loadDetail = React.useCallback(async () => {
     const requestId = ++detailLoadSeqRef.current;
     try {
-      const [d, f, a, act, threads] = await Promise.all([
+      const [d, f, c, a, act, threads] = await Promise.all([
         window.ade.prs.getDetail(pr.id).catch(() => null),
         window.ade.prs.getFiles(pr.id).catch(() => []),
+        (window.ade.prs.getCommits?.(pr.id) ?? Promise.resolve([])).catch(() => []),
         window.ade.prs.getActionRuns(pr.id).catch(() => []),
         window.ade.prs.getActivity(pr.id).catch(() => []),
         window.ade.prs.getReviewThreads(pr.id).catch(() => []),
@@ -685,6 +745,7 @@ export function PrDetailPane({
       if (requestId !== detailLoadSeqRef.current) return;
       setDetail(d);
       setFiles(f);
+      setCommits(c);
       setActionRuns(a);
       setActivity(act);
       setReviewThreads(threads);
@@ -971,6 +1032,9 @@ export function PrDetailPane({
   // ---------------------------------------------------------------------------
 
   const syncInventory = React.useCallback(async () => {
+    if (pr.state === "merged" || pr.state === "closed") {
+      return null;
+    }
     const requestId = ++inventoryLoadSeqRef.current;
     try {
       const [snapshot, freshChecks] = await Promise.all([
@@ -989,15 +1053,15 @@ export function PrDetailPane({
     } catch {
       return null;
     }
-  }, [checks, pr.id]);
+  }, [checks, pr.id, pr.state]);
 
   const refreshDetailSurface = React.useCallback(async (options: { includeInventory?: boolean } = {}) => {
     const tasks: Array<Promise<unknown>> = [onRefresh(), loadDetail()];
-    if (options.includeInventory) {
+    if (options.includeInventory && pr.state !== "merged" && pr.state !== "closed") {
       tasks.push(syncInventory());
     }
     await Promise.all(tasks);
-  }, [loadDetail, onRefresh, syncInventory]);
+  }, [loadDetail, onRefresh, pr.state, syncInventory]);
 
   const handleRefresh = React.useCallback(async () => {
     try {
@@ -1019,7 +1083,13 @@ export function PrDetailPane({
       source: item.source === "unknown" ? "human" : item.source,
       dismissReason: item.dismissReason,
       agentSessionId: item.agentSessionId,
+      url: item.url,
     })) as PanelIssueItem[];
+  }, []);
+
+  const handleOpenInventorySource = React.useCallback((item: PanelIssueItem) => {
+    if (!item.url) return;
+    void window.ade.app.openExternal(item.url);
   }, []);
 
   const mapConvergenceStatus = React.useCallback((snapshot: IssueInventorySnapshot | null): PanelConvergence => {
@@ -1048,14 +1118,14 @@ export function PrDetailPane({
         if (runId !== convergenceTabLoadSeqRef.current) return; // stale
         applyConvergenceRuntime(runtime);
       }).catch(() => undefined);
-      void syncInventory();
+      if (pr.state !== "merged" && pr.state !== "closed") void syncInventory();
       void window.ade.prs.pipelineSettingsGet(capturedPrId).then((s) => {
         if (runId !== convergenceTabLoadSeqRef.current) return; // stale
         setPipelineSettings(s);
         pipelineSettingsRef.current = s;
       }).catch(() => undefined);
     }
-  }, [activeTab, applyConvergenceRuntime, loadConvergenceState, syncInventory, pr.id]);
+  }, [activeTab, applyConvergenceRuntime, loadConvergenceState, syncInventory, pr.id, pr.state]);
 
   // Auto-converge: hybrid polling (checks complete + comment stabilization)
   // After agent session completes, polls every 60s. Triggers next round when:
@@ -1402,13 +1472,27 @@ export function PrDetailPane({
             const settings = pipelineSettingsRef.current;
             if (settings.autoMerge) {
               // Verify all checks are passing
-              const allChecksPassed = freshChecks.every(
+              const hasCheckData = freshChecks.length > 0;
+              const allChecksPassed = hasCheckData && freshChecks.every(
                 (c: PrCheck) =>
                   c.conclusion === "success" ||
                   c.conclusion === "neutral" ||
                   c.conclusion === "skipped",
               );
-              if (allChecksPassed) {
+              if (!hasCheckData) {
+                const reason = "Auto-merge paused because GitHub returned no check data for this PR.";
+                setActionError(reason);
+                setAutoConverge(false);
+                saveConvergenceRuntime({
+                  status: "paused",
+                  pollerStatus: "idle",
+                  activeSessionId: null,
+                  activeHref: convergenceSessionHref,
+                  pauseReason: reason,
+                  errorMessage: null,
+                  lastStoppedAt: new Date().toISOString(),
+                });
+              } else if (allChecksPassed) {
                 try {
                   // Map pipeline merge method to MergeMethod for the land call
                   const method: MergeMethod =
@@ -1803,7 +1887,8 @@ export function PrDetailPane({
     activity: COLORS.warning,
   };
 
-  const newIssueCount = inventorySnapshot?.items.filter(i => i.state === "new").length ?? 0;
+  const isTerminalPr = pr.state === "merged" || pr.state === "closed";
+  const newIssueCount = isTerminalPr ? 0 : (inventorySnapshot?.items.filter(i => i.state === "new").length ?? 0);
 
   // Merge convergence checks with action runs so the Path to Merge panel
   // shows the same unified view as the CI / Checks tab.  Raw check-runs
@@ -1997,6 +2082,7 @@ export function PrDetailPane({
             reviews={reviews}
             comments={comments}
             activity={activity}
+            commits={commits}
             files={files}
             reviewThreads={reviewThreadsForTimeline}
             deployments={detailDeployments}
@@ -2057,6 +2143,7 @@ export function PrDetailPane({
             autoConverge={autoConverge}
             pipelineSettings={pipelineSettings}
             waitState={autoConvergeWaitState}
+            terminalState={pr.state === "merged" || pr.state === "closed" ? pr.state : null}
             onPipelineSettingsChange={(partial) => {
               const prev = pipelineSettings;
               const next = { ...pipelineSettings, ...partial };
@@ -2077,6 +2164,7 @@ export function PrDetailPane({
             onMarkDismissed={handleMarkDismissed}
             onMarkEscalated={handleMarkEscalated}
             onResetInventory={handleResetInventory}
+            onOpenSource={handleOpenInventorySource}
             onViewAgentSession={(sessionId) => {
               const href = convergenceSessionHref
                 ?? (sessionId.startsWith("http://") || sessionId.startsWith("https://") || sessionId.startsWith("/")

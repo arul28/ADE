@@ -151,7 +151,10 @@ import type {
   LandResult,
   LandStackEnhancedArgs,
   LandQueueNextArgs,
+  CleanupPrBranchArgs,
+  CleanupPrBranchResult,
   PrCheck,
+  PrCommit,
   PrComment,
   PrReviewThread,
   PrHealth,
@@ -5878,6 +5881,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => getCtx().prService.getDetail(args.prId));
   ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => getCtx().prService.getFiles(args.prId));
+  ipcMain.handle(IPC.prsGetCommits, (_e, args: { prId: string }): Promise<PrCommit[]> => getCtx().prService.getCommits(args.prId));
   ipcMain.handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => getCtx().prService.getActionRuns(args.prId));
   ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => getCtx().prService.getActivity(args.prId));
   ipcMain.handle(IPC.prsAddComment, (_e, args) => getCtx().prService.addComment(args));
@@ -5930,6 +5934,8 @@ export function registerIpc({
       );
     },
   );
+  ipcMain.handle(IPC.prsCleanupBranch, (_e, args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> =>
+    getCtx().prService.cleanupBranch(args));
 
   // Issue Inventory (PR convergence loop)
   ipcMain.handle(IPC.prsIssueInventorySync, async (_e, args: { prId: string }): Promise<IssueInventorySnapshot> => {

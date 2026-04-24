@@ -89,6 +89,11 @@ function navigateToRoute(route: string): void {
   window.location.hash = target.startsWith("#") ? target : `#${target}`;
 }
 
+function dispatchTourEnded(tourId: string, reason: "completed" | "dismissed"): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("ade:tour-ended", { detail: { tourId, reason } }));
+}
+
 async function runActions(actions: StepAction[]): Promise<void> {
   for (const action of actions) {
     switch (action.type) {
@@ -286,6 +291,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       activeStepHistory: [],
       activeTourCtx: null,
     });
+    dispatchTourEnded(activeTourId, "completed");
     const onboarding = api();
     if (!onboarding) return;
     const progress = await onboarding.markTourCompleted(activeTourId);
@@ -306,6 +312,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       activeStepHistory: [],
       activeTourCtx: null,
     });
+    dispatchTourEnded(activeTourId, "dismissed");
     const onboarding = api();
     if (!onboarding) return;
     const progress = await onboarding.markTourDismissed(activeTourId);

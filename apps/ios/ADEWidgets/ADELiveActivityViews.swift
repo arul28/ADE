@@ -129,6 +129,7 @@ struct WorkspaceCompactTrailing: View {
                 .font(.system(size: 12, weight: .semibold).monospacedDigit())
                 .kerning(-0.2)
                 .foregroundStyle(tint)
+                .shadow(color: tint.opacity(0.5), radius: 4, x: 0, y: 0)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: 96, alignment: .trailing)
@@ -177,12 +178,40 @@ struct WorkspaceMinimalGlyph: View {
         }()
 
         ZStack {
+            // Outer soft color glow — subtly breathes outward, keeps the
+            // minimal region feeling alive even while tiny.
+            Circle()
+                .fill(color.opacity(0.45))
+                .frame(width: 34, height: 34)
+                .blur(radius: 6)
+
             Circle()
                 .fill(Color.black)
                 .frame(width: 28, height: 28)
-                .overlay(
-                    Circle().stroke(color, lineWidth: 2)
+
+            // Inner tinted radial wash top-left.
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [color.opacity(0.35), .clear],
+                        center: UnitPoint(x: 0.25, y: 0.2),
+                        startRadius: 0,
+                        endRadius: 22
+                    )
                 )
+                .frame(width: 28, height: 28)
+
+            // Gradient ring (bright tint at top → darker tint at bottom).
+            Circle()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [color, color.opacity(0.5)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1.75
+                )
+                .frame(width: 28, height: 28)
 
             inner(color: color)
         }
@@ -374,11 +403,20 @@ struct WorkspaceLockScreenPresentation: View {
 
     var body: some View {
         ZStack {
-            // Ambient tint wash (135° gradient from tint@12% → transparent).
+            // Ambient tint wash (135° gradient from tint@14% → transparent).
             LinearGradient(
-                colors: [tint.opacity(0.12), .clear],
+                colors: [tint.opacity(0.14), .clear],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
+            )
+            .allowsHitTesting(false)
+
+            // Soft radial bloom in the top-left corner in the tint color.
+            RadialGradient(
+                colors: [tint.opacity(0.22), .clear],
+                center: UnitPoint(x: 0.08, y: 0.08),
+                startRadius: 0,
+                endRadius: 220
             )
             .allowsHitTesting(false)
 
@@ -390,10 +428,36 @@ struct WorkspaceLockScreenPresentation: View {
         }
         .background(.ultraThinMaterial)
         .overlay(
+            // Soft top-to-bottom white highlight — gives the glass its "wet" feel.
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.08), .clear],
+                        startPoint: .top,
+                        endPoint: .center
+                    )
+                )
+                .allowsHitTesting(false)
+        )
+        .overlay(
+            // 1pt inner highlight (white top → fade).
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.18), Color.white.opacity(0.02)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .shadow(color: Color.black.opacity(0.40), radius: 18, x: 0, y: 6)
         .frame(maxWidth: 358)
         // Lock Screen Live Activities live in a fixed-height card — clamp
         // Dynamic Type so accessibility sizes don't overflow the chrome.
@@ -505,12 +569,44 @@ private struct AttentionLockCard: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(tint.opacity(0.15))
+                .fill(tint.opacity(0.16))
+        )
+        .background(
+            // Soft tint bloom in the top-left of the attention card.
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        colors: [tint.opacity(0.28), .clear],
+                        center: UnitPoint(x: 0.05, y: 0.1),
+                        startRadius: 0,
+                        endRadius: 160
+                    )
+                )
+        )
+        .overlay(
+            // Top white highlight to lift the tint-tile off the glass behind.
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.10), .clear],
+                        startPoint: .top,
+                        endPoint: .center
+                    )
+                )
+                .allowsHitTesting(false)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(tint.opacity(0.33), lineWidth: 0.5)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [tint.opacity(0.55), tint.opacity(0.15)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.75
+                )
         )
+        .shadow(color: tint.opacity(0.40), radius: 10, x: 0, y: 4)
     }
 }
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAppStore } from "../../state/appStore";
+import { useOnboardingStore } from "../../state/onboardingStore";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
 
@@ -37,10 +38,12 @@ type DidYouKnowProps = {
 export function DidYouKnow({ hints }: DidYouKnowProps) {
   const onboardingEnabled = useAppStore((s) => s.onboardingEnabled);
   const didYouKnowEnabled = useAppStore((s) => s.didYouKnowEnabled);
+  const activeTourId = useOnboardingStore((s) => s.activeTourId);
   const [dismissed, setDismissed] = useState(false);
   const [hint, setHint] = useState<Hint | null>(null);
 
   useEffect(() => {
+    if (activeTourId) return;
     if (!onboardingEnabled || !didYouKnowEnabled) return;
     try {
       if (sessionStorage.getItem(SESSION_KEY) === "1") return;
@@ -55,8 +58,9 @@ export function DidYouKnow({ hints }: DidYouKnowProps) {
     } catch {
       /* ignore */
     }
-  }, [onboardingEnabled, didYouKnowEnabled, hints]);
+  }, [activeTourId, onboardingEnabled, didYouKnowEnabled, hints]);
 
+  if (activeTourId) return null;
   if (!onboardingEnabled || !didYouKnowEnabled) return null;
   if (!hint || dismissed) return null;
   if (typeof document === "undefined") return null;

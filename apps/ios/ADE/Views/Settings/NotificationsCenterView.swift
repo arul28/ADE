@@ -232,18 +232,38 @@ struct NotificationsCenterView: View {
     VStack(spacing: 0) { content() }
       .padding(.horizontal, 0)
       .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(Color(red: 28.0 / 255.0, green: 25.0 / 255.0, blue: 42.0 / 255.0).opacity(0.75))
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(Color(red: 28.0 / 255.0, green: 25.0 / 255.0, blue: 42.0 / 255.0).opacity(0.72))
           .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
               .fill(.ultraThinMaterial)
           )
       )
       .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.05), lineWidth: 0.5)
+        // Soft top highlight — lifts the group off the page and reads as glass.
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(
+            LinearGradient(
+              colors: [Color.white.opacity(0.06), .clear],
+              startPoint: .top,
+              endPoint: .center
+            )
+          )
+          .allowsHitTesting(false)
       )
-      .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .strokeBorder(
+            LinearGradient(
+              colors: [Color.white.opacity(0.12), Color.white.opacity(0.02)],
+              startPoint: .top,
+              endPoint: .bottom
+            ),
+            lineWidth: 0.75
+          )
+      )
+      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .shadow(color: Color.black.opacity(0.35), radius: 16, x: 0, y: 6)
       .padding(.horizontal, 16)
   }
 

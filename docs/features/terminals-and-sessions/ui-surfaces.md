@@ -22,6 +22,27 @@ The page handles session navigation (selection, tab open, "go to lane")
 and invalidates the shared session list cache before pushing a
 freshly-opened chat into the Work tab.
 
+It also owns the sidebar's multi-select state:
+
+- `selectedSessionIds: Set<string>` with a `selectionAnchorId` tracker.
+- `handleSelectSession(id, event, visibleSessionIds)` — plain click
+  clears the multi-selection and opens the tab; shift-click selects the
+  range from the anchor; meta/ctrl-click toggles the id in/out of the
+  set; any of the three refresh the active single-selected item.
+- `handleBulkCloseSelected` runs on selected `running` sessions,
+  confirming before calling `closeChatSession` for chat rows or
+  `closeSession(ptyId, sessionId)` for PTY rows; failures are counted
+  and surfaced through `sessionActionError`.
+- `handleBulkDeleteSelected` runs on selected non-running sessions
+  with a similar confirm + promise-all-settled loop, wired to
+  `ade.agentChat.delete` for chat rows and `ade.sessions.delete` for
+  PTY rows. Succeeded ids are removed from the cache and the open-tabs
+  list.
+
+Any selection-entry that is no longer present in the rendered session
+list is pruned from `selectedSessionIds` automatically so stale ids
+don't leak across filter changes.
+
 ## Session sidebar: `SessionListPane.tsx`
 
 Lists sessions grouped by one of three modes (controlled by
@@ -54,6 +75,16 @@ Also renders:
 - the actual list of `SessionCard` rows (memoized)
 - an "Open new" button that sets `draftKind` and routes to
   `WorkStartSurface`
+- a bulk-action footer that appears when `selectedSessionIds` is
+  non-empty: "Close N running", "Delete N ended", and a clear-selection
+  X. The footer totals only count sessions that are still visible in
+  the current filter; callers are `TerminalsPage`'s bulk handlers.
+
+`onSelectSession(id, event, visibleSessionIds)` is forwarded verbatim
+from `TerminalsPage`. The pane passes its own ordered id list (derived
+from the active organization mode and uncollapsed groups) as the third
+argument so shift-range selection follows the visual order the user
+sees, not the underlying data order.
 
 ### `SessionCard.tsx`
 
@@ -75,6 +106,16 @@ enabled only when the session has ended and has a resolvable CLI
 resume command.
 
 The selected card adds a left accent border and elevated background.
+Cards in the multi-selection set (`isMultiSelected`) reuse the same
+accent and add a subtle ring so shift / meta click selection reads
+clearly even when the primary single-selection points elsewhere.
+
+A small amber warning pip with a tooltip appears next to the title
+when `getStaleRunningCliSessionAgeHours(session)` returns a value —
+i.e. the session is still `running`, is not chat-typed, is not a
+run-owned shell, and has been running for at least 12 hours. The
+tooltip reports the rounded age so the user can decide whether to
+close it.
 
 ## Work view: `WorkViewArea.tsx`
 

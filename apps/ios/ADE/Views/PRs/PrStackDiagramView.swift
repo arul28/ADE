@@ -23,7 +23,7 @@ struct PrStackNode: Identifiable, Equatable {
     branch: String,
     state: String,
     adeKind: String? = nil,
-    kindColor: Color = ADEColor.tintPRs,
+    kindColor: Color = PrGlassPalette.purple,
     subMetric: String? = nil,
     indent: Int = 0,
     isRoot: Bool = false,
@@ -42,111 +42,120 @@ struct PrStackNode: Identifiable, Equatable {
   }
 }
 
-/// Vertical rail + node dots for a stacked PR group. The rail uses a
-/// violet→amber→blue gradient matching the mock; child nodes indent 18pt
-/// with a horizontal connector back to the rail.
+/// Vertical-rail PR stack. Each row carries a 4pt accent rail tinted by
+/// state (green=open, amber=draft, danger=blocked, purple=base) with a soft
+/// glow. Branch is mono, state is a tinted pill.
 struct PrStackDiagramView: View {
   let nodes: [PrStackNode]
 
-  private let railX: CGFloat = 11
-  private let nodeGapX: CGFloat = 18
-
   var body: some View {
-    ZStack(alignment: .topLeading) {
-      // Rail
-      LinearGradient(
-        gradient: Gradient(colors: [
-          ADEColor.tintPRs.opacity(0.55),
-          ADEColor.warning.opacity(0.55),
-          ADEColor.accent.opacity(0.55),
-        ]),
-        startPoint: .top,
-        endPoint: .bottom
-      )
-      .frame(width: 1.5)
-      .padding(.leading, railX)
-      .padding(.vertical, 6)
-
-      VStack(alignment: .leading, spacing: 14) {
-        ForEach(nodes) { node in
-          PrStackDiagramRow(node: node, nodeGapX: nodeGapX, railX: railX)
-        }
+    VStack(alignment: .leading, spacing: 8) {
+      ForEach(nodes) { node in
+        PrStackDiagramRow(node: node)
       }
     }
-    .padding(.leading, 24)
-    .padding(.vertical, 8)
-    .padding(.trailing, 8)
+    .padding(.vertical, 6)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
 private struct PrStackDiagramRow: View {
   let node: PrStackNode
-  let nodeGapX: CGFloat
-  let railX: CGFloat
 
   private var stateColor: Color {
     switch node.state {
-    case "open": return ADEColor.success
-    case "draft": return ADEColor.textSecondary
-    case "blocked": return ADEColor.danger
-    case "base": return ADEColor.textSecondary
-    default: return ADEColor.textSecondary
+    case "open": return PrGlassPalette.success
+    case "draft": return PrGlassPalette.warning
+    case "blocked": return PrGlassPalette.danger
+    case "base": return PrGlassPalette.purple
+    default: return PrGlassPalette.blue
+    }
+  }
+
+  private var stateLabel: String {
+    switch node.state {
+    case "open": return "open"
+    case "draft": return "draft"
+    case "blocked": return "blocked"
+    case "base": return "base"
+    default: return node.state
     }
   }
 
   var body: some View {
-    HStack(alignment: .top, spacing: 0) {
-      ZStack(alignment: .topLeading) {
-        // Horizontal connector for indented children.
-        if node.indent > 0 {
-          Rectangle()
-            .fill(ADEColor.tintPRs.opacity(0.4))
-            .frame(width: CGFloat(node.indent) * nodeGapX + 4, height: 1.5)
-            .offset(x: -(CGFloat(node.indent) * nodeGapX) + 4, y: 8)
-        }
-        // Node dot (aligned to the rail).
-        Circle()
-          .fill(stateColor.opacity(0.25))
-          .overlay(
-            Circle().strokeBorder(stateColor, lineWidth: 1.5)
+    HStack(alignment: .top, spacing: 10) {
+      // 4pt accent rail tinted by state.
+      RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+        .fill(
+          LinearGradient(
+            colors: [stateColor, stateColor.opacity(0.55)],
+            startPoint: .top,
+            endPoint: .bottom
           )
-          .frame(width: 14, height: 14)
-          .shadow(color: stateColor.opacity(0.35), radius: 3)
-          .offset(x: -13, y: 2)
-      }
-      .frame(width: CGFloat(node.indent) * nodeGapX + 1, alignment: .leading)
+        )
+        .frame(width: 4)
+        .shadow(color: stateColor.opacity(0.55), radius: 7, x: 0, y: 0)
 
-      VStack(alignment: .leading, spacing: 3) {
+      VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 6) {
           Text(node.label)
             .font(.system(size: node.isRoot ? 14 : 13, weight: node.isRoot ? .bold : .semibold))
-            .foregroundColor(ADEColor.textPrimary)
+            .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
           if let adeKind = node.adeKind, !adeKind.isEmpty {
             PrTagChip(label: adeKind, color: node.kindColor)
           }
           Spacer(minLength: 0)
+          PrStackStatePill(state: stateLabel, color: stateColor)
         }
-        PrMonoText(text: node.branch, color: ADEColor.textSecondary, size: 10.5)
+        Text(node.branch)
+          .font(.system(size: 11, weight: .medium, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
         if let sub = node.subMetric {
-          PrMonoText(text: sub, color: stateColor, size: 10.5)
+          Text(sub)
+            .font(.system(size: 10.5, design: .monospaced))
+            .foregroundStyle(stateColor.opacity(0.95))
             .lineLimit(1)
         }
       }
+      .padding(.leading, CGFloat(node.indent) * 14)
     }
+    .padding(.horizontal, 2)
+    .padding(.vertical, 8)
+  }
+}
+
+private struct PrStackStatePill: View {
+  let state: String
+  let color: Color
+
+  var body: some View {
+    Text(state.uppercased())
+      .font(.system(size: 9, weight: .bold))
+      .tracking(0.8)
+      .foregroundStyle(color)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 3)
+      .background(
+        Capsule(style: .continuous)
+          .fill(color.opacity(0.16))
+      )
+      .overlay(
+        Capsule(style: .continuous)
+          .strokeBorder(color.opacity(0.45), lineWidth: 0.5)
+      )
   }
 }
 
 #Preview("PrStackDiagramView") {
   PrStackDiagramView(nodes: [
     PrStackNode(id: "1", label: "main", branch: "origin/main", state: "base", subMetric: "HEAD", isRoot: true),
-    PrStackNode(id: "2", label: "#309 · Schema migration v3", branch: "integration/schema-v3", state: "open", adeKind: "integration", kindColor: ADEColor.warning, subMetric: "base · awaiting 1 child", indent: 0, isRoot: true),
-    PrStackNode(id: "3", label: "#316 · Fix auth middleware ordering", branch: "lane/auth-fix", state: "open", adeKind: "worker", kindColor: ADEColor.accent, subMetric: "12 ✓ · 1 approval · ready", indent: 1),
-    PrStackNode(id: "4", label: "#315 · Add payments idempotency", branch: "lane/payments", state: "draft", adeKind: "lane", kindColor: ADEColor.success, subMetric: "8 ✓ · draft", indent: 1),
-    PrStackNode(id: "5", label: "#318 · Rename preferences", branch: "lane/rename-prefs", state: "blocked", adeKind: "mission", kindColor: ADEColor.tintPRs, subMetric: "2 ✗ · blocked", indent: 1, isLast: true),
+    PrStackNode(id: "2", label: "#309 · Schema migration v3", branch: "integration/schema-v3", state: "open", adeKind: "integration", kindColor: PrGlassPalette.warning, subMetric: "base · awaiting 1 child", indent: 0, isRoot: true),
+    PrStackNode(id: "3", label: "#316 · Fix auth middleware ordering", branch: "lane/auth-fix", state: "open", adeKind: "worker", kindColor: PrGlassPalette.purple, subMetric: "12 ✓ · 1 approval · ready", indent: 1),
+    PrStackNode(id: "4", label: "#315 · Add payments idempotency", branch: "lane/payments", state: "draft", adeKind: "lane", kindColor: PrGlassPalette.success, subMetric: "8 ✓ · draft", indent: 1),
+    PrStackNode(id: "5", label: "#318 · Rename preferences", branch: "lane/rename-prefs", state: "blocked", adeKind: "mission", kindColor: PrGlassPalette.purpleBright, subMetric: "2 ✗ · blocked", indent: 1, isLast: true),
   ])
   .padding()
-  .background(ADEColor.pageBackground)
+  .background(PrGlassPalette.ink)
 }

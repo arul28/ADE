@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAppStore } from "../../state/appStore";
+import { useOnboardingStore } from "../../state/onboardingStore";
 import { openExternalUrl } from "../../lib/openExternal";
 
 export type SmartTooltipContent = {
@@ -45,7 +46,8 @@ export function SmartTooltip({
   side: preferredSide = "top",
 }: SmartTooltipProps) {
   const globalEnabled = useAppStore((s) => s.smartTooltipsEnabled);
-  const enabled = forceEnabled ?? globalEnabled;
+  const activeTourId = useOnboardingStore((s) => s.activeTourId);
+  const enabled = Boolean(forceEnabled ?? (globalEnabled && !activeTourId));
   const tooltipId = useId();
 
   const [visible, setVisible] = useState(false);

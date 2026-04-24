@@ -306,7 +306,10 @@ import type {
   PrActionRun,
   PrActivityEvent,
   PrCheck,
+  PrCommit,
   PrComment,
+  CleanupPrBranchArgs,
+  CleanupPrBranchResult,
   PrConflictAnalysis,
   PrDetail,
   PrEventPayload,
@@ -1473,6 +1476,7 @@ declare global {
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
         getDetail: (prId: string) => Promise<PrDetail>;
         getFiles: (prId: string) => Promise<PrFile[]>;
+        getCommits: (prId: string) => Promise<PrCommit[]>;
         getActionRuns: (prId: string) => Promise<PrActionRun[]>;
         getActivity: (prId: string) => Promise<PrActivityEvent[]>;
         addComment: (args: AddPrCommentArgs) => Promise<PrComment>;
@@ -1542,6 +1546,9 @@ declare global {
         launchIssueResolutionFromThread: (
           args: LaunchPrIssueResolutionFromThreadArgs,
         ) => Promise<LaunchPrIssueResolutionFromThreadResult>;
+        cleanupBranch: (
+          args: CleanupPrBranchArgs,
+        ) => Promise<CleanupPrBranchResult>;
       };
       rebase: {
         scanNeeds: () => Promise<RebaseNeed[]>;

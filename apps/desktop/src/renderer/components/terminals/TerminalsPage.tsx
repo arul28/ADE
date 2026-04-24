@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { SidebarSimple } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
@@ -28,13 +28,60 @@ export function TerminalsPage() {
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+
+  const selectableSessions = useMemo(
+    () => [...work.runningFiltered, ...work.awaitingInputFiltered, ...work.endedFiltered],
+    [work.awaitingInputFiltered, work.endedFiltered, work.runningFiltered],
+  );
+
+  useEffect(() => {
+    const visibleIds = new Set(selectableSessions.map((session) => session.id));
+    setSelectedSessionIds((prev) => {
+      const next = new Set([...prev].filter((id) => visibleIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [selectableSessions]);
 
   const handleSelectSession = useCallback(
-    (id: string) => {
+    (id: string, event?: React.MouseEvent, visibleSessionIds?: string[]) => {
+      const useRange = event?.shiftKey === true;
+      const useToggle = event?.metaKey === true || event?.ctrlKey === true;
+      const orderedIds = visibleSessionIds?.length ? visibleSessionIds : selectableSessions.map((session) => session.id);
+
+      if (useRange) {
+        const anchorId = selectionAnchorId ?? id;
+        const anchorIndex = orderedIds.indexOf(anchorId);
+        const nextIndex = orderedIds.indexOf(id);
+        if (anchorIndex >= 0 && nextIndex >= 0) {
+          const [start, end] = anchorIndex <= nextIndex ? [anchorIndex, nextIndex] : [nextIndex, anchorIndex];
+          const rangeIds = orderedIds.slice(start, end + 1);
+          setSelectedSessionIds(new Set(rangeIds));
+          setSelectionAnchorId(anchorId);
+          work.setSelectedSessionId(id);
+          return;
+        }
+      }
+
+      if (useToggle) {
+        setSelectedSessionIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+        setSelectionAnchorId(id);
+        work.setSelectedSessionId(id);
+        return;
+      }
+
+      setSelectedSessionIds(new Set());
+      setSelectionAnchorId(id);
       work.setSelectedSessionId(id);
       work.openSessionTab(id);
     },
-    [work],
+    [selectableSessions, selectionAnchorId, work],
   );
 
   const handleInfoClick = useCallback(
@@ -150,6 +197,98 @@ export function TerminalsPage() {
     [work],
   );
 
+  const selectedSessions = useMemo(
+    () => selectableSessions.filter((session) => selectedSessionIds.has(session.id)),
+    [selectableSessions, selectedSessionIds],
+  );
+
+  const handleBulkCloseSelected = useCallback(() => {
+    const running = selectedSessions.filter((session) => session.status === "running");
+    if (!running.length) return;
+    const confirmed = window.confirm(
+      `Close ${running.length} running session${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI, shell, or chat process for each selected running session.`,
+    );
+    if (!confirmed) return;
+
+    setSessionActionError(null);
+    void Promise.allSettled(
+      running.map((session) => {
+        if (isChatToolType(session.toolType)) {
+          return work.closeChatSession(session.id);
+        }
+        if (session.ptyId) {
+          return work.closeSession(session.ptyId, session.id);
+        }
+        return Promise.resolve();
+      }),
+    )
+      .then((results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        if (failed > 0) {
+          setSessionActionError(`Close failed for ${failed} selected session${failed === 1 ? "" : "s"}.`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        }
+        setSelectedSessionIds(new Set());
+        setSelectionAnchorId(null);
+        invalidateSessionListCache();
+        return work.refresh({ showLoading: false, force: true });
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Close failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      });
+  }, [selectedSessions, work]);
+
+  const handleBulkDeleteSelected = useCallback(() => {
+    const ended = selectedSessions.filter((session) => session.status !== "running");
+    if (!ended.length) return;
+    const confirmed = window.confirm(
+      `Delete ${ended.length} ended session${ended.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
+    );
+    if (!confirmed) return;
+
+    setSessionActionError(null);
+    setDeletingSessionId("bulk");
+    void Promise.allSettled(
+      ended.map((session) => (
+        isChatToolType(session.toolType)
+          ? window.ade.agentChat.delete({ sessionId: session.id })
+          : window.ade.sessions.delete({ sessionId: session.id })
+      )),
+    )
+      .then(async (results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        const succeededIds = ended
+          .filter((_, index) => results[index]?.status === "fulfilled")
+          .map((session) => session.id);
+        for (const sessionId of succeededIds) {
+          work.removeSessionFromList(sessionId);
+          work.closeTab(sessionId);
+        }
+        setSelectedSessionIds(new Set());
+        setSelectionAnchorId(null);
+        setContextMenu(null);
+        setInfoPopover(null);
+        invalidateSessionListCache();
+        await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+          console.error("[TerminalsPage] refresh after bulk delete failed", { refreshErr });
+        });
+        if (failed > 0) {
+          setSessionActionError(`Delete failed for ${failed} selected session${failed === 1 ? "" : "s"}.`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        }
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Delete failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      })
+      .finally(() => {
+        setDeletingSessionId((current) => (current === "bulk" ? null : current));
+      });
+  }, [selectedSessions, work]);
+
   const handleResumeSession = useCallback(
     (session: TerminalSessionSummary) => {
       void work.resumeSession(session).catch(() => {});
@@ -256,10 +395,17 @@ export function TerminalsPage() {
             q={work.q}
             setQ={work.setQ}
             selectedSessionId={work.selectedSessionId}
+            selectedSessionIds={selectedSessionIds}
             draftKind={work.draftKind}
             showingDraft={work.activeItemId == null}
             onShowDraftKind={work.showDraftKind}
             onSelectSession={handleSelectSession}
+            onClearSelection={() => {
+              setSelectedSessionIds(new Set());
+              setSelectionAnchorId(null);
+            }}
+            onBulkClose={handleBulkCloseSelected}
+            onBulkDelete={handleBulkDeleteSelected}
             onResume={(s) => work.resumeSession(s).catch(() => {})}
             resumingSessionId={work.resumingSessionId}
             onInfoClick={handleInfoClick}
@@ -291,6 +437,9 @@ export function TerminalsPage() {
       work,
       sortedLanes,
       handleSelectSession,
+      selectedSessionIds,
+      handleBulkCloseSelected,
+      handleBulkDeleteSelected,
       handleInfoClick,
       handleContextMenu,
       sessionsHeaderActions,

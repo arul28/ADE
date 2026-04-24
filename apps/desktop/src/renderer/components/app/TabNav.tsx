@@ -19,6 +19,7 @@ import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import type { GitHubStatus } from "../../../shared/types";
+import { readStoredPrsRoute } from "../prs/prsRouteState";
 
 const mainItems = [
   { to: "/work", label: "Work", icon: Terminal },
@@ -91,6 +92,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   ) => {
     const isActive = primaryTabPath(location.pathname) === it.to;
     const isActiveAllowed = (!showWelcome && hasActiveProject) || it.to === "/project";
+    const navTarget = it.to === "/prs" ? readStoredPrsRoute(project?.rootPath) ?? it.to : it.to;
 
     if (!isActiveAllowed) {
       return (
@@ -117,12 +119,12 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     return (
       <NavLink
         key={it.to}
-        to={it.to}
+        to={navTarget}
         data-active={isActive ? "true" : undefined}
         onClick={() => {
           logRendererDebugEvent("renderer.tab_nav.click", {
             from: location.pathname,
-            to: it.to,
+            to: navTarget,
             showWelcome,
             hasActiveProject,
           });

@@ -23,14 +23,51 @@ struct PrStackSheet: View {
 
   var body: some View {
     NavigationStack(path: $detailPath) {
-      Group {
-        if isLoading && members.isEmpty {
-          VStack {
-            ProgressView()
-              .padding(.vertical, 32)
-          }
-          .frame(maxWidth: .infinity)
-        } else if let errorMessage, !syncService.connectionState.isHostUnreachable {
+      ZStack {
+        prLiquidGlassBackdrop()
+
+        // 4x5 grab handle at the top of the sheet — pure visual affordance,
+        // matching the frame `2pDr5` in the pencil.
+        VStack {
+          RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+            .fill(Color.white.opacity(0.25))
+            .frame(width: 36, height: 5)
+            .padding(.top, 6)
+          Spacer(minLength: 0)
+        }
+        .allowsHitTesting(false)
+
+        contentView
+      }
+      .navigationTitle(groupName ?? "PR stack")
+      .navigationBarTitleDisplayMode(.inline)
+      .navigationDestination(for: String.self) { prId in
+        PrDetailView(prId: prId, transitionNamespace: nil)
+          .environmentObject(syncService)
+      }
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Close") { dismiss() }
+        }
+      }
+      .task {
+        await reload()
+      }
+    }
+  }
+
+  // MARK: - Content
+
+  @ViewBuilder
+  private var contentView: some View {
+    Group {
+      if isLoading && members.isEmpty {
+        VStack {
+          ProgressView()
+            .padding(.vertical, 32)
+        }
+        .frame(maxWidth: .infinity)
+      } else if let errorMessage, !syncService.connectionState.isHostUnreachable {
           ScrollView {
             ADENoticeCard(
               title: "Stack failed to load",
@@ -82,14 +119,15 @@ struct PrStackSheet: View {
 
               stackHero
                 .padding(.horizontal, 16)
-                .padding(.top, 4)
+                .padding(.top, 20) // clearance for grab handle
 
               PrSectionHdr(title: "Stack")
 
               VStack(alignment: .leading, spacing: 0) {
                 PrStackDiagramView(nodes: diagramNodes)
               }
-              .adeGlassCard(cornerRadius: 18)
+              .padding(.vertical, 4)
+              .prGlassCard(cornerRadius: 18)
               .padding(.horizontal, 16)
 
               PrSectionHdr(title: "Merge plan") {
@@ -101,11 +139,12 @@ struct PrStackSheet: View {
                 ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
                   PrMergePlanRow(step: step)
                   if index < steps.count - 1 {
-                    Divider().overlay(ADEColor.textMuted.opacity(0.15))
+                    Divider().overlay(Color.white.opacity(0.06))
+                      .padding(.horizontal, 14)
                   }
                 }
               }
-              .adeGlassCard(cornerRadius: 18)
+              .prGlassCard(cornerRadius: 18)
               .padding(.horizontal, 16)
 
               Color.clear.frame(height: 90) // leave room for sticky bar
@@ -125,29 +164,12 @@ struct PrStackSheet: View {
                 dispatchLandStack()
               }
               .buttonStyle(.glassProminent)
-              .tint(ADEColor.tintPRs)
+              .tint(PrGlassPalette.purpleBright)
               .frame(maxWidth: .infinity)
               .disabled(isDispatchingStackAction || landTargetPrId == nil)
             }
           }
         }
-      }
-      .adeScreenBackground()
-      .adeNavigationGlass()
-      .navigationTitle(groupName ?? "PR stack")
-      .navigationBarTitleDisplayMode(.inline)
-      .navigationDestination(for: String.self) { prId in
-        PrDetailView(prId: prId, transitionNamespace: nil)
-          .environmentObject(syncService)
-      }
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Close") { dismiss() }
-        }
-      }
-      .task {
-        await reload()
-      }
     }
   }
 
@@ -159,26 +181,35 @@ struct PrStackSheet: View {
     let commitCount = stackInfo?.members.count ?? totalCount
     let baseBranch = stackRows.first?.baseBranch ?? "main"
     let headBranch = stackRows.last?.headBranch ?? (groupName ?? "stack")
-    return VStack(alignment: .leading, spacing: 6) {
+    let readyTint: Color = readyCount == totalCount ? PrGlassPalette.success : PrGlassPalette.warning
+    return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 6) {
-        PrTagChip(label: "integration", color: ADEColor.warning)
+        PrTagChip(label: "integration", color: PrGlassPalette.blue)
         if totalCount > 0 {
-          ADEStatusPill(
-            text: "\(readyCount) of \(totalCount) ready",
-            tint: readyCount == totalCount ? ADEColor.success : ADEColor.warning
-          )
+          HStack(spacing: 4) {
+            Circle()
+              .fill(readyTint)
+              .frame(width: 5, height: 5)
+            Text("\(readyCount) of \(totalCount) ready")
+              .font(.system(size: 10, weight: .bold))
+              .foregroundStyle(readyTint)
+          }
+          .padding(.horizontal, 9)
+          .padding(.vertical, 4)
+          .background(Capsule(style: .continuous).fill(readyTint.opacity(0.14)))
+          .overlay(Capsule(style: .continuous).strokeBorder(readyTint.opacity(0.4), lineWidth: 0.5))
         }
+        Spacer(minLength: 0)
       }
       Text(groupName ?? "Stacked pull requests")
-        .font(.system(size: 22, weight: .bold))
+        .font(.system(size: 24, weight: .bold))
         .foregroundStyle(ADEColor.textPrimary)
         .multilineTextAlignment(.leading)
         .lineLimit(2)
-      PrMonoText(
-        text: "\(headBranch) → \(baseBranch) · \(totalCount) child\(totalCount == 1 ? "" : "ren") · \(commitCount) commits",
-        color: ADEColor.textSecondary,
-        size: 11
-      )
+      Text("\(headBranch) → \(baseBranch) · \(totalCount) child\(totalCount == 1 ? "" : "ren") · \(commitCount) commits")
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
@@ -204,13 +235,13 @@ struct PrStackSheet: View {
       switch row.role {
       case .base:
         adeKind = "integration"
-        kindColor = ADEColor.warning
+        kindColor = PrGlassPalette.warning
       case .body:
         adeKind = "lane"
-        kindColor = ADEColor.tintFiles
+        kindColor = PrGlassPalette.blue
       case .head:
         adeKind = "lane"
-        kindColor = ADEColor.accent
+        kindColor = PrGlassPalette.purple
       }
 
       let sub: String?
@@ -399,10 +430,10 @@ private struct PrMergePlanRow: View {
 
   private var tint: Color {
     switch step.status {
-    case "blocked": return ADEColor.danger
-    case "ready": return ADEColor.success
-    case "queued": return ADEColor.accent
-    default: return ADEColor.textSecondary
+    case "blocked": return PrGlassPalette.danger
+    case "ready": return PrGlassPalette.success
+    case "queued": return PrGlassPalette.purple
+    default: return PrGlassPalette.blue
     }
   }
 
@@ -416,19 +447,25 @@ private struct PrMergePlanRow: View {
   }
 
   var body: some View {
-    HStack(alignment: .center, spacing: 10) {
-      Text("\(step.number)")
-        .font(.system(size: 12, weight: .heavy))
-        .foregroundStyle(tint)
-        .frame(width: 24, height: 24)
-        .background(
-          RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(tint.opacity(0.16))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .strokeBorder(tint.opacity(0.35), lineWidth: 0.5)
-        )
+    HStack(alignment: .center, spacing: 12) {
+      // Gradient numbered tile with soft glow.
+      ZStack {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .fill(
+            LinearGradient(
+              colors: [tint, tint.opacity(0.7)],
+              startPoint: .topLeading,
+              endPoint: .bottomTrailing
+            )
+          )
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5)
+        Text("\(step.number)")
+          .font(.system(size: 12, weight: .heavy))
+          .foregroundStyle(.white)
+      }
+      .frame(width: 26, height: 26)
+      .shadow(color: tint.opacity(0.45), radius: 8, x: 0, y: 2)
 
       VStack(alignment: .leading, spacing: 2) {
         Text(step.label)
@@ -436,14 +473,23 @@ private struct PrMergePlanRow: View {
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)
         if let sub = step.sub {
-          PrMonoText(text: sub, color: ADEColor.textSecondary, size: 10.5)
+          Text(sub)
+            .font(.system(size: 10.5, design: .monospaced))
+            .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
         }
       }
 
       Spacer(minLength: 0)
 
-      PrTagChip(label: label, color: tint)
+      Text(label.uppercased())
+        .font(.system(size: 9, weight: .bold))
+        .tracking(0.8)
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Capsule(style: .continuous).fill(tint.opacity(0.16)))
+        .overlay(Capsule(style: .continuous).strokeBorder(tint.opacity(0.45), lineWidth: 0.5))
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 11)

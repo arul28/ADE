@@ -179,8 +179,8 @@ export function WorkStartSurface({
   /* ---- CLI draft ---- */
   if (draftKind === "cli") {
     return (
-      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-8 px-6 py-6" style={{ background: "var(--color-bg)" }}>
-        <LogoGlow size="lg" />
+      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-6 overflow-hidden px-6 py-6" style={{ background: "var(--color-bg)" }}>
+        <LogoGlow size="sm" />
         <div className="flex w-full max-w-sm flex-col items-center">
           <GlassCard>
           {/* Lane */}
@@ -265,8 +265,8 @@ export function WorkStartSurface({
 
   /* ---- Shell draft ---- */
   return (
-    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-8 px-6 py-6" style={{ background: "var(--color-bg)" }}>
-      <LogoGlow size="lg" />
+    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-6 overflow-hidden px-6 py-6" style={{ background: "var(--color-bg)" }}>
+      <LogoGlow size="sm" />
       <div className="flex w-full max-w-sm flex-col items-center">
         <GlassCard>
         {/* Lane */}

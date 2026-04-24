@@ -1488,6 +1488,22 @@ export type PrActionCapabilities = {
   requiresLive: boolean;
 };
 
+export type CleanupPrBranchArgs = {
+  prId: string;
+  deleteLocalBranch?: boolean;
+  deleteRemoteBranch?: boolean;
+  remoteName?: string;
+};
+
+export type CleanupPrBranchResult = {
+  prId: string;
+  branchName: string;
+  localDeleted: boolean;
+  remoteDeleted: boolean;
+  localError: string | null;
+  remoteError: string | null;
+};
+
 /** A single lane eligible for PR creation from the mobile "Create PR" surface. */
 export type PrCreateLaneEligibility = {
   laneId: string;

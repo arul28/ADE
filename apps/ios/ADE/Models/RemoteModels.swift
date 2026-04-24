@@ -2996,6 +2996,48 @@ struct DeleteIntegrationProposalResult: Codable, Equatable {
   var deletedIntegrationLane: Bool
 }
 
+struct CreateQueuePrError: Codable, Equatable {
+  var laneId: String
+  var error: String
+}
+
+struct CreateQueuePrsResult: Codable, Equatable {
+  var groupId: String
+  var prs: [PrSummary]
+  var errors: [CreateQueuePrError]
+}
+
+struct IntegrationMergeResult: Codable, Equatable {
+  var laneId: String
+  var success: Bool
+  var error: String?
+}
+
+struct CreateIntegrationPrResult: Codable, Equatable {
+  var groupId: String
+  var integrationLaneId: String
+  var pr: PrSummary
+  var mergeResults: [IntegrationMergeResult]
+}
+
+struct CleanupIntegrationWorkflowResult: Codable, Equatable {
+  var proposalId: String
+  var archivedLaneIds: [String]
+  var skippedLaneIds: [String]
+  var workflowDisplayState: String
+  var cleanupState: String
+}
+
+struct LandResult: Codable, Equatable {
+  var prId: String
+  var prNumber: Int?
+  var success: Bool
+  var mergeCommitSha: String?
+  var branchDeleted: Bool?
+  var laneArchived: Bool?
+  var error: String?
+}
+
 struct PrMobileSnapshot: Codable, Equatable {
   var generatedAt: String
   var prs: [PrSummary]

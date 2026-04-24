@@ -1,5 +1,4 @@
 import React from "react";
-import { useAppStore } from "../../../state/appStore";
 import { useOnboardingStore } from "../../../state/onboardingStore";
 import { getTour } from "../../../onboarding/registry";
 import { TourOverlay } from "./TourOverlay";
@@ -8,13 +7,14 @@ import { TourOverlay } from "./TourOverlay";
 import "../../../onboarding/tours";
 
 export function TourHost() {
-  const onboardingEnabled = useAppStore((s) => s.onboardingEnabled);
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
   const activeTourVariant = useOnboardingStore((s) => s.activeTourVariant);
   const activeStepIndex = useOnboardingStore((s) => s.activeStepIndex);
   const activeTourCtx = useOnboardingStore((s) => s.activeTourCtx);
 
-  if (!onboardingEnabled) return null;
+  // The preference hides passive onboarding surfaces. A user-initiated tour
+  // should still render once it is active, otherwise the Help menu can start a
+  // tour that only changes routes and never shows guidance.
   if (!activeTourId) return null;
 
   const tour = getTour(activeTourId, activeTourVariant ?? undefined);

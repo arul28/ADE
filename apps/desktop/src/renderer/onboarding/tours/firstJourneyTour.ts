@@ -8,6 +8,17 @@ import {
   buildManageLaneDialogWalkthrough,
   buildPrCreateModalWalkthrough,
 } from "../stepBuilders";
+import { graphTour } from "./graphTour";
+import { filesTour } from "./filesTour";
+import { workTour } from "./workTour";
+import { runTour } from "./runTour";
+import { lanesTour } from "./lanesTour";
+import { laneWorkPaneTour } from "./laneWorkPaneTour";
+import { prsTour } from "./prsTour";
+import { historyTour } from "./historyTour";
+import { automationsTour } from "./automationsTour";
+import { ctoTour } from "./ctoTour";
+import { settingsTour } from "./settingsTour";
 
 /**
  * Flagship first-run Tutorial. Acts 0–12 described in
@@ -25,6 +36,19 @@ const LANE_EXISTS_REQUIRES = ["projectOpen", "laneExists"] as const;
 const OPTIONAL_ACTION_FALLBACK_MS = 30_000;
 
 type Ctx = TourCtx;
+
+function tutorialSection(
+  sectionId: string,
+  steps: readonly TourStep[],
+  requires: readonly string[] = PROJECT_OPEN_REQUIRES,
+): TourStep[] {
+  return steps.map((step, index) => ({
+    ...step,
+    id: step.id ?? `${sectionId}.${index}`,
+    requires: step.requires ?? requires,
+    waitForSelector: step.waitForSelector ?? (step.target ? step.target : undefined),
+  }));
+}
 
 function laneName(ctx: Ctx): string {
   return ctx.get<string>("laneName") ?? SAMPLE_LANE_NAME;
@@ -50,6 +74,17 @@ function isProjectBrowserOpenSync(): boolean {
 function isWelcomeProjectScreenVisible(): boolean {
   if (typeof document === "undefined") return false;
   return document.querySelector('[data-tour="project.welcomeOpenButton"]') != null;
+}
+
+function requestFocusedLaneLayout(): void {
+  if (typeof window === "undefined") return;
+  const { selectedLaneId, lanes } = useAppStore.getState();
+  const selectedLane = selectedLaneId ? lanes.find((lane) => lane.id === selectedLaneId) ?? null : null;
+  const targetLane = selectedLane?.laneType !== "primary"
+    ? selectedLane
+    : lanes.find((lane) => lane.laneType !== "primary") ?? null;
+  if (!targetLane) return;
+  window.dispatchEvent(new CustomEvent("ade:tour-focus-lane", { detail: { laneId: targetLane.id } }));
 }
 
 function waitForProjectBrowserClosed(): Promise<void> {
@@ -90,8 +125,8 @@ function buildTabHandoffStep(
   return {
     id,
     target: '[data-tour="app.helpMenu"]',
-    title: "Full tab tours live here",
-    body: `The full **${currentTab}** onboarding is always available from this menu. For now, this tutorial is moving on to **${nextTab}**.`,
+    title: "Replay this section later",
+    body: `You just walked the main **${currentTab}** controls. The ? menu can replay this same section by itself later, without the action steps. Next: **${nextTab}**.`,
     placement: "left",
     requires: LANE_EXISTS_REQUIRES,
     waitForSelector: '[data-tour="app.helpMenu"]',
@@ -104,8 +139,8 @@ const act0Welcome: TourStep = {
   id: "act0.welcome",
   target: "",
   title: "Welcome to ADE",
-  body: "Parallel lanes of work on one codebase. The next ten minutes walk every surface ADE gives you.",
-  actIntro: { title: "Welcome to ADE", subtitle: "Parallel lanes of work. One codebase.", variant: "drift" },
+  body: "ADE helps you work on one project in several safe copies at the same time. This tutorial creates one test lane, shows where its files/chats/Git state live, then cleans it up.",
+  actIntro: { title: "Welcome to ADE", subtitle: "Safe copies of one project, each with its own task.", variant: "drift" },
   docUrl: docs.welcome,
   branches: (_ctx: TourCtx) => {
     if (isWelcomeProjectScreenVisible()) return "act0.openProject";
@@ -117,7 +152,7 @@ const act0ProjectChoice: TourStep = {
   id: "act0.projectChoice",
   target: '[data-tour="project.activeTab"]',
   title: "Use this project",
-  body: "ADE already has a project open. Click **Use this project** to continue here, or click the plus button in the project bar to open another project first.",
+  body: "ADE already has a project open. Click **Use this project** to continue with this repo. If you want a different repo, use the project switcher after the tutorial.",
   placement: "bottom",
   waitForSelector: '[data-tour="project.activeTab"]',
   advanceWhenSelector: '[data-tour="project.browser"]',
@@ -149,7 +184,10 @@ const act0OpenProject: TourStep = {
   advanceWhenSelector: '[data-tour="project.browser"]',
   awaitingActionLabel: "Waiting for project",
   exitOnOutsideInteraction: true,
-  allowedInteractionSelectors: ["[data-tour='project.recentProject']"],
+  allowedInteractionSelectors: [
+    '[data-tour="project.welcomeOpenButton"]',
+    '[data-tour="project.recentProject"]',
+  ],
   docUrl: docs.welcome,
   // If a project is already open, ask the user to use it or open another one.
   // If the browser is open, move into the modal guidance. Otherwise hold here.
@@ -183,7 +221,7 @@ const act1Intro: TourStep = {
   id: "act1.intro",
   target: "",
   title: "Make a lane",
-  body: "A lane is a parallel branch of work — its own worktree, branch, files, and chat.",
+  body: "Think of a lane as one safe workspace for one task. It has its own branch, folder, file changes, and worker chats, while your primary project stays clean.",
   actIntro: { title: "Make a lane", variant: "orbit" },
   requires: PROJECT_OPEN_REQUIRES,
   beforeEnter: async () => [{ type: "navigate", to: "/lanes" }],
@@ -194,7 +232,7 @@ const act1SidebarSweep: TourStep = {
   id: "act1.sidebarSweep",
   target: '[data-tour="app.sidebar"]',
   title: "Your tabs",
-  body: "The left edge is an icon rail for the main surfaces. This walkthrough moves through Lanes, Graph, Files, Work, PRs, History, and the supporting tools.",
+  body: "The left rail is ADE's map. Lanes is where work starts, Graph shows how lanes relate, Files shows the lane's code, Work shows chats and terminals, and PRs/History help you ship and audit.",
   placement: "right",
   requires: PROJECT_OPEN_REQUIRES,
   waitForSelector: '[data-tour="app.sidebar"]',
@@ -205,12 +243,15 @@ const act1LaneTabSpotlight: TourStep = {
   id: "act1.laneTabSpotlight",
   target: '[data-tour="lanes.laneTab"]',
   title: "Your new lane",
-  body: "That tab is your new lane — its own branch, its own folder, its own chat.",
+  body: "That tab is your new lane. Select it any time you want this task's files, chats, and Git actions.",
   bodyTemplate: (ctx) =>
-    `${laneName(ctx)} is live — its own branch, its own folder, its own chat.`,
+    `${laneName(ctx)} is live. It has its own branch, folder, file changes, and worker chats. Primary stays separate.`,
   placement: "bottom",
   requires: LANE_EXISTS_REQUIRES,
   disableBack: true,
+  beforeEnter: async () => {
+    requestFocusedLaneLayout();
+  },
   waitForSelector: '[data-tour="lanes.laneTab"]',
   docUrl: docs.lanesOverview,
 };
@@ -253,7 +294,7 @@ const act2LaneNode: TourStep = {
   title: "Your lane, as a node",
   body: "That node is your lane hanging off primary. Edges show stacking — where one lane branches off another.",
   bodyTemplate: (ctx) =>
-    `That node is ${laneName(ctx)} hanging off primary. Edges show stacking — where one lane branches off another.`,
+    `That node is your new lane (${laneName(ctx)}) hanging off primary. Edges show stacking — where one lane branches off another.`,
   placement: "bottom",
   requires: LANE_EXISTS_REQUIRES,
   waitForSelector: '[data-tour="graph.node"]',
@@ -304,7 +345,7 @@ const act3Workspace: TourStep = {
   title: "Pick a workspace",
   body: "Use this selector to choose the primary project or a lane worktree before browsing files.",
   bodyTemplate: (ctx) =>
-    `Choose ${laneName(ctx)} here to scope the tree and editor to that lane's worktree.`,
+    `Choose your new lane (${laneName(ctx)}) here to scope the tree and editor to that lane's worktree.`,
   placement: "bottom",
   requires: LANE_EXISTS_REQUIRES,
   waitForSelector: '[data-tour="files.workspaceSelector"]',
@@ -563,15 +604,12 @@ const act7Stacking: TourStep = {
 
 const act7Close: TourStep = {
   id: "act7.close",
-  target: '[data-tour="prs.closeBtn"]',
+  target: '[data-tour="prs.detailDrawer"], [data-tour="prs.list"]',
   title: "Close actions",
   body: "Close appears only on an open selected PR. The walkthrough points out the action; you decide whether a real PR should close.",
   placement: "top",
-  requires: ["projectOpen", "prCreated"],
-  fallbackAfterMs: OPTIONAL_ACTION_FALLBACK_MS,
-  fallbackNextLabel: "Skip close action",
-  fallbackNotice: "Close is available only after a PR is selected.",
-  waitForSelector: '[data-tour="prs.closeBtn"]',
+  requires: PROJECT_OPEN_REQUIRES,
+  waitForSelector: '[data-tour="prs.detailDrawer"], [data-tour="prs.list"]',
   docUrl: docs.lanesOverview,
 };
 
@@ -638,34 +676,34 @@ const act9Intro: TourStep = {
 
 const act9Triggers: TourStep = {
   id: "act9.triggers",
-  target: '[data-tour="automations.triggersList"]',
+  target: '[data-tour="automations.createTrigger"]',
   title: "Triggers",
   body: "Pick what starts the automation — a webhook, a schedule, a git event, or a file watch. One automation can wire up several.",
   placement: "right",
   requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="automations.triggersList"]',
+  waitForSelector: '[data-tour="automations.createTrigger"]',
   docUrl: docs.automationsOverview,
 };
 
 const act9Actions: TourStep = {
   id: "act9.actions",
-  target: '[data-tour="automations.actionsList"]',
+  target: '[data-tour="automations.createTrigger"]',
   title: "Actions",
   body: "What happens when a trigger fires — run a command, dispatch a mission, ping a worker. Chain them in order.",
   placement: "right",
   requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="automations.actionsList"]',
+  waitForSelector: '[data-tour="automations.createTrigger"]',
   docUrl: docs.automationsOverview,
 };
 
 const act9Guardrails: TourStep = {
   id: "act9.guardrails",
-  target: '[data-tour="automations.guardrails"]',
+  target: '[data-tour="automations.createTrigger"]',
   title: "Guardrails",
   body: "Rate limits, concurrency caps, quiet hours. Guardrails stop an automation from going rogue — set them before you save.",
   placement: "right",
   requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="automations.guardrails"]',
+  waitForSelector: '[data-tour="automations.createTrigger"]',
   docUrl: docs.automationsOverview,
 };
 
@@ -781,7 +819,7 @@ const act12Nav: TourStep = {
   id: "act12.nav",
   target: "",
   title: "Clean up",
-  body: "Back to Lanes to tidy up the sample lane. Nothing you changed along the way stays behind.",
+  body: "Back to Lanes to tidy up the sample lane. The tutorial will show where cleanup happens before it ends.",
   requires: PROJECT_OPEN_REQUIRES,
   beforeEnter: async () => [{ type: "navigate", to: "/lanes" }],
   docUrl: docs.lanesOverview,
@@ -855,29 +893,23 @@ const firstJourneyTour: Tour = {
     act1SidebarSweep,
     ...buildCreateLaneDialogWalkthrough(),
     act1LaneTabSpotlight,
+    ...tutorialSection("act1.lanes", lanesTour.steps, LANE_EXISTS_REQUIRES),
+    ...tutorialSection("act1.laneWorkPane", laneWorkPaneTour.steps, LANE_EXISTS_REQUIRES),
     act1PerTabTours,
 
     // Act 2 — Graph
     act2Intro,
-    act2LaneNode,
-    act2Zoom,
-    act2Legend,
+    ...tutorialSection("act2.graph", graphTour.steps, LANE_EXISTS_REQUIRES),
     act2PerTabTours,
 
     // Act 3 — Files
     act3Intro,
-    act3Workspace,
-    act3Tree,
-    act3Search,
-    act3Mode,
-    act3OpenIn,
+    ...tutorialSection("act3.files", filesTour.steps, LANE_EXISTS_REQUIRES),
     act3PerTabTours,
 
     // Act 4 — Work
     act4Intro,
-    act4Sessions,
-    act4LaneFilter,
-    act4NewSession,
+    ...tutorialSection("act4.work", workTour.steps, LANE_EXISTS_REQUIRES),
     act4ViewArea,
     act4PerTabTours,
 
@@ -889,47 +921,33 @@ const firstJourneyTour: Tour = {
     // Act 6 — PRs
     act7Intro,
     ...buildPrCreateModalWalkthrough(),
-    act7List,
-    act7Checks,
-    act7Conflict,
-    act7Stacking,
+    ...tutorialSection("act7.prs", prsTour.steps, LANE_EXISTS_REQUIRES),
     act7CloseWithBranch,
     act7PerTabTours,
 
     // Act 7 — History
     act6Intro,
-    act6Entries,
-    act6Filter,
-    act6ColumnSettings,
+    ...tutorialSection("act6.history", historyTour.steps),
     act6PerTabTours,
 
     // Act 8 — Run (bonus)
     act8Intro,
-    act8LaneSelector,
-    act8AddCommand,
-    act8ProcessMonitor,
+    ...tutorialSection("act8.run", runTour.steps),
     act8PerTabTours,
 
     // Act 9 — Automations (bonus)
     act9Intro,
-    act9Triggers,
-    act9Actions,
-    act9Guardrails,
+    ...tutorialSection("act9.automations", automationsTour.steps),
     act9PerTabTours,
 
     // Act 10 — CTO (bonus)
     act10Intro,
-    act10Sidebar,
-    act10Team,
-    act10Linear,
+    ...tutorialSection("act10.cto", ctoTour.steps),
     act10PerTabTours,
 
     // Act 11 — Settings (bonus)
     act11Intro,
-    act11Appearance,
-    act11Ai,
-    act11Memory,
-    act11Templates,
+    ...tutorialSection("act11.settings", settingsTour.steps),
     act11PerTabTours,
 
     // Act 12 — Cleanup (mandatory)

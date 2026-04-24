@@ -7,6 +7,7 @@ struct PrDetailView: View {
   let transitionNamespace: Namespace.ID?
 
   @State private var pr: PullRequestListItem?
+  @State private var githubItem: GitHubPrListItem?
   @State private var snapshot: PullRequestSnapshot?
   @State private var reviewThreads: [PrReviewThread] = []
   @State private var actionRuns: [PrActionRun] = []
@@ -81,34 +82,40 @@ struct PrDetailView: View {
   }
 
   private var currentPr: PullRequestListItem {
-    pr ?? PullRequestListItem(
+    if let pr { return pr }
+    let detail = snapshot?.detail
+    let status = snapshot?.status
+    let files = snapshot?.files ?? []
+    let additions = files.reduce(0) { $0 + $1.additions }
+    let deletions = files.reduce(0) { $0 + $1.deletions }
+    return PullRequestListItem(
       id: prId,
       laneId: "",
       laneName: nil,
       projectId: "",
-      repoOwner: "",
-      repoName: "",
-      githubPrNumber: 0,
-      githubUrl: "",
-      title: "Pull request",
-      state: snapshot?.status?.state ?? "open",
-      baseBranch: "",
-      headBranch: "",
-      checksStatus: snapshot?.status?.checksStatus ?? "none",
-      reviewStatus: snapshot?.status?.reviewStatus ?? "none",
-      additions: 0,
-      deletions: 0,
+      repoOwner: githubItem?.repoOwner ?? "",
+      repoName: githubItem?.repoName ?? "",
+      githubPrNumber: githubItem?.githubPrNumber ?? 0,
+      githubUrl: githubItem?.githubUrl ?? "",
+      title: githubItem?.title ?? "Pull request",
+      state: detail?.isDraft == true ? "draft" : (githubItem?.state ?? status?.state ?? "open"),
+      baseBranch: githubItem?.baseBranch ?? "",
+      headBranch: githubItem?.headBranch ?? "",
+      checksStatus: status?.checksStatus ?? "none",
+      reviewStatus: status?.reviewStatus ?? "none",
+      additions: additions,
+      deletions: deletions,
       lastSyncedAt: nil,
-      createdAt: "",
-      updatedAt: "",
-      adeKind: nil,
-      linkedGroupId: nil,
+      createdAt: githubItem?.createdAt ?? "",
+      updatedAt: githubItem?.updatedAt ?? "",
+      adeKind: githubItem?.adeKind,
+      linkedGroupId: githubItem?.linkedGroupId,
       linkedGroupType: nil,
       linkedGroupName: nil,
       linkedGroupPosition: nil,
       linkedGroupCount: 0,
-      workflowDisplayState: nil,
-      cleanupState: nil
+      workflowDisplayState: githubItem?.workflowDisplayState,
+      cleanupState: githubItem?.cleanupState
     )
   }
 
@@ -166,10 +173,36 @@ struct PrDetailView: View {
   private func tabTitle(_ tab: PrDetailTab) -> String {
     switch tab {
     case .overview: return "Overview"
-    case .checks: return "Checks"
+    case .checks: return "CI / Checks"
     case .activity: return "Activity"
     case .files: return "Files"
-    case .convergence: return "Path"
+    case .convergence: return "Path to Merge"
+    }
+  }
+
+  /// Live count for the segmented tab pill. Returns nil when no count is
+  /// meaningful (Overview) or when data hasn't synced yet (zero hidden).
+  private func tabCount(_ tab: PrDetailTab) -> Int? {
+    switch tab {
+    case .overview:
+      return nil
+    case .convergence:
+      let items = issueInventory?.items ?? []
+      let active = items.filter { $0.state == "new" || $0.state == "sent_to_agent" || $0.state == "escalated" }.count
+      return active > 0 ? active : nil
+    case .files:
+      let count = snapshot?.files.count ?? 0
+      return count > 0 ? count : nil
+    case .checks:
+      let count = snapshot?.checks.count ?? 0
+      return count > 0 ? count : nil
+    case .activity:
+      let comments = snapshot?.comments.count ?? 0
+      let reviews = snapshot?.reviews.count ?? 0
+      let commits = snapshot?.commits?.count ?? 0
+      let events = activityEvents.count
+      let count = comments + reviews + commits + events
+      return count > 0 ? count : nil
     }
   }
 
@@ -266,6 +299,8 @@ struct PrDetailView: View {
           pipelineSettings: pipelineSettings,
           capabilities: capabilities,
           isLive: canRunPrActions,
+          aiResolution: aiResolution,
+          isAiResolverBusy: isAiResolverBusy,
           onRefreshAiSummary: refreshAiSummary,
           onRerunChecks: rerunChecks,
           onSyncIssueInventory: syncIssueInventory,
@@ -276,7 +311,10 @@ struct PrDetailView: View {
           onToggleAutoMerge: toggleAutoMerge,
           onSetPipelineMergeMethod: setPipelineMergeMethod,
           onSetPipelineMaxRounds: setPipelineMaxRounds,
-          onSetPipelineRebasePolicy: setPipelineRebasePolicy
+          onSetPipelineRebasePolicy: setPipelineRebasePolicy,
+          onCopyPrompt: copyConvergencePrompt,
+          onLaunchAiResolver: { aiResolverSheetPresented = true },
+          onStopAiResolver: stopAiResolver
         )
         .prListRow()
       case .files:
@@ -328,8 +366,9 @@ struct PrDetailView: View {
       }
     }
     .listStyle(.plain)
+    .listRowSpacing(12)
     .scrollContentBackground(.hidden)
-    .adeScreenBackground()
+    .background(prLiquidGlassBackdrop().ignoresSafeArea())
     .adeNavigationGlass()
     .navigationTitle(currentPr.title)
     .navigationBarTitleDisplayMode(.inline)
@@ -407,32 +446,36 @@ struct PrDetailView: View {
     .task(id: syncService.localStateRevision) {
       await reload()
     }
-    .alert(cleanupChoice == .archive ? "Archive lane?" : "Delete lane and branch?", isPresented: $cleanupConfirmationPresented) {
-      Button(cleanupChoice == .archive ? "Archive" : "Delete", role: cleanupChoice == .archive ? nil : .destructive) {
-        Task { await performCleanup() }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text(cleanupChoice == .archive
-        ? "This keeps the lane for history but removes it from the active stack."
-        : "This removes the lane from ADE and asks the host to delete the branch as part of cleanup.")
-    }
-    .confirmationDialog(
-      "Merge strategy",
-      isPresented: $mergeMethodSheetPresented,
-      titleVisibility: .visible
-    ) {
-      ForEach(PrMergeMethodOption.allCases) { option in
-        Button(option.title) {
-          mergeMethod = option
-          mergeCurrentPr()
+    .sheet(isPresented: $cleanupConfirmationPresented) {
+      PrCleanupConfirmationSheet(
+        choice: cleanupChoice,
+        onConfirm: {
+          cleanupConfirmationPresented = false
+          Task { await performCleanup() }
+        },
+        onCancel: {
+          cleanupConfirmationPresented = false
         }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text(canAttemptBlockedMerge
-        ? "ADE sees merge blockers, but this will still ask GitHub to merge. GitHub may reject the request unless your account can bypass the current requirements."
-        : "Pick how this PR should be merged. Host rules may override your choice.")
+      )
+      .presentationDetents([.height(340)])
+      .presentationDragIndicator(.hidden)
+      .presentationBackground(.clear)
+    }
+    .sheet(isPresented: $mergeMethodSheetPresented) {
+      PrMergeStrategySheet(
+        selected: $mergeMethod,
+        canAttemptBlockedMerge: canAttemptBlockedMerge,
+        onMerge: {
+          mergeMethodSheetPresented = false
+          mergeCurrentPr()
+        },
+        onCancel: {
+          mergeMethodSheetPresented = false
+        }
+      )
+      .presentationDetents([.height(520)])
+      .presentationDragIndicator(.hidden)
+      .presentationBackground(.clear)
     }
     .sheet(item: $stackPresentation) { presentation in
       PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
@@ -511,79 +554,161 @@ struct PrDetailView: View {
   private var heroCard: some View {
     let state = snapshot?.status?.state ?? currentPr.state
     let stateTint = prStateTint(state)
-    let author = snapshot?.detail?.author.login ?? "unknown"
-    let metaPrefix = currentPr.headBranch.isEmpty
-      ? "unknown"
-      : "\(currentPr.headBranch) → \(currentPr.baseBranch.isEmpty ? "base" : currentPr.baseBranch)"
+    let author = snapshot?.detail?.author.login ?? githubItem?.author ?? "unknown"
+    let baseLabel = currentPr.baseBranch.isEmpty ? "base" : currentPr.baseBranch
+    let headLabel = currentPr.headBranch.isEmpty ? "head" : currentPr.headBranch
 
-    return VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 6) {
-        Text("#\(currentPr.githubPrNumber)")
-          .font(.system(size: 12, weight: .bold, design: .monospaced))
+    return HStack(alignment: .top, spacing: 12) {
+      // 44pt state tile on the left
+      ZStack {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(
+            LinearGradient(
+              colors: [stateTint.opacity(0.38), stateTint.opacity(0.14)],
+              startPoint: .topLeading,
+              endPoint: .bottomTrailing
+            )
+          )
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .strokeBorder(stateTint.opacity(0.48), lineWidth: 0.75)
+        Image(systemName: "arrow.triangle.pull")
+          .font(.system(size: 17, weight: .semibold))
           .foregroundStyle(stateTint)
-          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-status-\(currentPr.id)", in: transitionNamespace)
-        PrTagChip(label: state, color: stateTint)
-        if let kindLabel = prAdeKindLabel(currentPr.adeKind) {
-          PrTagChip(label: kindLabel, color: ADEColor.tintPRs)
+          .shadow(color: stateTint.opacity(0.55), radius: 6)
+      }
+      .frame(width: 44, height: 44)
+      .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-status-\(currentPr.id)", in: transitionNamespace)
+
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 6) {
+          Text("#\(currentPr.githubPrNumber)")
+            .font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundStyle(stateTint)
+          PrTagChip(label: state, color: stateTint)
+          if let kindLabel = prAdeKindLabel(currentPr.adeKind) {
+            PrTagChip(label: kindLabel, color: ADEColor.tintPRs)
+          }
+          Spacer(minLength: 0)
         }
-        Spacer(minLength: 0)
+
+        Text(currentPr.title)
+          .font(.system(size: 15, weight: .semibold))
+          .tracking(-0.2)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineSpacing(1)
+          .lineLimit(3)
+          .fixedSize(horizontal: false, vertical: true)
+          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-title-\(currentPr.id)", in: transitionNamespace)
+
+        // Single mono meta line: branch → base · opened … by @author
+        (
+          Text(headLabel)
+            .foregroundColor(ADEColor.textSecondary)
+          + Text(" → ")
+            .foregroundColor(ADEColor.textMuted)
+          + Text(baseLabel)
+            .foregroundColor(ADEColor.textSecondary)
+          + Text("  ·  opened \(prRelativeTime(currentPr.createdAt)) by @\(author)")
+            .foregroundColor(ADEColor.textMuted)
+        )
+        .font(.system(size: 11, design: .monospaced))
+        .lineLimit(1)
+        .truncationMode(.middle)
       }
 
-      Text(currentPr.title)
-        .font(.system(size: 22, weight: .semibold))
-        .tracking(-0.5)
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineSpacing(1)
-        .fixedSize(horizontal: false, vertical: true)
-        .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-title-\(currentPr.id)", in: transitionNamespace)
-
-      Text("\(metaPrefix) · opened \(prRelativeTime(currentPr.createdAt)) by \(author)")
-        .font(.system(size: 11, design: .monospaced))
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(2)
+      Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 18)
-    .padding(.vertical, 10)
+    .padding(.horizontal, 14)
+    .padding(.vertical, 14)
+    .prGlassCard(cornerRadius: 20, tint: stateTint.opacity(0.42))
+    .padding(.horizontal, 2)
+    .shadow(color: stateTint.opacity(0.14), radius: 18, y: 8)
   }
 
   // MARK: - Sub-tab picker
 
+  /// Compact tab labels used in the inactive state where we have less room.
+  /// Active tab gets the full label so the user always knows where they are.
+  private func compactTabTitle(_ tab: PrDetailTab) -> String {
+    switch tab {
+    case .convergence: return "Path"
+    case .checks: return "Checks"
+    default: return tabTitle(tab)
+    }
+  }
+
   private var subTabPicker: some View {
-    HStack(spacing: 2) {
+    HStack(spacing: 4) {
       ForEach(visibleTabs) { tab in
         let active = selectedTab == tab
+        let count = tabCount(tab)
         Button {
-          selectedTab = tab
+          withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            selectedTab = tab
+          }
         } label: {
-          Text(tabTitle(tab))
-            .font(.system(size: 12.5, weight: active ? .semibold : .medium))
-            .foregroundStyle(active ? ADEColor.tintPRs : ADEColor.textSecondary)
+          HStack(spacing: 4) {
+            Text(active ? tabTitle(tab) : compactTabTitle(tab))
+              .font(.system(size: 12.5, weight: active ? .semibold : .medium))
+              .foregroundStyle(active ? ADEColor.textPrimary : ADEColor.textSecondary)
+              .lineLimit(1)
+              .minimumScaleFactor(0.85)
+            if let count {
+              Text("\(count)")
+                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(active ? ADEColor.tintPRs : ADEColor.textMuted)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1.5)
+                .background(
+                  Capsule(style: .continuous)
+                    .fill((active ? ADEColor.tintPRs : ADEColor.textMuted).opacity(0.16))
+                )
+            }
+          }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(
-              RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(active ? ADEColor.tintPRs.opacity(0.14) : Color.clear)
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(active ? ADEColor.tintPRs.opacity(0.3) : Color.clear, lineWidth: 0.5)
-            )
+            .padding(.vertical, 9)
+            .background {
+              if active {
+                ZStack {
+                  RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                  RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+                  RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(
+                      LinearGradient(
+                        colors: [Color.white.opacity(0.10), Color.white.opacity(0.0)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                      )
+                    )
+                  RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6)
+                }
+                .shadow(color: Color.black.opacity(0.35), radius: 8, y: 3)
+              }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
       }
     }
-    .padding(3)
+    .padding(4)
+    .frame(height: 40)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(ADEColor.recessedBackground.opacity(0.7))
+      ZStack {
+        RoundedRectangle(cornerRadius: 13, style: .continuous)
+          .fill(.ultraThinMaterial)
+        RoundedRectangle(cornerRadius: 13, style: .continuous)
+          .fill(Color.black.opacity(0.22))
+      }
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
+      RoundedRectangle(cornerRadius: 13, style: .continuous)
+        .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.5)
     )
-    .padding(.horizontal, 16)
+    .padding(.horizontal, 2)
     .padding(.top, 2)
   }
 
@@ -592,71 +717,112 @@ struct PrDetailView: View {
   private var stickyActionBar: some View {
     let gate = mergeGateInfo
     let needsRebase = gate.tone == .amber || behindBaseBy > 0
-    let rebaseLabel = behindBaseBy > 0 ? "Rebase · \(behindBaseBy) behind" : "Rebase"
 
-    let mergeLabel: String
-    let mergeTint: Color
-    let mergeEnabled: Bool
+    // Single full-width action — matches the mocks. The pre-merge "needs
+    // rebase" / "merge blocked" states surface as inline body cards (Merge
+    // Gate, Needs Attention, Rebase Banner) — they don't double up as
+    // bottom buttons. The bottom bar is the one decisive action right now.
+    let label: String
+    let symbol: String
+    let isPrimary: Bool   // green = ready to merge
+    let isAmber: Bool     // amber = need rebase first
+    let action: () -> Void
+    let enabled: Bool
+
     switch gate.tone {
     case .green:
-      mergeLabel = "Merge"
-      mergeTint = ADEColor.success
-      mergeEnabled = canRunPrActions && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
-    case .red where canAttemptBlockedMerge:
-      mergeLabel = "Attempt merge"
-      mergeTint = ADEColor.warning
-      mergeEnabled = true
+      label = "Merge"
+      symbol = "checkmark.seal.fill"
+      isPrimary = true
+      isAmber = false
+      enabled = canRunPrActions && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
+      action = { presentMergeMethodPicker() }
     case .amber:
-      mergeLabel = "Needs rebase"
-      mergeTint = ADEColor.warning
-      mergeEnabled = false
+      label = needsRebase ? (behindBaseBy > 0 ? "Rebase · \(behindBaseBy) behind" : "Rebase") : "Needs rebase"
+      symbol = "arrow.triangle.2.circlepath"
+      isPrimary = false
+      isAmber = true
+      enabled = canRunPrActions && !currentPr.laneId.isEmpty
+      action = { triggerRebase() }
+    case .red where canAttemptBlockedMerge:
+      label = "Attempt merge"
+      symbol = "arrow.triangle.merge"
+      isPrimary = false
+      isAmber = true
+      enabled = true
+      action = { presentMergeMethodPicker() }
     case .red:
-      mergeLabel = "Merge blocked"
-      mergeTint = ADEColor.danger
-      mergeEnabled = false
+      label = "Merge blocked"
+      symbol = "xmark.octagon.fill"
+      isPrimary = false
+      isAmber = false
+      enabled = false
+      action = { }
     }
 
     return PrStickyActionBar {
-      Button(action: triggerRebase) {
-        Text(rebaseLabel)
-          .font(.system(size: 12.5, weight: .semibold))
-          .foregroundStyle(needsRebase ? ADEColor.textPrimary : ADEColor.textSecondary)
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 12)
-          .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .fill(Color.white.opacity(needsRebase ? 0.06 : 0.03))
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .strokeBorder(Color.white.opacity(needsRebase ? 0.12 : 0.05), lineWidth: 0.5)
-          )
-      }
-      .buttonStyle(.plain)
-      .disabled(!needsRebase || !canRunPrActions || currentPr.laneId.isEmpty)
-
       Button {
-        if mergeEnabled {
+        if enabled {
           ADEHaptics.success()
-          presentMergeMethodPicker()
+          action()
         }
       } label: {
-        Text(mergeLabel)
-          .font(.system(size: 12.5, weight: .bold))
-          .foregroundStyle(mergeTint)
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 12)
-          .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .fill(mergeTint.opacity(0.14))
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .strokeBorder(mergeTint.opacity(0.32), lineWidth: 0.5)
-          )
+        HStack(spacing: 8) {
+          Image(systemName: symbol)
+            .font(.system(size: 14, weight: .bold))
+          Text(label)
+            .font(.system(size: 15, weight: .bold))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        .foregroundStyle(isPrimary ? Color.white : (isAmber ? ADEColor.warning : ADEColor.danger))
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background {
+          if isPrimary {
+            ZStack {
+              RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(
+                  LinearGradient(
+                    colors: [ADEColor.success, ADEColor.success.opacity(0.82)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                  )
+                )
+              RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(
+                  LinearGradient(
+                    colors: [Color.white.opacity(0.22), Color.white.opacity(0.0)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                  )
+                )
+            }
+          } else {
+            ZStack {
+              RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial)
+              RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill((isAmber ? ADEColor.warning : ADEColor.danger).opacity(0.14))
+            }
+          }
+        }
+        .overlay(
+          RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(
+              isPrimary ? Color.white.opacity(0.32) : (isAmber ? ADEColor.warning.opacity(0.45) : ADEColor.danger.opacity(0.45)),
+              lineWidth: 0.75
+            )
+        )
+        .shadow(
+          color: isPrimary ? ADEColor.success.opacity(0.45) : .clear,
+          radius: 18,
+          y: 6
+        )
+        .opacity(enabled ? 1 : 0.55)
       }
       .buttonStyle(.plain)
-      .disabled(!mergeEnabled)
+      .disabled(!enabled)
     }
   }
 
@@ -712,6 +878,16 @@ struct PrDetailView: View {
       let listItems = try await listItemsTask
       pr = listItems.first(where: { $0.id == prId })
       snapshot = try await snapshotTask
+
+      // Fall back to the GitHub snapshot when the PR isn't in the lane-PR list
+      // (e.g. external PRs or stale local cache). This keeps the hero card from
+      // collapsing into "Pull request / @unknown" placeholders.
+      if pr == nil && isLive {
+        if let github = try? await syncService.fetchGitHubPullRequestSnapshot() {
+          let all = github.repoPullRequests + github.externalPullRequests
+          githubItem = all.first { $0.linkedPrId == prId || $0.id == prId }
+        }
+      }
       reviewThreads = await reviewThreadsTask?.value ?? []
       actionRuns = await actionRunsTask?.value ?? []
       activityEvents = await activityTask?.value ?? []
@@ -1026,10 +1202,105 @@ struct PrDetailView: View {
     }
   }
 
+  /// Builds a markdown-style prompt summarising unresolved review comments
+  /// and failing checks, then copies it to the system clipboard. Mirrors the
+  /// "Copy Prompt" affordance on the desktop Path-to-Merge view — the user can
+  /// paste this into Claude/Codex/etc to bootstrap a fix session.
+  private func copyConvergencePrompt() {
+    var lines: [String] = []
+    let pr = currentPr
+    lines.append("# PR #\(pr.githubPrNumber) — \(pr.title)")
+    if !pr.headBranch.isEmpty || !pr.baseBranch.isEmpty {
+      let head = pr.headBranch.isEmpty ? "head" : pr.headBranch
+      let base = pr.baseBranch.isEmpty ? "base" : pr.baseBranch
+      lines.append("Branch: `\(head)` → `\(base)`")
+    }
+    if !pr.githubUrl.isEmpty { lines.append(pr.githubUrl) }
+
+    let active = (issueInventory?.items ?? []).filter {
+      $0.state == "new" || $0.state == "sent_to_agent" || $0.state == "escalated"
+    }
+    if !active.isEmpty {
+      lines.append("")
+      lines.append("## Unresolved review comments (\(active.count))")
+      for item in active {
+        let severity = (item.severity ?? "note").uppercased()
+        var location = ""
+        if let path = item.filePath, !path.isEmpty {
+          location = item.line.map { " — `\(path):\($0)`" } ?? " — `\(path)`"
+        }
+        lines.append("- **[\(severity)]** \(item.headline)\(location)")
+        if let body = item.body, !body.isEmpty {
+          let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines).prefix(280)
+          lines.append("  > \(trimmed)")
+        }
+      }
+    }
+
+    let failed = (snapshot?.checks ?? []).filter { check in
+      check.status == "completed" && check.conclusion != nil &&
+        check.conclusion != "success" && check.conclusion != "neutral" && check.conclusion != "skipped"
+    }
+    if !failed.isEmpty {
+      lines.append("")
+      lines.append("## Failing checks (\(failed.count))")
+      for check in failed {
+        let context = check.conclusion ?? check.status
+        lines.append("- `\(check.name)` — \(context)")
+      }
+    }
+
+    lines.append("")
+    lines.append("Resolve these issues, push fixes to `\(pr.headBranch.isEmpty ? "this branch" : pr.headBranch)`, and bring the PR to a green merge gate.")
+
+    UIPasteboard.general.string = lines.joined(separator: "\n")
+    ADEHaptics.success()
+    actionMessage = "Convergence prompt copied to clipboard."
+  }
+
   private func copyFilePath(_ file: PrFile) {
     UIPasteboard.general.string = file.filename
     actionMessage = "Copied \(file.filename)."
     errorMessage = nil
+  }
+}
+
+// MARK: - Liquid-glass backdrop
+
+@ViewBuilder
+func prLiquidGlassBackdrop() -> some View {
+  ZStack {
+    PrGlassPalette.ink
+
+    RadialGradient(
+      colors: [PrGlassPalette.purple.opacity(0.35), .clear],
+      center: .init(x: 0.15, y: 0.12),
+      startRadius: 8,
+      endRadius: 520
+    )
+    .blendMode(.plusLighter)
+
+    RadialGradient(
+      colors: [PrGlassPalette.blue.opacity(0.28), .clear],
+      center: .init(x: 0.95, y: 0.18),
+      startRadius: 10,
+      endRadius: 460
+    )
+    .blendMode(.plusLighter)
+
+    RadialGradient(
+      colors: [PrGlassPalette.pink.opacity(0.22), .clear],
+      center: .init(x: 0.55, y: 1.05),
+      startRadius: 10,
+      endRadius: 580
+    )
+    .blendMode(.plusLighter)
+
+    LinearGradient(
+      colors: [Color.black.opacity(0.0), Color.black.opacity(0.35)],
+      startPoint: .top,
+      endPoint: .bottom
+    )
   }
 }
 
@@ -1123,40 +1394,522 @@ private struct PrSubmitReviewSheet: View {
   let onSubmit: (PrReviewEventOption, String?) -> Void
   @State private var event: PrReviewEventOption = .comment
   @State private var reviewBody = ""
+  @FocusState private var bodyFocused: Bool
+
+  private var accentColor: Color {
+    switch event {
+    case .approve: return PrGlassPalette.success
+    case .requestChanges: return PrGlassPalette.danger
+    case .comment: return PrGlassPalette.blue
+    }
+  }
+
+  private var submitDisabled: Bool {
+    event != .approve && reviewBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
 
   var body: some View {
-    NavigationStack {
-      Form {
-        Section("Review") {
-          Picker("Decision", selection: $event) {
-            ForEach(PrReviewEventOption.allCases) { option in
-              Text(option.title).tag(option)
-            }
-          }
-          TextEditor(text: $reviewBody)
-            .frame(minHeight: 180)
+    PrDetailLiquidSheetShell(
+      title: "Submit review",
+      leadingLabel: "Cancel",
+      onLeading: { dismiss() },
+      trailingLabel: "Submit",
+      trailingTint: accentColor,
+      trailingDisabled: submitDisabled,
+      onTrailing: {
+        let trimmed = reviewBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        onSubmit(event, trimmed.isEmpty ? nil : trimmed)
+      }
+    ) {
+      VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 8) {
+          PrEyebrow(text: "Decision")
+            .padding(.horizontal, 2)
+
+          PrReviewDecisionPicker(selection: $event)
         }
 
-        Section {
-          Text("Approvals can be submitted without a note. Requested changes and comments should include enough context for the author to act.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-      }
-      .navigationTitle("Submit review")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
-        }
-        ToolbarItem(placement: .confirmationAction) {
-          Button("Submit") {
-            let trimmed = reviewBody.trimmingCharacters(in: .whitespacesAndNewlines)
-            onSubmit(event, trimmed.isEmpty ? nil : trimmed)
+        VStack(alignment: .leading, spacing: 8) {
+          PrEyebrow(text: "Review")
+            .padding(.horizontal, 2)
+
+          ZStack(alignment: .topLeading) {
+            if reviewBody.isEmpty {
+              Text("Leave a note with your review…")
+                .font(.system(size: 14))
+                .foregroundStyle(Color(red: 0x5E / 255, green: 0x5A / 255, blue: 0x70 / 255))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .allowsHitTesting(false)
+            }
+            TextEditor(text: $reviewBody)
+              .scrollContentBackground(.hidden)
+              .focused($bodyFocused)
+              .font(.system(size: 14))
+              .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+              .padding(.horizontal, 10)
+              .padding(.vertical, 6)
+              .frame(minHeight: 160)
           }
-          .disabled(event != .approve && reviewBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .prGlassCard(cornerRadius: 14, shadow: false)
+          .onTapGesture { bodyFocused = true }
+        }
+
+        Text("Approvals can be submitted without a note, but comments and requests for changes need one.")
+          .font(.system(size: 11))
+          .foregroundStyle(Color(red: 0x5E / 255, green: 0x5A / 255, blue: 0x70 / 255))
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.horizontal, 2)
+      }
+      .padding(16)
+    }
+  }
+}
+
+// MARK: - File-private liquid-glass sheet primitives (PR detail)
+
+/// Shared sheet shell mirroring the one on PrsRootScreen: deep-ink backdrop,
+/// 36x5 grab handle, title bar with leading (Cancel) and trailing (Submit).
+private struct PrDetailLiquidSheetShell<Content: View>: View {
+  let title: String
+  let leadingLabel: String
+  let onLeading: () -> Void
+  let trailingLabel: String
+  let trailingTint: Color
+  let trailingDisabled: Bool
+  let onTrailing: () -> Void
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    ZStack {
+      prLiquidGlassBackdrop().ignoresSafeArea()
+
+      VStack(spacing: 0) {
+        Capsule(style: .continuous)
+          .fill(Color.white.opacity(0.25))
+          .frame(width: 36, height: 5)
+          .padding(.top, 8)
+          .padding(.bottom, 8)
+
+        HStack {
+          Button(action: onLeading) {
+            Text(leadingLabel)
+              .font(.system(size: 14, weight: .semibold))
+              .foregroundStyle(PrGlassPalette.purpleBright)
+          }
+          Spacer(minLength: 0)
+          Text(title)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+          Spacer(minLength: 0)
+          Button(action: onTrailing) {
+            Text(trailingLabel)
+              .font(.system(size: 14, weight: .semibold))
+              .foregroundStyle(trailingTint)
+              .opacity(trailingDisabled ? 0.35 : 1.0)
+          }
+          .disabled(trailingDisabled)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+          Rectangle()
+            .fill(Color.white.opacity(0.06))
+            .frame(height: 0.5)
+        }
+
+        ScrollView {
+          content()
         }
       }
     }
+  }
+}
+
+/// 3-way tinted segmented picker for the review decision.
+private struct PrReviewDecisionPicker: View {
+  @Binding var selection: PrReviewEventOption
+
+  var body: some View {
+    HStack(spacing: 6) {
+      ForEach(PrReviewEventOption.allCases) { option in
+        PrReviewDecisionTab(
+          option: option,
+          isSelected: selection == option
+        ) {
+          withAnimation(.easeOut(duration: 0.15)) {
+            selection = option
+          }
+        }
+      }
+    }
+    .padding(4)
+    .background(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(.ultraThinMaterial)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+    )
+  }
+}
+
+private struct PrReviewDecisionTab: View {
+  let option: PrReviewEventOption
+  let isSelected: Bool
+  let onTap: () -> Void
+
+  private var tint: Color {
+    switch option {
+    case .approve: return PrGlassPalette.success
+    case .requestChanges: return PrGlassPalette.danger
+    case .comment: return PrGlassPalette.blue
+    }
+  }
+
+  var body: some View {
+    Button(action: onTap) {
+      Text(option.title)
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(isSelected ? Color.white : Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
+        .frame(maxWidth: .infinity)
+        .frame(height: 34)
+        .background(
+          ZStack {
+            if isSelected {
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                  LinearGradient(
+                    colors: [tint.opacity(0.85), tint.opacity(0.55)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                  )
+                )
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(tint.opacity(0.65), lineWidth: 0.75)
+            }
+          }
+        )
+        .shadow(color: isSelected ? tint.opacity(0.45) : .clear, radius: 10, x: 0, y: 3)
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+/// Merge-strategy dialog (radio rows + Cancel + Merge).
+private struct PrMergeStrategySheet: View {
+  @Binding var selected: PrMergeMethodOption
+  let canAttemptBlockedMerge: Bool
+  let onMerge: () -> Void
+  let onCancel: () -> Void
+
+  var body: some View {
+    ZStack(alignment: .bottom) {
+      Color.black.opacity(0.55)
+        .ignoresSafeArea()
+        .onTapGesture(perform: onCancel)
+
+      VStack(spacing: 0) {
+        prLiquidGlassBackdrop()
+          .opacity(0.0)
+          .frame(height: 0)
+
+        VStack(spacing: 14) {
+          // Grab handle.
+          Capsule(style: .continuous)
+            .fill(Color.white.opacity(0.25))
+            .frame(width: 36, height: 5)
+            .padding(.top, 2)
+
+          VStack(alignment: .leading, spacing: 4) {
+            PrEyebrow(text: "Merge strategy", tint: PrGlassPalette.purple)
+            Text(canAttemptBlockedMerge ? "Force-request merge" : "Pick how to merge")
+              .font(.system(size: 17, weight: .semibold))
+              .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+              .tracking(-0.2)
+            Text(canAttemptBlockedMerge
+              ? "ADE sees merge blockers, but this will still ask GitHub to merge. GitHub may reject unless your account can bypass requirements."
+              : "Host rules may override your choice. All checks will be verified before merging.")
+              .font(.system(size: 11))
+              .foregroundStyle(Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+          VStack(spacing: 8) {
+            ForEach(PrMergeMethodOption.allCases) { option in
+              PrGlassRadioRow(
+                title: option.title,
+                subtitle: option.description,
+                icon: iconFor(option),
+                isSelected: selected == option
+              ) {
+                selected = option
+              }
+            }
+          }
+
+          HStack(spacing: 10) {
+            Button(action: onCancel) {
+              Text("Cancel")
+            }
+            .buttonStyle(PrDetailGlassOutlineButtonStyle())
+
+            Button(action: onMerge) {
+              Label(canAttemptBlockedMerge ? "Merge anyway" : "Merge", systemImage: "arrow.triangle.merge")
+            }
+            .buttonStyle(PrDetailGlassPrimaryButtonStyle(tint: canAttemptBlockedMerge ? PrGlassPalette.warning : PrGlassPalette.purpleDeep))
+          }
+          .padding(.top, 2)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 10)
+        .padding(.bottom, 22)
+        .frame(maxWidth: .infinity)
+        .background {
+          RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(PrGlassPalette.ink)
+          RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(.ultraThinMaterial)
+        }
+        .overlay(
+          RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+        )
+        .overlay(alignment: .top) {
+          // Ambient purple glow at top edge.
+          LinearGradient(
+            colors: [PrGlassPalette.purple.opacity(0.22), .clear],
+            startPoint: .top,
+            endPoint: .bottom
+          )
+          .frame(height: 80)
+          .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+          .allowsHitTesting(false)
+        }
+        .shadow(color: Color.black.opacity(0.55), radius: 28, x: 0, y: 10)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+      }
+    }
+  }
+
+  private func iconFor(_ option: PrMergeMethodOption) -> String {
+    switch option {
+    case .squash: return "square.stack.3d.down.right.fill"
+    case .merge: return "arrow.triangle.merge"
+    case .rebase: return "arrow.triangle.2.circlepath"
+    }
+  }
+}
+
+/// Centered cleanup confirmation sheet.
+private struct PrCleanupConfirmationSheet: View {
+  let choice: PrCleanupChoice
+  let onConfirm: () -> Void
+  let onCancel: () -> Void
+
+  private var isDestructive: Bool { choice == .deleteBranch }
+
+  private var title: String {
+    choice == .archive ? "Archive lane?" : "Delete lane and branch?"
+  }
+
+  private var message: String {
+    choice == .archive
+      ? "This keeps the lane for history but removes it from the active stack."
+      : "This removes the lane from ADE and asks the host to delete the branch as part of cleanup. This cannot be undone."
+  }
+
+  private var confirmTitle: String { choice == .archive ? "Archive" : "Delete" }
+
+  var body: some View {
+    ZStack {
+      Color.black.opacity(0.55)
+        .ignoresSafeArea()
+        .onTapGesture(perform: onCancel)
+
+      VStack(spacing: 14) {
+        ZStack {
+          Circle()
+            .fill((isDestructive ? PrGlassPalette.danger : PrGlassPalette.warning).opacity(0.22))
+          Image(systemName: isDestructive ? "trash.fill" : "archivebox.fill")
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(isDestructive ? PrGlassPalette.danger : PrGlassPalette.warning)
+        }
+        .frame(width: 44, height: 44)
+
+        Text(title)
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+          .tracking(-0.2)
+          .multilineTextAlignment(.center)
+
+        Text(message)
+          .font(.system(size: 12))
+          .foregroundStyle(Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.horizontal, 4)
+
+        HStack(spacing: 10) {
+          Button(action: onCancel) {
+            Text("Cancel")
+          }
+          .buttonStyle(PrDetailGlassOutlineButtonStyle())
+
+          Button(action: onConfirm) {
+            Text(confirmTitle)
+          }
+          .buttonStyle(
+            PrDetailGlassPrimaryButtonStyle(
+              tint: isDestructive ? PrGlassPalette.danger : PrGlassPalette.purpleDeep
+            )
+          )
+        }
+        .padding(.top, 2)
+      }
+      .padding(20)
+      .frame(maxWidth: .infinity)
+      .background {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+          .fill(PrGlassPalette.ink)
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+          .fill(.ultraThinMaterial)
+      }
+      .overlay(
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+          .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+      )
+      .shadow(color: Color.black.opacity(0.55), radius: 28, x: 0, y: 10)
+      .padding(.horizontal, 28)
+    }
+  }
+}
+
+/// Radio row used in the merge strategy dialog.
+private struct PrGlassRadioRow: View {
+  let title: String
+  let subtitle: String
+  let icon: String
+  let isSelected: Bool
+  let onTap: () -> Void
+
+  var body: some View {
+    Button(action: onTap) {
+      HStack(alignment: .center, spacing: 12) {
+        ZStack {
+          if isSelected {
+            Circle()
+              .fill(PrGlassPalette.accentGradient)
+          } else {
+            Circle()
+              .fill(Color.white.opacity(0.06))
+          }
+          Image(systemName: icon)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(isSelected ? Color.white : Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
+        }
+        .frame(width: 32, height: 32)
+
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+          Text(subtitle)
+            .font(.system(size: 11))
+            .foregroundStyle(Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        Spacer(minLength: 0)
+
+        ZStack {
+          Circle()
+            .strokeBorder(
+              isSelected ? PrGlassPalette.purpleBright : Color.white.opacity(0.22),
+              lineWidth: isSelected ? 1.5 : 1
+            )
+            .frame(width: 18, height: 18)
+          if isSelected {
+            Circle()
+              .fill(PrGlassPalette.purpleBright)
+              .frame(width: 10, height: 10)
+              .shadow(color: PrGlassPalette.purpleBright.opacity(0.7), radius: 6)
+          }
+        }
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .prGlassCard(
+        cornerRadius: 12,
+        tint: isSelected ? PrGlassPalette.purple.opacity(0.55) : nil,
+        strokeOpacity: isSelected ? 0.22 : 0.10,
+        shadow: false
+      )
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+private struct PrDetailGlassPrimaryButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+  let tint: Color
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.system(size: 14, weight: .semibold))
+      .foregroundStyle(Color.white)
+      .frame(maxWidth: .infinity)
+      .frame(height: 44)
+      .background(
+        ZStack {
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(
+              LinearGradient(
+                colors: [tint.opacity(0.95), tint.opacity(0.70)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+              )
+            )
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(
+              LinearGradient(
+                colors: [Color.white.opacity(0.45), Color.white.opacity(0.05)],
+                startPoint: .top,
+                endPoint: .bottom
+              ),
+              lineWidth: 1
+            )
+        }
+      )
+      .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.45)
+      .shadow(color: tint.opacity(isEnabled ? 0.45 : 0.0), radius: 14, x: 0, y: 5)
+      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+  }
+}
+
+private struct PrDetailGlassOutlineButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.system(size: 14, weight: .semibold))
+      .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+      .frame(maxWidth: .infinity)
+      .frame(height: 44)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(.ultraThinMaterial)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+      )
+      .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.45)
+      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
   }
 }

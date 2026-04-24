@@ -64,6 +64,9 @@ struct PrChecksTab: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
+      if !checks.isEmpty {
+        PrChecksProgressBar(stats: stats)
+      }
       PrChecksStatStrip(stats: stats)
 
       if checks.isEmpty {
@@ -77,6 +80,21 @@ struct PrChecksTab: View {
           PrChecksGroupCard(group: group)
         }
       }
+
+      // Dedicated AI resolver row (sparkle icon, copy, Launch/Stop CTA).
+      PrChecksAiResolverRow(
+        isBusy: isAiResolverBusy,
+        isRunning: aiResolverRunning,
+        isLive: isLive,
+        onLaunch: onLaunchAiResolver,
+        onStop: onStopAiResolver
+      )
+
+      // Outline rerun button.
+      PrChecksRerunButton(
+        canRerun: canRerunChecks && isLive && hasFailedChecks,
+        onRerun: onRerun
+      )
 
       if !deployments.isEmpty {
         PrDetailSectionCard("Deployments") {
@@ -102,21 +120,61 @@ struct PrChecksTab: View {
         }
       }
 
-      PrChecksActionsRow(
-        canRerun: canRerunChecks && isLive && hasFailedChecks,
-        isAiBusy: isAiResolverBusy,
-        isAiRunning: aiResolverRunning,
-        isLive: isLive,
-        onRerun: onRerun,
-        onLaunchAi: onLaunchAiResolver,
-        onStopAi: onStopAiResolver
-      )
-
       if !canRerunChecks {
         Text("This host has not exposed PR check reruns to the mobile sync channel yet.")
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
       }
+    }
+  }
+}
+
+// MARK: - Progress bar
+
+/// Slim 4-color summary bar mirroring the desktop CI / Checks header. Each
+/// segment width is proportional to its share of the run set; the layout uses
+/// GeometryReader so it tracks the parent width even on rotation.
+private struct PrChecksProgressBar: View {
+  let stats: PrChecksStatStrip.Stats
+
+  private var passSummary: String {
+    let total = stats.total
+    if total == 0 { return "no checks" }
+    if stats.fail > 0 { return "\(stats.fail) failing" }
+    if stats.pending > 0 { return "\(stats.pending) pending · \(stats.pass) passing" }
+    return "all passing"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
+        Text("CI / CHECKS")
+          .font(.system(size: 10, weight: .bold))
+          .tracking(1.0)
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 6)
+        Text(passSummary)
+          .font(.system(size: 10.5, weight: .semibold))
+          .foregroundStyle(stats.fail > 0 ? ADEColor.danger : (stats.pending > 0 ? ADEColor.warning : ADEColor.success))
+      }
+      .padding(.horizontal, 4)
+
+      GeometryReader { geo in
+        let total = max(stats.total, 1)
+        let passW = geo.size.width * CGFloat(stats.pass) / CGFloat(total)
+        let failW = geo.size.width * CGFloat(stats.fail) / CGFloat(total)
+        let pendW = geo.size.width * CGFloat(stats.pending) / CGFloat(total)
+        HStack(spacing: 0) {
+          if stats.fail > 0 { Rectangle().fill(ADEColor.danger).frame(width: failW) }
+          if stats.pending > 0 { Rectangle().fill(ADEColor.warning).frame(width: pendW) }
+          if stats.pass > 0 { Rectangle().fill(ADEColor.success).frame(width: passW) }
+          if stats.total == 0 { Rectangle().fill(ADEColor.textMuted.opacity(0.3)) }
+        }
+        .clipShape(Capsule())
+      }
+      .frame(height: 6)
+      .background(Capsule().fill(Color.white.opacity(0.05)))
+      .overlay(Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
     }
   }
 }
@@ -134,12 +192,53 @@ private struct PrChecksStatStrip: View {
   let stats: Stats
 
   var body: some View {
-    HStack(spacing: 6) {
-      PrCheckStatPill(count: stats.fail, label: "Fail", color: ADEColor.danger)
-      PrCheckStatPill(count: stats.pending, label: "Pending", color: ADEColor.warning)
-      PrCheckStatPill(count: stats.pass, label: "Pass", color: ADEColor.success)
-      PrCheckStatPill(count: stats.total, label: "Total", color: ADEColor.tintPRs)
+    HStack(spacing: 8) {
+      PrChecksStatTile(count: stats.fail, label: "Fail", tint: ADEColor.danger)
+      PrChecksStatTile(count: stats.pending, label: "Pending", tint: ADEColor.warning)
+      PrChecksStatTile(count: stats.pass, label: "Pass", tint: ADEColor.success)
+      PrChecksStatTile(count: stats.total, label: "Total", tint: PrGlassPalette.purpleBright)
     }
+  }
+}
+
+private struct PrChecksStatTile: View {
+  let count: Int
+  let label: String
+  let tint: Color
+
+  var body: some View {
+    VStack(spacing: 2) {
+      Text(label)
+        .font(.system(size: 9.5, weight: .bold))
+        .tracking(0.8)
+        .foregroundStyle(tint.opacity(0.9))
+      Text("\(count)")
+        .font(.system(size: 24, weight: .semibold, design: .rounded))
+        .foregroundStyle(tint)
+        .shadow(color: tint.opacity(0.45), radius: 6)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 10)
+    .background(
+      ZStack {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(.ultraThinMaterial)
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(tint.opacity(0.16))
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(
+            LinearGradient(
+              colors: [Color.white.opacity(0.08), Color.white.opacity(0)],
+              startPoint: .top,
+              endPoint: .bottom
+            )
+          )
+      }
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .strokeBorder(tint.opacity(0.38), lineWidth: 0.75)
+    )
   }
 }
 
@@ -330,12 +429,26 @@ private struct PrCheckRowCompact: View {
         }
       } label: {
         HStack(alignment: .top, spacing: 10) {
+          // Red accent rail on failing rows.
+          Rectangle()
+            .fill(kind == .failure ? ADEColor.danger : Color.clear)
+            .frame(width: 2)
+            .cornerRadius(1)
+            .shadow(color: kind == .failure ? ADEColor.danger.opacity(0.6) : .clear, radius: 4)
+
           ZStack {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
               .fill(tint.opacity(0.15))
-            Image(systemName: iconName)
-              .font(.system(size: 11, weight: .heavy))
-              .foregroundStyle(tint)
+            if kind == .pending {
+              Image(systemName: iconName)
+                .font(.system(size: 11, weight: .heavy))
+                .foregroundStyle(tint)
+                .symbolEffect(.pulse, options: .repeat(.continuous))
+            } else {
+              Image(systemName: iconName)
+                .font(.system(size: 11, weight: .heavy))
+                .foregroundStyle(tint)
+            }
           }
           .frame(width: 22, height: 22)
           .padding(.top, 1)
@@ -465,62 +578,142 @@ private struct PrDeploymentRow: View {
 
 // MARK: - Bottom actions
 
-private struct PrChecksActionsRow: View {
-  let canRerun: Bool
-  let isAiBusy: Bool
-  let isAiRunning: Bool
+/// Dedicated AI resolver row. Sparkle icon disc, title+blurb, and a purple
+/// gradient Launch CTA (or a red Stop when a run is live).
+private struct PrChecksAiResolverRow: View {
+  let isBusy: Bool
+  let isRunning: Bool
   let isLive: Bool
-  let onRerun: () -> Void
-  let onLaunchAi: () -> Void
-  let onStopAi: () -> Void
+  let onLaunch: () -> Void
+  let onStop: () -> Void
 
   var body: some View {
-    HStack(spacing: 8) {
-      Button {
-        ADEHaptics.success()
-        onRerun()
-      } label: {
-        HStack(spacing: 6) {
-          Image(systemName: "arrow.triangle.2.circlepath")
-            .font(.system(size: 11, weight: .semibold))
-          Text("Retry failed")
-            .font(.caption.weight(.semibold))
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 11)
-        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
-        )
-        .foregroundStyle(ADEColor.textSecondary)
+    HStack(alignment: .center, spacing: 12) {
+      ZStack {
+        Circle()
+          .fill(PrGlassPalette.purple.opacity(0.55))
+          .frame(width: 34, height: 34)
+          .blur(radius: 10)
+          .opacity(0.7)
+        Circle()
+          .fill(
+            LinearGradient(
+              colors: [PrGlassPalette.purpleBright, PrGlassPalette.purpleDeep],
+              startPoint: .topLeading,
+              endPoint: .bottomTrailing
+            )
+          )
+          .frame(width: 30, height: 30)
+        Circle()
+          .strokeBorder(
+            LinearGradient(colors: [Color.white.opacity(0.55), .clear], startPoint: .top, endPoint: .center),
+            lineWidth: 1
+          )
+          .frame(width: 30, height: 30)
+        Image(systemName: "sparkles")
+          .font(.system(size: 13, weight: .bold))
+          .foregroundStyle(.white)
+          .symbolEffect(.pulse, options: .repeat(.continuous))
       }
-      .buttonStyle(.plain)
-      .disabled(!canRerun)
-      .opacity(canRerun ? 1 : 0.5)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text("AI resolver")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text("Diagnose failing checks and propose fixes")
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+      }
+
+      Spacer(minLength: 0)
 
       Button {
-        if isAiRunning { onStopAi() } else { onLaunchAi() }
+        if isRunning { onStop() } else { onLaunch() }
       } label: {
-        HStack(spacing: 6) {
-          if isAiBusy {
-            ProgressView().controlSize(.mini).tint(.black)
-          } else {
-            Image(systemName: isAiRunning ? "stop.fill" : "sparkles")
+        HStack(spacing: 5) {
+          if isBusy {
+            ProgressView().controlSize(.mini).tint(.white)
+          } else if isRunning {
+            Image(systemName: "stop.fill")
               .font(.system(size: 11, weight: .bold))
           }
-          Text(isAiRunning ? "Stop AI" : "Fix with AI")
-            .font(.caption.weight(.bold))
+          Text(isRunning ? "Stop" : "Launch")
+            .font(.system(size: 12, weight: .bold))
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 11)
-        .background(isAiRunning ? ADEColor.danger : ADEColor.tintPRs, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .foregroundStyle(isAiRunning ? Color.white : Color.black)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background {
+          if isRunning {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .fill(ADEColor.danger)
+          } else {
+            ZStack {
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(PrGlassPalette.accentGradient)
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                  LinearGradient(
+                    colors: [Color.white.opacity(0.22), Color.white.opacity(0)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                  )
+                )
+            }
+          }
+        }
+        .overlay(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5)
+        )
+        .shadow(
+          color: isRunning ? ADEColor.danger.opacity(0.45) : PrGlassPalette.purpleDeep.opacity(0.55),
+          radius: 10,
+          y: 4
+        )
       }
       .buttonStyle(.plain)
-      .disabled(isAiBusy || !isLive)
-      .opacity((isAiBusy || !isLive) ? 0.6 : 1)
+      .disabled(isBusy || !isLive)
+      .opacity((isBusy || !isLive) ? 0.6 : 1)
     }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .prGlassCard(cornerRadius: 16, tint: PrGlassPalette.purple.opacity(0.45))
+  }
+}
+
+/// Outline-style "Rerun failed checks" button.
+private struct PrChecksRerunButton: View {
+  let canRerun: Bool
+  let onRerun: () -> Void
+
+  var body: some View {
+    Button {
+      ADEHaptics.success()
+      onRerun()
+    } label: {
+      HStack(spacing: 7) {
+        Image(systemName: "arrow.triangle.2.circlepath")
+          .font(.system(size: 12, weight: .semibold))
+        Text("Rerun failed checks")
+          .font(.system(size: 13, weight: .semibold))
+      }
+      .foregroundStyle(ADEColor.textSecondary)
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 12)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(.ultraThinMaterial)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(!canRerun)
+    .opacity(canRerun ? 1 : 0.5)
   }
 }
 

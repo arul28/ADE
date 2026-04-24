@@ -35,28 +35,24 @@ struct PrAiResolverCtaCard: View {
     self.onStop = onStop
   }
 
-  var body: some View {
-    HStack(alignment: .center, spacing: 10) {
-      ZStack {
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .fill(ADEColor.tintPRs.opacity(0.2))
-          .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-              .strokeBorder(ADEColor.tintPRs.opacity(0.4), lineWidth: 0.5)
-          )
-        Image(systemName: "sparkles")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(ADEColor.tintPRs)
-      }
-      .frame(width: 32, height: 32)
+  /// Running state picks up a danger accent (stop glyph); idle state uses
+  /// the amber/warning tint matching the "something needs fixing" reading.
+  private var accent: Color {
+    isRunning ? PrGlassPalette.danger : PrGlassPalette.warning
+  }
 
-      VStack(alignment: .leading, spacing: 2) {
+  var body: some View {
+    HStack(alignment: .center, spacing: 12) {
+      iconDisc
+
+      VStack(alignment: .leading, spacing: 3) {
+        PrsEyebrowLabel(text: "AI RESOLVER", tint: accent.opacity(0.95))
         Text(title)
-          .font(.subheadline.weight(.bold))
+          .font(.system(size: 14, weight: .bold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         Text(isRunning ? "Worker running · auto-pushing fixes" : subtitle)
-          .font(.system(.caption2, design: .monospaced))
+          .font(.system(size: 10.5, weight: .medium, design: .monospaced))
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(2)
       }
@@ -65,14 +61,47 @@ struct PrAiResolverCtaCard: View {
 
       launchButton
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .background(gradientBackground)
-    .overlay(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .strokeBorder(ADEColor.tintPRs.opacity(0.3), lineWidth: 0.5)
-    )
-    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .padding(14)
+    .prGlassCard(cornerRadius: 16, tint: accent)
+  }
+
+  /// Amber→orange (or danger) gradient tile matching the mock's rebase tile.
+  private var iconDisc: some View {
+    ZStack {
+      RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .fill(accent.opacity(0.55))
+        .frame(width: 38, height: 38)
+        .blur(radius: 10)
+        .opacity(0.6)
+
+      RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .fill(
+          LinearGradient(
+            colors: [
+              accent,
+              accent.opacity(0.75),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+          )
+        )
+        .frame(width: 34, height: 34)
+
+      RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .strokeBorder(
+          LinearGradient(
+            colors: [Color.white.opacity(0.55), .clear],
+            startPoint: .top,
+            endPoint: .center
+          ),
+          lineWidth: 1
+        )
+        .frame(width: 34, height: 34)
+
+      Image(systemName: "sparkles")
+        .font(.system(size: 14, weight: .bold))
+        .foregroundStyle(.white)
+    }
   }
 
   @ViewBuilder
@@ -81,19 +110,33 @@ struct PrAiResolverCtaCard: View {
       Button {
         onStop()
       } label: {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
           if isBusy {
-            ProgressView().controlSize(.mini).tint(ADEColor.danger)
+            ProgressView().controlSize(.mini).tint(.white)
           } else {
             Image(systemName: "stop.fill").font(.system(size: 10, weight: .bold))
           }
           Text("Stop")
-            .font(.caption.weight(.bold))
+            .font(.system(size: 12, weight: .bold))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(ADEColor.danger.opacity(0.18), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .foregroundStyle(ADEColor.danger)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .foregroundStyle(.white)
+        .background(
+          Capsule(style: .continuous)
+            .fill(
+              LinearGradient(
+                colors: [PrGlassPalette.danger, PrGlassPalette.danger.opacity(0.75)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+              )
+            )
+        )
+        .overlay(
+          Capsule(style: .continuous)
+            .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5)
+        )
+        .shadow(color: PrGlassPalette.danger.opacity(0.55), radius: 10, x: 0, y: 3)
       }
       .buttonStyle(.plain)
       .disabled(!isLive && !isBusy)
@@ -101,34 +144,41 @@ struct PrAiResolverCtaCard: View {
       Button {
         onLaunch()
       } label: {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
           if isBusy {
-            ProgressView().controlSize(.mini).tint(.black)
+            ProgressView().controlSize(.mini).tint(.white)
           } else {
             Image(systemName: "sparkles").font(.system(size: 10, weight: .bold))
           }
           Text(isBusy ? "Starting" : "Launch")
-            .font(.caption.weight(.bold))
+            .font(.system(size: 12, weight: .bold))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(ADEColor.tintPRs, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .foregroundStyle(Color.black)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .foregroundStyle(.white)
+        .background(
+          Capsule(style: .continuous)
+            .fill(
+              LinearGradient(
+                colors: [
+                  PrGlassPalette.warning,
+                  Color(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x06 / 255),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+              )
+            )
+        )
+        .overlay(
+          Capsule(style: .continuous)
+            .strokeBorder(Color.white.opacity(0.45), lineWidth: 0.5)
+        )
+        .shadow(color: PrGlassPalette.warning.opacity(0.55), radius: 10, x: 0, y: 3)
       }
       .buttonStyle(.plain)
       .disabled(isBusy || !isLive)
+      .opacity(isLive ? 1 : 0.55)
     }
-  }
-
-  private var gradientBackground: LinearGradient {
-    LinearGradient(
-      colors: [
-        ADEColor.tintPRs.opacity(0.18),
-        ADEColor.tintPRs.opacity(0.04),
-      ],
-      startPoint: .topLeading,
-      endPoint: .bottomTrailing
-    )
   }
 }
 

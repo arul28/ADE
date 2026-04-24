@@ -288,6 +288,108 @@ describe("issueInventoryService", () => {
       expect(insertCalls.length).toBe(0);
     });
 
+    it("treats unresolved threads with a latest resolution acknowledgement as fixed", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(makeFakeRow({
+        external_id: "thread:thread-ack",
+        state: "new",
+        thread_comment_count: 1,
+        thread_latest_comment_id: "comment-1",
+      }));
+      db.all.mockReturnValue([makeFakeRow({
+        external_id: "thread:thread-ack",
+        state: "new",
+        thread_comment_count: 1,
+        thread_latest_comment_id: "comment-1",
+      })]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [makeReviewThread({
+          id: "thread-ack",
+          comments: [
+            {
+              id: "comment-1",
+              author: "reviewer",
+              authorAvatarUrl: null,
+              body: "This needs a null check.",
+              url: null,
+              createdAt: "2026-03-23T12:00:00.000Z",
+              updatedAt: "2026-03-23T12:00:00.000Z",
+            },
+            {
+              id: "comment-2",
+              author: "arul28",
+              authorAvatarUrl: null,
+              body: "Fixed in the latest commit.",
+              url: null,
+              createdAt: "2026-03-23T12:10:00.000Z",
+              updatedAt: "2026-03-23T12:10:00.000Z",
+            },
+          ],
+        })],
+        [],
+      );
+
+      const updateCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("update pr_issue_inventory"),
+      );
+      expect(updateCalls.some((call: unknown[]) => (call[1] as unknown[])[8] === "fixed")).toBe(true);
+    });
+
+    it("does not treat negative resolution wording as fixed", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(makeFakeRow({
+        external_id: "thread:thread-not-fixed",
+        state: "new",
+        thread_comment_count: 1,
+        thread_latest_comment_id: "comment-1",
+      }));
+      db.all.mockReturnValue([makeFakeRow({
+        external_id: "thread:thread-not-fixed",
+        state: "new",
+        thread_comment_count: 1,
+        thread_latest_comment_id: "comment-1",
+      })]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [makeReviewThread({
+          id: "thread-not-fixed",
+          comments: [
+            {
+              id: "comment-1",
+              author: "reviewer",
+              authorAvatarUrl: null,
+              body: "Please tighten this logic.",
+              url: null,
+              createdAt: "2026-03-23T12:00:00.000Z",
+              updatedAt: "2026-03-23T12:00:00.000Z",
+            },
+            {
+              id: "comment-2",
+              author: "reviewer",
+              authorAvatarUrl: null,
+              body: "This is not fixed yet.",
+              url: null,
+              createdAt: "2026-03-23T12:10:00.000Z",
+              updatedAt: "2026-03-23T12:10:00.000Z",
+            },
+          ],
+        })],
+        [],
+      );
+
+      const updateCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("update pr_issue_inventory"),
+      );
+      expect(updateCalls.some((call: unknown[]) => (call[1] as unknown[])[8] === "fixed")).toBe(false);
+    });
+
     it("skips outdated review threads", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(null);

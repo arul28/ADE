@@ -512,6 +512,35 @@ offline usage remain fast.
 
 ## PR data projection
 
+The iOS PR wizard (`CreatePrWizardView`) supports three create modes —
+`single`, `queue`, and `integration` — with a shared stepper (Mode →
+Source → Details → Review) and per-mode submit handlers routed through
+the sync command surface:
+
+- single → `prs.createFromLane` (via `onCreateSingle` callback)
+- queue → `prs.createQueue` and `prs.startQueueAutomation`, returning
+  `CreateQueuePrsResult`
+- integration → `prs.simulateIntegration` followed by
+  `prs.commitIntegration`, returning `CreateIntegrationPrResult`
+
+`SyncService.swift` exposes these through typed wrappers
+(`createQueuePrs`, `startQueueAutomation`, `simulateIntegration`,
+`commitIntegration`, `listIntegrationWorkflows`, `landStackEnhanced`)
+along with `getPipelineSettings` / `savePipelineSettings` /
+`deletePipelineSettings` so the iOS PR detail can read and mutate the
+same convergence pipeline the desktop detail pane uses.
+`RemoteModels.swift` now also carries `CreateQueuePrError`,
+`CreateQueuePrsResult`, `IntegrationMergeResult`,
+`CreateIntegrationPrResult`, `CleanupIntegrationWorkflowResult`, and
+`LandResult` to match the desktop return shapes.
+
+`PrRebaseScreen` now mirrors the full desktop RebaseTab detail pane:
+drift analysis stat grid, collapsible target-commits list, and the
+full action set (AI resolver / local-only rebase / push / defer /
+dismiss) routed through the existing sync commands. The phone and
+desktop rebase flows stay in parity so the same lane behaves the same
+on either device.
+
 The iOS PRs tab consumes a single aggregate command,
 `prs.getMobileSnapshot`, which returns `PrMobileSnapshot`:
 
@@ -561,9 +590,11 @@ reflected in the phone's UI on the next descriptor read.
 | Missions tab | Planned |
 | CTO / Automations / Graph / History tabs | Planned |
 | Full Settings parity | Planned |
-| Push notifications (APNs) | Planned |
+| Push notifications (APNs) | Implemented (categories, actions, Notification Service Extension, per-device preferences) |
+| Widgets (Home Screen / Lock Screen / Control) | Implemented |
+| Live Activities (workspace roster + attention) | Implemented |
 | iPad adaptive layout | Planned |
-| Widgets + Spotlight | Planned |
+| Spotlight indexing | Planned |
 
 ## Gotchas
 

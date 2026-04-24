@@ -14,7 +14,7 @@ import type {
   PrReviewThread,
 } from "../../../shared/types";
 import { DEFAULT_CONVERGENCE_RUNTIME_STATE, DEFAULT_PIPELINE_SETTINGS } from "../../../shared/types";
-import { isNoisyIssueComment } from "./resolverUtils";
+import { isNoisyIssueComment, looksLikeResolutionAck } from "./resolverUtils";
 import { nowIso } from "../shared/utils";
 
 // ---------------------------------------------------------------------------
@@ -740,7 +740,12 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
           threadLatestCommentSource: source,
         };
 
-        if (thread.isResolved || thread.isOutdated) {
+        const latestReplyLooksResolved = source !== "coderabbit"
+          && source !== "copilot"
+          && source !== "codex"
+          && looksLikeResolutionAck(body);
+
+        if (thread.isResolved || thread.isOutdated || latestReplyLooksResolved) {
           if (!existing) continue;
           upsertItem(prId, externalId, threadData, {
             state: "fixed",

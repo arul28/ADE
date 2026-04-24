@@ -514,7 +514,9 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     "",
     "Requirements",
     "- Fix all valid issues in the selected scope, not just the first one.",
+    "- Treat this chat as one bounded Path to Merge resolution round. Make one coherent set of fixes for the current inventory, then hand control back to ADE.",
     "- If you make local code or git changes that should affect the PR, do not finish with local-only state. Commit the changes and push the PR branch before you stop.",
+    "- After you push, do not wait indefinitely for CI or advisory review bots. ADE will poll GitHub, observe custom post-push comments, and launch the next round if new actionable work appears.",
     "- If you only resolve stale review threads or other PR metadata with ADE tools and no local git changes are needed, say that clearly in your final note.",
     "- If you cannot safely commit or push the necessary changes, stop with a concrete blocker instead of exiting as if the round succeeded.",
   );
@@ -559,7 +561,7 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     "- Before you push, rerun the complete failing test files or suites locally, not just the specific failing test names. Test runners and sharded CI can hide additional failures behind the first error in a file.",
     "- Treat newly added or heavily modified test files as likely regression hotspots, even if CI only surfaced a different failure first.",
     "- Watch carefully for regressions caused by your fixes. If a change breaks an existing test because the expected behavior legitimately changed, update the test. Do not change tests just to mask a bug.",
-    "- Continue iterating until the selected issue set is cleared and CI is green, or stop only with a concrete blocker and explain it clearly.",
+    "- Stop with a concise final note that lists what changed, what you validated, whether you pushed, and any concrete blocker ADE should surface to the operator.",
   );
   if (isIncremental) {
     promptSections.push(

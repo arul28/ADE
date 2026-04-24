@@ -22,45 +22,6 @@ private let prAbsoluteFormatter: DateFormatter = {
   return formatter
 }()
 
-func filterPullRequestListItems(
-  _ items: [PullRequestListItem],
-  query: String,
-  state: PrListStateFilter
-) -> [PullRequestListItem] {
-  let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
-  return items.filter { item in
-    let matchesState: Bool = {
-      switch state {
-      case .all:
-        return true
-      case .open:
-        return item.state == "open"
-      case .draft:
-        return item.state == "draft"
-      case .closed:
-        return item.state == "closed"
-      case .merged:
-        return item.state == "merged"
-      }
-    }()
-
-    guard matchesState else { return false }
-    guard !normalizedQuery.isEmpty else { return true }
-
-    let haystack = [
-      item.title,
-      item.headBranch,
-      item.baseBranch,
-      item.laneName ?? "",
-      item.adeKind ?? "",
-      "#\(item.githubPrNumber)",
-    ].joined(separator: " ").lowercased()
-
-    return haystack.contains(normalizedQuery)
-  }
-}
-
 func matchedLaneForExactBranch(_ headBranch: String?, lanes: [LaneSummary]) -> LaneSummary? {
   guard let headBranch = headBranch?.trimmingCharacters(in: .whitespacesAndNewlines),
     !headBranch.isEmpty
@@ -546,6 +507,35 @@ private final class PrMarkdownAttributedStringBox: NSObject {
   }
 }
 
+// MARK: - PrGlassPalette extension (foundation tokens for the PRs overhaul).
+//
+// The base palette lives in `PrMergeGateCard.swift`. These additions are
+// purely additive — they introduce the extra tokens the upcoming PRs tab
+// overhaul needs (surface fills, text hierarchy, info accent, eyebrow tint,
+// and a couple of alias names so future callers can use the spec vocabulary
+// without renaming existing callsites). Do NOT rename existing tokens.
+
+extension PrGlassPalette {
+  // Surface fills.
+  static let cardFill = Color(red: 0x14 / 255, green: 0x13 / 255, blue: 0x1C / 255)
+  static let cardElevated = Color(red: 0x1B / 255, green: 0x1F / 255, blue: 0x26 / 255)
+
+  // Text hierarchy (mirror the PrsGlass values so the two palettes stay in
+  // sync without forcing callers to switch enums).
+  static let textPrimary = Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255)
+  static let textSecondary = Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255)
+  static let textMuted = Color(red: 0x5E / 255, green: 0x5A / 255, blue: 0x70 / 255)
+
+  // Eyebrow tint (muted violet for section labels).
+  static let eyebrow = Color(red: 0x8F / 255, green: 0x7B / 255, blue: 0xC7 / 255)
+
+  // Info accent (soft blue, used for non-critical callouts).
+  static let info = Color(red: 0x6B / 255, green: 0x8A / 255, blue: 0xFD / 255)
+
+  // Aliases for spec vocabulary. `purpleSoft` = existing `purple`.
+  static var purpleSoft: Color { purple }
+}
+
 // MARK: - Shared PRs tab view helpers
 
 struct PrSectionHdr<Trailing: View>: View {
@@ -560,8 +550,8 @@ struct PrSectionHdr<Trailing: View>: View {
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(title.uppercased())
-        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-        .tracking(1.2)
+        .font(.system(size: 10, weight: .bold))
+        .tracking(1.1)
         .foregroundColor(ADEColor.textSecondary)
       Spacer(minLength: 12)
       trailing()
@@ -588,26 +578,6 @@ extension PrSectionHdr where Trailing == EmptyView {
     }
   }
   .frame(maxWidth: .infinity)
-  .background(ADEColor.pageBackground)
-}
-
-struct PrEyebrow: View {
-  let text: String
-
-  var body: some View {
-    Text(text.uppercased())
-      .font(.system(size: 10, weight: .semibold, design: .monospaced))
-      .tracking(1.4)
-      .foregroundColor(ADEColor.tintPRs)
-  }
-}
-
-#Preview("PrEyebrow") {
-  VStack(alignment: .leading, spacing: 10) {
-    PrEyebrow(text: "Ready to merge")
-    PrEyebrow(text: "Blocked · reviews")
-  }
-  .padding()
   .background(ADEColor.pageBackground)
 }
 
@@ -1055,4 +1025,139 @@ struct PrStickyActionBar<Content: View>: View {
   }
   .frame(maxWidth: .infinity, maxHeight: .infinity)
   .background(ADEColor.pageBackground)
+}
+
+// MARK: - PrGlassDialog
+//
+// Centered modal dialog used to replace iOS `confirmationDialog`/`alert` with
+// a brand-consistent liquid-glass card. Presented via `.prGlassDialog(...)`
+// below, which dims the backdrop and centers the dialog on iOS 17+.
+
+struct PrGlassDialog<Actions: View>: View {
+  let icon: Image?
+  let iconTint: Color
+  let title: String
+  let message: String?
+  @ViewBuilder let actions: () -> Actions
+
+  init(
+    icon: Image? = nil,
+    iconTint: Color = PrGlassPalette.purple,
+    title: String,
+    message: String? = nil,
+    @ViewBuilder actions: @escaping () -> Actions
+  ) {
+    self.icon = icon
+    self.iconTint = iconTint
+    self.title = title
+    self.message = message
+    self.actions = actions
+  }
+
+  var body: some View {
+    VStack(spacing: 14) {
+      if let icon {
+        ZStack {
+          Circle()
+            .fill(iconTint.opacity(0.22))
+            .frame(width: 56, height: 56)
+          Circle()
+            .strokeBorder(iconTint.opacity(0.45), lineWidth: 1)
+            .frame(width: 56, height: 56)
+          icon
+            .font(.system(size: 22, weight: .semibold))
+            .foregroundStyle(iconTint)
+        }
+        .padding(.top, 4)
+      }
+
+      VStack(spacing: 6) {
+        Text(title)
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundStyle(PrGlassPalette.textPrimary)
+          .multilineTextAlignment(.center)
+        if let message, !message.isEmpty {
+          Text(message)
+            .font(.system(size: 13))
+            .foregroundStyle(PrGlassPalette.textSecondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+
+      HStack(spacing: 10) {
+        actions()
+      }
+      .padding(.top, 4)
+    }
+    .padding(.horizontal, 20)
+    .padding(.vertical, 22)
+    .frame(maxWidth: 320)
+    .background {
+      ZStack {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+          .fill(.ultraThinMaterial)
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+          .fill(PrGlassPalette.cardFill.opacity(0.55))
+        // Top-light highlight.
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+          .fill(
+            LinearGradient(
+              colors: [Color.white.opacity(0.10), Color.white.opacity(0)],
+              startPoint: .top,
+              endPoint: .center
+            )
+          )
+      }
+    }
+    .overlay(
+      RoundedRectangle(cornerRadius: 22, style: .continuous)
+        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+    )
+    .shadow(color: PrGlassPalette.purpleDeep.opacity(0.40), radius: 22, x: 0, y: 8)
+  }
+}
+
+private struct PrGlassDialogPresenter<DialogContent: View>: ViewModifier {
+  @Binding var isPresented: Bool
+  @ViewBuilder let dialog: () -> DialogContent
+
+  func body(content: Content) -> some View {
+    content.fullScreenCover(isPresented: $isPresented) {
+      ZStack {
+        Color.black.opacity(0.45)
+          .ignoresSafeArea()
+          .onTapGesture { isPresented = false }
+        dialog()
+          .padding(.horizontal, 24)
+      }
+      .presentationBackground(.clear)
+    }
+  }
+}
+
+extension View {
+  func prGlassDialog<DialogContent: View>(
+    isPresented: Binding<Bool>,
+    @ViewBuilder dialog: @escaping () -> DialogContent
+  ) -> some View {
+    modifier(PrGlassDialogPresenter(isPresented: isPresented, dialog: dialog))
+  }
+}
+
+#Preview("PrGlassDialog") {
+  ZStack {
+    PrGlassPalette.ink.ignoresSafeArea()
+    PrGlassDialog(
+      icon: Image(systemName: "arrow.triangle.merge"),
+      iconTint: PrGlassPalette.purpleBright,
+      title: "Merge this pull request?",
+      message: "This will squash 4 commits and close the PR."
+    ) {
+      Button("Cancel") {}
+        .buttonStyle(.bordered)
+      Button("Merge") {}
+        .buttonStyle(.borderedProminent)
+    }
+  }
 }

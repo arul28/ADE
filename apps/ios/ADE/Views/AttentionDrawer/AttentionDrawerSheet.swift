@@ -8,6 +8,7 @@ struct AttentionDrawerSheet: View {
     @EnvironmentObject private var syncService: SyncService
     @EnvironmentObject private var drawer: AttentionDrawerModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // Sections are rendered in this fixed priority order so the UI feels
     // consistent even as counts shift.
@@ -50,11 +51,41 @@ struct AttentionDrawerSheet: View {
     private var emptyState: some View {
         VStack(spacing: 16) {
             Spacer()
-            Image(systemName: "sparkles")
-                .font(.system(size: 44, weight: .regular))
-                .foregroundStyle(ADESharedTheme.statusSuccess.opacity(0.8))
-                .frame(width: 84, height: 84)
-                .background(ADESharedTheme.statusSuccess.opacity(0.1), in: Circle())
+            ZStack {
+                // Radial purple bloom behind the disc — signals the "PRs / attention" surface.
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                PrGlassPalette.purple.opacity(0.30),
+                                PrGlassPalette.purple.opacity(0.0),
+                            ],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: 56
+                        )
+                    )
+                    .frame(width: 120, height: 120)
+                    .blur(radius: 10)
+
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .frame(width: 64, height: 64)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(
+                                PrGlassPalette.accentGradient,
+                                lineWidth: 1
+                            )
+                            .opacity(0.6)
+                    )
+                    .shadow(color: PrGlassPalette.purple.opacity(0.25), radius: 10, x: 0, y: 4)
+
+                Image(systemName: "sparkles")
+                    .font(.system(size: 28, weight: .regular))
+                    .foregroundStyle(PrGlassPalette.purple.opacity(0.95))
+                    .modifier(DrawerPulseEffect(active: !reduceMotion))
+            }
 
             VStack(spacing: 6) {
                 Text("No pending items")
@@ -101,10 +132,14 @@ struct AttentionDrawerSheet: View {
                 Text("\(items.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(ADEColor.textSecondary)
-                    .padding(.horizontal, 7)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 2)
                     .background(
-                        Capsule().fill(ADEColor.textSecondary.opacity(0.12))
+                        Capsule().fill(.ultraThinMaterial)
+                    )
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
                     )
                 Spacer(minLength: 0)
             }
@@ -186,17 +221,68 @@ private struct AttentionDrawerCard: View {
             }
             .padding(14)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(tint.opacity(0.08))
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(tint.opacity(0.16))
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(
+                            RadialGradient(
+                                colors: [tint.opacity(0.22), tint.opacity(0.0)],
+                                center: .topLeading,
+                                startRadius: 0,
+                                endRadius: 200
+                            )
+                        )
+                }
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(tint.opacity(0.25), lineWidth: 0.5)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.08), .clear],
+                            startPoint: .top,
+                            endPoint: .center
+                        )
+                    )
+                    .allowsHitTesting(false)
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                tint.opacity(0.55),
+                                tint.opacity(0.15),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
+            )
+            .shadow(color: tint.opacity(0.35), radius: 8, x: 0, y: 4)
+            .shadow(color: Color.black.opacity(0.25), radius: 5, x: 0, y: 2)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(item.title). \(item.subtitle)")
         .accessibilityHint(item.deepLink == nil ? "" : "Opens the related surface.")
+    }
+}
+
+/// `.symbolEffect(.pulse)` is gated behind Reduce Motion — when the user has
+/// that system setting on, the glyph renders statically.
+@available(iOS 17.0, *)
+private struct DrawerPulseEffect: ViewModifier {
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        if active {
+            content.symbolEffect(.pulse, options: .repeating)
+        } else {
+            content
+        }
     }
 }

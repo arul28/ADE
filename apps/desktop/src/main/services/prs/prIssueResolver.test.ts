@@ -169,6 +169,8 @@ describe("buildPrIssueResolutionPrompt", () => {
     expect(prompt).toContain("Watch carefully for regressions caused by your fixes.");
     expect(prompt).toContain("update the test");
     expect(prompt).toContain("rerun the complete failing test files or suites locally");
+    expect(prompt).toContain("one bounded Path to Merge resolution round");
+    expect(prompt).toContain("ADE will poll GitHub");
     expect(prompt).toContain("Commit the changes and push the PR branch before you stop.");
     expect(prompt).toContain("If you cannot safely commit or push the necessary changes");
     expect(prompt).toContain("prRefreshIssueInventory");
