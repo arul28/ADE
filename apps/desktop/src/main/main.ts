@@ -3856,6 +3856,7 @@ app.whenReady().then(async () => {
       laneCount,
       isAvailable: fs.existsSync(ctx.project.rootPath),
       isCached: false,
+      isOpen: true,
     };
   }
 
@@ -3870,6 +3871,7 @@ app.whenReady().then(async () => {
       laneCount: recent.laneCount ?? 0,
       isAvailable: recent.exists,
       isCached: false,
+      isOpen: false,
     };
   }
 

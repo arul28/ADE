@@ -227,6 +227,7 @@ export type SyncMobileProjectSummary = {
   laneCount: number;
   isAvailable: boolean;
   isCached: boolean;
+  isOpen: boolean;
 };
 
 export type SyncProjectCatalogPayload = {
