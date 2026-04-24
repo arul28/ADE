@@ -197,6 +197,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.release_tag }}
           TARGET_REF: ${{ inputs.target_ref }}
+          GH_REPO: ${{ github.repository }}
         run: |
           shopt -s nullglob
           files=(
@@ -214,10 +215,11 @@ jobs:
             exit 1
           fi
 
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" "${files[@]}" --clobber
+          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${files[@]}" --repo "$GH_REPO" --clobber
           else
             gh release create "$TAG_NAME" "${files[@]}" \
+              --repo "$GH_REPO" \
               --draft \
               --title "$TAG_NAME" \
               --generate-notes \
