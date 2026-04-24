@@ -2931,6 +2931,18 @@ final class SyncService: ObservableObject {
     _ = try await sendChatCommand(action: "chat.dispose", payload: AgentChatDisposeRequest(sessionId: sessionId))
   }
 
+  func archiveChatSession(sessionId: String) async throws {
+    _ = try await sendChatCommand(action: "chat.archive", payload: AgentChatDisposeRequest(sessionId: sessionId))
+  }
+
+  func unarchiveChatSession(sessionId: String) async throws {
+    _ = try await sendChatCommand(action: "chat.unarchive", payload: AgentChatDisposeRequest(sessionId: sessionId))
+  }
+
+  func deleteChatSession(sessionId: String) async throws {
+    _ = try await sendChatCommand(action: "chat.delete", payload: AgentChatDisposeRequest(sessionId: sessionId))
+  }
+
   func readArtifact(artifactId: String? = nil, uri: String? = nil, path: String? = nil) async throws -> SyncFileBlob {
     var args: [String: Any] = [:]
     if let artifactId, !artifactId.isEmpty {

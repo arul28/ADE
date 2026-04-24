@@ -241,6 +241,7 @@ import type {
   ExportHistoryResult,
   AgentTool,
   AgentChatApproveArgs,
+  AgentChatArchiveArgs,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
@@ -1598,6 +1599,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatModels, args),
     dispose: async (args: AgentChatDisposeArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatDispose, args),
+    archive: async (args: AgentChatArchiveArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatArchive, args),
+    unarchive: async (args: AgentChatArchiveArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatUnarchive, args),
     delete: async (args: AgentChatDeleteArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatDelete, args),
     updateSession: async (

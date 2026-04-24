@@ -30,7 +30,7 @@ const resolvedArg2 =
   async (_a: any, _b: any) =>
     v;
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
-  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
 
 const MOCK_PROJECT = {
   id: "browser-mock",

@@ -928,6 +928,7 @@ export function AgentChatPane({
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
+  const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
@@ -1617,6 +1618,7 @@ export function AgentChatPane({
   const refreshLockedSessionSummary = useCallback(async () => {
     if (!lockSessionId) {
       setSessions([]);
+      setArchivedSessions([]);
       return null;
     }
 
@@ -1656,7 +1658,12 @@ export function AgentChatPane({
       return;
     }
 
-    const rows = await window.ade.agentChat.list({ laneId });
+    const allRows = await window.ade.agentChat.list({ laneId });
+    const rows = allRows.filter((session) => !session.archivedAt);
+    setArchivedSessions(sortSessionSummariesByRecency(
+      allRows.filter((session) => Boolean(session.archivedAt)),
+      localTouchBySessionRef.current,
+    ));
     const nextRows = sortSessionSummariesByRecency(rows, localTouchBySessionRef.current);
     setSessions(nextRows);
     const retainedSessionIds = buildRetainedChatSessionIds({
@@ -2658,6 +2665,35 @@ export function AgentChatPane({
       });
   }, [refreshSessions, selectedSession, selectedSessionId]);
 
+  const handleArchiveChat = useCallback((sessionId: string) => {
+    setError(null);
+    void window.ade.agentChat.archive({ sessionId })
+      .then(async () => {
+        invalidateSessionListCache();
+        if (selectedSessionIdRef.current === sessionId) {
+          setSelectedSessionId(null);
+        }
+        await refreshSessions().catch(() => {});
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(`Archive failed: ${message}`);
+      });
+  }, [refreshSessions]);
+
+  const handleUnarchiveChat = useCallback((sessionId: string) => {
+    setError(null);
+    void window.ade.agentChat.unarchive({ sessionId })
+      .then(async () => {
+        invalidateSessionListCache();
+        await refreshSessions().catch(() => {});
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(`Restore failed: ${message}`);
+      });
+  }, [refreshSessions]);
+
   // ── Eager session creation ──
   // Create a session as soon as we have a model + lane, so slash commands
   // and other pre-chat metadata are available immediately.
@@ -3390,6 +3426,12 @@ export function AgentChatPane({
                 <button
                   key={session.sessionId}
                   type="button"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    if (window.confirm(`Archive "${title}"?\n\nArchived chats are hidden from the active chat tabs.`)) {
+                      handleArchiveChat(session.sessionId);
+                    }
+                  }}
                   className={cn(
                     "inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-1.5 font-sans text-[11px] transition-all",
                     isActive
@@ -3444,6 +3486,25 @@ export function AgentChatPane({
           >
             <Plus size={10} weight="bold" />
           </button>
+          {archivedSessions.length ? (
+            <select
+              className="h-7 max-w-[160px] shrink-0 rounded-md border border-white/[0.06] bg-black/20 px-2 font-sans text-[11px] text-muted-fg/60 outline-none transition-colors hover:border-white/[0.1] hover:text-fg"
+              title="Restore archived chat"
+              defaultValue=""
+              onChange={(event) => {
+                const sessionId = event.currentTarget.value;
+                event.currentTarget.value = "";
+                if (sessionId) handleUnarchiveChat(sessionId);
+              }}
+            >
+              <option value="">Archived ({archivedSessions.length})</option>
+              {archivedSessions.map((session) => (
+                <option key={session.sessionId} value={session.sessionId}>
+                  Restore {chatSessionTitle(session)}
+                </option>
+              ))}
+            </select>
+          ) : null}
         </div>
       ) : null}
     </div>

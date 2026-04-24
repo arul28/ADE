@@ -45,62 +45,182 @@ func workTerminalDisplay(raw: String?, fallback: String?) -> WorkTerminalDisplay
 }
 
 func sanitizeTerminalOutputForDisplay(_ input: String) -> String {
-  var output = String.UnicodeScalarView()
-  var index = input.unicodeScalars.startIndex
+  let screen = WorkTerminalTextReplay()
+  screen.write(input)
+  return collapseDuplicatedWorkStreamTextIfNeeded(screen.text)
+}
 
-  func skipUntilCSICommand() {
-    while index < input.unicodeScalars.endIndex {
-      let scalar = input.unicodeScalars[index]
-      index = input.unicodeScalars.index(after: index)
-      if scalar.value >= 0x40 && scalar.value <= 0x7E {
+private final class WorkTerminalTextReplay {
+  private var lines: [[UnicodeScalar]] = [[]]
+  private var row = 0
+  private var column = 0
+
+  var text: String {
+    lines
+      .map { String(String.UnicodeScalarView($0)).trimmingTrailingTerminalPadding() }
+      .joined(separator: "\n")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  func write(_ input: String) {
+    let scalars = Array(input.unicodeScalars)
+    var index = scalars.startIndex
+
+    while index < scalars.endIndex {
+      let scalar = scalars[index]
+      index = scalars.index(after: index)
+
+      if scalar == "\u{001B}" {
+        consumeEscape(in: scalars, index: &index)
+        continue
+      }
+
+      switch scalar {
+      case "\n":
+        newline()
+      case "\r":
+        column = 0
+      case "\t":
+        let spaces = max(1, 4 - (column % 4))
+        for _ in 0..<spaces { put(" ") }
+      case "\u{0008}":
+        column = max(0, column - 1)
+      default:
+        if scalar.value >= 0x20 && scalar.value != 0x7F {
+          put(scalar)
+        }
+      }
+    }
+  }
+
+  private func put(_ scalar: UnicodeScalar) {
+    ensureCursor()
+    while lines[row].count < column {
+      lines[row].append(" ")
+    }
+    if column < lines[row].count {
+      lines[row][column] = scalar
+    } else {
+      lines[row].append(scalar)
+    }
+    column += 1
+  }
+
+  private func newline() {
+    row += 1
+    column = 0
+    ensureCursor()
+  }
+
+  private func ensureCursor() {
+    while lines.count <= row {
+      lines.append([])
+    }
+  }
+
+  private func consumeEscape(in scalars: [UnicodeScalar], index: inout Int) {
+    guard index < scalars.endIndex else { return }
+    let kind = scalars[index]
+    index = scalars.index(after: index)
+
+    switch kind {
+    case "[":
+      consumeCSI(in: scalars, index: &index)
+    case "]":
+      consumeOSC(in: scalars, index: &index)
+    case "c":
+      lines = [[]]
+      row = 0
+      column = 0
+    case "(", ")", "*", "+":
+      if index < scalars.endIndex {
+        index = scalars.index(after: index)
+      }
+    default:
+      break
+    }
+  }
+
+  private func consumeOSC(in scalars: [UnicodeScalar], index: inout Int) {
+    while index < scalars.endIndex {
+      let current = scalars[index]
+      index = scalars.index(after: index)
+      if current == "\u{0007}" {
+        break
+      }
+      if current == "\u{001B}", index < scalars.endIndex, scalars[index] == "\\" {
+        index = scalars.index(after: index)
         break
       }
     }
   }
 
-  while index < input.unicodeScalars.endIndex {
-    let scalar = input.unicodeScalars[index]
-    index = input.unicodeScalars.index(after: index)
-
-    if scalar == "\u{001B}" {
-      guard index < input.unicodeScalars.endIndex else { break }
-      let next = input.unicodeScalars[index]
-      index = input.unicodeScalars.index(after: index)
-      if next == "[" {
-        skipUntilCSICommand()
-      } else if next == "]" {
-        while index < input.unicodeScalars.endIndex {
-          let current = input.unicodeScalars[index]
-          index = input.unicodeScalars.index(after: index)
-          if current == "\u{0007}" {
-            break
-          }
-          if current == "\u{001B}", index < input.unicodeScalars.endIndex, input.unicodeScalars[index] == "\\" {
-            index = input.unicodeScalars.index(after: index)
-            break
-          }
-        }
-      } else if next == "(" || next == ")" || next == "*" || next == "+" {
-        if index < input.unicodeScalars.endIndex {
-          index = input.unicodeScalars.index(after: index)
-        }
+  private func consumeCSI(in scalars: [UnicodeScalar], index: inout Int) {
+    var body = String.UnicodeScalarView()
+    while index < scalars.endIndex {
+      let scalar = scalars[index]
+      index = scalars.index(after: index)
+      if scalar.value >= 0x40 && scalar.value <= 0x7E {
+        applyCSI(command: Character(scalar), body: String(body))
+        break
       }
-      continue
-    }
-
-    switch scalar {
-    case "\n", "\t":
-      output.append(scalar)
-    case "\r":
-      output.append("\n")
-    default:
-      if scalar.value >= 0x20 && scalar.value != 0x7F {
-        output.append(scalar)
-      }
+      body.append(scalar)
     }
   }
 
-  return collapseDuplicatedWorkStreamTextIfNeeded(String(output))
+  private func applyCSI(command: Character, body: String) {
+    let params = body
+      .split(separator: ";", omittingEmptySubsequences: false)
+      .map { Int(String($0).trimmingCharacters(in: CharacterSet(charactersIn: "?"))) ?? 0 }
+    let first = params.first ?? 0
+
+    switch command {
+    case "A":
+      row = max(0, row - max(1, first))
+    case "B":
+      row += max(1, first)
+      ensureCursor()
+    case "C":
+      column += max(1, first)
+    case "D":
+      column = max(0, column - max(1, first))
+    case "G":
+      column = max(0, max(1, first) - 1)
+    case "H", "f":
+      row = max(0, max(1, first) - 1)
+      column = max(0, max(1, params.dropFirst().first ?? 1) - 1)
+      ensureCursor()
+    case "J":
+      if first == 2 || first == 3 {
+        lines = [[]]
+        row = 0
+        column = 0
+      }
+    case "K":
+      ensureCursor()
+      if first == 1 {
+        lines[row].removeFirst(min(column, lines[row].count))
+        column = 0
+      } else if first == 2 {
+        lines[row].removeAll()
+        column = 0
+      } else if column < lines[row].count {
+        lines[row].removeSubrange(column..<lines[row].count)
+      }
+    default:
+      break
+    }
+  }
+}
+
+private extension String {
+  func trimmingTrailingTerminalPadding() -> String {
+    var result = self
+    while let last = result.unicodeScalars.last, CharacterSet.whitespaces.contains(last) {
+      result.removeLast()
+    }
+    return result
+  }
 }
 
 func collapseDuplicatedWorkStreamTextIfNeeded(_ input: String) -> String {

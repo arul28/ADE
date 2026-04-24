@@ -313,6 +313,7 @@ private struct WorkPreviewSessionListScreen: View {
             onPin: { _ in },
             onRename: { _ in },
             onEnd: { _ in },
+            onDelete: { _ in },
             onResume: { _ in },
             onCopyId: { _ in },
             onGoToLane: { _ in }

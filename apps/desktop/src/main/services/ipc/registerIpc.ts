@@ -174,6 +174,7 @@ import type {
   ExportHistoryArgs,
   ExportHistoryResult,
   AgentChatApproveArgs,
+  AgentChatArchiveArgs,
   AgentChatClaudePermissionMode,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
@@ -4524,6 +4525,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatDispose, async (_event, arg: AgentChatDisposeArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.dispose(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatArchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.agentChatService.archiveSession(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatUnarchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.agentChatService.unarchiveSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatDelete, async (_event, arg: AgentChatDeleteArgs): Promise<void> => {

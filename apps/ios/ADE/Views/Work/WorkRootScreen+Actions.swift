@@ -279,13 +279,30 @@ extension WorkRootScreen {
   }
 
   func toggleArchive(_ session: TerminalSessionSummary) {
-    var archived = archivedSessionIds
-    if archived.contains(session.id) {
-      archived.remove(session.id)
-    } else {
-      archived.insert(session.id)
+    Task {
+      do {
+        if isChatSession(session) {
+          if archivedSessionIds.contains(session.id) {
+            try await syncService.unarchiveChatSession(sessionId: session.id)
+          } else {
+            try await syncService.archiveChatSession(sessionId: session.id)
+          }
+          archivedSessionIdsStorage = archivedSessionIds.filter { $0 != session.id }.sorted().joined(separator: "\n")
+          await reload(refreshRemote: true)
+          return
+        }
+        var archived = archivedSessionIds
+        if archived.contains(session.id) {
+          archived.remove(session.id)
+        } else {
+          archived.insert(session.id)
+        }
+        archivedSessionIdsStorage = archived.sorted().joined(separator: "\n")
+      } catch {
+        ADEHaptics.error()
+        errorMessage = error.localizedDescription
+      }
     }
-    archivedSessionIdsStorage = archived.sorted().joined(separator: "\n")
   }
 
   func togglePin(_ session: TerminalSessionSummary) {
@@ -366,6 +383,21 @@ extension WorkRootScreen {
       toggleArchive(session)
     }
     openSession(session)
+  }
+
+  func deleteChatSession(_ session: TerminalSessionSummary) {
+    Task {
+      do {
+        try await syncService.deleteChatSession(sessionId: session.id)
+        var archived = archivedSessionIds
+        archived.remove(session.id)
+        archivedSessionIdsStorage = archived.sorted().joined(separator: "\n")
+        await reload(refreshRemote: true)
+      } catch {
+        ADEHaptics.error()
+        errorMessage = error.localizedDescription
+      }
+    }
   }
 
   @MainActor

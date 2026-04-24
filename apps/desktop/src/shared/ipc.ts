@@ -142,6 +142,8 @@ export const IPC = {
   agentChatModels: "ade.agentChat.models",
   agentChatDispose: "ade.agentChat.dispose",
   agentChatDelete: "ade.agentChat.delete",
+  agentChatArchive: "ade.agentChat.archive",
+  agentChatUnarchive: "ade.agentChat.unarchive",
   agentChatEvent: "ade.agentChat.event",
   agentChatUpdateSession: "ade.agentChat.updateSession",
   agentChatWarmupModel: "ade.agentChat.warmupModel",

@@ -650,6 +650,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       laneCount: 4,
       isAvailable: true,
       isCached: false,
+      isOpen: false,
     };
     const connection = {
       authKind: "bootstrap" as const,

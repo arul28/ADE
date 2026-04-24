@@ -1,5 +1,6 @@
 import type {
   AgentChatCreateArgs,
+  AgentChatArchiveArgs,
   AgentChatApproveArgs,
   AgentChatDisposeArgs,
   AgentChatFileRef,
@@ -660,6 +661,12 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
 function parseAgentChatDisposeArgs(value: Record<string, unknown>): AgentChatDisposeArgs {
   return {
     sessionId: requireString(value.sessionId, "chat.dispose requires sessionId."),
+  };
+}
+
+function parseAgentChatArchiveArgs(value: Record<string, unknown>, action: string): AgentChatArchiveArgs {
+  return {
+    sessionId: requireString(value.sessionId, `${action} requires sessionId.`),
   };
 }
 
@@ -1667,6 +1674,18 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     requireService(args.agentChatService, "Agent chat service not available.").updateSession(parseAgentChatUpdateSessionArgs(payload)));
   register("chat.dispose", { viewerAllowed: true, queueable: true }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").dispose(parseAgentChatDisposeArgs(payload));
+    return { ok: true };
+  });
+  register("chat.archive", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").archiveSession(parseAgentChatArchiveArgs(payload, "chat.archive"));
+    return { ok: true };
+  });
+  register("chat.unarchive", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").unarchiveSession(parseAgentChatArchiveArgs(payload, "chat.unarchive"));
+    return { ok: true };
+  });
+  register("chat.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").deleteSession(parseAgentChatArchiveArgs(payload, "chat.delete"));
     return { ok: true };
   });
   register("chat.models", { viewerAllowed: true }, async (payload) =>

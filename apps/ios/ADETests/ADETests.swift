@@ -3,6 +3,36 @@ import SQLite3
 @testable import ADE
 
 final class ADETests: XCTestCase {
+  func testTerminalDisplayReplaysCarriageReturnProgressUpdates() {
+    let output = sanitizeTerminalOutputForDisplay("Downloading 10%\rDownloading 80%\rDownloading 100%\nDone")
+
+    XCTAssertEqual(output, "Downloading 100%\nDone")
+  }
+
+  func testTerminalDisplayHandlesEraseLineSpinners() {
+    let output = sanitizeTerminalOutputForDisplay("Working -\r\u{001B}[KWorking \\\r\u{001B}[KComplete\n")
+
+    XCTAssertEqual(output, "Complete")
+  }
+
+  func testTerminalDisplayAppliesCursorAddressingAndClearScreen() {
+    let output = sanitizeTerminalOutputForDisplay("old screen\u{001B}[2J\u{001B}[Htop\nbottom\u{001B}[1A\u{001B}[Gmiddle")
+
+    XCTAssertEqual(output, "middle\nbottom")
+  }
+
+  func testTerminalDisplayStripsAnsiColorAndBackspaces() {
+    let output = sanitizeTerminalOutputForDisplay("\u{001B}[31merr\u{001B}[0mor\u{0008}k")
+
+    XCTAssertEqual(output, "errok")
+  }
+
+  func testTerminalDisplayPreservesIndentedOutput() {
+    let output = sanitizeTerminalOutputForDisplay("if true {\n    print(\"ok\")\n}\n")
+
+    XCTAssertEqual(output, "if true {\n    print(\"ok\")\n}")
+  }
+
   func testUnwrapSyncCommandResponseReturnsResultPayload() throws {
     let raw: [String: Any] = [
       "commandId": "cmd-1",

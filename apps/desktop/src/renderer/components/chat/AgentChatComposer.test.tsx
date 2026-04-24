@@ -507,6 +507,16 @@ describe("AgentChatComposer", () => {
     expect(composerShell?.parentElement?.className ?? "").not.toContain("rounded-none");
   });
 
+  it("opts the chat textarea into native typing assistance", () => {
+    renderComposer();
+
+    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
+    expect(textarea.getAttribute("autocomplete")).toBe("on");
+    expect(textarea.getAttribute("autocorrect")).toBe("on");
+    expect(textarea.getAttribute("autocapitalize")).toBe("sentences");
+    expect(textarea.getAttribute("spellcheck")).toBe("true");
+  });
+
   it("focuses the grid composer when the tile becomes active", () => {
     const props = buildComposerProps({
       layoutVariant: "grid-tile",

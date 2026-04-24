@@ -65,7 +65,9 @@ struct WorkRootScreen: View {
   }
 
   var archivedSessionIds: Set<String> {
-    Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
+    let local = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
+    let remote = Set(chatSummaries.values.compactMap { $0.archivedAt == nil ? nil : $0.sessionId })
+    return local.union(remote)
   }
 
   var laneById: [String: LaneSummary] {
@@ -371,6 +373,7 @@ struct WorkRootScreen: View {
                     onPin: togglePin,
                     onRename: beginRename,
                     onEnd: { session in endTarget = session },
+                    onDelete: deleteChatSession,
                     onResume: resumeSession,
                     onCopyId: copySessionId,
                     onGoToLane: goToLane

@@ -24,7 +24,8 @@ type ClaudeV2Session = {
   supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
 };
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
-import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
+import { discoverClaudeSlashCommands, resolveClaudeSlashCommandInvocation } from "./claudeSlashCommandDiscovery";
+import { discoverCodexSlashCommands, resolveCodexSlashCommandInvocation } from "./codexSlashCommandDiscovery";
 import type {
   RuntimeFilePart as FilePart,
   RuntimeImagePart as ImagePart,
@@ -69,6 +70,7 @@ import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import { DEFAULT_FLUSH_PROMPT } from "../memory/compactionFlushPrompt";
 import type {
   AgentChatApprovalDecision,
+  AgentChatArchiveArgs,
   AgentChatCancelSteerArgs,
   AgentChatClaudePermissionMode,
   AgentChatCompletionReport,
@@ -301,14 +303,6 @@ type CodexRuntime = {
   commandOutputByItemId: Map<string, string>;
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
-  // Tracks itemIds whose output/diff was streamed incrementally via
-  // outputDelta handlers. When the snapshot (`item/.../completed`) later fires
-  // with the full aggregated content, we emit empty output/diff on those
-  // itemIds so the renderer's `mergeStreamingText` heuristic doesn't append
-  // the snapshot onto the already-accumulated delta chunks when the snapshot
-  // prefix doesn't exactly match (e.g. diff headers absent from deltas).
-  streamedCommandItemIds: Set<string>;
-  streamedFileChangeItemIds: Set<string>;
   activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
   interruptedTurnIds: Set<string>;
   ignoredTurnIds: Set<string>;
@@ -364,6 +358,88 @@ type ClaudeRuntime = {
   /** Resume the active-turn idle watchdog after the blocking wait finishes. */
   resumeIdleWatchdog?: (() => void) | null;
 };
+
+const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
+  { name: "/permissions", description: "Set what Codex can do without asking first.", source: "sdk" },
+  { name: "/sandbox-add-read-dir", description: "Grant sandbox read access to an extra directory.", source: "sdk" },
+  { name: "/agent", description: "Switch the active agent thread.", source: "sdk" },
+  { name: "/apps", description: "Browse apps and insert them into your prompt.", source: "sdk" },
+  { name: "/plugins", description: "Browse installed and discoverable plugins.", source: "sdk" },
+  { name: "/clear", description: "Clear the terminal and start a fresh chat.", source: "sdk" },
+  { name: "/compact", description: "Summarize the visible conversation to free tokens.", source: "sdk" },
+  { name: "/copy", description: "Copy the latest completed Codex output.", source: "sdk" },
+  { name: "/diff", description: "Show the Git diff, including untracked files.", source: "sdk" },
+  { name: "/exit", description: "Exit the CLI.", source: "sdk" },
+  { name: "/experimental", description: "Toggle experimental features.", source: "sdk" },
+  { name: "/feedback", description: "Send logs to the Codex maintainers.", source: "sdk" },
+  { name: "/init", description: "Generate an AGENTS.md scaffold in the current directory.", source: "sdk" },
+  { name: "/logout", description: "Sign out of Codex.", source: "sdk" },
+  { name: "/mcp", description: "List configured MCP tools.", source: "sdk" },
+  { name: "/mention", description: "Attach a file to the conversation.", source: "sdk" },
+  { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
+  { name: "/fast", description: "Toggle Fast mode for supported models.", source: "sdk" },
+  { name: "/plan", description: "Switch to plan mode and optionally send a prompt.", source: "sdk" },
+  { name: "/personality", description: "Choose a communication style for responses.", source: "sdk" },
+  { name: "/ps", description: "Show experimental background terminals and recent output.", source: "sdk" },
+  { name: "/stop", description: "Stop all background terminals.", source: "sdk" },
+  { name: "/fork", description: "Fork the current conversation into a new thread.", source: "sdk" },
+  { name: "/resume", description: "Resume a saved conversation from your session list.", source: "sdk" },
+  { name: "/new", description: "Start a new conversation inside the same CLI session.", source: "sdk" },
+  { name: "/quit", description: "Exit the CLI.", source: "sdk" },
+  { name: "/review", description: "Ask Codex to review your working tree.", source: "sdk" },
+  { name: "/status", description: "Display session configuration and token usage.", source: "sdk" },
+  { name: "/debug-config", description: "Print config layer and requirements diagnostics.", source: "sdk" },
+  { name: "/statusline", description: "Configure TUI status-line fields.", source: "sdk" },
+  { name: "/title", description: "Configure terminal window or tab title fields.", source: "sdk" },
+];
+
+const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
+  { name: "/add-dir", description: "Add a working directory for file access.", source: "sdk", argumentHint: "<path>" },
+  { name: "/agents", description: "Manage agent configurations.", source: "sdk" },
+  { name: "/batch", description: "Orchestrate large-scale changes across a codebase in parallel.", source: "sdk", argumentHint: "<instruction>" },
+  { name: "/branch", description: "Create a branch of the current conversation.", source: "sdk", argumentHint: "[name]" },
+  { name: "/clear", description: "Start a new conversation with empty context.", source: "sdk" },
+  { name: "/compact", description: "Free up context by summarizing the conversation so far.", source: "sdk", argumentHint: "[instructions]" },
+  { name: "/config", description: "Open settings.", source: "sdk" },
+  { name: "/context", description: "Visualize current context usage.", source: "sdk" },
+  { name: "/copy", description: "Copy the last assistant response to clipboard.", source: "sdk", argumentHint: "[N]" },
+  { name: "/cost", description: "Alias for usage.", source: "sdk" },
+  { name: "/debug", description: "Enable debug logging and troubleshoot issues.", source: "sdk", argumentHint: "[description]" },
+  { name: "/diff", description: "Open an interactive diff viewer.", source: "sdk" },
+  { name: "/doctor", description: "Diagnose and verify Claude Code installation and settings.", source: "sdk" },
+  { name: "/effort", description: "Set the model effort level.", source: "sdk", argumentHint: "[level|auto]" },
+  { name: "/exit", description: "Exit the CLI.", source: "sdk" },
+  { name: "/export", description: "Export the current conversation as plain text.", source: "sdk", argumentHint: "[filename]" },
+  { name: "/fast", description: "Toggle fast mode on or off.", source: "sdk", argumentHint: "[on|off]" },
+  { name: "/feedback", description: "Submit feedback about Claude Code.", source: "sdk", argumentHint: "[report]" },
+  { name: "/help", description: "Show help and available commands.", source: "sdk" },
+  { name: "/hooks", description: "View hook configurations for tool events.", source: "sdk" },
+  { name: "/ide", description: "Manage IDE integrations and show status.", source: "sdk" },
+  { name: "/init", description: "Initialize project with a CLAUDE.md guide.", source: "sdk" },
+  { name: "/login", description: "Sign in to Claude Code for this chat runtime", source: "sdk" },
+  { name: "/logout", description: "Sign out from Anthropic.", source: "sdk" },
+  { name: "/mcp", description: "Manage MCP server connections and OAuth authentication.", source: "sdk" },
+  { name: "/memory", description: "Edit CLAUDE.md memory files and memory settings.", source: "sdk" },
+  { name: "/model", description: "Select or change the AI model.", source: "sdk", argumentHint: "[model]" },
+  { name: "/permissions", description: "Manage allow, ask, and deny rules for tool permissions.", source: "sdk" },
+  { name: "/plan", description: "Enter plan mode directly from the prompt.", source: "sdk", argumentHint: "[description]" },
+  { name: "/plugin", description: "Manage Claude Code plugins.", source: "sdk" },
+  { name: "/quit", description: "Exit the CLI.", source: "sdk" },
+  { name: "/resume", description: "Resume a conversation by ID or name.", source: "sdk", argumentHint: "[session]" },
+  { name: "/review", description: "Review a pull request locally in the current session.", source: "sdk", argumentHint: "[PR]" },
+  { name: "/rewind", description: "Rewind the conversation and/or code to a previous point.", source: "sdk" },
+  { name: "/security-review", description: "Analyze pending changes for security vulnerabilities.", source: "sdk" },
+  { name: "/simplify", description: "Review recently changed files for reuse, quality, and efficiency issues.", source: "sdk", argumentHint: "[focus]" },
+  { name: "/skills", description: "List available skills.", source: "sdk" },
+  { name: "/status", description: "Show version, model, account, and connectivity.", source: "sdk" },
+  { name: "/statusline", description: "Configure Claude Code status line.", source: "sdk" },
+  { name: "/tasks", description: "List and manage background tasks.", source: "sdk" },
+  { name: "/theme", description: "Change the color theme.", source: "sdk" },
+  { name: "/usage", description: "Show session cost, plan usage limits, and activity stats.", source: "sdk" },
+];
+
+const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
+const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
 
 type PendingOpenCodeApproval = {
   category: "bash" | "write";
@@ -887,7 +963,7 @@ const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
 const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
 const DEFAULT_OPENCODE_DESCRIPTOR = getDefaultModelDescriptor("opencode");
 const DEFAULT_CURSOR_DESCRIPTOR = getDefaultModelDescriptor("cursor");
-const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-5.4";
+const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-5.5";
 const DEFAULT_CLAUDE_MODEL = DEFAULT_CLAUDE_DESCRIPTOR?.providerModelId ?? DEFAULT_CLAUDE_DESCRIPTOR?.shortId ?? "sonnet";
 const DEFAULT_OPENCODE_MODEL_ID = DEFAULT_OPENCODE_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-4-6";
 const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto";
@@ -7091,11 +7167,12 @@ export function createAgentChatService(args: {
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               if (block.type === "text") {
                 // Check both the real-id key AND the id-less fallback key. When
-                // content_block_delta fires before message_start (or the SDK
-                // omits message_start entirely), streamed deltas record fallback
-                // keys `${turnId}:b${N}:${idx}` into the set. The snapshot then
-                // arrives with a real id and would otherwise miss the dedup,
-                // re-emitting the same text and producing a doubled bubble.
+                // content_block_delta fires before message_start (or when the
+                // SDK omits message_start entirely), streamed deltas record
+                // fallback keys `${turnId}:b${N}:${idx}` into the set. The
+                // snapshot then arrives with a real id and would otherwise miss
+                // the dedup, re-emitting the same text and producing a doubled
+                // bubble in the renderer.
                 const textKey = claudeDedupeKey(assistantMessageId, blockIndex);
                 const fallbackTextKey = assistantMessageId ? claudeDedupeKey(null, blockIndex) : null;
                 const alreadyStreamed =
@@ -8653,16 +8730,11 @@ export function createAgentChatService(args: {
       const output = String(item.aggregatedOutput ?? runtime.commandOutputByItemId.get(itemId) ?? "");
       runtime.commandOutputByItemId.set(itemId, output);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
-      // If this item's output was already streamed via outputDelta, the
-      // renderer has the content accumulated; emit empty output on the
-      // snapshot so `mergeStreamingText` doesn't append the snapshot onto the
-      // deltas when the snapshot prefix doesn't match exactly.
-      const emittedOutput = runtime.streamedCommandItemIds.has(itemId) ? "" : output;
       emitChatEvent(managed, {
         type: "command",
         command: String(item.command ?? "command"),
         cwd: String(item.cwd ?? managed.laneWorktreePath),
-        output: emittedOutput,
+        output,
         itemId,
         turnId,
         exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
@@ -8701,16 +8773,11 @@ export function createAgentChatService(args: {
       const status = mapCommandStatus(
         String(item.status ?? (eventKind === "completed" ? "completed" : "inProgress"))
       );
-      // If this item's diff was already streamed via outputDelta, the
-      // renderer has accumulated the delta content; emit empty diff on the
-      // snapshot so `mergeStreamingText` doesn't append the full diff (with
-      // headers absent from deltas) onto the accumulated chunks.
-      const streamedAlready = runtime.streamedFileChangeItemIds.has(itemId);
       for (const change of changes) {
         emitChatEvent(managed, {
           type: "file_change",
           path: change.path,
-          diff: streamedAlready ? "" : (change.diff || runtime.fileDeltaByItemId.get(itemId) || ""),
+          diff: change.diff || runtime.fileDeltaByItemId.get(itemId) || "",
           kind: change.kind,
           itemId,
           turnId,
@@ -9181,7 +9248,6 @@ export function createAgentChatService(args: {
       const next = `${runtime.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
       runtime.commandOutputByItemId.set(itemId, next);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
-      runtime.streamedCommandItemIds.add(itemId);
       emitChatEvent(managed, {
         type: "activity",
         activity: "running_command",
@@ -9207,7 +9273,6 @@ export function createAgentChatService(args: {
       const next = `${runtime.fileDeltaByItemId.get(itemId) ?? ""}${delta}`;
       runtime.fileDeltaByItemId.set(itemId, next);
       evictOldestEntries(runtime.fileDeltaByItemId, MAX_SESSION_MAP_ENTRIES);
-      runtime.streamedFileChangeItemIds.add(itemId);
       emitChatEvent(managed, {
         type: "activity",
         activity: "editing_file",
@@ -9299,8 +9364,6 @@ export function createAgentChatService(args: {
       runtime.itemTurnIdByItemId.clear();
       runtime.commandOutputByItemId.clear();
       runtime.fileDeltaByItemId.clear();
-      runtime.streamedCommandItemIds.clear();
-      runtime.streamedFileChangeItemIds.clear();
       runtime.fileChangesByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
@@ -9508,8 +9571,6 @@ export function createAgentChatService(args: {
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
-      streamedCommandItemIds: new Set<string>(),
-      streamedFileChangeItemIds: new Set<string>(),
       activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
@@ -10426,13 +10487,15 @@ export function createAgentChatService(args: {
         .filter((entry): entry is AgentChatModelInfo => entry != null);
 
       if (models.length) {
+        const preferredIdx = models.findIndex((entry) => entry.id === DEFAULT_CODEX_MODEL);
+        if (preferredIdx >= 0) {
+          return models.map((entry, index) => ({
+            ...entry,
+            isDefault: index === preferredIdx,
+          }));
+        }
         if (!models.some((entry) => entry.isDefault)) {
-          const preferredIdx = models.findIndex((entry) => entry.id === DEFAULT_CODEX_MODEL);
-          if (preferredIdx >= 0) {
-            models[preferredIdx] = { ...models[preferredIdx]!, isDefault: true };
-          } else {
-            models[0] = { ...models[0]!, isDefault: true };
-          }
+          models[0] = { ...models[0]!, isDefault: true };
         }
         return models;
       }
@@ -10960,8 +11023,20 @@ export function createAgentChatService(args: {
     // false (review 3134504183 / 3134403060).
     const providerHasPersistentGuidance = managed.session.provider === "claude";
     const shouldInjectGuidance = !providerHasPersistentGuidance;
+    const expandedClaudeSlashCommand = providerSlashCommand
+      && managed.session.provider === "claude"
+      && slashCommand != null
+      && !CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
+      ? resolveClaudeSlashCommandInvocation(managed.laneWorktreePath, trimmed)
+      : null;
+    const expandedCodexSlashCommand = providerSlashCommand
+      && managed.session.provider === "codex"
+      && slashCommand != null
+      && !CODEX_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
+      ? resolveCodexSlashCommandInvocation(managed.laneWorktreePath, trimmed)
+      : null;
     const promptText = providerSlashCommand
-      ? trimmed
+      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? trimmed
       : composeLaunchDirectives(trimmed, [
           shouldInjectLaneDirective
             ? buildLaneWorktreeDirective({
@@ -12780,6 +12855,7 @@ export function createAgentChatService(args: {
         : null,
       startedAt: row.startedAt,
       endedAt: row.endedAt,
+      archivedAt: row.archivedAt ?? null,
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? null,
@@ -13465,6 +13541,24 @@ export function createAgentChatService(args: {
     sessionService.deleteSession(trimmedSessionId);
   };
 
+  const archiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
+    const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!trimmedSessionId.length) throw new Error("Chat session id is required.");
+    const existing = sessionService.get(trimmedSessionId);
+    if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
+    if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
+    sessionService.archiveSession(trimmedSessionId);
+  };
+
+  const unarchiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
+    const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!trimmedSessionId.length) throw new Error("Chat session id is required.");
+    const existing = sessionService.get(trimmedSessionId);
+    if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
+    if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
+    sessionService.unarchiveSession(trimmedSessionId);
+  };
+
   const disposeAll = async (): Promise<void> => {
     clearInterval(sessionCleanupTimer);
     for (const sessionId of [...managedSessions.keys()]) {
@@ -13910,54 +14004,53 @@ export function createAgentChatService(args: {
     if (!managed) return [];
     const provider = managed.session.provider;
 
-    const localCommands: AgentChatSlashCommand[] = provider === "claude"
+    const localCommands: AgentChatSlashCommand[] = provider === "claude" || provider === "codex"
       ? []
       : [{ name: "/clear", description: "Clear chat history", source: "local" }];
-    if (provider === "claude") {
-      localCommands.push({
-        name: "/login",
-        description: "Sign in to Claude Code for this chat runtime",
-        source: "local",
-      });
-    }
+
+    const mergeSlashCommands = (groups: AgentChatSlashCommand[][]): AgentChatSlashCommand[] => {
+      const merged = new Map<string, AgentChatSlashCommand>();
+      for (const group of groups) {
+        for (const command of group) {
+          merged.set(command.name, command);
+        }
+      }
+      return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+    };
 
     // Claude SDK commands plus filesystem-backed Claude Code commands/skills.
     if (provider === "claude") {
-      const sdkCommands = managed.runtime?.kind === "claude" ? managed.runtime.slashCommands : [];
-      const sdkCmds: AgentChatSlashCommand[] = [
-        ...sdkCommands,
-        ...discoverClaudeSlashCommands(managed.laneWorktreePath),
-      ].map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+      const runtimeCommands: AgentChatSlashCommand[] = (managed.runtime?.kind === "claude" ? managed.runtime.slashCommands : []).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
-      const merged = new Map<string, AgentChatSlashCommand>();
-      for (const command of sdkCmds) {
-        merged.set(command.name, command);
-      }
-      for (const command of localCommands) {
-        merged.set(command.name, command);
-      }
-      return [...merged.values()];
+      const projectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+        name: cmd.name,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        source: "sdk" as const,
+      }));
+      return mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]);
     }
 
     // Codex SDK commands
-    if (provider === "codex" && managed.runtime?.kind === "codex") {
-      const rt = managed.runtime;
-      const sdkCmds: AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+    if (provider === "codex") {
+      const rt = managed.runtime?.kind === "codex" ? managed.runtime : null;
+      const dynamicCommands: AgentChatSlashCommand[] = (rt?.slashCommands ?? []).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
-      // Add /review as a built-in Codex command if not already in skills
-      if (!sdkCmds.some((c) => c.name === "/review")) {
-        sdkCmds.push({ name: "/review", description: "Review uncommitted changes", source: "sdk" as const });
-      }
-      const sdkNames = new Set(sdkCmds.map((c: AgentChatSlashCommand) => c.name));
-      return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
+      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(managed.laneWorktreePath).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+        name: cmd.name,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        source: "sdk" as const,
+      }));
+      return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
     // OpenCode / Cursor — only local commands
@@ -14279,6 +14372,8 @@ export function createAgentChatService(args: {
     codexFuzzyFileSearch,
     dispose,
     deleteSession,
+    archiveSession,
+    unarchiveSession,
     disposeAll,
     forceDisposeAll,
     updateSession,

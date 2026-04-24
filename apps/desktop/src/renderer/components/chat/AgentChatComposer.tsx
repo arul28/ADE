@@ -83,21 +83,8 @@ const LOCAL_SLASH_COMMANDS: SlashCommandEntry[] = [
   { command: "/clear", label: "Clear", description: "Clear chat history", source: "local" },
 ];
 
-/** Well-known defaults shown before the SDK session is initialized. */
-const CLAUDE_DEFAULT_COMMANDS: SlashCommandEntry[] = [];
-
-const CODEX_DEFAULT_COMMANDS: SlashCommandEntry[] = [
-  { command: "/review", label: "Review", description: "Review uncommitted changes", source: "sdk" },
-  { command: "/help", label: "Help", description: "Show available commands", source: "sdk" },
-];
-
-const DEFAULT_COMMANDS_BY_FAMILY: Record<string, SlashCommandEntry[]> = {
-  anthropic: CLAUDE_DEFAULT_COMMANDS,
-  openai: CODEX_DEFAULT_COMMANDS,
-};
-
 /** Build the effective slash command list by merging SDK-provided commands with local ones. */
-function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: string): SlashCommandEntry[] {
+function buildSlashCommands(sdkCommands: AgentChatSlashCommand[]): SlashCommandEntry[] {
   const result: SlashCommandEntry[] = [];
   const seen = new Set<string>();
 
@@ -113,17 +100,6 @@ function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: 
       argumentHint: cmd.argumentHint,
       source: cmd.source,
     });
-  }
-
-  // If no SDK commands loaded yet, show well-known defaults for the provider
-  if (sdkCommands.length === 0) {
-    const defaults = (modelFamily ? DEFAULT_COMMANDS_BY_FAMILY[modelFamily] : undefined) ?? [];
-    for (const cmd of defaults) {
-      if (!seen.has(cmd.command)) {
-        seen.add(cmd.command);
-        result.push(cmd);
-      }
-    }
   }
 
   // Local commands that aren't already provided by SDK
@@ -517,9 +493,6 @@ export function AgentChatComposer({
   const [attachmentCursor, setAttachmentCursor] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
 
-  const [slashPickerOpen, setSlashPickerOpen] = useState(false);
-  const [slashQuery, setSlashQuery] = useState("");
-  const [slashCursor, setSlashCursor] = useState(0);
   const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
   const [hoveredCodexPreset, setHoveredCodexPreset] = useState<Exclude<CodexPermissionPreset, "custom"> | null>(null);
   const [claudeModePickerOpen, setClaudeModePickerOpen] = useState(false);
@@ -560,23 +533,10 @@ export function AgentChatComposer({
   }, [draft, resizeTextarea]);
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
-  const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
-
   const effectiveSlashCommands = useMemo(
-    () => buildSlashCommands(sdkSlashCommands, selectedModel?.family),
-    [sdkSlashCommands, selectedModel?.family],
+    () => buildSlashCommands(sdkSlashCommands),
+    [sdkSlashCommands],
   );
-
-  const filteredSlashCommands = useMemo(() => {
-    if (!slashQuery.length) return effectiveSlashCommands;
-    const q = slashQuery.toLowerCase();
-    return effectiveSlashCommands.filter(
-      (cmd) =>
-        cmd.command.toLowerCase().includes(q) ||
-        cmd.label.toLowerCase().includes(q) ||
-        cmd.description.toLowerCase().includes(q)
-    );
-  }, [slashQuery, effectiveSlashCommands]);
 
   /* ── Attachment picker effects ── */
   useEffect(() => {
@@ -681,15 +641,13 @@ export function AgentChatComposer({
     }
   };
 
-  const handleSlashSelect = (cmd: SlashCommandEntry) => {
-    setSlashPickerOpen(false);
-    setSlashQuery("");
+  const handleSlashSelect = useCallback((cmd: SlashCommandEntry) => {
     // Local-only commands handled client-side
     if (cmd.command === "/clear" && cmd.source === "local" && onClearEvents) { onClearEvents(); onDraftChange(""); return; }
     // SDK and all other commands: set as draft text to be sent to the agent
     const suffix = cmd.argumentHint ? ` ${cmd.argumentHint}` : "";
     onDraftChange(`${cmd.command}${suffix} `);
-  };
+  }, [onClearEvents, onDraftChange]);
 
   const nativeControlsDisabled = permissionModeLocked;
   const slot = parallelControlSlot;
@@ -1261,25 +1219,6 @@ export function AgentChatComposer({
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
 
-    /* Slash picker keyboard */
-    if (slashPickerOpen) {
-      if (event.key === "Escape") { event.preventDefault(); setSlashPickerOpen(false); setSlashQuery(""); return; }
-      if (event.key === "ArrowDown") { event.preventDefault(); setSlashCursor((v) => Math.min(v + 1, Math.max(filteredSlashCommands.length - 1, 0))); return; }
-      if (event.key === "ArrowUp") { event.preventDefault(); setSlashCursor((v) => Math.max(v - 1, 0)); return; }
-      if (event.key === "Enter" || event.key === "Tab") {
-        const cmd = filteredSlashCommands[slashCursor];
-        if (cmd) { event.preventDefault(); handleSlashSelect(cmd); return; }
-      }
-    }
-
-    /* Trigger pickers — let "/" be typed so onChange can filter */
-    if (event.key === "/" && draft.length === 0 && !commandModified && !event.altKey) {
-      setSlashPickerOpen(true);
-      setSlashQuery("");
-      setSlashCursor(0);
-      // Don't preventDefault — the "/" will appear in the textarea and onChange will
-      // see val.startsWith("/"), keeping the picker open and enabling type-to-filter.
-    }
     /* Command menu keyboard navigation */
     if (commandMenuTrigger) {
       if (event.key === "Escape") { event.preventDefault(); setCommandMenuTrigger(null); return; }
@@ -1361,10 +1300,15 @@ export function AgentChatComposer({
       onDraftChange(`${before}@${item.path} ${after}`);
       onAddAttachment({ path: item.path, type: inferAttachmentType(item.path) });
     } else if (item.type === "command") {
-      onDraftChange(`/${item.name} `);
+      const selected = effectiveSlashCommands.find((cmd) => cmd.command.replace(/^\//, "") === item.name);
+      if (selected) {
+        handleSlashSelect(selected);
+      } else {
+        onDraftChange(`/${item.name} `);
+      }
     }
     setCommandMenuTrigger(null);
-  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, onDraftChange, onAddAttachment]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, effectiveSlashCommands, handleSlashSelect, onDraftChange, onAddAttachment]);
 
   const submitComposerDraft = useCallback(() => {
     const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
@@ -1526,35 +1470,6 @@ export function AgentChatComposer({
               event.currentTarget.value = "";
             }}
           />
-          {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-            <div className="ade-chat-drawer-glass absolute bottom-full left-3 z-10 mb-3 w-80 overflow-hidden">
-              <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/40">
-                Commands
-              </div>
-              <div className="max-h-52 overflow-auto py-1">
-                {filteredSlashCommands.map((cmd, index) => (
-                  <button
-                    key={cmd.command}
-                    type="button"
-                    data-active={index === slashCursor}
-                    className={cn(
-                      "ade-chat-drawer-row mx-1 flex w-[calc(100%-0.5rem)] items-center gap-3 rounded-lg px-3 py-2.5 text-left font-mono text-[10px]",
-                      index === slashCursor ? "text-fg" : "text-fg/55",
-                    )}
-                    onMouseEnter={() => setSlashCursor(index)}
-                    onClick={() => handleSlashSelect(cmd)}
-                  >
-                    <span className="w-16 shrink-0 text-accent/70">{cmd.command}</span>
-                    <span className="flex-1 truncate text-fg/45">{cmd.description}</span>
-                    {cmd.source === "sdk" ? (
-                      <span className="shrink-0 rounded-sm bg-violet-500/10 px-1 py-px text-[8px] text-violet-300/60">sdk</span>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
           {attachmentPickerOpen ? (
             <div className="ade-chat-drawer-glass absolute bottom-full left-3 z-10 mb-3 w-80 overflow-hidden">
               <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2.5">
@@ -1806,7 +1721,19 @@ export function AgentChatComposer({
             <button
               type="button"
               className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-              onClick={() => { const d = textareaRef.current?.value ?? ""; if (!d.length) { onDraftChange("/"); } setSlashPickerOpen(true); setSlashQuery(d.startsWith("/") ? d.slice(1) : ""); setSlashCursor(0); textareaRef.current?.focus(); }}
+              onClick={() => {
+                const el = textareaRef.current;
+                const currentDraft = el?.value ?? "";
+                if (!currentDraft.length) onDraftChange("/");
+                const rect = el?.getBoundingClientRect();
+                setCommandMenuTrigger({
+                  type: "slash",
+                  query: currentDraft.startsWith("/") ? currentDraft.slice(1).match(/^[^\s/]*/)?.[0] ?? "" : "",
+                  cursorIndex: 0,
+                });
+                if (rect) setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                el?.focus();
+              }}
               title="Commands (/)"
               aria-label="Open command picker"
             >
@@ -1968,7 +1895,12 @@ export function AgentChatComposer({
           <ChatCommandMenu
             ref={commandMenuRef}
             trigger={commandMenuTrigger}
-            slashCommands={effectiveSlashCommands.map((c) => ({ name: c.command.replace(/^\//, ""), description: c.description }))}
+            slashCommands={effectiveSlashCommands.map((c) => ({
+              name: c.command.replace(/^\//, ""),
+              description: c.description,
+              argumentHint: c.argumentHint,
+              source: c.source,
+            }))}
             sessionId={sessionId ?? null}
             anchor={commandMenuAnchor}
             onSelect={handleCommandMenuSelect}
@@ -1980,15 +1912,20 @@ export function AgentChatComposer({
             onChange={(event) => {
               const val = event.target.value;
               onDraftChange(val);
-              if (slashPickerOpen && !val.startsWith("/")) { setSlashPickerOpen(false); setSlashQuery(""); }
-              if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
+              const rect = event.target.getBoundingClientRect();
+
+              if (val.startsWith("/") && !val.slice(1).includes("\n")) {
+                const query = val.slice(1).match(/^[^\s/]*/)?.[0] ?? "";
+                setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
+                setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                return;
+              }
 
               // Detect @mention trigger
               const cursorPos = event.target.selectionStart ?? val.length;
               const textBeforeCursor = val.slice(0, cursorPos);
               const atMatch = textBeforeCursor.match(/@([^\s@]*)$/);
               if (atMatch) {
-                const rect = event.target.getBoundingClientRect();
                 setCommandMenuTrigger({ type: "at", query: atMatch[1], cursorIndex: cursorPos - atMatch[0].length });
                 setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
               } else {
@@ -1998,6 +1935,10 @@ export function AgentChatComposer({
             rows={1}
             onInput={resizeTextarea}
             disabled={parallelLaunchBusy}
+            autoComplete="on"
+            autoCorrect="on"
+            autoCapitalize="sentences"
+            spellCheck={true}
             className={cn(
               "block w-full resize-none bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
               dragActive ? "opacity-30" : "",

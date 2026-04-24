@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
+import { discoverClaudeSlashCommands, resolveClaudeSlashCommandInvocation } from "./claudeSlashCommandDiscovery";
 
 let tmpRoot: string;
 let homeRoot: string;
@@ -151,5 +151,42 @@ describe("discoverClaudeSlashCommands", () => {
         description: "Project ship",
       },
     ]);
+  });
+});
+
+describe("resolveClaudeSlashCommandInvocation", () => {
+  it("expands project command files with $ARGUMENTS before sending to Claude", () => {
+    const commandsDir = path.join(tmpRoot, ".claude", "commands");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "audit.md"), [
+      "---",
+      "description: Audit recent work",
+      "---",
+      "",
+      "Audit the work you just did.",
+      "",
+      "Focus: $ARGUMENTS",
+      "",
+    ].join("\n"));
+
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/audit chat command menu")).toEqual({
+      name: "/audit",
+      argumentsText: "chat command menu",
+      promptText: "Audit the work you just did.\n\nFocus: chat command menu",
+    });
+  });
+
+  it("lets project command files override same-named personal command files", () => {
+    fs.mkdirSync(path.join(homeRoot, ".claude", "commands"), { recursive: true });
+    fs.mkdirSync(path.join(tmpRoot, ".claude", "commands"), { recursive: true });
+    fs.writeFileSync(path.join(homeRoot, ".claude", "commands", "ship.md"), "Personal $ARGUMENTS\n");
+    fs.writeFileSync(path.join(tmpRoot, ".claude", "commands", "ship.md"), "Project $ARGUMENTS\n");
+
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/ship now")?.promptText).toBe("Project now");
+  });
+
+  it("returns null for built-in commands and unknown command files", () => {
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/help")).toBeNull();
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/missing")).toBeNull();
   });
 });

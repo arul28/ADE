@@ -65,6 +65,7 @@ import type {
   ExportHistoryResult,
   AgentTool,
   AgentChatApproveArgs,
+  AgentChatArchiveArgs,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
@@ -1130,6 +1131,8 @@ declare global {
         respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
         dispose: (args: AgentChatDisposeArgs) => Promise<void>;
+        archive: (args: AgentChatArchiveArgs) => Promise<void>;
+        unarchive: (args: AgentChatArchiveArgs) => Promise<void>;
         delete: (args: AgentChatDeleteArgs) => Promise<void>;
         updateSession: (
           args: AgentChatUpdateSessionArgs,

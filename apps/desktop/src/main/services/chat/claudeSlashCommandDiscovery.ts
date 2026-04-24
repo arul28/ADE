@@ -9,6 +9,12 @@ export type DiscoveredClaudeSlashCommand = {
   argumentHint?: string;
 };
 
+export type ResolvedClaudeSlashCommandInvocation = {
+  name: string;
+  promptText: string;
+  argumentsText: string;
+};
+
 type CommandFrontmatter = {
   description?: unknown;
   "argument-hint"?: unknown;
@@ -38,12 +44,16 @@ function readFrontmatter(markdown: string): Record<string, unknown> {
 }
 
 function firstMarkdownParagraph(markdown: string): string {
-  const body = markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
+  const body = stripFrontmatter(markdown);
   const paragraph = body
     .split(/\r?\n\r?\n/)
     .map((part) => part.trim())
     .find((part) => part.length > 0);
   return paragraph?.split(/\r?\n/)[0]?.trim() ?? "";
+}
+
+function stripFrontmatter(markdown: string): string {
+  return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
 }
 
 function normalizeSlashCommandName(value: string): string | null {
@@ -107,6 +117,22 @@ function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashComma
   return commands;
 }
 
+function resolveLegacyCommandFile(commandsDir: string, commandName: string): string | null {
+  if (!fs.existsSync(commandsDir)) return null;
+  const commandPathParts = commandName.replace(/^\//, "").split(":").filter(Boolean);
+  if (!commandPathParts.length) return null;
+  const candidate = path.join(commandsDir, ...commandPathParts) + ".md";
+  const relative = path.relative(commandsDir, candidate);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  if (!fs.existsSync(candidate)) return null;
+  try {
+    const stat = fs.statSync(candidate);
+    return stat.isFile() ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 function discoverSkills(skillsDir: string): DiscoveredClaudeSlashCommand[] {
   const commands: DiscoveredClaudeSlashCommand[] = [];
   if (!fs.existsSync(skillsDir)) return commands;
@@ -160,4 +186,40 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
   }
 
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function resolveClaudeSlashCommandInvocation(
+  cwd: string,
+  input: string,
+): ResolvedClaudeSlashCommandInvocation | null {
+  const trimmed = input.trim();
+  const match = trimmed.match(/^(\/[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)*)(?:\s+([\s\S]*))?$/);
+  if (!match) return null;
+
+  const name = match[1]?.toLowerCase();
+  if (!name) return null;
+  const argumentsText = match[2]?.trim() ?? "";
+  const roots = [
+    path.join(os.homedir(), ".claude"),
+    path.join(cwd, ".claude"),
+  ];
+
+  let commandFile: string | null = null;
+  for (const root of roots) {
+    commandFile = resolveLegacyCommandFile(path.join(root, "commands"), name) ?? commandFile;
+  }
+  if (!commandFile) return null;
+
+  try {
+    const content = fs.readFileSync(commandFile, "utf8");
+    const body = stripFrontmatter(content).trim();
+    if (!body.length) return null;
+    return {
+      name,
+      argumentsText,
+      promptText: body.replace(/\$ARGUMENTS/g, argumentsText),
+    };
+  } catch {
+    return null;
+  }
 }

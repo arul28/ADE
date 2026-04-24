@@ -58,11 +58,11 @@ ade lanes create "fix-checkout-flow" --parent main
 ade git commit --lane lane-id
 ade git push --lane lane-id
 ade prs create --lane lane-id --base main --title "Fix checkout flow"
-ade prs path-to-merge --pr pr-id --model gpt-5.4 --max-rounds 3 --no-auto-merge
+ade prs path-to-merge --pr pr-id --model gpt-5.5 --max-rounds 3 --no-auto-merge
 ade run defs --text
 ade run start web --lane lane-id
 ade shell start --lane lane-id -- npm test
-ade chat create --lane lane-id --model gpt-5.4
+ade chat create --lane lane-id --model gpt-5.5
 ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id
 ade actions list
