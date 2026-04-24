@@ -22,6 +22,10 @@ vi.mock("../onboarding/HelpMenu", () => ({
   HelpMenu: () => null,
 }));
 
+vi.mock("../executionTargets/TopBarExecutionTargetSelect", () => ({
+  TopBarExecutionTargetSelect: () => null,
+}));
+
 vi.mock("../../lib/sessions", () => ({
   isRunOwnedSession: () => false,
 }));
