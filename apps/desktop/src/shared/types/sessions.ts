@@ -69,6 +69,7 @@ export type TerminalSessionSummary = {
   status: TerminalSessionStatus;
   startedAt: string;
   endedAt: string | null;
+  archivedAt?: string | null;
   exitCode: number | null;
   transcriptPath: string;
   headShaStart: string | null;

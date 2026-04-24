@@ -46,7 +46,7 @@ function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boole
 }
 
 const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
-const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
 
 // CLI-wrapped Anthropic models (claude provider)
 export const CLAUDE_MODELS: ModelEntry[] = MODEL_REGISTRY

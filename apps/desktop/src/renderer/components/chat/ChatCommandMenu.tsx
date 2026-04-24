@@ -29,7 +29,7 @@ type ChatCommandMenuProps = {
   /** The current trigger character and query. */
   trigger: { type: "at" | "slash"; query: string; cursorIndex: number } | null;
   /** Available slash commands. */
-  slashCommands: Array<{ name: string; description: string }>;
+  slashCommands: Array<{ name: string; description: string; argumentHint?: string; source?: "sdk" | "local" }>;
   /** Session ID for file search. */
   sessionId: string | null;
   /** Anchor position: { top, left } relative to the container. */
@@ -98,7 +98,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       }
 
       const query = trigger.query;
-      if (!sessionId || !query.trim()) {
+      if (!sessionId) {
         setFileResults([]);
         setFileLoading(false);
         return;
@@ -180,10 +180,14 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const visible = trigger !== null && anchor !== null;
 
     // ---- Description lookup for commands ----
-    const descriptionMap = useMemo(() => {
-      const map = new Map<string, string>();
+    const commandMap = useMemo(() => {
+      const map = new Map<string, { description: string; argumentHint?: string; source?: "sdk" | "local" }>();
       for (const cmd of slashCommands) {
-        map.set(cmd.name, cmd.description);
+        map.set(cmd.name, {
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: cmd.source,
+        });
       }
       return map;
     }, [slashCommands]);
@@ -191,8 +195,9 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const query = trigger?.query.trim() ?? "";
     const isAtTrigger = trigger?.type === "at";
     const isUnavailable = isAtTrigger && !sessionId;
-    const isIdle = Boolean(trigger) && !query.length && !isUnavailable;
+    const isIdle = Boolean(trigger) && !query.length && !isUnavailable && !isAtTrigger;
     const isNoResults = Boolean(query.length) && !fileLoading && items.length === 0 && (!isAtTrigger || Boolean(sessionId));
+    const isAtEmptyResults = isAtTrigger && !query.length && !fileLoading && !isUnavailable && items.length === 0;
 
     return (
       <AnimatePresence>
@@ -244,6 +249,9 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                   {isAtTrigger ? `No matches for "${query}"` : `No commands match "${query}"`}
                 </div>
               )}
+              {!fileLoading && isAtEmptyResults && (
+                <div className="px-3 py-2 text-[11px] text-fg/30">No files found</div>
+              )}
 
               {/* Items */}
               {items.map((item, i) => {
@@ -271,7 +279,8 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                   );
                 }
 
-                const description = descriptionMap.get(item.name) ?? "";
+                const command = commandMap.get(item.name);
+                const description = command?.description ?? "";
                 return (
                   <div
                     key={item.name}
@@ -285,6 +294,9 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                   >
                     <Command size={13} weight="duotone" className={cn("shrink-0", isSelected ? "text-violet-400/80" : "text-fg/30")} />
                     <span className={cn(isSelected ? "text-violet-200/90 font-medium" : "text-fg/70")}>/{item.name}</span>
+                    {command?.argumentHint ? (
+                      <span className="shrink-0 text-fg/32">{command.argumentHint}</span>
+                    ) : null}
                     {description && (
                       <span className="ml-auto truncate text-fg/40">{description}</span>
                     )}

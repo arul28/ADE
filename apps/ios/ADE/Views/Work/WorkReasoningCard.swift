@@ -5,16 +5,16 @@ import SwiftUI
 /// Collapsed state mirrors desktop's compact "Thought" pill: a single-line
 /// capsule with chevron · brain icon · "Thought" that hugs the assistant
 /// column rather than spanning full width. While the turn is live the header
-/// pulses ("Thinking …") and the body auto-expands so tokens stream in real
-/// time; once the turn settles the card auto-collapses again.
+/// pulses ("Thinking …") but the body stays collapsed by default; the user
+/// must tap the pill to reveal streaming reasoning tokens.
 struct WorkReasoningCard: View {
   let card: WorkEventCardModel
   let isLive: Bool
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   // Default collapsed — reasoning is the model's scratchpad, not the answer.
-  // The live turn still auto-expands via the onChange(of: isLive) handler
-  // below so users can watch thoughts stream in real time.
+  // We no longer auto-expand while live: thoughts should not fill the view
+  // unless the user explicitly opts in by tapping the pill.
   @State private var isExpanded: Bool = false
 
   private var bodyText: String? {
@@ -52,16 +52,6 @@ struct WorkReasoningCard: View {
         }
       }
       Spacer(minLength: 0)
-    }
-    .onAppear {
-      // Auto-expand while the turn is still thinking so the user can see
-      // tokens land as they arrive.
-      if isLive { isExpanded = true }
-    }
-    .onChange(of: isLive) { _, nowLive in
-      withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
-        isExpanded = nowLive
-      }
     }
   }
 

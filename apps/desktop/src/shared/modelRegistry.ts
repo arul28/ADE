@@ -193,6 +193,24 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ADE codex chat surfaces expose a consistent ladder:
   // low | medium | high | xhigh, except GPT-5.1-Codex-Mini which only exposes medium | high.
   {
+    id: "openai/gpt-5.5-codex",
+    shortId: "gpt-5.5-codex",
+    aliases: ["gpt-5.5-codex"],
+    displayName: "GPT-5.5",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#10A37F",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.5",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    costTier: "high",
+  },
+  {
     id: "openai/gpt-5.4-codex",
     shortId: "gpt-5.4-codex",
     aliases: ["gpt-5.4-codex"],

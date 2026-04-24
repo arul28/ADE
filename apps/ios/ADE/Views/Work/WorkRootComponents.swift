@@ -407,6 +407,7 @@ struct WorkSessionListRow: View {
   let onPin: (TerminalSessionSummary) -> Void
   let onRename: (TerminalSessionSummary) -> Void
   let onEnd: (TerminalSessionSummary) -> Void
+  let onDelete: (TerminalSessionSummary) -> Void
   let onResume: (TerminalSessionSummary) -> Void
   let onCopyId: (TerminalSessionSummary) -> Void
   let onGoToLane: (TerminalSessionSummary) -> Void
@@ -450,6 +451,10 @@ struct WorkSessionListRow: View {
         Button("Close session", role: .destructive) {
           onEnd(session)
         }
+      } else if shouldShowDeleteAction {
+        Button("Delete chat", role: .destructive) {
+          onDelete(session)
+        }
       } else if shouldShowResumeAction {
         Button("Resume") {
           onResume(session)
@@ -469,8 +474,14 @@ struct WorkSessionListRow: View {
   }
 
   private var shouldShowEndAction: Bool {
-    guard !isChatSession(session) else { return false }
+    if isChatSession(session) {
+      return status == "active" || status == "awaiting-input" || status == "idle"
+    }
     return status == "active" || status == "awaiting-input"
+  }
+
+  private var shouldShowDeleteAction: Bool {
+    isChatSession(session) && status == "ended"
   }
 
   private var shouldShowResumeAction: Bool {

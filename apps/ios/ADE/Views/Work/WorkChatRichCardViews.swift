@@ -125,11 +125,6 @@ struct WorkToolCardView: View {
           .lineLimit(1)
           .truncationMode(.tail)
       }
-      if toolCard.status == .running {
-        Text("Running")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.warning)
-      }
       Spacer(minLength: 4)
       Image(systemName: "chevron.down")
         .font(.system(size: 10, weight: .semibold))
@@ -149,7 +144,11 @@ struct WorkToolCardView: View {
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
         HStack(spacing: 8) {
-          WorkTag(text: toolCard.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
+          // Running state is surfaced globally by WorkActivityIndicator at the
+          // bottom of the chat; repeating it on every card just stacks clutter.
+          if toolCard.status != .running {
+            WorkTag(text: toolCard.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
+          }
           Text(formattedSessionDuration(startedAt: toolCard.startedAt, endedAt: toolCard.completedAt))
             .font(.caption2.monospacedDigit())
             .foregroundStyle(ADEColor.textMuted)
@@ -308,23 +307,23 @@ struct WorkToolGroupCardView: View {
   }
 
   private var latestTint: Color {
-    color(for: latest?.status ?? .completed)
+    // If any member is still running, surface that on the group icon —
+    // otherwise a just-completed latest member hides the fact that earlier
+    // calls in the cluster are still in flight.
+    if group.hasRunning { return color(for: .running) }
+    return color(for: latest?.status ?? .completed)
   }
 
   private var headerSubtitle: String {
-    var tools = 0, commands = 0, files = 0, running = 0
+    var tools = 0, commands = 0, files = 0
     for m in group.members {
       switch m {
       case .tool: tools += 1
       case .command: commands += 1
       case .fileChange: files += 1
       }
-      if m.status == .running {
-        running += 1
-      }
     }
     var parts: [String] = []
-    if running > 0 { parts.append("\(running) running") }
     if tools > 0 { parts.append("\(tools) tool\(tools == 1 ? "" : "s")") }
     if commands > 0 { parts.append("\(commands) cmd\(commands == 1 ? "" : "s")") }
     if files > 0 { parts.append("\(files) file\(files == 1 ? "" : "s")") }
@@ -539,7 +538,9 @@ struct WorkCommandCardView: View {
       .buttonStyle(.plain)
 
       HStack(spacing: 8) {
-        WorkTag(text: card.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
+        if card.status != .running {
+          WorkTag(text: card.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
+        }
         if !card.cwd.isEmpty {
           WorkTag(text: card.cwd, icon: "folder", tint: ADEColor.textSecondary)
         }
@@ -630,7 +631,9 @@ struct WorkFileChangeCardView: View {
 
       HStack(spacing: 8) {
         WorkTag(text: card.kind.replacingOccurrences(of: "_", with: " ").capitalized, icon: fileChangeIcon, tint: statusTint)
-        WorkTag(text: card.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
+        if card.status != .running {
+          WorkTag(text: card.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
+        }
       }
 
       if !card.diff.isEmpty {

@@ -65,7 +65,18 @@ struct WorkRootScreen: View {
   }
 
   var archivedSessionIds: Set<String> {
-    Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
+    let local = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
+    var result = Set<String>()
+    for summary in chatSummaries.values {
+      if summary.archivedAt != nil {
+        result.insert(summary.sessionId)
+      }
+    }
+    let remoteKnownIds = Set(chatSummaries.values.map { $0.sessionId })
+    for id in local where !remoteKnownIds.contains(id) {
+      result.insert(id)
+    }
+    return result
   }
 
   var laneById: [String: LaneSummary] {
@@ -371,6 +382,7 @@ struct WorkRootScreen: View {
                     onPin: togglePin,
                     onRename: beginRename,
                     onEnd: { session in endTarget = session },
+                    onDelete: deleteChatSession,
                     onResume: resumeSession,
                     onCopyId: copySessionId,
                     onGoToLane: goToLane

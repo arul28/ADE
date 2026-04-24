@@ -180,9 +180,12 @@ function createCommandError(command, args, status, stdout, stderr) {
   );
 }
 
+const DEFAULT_RUN_COMMAND_TIMEOUT_MS = 3 * 60 * 1000;
+
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const useShell = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
+    const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_COMMAND_TIMEOUT_MS;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
@@ -192,6 +195,22 @@ function runCommand(command, args, options = {}) {
 
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore best-effort kill
+      }
+      const rendered = [command, ...args].join(" ");
+      const details = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n");
+      reject(new Error(
+        `[validate-win-artifacts] Command timed out after ${timeoutMs}ms: ${rendered}` +
+          (details ? `\n${details}` : ""),
+      ));
+    }, timeoutMs);
 
     child.stdout?.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
@@ -200,8 +219,13 @@ function runCommand(command, args, options = {}) {
       stderr += chunk.toString("utf8");
     });
 
-    child.on("error", reject);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      if (!timedOut) reject(err);
+    });
     child.on("close", (status) => {
+      clearTimeout(timer);
+      if (timedOut) return;
       if (status === 0) {
         resolve({ stdout, stderr });
         return;

@@ -75,7 +75,7 @@ const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 
 
 const DEFAULT_ORCHESTRATOR_MODEL_BY_PROVIDER: Record<"claude" | "codex", MissionModelConfig["orchestratorModel"]> = {
   claude: { provider: "claude", modelId: getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
-  codex: { provider: "codex", modelId: getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex", thinkingLevel: "medium" },
+  codex: { provider: "codex", modelId: getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex", thinkingLevel: "medium" },
 };
 
 const HIGH_TEAMMATE_COUNT_GUARDRAIL_THRESHOLD = 5;

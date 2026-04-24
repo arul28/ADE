@@ -30,7 +30,7 @@ import type { createWorkerTaskSessionService } from "../../desktop/src/main/serv
 import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
-import { getModelById, resolveModelAlias } from "../../desktop/src/shared/modelRegistry";
+import { getModelById, getRuntimeModelRefForDescriptor, resolveModelAlias } from "../../desktop/src/shared/modelRegistry";
 import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -396,7 +396,7 @@ function createHeadlessAgentChatService(projectRoot: string): HeadlessLinearServ
   const identitySessionIds = new Map<string, string>();
   const transcripts = new Map<string, HeadlessTranscriptEntry[]>();
 
-  const HEADLESS_MODEL_ID = "openai/gpt-5.4-codex";
+  const HEADLESS_MODEL_ID = "openai/gpt-5.5-codex";
 
   const clipText = (value: string, maxChars: number): string => {
     const trimmed = value.trim();
@@ -421,7 +421,7 @@ function createHeadlessAgentChatService(projectRoot: string): HeadlessLinearServ
     if (descriptor) {
       return {
         modelId: descriptor.id,
-        model: descriptor.shortId,
+        model: getRuntimeModelRefForDescriptor(descriptor),
       };
     }
     return {

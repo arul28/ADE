@@ -487,6 +487,7 @@ export type AgentChatSession = {
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
+  archivedAt?: string | null;
   threadId?: string;
   /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
   requestedCwd?: string | null;
@@ -525,6 +526,7 @@ export type AgentChatSessionSummary = {
   idleSinceAt?: string | null;
   startedAt: string;
   endedAt: string | null;
+  archivedAt?: string | null;
   lastActivityAt: string;
   lastOutputPreview: string | null;
   summary: string | null;
@@ -725,6 +727,10 @@ export type AgentChatDisposeArgs = {
 };
 
 export type AgentChatDeleteArgs = {
+  sessionId: string;
+};
+
+export type AgentChatArchiveArgs = {
   sessionId: string;
 };
 

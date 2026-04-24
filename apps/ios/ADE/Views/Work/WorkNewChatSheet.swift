@@ -307,7 +307,7 @@ struct WorkNewChatSheet: View {
             VStack(alignment: .leading, spacing: 8) {
               TextField("Tell the agent what to do", text: $initialMessage, axis: .vertical)
                 .textInputAutocapitalization(.sentences)
-                .autocorrectionDisabled()
+                .autocorrectionDisabled(false)
                 .adeInsetField(cornerRadius: 14, padding: 12)
                 .disabled(busy)
 

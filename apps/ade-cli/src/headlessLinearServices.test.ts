@@ -419,8 +419,30 @@ describe("headlessLinearServices", () => {
       laneId: "lane-1",
     });
     expect(session.title).toBe("CTO Headless Session");
-    expect(session.model).toBe("gpt-5.4-codex");
-    expect(session.modelId).toBe("openai/gpt-5.4-codex");
+    expect(session.model).toBe("gpt-5.5");
+    expect(session.modelId).toBe("openai/gpt-5.5-codex");
+
+    services.dispose();
+  });
+
+  it("resolves explicit model IDs to their native runtime model refs in headless sessions", async () => {
+    const services = createHeadlessLinearServices(createDeps());
+
+    const codex = await services.agentChatService.ensureIdentitySession({
+      identityKey: "agent:codex-model",
+      laneId: "lane-1",
+      modelId: "openai/gpt-5.5-codex",
+    });
+    const claude = await services.agentChatService.ensureIdentitySession({
+      identityKey: "agent:claude-model",
+      laneId: "lane-1",
+      modelId: "anthropic/claude-opus-4-7-1m",
+    });
+
+    expect(codex.model).toBe("gpt-5.5");
+    expect(codex.modelId).toBe("openai/gpt-5.5-codex");
+    expect(claude.model).toBe("opus-1m");
+    expect(claude.modelId).toBe("anthropic/claude-opus-4-7-1m");
 
     services.dispose();
   });

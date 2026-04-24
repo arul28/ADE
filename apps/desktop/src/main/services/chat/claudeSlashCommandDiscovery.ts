@@ -9,6 +9,12 @@ export type DiscoveredClaudeSlashCommand = {
   argumentHint?: string;
 };
 
+export type ResolvedClaudeSlashCommandInvocation = {
+  name: string;
+  promptText: string;
+  argumentsText: string;
+};
+
 type CommandFrontmatter = {
   description?: unknown;
   "argument-hint"?: unknown;
@@ -38,12 +44,16 @@ function readFrontmatter(markdown: string): Record<string, unknown> {
 }
 
 function firstMarkdownParagraph(markdown: string): string {
-  const body = markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
+  const body = stripFrontmatter(markdown);
   const paragraph = body
     .split(/\r?\n\r?\n/)
     .map((part) => part.trim())
     .find((part) => part.length > 0);
   return paragraph?.split(/\r?\n/)[0]?.trim() ?? "";
+}
+
+function stripFrontmatter(markdown: string): string {
+  return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
 }
 
 function normalizeSlashCommandName(value: string): string | null {
@@ -107,6 +117,55 @@ function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashComma
   return commands;
 }
 
+function resolveLegacyCommandFile(commandsDir: string, commandName: string): string | null {
+  if (!fs.existsSync(commandsDir)) return null;
+  const commandPathParts = commandName.replace(/^\//, "").split(":").filter(Boolean);
+  if (!commandPathParts.length) return null;
+  const candidate = path.join(commandsDir, ...commandPathParts) + ".md";
+  const relative = path.relative(commandsDir, candidate);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  if (fs.existsSync(candidate)) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (stat.isFile()) return candidate;
+    } catch {
+      // fall through to slow-path scan
+    }
+  }
+  // Slow path: discovery normalizes filenames (lowercase + slugified), so a
+  // file like `My Command.md` is exposed as `/my-command` but the literal
+  // path above won't find it. Walk the directory and match by normalized
+  // name so non-canonical filenames still resolve.
+  const targetName = commandName.toLowerCase();
+  let match: string | null = null;
+  const visit = (dir: string, prefix: string[], depth: number): void => {
+    if (match || depth > MAX_LEGACY_COMMAND_DEPTH) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (match) return;
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath, [...prefix, entry.name], depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      const commandPath = [...prefix, entry.name].join(":");
+      const normalized = normalizeSlashCommandName(commandPath);
+      if (normalized && normalized.toLowerCase() === targetName) {
+        match = entryPath;
+        return;
+      }
+    }
+  };
+  visit(commandsDir, [], 0);
+  return match;
+}
+
 function discoverSkills(skillsDir: string): DiscoveredClaudeSlashCommand[] {
   const commands: DiscoveredClaudeSlashCommand[] = [];
   if (!fs.existsSync(skillsDir)) return commands;
@@ -160,4 +219,46 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
   }
 
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function resolveClaudeSlashCommandInvocation(
+  cwd: string,
+  input: string,
+): ResolvedClaudeSlashCommandInvocation | null {
+  const trimmed = input.trim();
+  const match = trimmed.match(/^(\/[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)*)(?:\s+([\s\S]*))?$/);
+  if (!match) return null;
+
+  const name = match[1]?.toLowerCase();
+  if (!name) return null;
+  const argumentsText = match[2]?.trim() ?? "";
+  const roots = [
+    path.join(os.homedir(), ".claude"),
+    path.join(cwd, ".claude"),
+  ];
+
+  let commandFile: string | null = null;
+  for (const root of roots) {
+    commandFile = resolveLegacyCommandFile(path.join(root, "commands"), name) ?? commandFile;
+  }
+  if (!commandFile) return null;
+
+  try {
+    const content = fs.readFileSync(commandFile, "utf8");
+    const body = stripFrontmatter(content).trim();
+    if (!body.length) return null;
+    const hasPlaceholder = /\$ARGUMENTS/.test(body);
+    const promptText = hasPlaceholder
+      ? body.replace(/\$ARGUMENTS/g, argumentsText)
+      : argumentsText.length
+        ? `${body}\n\nArguments: ${argumentsText}`
+        : body;
+    return {
+      name,
+      argumentsText,
+      promptText,
+    };
+  } catch {
+    return null;
+  }
 }

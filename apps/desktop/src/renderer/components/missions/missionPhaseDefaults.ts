@@ -2,7 +2,7 @@ import type { ModelConfig, PhaseCard, PhaseProfile } from "../../../shared/types
 import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 
 const DEFAULT_CLAUDE_PHASE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
-const DEFAULT_CODEX_PHASE_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+const DEFAULT_CODEX_PHASE_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
 
 const DEFAULT_MODELS: Record<string, ModelConfig> = {
   planning: { modelId: DEFAULT_CLAUDE_PHASE_MODEL_ID, thinkingLevel: "medium" },

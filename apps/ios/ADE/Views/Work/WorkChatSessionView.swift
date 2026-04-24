@@ -666,8 +666,8 @@ private struct WorkChatComposerDraftInput: View {
         .foregroundStyle(ADEColor.textPrimary)
         .tint(ADEColor.accent)
         .disabled(!canCompose)
-        .autocorrectionDisabled()
-        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled(false)
+        .textInputAutocapitalization(.sentences)
         .focused($composerFocused)
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         .onChange(of: pendingInsert) { _, token in

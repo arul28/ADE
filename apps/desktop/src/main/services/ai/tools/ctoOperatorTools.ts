@@ -767,7 +767,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
       "IMPORTANT: Always pass modelId when the user specifies a model. Use the full model ID " +
       "(e.g. 'anthropic/claude-opus-4-7' for Opus, 'anthropic/claude-sonnet-4-6' for Sonnet, " +
-      "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.4-codex' for GPT-5.4). " +
+      "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.5-codex' for GPT-5.5). " +
       "If no modelId is passed, the CTO's default model preference is used. " +
       "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
       "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +

@@ -569,6 +569,7 @@ function createMockSessionService() {
         status: "running",
         startedAt: args.startedAt ?? new Date().toISOString(),
         endedAt: null,
+        archivedAt: null,
         transcriptPath: args.transcriptPath ?? "",
         resumeCommand: args.resumeCommand ?? null,
         lastOutputPreview: null,
@@ -601,6 +602,16 @@ function createMockSessionService() {
     deleteSession: vi.fn((sessionId: string) => {
       sessions.delete(sessionId);
       return true;
+    }),
+    archiveSession: vi.fn((sessionId: string) => {
+      const row = sessions.get(sessionId);
+      if (row) row.archivedAt = row.archivedAt ?? new Date().toISOString();
+      return Boolean(row);
+    }),
+    unarchiveSession: vi.fn((sessionId: string) => {
+      const row = sessions.get(sessionId);
+      if (row) row.archivedAt = null;
+      return Boolean(row);
     }),
     updateMeta: vi.fn((args: any) => {
       const row = sessions.get(args.sessionId);
@@ -2725,7 +2736,7 @@ describe("createAgentChatService", () => {
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toBeDefined();
-      expect(loginCmd!.source).toBe("local");
+      expect(loginCmd!.source).toBe("sdk");
     });
 
     it("includes project Claude Code command files before SDK init completes", async () => {
@@ -2782,7 +2793,7 @@ describe("createAgentChatService", () => {
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toMatchObject({
         description: "Sign in to Claude Code for this chat runtime",
-        source: "local",
+        source: "sdk",
       });
     });
 
@@ -2798,6 +2809,28 @@ describe("createAgentChatService", () => {
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toBeUndefined();
+    });
+
+    it("includes Codex prompt files before the app server reports dynamic commands", async () => {
+      const promptsDir = path.join(tmpRoot, ".codex", "prompts");
+      fs.mkdirSync(promptsDir, { recursive: true });
+      fs.writeFileSync(path.join(promptsDir, "audit.md"), "Audit recent work.");
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/audit",
+          description: "Audit recent work.",
+          source: "sdk",
+        }),
+      ]));
     });
   });
 
@@ -2849,6 +2882,126 @@ describe("createAgentChatService", () => {
     await vi.waitFor(() => {
       expect(send).toHaveBeenLastCalledWith("/automate chat slash commands");
     });
+  });
+
+  it("expands project Claude command files before sending to the SDK", async () => {
+    const commandsDir = path.join(tmpRoot, ".claude", "commands");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "audit.md"), [
+      "---",
+      "description: Audit recent work",
+      "---",
+      "",
+      "Audit the work you just did.",
+      "",
+      "Focus: $ARGUMENTS",
+      "",
+    ].join("\n"));
+
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-project-slash-command",
+          slash_commands: [],
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        return;
+      }
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-project-slash-command",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "/audit command menus",
+    });
+
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenLastCalledWith("Audit the work you just did.\n\nFocus: command menus");
+    });
+  });
+
+  it("expands Codex prompt files before sending to the app server", async () => {
+    const promptsDir = path.join(tmpRoot, ".codex", "prompts");
+    fs.mkdirSync(promptsDir, { recursive: true });
+    fs.writeFileSync(path.join(promptsDir, "audit.md"), [
+      "Audit the Codex chat work.",
+      "",
+      "Focus: $ARGUMENTS",
+      "",
+    ].join("\n"));
+
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "/audit command menus",
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+    const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start") as any;
+    expect(turnStartRequest.params.input).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "text",
+        text: "Audit the Codex chat work.\n\nFocus: command menus",
+      }),
+    ]));
+  });
+
+  it("keeps built-in Codex slash commands routed to the app server", async () => {
+    const promptsDir = path.join(tmpRoot, ".codex", "prompts");
+    fs.mkdirSync(promptsDir, { recursive: true });
+    fs.writeFileSync(path.join(promptsDir, "review.md"), "This project prompt must not replace built-in review.");
+
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "/review",
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "review/start")).toBe(true);
+    });
+    expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
   });
 
   // --------------------------------------------------------------------------

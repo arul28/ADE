@@ -249,7 +249,7 @@ export function plannerProviderToModelConfig(provider: PlannerProvider): ModelCo
   if (provider === "codex") {
     return {
       provider: "codex",
-      modelId: getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex",
+      modelId: getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex",
       thinkingLevel: "medium",
     };
   }

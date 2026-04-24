@@ -2019,7 +2019,6 @@ function renderEvent(
       >
         <CollapsibleCard
           defaultOpen={false}
-          forceOpen={isLive ? true : undefined}
           summary={
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-sans text-[11px] text-fg/52">
               <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center">
@@ -2937,6 +2936,13 @@ const ROW_GAP = 12;
 const OVERSCAN = 10;
 /** Minimum number of rows before virtualization kicks in. */
 const VIRTUALIZATION_THRESHOLD = 60;
+/**
+ * Distance (px) from the bottom of the scroll container within which we
+ * consider the user "stuck to bottom" and keep auto-following new content.
+ * Sized so a single wheel nudge during streaming reliably breaks free of
+ * auto-follow rather than being snapped back.
+ */
+const STICK_THRESHOLD_PX = 160;
 
 export function calculateVirtualWindow({
   rowCount,
@@ -3059,6 +3065,7 @@ export function AgentChatMessageList({
   sessionEnded?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const collapseCacheRef = useRef<{ events: AgentChatEventEnvelope[]; rows: TranscriptRenderEnvelope[] }>({
@@ -3068,6 +3075,14 @@ export function AgentChatMessageList({
   const [stickToBottom, setStickToBottom] = useState(true);
   const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
   const stickToBottomRef = useRef(true);
+  // Track the single pending rAF handle for scroll-to-bottom writes so we
+  // coalesce every source (ResizeObserver, stick-flip effect, jump button)
+  // into at most one scrollTop assignment per frame.
+  const scrollRafRef = useRef<number | null>(null);
+  // Each programmatic scroll write increments this counter; the matching
+  // scroll event then decrements it and skips stick-state updates. Keeps
+  // user gestures as the only thing that toggles auto-follow off.
+  const programmaticScrollCountRef = useRef(0);
   const onApprovalRef = useRef(onApproval);
   const resolvedInputStates = useMemo(() => {
     const resolved = new Map<string, PendingInputResolution>();
@@ -3192,36 +3207,66 @@ export function AgentChatMessageList({
     stickToBottomRef.current = stickToBottom;
   }, [stickToBottom]);
 
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !stickToBottom) return;
-    const raf = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [groupedRows, measurementTick, stickToBottom, showStreamingIndicator]);
-
-  // Observe scrollHeight changes via MutationObserver so streaming content
-  // (which grows existing rows without changing groupedRows identity) still
-  // triggers autoscroll.  Scoped to the live-turn window: the observer is
-  // attached only while activeTurnId is non-null and tears down when the
-  // turn ends, avoiding unnecessary scroll-forcing after streaming finishes.
-  useEffect(() => {
-    if (!activeTurnId) return;
-    const el = scrollRef.current;
-    if (!el || typeof MutationObserver === "undefined") return;
-    let prevScrollHeight = el.scrollHeight;
-    const mo = new MutationObserver(() => {
-      if (el.scrollHeight !== prevScrollHeight) {
-        prevScrollHeight = el.scrollHeight;
-        if (stickToBottomRef.current) {
-          el.scrollTop = el.scrollHeight;
-        }
+  // Unified stick-to-bottom autoscroll:
+  // - scrollToBottomSoon coalesces every scroll-to-bottom request into a
+  //   single rAF per frame so rapid streaming updates can't produce
+  //   back-to-back synchronous scrollTop writes (the classic source of
+  //   chat flicker during token streaming).
+  // - A ResizeObserver on the content wrapper picks up every size change —
+  //   new rows appearing *and* streaming tokens extending existing rows —
+  //   without the old MutationObserver's characterData firehose.
+  const scrollToBottomSoon = useCallback(() => {
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const el = scrollRef.current;
+      if (!el || !stickToBottomRef.current) return;
+      const target = el.scrollHeight - el.clientHeight;
+      if (target <= 0) return;
+      const before = el.scrollTop;
+      if (Math.abs(before - target) < 1) return;
+      el.scrollTop = target;
+      // Only register a pending programmatic scroll event if the assignment
+      // actually moved the element. Otherwise (clamped to the same value,
+      // hidden element, etc.) no scroll event will fire and the counter
+      // would stay positive forever, misclassifying the next real user
+      // scroll as programmatic.
+      if (el.scrollTop !== before) {
+        programmaticScrollCountRef.current += 1;
       }
     });
-    mo.observe(el, { childList: true, subtree: true, characterData: true });
-    return () => mo.disconnect();
-  }, [activeTurnId]);
+  }, []);
+
+  useEffect(() => () => {
+    if (scrollRafRef.current !== null) {
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = null;
+    }
+  }, []);
+
+  // When the user re-enters the sticky zone (or on first mount), snap to bottom.
+  useEffect(() => {
+    if (stickToBottom) scrollToBottomSoon();
+  }, [stickToBottom, scrollToBottomSoon]);
+
+  // Observe the content wrapper so streaming growth triggers a single
+  // rAF-coalesced scroll. The observer stays attached at all times; the
+  // rAF callback self-guards on stickToBottomRef so it's a cheap no-op
+  // when the user has scrolled up.
+  useEffect(() => {
+    const wrapper = contentWrapperRef.current;
+    if (!wrapper || typeof ResizeObserver === "undefined") {
+      // Fallback: when ResizeObserver is unavailable (test env) we still
+      // want sticky behavior as content mutates.
+      if (stickToBottomRef.current) scrollToBottomSoon();
+      return;
+    }
+    const ro = new ResizeObserver(() => {
+      if (stickToBottomRef.current) scrollToBottomSoon();
+    });
+    ro.observe(wrapper);
+    return () => ro.disconnect();
+  }, [scrollToBottomSoon]);
 
   // Observe the scroll container's size so we know the viewport height.
   useEffect(() => {
@@ -3306,8 +3351,19 @@ export function AgentChatMessageList({
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
+    // Absorb scroll events produced by our own programmatic scroll-to-bottom
+    // writes so we never flip sticky state based on them — only the user's
+    // own gesture (wheel / trackpad / keyboard) should break auto-follow.
+    if (programmaticScrollCountRef.current > 0) {
+      programmaticScrollCountRef.current -= 1;
+      if (shouldVirtualize) setScrollTop(target.scrollTop);
+      return;
+    }
     const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
-    const nextStick = distanceFromBottom < 72;
+    // Wider threshold (~1 row of assistant text) so a small wheel nudge
+    // while the turn is streaming actually breaks free instead of snapping
+    // straight back to the bottom.
+    const nextStick = distanceFromBottom < STICK_THRESHOLD_PX;
     if (nextStick !== stickToBottomRef.current) {
       stickToBottomRef.current = nextStick;
       setStickToBottom(nextStick);
@@ -3316,6 +3372,12 @@ export function AgentChatMessageList({
       setScrollTop(target.scrollTop);
     }
   }, [shouldVirtualize]);
+
+  const jumpToLatest = useCallback(() => {
+    stickToBottomRef.current = true;
+    setStickToBottom(true);
+    scrollToBottomSoon();
+  }, [scrollToBottomSoon]);
 
   const latestWorkLogIndex = useMemo(() => {
     for (let i = groupedRows.length - 1; i >= 0; i -= 1) {
@@ -3437,39 +3499,58 @@ export function AgentChatMessageList({
     <TurnSummaryCard summary={turnSummary} onReviewChanges={turnSummary.files.length > 0 ? handleReviewChanges : undefined} />
   ) : null;
 
+  // Jump-to-latest pill is only meaningful during an active turn — if nothing
+  // is streaming there's no "latest" to catch up to.
+  const showJumpToLatest = !stickToBottom && !sessionEnded;
+
   return (
-    <div
-      ref={scrollRef}
-      className={cn("ade-chat-timeline-pane h-full min-h-0 overflow-auto px-5 pt-5 pb-8", className)}
-      onScroll={handleScroll}
-    >
-      {rows.length === 0 && !streamingIndicator ? (
-        null
-      ) : shouldVirtualize ? (
-        /* ── Virtualized path: only render rows in / near the viewport ── */
-        <div className="space-y-3">
-          <div style={{ height: totalHeight, position: "relative" }}>
-            {/* Top spacer pushes rendered rows to their correct scroll position */}
-            <div style={{ height: offsetTop }} aria-hidden />
+    <div className={cn("relative h-full min-h-0", className)}>
+      <div
+        ref={scrollRef}
+        className="ade-chat-timeline-pane h-full min-h-0 overflow-auto px-5 pt-5 pb-8"
+        onScroll={handleScroll}
+      >
+        <div ref={contentWrapperRef}>
+          {rows.length === 0 && !streamingIndicator ? (
+            null
+          ) : shouldVirtualize ? (
+            /* ── Virtualized path: only render rows in / near the viewport ── */
             <div className="space-y-3">
-              {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) =>
-                renderRow(envelope, startIndex + i, true)
-              )}
+              <div style={{ height: totalHeight, position: "relative" }}>
+                {/* Top spacer pushes rendered rows to their correct scroll position */}
+                <div style={{ height: offsetTop }} aria-hidden />
+                <div className="space-y-3">
+                  {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) =>
+                    renderRow(envelope, startIndex + i, true)
+                  )}
+                </div>
+                {/* Bottom spacer fills remaining scroll area */}
+                <div style={{ height: bottomSpacerHeight }} aria-hidden />
+              </div>
+              {streamingIndicator}
+              {turnSummaryCard}
             </div>
-            {/* Bottom spacer fills remaining scroll area */}
-            <div style={{ height: bottomSpacerHeight }} aria-hidden />
-          </div>
-          {streamingIndicator}
-          {turnSummaryCard}
+          ) : (
+            /* ── Non-virtualized path: render all rows (small conversation) ── */
+            <div className="space-y-3">
+              {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
+              {streamingIndicator}
+              {turnSummaryCard}
+            </div>
+          )}
         </div>
-      ) : (
-        /* ── Non-virtualized path: render all rows (small conversation) ── */
-        <div className="space-y-3">
-          {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
-          {streamingIndicator}
-          {turnSummaryCard}
-        </div>
-      )}
+      </div>
+      {showJumpToLatest ? (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-violet-400/30 bg-violet-500/20 px-3 py-1.5 font-sans text-[11px] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
+          aria-label="Jump to latest message"
+        >
+          <CaretDown size={11} weight="bold" />
+          <span>Jump to latest</span>
+        </button>
+      ) : null}
     </div>
   );
 }

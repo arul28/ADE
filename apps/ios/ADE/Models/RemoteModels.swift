@@ -525,6 +525,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var idleSinceAt: String?
   var startedAt: String
   var endedAt: String?
+  var archivedAt: String?
   var lastActivityAt: String
   var lastOutputPreview: String?
   var summary: String?
@@ -1042,6 +1043,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var completion: ChatCompletionReport?
   var status: String
   var idleSinceAt: String?
+  var archivedAt: String?
   var threadId: String?
   var requestedCwd: String?
   var createdAt: String
@@ -1077,6 +1079,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case completion
     case status
     case idleSinceAt
+    case archivedAt
     case threadId
     case requestedCwd
     case createdAt
@@ -1114,6 +1117,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     completion = try container.decodeIfPresent(ChatCompletionReport.self, forKey: .completion)
     status = try container.decode(String.self, forKey: .status)
     idleSinceAt = try container.decodeIfPresent(String.self, forKey: .idleSinceAt)
+    archivedAt = try container.decodeIfPresent(String.self, forKey: .archivedAt)
     threadId = try container.decodeIfPresent(String.self, forKey: .threadId)
     requestedCwd = try container.decodeIfPresent(String.self, forKey: .requestedCwd)
     createdAt = try container.decode(String.self, forKey: .createdAt)

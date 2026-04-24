@@ -319,6 +319,8 @@ private struct WorkNewChatComposerBar: View {
         .font(.body)
         .foregroundStyle(ADEColor.textPrimary)
         .tint(ADEColor.accent)
+        .autocorrectionDisabled(false)
+        .textInputAutocapitalization(.sentences)
         .focused($composerFocused)
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         .onChange(of: pendingInsert) { _, newValue in
