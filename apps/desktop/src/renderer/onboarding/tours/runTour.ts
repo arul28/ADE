@@ -4,7 +4,7 @@ import { docs } from "../docsLinks";
 export const runTour: Tour = {
   id: "run",
   title: "Run tab walkthrough",
-  route: "/run",
+  route: "/project",
   steps: [
     {
       target: '[data-tour="run.header"]',

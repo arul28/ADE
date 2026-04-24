@@ -37,16 +37,7 @@ export function HelpMenu() {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const pendingTourAbortRef = useRef<AbortController | null>(null);
 
-  const tours = useMemo(() => {
-    const byId = new Map<string, ReturnType<typeof listTours>[number]>();
-    for (const tour of listTours()) {
-      const existing = byId.get(tour.id);
-      if (!existing || (existing.steps.length === 0 && tour.steps.length > 0)) {
-        byId.set(tour.id, tour);
-      }
-    }
-    return [...byId.values()];
-  }, []);
+  const tours = useMemo(() => listTours("full"), []);
   const fullTutorial = tours.find((tour) => tour.id === FULL_TUTORIAL_ID && tour.steps.length > 0);
   const menuTours = tours.filter((tour) => tour.id !== FULL_TUTORIAL_ID);
 

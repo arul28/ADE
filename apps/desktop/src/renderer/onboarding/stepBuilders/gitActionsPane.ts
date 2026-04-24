@@ -1,8 +1,6 @@
 import type { TourStep } from "../registry";
 import { docs } from "../docsLinks";
 
-const GIT_ACTION_FALLBACK_MS = 30_000;
-
 function commitShortcutModifier(): "Cmd" | "Ctrl" {
   if (typeof navigator !== "undefined" && /mac/i.test(navigator.platform)) {
     return "Cmd";
@@ -40,10 +38,7 @@ export function buildGitActionsPaneWalkthrough(): TourStep[] {
       },
       body: `Commits require staged changes unless Amend is enabled. ${modifierKey}+Enter runs the commit action when the button is enabled.`,
       placement: "left",
-      requires: ["laneExists", "commitExists"],
-      fallbackAfterMs: GIT_ACTION_FALLBACK_MS,
-      fallbackNextLabel: "Continue without committing",
-      fallbackNotice: "No commit is required to keep learning the rest of ADE.",
+      requires: ["laneExists"],
       waitForSelector: '[data-tour="lanes.gitActionsPane"]',
       docUrl: docs.lanesOverview,
     },
@@ -53,10 +48,7 @@ export function buildGitActionsPaneWalkthrough(): TourStep[] {
       title: "Publish or push",
       body: "The remote button changes with the lane state: Publish for a new remote branch, Push for local commits, or Force Push when history was rewritten.",
       placement: "left",
-      requires: ["laneExists", "commitExists"],
-      fallbackAfterMs: GIT_ACTION_FALLBACK_MS,
-      fallbackNextLabel: "Continue without pushing",
-      fallbackNotice: "Push controls stay disabled until the lane has commits and a usable remote state.",
+      requires: ["laneExists"],
       waitForSelector: '[data-tour="lanes.gitActionsPane"]',
       docUrl: docs.lanesOverview,
     },

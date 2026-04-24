@@ -72,6 +72,11 @@ Renderer — onboarding:
   — top-level orchestrator: mounts the `TourHost`, auto-fires per-tab
   tours on route change, renders `DidYouKnow`, and pops the
   `TutorialPromptCard` when the first-session tutorial is available.
+  `DidYouKnow` suppresses itself whenever `activeTourId` is set in the
+  onboarding store, so a live tour never competes with a "did you know"
+  tooltip. `SmartTooltip` applies the same gate — tooltips silently
+  return a null wrapper while a tour is active so the tour's own
+  spotlight is the only floating UI.
 - `apps/desktop/src/renderer/components/onboarding/TutorialPromptCard.tsx`
   — Start / Not now / Don't show again gate for the 13-act tutorial.
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
@@ -79,6 +84,15 @@ Renderer — onboarding:
   links, restart tutorial.
 - `apps/desktop/src/renderer/components/onboarding/tour/TourHost.tsx`,
   `TourOverlay.tsx`, `TourStep.tsx` — rendered overlay and per-step card.
+  `TourHost` intentionally does not gate on the `onboardingEnabled`
+  preference: the preference hides passive onboarding surfaces
+  (`DidYouKnow`, tour auto-start hooks), but a tour the user explicitly
+  starts from the Help menu must still render even when ambient
+  onboarding is off — otherwise the menu would silently change routes
+  without showing any guidance. `TourOverlay` applies a short
+  (350 ms) grace period after a step mounts before
+  `exitOnOutsideInteraction` takes effect, so the click that launched
+  the current step cannot also dismiss it.
 - `apps/desktop/src/renderer/components/onboarding/fx/*` — motion-FX
   primitives (`ActIntro`, `AnimatedField`, `Confetti`, `GhostCursor`,
   `MorphingTree`, `Spotlight`, `StaggeredText`, `TourIllustration`)

@@ -252,8 +252,25 @@ public struct ActionPill<Intent: AppIntent>: View {
             .padding(.horizontal, 14)
             .frame(maxWidth: .infinity)
             .background(background)
+            .overlay(
+                // Soft top highlight — gives every variant a convex, wet look.
+                Capsule(style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.22), .clear],
+                            startPoint: .top,
+                            endPoint: .center
+                        )
+                    )
+                    .allowsHitTesting(false)
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(strokeGradient, lineWidth: 0.75)
+            )
             .foregroundStyle(foreground)
             .clipShape(Capsule(style: .continuous))
+            .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: 3)
         }
         .buttonStyle(ActionPillButtonStyle())
         .accessibilityLabel(Text(label))
@@ -262,11 +279,68 @@ public struct ActionPill<Intent: AppIntent>: View {
     private var background: some ShapeStyle {
         switch variant {
         case .primary(let tint):
-            return AnyShapeStyle(tint)
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [tint, tint.opacity(0.82)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
         case .secondary:
-            return AnyShapeStyle(Color.white.opacity(0.1))
+            return AnyShapeStyle(.ultraThinMaterial)
         case .danger:
-            return AnyShapeStyle(Color(red: 239/255, green: 68/255, blue: 68/255).opacity(0.15))
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [
+                        Color(red: 239/255, green: 68/255, blue: 68/255).opacity(0.78),
+                        Color(red: 239/255, green: 68/255, blue: 68/255).opacity(0.55),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+        }
+    }
+
+    private var strokeGradient: LinearGradient {
+        switch variant {
+        case .primary(let tint):
+            return LinearGradient(
+                colors: [tint.opacity(0.55), tint.opacity(0.15)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        case .secondary:
+            return LinearGradient(
+                colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        case .danger:
+            return LinearGradient(
+                colors: [
+                    Color(red: 239/255, green: 68/255, blue: 68/255).opacity(0.55),
+                    Color(red: 239/255, green: 68/255, blue: 68/255).opacity(0.20),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
+    private var shadowColor: Color {
+        switch variant {
+        case .primary(let tint): return tint.opacity(0.35)
+        case .secondary:         return Color.black.opacity(0.30)
+        case .danger:            return Color(red: 239/255, green: 68/255, blue: 68/255).opacity(0.25)
+        }
+    }
+
+    private var shadowRadius: CGFloat {
+        switch variant {
+        case .primary: return 8
+        case .secondary: return 5
+        case .danger: return 7
         }
     }
 
@@ -470,7 +544,23 @@ public struct GlanceChip: View {
         .padding(.vertical, 5)
         .padding(.horizontal, 10)
         .background(
-            Capsule(style: .continuous).fill(color.opacity(0.12))
+            Capsule(style: .continuous).fill(color.opacity(0.14))
+        )
+        .overlay(
+            // Faint top highlight so the chip reads as glass, not a flat tile.
+            Capsule(style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.12), .clear],
+                        startPoint: .top,
+                        endPoint: .center
+                    )
+                )
+                .allowsHitTesting(false)
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(color.opacity(0.28), lineWidth: 0.5)
         )
     }
 }

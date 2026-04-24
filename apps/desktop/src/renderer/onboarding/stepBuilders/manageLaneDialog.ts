@@ -44,7 +44,10 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
       awaitingActionLabel: "Waiting for Manage Lane dialog",
       advanceWhenSelector: '[data-tour="lanes.manageDialog.laneInfo"]',
       exitOnOutsideInteraction: true,
-      allowedInteractionSelectors: ['[data-tour="lanes.laneTab"]'],
+      allowedInteractionSelectors: [
+        '[data-tour="lanes.laneTab"]',
+        '[data-tour="lanes.manageLane"]',
+      ],
     },
     {
       id: "manageLane.laneInfo",

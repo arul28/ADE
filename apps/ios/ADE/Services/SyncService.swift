@@ -3233,7 +3233,13 @@ final class SyncService: ObservableObject {
   }
 
   func fetchPipelineSettings(prId: String) async throws -> PipelineSettings {
-    try await sendDecodableCommand(action: "prs.pipelineSettings.get", args: ["prId": prId], as: PipelineSettings.self)
+    // Delegate to `getPipelineSettings` so both paths handle the server's
+    // `NSNull` response uniformly instead of crashing with a decode error
+    // when the desktop returns "no settings" after a save.
+    if let settings = try await getPipelineSettings(prId: prId) {
+      return settings
+    }
+    return PipelineSettings(autoMerge: false, mergeMethod: "repo_default", maxRounds: 5, onRebaseNeeded: "pause")
   }
 
   func savePipelineSettings(prId: String, autoMerge: Bool? = nil, mergeMethod: String? = nil, maxRounds: Int? = nil, onRebaseNeeded: String? = nil) async throws {
@@ -3243,6 +3249,125 @@ final class SyncService: ObservableObject {
     if let maxRounds { settings["maxRounds"] = maxRounds }
     if let onRebaseNeeded { settings["onRebaseNeeded"] = onRebaseNeeded }
     _ = try await sendCommand(action: "prs.pipelineSettings.save", args: ["prId": prId, "settings": settings])
+  }
+
+  func savePipelineSettings(prId: String, settings: PipelineSettings) async throws {
+    _ = try await sendCommand(action: "prs.pipelineSettings.save", args: [
+      "prId": prId,
+      "settings": [
+        "autoMerge": settings.autoMerge,
+        "mergeMethod": settings.mergeMethod,
+        "maxRounds": settings.maxRounds,
+        "onRebaseNeeded": settings.onRebaseNeeded,
+      ],
+    ])
+  }
+
+  func getPipelineSettings(prId: String) async throws -> PipelineSettings? {
+    let response = try await sendCommand(action: "prs.pipelineSettings.get", args: ["prId": prId])
+    if response is NSNull { return nil }
+    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
+      throw QueuedRemoteCommandError(action: "prs.pipelineSettings.get")
+    }
+    return try decode(response, as: PipelineSettings.self)
+  }
+
+  func deletePipelineSettings(prId: String) async throws {
+    _ = try await sendCommand(action: "prs.pipelineSettings.delete", args: ["prId": prId])
+  }
+
+  @discardableResult
+  func createQueuePrs(
+    laneIds: [String],
+    targetBranch: String? = nil,
+    titles: [String: String]? = nil,
+    draft: Bool? = nil,
+    autoRebase: Bool? = nil,
+    ciGating: Bool? = nil,
+    queueName: String? = nil,
+    allowDirtyWorktree: Bool? = nil
+  ) async throws -> CreateQueuePrsResult {
+    var args: [String: Any] = ["laneIds": laneIds]
+    if let targetBranch, !targetBranch.isEmpty { args["targetBranch"] = targetBranch }
+    if let titles, !titles.isEmpty { args["titles"] = titles }
+    if let draft { args["draft"] = draft }
+    if let autoRebase { args["autoRebase"] = autoRebase }
+    if let ciGating { args["ciGating"] = ciGating }
+    if let queueName, !queueName.isEmpty { args["queueName"] = queueName }
+    if let allowDirtyWorktree { args["allowDirtyWorktree"] = allowDirtyWorktree }
+    return try await sendDecodableCommand(action: "prs.createQueue", args: args, as: CreateQueuePrsResult.self)
+  }
+
+  func startQueueAutomation(
+    groupId: String,
+    method: String,
+    archiveLane: Bool? = nil,
+    autoResolve: Bool? = nil,
+    ciGating: Bool? = nil,
+    resolverProvider: String? = nil,
+    resolverModel: String? = nil
+  ) async throws {
+    var args: [String: Any] = [
+      "groupId": groupId,
+      "method": method,
+    ]
+    if let archiveLane { args["archiveLane"] = archiveLane }
+    if let autoResolve { args["autoResolve"] = autoResolve }
+    if let ciGating { args["ciGating"] = ciGating }
+    if let resolverProvider, !resolverProvider.isEmpty { args["resolverProvider"] = resolverProvider }
+    if let resolverModel, !resolverModel.isEmpty { args["resolverModel"] = resolverModel }
+    _ = try await sendCommand(action: "prs.startQueueAutomation", args: args)
+  }
+
+  func simulateIntegration(
+    sourceLaneIds: [String],
+    baseBranch: String? = nil,
+    persist: Bool? = nil,
+    mergeIntoLaneId: String? = nil
+  ) async throws -> IntegrationProposal {
+    var args: [String: Any] = ["sourceLaneIds": sourceLaneIds]
+    if let baseBranch, !baseBranch.isEmpty { args["baseBranch"] = baseBranch }
+    if let persist { args["persist"] = persist }
+    if let mergeIntoLaneId, !mergeIntoLaneId.isEmpty { args["mergeIntoLaneId"] = mergeIntoLaneId }
+    return try await sendDecodableCommand(action: "prs.simulateIntegration", args: args, as: IntegrationProposal.self)
+  }
+
+  @discardableResult
+  func commitIntegration(
+    proposalId: String,
+    integrationLaneName: String? = nil,
+    title: String? = nil,
+    body: String? = nil,
+    draft: Bool? = nil,
+    pauseOnConflict: Bool? = nil,
+    allowDirtyWorktree: Bool? = nil,
+    preferredIntegrationLaneId: String? = nil
+  ) async throws -> CreateIntegrationPrResult {
+    var args: [String: Any] = ["proposalId": proposalId]
+    if let integrationLaneName, !integrationLaneName.isEmpty { args["integrationLaneName"] = integrationLaneName }
+    if let title, !title.isEmpty { args["title"] = title }
+    if let body { args["body"] = body }
+    if let draft { args["draft"] = draft }
+    if let pauseOnConflict { args["pauseOnConflict"] = pauseOnConflict }
+    if let allowDirtyWorktree { args["allowDirtyWorktree"] = allowDirtyWorktree }
+    if let preferredIntegrationLaneId, !preferredIntegrationLaneId.isEmpty {
+      args["preferredIntegrationLaneId"] = preferredIntegrationLaneId
+    }
+    return try await sendDecodableCommand(action: "prs.commitIntegration", args: args, as: CreateIntegrationPrResult.self)
+  }
+
+  func listIntegrationWorkflows(view: String? = nil) async throws -> [IntegrationProposal] {
+    var args: [String: Any] = [:]
+    if let view, !view.isEmpty { args["view"] = view }
+    return try await sendDecodableCommand(action: "prs.listIntegrationWorkflows", args: args, as: [IntegrationProposal].self)
+  }
+
+  func landStackEnhanced(rootLaneId: String, method: String, mode: String) async throws -> [LandResult] {
+    try await sendDecodableCommand(action: "prs.landStackEnhanced", args: [
+      "rootLaneId": rootLaneId,
+      "method": method,
+      "mode": mode,
+    ], as: [LandResult].self)
   }
 
   private func saveProfile(_ profile: HostConnectionProfile?) {

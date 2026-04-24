@@ -13,6 +13,8 @@ import type {
   CommitIntegrationArgs,
   CleanupIntegrationWorkflowArgs,
   CleanupIntegrationWorkflowResult,
+  CleanupPrBranchArgs,
+  CleanupPrBranchResult,
   DeleteIntegrationProposalArgs,
   DeleteIntegrationProposalResult,
   DismissIntegrationCleanupArgs,
@@ -2615,6 +2617,10 @@ export function createPrService({
     const createdAt = nowIso();
     const headBranch = asString(pr?.head?.ref) || branchNameFromRef(lane.branchRef);
     const baseBranch = asString(pr?.base?.ref) || branchNameFromRef(lane.baseRef);
+    const laneBranch = branchNameFromRef(lane.branchRef);
+    if (normalizeBranchName(laneBranch) !== normalizeBranchName(headBranch)) {
+      throw new Error(`Cannot link PR #${locator.number} to lane "${lane.name}" because the PR head branch is "${headBranch}" but the lane branch is "${laneBranch}".`);
+    }
 
     // Backfill creation_strategy for imported PRs that don't have one stored yet.
     // The wizard defaults to "pr_target" when users create via the UI; mirror
@@ -2651,6 +2657,78 @@ export function createPrService({
     const prId = upsertRow(summary);
     markHotRefresh([prId]);
     return await refreshOne(prId);
+  };
+
+  const cleanupBranch = async (args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> => {
+    const row = getRow(args.prId);
+    if (!row) throw new Error(`PR not found: ${args.prId}`);
+    if (row.state !== "merged" && row.state !== "closed") {
+      throw new Error("Branch cleanup is only available after a PR is merged or closed.");
+    }
+
+    const branchName = branchNameFromRef(row.head_branch);
+    if (!branchName || branchName === "HEAD") {
+      throw new Error("PR head branch is missing.");
+    }
+
+    const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+    const primaryBranches = new Set(
+      lanes
+        .filter((lane) => lane.laneType === "primary")
+        .map((lane) => normalizeBranchName(branchNameFromRef(lane.branchRef)))
+        .filter(Boolean),
+    );
+    if (primaryBranches.has(normalizeBranchName(branchName))) {
+      throw new Error(`Refusing to clean up protected branch "${branchName}".`);
+    }
+
+    const result: CleanupPrBranchResult = {
+      prId: args.prId,
+      branchName,
+      localDeleted: false,
+      remoteDeleted: false,
+      localError: null,
+      remoteError: null,
+    };
+
+    if (args.deleteLocalBranch !== false) {
+      const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
+        cwd: projectRoot,
+        timeoutMs: 8_000,
+      });
+      if (refCheck.exitCode === 0) {
+        // Only force-delete when the PR is merged. For closed (non-merged) PRs
+        // the branch may still hold unintegrated work, so use the safe `-d`
+        // variant which refuses to drop unmerged commits.
+        const deleteFlag = row.state === "merged" ? "-D" : "-d";
+        const deleted = await runGit(["branch", deleteFlag, branchName], { cwd: projectRoot, timeoutMs: 30_000 });
+        if (deleted.exitCode === 0) result.localDeleted = true;
+        else result.localError = deleted.stderr || deleted.stdout || `Failed to delete local branch ${branchName}`;
+      }
+    }
+
+    if (args.deleteRemoteBranch) {
+      const remote = args.remoteName?.trim() || "origin";
+      const remoteCheck = await runGit(["remote", "get-url", remote], { cwd: projectRoot, timeoutMs: 8_000 });
+      if (remoteCheck.exitCode !== 0) {
+        result.remoteError = `Remote '${remote}' is not configured for this repository`;
+      } else {
+        const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, branchName], {
+          cwd: projectRoot,
+          timeoutMs: 12_000,
+        });
+        if (remoteRefCheck.exitCode === 0 && remoteRefCheck.stdout.trim().length > 0) {
+          const deleted = await runGit(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
+          if (deleted.exitCode === 0) result.remoteDeleted = true;
+          else result.remoteError = deleted.stderr || deleted.stdout || `Failed to delete remote branch ${branchName}`;
+        }
+      }
+    }
+
+    if (result.localError || result.remoteError) {
+      logger.warn("prs.branch_cleanup_partial_failure", result);
+    }
+    return result;
   };
 
   const land = async (args: LandPrArgs): Promise<LandResult> => {
@@ -5034,6 +5112,10 @@ export function createPrService({
       return await linkToLane(args);
     },
 
+    async cleanupBranch(args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> {
+      return await cleanupBranch(args);
+    },
+
     getForLane(laneId: string): PrSummary | null {
       const row = getRowForLane(laneId);
       return row ? rowToSummary(row) : null;
@@ -5304,6 +5386,12 @@ export function createPrService({
       const files = await getFilesSnapshot(prId);
       upsertSnapshotRow({ prId, files });
       return files;
+    },
+
+    async getCommits(prId: string): Promise<PrCommit[]> {
+      const commits = await getCommitsSnapshot(prId);
+      upsertSnapshotRow({ prId, commits });
+      return commits;
     },
 
     async getActionRuns(prId: string): Promise<PrActionRun[]> {

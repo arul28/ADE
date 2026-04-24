@@ -31,18 +31,31 @@ struct WorkspaceWidgetBackground: View {
             if renderingMode == .accented {
                 Color.clear
             } else {
-                LinearGradient(
-                    colors: [
-                        WorkspaceWidgetPalette.gradientStart,
-                        WorkspaceWidgetPalette.gradientEnd,
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
+                // Black ink base — #070609, per the finalized widget spec.
+                Color(red: 0x07 / 255.0, green: 0x06 / 255.0, blue: 0x09 / 255.0)
+                // Ambient violet bloom in the top-left — the signature PRs glow.
+                RadialGradient(
+                    colors: [WorkspaceWidgetPalette.dotViolet.opacity(0.38), .clear],
+                    center: UnitPoint(x: 0.1, y: -0.05),
+                    startRadius: 0,
+                    endRadius: 320
                 )
+                .allowsHitTesting(false)
+                // Secondary pink-ish bloom in the bottom-right for depth.
+                RadialGradient(
+                    colors: [
+                        Color(red: 0xF4 / 255, green: 0x72 / 255, blue: 0xB6 / 255).opacity(0.18),
+                        .clear,
+                    ],
+                    center: UnitPoint(x: 1.05, y: 1.05),
+                    startRadius: 0,
+                    endRadius: 260
+                )
+                .allowsHitTesting(false)
                 Canvas { context, size in
                     let spacing: CGFloat = 12
                     let dotSize: CGFloat = 1
-                    let dotColor = WorkspaceWidgetPalette.dotViolet.opacity(0.06)
+                    let dotColor = Color.white.opacity(0.04)
                     var y: CGFloat = 0
                     while y < size.height {
                         var x: CGFloat = 0
@@ -55,10 +68,31 @@ struct WorkspaceWidgetBackground: View {
                     }
                 }
                 .allowsHitTesting(false)
+                // Top white highlight band — LinearGradient 0.06 → clear, top to ~25%.
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.06), .clear],
+                            startPoint: .top,
+                            endPoint: UnitPoint(x: 0.5, y: 0.25)
+                        )
+                    )
+                    .allowsHitTesting(false)
             }
+            // 1pt inner highlight ring.
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .inset(by: 0.25)
-                .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.14), Color.white.opacity(0.02)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+            // Outer 1pt stroke — crisp rim separating the tile from its neighbor.
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
         }
     }
 }

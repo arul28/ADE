@@ -1,8 +1,13 @@
 import React from "react";
-import { GitBranch, Info, Play } from "@phosphor-icons/react";
+import { GitBranch, Info, Play, WarningCircle } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { sessionStatusDot, sanitizeTerminalInlineText } from "../../lib/terminalAttention";
-import { primarySessionLabel, preferredSessionLabel, shortToolTypeLabel } from "../../lib/sessions";
+import {
+  getStaleRunningCliSessionAgeHours,
+  primarySessionLabel,
+  preferredSessionLabel,
+  shortToolTypeLabel,
+} from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
@@ -36,6 +41,7 @@ export const SessionCard = React.memo(function SessionCard({
   session,
   lane,
   isSelected,
+  isMultiSelected,
   onSelect,
   onResume,
   onInfoClick,
@@ -45,7 +51,8 @@ export const SessionCard = React.memo(function SessionCard({
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
   isSelected: boolean;
-  onSelect: (id: string) => void;
+  isMultiSelected?: boolean;
+  onSelect: (id: string, event: React.MouseEvent) => void;
   onResume: () => void;
   onInfoClick: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -57,6 +64,11 @@ export const SessionCard = React.memo(function SessionCard({
   const primaryText = primarySessionLabel(session);
   const previewLine = getPreviewLine(session, primaryText);
   const laneMarker = lane?.icon ? iconGlyph(lane.icon) : <GitBranch size={11} weight="regular" />;
+  const staleAgeHours = getStaleRunningCliSessionAgeHours(session);
+  const isHighlighted = isSelected || isMultiSelected;
+  const highlightedBorder = isHighlighted
+    ? "1px solid rgba(255,255,255,0.08)"
+    : "1px solid transparent";
   const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
     provider: session.toolType === "claude-chat" ? "claude" : null,
     status: session.runtimeState === "idle" ? "idle" : "active",
@@ -70,16 +82,17 @@ export const SessionCard = React.memo(function SessionCard({
         type="button"
         className={cn(
           "relative w-full overflow-hidden text-left transition-all duration-100 rounded-lg border-l-2",
-          isSelected
+          isHighlighted
             ? "border-l-accent bg-white/[0.06] hover:bg-white/[0.07]"
             : "border-l-transparent bg-transparent hover:bg-white/[0.03]",
+          isMultiSelected && "ring-1 ring-accent/35",
         )}
         style={{
-          borderTop: isSelected ? "1px solid rgba(255,255,255,0.08)" : "1px solid transparent",
-          borderRight: isSelected ? "1px solid rgba(255,255,255,0.08)" : "1px solid transparent",
-          borderBottom: isSelected ? "1px solid rgba(255,255,255,0.08)" : "1px solid transparent",
+          borderTop: highlightedBorder,
+          borderRight: highlightedBorder,
+          borderBottom: highlightedBorder,
         }}
-        onClick={() => onSelect(session.id)}
+        onClick={(event) => onSelect(session.id, event)}
       >
         <div className="flex items-start gap-2.5 px-2.5 py-2">
           {/* Logo */}
@@ -97,10 +110,19 @@ export const SessionCard = React.memo(function SessionCard({
               />
               <span
                 className="min-w-0 flex-1 truncate text-[11px] text-fg/90"
-                style={{ fontWeight: isSelected ? 600 : 400 }}
+                style={{ fontWeight: isHighlighted ? 600 : 400 }}
               >
                 {primaryText}
               </span>
+              {staleAgeHours != null ? (
+                <span
+                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-300"
+                  aria-label="Old running session"
+                  title={`Old running session. This CLI or shell session has been running for about ${staleAgeHours} hours. Close it if it is no longer being used.`}
+                >
+                  <WarningCircle size={11} weight="fill" />
+                </span>
+              ) : null}
               <span className="shrink-0 text-[10px] text-muted-fg/45 tabular-nums">
                 {relativeTimeCompact(session.endedAt ?? session.startedAt)}
               </span>

@@ -22,6 +22,7 @@ import {
 } from "./prToastPresentation";
 import { TabBackground } from "../ui/TabBackground";
 import { useAppStore } from "../../state/appStore";
+import { useOnboardingStore } from "../../state/onboardingStore";
 import { Button } from "../ui/Button";
 import type {
   AiSettingsStatus,
@@ -38,7 +39,7 @@ import {
   getEffectiveBinding,
 } from "../../lib/keybindings";
 import { listSessionsCached } from "../../lib/sessionListCache";
-import { isRunOwnedSession } from "../../lib/sessions";
+import { getStaleRunningCliSessionAgeHours, isRunOwnedSession } from "../../lib/sessions";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
 import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
@@ -75,6 +76,11 @@ type LinearWorkflowToast = {
     LinearWorkflowEventPayload,
     { type: "linear-workflow-notification" }
   >;
+};
+
+type StaleCliNotice = {
+  count: number;
+  oldestStartedAt: string;
 };
 
 const EMPTY_TERMINAL_ATTENTION = {
@@ -172,6 +178,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     LinearWorkflowToast[]
   >([]);
   const linearToastTimersRef = useRef<Map<string, number>>(new Map());
+  const [staleCliNotice, setStaleCliNotice] =
+    useState<StaleCliNotice | null>(null);
+  const dismissedStaleCliNoticeKeyRef = useRef<string | null>(null);
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
   const [aiMockProvider, setAiMockProvider] = useState<{
     createdAt: string;
@@ -424,6 +433,80 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [setTerminalAttention, shouldTrackTerminalAttention]);
+
+  useEffect(() => {
+    if (!project?.rootPath || showWelcome) {
+      setStaleCliNotice(null);
+      dismissedStaleCliNoticeKeyRef.current = null;
+      return;
+    }
+
+    const projectRoot = project.rootPath;
+    let cancelled = false;
+    let refreshTimer: number | null = null;
+
+    // Prevent cross-project stale notice carryover while the first refresh is
+    // pending for the new project.
+    setStaleCliNotice(null);
+
+    const refreshStaleCliNotice = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const sessions = await listSessionsCached(
+          { status: "running", limit: 500 },
+          { force: true },
+        );
+        if (cancelled) return;
+        const nowMs = Date.now();
+        const stale = sessions
+          .filter((session) => {
+            if (isRunOwnedSession(session)) return false;
+            return getStaleRunningCliSessionAgeHours(session, nowMs) != null;
+          })
+          .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
+
+        if (!stale.length) {
+          setStaleCliNotice(null);
+          return;
+        }
+
+        const oldestStartedAt = stale[0]?.startedAt ?? new Date(nowMs).toISOString();
+        const noticeKey = `${projectRoot}:${stale.length}:${oldestStartedAt}`;
+        if (dismissedStaleCliNoticeKeyRef.current === noticeKey) {
+          setStaleCliNotice(null);
+          return;
+        }
+        setStaleCliNotice({ count: stale.length, oldestStartedAt });
+      } catch {
+        // best effort
+      }
+    };
+
+    const scheduleRefresh = (delayMs = 0) => {
+      if (refreshTimer != null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshStaleCliNotice();
+      }, delayMs);
+    };
+
+    scheduleRefresh(4_000);
+    const interval = window.setInterval(() => scheduleRefresh(), 10 * 60_000);
+    const onFocus = () => scheduleRefresh();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") scheduleRefresh();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [project?.rootPath, showWelcome]);
 
   useEffect(() => {
     let cancelled = false;
@@ -734,10 +817,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     location.pathname === "/project" &&
     onboardingStatusLoading;
   const hideSidebar = isOnboardingRoute || shouldHoldProjectRouteForOnboarding;
+  const tourActive = useOnboardingStore((s) => s.activeTourId != null);
+  const staleCliNoticeAgeHours = staleCliNotice
+    ? getStaleRunningCliSessionAgeHours({
+        status: "running",
+        startedAt: staleCliNotice.oldestStartedAt,
+        toolType: "shell",
+      }) ?? 12
+    : 0;
+  const staleCliNoticeDismissKey =
+    staleCliNotice && currentProjectRoot
+      ? `${currentProjectRoot}:${staleCliNotice.count}:${staleCliNotice.oldestStartedAt}`
+      : null;
   const showContextBanner =
     !hideSidebar &&
     Boolean(project?.rootPath) &&
     !showWelcome &&
+    !tourActive &&
     generationState !== "pending" &&
     generationState !== "running" &&
     actionableContextDocs.length > 0 &&
@@ -909,6 +1005,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {!hideSidebar &&
       project?.rootPath &&
       !showWelcome &&
+      !tourActive &&
       (contextStatus?.generation.state === "pending" ||
         contextStatus?.generation.state === "running") ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-sky-500/6 px-3 py-1.5 text-[11px] font-mono text-sky-800 animate-pulse">
@@ -928,6 +1025,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {!hideSidebar &&
       project?.rootPath &&
       !showWelcome &&
+      !tourActive &&
       contextStatus?.generation.state === "failed" ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-red-500/6 px-3 py-1.5 text-[11px] font-mono text-red-800">
           Context doc generation failed
@@ -991,8 +1089,61 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <RightEdgeFloatingPane />
 
-          {prToasts.length > 0 ? (
+          {staleCliNotice || prToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
+              {staleCliNotice ? (
+                <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/12">
+                      <WarningCircle size={16} weight="fill" className="text-amber-300" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-300">
+                            Running sessions
+                          </span>
+                          <div className="mt-2 text-[13px] font-semibold leading-tight text-fg">
+                            {staleCliNotice.count} old CLI or shell process{staleCliNotice.count === 1 ? "" : "es"} still running
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+                          onClick={() => {
+                            if (staleCliNoticeDismissKey) {
+                              dismissedStaleCliNoticeKeyRef.current = staleCliNoticeDismissKey;
+                            }
+                            setStaleCliNotice(null);
+                          }}
+                          aria-label="Dismiss old running sessions notice"
+                          title="Dismiss"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <div className="mt-2 text-[12px] leading-relaxed text-muted-fg">
+                        The oldest has been open for about {staleCliNoticeAgeHours} hours. Review running sessions and close anything no longer in use.
+                      </div>
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          type="button"
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-amber-300 px-3 text-[11px] font-medium text-[#0F0D14] transition-colors hover:brightness-110"
+                          onClick={() => {
+                            navigate("/work?status=running");
+                            if (staleCliNoticeDismissKey) {
+                              dismissedStaleCliNoticeKeyRef.current = staleCliNoticeDismissKey;
+                            }
+                            setStaleCliNotice(null);
+                          }}
+                        >
+                          View processes
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               {prToasts.map((toast) => {
                 const laneName =
                   lanes.find((lane) => lane.id === toast.event.laneId)?.name ??

@@ -31,11 +31,36 @@ struct PRsTabView: View {
   @State private var laneLinkRequest: PrGitHubLaneLinkRequest?
   @SceneStorage("ade.prs.rootSurface") private var rootSurfaceRawValue = PrRootSurface.github.rawValue
   @SceneStorage("ade.prs.workflowFilter") private var workflowFilterRawValue = PrWorkflowKindFilter.all.rawValue
-  @SceneStorage("ade.prs.stateFilter") private var stateFilterRawValue = PrListStateFilter.all.rawValue
   @SceneStorage("ade.prs.githubStatusFilter") private var githubStatusFilterRawValue = PrGitHubStatusFilter.open.rawValue
   @SceneStorage("ade.prs.githubScopeFilter") private var githubScopeFilterRawValue = PrGitHubScopeFilter.all.rawValue
   @SceneStorage("ade.prs.githubSort") private var githubSortRawValue = PrGitHubSortOption.updated.rawValue
   @State private var searchText = ""
+  @State private var filtersExpanded = false
+
+  private var hasActiveFilters: Bool {
+    selectedGitHubScopeFilter.wrappedValue != .all
+      || selectedGitHubStatusFilter.wrappedValue != .open
+      || selectedGitHubSort.wrappedValue != .updated
+  }
+
+  /// Compact one-liner shown when filters are collapsed but non-default,
+  /// e.g. "ADE-linked · Merged · sort newest".
+  private var activeFilterSummary: String {
+    var parts: [String] = []
+    let scope = selectedGitHubScopeFilter.wrappedValue
+    if scope != .all {
+      parts.append(scope == .ade ? "ADE-linked" : "External")
+    }
+    let status = selectedGitHubStatusFilter.wrappedValue
+    if status != .open {
+      parts.append(status.rawValue.capitalized)
+    }
+    let sort = selectedGitHubSort.wrappedValue
+    if sort != .updated {
+      parts.append("Sort \(sort.title.lowercased())")
+    }
+    return parts.isEmpty ? "Filters" : parts.joined(separator: " · ")
+  }
 
   private var prsStatus: SyncDomainStatus {
     syncService.status(for: .prs)
@@ -47,13 +72,6 @@ struct PRsTabView: View {
 
   private var isLoadingSkeleton: Bool {
     prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData
-  }
-
-  private var selectedStateFilter: Binding<PrListStateFilter> {
-    Binding(
-      get: { PrListStateFilter(rawValue: stateFilterRawValue) ?? .all },
-      set: { stateFilterRawValue = $0.rawValue }
-    )
   }
 
   private var selectedRootSurface: Binding<PrRootSurface> {
@@ -250,7 +268,7 @@ struct PRsTabView: View {
   var body: some View {
     NavigationStack(path: $path) {
       List {
-        compactStatusHeader
+        prsSearchPill
 
         if let notice = laneContextNotice {
           notice.prListRow()
@@ -318,12 +336,12 @@ struct PRsTabView: View {
             .prListRow()
           }
 
-          Picker("PR surface", selection: selectedRootSurface) {
-            ForEach(PrRootSurface.allCases) { surface in
-              Text(surface.title).tag(surface)
-            }
-          }
-          .pickerStyle(.segmented)
+          PrsSurfaceToggle(
+            selection: selectedRootSurface,
+            repoPrCount: allGitHubPrs.count,
+            workflowCount: workflowCards.count
+          )
+          .padding(.top, 2)
           .prListRow()
 
           switch selectedRootSurface.wrappedValue {
@@ -335,31 +353,15 @@ struct PRsTabView: View {
         }
       }
       .listStyle(.plain)
+      .listRowSpacing(10)
       .scrollContentBackground(.hidden)
-      .adeScreenBackground()
+      .background { PrsLiquidBackdrop() }
       .adeNavigationGlass()
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
-      .searchable(text: $searchText, prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflow cards")
       .toolbar(.hidden, for: .navigationBar)
       .safeAreaInset(edge: .top, spacing: 0) {
-        ADERootTopBar(title: "PRs") {
-          Button {
-            Task { await reload(refreshRemote: true) }
-          } label: {
-            Image(systemName: "arrow.clockwise")
-          }
-          .accessibilityLabel("Refresh pull requests")
-          .disabled(prsStatus.phase == .hydrating)
-
-          Button {
-            createPresented = true
-          } label: {
-            Image(systemName: "plus")
-          }
-          .accessibilityLabel("Create pull request")
-          .disabled(!canCreatePr)
-        }
+        prsInlineTopBar
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task(id: prsProjectionReloadKey) {
@@ -397,26 +399,7 @@ struct PRsTabView: View {
           .environmentObject(syncService)
       }
       .sheet(isPresented: $createPresented) {
-        CreatePrWizardView(
-          lanes: lanes,
-          createCapabilities: mobileSnapshot?.createCapabilities
-        ) { laneId, title, body, draft, baseBranch, labels, reviewers, strategy in
-          runPrRootAction("Creating pull request") {
-            try await syncService.createPullRequest(
-              laneId: laneId,
-              title: title,
-              body: body,
-              draft: draft,
-              baseBranch: baseBranch,
-              labels: labels,
-              reviewers: reviewers,
-              strategy: strategy
-            )
-          } onSuccess: {
-            createPresented = false
-          }
-        }
-        .environmentObject(syncService)
+        createPrWizardSheet
       }
       .sheet(item: $stackPresentation) { presentation in
         PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
@@ -462,49 +445,276 @@ struct PRsTabView: View {
     }
   }
 
+  /// Count shown in the hero-header chip — matches whichever surface the user
+  /// is currently viewing, so we don't flash "GitHub 42" in the title while
+  /// the workflows surface is showing 3 cards.
+  private var heroCount: Int {
+    switch selectedRootSurface.wrappedValue {
+    case .github:
+      return githubSnapshot == nil ? filteredPrs.count : filteredGitHubPrs.count
+    case .workflows:
+      return groupedWorkflowCards.count
+    }
+  }
+
+  /// Inline top bar — eyebrow + 32pt PRs title on the left, refresh +
+  /// gradient-plus on the right, all in one row. Pulls the hero up so we
+  /// stop wasting an entire scroll-row on whitespace.
+  @ViewBuilder
+  private var prsInlineTopBar: some View {
+    HStack(alignment: .center, spacing: 12) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text("PRs")
+          .font(.system(size: 28, weight: .bold, design: .rounded))
+          .tracking(-0.6)
+          .foregroundStyle(PrsGlass.textPrimary)
+          .shadow(color: Color.black.opacity(0.45), radius: 6, x: 0, y: 2)
+          .lineLimit(1)
+          .fixedSize(horizontal: true, vertical: false)
+        if heroCount > 0 {
+          Text("\(heroCount)")
+            .font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundStyle(PrsGlass.textMuted)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+              Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+              Capsule(style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.6)
+            )
+            .fixedSize()
+        }
+      }
+      .layoutPriority(1)
+      Spacer(minLength: 0)
+      HStack(spacing: 8) {
+        // Filter toggle — collapsed by default, expands the filter chip
+        // panel inline in the list. Tints purple when any non-default
+        // filter is active so users know they're looking at a subset.
+        Button {
+          withAnimation(.easeInOut(duration: 0.2)) {
+            filtersExpanded.toggle()
+          }
+        } label: {
+          let active = hasActiveFilters
+          PrsGlassDisc(
+            tint: active ? PrsGlass.accentTop : PrsGlass.textSecondary,
+            isAlive: active
+          ) {
+            Image(systemName: filtersExpanded ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+              .font(.system(size: 14, weight: .bold))
+              .foregroundStyle(active ? PrsGlass.accentTop : PrsGlass.textSecondary)
+          }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(filtersExpanded ? "Hide filters" : "Show filters")
+
+        Button {
+          Task { await reload(refreshRemote: true) }
+        } label: {
+          PrsGlassDisc(tint: PrsGlass.textSecondary, isAlive: false) {
+            Image(systemName: "arrow.clockwise")
+              .font(.system(size: 13, weight: .bold))
+              .foregroundStyle(PrsGlass.textSecondary)
+          }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Refresh pull requests")
+        .disabled(prsStatus.phase == .hydrating)
+
+        Button {
+          createPresented = true
+        } label: {
+          ZStack {
+            Circle()
+              .fill(
+                LinearGradient(
+                  colors: [PrsGlass.accentTop, PrsGlass.accentBottom],
+                  startPoint: .topLeading,
+                  endPoint: .bottomTrailing
+                )
+              )
+              .frame(width: 34, height: 34)
+              .overlay(
+                Circle()
+                  .strokeBorder(Color.white.opacity(0.45), lineWidth: 0.75)
+              )
+              .shadow(color: PrsGlass.glowPurple.opacity(0.55), radius: 10, x: 0, y: 3)
+            Image(systemName: "plus")
+              .font(.system(size: 15, weight: .bold))
+              .foregroundStyle(.white)
+          }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Create pull request")
+        .disabled(!canCreatePr)
+        .opacity(canCreatePr ? 1 : 0.4)
+
+        // Global triad (laptop/grid/bell) — kept in PRs tab for parity with
+        // every other tab. The user doesn't have to context-switch tabs to
+        // reach connection status, project home, or attention.
+        ADERootToolbarControls()
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.top, 4)
+    .padding(.bottom, 6)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+  }
+
+  @ViewBuilder
+  private var prsHeroHeader: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 8) {
+        PrsEyebrowLabel(text: "Open Pull Requests")
+        PrsLivePulse(isLive: isLive, syncedLabel: syncSubtitle)
+        Spacer(minLength: 0)
+        if linkedPrCount > 0 {
+          HStack(spacing: 4) {
+            Image(systemName: "link")
+              .font(.system(size: 9, weight: .bold))
+            Text("\(linkedPrCount)")
+              .font(.system(size: 10, weight: .bold, design: .monospaced))
+          }
+          .foregroundStyle(PrsGlass.textMuted)
+        }
+      }
+      HStack(alignment: .firstTextBaseline, spacing: 10) {
+        Text("PRs")
+          .font(.system(size: 32, weight: .bold, design: .rounded))
+          .tracking(-0.8)
+          .foregroundStyle(PrsGlass.textPrimary)
+        if heroCount > 0 {
+          Text("\(heroCount)")
+            .font(.system(size: 13, weight: .bold, design: .monospaced))
+            .foregroundStyle(PrsGlass.textMuted)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(
+              Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+              Capsule(style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.6)
+            )
+        }
+        Spacer(minLength: 0)
+      }
+    }
+    .padding(.top, 0)
+    .padding(.bottom, 0)
+    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+    .listRowBackground(Color.clear)
+    .listRowSeparator(.hidden)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+  }
+
+  @ViewBuilder
+  private var prsSearchPill: some View {
+    PrsGlassSearchPill(
+      text: $searchText,
+      placeholder: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflow cards"
+    )
+    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+    .listRowBackground(Color.clear)
+    .listRowSeparator(.hidden)
+  }
+
   @ViewBuilder
   private var compactStatusHeader: some View {
     HStack(alignment: .firstTextBaseline, spacing: 10) {
-      Text(syncEyebrow)
-        .font(.caption.weight(.semibold))
-        .textCase(.uppercase)
-        .foregroundStyle(ADEColor.tintPRs)
-        .lineLimit(1)
-        .minimumScaleFactor(0.85)
-        .accessibilityLabel("Pull request sync status: \(syncEyebrow)")
+      PrsLivePulse(isLive: isLive, syncedLabel: syncSubtitle)
 
       Spacer(minLength: 0)
 
       if linkedPrCount > 0 {
-        Text("\(linkedPrCount) linked")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
+        HStack(spacing: 4) {
+          Image(systemName: "link")
+            .font(.system(size: 9, weight: .bold))
+          Text("\(linkedPrCount) linked")
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        }
+        .foregroundStyle(PrsGlass.textMuted)
+        .lineLimit(1)
       }
     }
     .padding(.horizontal, 4)
-    .padding(.vertical, 2)
+    .padding(.top, 4)
+    .padding(.bottom, 6)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Pull request sync status: \(syncEyebrow)")
     .listRowBackground(Color.clear)
     .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
     .listRowSeparator(.hidden)
   }
 
+  private var syncSubtitle: String? {
+    if isLoadingSkeleton { return "hydrating" }
+    if !isLive { return "cached" }
+    if let syncedAt = githubSnapshot?.syncedAt, !syncedAt.isEmpty {
+      return "synced \(prRelativeTime(syncedAt))"
+    }
+    return nil
+  }
+
+  private var workflowKindCounts: [String: Int] {
+    var counts: [String: Int] = [:]
+    for card in workflowCards {
+      counts[card.kind, default: 0] += 1
+    }
+    counts["all"] = workflowCards.count
+    return counts
+  }
+
   @ViewBuilder
   private var githubSurfaceRows: some View {
-    PrGitHubFiltersCard(
-      repo: githubSnapshot?.repo,
-      viewerLogin: githubSnapshot?.viewerLogin,
-      syncedAt: githubSnapshot?.syncedAt,
-      statusFilter: selectedGitHubStatusFilter,
-      scopeFilter: selectedGitHubScopeFilter,
-      sortOption: selectedGitHubSort,
-      counts: githubFilterCounts,
-      visibleCount: githubSnapshot == nil ? filteredPrs.count : filteredGitHubPrs.count,
-      totalCount: githubSnapshot == nil ? prs.count : allGitHubPrs.count,
-      isLive: isLive,
-      onRefresh: { Task { await reload(refreshRemote: true) } }
-    )
-    .prListRow()
+    if filtersExpanded {
+      PrGitHubFiltersCard(
+        statusFilter: selectedGitHubStatusFilter,
+        scopeFilter: selectedGitHubScopeFilter,
+        sortOption: selectedGitHubSort,
+        counts: githubFilterCounts
+      )
+      .transition(.opacity.combined(with: .move(edge: .top)))
+      .prListRow()
+    } else if hasActiveFilters {
+      // Compact summary chip when filters are collapsed but active.
+      Button {
+        withAnimation(.easeInOut(duration: 0.2)) { filtersExpanded = true }
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "line.3.horizontal.decrease.circle.fill")
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(PrsGlass.accentTop)
+          Text(activeFilterSummary)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(PrsGlass.textSecondary)
+            .lineLimit(1)
+          Spacer(minLength: 0)
+          Image(systemName: "chevron.down")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(PrsGlass.textMuted)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+          Capsule(style: .continuous)
+            .fill(Color.white.opacity(0.05))
+        )
+        .overlay(
+          Capsule(style: .continuous)
+            .stroke(PrsGlass.accentTop.opacity(0.30), lineWidth: 0.75)
+        )
+      }
+      .buttonStyle(.plain)
+      .prListRow()
+    }
 
     if prsStatus.phase == .ready && filteredPrs.isEmpty && filteredGitHubPrs.isEmpty {
       ADEEmptyStateView(
@@ -558,11 +768,29 @@ struct PRsTabView: View {
         }
       }
       if !externalItems.isEmpty {
-        Section("External PRs") {
+        let unmappedCount = externalItems.filter {
+          $0.adeKind == nil && $0.linkedPrId == nil && $0.linkedLaneId == nil
+        }.count
+        Section {
           ForEach(externalItems) { item in
             githubRowNavigation(for: item)
               .prListRow()
           }
+        } header: {
+          HStack(spacing: 6) {
+            PrsEyebrowLabel(
+              text: unmappedCount > 0
+                ? "External · \(unmappedCount) unmapped"
+                : "External",
+              tint: PrsGlass.externalTop
+            )
+            Spacer(minLength: 0)
+          }
+          .padding(.top, 8)
+          .padding(.bottom, 4)
+          .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+          .listRowBackground(Color.clear)
+          .textCase(nil)
         }
       }
     }
@@ -601,7 +829,12 @@ struct PRsTabView: View {
       Button {
         githubDetailRequest = PrGitHubLaneLinkRequest(item: item)
       } label: {
-        PrRowCard(item: item)
+        PrRowCard(
+          item: item,
+          onLink: canLinkGitHubPullRequests
+            ? { laneLinkRequest = PrGitHubLaneLinkRequest(item: item) }
+            : nil
+        )
       }
       .buttonStyle(.plain)
       .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -609,6 +842,12 @@ struct PRsTabView: View {
           githubDetailRequest = PrGitHubLaneLinkRequest(item: item)
         }
         .tint(ADEColor.warning)
+        if canLinkGitHubPullRequests {
+          Button("Link") {
+            laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
+          }
+          .tint(ADEColor.tintPRs)
+        }
         Button("Open in GitHub") { openGitHub(urlString: item.githubUrl) }
           .tint(ADEColor.accent)
       }
@@ -617,12 +856,10 @@ struct PRsTabView: View {
 
   @ViewBuilder
   private var workflowsSurfaceRows: some View {
-    Picker("Workflow", selection: selectedWorkflowFilter) {
-      ForEach(PrWorkflowKindFilter.allCases) { filter in
-        Text(filter.title).tag(filter)
-      }
-    }
-    .pickerStyle(.segmented)
+    PrsWorkflowFilterPills(
+      selection: selectedWorkflowFilter,
+      counts: workflowKindCounts
+    )
     .prListRow()
 
     if groupedWorkflowCards.isEmpty {
@@ -993,7 +1230,6 @@ struct PRsTabView: View {
   private func handleRequestedPrNavigation() async {
     guard let request = syncService.requestedPrNavigation else { return }
     rootSurfaceRawValue = PrRootSurface.github.rawValue
-    stateFilterRawValue = PrListStateFilter.all.rawValue
     selectedPrTransitionId = request.prId
     laneContextLaneId = request.laneId
     path = NavigationPath()
@@ -1002,6 +1238,103 @@ struct PRsTabView: View {
   }
 
   @MainActor
+  @ViewBuilder
+  private var createPrWizardSheet: some View {
+    CreatePrWizardView(
+      lanes: lanes,
+      createCapabilities: mobileSnapshot?.createCapabilities,
+      onCreateSingle: handleCreateSinglePr,
+      onCreateQueue: handleCreateQueuePrs,
+      onCreateIntegration: handleCreateIntegrationPr
+    )
+    .environmentObject(syncService)
+  }
+
+  private func handleCreateSinglePr(
+    laneId: String,
+    title: String,
+    body: String,
+    draft: Bool,
+    baseBranch: String,
+    labels: [String],
+    reviewers: [String],
+    strategy: String?
+  ) {
+    runPrRootAction(
+      "Creating pull request",
+      operation: {
+        try await syncService.createPullRequest(
+          laneId: laneId,
+          title: title,
+          body: body,
+          draft: draft,
+          baseBranch: baseBranch,
+          labels: labels,
+          reviewers: reviewers,
+          strategy: strategy
+        )
+      },
+      onSuccess: {
+        createPresented = false
+      }
+    )
+  }
+
+  private func handleCreateQueuePrs(_ request: CreateQueuePrsRequest) {
+    runPrRootAction(
+      "Creating queue PRs",
+      operation: {
+        _ = try await syncService.createQueuePrs(
+          laneIds: request.laneIds,
+          targetBranch: request.baseBranch,
+          titles: request.titles,
+          draft: request.draft,
+          autoRebase: request.autoRebase,
+          ciGating: request.ciGating,
+          queueName: request.queueName,
+          allowDirtyWorktree: nil
+        )
+      },
+      onSuccess: {
+        createPresented = false
+      }
+    )
+  }
+
+  private func handleCreateIntegrationPr(_ request: CreateIntegrationRequest) {
+    runPrRootAction(
+      "Creating integration PR",
+      operation: {
+        let proposal = try await syncService.simulateIntegration(
+          sourceLaneIds: request.sourceLaneIds,
+          baseBranch: request.baseBranch,
+          persist: true,
+          mergeIntoLaneId: nil
+        )
+        // Conflict path: the desktop surfaces a dedicated conflict
+        // resolution UI; on iOS v1 we bail out with a friendly error
+        // so the host sheet can re-surface. v2 TODO: render the
+        // pairwise conflict matrix inline.
+        if proposal.status == "conflict" || proposal.overallOutcome == "conflict" {
+          throw PrWizardError.integrationConflict
+        }
+        _ = try await syncService.commitIntegration(
+          proposalId: proposal.proposalId,
+          integrationLaneName: request.integrationLaneName,
+          title: request.title,
+          body: request.body,
+          draft: request.draft,
+          pauseOnConflict: true,
+          allowDirtyWorktree: nil,
+          preferredIntegrationLaneId: nil
+        )
+      },
+      onSuccess: {
+        createPresented = false
+      }
+    )
+  }
+
   private func runPrRootAction(
     _ label: String,
     operation: @escaping () async throws -> Void,
@@ -1201,71 +1534,115 @@ private struct PrGitHubReadDetailSheet: View {
     item.isDraft ? "draft" : item.state
   }
 
-  private var branchLine: String {
-    let head = item.headBranch?.isEmpty == false ? item.headBranch! : "unknown branch"
-    let base = item.baseBranch?.isEmpty == false ? item.baseBranch! : "unknown base"
-    return "\(head) → \(base)"
+  private var headBranch: String {
+    item.headBranch?.isEmpty == false ? item.headBranch! : "unknown branch"
+  }
+
+  private var baseBranch: String {
+    item.baseBranch?.isEmpty == false ? item.baseBranch! : "unknown base"
   }
 
   var body: some View {
-    NavigationStack {
-      List {
-        Section {
-          VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-              Text("#\(item.githubPrNumber)")
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .foregroundStyle(prStateTint(stateLabel))
-              PrTagChip(label: stateLabel, color: prStateTint(stateLabel))
-              PrTagChip(label: "unmapped", color: ADEColor.warning, filled: true)
+    PrLiquidSheetShell(
+      title: "PR details",
+      trailingLabel: "Done",
+      onTrailing: { dismiss() }
+    ) {
+      VStack(alignment: .leading, spacing: 14) {
+        // Hero: number + state + EXTERNAL chip + title.
+        VStack(alignment: .leading, spacing: 12) {
+          HStack(spacing: 8) {
+            Text("#\(item.githubPrNumber)")
+              .font(.system(size: 22, weight: .bold, design: .monospaced))
+              .foregroundStyle(PrGlassPalette.success)
+              .shadow(color: PrGlassPalette.success.opacity(0.45), radius: 8)
+
+            PrTagChip(label: stateLabel, color: prStateTint(stateLabel))
+
+            if item.scope == "external" {
+              PrExternalInfoChip()
             }
 
-            Text(item.title)
-              .font(.headline)
-              .foregroundStyle(ADEColor.textPrimary)
-              .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 5) {
-              PrMonoText(text: "\(item.repoOwner)/\(item.repoName)", color: ADEColor.textSecondary, size: 11)
-              PrMonoText(text: branchLine, color: ADEColor.textSecondary, size: 11)
-              if let author = item.author, !author.isEmpty {
-                PrMonoText(text: "author @\(author)", color: ADEColor.textMuted, size: 11)
-              }
-              PrMonoText(text: "updated \(prRelativeTime(item.updatedAt))", color: ADEColor.textMuted, size: 11)
-            }
+            Spacer(minLength: 0)
           }
-          .padding(.vertical, 4)
-        }
 
-        Section {
-          ADENoticeCard(
-            title: "Unmapped PR",
-            message: "This GitHub PR is not linked to an ADE lane. Review the branch and author before choosing Link PR.",
-            icon: "link.badge.plus",
-            tint: ADEColor.warning,
-            actionTitle: nil,
-            action: nil
+          Text(item.title)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(PrsGlass.textPrimary)
+            .tracking(-0.2)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+        VStack(spacing: 8) {
+          PrGlassMonoRow(
+            eyebrow: "Repo",
+            value: "\(item.repoOwner)/\(item.repoName)",
+            icon: "chevron.left.slash.chevron.right"
+          )
+          PrGlassMonoRow(
+            eyebrow: "Branches",
+            value: "\(headBranch) → \(baseBranch)",
+            icon: "arrow.triangle.branch"
+          )
+          PrGlassMonoRow(
+            eyebrow: "Author",
+            value: (item.author?.isEmpty == false) ? "@\(item.author!)" : "unknown",
+            icon: "person.fill"
+          )
+          PrGlassMonoRow(
+            eyebrow: "Updated",
+            value: prRelativeTime(item.updatedAt),
+            icon: "clock"
           )
         }
 
-        Section {
-          Button("Link PR") {
-            onLink()
+        // Unmapped / linked-lane CTA card.
+        HStack(alignment: .top, spacing: 12) {
+          ZStack {
+            Circle()
+              .fill(PrGlassPalette.purple.opacity(0.22))
+            Image(systemName: "link.badge.plus")
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(PrGlassPalette.purpleBright)
           }
+          .frame(width: 34, height: 34)
+
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Not linked to an ADE lane")
+              .font(.system(size: 13, weight: .semibold))
+              .foregroundStyle(PrsGlass.textPrimary)
+            Text("Review the branch and author, then link this PR into a lane to track it inside ADE.")
+              .font(.system(size: 11))
+              .foregroundStyle(PrsGlass.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+
+          Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .prGlassCard(cornerRadius: 14, tint: PrGlassPalette.purple.opacity(0.55), shadow: false)
+
+        VStack(spacing: 10) {
+          Button {
+            onLink()
+          } label: {
+            Label("Link to lane", systemImage: "link")
+          }
+          .buttonStyle(PrGlassPrimaryButtonStyle())
           .disabled(!canLink)
 
-          Button("Open in GitHub") {
+          Button {
             onOpenGitHub()
+          } label: {
+            Label("Open on GitHub", systemImage: "arrow.up.right.square")
           }
+          .buttonStyle(PrGlassOutlineButtonStyle())
         }
+        .padding(.top, 4)
       }
-      .navigationTitle("PR details")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { dismiss() }
-        }
-      }
+      .padding(16)
     }
   }
 }
@@ -1286,78 +1663,117 @@ private struct PrLaneLinkSheet: View {
   }
 
   var body: some View {
-    NavigationStack {
-      List {
-        Section {
-          VStack(alignment: .leading, spacing: 8) {
-            Text(item.title)
-              .font(.headline)
-              .foregroundStyle(ADEColor.textPrimary)
-            Text("#\(item.githubPrNumber) · \(item.repoOwner)/\(item.repoName)")
-              .font(.system(.caption, design: .monospaced))
-              .foregroundStyle(ADEColor.textSecondary)
-            if let head = item.headBranch, let base = item.baseBranch {
-              Text("\(head) → \(base)")
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
-            }
-            HStack(spacing: 8) {
-              if let author = item.author, !author.isEmpty {
-                Text("@\(author)")
-              }
-              Text("updated \(prRelativeTime(item.updatedAt))")
-            }
-            .font(.system(.caption2, design: .monospaced))
-            .foregroundStyle(ADEColor.textMuted)
+    PrLiquidSheetShell(
+      title: "Link to lane",
+      trailingLabel: "Cancel",
+      onTrailing: { dismiss() }
+    ) {
+      VStack(alignment: .leading, spacing: 14) {
+        // PR summary card.
+        VStack(alignment: .leading, spacing: 6) {
+          Text(item.title)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(PrsGlass.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+
+          Text("#\(item.githubPrNumber) · \(item.repoOwner)/\(item.repoName)")
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(PrsGlass.textSecondary)
+
+          if let head = item.headBranch, let base = item.baseBranch {
+            Text("\(head) → \(base)")
+              .font(.system(size: 11, design: .monospaced))
+              .foregroundStyle(PrsGlass.textSecondary)
           }
-          .padding(.vertical, 4)
+
+          HStack(spacing: 6) {
+            if let author = item.author, !author.isEmpty {
+              Text("@\(author)")
+            }
+            Text("· updated \(prRelativeTime(item.updatedAt))")
+          }
+          .font(.system(size: 11, design: .monospaced))
+          .foregroundStyle(PrsGlass.textMuted)
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .prGlassCard(cornerRadius: 14, shadow: false)
 
         if !canLink {
-          Section {
-            Label("Reconnect to a host that supports PR lane linking.", systemImage: "wifi.exclamationmark")
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.warning)
+          HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "wifi.exclamationmark")
+              .font(.system(size: 13, weight: .semibold))
+              .foregroundStyle(PrGlassPalette.warning)
+            Text("Reconnect to a host that supports PR lane linking.")
+              .font(.system(size: 11))
+              .foregroundStyle(PrGlassPalette.warning)
+              .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
           }
+          .padding(.horizontal, 12)
+          .padding(.vertical, 10)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .prGlassCard(cornerRadius: 12, tint: PrGlassPalette.warning.opacity(0.45), shadow: false)
         }
 
-        Section("Lane") {
+        VStack(alignment: .leading, spacing: 8) {
+          PrsEyebrowLabel(text: "Lane")
+            .padding(.horizontal, 2)
+
+          Text(laneSelectionMessage)
+            .font(.system(size: 11))
+            .foregroundStyle(laneSelectionTint)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 2)
+            .padding(.bottom, 2)
+
           if availableLanes.isEmpty {
-            Text("No eligible lanes are available to link.")
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.textSecondary)
+            HStack(spacing: 10) {
+              Image(systemName: "tray")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(PrsGlass.textMuted)
+              Text("No eligible lanes are available to link.")
+                .font(.system(size: 12))
+                .foregroundStyle(PrsGlass.textSecondary)
+              Spacer(minLength: 0)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .prGlassCard(cornerRadius: 12, shadow: false)
           } else {
-            Text(laneSelectionMessage)
-              .font(.footnote)
-              .foregroundStyle(laneSelectionTint)
-              .fixedSize(horizontal: false, vertical: true)
-            Picker("Lane", selection: $selectedLaneId) {
-              Text("Choose lane").tag("")
+            VStack(spacing: 6) {
               ForEach(availableLanes) { lane in
-                Text("\(lane.name) · \(lane.branchRef)").tag(lane.id)
+                PrGlassLaneRow(
+                  name: lane.name,
+                  branch: lane.branchRef,
+                  isSelected: selectedLaneId == lane.id
+                ) {
+                  selectedLaneId = lane.id
+                }
               }
             }
           }
         }
 
-        Section {
-          Button("Link to lane") {
+        VStack(spacing: 10) {
+          Button {
             onLink(selectedLaneId)
+          } label: {
+            Label("Link to lane", systemImage: "link")
           }
+          .buttonStyle(PrGlassPrimaryButtonStyle())
           .disabled(!canLink || selectedLaneId.isEmpty)
 
-          Button("Open in GitHub") {
+          Button {
             onOpenGitHub()
+          } label: {
+            Label("Open on GitHub", systemImage: "arrow.up.right.square")
           }
+          .buttonStyle(PrGlassOutlineButtonStyle())
         }
+        .padding(.top, 4)
       }
-      .navigationTitle("Link PR")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { dismiss() }
-        }
-      }
+      .padding(16)
     }
     .onAppear {
       if selectedLaneId.isEmpty {
@@ -1381,6 +1797,253 @@ private struct PrLaneLinkSheet: View {
   }
 
   private var laneSelectionTint: Color {
-    selectedLaneId.isEmpty ? ADEColor.warning : ADEColor.textSecondary
+    selectedLaneId.isEmpty ? PrGlassPalette.warning : PrsGlass.textSecondary
+  }
+}
+
+// MARK: - File-private liquid-glass primitives (sheets)
+
+/// Standard liquid-glass sheet shell: deep-ink backdrop, 36×5 grab handle,
+/// inline title bar with a single trailing label (Done/Cancel).
+private struct PrLiquidSheetShell<Content: View>: View {
+  let title: String
+  let trailingLabel: String
+  let onTrailing: () -> Void
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    ZStack {
+      prLiquidGlassBackdrop().ignoresSafeArea()
+
+      VStack(spacing: 0) {
+        Capsule(style: .continuous)
+          .fill(Color.white.opacity(0.25))
+          .frame(width: 36, height: 5)
+          .padding(.top, 8)
+          .padding(.bottom, 8)
+
+        HStack {
+          Text(title)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(PrsGlass.textPrimary)
+          Spacer(minLength: 0)
+          Button(action: onTrailing) {
+            Text(trailingLabel)
+              .font(.system(size: 14, weight: .semibold))
+              .foregroundStyle(PrGlassPalette.purpleBright)
+          }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+          Rectangle()
+            .fill(Color.white.opacity(0.06))
+            .frame(height: 0.5)
+        }
+
+        ScrollView {
+          content()
+        }
+      }
+    }
+    .presentationDetents([.large])
+    .presentationDragIndicator(.hidden)
+  }
+}
+
+/// Small "EXTERNAL" info chip used on the GitHub PR detail sheet.
+private struct PrExternalInfoChip: View {
+  var body: some View {
+    HStack(spacing: 4) {
+      Image(systemName: "arrow.up.right.square.fill")
+        .font(.system(size: 9, weight: .bold))
+      Text("EXTERNAL")
+        .font(.system(size: 9, weight: .bold))
+        .tracking(1.0)
+    }
+    .foregroundStyle(PrGlassPalette.blue)
+    .padding(.horizontal, 8)
+    .padding(.vertical, 4)
+    .background(
+      Capsule(style: .continuous)
+        .fill(PrGlassPalette.blue.opacity(0.18))
+    )
+    .overlay(
+      Capsule(style: .continuous)
+        .strokeBorder(PrGlassPalette.blue.opacity(0.35), lineWidth: 0.75)
+    )
+  }
+}
+
+/// Glass row: eyebrow label + monospaced value, with a small glyph disc.
+private struct PrGlassMonoRow: View {
+  let eyebrow: String
+  let value: String
+  let icon: String
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 12) {
+      ZStack {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .fill(Color.white.opacity(0.06))
+          .frame(width: 30, height: 30)
+        Image(systemName: icon)
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(PrsGlass.textSecondary)
+      }
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text(eyebrow.uppercased())
+          .font(.system(size: 9, weight: .bold))
+          .tracking(1.0)
+          .foregroundStyle(PrsGlass.textMuted)
+        Text(value)
+          .font(.system(size: 12, design: .monospaced))
+          .foregroundStyle(PrsGlass.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .prGlassCard(cornerRadius: 12, shadow: false)
+  }
+}
+
+/// Lane row for the Lane-Link sheet: lane-icon disc + name + mono branch +
+/// selection checkmark.
+private struct PrGlassLaneRow: View {
+  let name: String
+  let branch: String
+  let isSelected: Bool
+  let onTap: () -> Void
+
+  var body: some View {
+    Button(action: onTap) {
+      HStack(alignment: .center, spacing: 12) {
+        ZStack {
+          if isSelected {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+              .fill(PrGlassPalette.accentGradient)
+          } else {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+              .fill(Color.white.opacity(0.06))
+          }
+          Image(systemName: "arrow.triangle.branch")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(isSelected ? Color.white : PrsGlass.textSecondary)
+        }
+        .frame(width: 32, height: 32)
+
+        VStack(alignment: .leading, spacing: 2) {
+          Text(name)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(PrsGlass.textPrimary)
+            .lineLimit(1)
+          Text(branch)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(PrsGlass.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+
+        Spacer(minLength: 0)
+
+        if isSelected {
+          Image(systemName: "checkmark.circle.fill")
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(PrGlassPalette.purpleBright)
+        } else {
+          Circle()
+            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+            .frame(width: 17, height: 17)
+        }
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .prGlassCard(
+        cornerRadius: 12,
+        tint: isSelected ? PrGlassPalette.purple.opacity(0.55) : nil,
+        strokeOpacity: isSelected ? 0.22 : 0.10,
+        shadow: false
+      )
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+/// Gradient primary CTA (purple, with glow + inner highlight).
+private struct PrGlassPrimaryButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.system(size: 14, weight: .semibold))
+      .foregroundStyle(Color.white)
+      .frame(maxWidth: .infinity)
+      .frame(height: 44)
+      .background(
+        ZStack {
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(PrGlassPalette.accentGradient)
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(
+              LinearGradient(
+                colors: [Color.white.opacity(0.45), Color.white.opacity(0.05)],
+                startPoint: .top,
+                endPoint: .bottom
+              ),
+              lineWidth: 1
+            )
+        }
+      )
+      .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.45)
+      .shadow(
+        color: PrGlassPalette.purpleDeep.opacity(isEnabled ? 0.45 : 0.0),
+        radius: 16,
+        x: 0,
+        y: 6
+      )
+      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+  }
+}
+
+/// Glass-outline secondary CTA.
+private struct PrGlassOutlineButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.system(size: 14, weight: .semibold))
+      .foregroundStyle(PrsGlass.textPrimary)
+      .frame(maxWidth: .infinity)
+      .frame(height: 44)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(.ultraThinMaterial)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+      )
+      .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.45)
+      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+  }
+}
+
+// MARK: - Wizard-surfaced errors
+
+fileprivate enum PrWizardError: LocalizedError {
+  case integrationConflict
+
+  var errorDescription: String? {
+    switch self {
+    case .integrationConflict:
+      return "Integration has conflicts — simulate in full first"
+    }
   }
 }

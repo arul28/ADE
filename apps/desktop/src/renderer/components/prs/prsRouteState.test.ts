@@ -1,7 +1,22 @@
-import { describe, expect, it } from "vitest";
-import { buildPrsRouteSearch, parsePrsRouteState, resolvePrsActiveTab } from "./prsRouteState";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildPrsRouteSearch, parsePrsRouteState, readStoredPrsRoute, resolvePrsActiveTab, writeStoredPrsRoute } from "./prsRouteState";
 
 describe("prsRouteState", () => {
+  beforeEach(() => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
+        clear: () => storage.clear(),
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("treats a hash PR route as authoritative over stale outer search params", () => {
     expect(
       parsePrsRouteState({
@@ -17,6 +32,7 @@ describe("prsRouteState", () => {
       eventId: null,
       threadId: null,
       commitSha: null,
+      detailTab: null,
     });
   });
 
@@ -35,13 +51,14 @@ describe("prsRouteState", () => {
       eventId: null,
       threadId: null,
       commitSha: null,
+      detailTab: null,
     });
   });
 
-  it("parses deep-link event, thread, and commit params", () => {
+  it("parses deep-link event, thread, commit, and detail tab params", () => {
     expect(
       parsePrsRouteState({
-        search: "?tab=normal&prId=pr-1&eventId=evt-99&threadId=thr-12&commitSha=abc123",
+        search: "?tab=normal&prId=pr-1&eventId=evt-99&threadId=thr-12&commitSha=abc123&detailTab=convergence",
       }),
     ).toEqual({
       tab: "normal",
@@ -52,6 +69,7 @@ describe("prsRouteState", () => {
       eventId: "evt-99",
       threadId: "thr-12",
       commitSha: "abc123",
+      detailTab: "convergence",
     });
   });
 
@@ -65,8 +83,9 @@ describe("prsRouteState", () => {
         eventId: "evt-5",
         threadId: "thr-3",
         commitSha: "abc",
+        detailTab: "checks",
       }),
-    ).toBe("?tab=normal&prId=pr-1&eventId=evt-5&threadId=thr-3&commitSha=abc");
+    ).toBe("?tab=normal&prId=pr-1&eventId=evt-5&threadId=thr-3&commitSha=abc&detailTab=checks");
   });
 
   it("builds normal and workflow route searches with the expected ids", () => {
@@ -96,6 +115,19 @@ describe("prsRouteState", () => {
         selectedRebaseItemId: "lane-456",
       }),
     ).toBe("?tab=workflows&workflow=rebase&laneId=lane-456");
+  });
+
+  it("stores the last PRs route per project and falls back to the legacy global key", () => {
+    writeStoredPrsRoute("/prs?tab=normal&prId=project-a", "/tmp/project-a");
+    writeStoredPrsRoute("/prs?tab=normal&prId=project-b", "/tmp/project-b");
+    writeStoredPrsRoute("/files", "/tmp/project-b");
+
+    expect(readStoredPrsRoute("/tmp/project-a")).toBe("/prs?tab=normal&prId=project-a");
+    expect(readStoredPrsRoute("/tmp/project-b")).toBe("/prs?tab=normal&prId=project-b");
+    expect(readStoredPrsRoute("/tmp/project-c")).toBeNull();
+
+    writeStoredPrsRoute("/prs?tab=workflows&workflow=queue");
+    expect(readStoredPrsRoute("/tmp/project-c")).toBe("/prs?tab=workflows&workflow=queue");
   });
 });
 

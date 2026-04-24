@@ -71,12 +71,19 @@ Renderer surfaces:
 
 - `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` —
   entry surface with `PaneTilingLayout` (sessions list + work view).
+  Owns the multi-select state (`selectedSessionIds`, shift/ctrl anchor,
+  bulk close and bulk delete handlers) that the sidebar forwards into.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
-  sticky group headers, search/filter.
+  sticky group headers, search/filter. Renders a bulk action bar at the
+  bottom when sessions are multi-selected (Close N running / Delete N
+  ended / clear selection).
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
-  delta chips).
+  delta chips). Surfaces a small amber warning pip next to the title
+  when `getStaleRunningCliSessionAgeHours` returns a value, so users
+  can spot long-running CLI/shell sessions without opening them. The
+  card also reports its multi-select state via `isMultiSelected`.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
   tabs/grid/single Work view. The grid mode renders through the shared
   `PaneTilingLayout`; the seed tree comes from `buildWorkSessionTilingTree`.
@@ -112,6 +119,12 @@ Renderer surfaces:
   `ade.agentChat.delete`.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
   cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
+- `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers
+  plus `getStaleRunningCliSessionAgeHours`, the canonical check that
+  returns a rounded age in hours when a non-run, non-chat session has
+  been `running` for at least `STALE_RUNNING_CLI_SESSION_MS` (12 h).
+  Used by both `SessionCard` (inline pip) and `AppShell` (stale-CLI
+  toast).
 
 ## Detail docs
 

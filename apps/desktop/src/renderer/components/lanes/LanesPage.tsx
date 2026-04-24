@@ -184,6 +184,17 @@ export function resolveLaneIdsDeepLinkSelection(args: {
   return { laneIds, signature };
 }
 
+function laneTilingLayoutIds(laneId: string): string[] {
+  return [
+    `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`,
+    `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:wf:${laneId}`,
+    `lanes:tiling:v6:${laneId}`,
+    `lanes:tiling:v6:wf:${laneId}`,
+    `lanes:tiling:v7:${laneId}`,
+    `lanes:tiling:v7:wf:${laneId}`,
+  ];
+}
+
 /* ---- Component ---- */
 
 export function LanesPage() {
@@ -199,6 +210,8 @@ export function LanesPage() {
   const clearLaneInspectorTab = useAppStore((s) => s.clearLaneInspectorTab);
   const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
+  const activeTourId = useOnboardingStore((s) => s.activeTourId);
+  const suppressTourDistractions = activeTourId === "first-journey";
 
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
@@ -379,6 +392,7 @@ export function LanesPage() {
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
   const filteredSet = useMemo(() => new Set(filteredLaneIds), [filteredLaneIds]);
   const visibleRebaseSuggestions = useMemo(() => {
+    if (suppressTourDistractions) return [];
     const laneIdSet = new Set(filteredLaneIds);
     return laneSnapshots
       .map((snapshot) => snapshot.rebaseSuggestion)
@@ -388,8 +402,9 @@ export function LanesPage() {
           return laneIdSet.has(suggestion.laneId);
         },
       );
-  }, [laneSnapshots, filteredLaneIds]);
+  }, [laneSnapshots, filteredLaneIds, suppressTourDistractions]);
   const visibleAutoRebaseNeedsAttention = useMemo(() => {
+    if (suppressTourDistractions) return [];
     const laneIdSet = new Set(filteredLaneIds);
     return laneSnapshots
       .map((snapshot) => snapshot.autoRebaseStatus)
@@ -399,7 +414,7 @@ export function LanesPage() {
           return laneIdSet.has(status.laneId) && status.state !== "autoRebased";
         },
       );
-  }, [laneSnapshots, filteredLaneIds]);
+  }, [laneSnapshots, filteredLaneIds, suppressTourDistractions]);
 
   const activeWithPins = useMemo(
     () => mergeUnique(activeLaneIds, Array.from(pinnedLaneIds).filter((id) => lanesById.has(id))),
@@ -1047,21 +1062,75 @@ export function LanesPage() {
     }
   }, [lanesById, pinnedLaneIds]);
 
-  const resetGridLayout = useCallback(async () => {
+  const resetGridLayout = useCallback(async (preferredLaneId?: string | null) => {
+    const selectedVisibleLane =
+      preferredLaneId && lanesById.has(preferredLaneId)
+        ? preferredLaneId
+        : selectedLaneId && lanesById.has(selectedLaneId)
+          ? selectedLaneId
+          : visibleLaneIds[0] ?? filteredLaneIds[0] ?? sortedLanes[0]?.id ?? null;
+    if (selectedVisibleLane) {
+      setPinnedLaneIds(new Set());
+      setActiveLaneIds([selectedVisibleLane]);
+      selectLane(selectedVisibleLane);
+    }
     const promises: Promise<void>[] = [];
-    for (const laneId of visibleLaneIds) {
-      const layoutKey = `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`;
-      promises.push(
-        window.ade.layout.set(layoutKey, {}).catch(() => {}),
-        window.ade.tilingTree.set(layoutKey, {}).catch(() => {})
-      );
+    const laneIdsToReset = new Set<string>([
+      ...filteredLaneIds,
+      ...visibleLaneIds,
+      ...activeLaneIds,
+    ]);
+    if (selectedVisibleLane) laneIdsToReset.add(selectedVisibleLane);
+    for (const laneId of laneIdsToReset) {
+      for (const layoutKey of laneTilingLayoutIds(laneId)) {
+        promises.push(
+          window.ade.layout.set(layoutKey, {}).catch(() => {}),
+          window.ade.tilingTree.set(layoutKey, {}).catch(() => {})
+        );
+      }
     }
     /* Also reset lane column widths */
     promises.push(window.ade.layout.set("lanes:columns:v1", {}).catch(() => {}));
     await Promise.all(promises);
     /* Force full remount so default sizes/trees take effect */
     setGridResetKey((k) => k + 1);
-  }, [visibleLaneIds]);
+  }, [activeLaneIds, filteredLaneIds, lanesById, selectLane, selectedLaneId, sortedLanes, visibleLaneIds]);
+
+  useEffect(() => {
+    const onTourEnded = (event: Event) => {
+      const detail = (event as CustomEvent<{ tourId?: unknown }>).detail;
+      if (detail?.tourId !== "first-journey") return;
+      void resetGridLayout(selectedLaneId);
+    };
+    window.addEventListener("ade:tour-ended", onTourEnded);
+    return () => window.removeEventListener("ade:tour-ended", onTourEnded);
+  }, [resetGridLayout]);
+
+  useEffect(() => {
+    const onTourFocusLane = (event: Event) => {
+      const detail = (event as CustomEvent<{ laneId?: unknown }>).detail;
+      const requestedLaneId = typeof detail?.laneId === "string" ? detail.laneId : null;
+      const requestedLane = requestedLaneId ? lanesById.get(requestedLaneId) ?? null : null;
+      const selectedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
+      const fallbackLane =
+        selectedLane && selectedLane.laneType !== "primary"
+          ? selectedLane
+          : sortedLanes.find((lane) => lane.laneType !== "primary") ?? null;
+      const targetLane = requestedLane && requestedLane.laneType !== "primary" ? requestedLane : fallbackLane;
+      if (!targetLane) return;
+      setActiveLaneIds([targetLane.id]);
+      selectLane(targetLane.id);
+      void Promise.all([
+        ...laneTilingLayoutIds(targetLane.id).flatMap((layoutKey) => [
+          window.ade.layout.set(layoutKey, {}).catch(() => {}),
+          window.ade.tilingTree.set(layoutKey, {}).catch(() => {}),
+        ]),
+        window.ade.layout.set("lanes:columns:v1", {}).catch(() => {}),
+      ]).finally(() => setGridResetKey((k) => k + 1));
+    };
+    window.addEventListener("ade:tour-focus-lane", onTourFocusLane);
+    return () => window.removeEventListener("ade:tour-focus-lane", onTourFocusLane);
+  }, [lanesById, selectLane, selectedLaneId, sortedLanes]);
 
   const requestRebaseScope = useCallback((laneId: string) => {
     const laneName = lanesById.get(laneId)?.name ?? laneId;
@@ -1927,7 +1996,9 @@ export function LanesPage() {
               type="button"
               data-tour="lanes.resetGrid"
               title="Reset grid to default layout"
-              onClick={resetGridLayout}
+              onClick={() => {
+                void resetGridLayout(selectedLaneId);
+              }}
               className="inline-flex items-center gap-1 shrink-0"
               style={{
                 fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px",
@@ -1971,7 +2042,7 @@ export function LanesPage() {
             endedCount: 0,
             sessionCount: 0,
           };
-          const rebaseSuggestion = laneSnapshot?.rebaseSuggestion ?? null;
+          const rebaseSuggestion = suppressTourDistractions ? null : laneSnapshot?.rebaseSuggestion ?? null;
           const autoRebaseStatus = laneSnapshot?.autoRebaseStatus ?? null;
           const devicesOpen = lane.devicesOpen ?? [];
           const tabNumber = String(index + 1).padStart(2, "0");

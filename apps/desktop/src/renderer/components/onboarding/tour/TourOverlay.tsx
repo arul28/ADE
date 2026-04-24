@@ -14,8 +14,10 @@ import { TourStep } from "./TourStep";
 
 const SELECTOR_RETRY_MS = 500;
 const RETRY_INTERVAL_MS = 50;
+const OUTSIDE_INTERACTION_GRACE_MS = 2_500;
 const INTERACTIVE_SHORTCUT_SELECTOR =
   'button, a[href], input, select, textarea, [contenteditable]:not([contenteditable="false"])';
+let lastActIntroAdvanceAtMs = 0;
 
 type TourOverlayProps = {
   step: TourStepType;
@@ -135,6 +137,7 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
   const showWelcome = useAppStore((s) => s.showWelcome);
   const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
   const lanes = useAppStore((s) => s.lanes);
+  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
 
   const [target, setTarget] = useState<TargetState>({ kind: "missing" });
   const [reduceMotion] = useState(prefersReducedMotion);
@@ -151,10 +154,16 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
   const stepElapsedMs = Math.max(0, nowMs - stepStartedAtMs);
   const laneCount = lanes.filter((lane) => lane.laneType !== "primary").length;
   const nonPrimaryLaneIds = lanes.filter((lane) => lane.laneType !== "primary").map((lane) => lane.id);
+  const selectedNonPrimaryLaneOpen = lanes.some((lane) => lane.id === selectedLaneId && lane.laneType !== "primary");
   const createLaneBaselineIds = ctx?.get<string[]>("createLaneBaselineIds");
   const laneCountIncreased = Array.isArray(createLaneBaselineIds)
     ? nonPrimaryLaneIds.some((laneId) => !createLaneBaselineIds.includes(laneId))
     : laneCount > laneCountAtStepStart;
+  const createLaneDialogOpen = hasDomTarget('[data-tour="lanes.createDialog.name"]');
+  const createLaneStepCompleted =
+    step.id?.startsWith("createLane.") === true &&
+    selectedNonPrimaryLaneOpen &&
+    !createLaneDialogOpen;
   const workspaceProjectOpen =
     projectHydrated === true &&
     showWelcome !== true &&
@@ -172,7 +181,7 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
     commitCount: countDomTargets('[data-tour="history.entry"]'),
     prCreated: hasDomTarget('[data-tour="prs.listRow"]'),
     prCount: countDomTargets('[data-tour="prs.listRow"]'),
-    createLaneDialogOpen: hasDomTarget('[data-tour="lanes.createDialog.name"]'),
+    createLaneDialogOpen: createLaneDialogOpen || createLaneStepCompleted,
     manageLaneDialogOpen: hasDomTarget('[data-tour="lanes.manageDialog.laneInfo"]'),
     managelaneDialogOpen: hasDomTarget('[data-tour="lanes.manageDialog.laneInfo"]'),
     prCreateModalOpen: hasDomTarget('[data-tour="prs.createModal.base"], [data-tour="prs.createModal.title"]'),
@@ -359,6 +368,24 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
     advanceTour();
   }, [advanceTour, requirementsSatisfied, step.awaitingActionLabel, step.id, step.requires, stepIndex]);
 
+  useEffect(() => {
+    if (!step.id?.startsWith("createLane.")) return;
+    if (step.id === "createLane.openMenu" || step.id === "createLane.chooseCreate") return;
+    // The dedicated `laneCountIncreased` effect above already drives the
+    // auto-advance for action-gated steps that require lane creation. Let it
+    // own that signal so we don't double-advance (and skip a step) off the
+    // same event.
+    if (step.awaitingActionLabel && step.requires?.includes("laneCountIncreased")) return;
+    const createLaneFlowCompleted =
+      laneCountIncreased || createLaneStepCompleted;
+    if (!createLaneFlowCompleted) return;
+    const autoAdvanceKey = `${step.id}:createdLane`;
+    if (autoAdvancedStepRef.current === autoAdvanceKey) return;
+    autoAdvancedStepRef.current = autoAdvanceKey;
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    advanceTour();
+  }, [advanceTour, createLaneStepCompleted, laneCountIncreased, step.awaitingActionLabel, step.id, step.requires]);
+
   // Keyboard handling at the document level.
   useEffect(() => {
     if (step.actIntro) return;
@@ -395,6 +422,8 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
   useEffect(() => {
     if (!step.exitOnOutsideInteraction) return;
     const onPointerDown = (event: PointerEvent) => {
+      if (Date.now() - stepStartedAtMs < OUTSIDE_INTERACTION_GRACE_MS) return;
+      if (Date.now() - lastActIntroAdvanceAtMs < OUTSIDE_INTERACTION_GRACE_MS) return;
       const target = event.target;
       if (step.preventTargetInteraction && eventTargetMatchesSelector(target, step.target)) {
         event.preventDefault();
@@ -407,6 +436,7 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
       for (const selector of step.allowedInteractionSelectors ?? []) {
         if (eventTargetMatchesSelector(target, selector)) return;
       }
+      if (!eventTargetMatchesSelector(target, INTERACTIVE_SHORTCUT_SELECTOR)) return;
       requestExitConfirmation();
     };
     document.addEventListener("pointerdown", onPointerDown, true);
@@ -417,6 +447,7 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
     step.exitOnOutsideInteraction,
     step.preventTargetInteraction,
     step.target,
+    stepStartedAtMs,
   ]);
 
   if (typeof document === "undefined") return null;
@@ -425,13 +456,17 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
   const missing = hasTargetSelector(step) && target.kind !== "found";
 
   if (step.actIntro) {
+    const completeActIntro = () => {
+      lastActIntroAdvanceAtMs = Date.now();
+      advanceTour();
+    };
     return createPortal(
       <ActIntro
         title={step.actIntro.title}
         subtitle={step.actIntro.subtitle}
         variant={step.actIntro.variant}
-        onComplete={advanceTour}
-        onSkip={advanceTour}
+        onComplete={completeActIntro}
+        onSkip={completeActIntro}
       />,
       document.body,
     );

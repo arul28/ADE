@@ -32,6 +32,22 @@ export function isRunOwnedSession(session: Pick<TerminalSessionSummary, "toolTyp
   return isRunOwnedToolType(session.toolType);
 }
 
+export const STALE_RUNNING_CLI_SESSION_MS = 12 * 60 * 60 * 1_000;
+
+export function getStaleRunningCliSessionAgeHours(
+  session: Pick<TerminalSessionSummary, "status" | "startedAt" | "toolType">,
+  nowMs: number = Date.now(),
+): number | null {
+  if (session.status !== "running") return null;
+  if (isRunOwnedSession(session)) return null;
+  if (isChatToolType(session.toolType)) return null;
+  const startedMs = Date.parse(session.startedAt);
+  if (!Number.isFinite(startedMs)) return null;
+  const ageMs = nowMs - startedMs;
+  if (ageMs < STALE_RUNNING_CLI_SESSION_MS) return null;
+  return Math.max(12, Math.floor(ageMs / (60 * 60 * 1_000)));
+}
+
 export function defaultSessionLabel(toolType: string | null | undefined): string {
   if (toolType === "shell" || toolType == null) return "Workspace";
   if (toolType === "run-shell") return "Run inspector";

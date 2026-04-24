@@ -18,7 +18,6 @@ import {
   Package,
   Tag,
   GitMerge,
-  ArrowDown,
   Robot,
   WarningCircle,
   Clock,
@@ -368,30 +367,6 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
             })}
           </div>
         )}
-
-        {unresolvedIds.length > 0 ? (
-          <button
-            type="button"
-            onClick={() => cycleUnresolved(1)}
-            className="flex h-8 items-center gap-1.5 px-3 text-[11px] font-medium"
-            style={{
-              position: "sticky",
-              bottom: 12,
-              marginLeft: "auto",
-              marginRight: 0,
-              background: COLORS.accentSubtle,
-              border: `1px solid ${COLORS.accentBorder}`,
-              borderRadius: 8,
-              color: COLORS.accent,
-              boxShadow: "0 8px 20px rgba(0,0,0,0.35)",
-            }}
-            data-testid="pr-timeline-unresolved-fab"
-            aria-label={`Jump to unresolved threads (${unresolvedIds.length})`}
-          >
-            <ArrowDown size={11} weight="bold" />
-            {unresolvedIds.length} unresolved
-          </button>
-        ) : null}
       </div>
     </div>
   );
@@ -617,32 +592,7 @@ function TimelineRowContent({
         </Card>
       );
     case "commit_push":
-      return (
-        <InlineRow icon={<GitCommit size={12} weight="bold" />}>
-          <span style={{ color: COLORS.textSecondary }}>
-            <strong style={{ color: COLORS.textPrimary }}>{event.author ?? "someone"}</strong>{" "}
-            pushed{" "}
-            <span
-              style={{
-                color: COLORS.textMuted,
-                fontFamily: MONO_FONT,
-              }}
-            >
-              {event.shortSha}
-            </span>
-            {" · "}
-            <span style={{ color: COLORS.textPrimary }}>{event.subject}</span>
-            {event.forcePushed ? (
-              <span
-                style={{ color: COLORS.warning, marginLeft: 6, fontFamily: MONO_FONT }}
-              >
-                force-pushed
-              </span>
-            ) : null}
-          </span>
-          <Timestamp ts={event.timestamp} />
-        </InlineRow>
-      );
+      return <CommitDivider event={event} focused={focused} />;
     case "review":
       if (event.isBot) {
         return near ? (
@@ -766,6 +716,64 @@ function TimelineRowContent({
     default:
       return null;
   }
+}
+
+function CommitDivider({
+  event,
+  focused,
+}: {
+  event: Extract<PrTimelineEvent, { type: "commit_push" }>;
+  focused: boolean;
+}) {
+  return (
+    <div
+      data-testid="pr-timeline-commit-divider"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 14px",
+        background: focused ? COLORS.accentSubtle : "rgba(255,255,255,0.025)",
+        borderTop: `2px solid ${focused ? COLORS.accent : COLORS.border}`,
+        borderBottom: `1px solid ${COLORS.border}`,
+        boxShadow: focused ? `0 0 0 1px ${COLORS.accentBorder} inset` : "none",
+      }}
+    >
+      <span
+        style={{
+          width: 28,
+          height: 28,
+          borderRadius: 7,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: focused ? COLORS.accentSubtle : COLORS.recessedBg,
+          border: `1px solid ${focused ? COLORS.accentBorder : COLORS.border}`,
+          color: focused ? COLORS.accent : COLORS.textMuted,
+          flexShrink: 0,
+        }}
+      >
+        <GitCommit size={14} weight="bold" />
+      </span>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div className="flex items-center gap-2">
+          <span style={{ color: COLORS.textPrimary, fontSize: 13, fontWeight: 700 }}>
+            {event.subject || "Commit"}
+          </span>
+          {event.forcePushed ? (
+            <span style={{ color: COLORS.warning, fontFamily: MONO_FONT, fontSize: 10 }}>
+              force-pushed
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+          <span>{event.shortSha}</span>
+          <span>by {event.author ?? "unknown"}</span>
+        </div>
+      </div>
+      <Timestamp ts={event.timestamp} />
+    </div>
+  );
 }
 
 /* ══════════════════ Small building blocks ══════════════════ */

@@ -10,6 +10,7 @@ import { PrDetailPane } from "../detail/PrDetailPane";
 import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatters";
 import { PrCiRunningIndicator } from "../shared/prVisuals";
 import { usePrs } from "../state/PrsContext";
+import type { PrDetailRouteTab } from "../prsRouteState";
 
 const VIRTUALIZE_AT = 50;
 
@@ -18,6 +19,8 @@ type GitHubTabProps = {
   mergeMethod: MergeMethod;
   selectedPrId: string | null;
   onSelectPr: (id: string | null) => void;
+  selectedDetailTab?: PrDetailRouteTab | null;
+  onDetailTabChange?: (tab: PrDetailRouteTab) => void;
   onRefreshAll: () => Promise<void>;
   onOpenRebaseTab?: (laneId?: string) => void;
   onOpenQueueView?: (groupId: string) => void;
@@ -331,7 +334,17 @@ function GitHubReadOnlyPane({
   );
 }
 
-export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefreshAll, onOpenRebaseTab, onOpenQueueView }: GitHubTabProps) {
+export function GitHubTab({
+  lanes,
+  mergeMethod,
+  selectedPrId,
+  onSelectPr,
+  selectedDetailTab,
+  onDetailTabChange,
+  onRefreshAll,
+  onOpenRebaseTab,
+  onOpenQueueView,
+}: GitHubTabProps) {
   const navigate = useNavigate();
   const {
     prs,
@@ -871,6 +884,8 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
               onOpenRebaseTab={onOpenRebaseTab}
               queueContext={selectedQueueContext}
               onOpenQueueView={onOpenQueueView}
+              initialDetailTab={selectedDetailTab}
+              onDetailTabChange={onDetailTabChange}
             />
           ) : selectedItem ? (
             <GitHubReadOnlyPane

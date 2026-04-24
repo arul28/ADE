@@ -1,5 +1,13 @@
 export type PrWorkflowTab = "queue" | "integration" | "rebase";
 export type PrActiveTab = "github" | "normal" | PrWorkflowTab;
+export type PrDetailRouteTab = "overview" | "convergence" | "files" | "checks" | "activity";
+
+export const PRS_LAST_ROUTE_STORAGE_KEY = "ade:prs:lastRoute";
+
+function scopedPrsRouteStorageKey(projectRoot?: string | null): string {
+  const root = projectRoot?.trim();
+  return root ? `${PRS_LAST_ROUTE_STORAGE_KEY}:${root}` : PRS_LAST_ROUTE_STORAGE_KEY;
+}
 
 export type ParsedPrsRouteState = {
   tab: "github" | "normal" | "workflows" | PrWorkflowTab | null;
@@ -10,6 +18,7 @@ export type ParsedPrsRouteState = {
   eventId: string | null;
   threadId: string | null;
   commitSha: string | null;
+  detailTab: PrDetailRouteTab | null;
 };
 
 function parseSearch(search: string): URLSearchParams {
@@ -18,6 +27,7 @@ function parseSearch(search: string): URLSearchParams {
 
 const WORKFLOW_TABS: ReadonlySet<string> = new Set<PrWorkflowTab>(["queue", "integration", "rebase"]);
 const VALID_TABS: ReadonlySet<string> = new Set(["github", "normal", "workflows", ...WORKFLOW_TABS]);
+const DETAIL_TABS: ReadonlySet<string> = new Set<PrDetailRouteTab>(["overview", "convergence", "files", "checks", "activity"]);
 
 function parseTab(value: string | null): ParsedPrsRouteState["tab"] {
   if (value && VALID_TABS.has(value)) return value as ParsedPrsRouteState["tab"];
@@ -26,6 +36,11 @@ function parseTab(value: string | null): ParsedPrsRouteState["tab"] {
 
 function parseWorkflowTab(value: string | null): PrWorkflowTab | null {
   if (value && WORKFLOW_TABS.has(value)) return value as PrWorkflowTab;
+  return null;
+}
+
+function parseDetailTab(value: string | null): PrDetailRouteTab | null {
+  if (value && DETAIL_TABS.has(value)) return value as PrDetailRouteTab;
   return null;
 }
 
@@ -64,7 +79,37 @@ export function parsePrsRouteState(args: { search?: string | null; hash?: string
     eventId: pick("eventId"),
     threadId: pick("threadId"),
     commitSha: pick("commitSha"),
+    detailTab: parseDetailTab(routeParams.get("detailTab")),
   };
+}
+
+export function sanitizeStoredPrsRoute(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (trimmed === "/prs" || trimmed.startsWith("/prs?")) return trimmed;
+  return null;
+}
+
+export function readStoredPrsRoute(projectRoot?: string | null): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const scopedRoute = sanitizeStoredPrsRoute(window.localStorage.getItem(scopedPrsRouteStorageKey(projectRoot)));
+    if (scopedRoute) return scopedRoute;
+    return sanitizeStoredPrsRoute(window.localStorage.getItem(PRS_LAST_ROUTE_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+export function writeStoredPrsRoute(value: string, projectRoot?: string | null): void {
+  if (typeof window === "undefined") return;
+  const route = sanitizeStoredPrsRoute(value);
+  if (!route) return;
+  try {
+    window.localStorage.setItem(scopedPrsRouteStorageKey(projectRoot), route);
+  } catch {
+    // localStorage can be unavailable in private/test environments.
+  }
 }
 
 export type ResolvedPrsRoute = {
@@ -111,6 +156,7 @@ export function buildPrsRouteSearch(args: {
   eventId?: string | null;
   threadId?: string | null;
   commitSha?: string | null;
+  detailTab?: PrDetailRouteTab | null;
 }): string {
   const params = new URLSearchParams();
 
@@ -120,6 +166,7 @@ export function buildPrsRouteSearch(args: {
     if (args.eventId) params.set("eventId", args.eventId);
     if (args.threadId) params.set("threadId", args.threadId);
     if (args.commitSha) params.set("commitSha", args.commitSha);
+    if (args.selectedPrId && args.detailTab) params.set("detailTab", args.detailTab);
   } else {
     params.set("tab", "workflows");
     params.set("workflow", args.activeTab);

@@ -112,6 +112,33 @@ struct PrActivityTab: View {
     return "PR"
   }
 
+  private var timelineRail: some View {
+    HStack {
+      ZStack(alignment: .top) {
+        Rectangle()
+          .fill(Color.clear)
+          .frame(width: 1)
+        Path { p in
+          p.move(to: CGPoint(x: 0.5, y: 0))
+          p.addLine(to: CGPoint(x: 0.5, y: 10000))
+        }
+        .stroke(
+          LinearGradient(
+            colors: [ADEColor.purpleAccent.opacity(0.0), ADEColor.purpleAccent.opacity(0.25), ADEColor.purpleAccent.opacity(0.0)],
+            startPoint: .top,
+            endPoint: .bottom
+          ),
+          style: StrokeStyle(lineWidth: 1, dash: [2, 4])
+        )
+        .frame(width: 1)
+      }
+      .frame(width: 1)
+      .padding(.leading, 3)
+      Spacer()
+    }
+    .allowsHitTesting(false)
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
       PrApprovalSummaryCard(
@@ -123,6 +150,14 @@ struct PrActivityTab: View {
         latestReviewedAt: reviews.compactMap { $0.submittedAt }.max()
       )
 
+      // Chronological timeline — the primary view on the Activity tab,
+      // mirroring desktop where commits/comments/reviews/deployments interleave
+      // in one stream. Threads + reviewer summaries below remain available as
+      // secondary surfaces.
+      if !timeline.isEmpty {
+        PrActivityTimelineList(events: timeline)
+      }
+
       PrAiResolverCtaCard(
         variant: .inline,
         isBusy: isAiResolverBusy,
@@ -133,7 +168,7 @@ struct PrActivityTab: View {
       )
 
       if !unresolvedThreads.isEmpty {
-        sectionHeader(title: "Unresolved", trailing: "\(unresolvedThreads.count) unresolved")
+        sectionHeader(title: "Threads", trailing: "\(unresolvedThreads.count) unresolved")
         ForEach(unresolvedThreads) { thread in
           PrReviewThreadCard(
             thread: thread,
@@ -171,11 +206,7 @@ struct PrActivityTab: View {
             PrBotReviewRow(item: item)
           }
         }
-        .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
-        )
+        .prGlassCard(cornerRadius: 18)
       }
 
       if !humanReviewers.isEmpty {
@@ -188,11 +219,7 @@ struct PrActivityTab: View {
             PrHumanReviewerRow(reviewer: reviewer)
           }
         }
-        .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
-        )
+        .prGlassCard(cornerRadius: 18)
       }
 
       if unresolvedThreads.isEmpty && resolvedThreads.isEmpty && botReviews.isEmpty && humanReviewers.isEmpty && timeline.isEmpty {
@@ -224,6 +251,7 @@ struct PrActivityTab: View {
           .foregroundStyle(ADEColor.textSecondary)
       }
     }
+    .background(timelineRail, alignment: .topLeading)
   }
 
   @ViewBuilder
@@ -312,13 +340,9 @@ private struct PrApprovalSummaryCard: View {
         PrTagChip(label: "\(unresolvedCount) unresolved", color: ADEColor.warning)
       }
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
-    )
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .prGlassCard(cornerRadius: 18)
   }
 }
 
@@ -479,10 +503,20 @@ private struct PrReviewThreadCard: View {
       .padding(.horizontal, 14)
       .padding(.bottom, 12)
     }
-    .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .prGlassCard(
+      cornerRadius: 18,
+      tint: isFocused ? PrGlassPalette.purple.opacity(0.6) : nil,
+      strokeOpacity: isFocused ? 0.35 : 0.10,
+      highlightOpacity: isFocused ? 0.22 : 0.14
+    )
     .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(isFocused ? ADEColor.tintPRs.opacity(0.4) : ADEColor.glassBorder, lineWidth: isFocused ? 1 : 0.5)
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .strokeBorder(PrGlassPalette.purple.opacity(isFocused ? 0.55 : 0), lineWidth: 0.75)
+    )
+    .shadow(
+      color: isFocused ? PrGlassPalette.purpleDeep.opacity(0.4) : .clear,
+      radius: isFocused ? 18 : 0,
+      y: 0
     )
   }
 
@@ -691,11 +725,7 @@ private struct PrCollapsibleResolvedSection: View {
             )
           }
         }
-        .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
-        )
+        .prGlassCard(cornerRadius: 18)
         .transition(.opacity.combined(with: .move(edge: .top)))
       }
     }
@@ -1008,33 +1038,192 @@ private struct PrReplyComposer: View {
       ZStack(alignment: .leading) {
         if text.isEmpty {
           Text(placeholder)
-            .font(.footnote)
+            .font(.system(size: 12, design: .monospaced))
             .foregroundStyle(ADEColor.textMuted)
         }
         TextField("", text: $text, axis: .vertical)
-          .font(.footnote)
+          .font(.system(size: 12, design: .monospaced))
           .lineLimit(1...4)
           .foregroundStyle(ADEColor.textPrimary)
       }
 
       Button(action: onSend) {
         Image(systemName: "paperplane.fill")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(Color.black)
-          .frame(width: 26, height: 26)
-          .background(ADEColor.tintPRs, in: Circle())
+          .font(.system(size: 12, weight: .bold))
+          .foregroundStyle(Color.white)
+          .frame(width: 30, height: 30)
+          .background(
+            PrGlassPalette.accentGradient,
+            in: Circle()
+          )
+          .overlay(Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5))
+          .overlay(
+            Circle()
+              .inset(by: 1)
+              .stroke(Color.white.opacity(0.22), lineWidth: 0.5)
+              .blendMode(.plusLighter)
+          )
+          .shadow(color: PrGlassPalette.purpleDeep.opacity(0.55), radius: 10, y: 3)
       }
       .buttonStyle(.plain)
       .disabled(!isLive || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       .opacity((!isLive || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 0.5 : 1)
     }
-    .padding(.horizontal, 12)
+    .padding(.horizontal, 14)
     .padding(.vertical, 8)
-    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 20, style: .continuous)
-        .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
-    )
+    .prGlassCard(cornerRadius: 22)
+  }
+}
+
+// MARK: - Activity timeline
+
+/// Chronological event list used at the top of the Activity tab. Each row is
+/// avatar-disc + colored event label + body. The vertical hairline behind the
+/// dots threads the events together, matching the desktop's timeline column.
+struct PrActivityTimelineList: View {
+  let events: [PrTimelineEvent]
+
+  private var sorted: [PrTimelineEvent] {
+    events.sorted { (a, b) in
+      let l = prParsedDate(a.timestamp) ?? .distantPast
+      let r = prParsedDate(b.timestamp) ?? .distantPast
+      return l > r
+    }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .firstTextBaseline, spacing: 6) {
+        Text("TIMELINE")
+          .font(.system(size: 10, weight: .bold))
+          .tracking(1.0)
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 8)
+        Text("\(events.count)")
+          .font(.system(size: 11, weight: .bold, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 4)
+
+      VStack(spacing: 0) {
+        ForEach(Array(sorted.enumerated()), id: \.element.id) { index, event in
+          PrActivityTimelineRow(
+            event: event,
+            isFirst: index == 0,
+            isLast: index == sorted.count - 1
+          )
+        }
+      }
+      .prGlassCard(cornerRadius: 16)
+    }
+  }
+}
+
+/// Single timeline row. The left rail is a 22pt-wide column with the dot in
+/// the middle and stub-lines top/bottom that join into a continuous rail.
+private struct PrActivityTimelineRow: View {
+  let event: PrTimelineEvent
+  let isFirst: Bool
+  let isLast: Bool
+
+  private var tint: Color { timelineTint(event.kind) }
+  private var symbol: String { timelineSymbol(event.kind) }
+
+  private var ago: String { prRelativeTime(event.timestamp) }
+
+  private var kindLabel: String {
+    switch event.kind {
+    case .stateChange: return "state"
+    case .review: return "review"
+    case .comment: return "comment"
+    case .deployment: return "deploy"
+    case .commit: return "commit"
+    case .label: return "label"
+    case .ci: return "ci"
+    case .forcePush: return "force-push"
+    case .reviewRequest: return "request"
+    }
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 0) {
+      // Rail column with vertical hairline + dot.
+      ZStack(alignment: .top) {
+        VStack(spacing: 0) {
+          Rectangle()
+            .fill(isFirst ? Color.clear : ADEColor.textMuted.opacity(0.22))
+            .frame(width: 1, height: 14)
+          Rectangle()
+            .fill(isLast ? Color.clear : ADEColor.textMuted.opacity(0.22))
+            .frame(width: 1)
+            .frame(maxHeight: .infinity)
+        }
+        .frame(width: 22)
+
+        ZStack {
+          Circle()
+            .fill(tint.opacity(0.18))
+            .frame(width: 22, height: 22)
+          Circle()
+            .strokeBorder(tint.opacity(0.45), lineWidth: 0.75)
+            .frame(width: 22, height: 22)
+          Image(systemName: symbol)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(tint)
+        }
+        .padding(.top, 8)
+      }
+      .frame(width: 28)
+
+      VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 6) {
+          Text(kindLabel.uppercased())
+            .font(.system(size: 9, weight: .bold))
+            .tracking(0.6)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(tint.opacity(0.16)))
+            .overlay(Capsule().strokeBorder(tint.opacity(0.32), lineWidth: 0.5))
+          if let author = event.author, !author.isEmpty {
+            Text("@\(author)")
+              .font(.system(size: 11, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+          }
+          Spacer(minLength: 4)
+          Text(ago)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+
+        Text(event.title)
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
+
+        if let body = event.body, !body.isEmpty {
+          let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+          if !trimmed.isEmpty {
+            Text(trimmed)
+              .font(.system(size: 11))
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(3)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+
+        if let metadata = event.metadata, !metadata.isEmpty {
+          Text(metadata)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+      }
+      .padding(.vertical, 10)
+      .padding(.trailing, 12)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 

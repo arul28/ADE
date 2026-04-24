@@ -276,16 +276,43 @@ struct PrMobileWorkflowCardView: View {
     )
   }
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      switch card.kind {
-      case "queue": queueSection
-      case "integration": integrationSection
-      case "rebase": rebaseSection
-      default: unknownSection
-      }
+  /// Tint applied to the outer liquid-glass card and the 4pt status rail on
+  /// the left edge. Queue → green, Integration → amber, Rebase → amber.
+  private var cardTint: Color {
+    switch card.kind {
+    case "queue": return PrGlassPalette.success
+    case "integration": return PrGlassPalette.warning
+    case "rebase": return PrGlassPalette.warning
+    default: return PrGlassPalette.purple
     }
-    .adeGlassCard(cornerRadius: 18)
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      // 4pt status rail tinted by workflow kind.
+      RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+        .fill(
+          LinearGradient(
+            colors: [cardTint, cardTint.opacity(0.5)],
+            startPoint: .top,
+            endPoint: .bottom
+          )
+        )
+        .frame(width: 4)
+        .shadow(color: cardTint.opacity(0.55), radius: 8, x: 0, y: 0)
+
+      VStack(alignment: .leading, spacing: 14) {
+        switch card.kind {
+        case "queue": queueSection
+        case "integration": integrationSection
+        case "rebase": rebaseSection
+        default: unknownSection
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(14)
+    .prGlassCard(cornerRadius: 20, tint: cardTint)
     .confirmationDialog(
       landingConfirmation?.title ?? "Land workflow",
       isPresented: landingConfirmationPresented,
@@ -322,24 +349,35 @@ struct PrMobileWorkflowCardView: View {
 
     HStack(alignment: .top, spacing: 10) {
       VStack(alignment: .leading, spacing: 4) {
-        PrEyebrow(text: "QUEUE WORKFLOW")
+        PrsEyebrowLabel(text: "QUEUE WORKFLOW", tint: PrGlassPalette.success)
         HStack(spacing: 6) {
           Text(card.groupName.nonEmpty ?? "Queue workflow")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
           if let position = card.currentPosition, let total = card.totalEntries, total > 0 {
-            ADEStatusPill(text: "\(position + 1)/\(total)", tint: ADEColor.textMuted)
+            Text("\(position + 1)/\(total)")
+              .font(.system(size: 11, weight: .bold, design: .monospaced))
+              .foregroundStyle(PrGlassPalette.success)
+              .padding(.horizontal, 7)
+              .padding(.vertical, 2)
+              .background(Capsule(style: .continuous).fill(PrGlassPalette.success.opacity(0.16)))
+              .overlay(Capsule(style: .continuous).strokeBorder(PrGlassPalette.success.opacity(0.4), lineWidth: 0.5))
           }
         }
         if let targetBranch = card.targetBranch {
           Text(targetBranch)
-            .font(.caption.monospaced())
+            .font(.system(size: 11, weight: .medium, design: .monospaced))
             .foregroundStyle(ADEColor.textSecondary)
         }
       }
       Spacer(minLength: 8)
       if let state = card.state {
-        ADEStatusPill(text: state.uppercased(), tint: state == "completed" ? ADEColor.success : (state == "paused" ? ADEColor.warning : ADEColor.accent))
+        let isRunningState = (state == "landing" || state == "running" || state == "active" || state == "in_progress")
+        if isRunningState {
+          PrsLivePulse(isLive: true, syncedLabel: state.uppercased())
+        } else {
+          ADEStatusPill(text: state.uppercased(), tint: state == "completed" ? PrGlassPalette.success : (state == "paused" ? PrGlassPalette.warning : PrGlassPalette.purple))
+        }
       }
     }
 
@@ -490,11 +528,28 @@ struct PrMobileWorkflowCardView: View {
     let totalCount = card.laneCount ?? 0
 
     VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 6) {
-        PrTagChip(label: "integration", color: ADEColor.warning)
+      HStack(spacing: 8) {
+        PrsEyebrowLabel(text: "INTEGRATION", tint: PrGlassPalette.warning)
         if totalCount > 0 {
-          ADEStatusPill(text: "\(readyCount) of \(totalCount) ready", tint: readyCount == totalCount ? ADEColor.success : ADEColor.warning)
+          HStack(spacing: 4) {
+            Image(systemName: "timer")
+              .font(.system(size: 10, weight: .bold))
+            Text("\(readyCount) of \(totalCount) ready")
+              .font(.system(size: 10, weight: .bold))
+          }
+          .foregroundStyle(readyCount == totalCount ? PrGlassPalette.success : PrGlassPalette.warning)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 3)
+          .background(
+            Capsule(style: .continuous)
+              .fill((readyCount == totalCount ? PrGlassPalette.success : PrGlassPalette.warning).opacity(0.16))
+          )
+          .overlay(
+            Capsule(style: .continuous)
+              .strokeBorder((readyCount == totalCount ? PrGlassPalette.success : PrGlassPalette.warning).opacity(0.4), lineWidth: 0.5)
+          )
         }
+        Spacer(minLength: 0)
       }
       Text(card.title.nonEmpty ?? "Integration workflow")
         .font(.title3.weight(.bold))
@@ -649,13 +704,14 @@ struct PrMobileWorkflowCardView: View {
 
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
+        PrsEyebrowLabel(text: "REBASE", tint: tintForMode)
         if let prNumber = card.prNumber {
           Text("#\(prNumber)")
-            .font(.system(.caption, design: .monospaced).weight(.bold))
+            .font(.system(size: 11, weight: .bold, design: .monospaced))
             .foregroundStyle(tintForMode)
         }
         ADEStatusPill(text: pillLabel, tint: tintForMode)
-        PrTagChip(label: "lane", color: ADEColor.tintFiles)
+        PrTagChip(label: "lane", color: PrGlassPalette.blue)
         Spacer(minLength: 0)
         if card.conflictPredicted == true {
           PrConflictBadge()
@@ -667,7 +723,7 @@ struct PrMobileWorkflowCardView: View {
         .lineLimit(2)
       if let behindBy = card.behindBy {
         Text("\(behindBy) commit\(behindBy == 1 ? "" : "s") behind target")
-          .font(.caption.monospaced())
+          .font(.system(size: 11, weight: .medium, design: .monospaced))
           .foregroundStyle(ADEColor.textSecondary)
       }
       // Mode-specific explainer copy.
@@ -686,7 +742,8 @@ struct PrMobileWorkflowCardView: View {
         .foregroundStyle(ADEColor.textMuted)
     }
 
-    // Tappable link to the new rebase screen.
+    // Tappable link to the new rebase screen — styled as a bold amber→orange
+    // gradient CTA per the liquid-glass spec.
     if let laneId = card.laneId {
       NavigationLink {
         PrRebaseScreen(
@@ -705,14 +762,37 @@ struct PrMobileWorkflowCardView: View {
       } label: {
         HStack(spacing: 8) {
           Image(systemName: "chart.bar.doc.horizontal")
+            .font(.system(size: 13, weight: .bold))
           Text("Inspect drift")
+            .font(.system(size: 14, weight: .bold))
           Spacer(minLength: 0)
-          Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+          Image(systemName: "chevron.right")
+            .font(.system(size: 12, weight: .bold))
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(
+              LinearGradient(
+                colors: [
+                  PrGlassPalette.warning,
+                  Color(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x06 / 255),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+              )
+            )
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.4), lineWidth: 0.5)
+        )
+        .shadow(color: PrGlassPalette.warning.opacity(0.55), radius: 12, x: 0, y: 3)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
+      .buttonStyle(.plain)
     }
 
     HStack(spacing: 10) {

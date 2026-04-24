@@ -141,6 +141,9 @@ function GraphInner() {
   const prRefreshTimerRef = React.useRef<number | null>(null);
   const graphConfirm = useConfirmDialog();
   const lanesRef = React.useRef(lanes);
+  const nodesRef = React.useRef<Array<Node<GraphNodeData>>>([]);
+  const handledFocusLaneRef = React.useRef<string | null>(null);
+  const handledFocusProposalRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     lanesRef.current = lanes;
@@ -248,6 +251,10 @@ function GraphInner() {
   const [loadedGraphPreferences, setLoadedGraphPreferences] = React.useState(false);
   const [nodes, setNodes] = React.useState<Array<Node<GraphNodeData>>>([]);
   const [edges, setEdges] = React.useState<Array<Edge<GraphEdgeData>>>([]);
+
+  React.useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
   const [batch, setBatch] = React.useState<BatchAssessmentResult | null>(null);
   const [batchProgress, setBatchProgress] = React.useState<BatchProgress | null>(null);
   const [loadingTopology, setLoadingTopology] = React.useState(true);
@@ -906,15 +913,21 @@ function GraphInner() {
   // E3: Handle ?focusLane= query param
   React.useEffect(() => {
     const focusParam = searchParams.get("focusLane");
-    if (!focusParam || !loadedGraphPreferences || lanes.length === 0) return;
+    if (!focusParam) {
+      handledFocusLaneRef.current = null;
+      return;
+    }
+    if (!loadedGraphPreferences || lanes.length === 0) return;
+    if (handledFocusLaneRef.current === focusParam) return;
     const targetLane = lanes.find((lane) => lane.id === focusParam);
     if (!targetLane) return;
-    setSelectedLaneIds([focusParam]);
+    handledFocusLaneRef.current = focusParam;
+    setSelectedLaneIds((prev) => (sameIdSet(prev, [focusParam]) ? prev : [focusParam]));
     setFocusLaneId(focusParam);
     // Center on the focused node
     let glowTimer: number | undefined;
     const timer = window.setTimeout(() => {
-      const targetNode = nodes.find((node) => node.id === focusParam);
+      const targetNode = nodesRef.current.find((node) => node.id === focusParam);
       if (targetNode) {
         void reactFlow.fitView({ nodes: [targetNode], duration: 500, padding: 0.4 });
       }
@@ -931,15 +944,21 @@ function GraphInner() {
       window.clearTimeout(timer);
       if (glowTimer !== undefined) window.clearTimeout(glowTimer);
     };
-  }, [searchParams, loadedGraphPreferences, lanes, nodes, reactFlow, setSearchParams]);
+  }, [searchParams, loadedGraphPreferences, lanes, reactFlow, setSearchParams]);
 
   // E3b: Handle ?focusProposal= query param
   React.useEffect(() => {
     const focusParam = searchParams.get("focusProposal");
-    if (!focusParam || !loadedGraphPreferences || nodes.length === 0) return;
+    if (!focusParam) {
+      handledFocusProposalRef.current = null;
+      return;
+    }
+    if (!loadedGraphPreferences || nodes.length === 0) return;
+    if (handledFocusProposalRef.current === focusParam) return;
     const proposalNodeId = `proposal:${focusParam}`;
-    const targetNode = nodes.find((node) => node.id === proposalNodeId);
+    const targetNode = nodesRef.current.find((node) => node.id === proposalNodeId);
     if (!targetNode) return;
+    handledFocusProposalRef.current = focusParam;
     setFocusLaneId(proposalNodeId);
     // Center on the focused proposal node
     const timer = window.setTimeout(() => {
@@ -955,7 +974,7 @@ function GraphInner() {
       return () => window.clearTimeout(glowTimer);
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [searchParams, loadedGraphPreferences, nodes, reactFlow, setSearchParams]);
+  }, [searchParams, loadedGraphPreferences, nodes.length, reactFlow, setSearchParams]);
 
   React.useEffect(() => {
     const laneId = nodeTooltip?.laneId ?? null;
@@ -4019,7 +4038,10 @@ function GraphInner() {
 
       {selectedLane ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[60] flex justify-center">
-          <div className="pointer-events-auto w-[min(1120px,calc(100%-24px))] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl px-3 py-2 shadow-float">
+          <div
+            className="pointer-events-auto w-[min(1120px,calc(100%-24px))] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl px-3 py-2 shadow-float"
+            data-tour="graph.focusedLane"
+          >
             <div className="flex flex-wrap items-center gap-3">
               <div className="min-w-0">
                 <div className="text-[11px] font-sans font-semibold text-fg">{selectedLane.name}</div>

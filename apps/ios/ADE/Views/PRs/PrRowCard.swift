@@ -5,6 +5,7 @@ struct PrRowCard: View {
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
   let onShowStack: (String, String?) -> Void
+  let onLink: (() -> Void)?
 
   init(
     pr: PullRequestListItem,
@@ -16,65 +17,76 @@ struct PrRowCard: View {
     self.transitionNamespace = transitionNamespace
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.onShowStack = onShowStack
+    self.onLink = nil
   }
 
   init(
     item: GitHubPrListItem,
     transitionNamespace: Namespace.ID? = nil,
-    isSelectedTransitionSource: Bool = false
+    isSelectedTransitionSource: Bool = false,
+    onLink: (() -> Void)? = nil
   ) {
     self.data = Data(item: item)
     self.transitionNamespace = transitionNamespace
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.onShowStack = { _, _ in }
+    self.onLink = onLink
   }
 
   var body: some View {
-    HStack(alignment: .top, spacing: 11) {
-      PrStateTile(state: data.state)
+    HStack(alignment: .top, spacing: 12) {
+      PrsStatusRail(state: data.state)
+        .frame(maxHeight: .infinity)
         .adeMatchedGeometry(id: isSelectedTransitionSource ? "pr-status-\(data.id)" : nil, in: transitionNamespace)
 
-      VStack(alignment: .leading, spacing: 4) {
+      VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 6) {
           Text("#\(data.prNumber)")
             .font(.system(size: 11, weight: .bold, design: .monospaced))
-            .foregroundStyle(prStateTint(data.state))
+            .foregroundStyle(PrsGlass.statusTint(data.state))
+
+          PrsRowStateChip(state: data.state)
 
           if let kindLabel = data.adeKindLabel, let tint = data.adeKindTint {
             PrTagChip(label: kindLabel, color: tint)
           }
 
           if data.isUnmapped {
-            PrTagChip(label: "unmapped", color: ADEColor.warning, filled: true)
+            PrsUnlinkedPill()
           }
 
-          if data.isExternal {
-            PrTagChip(label: "external", color: ADEColor.textSecondary)
+          if data.isExternal && !data.isUnmapped {
+            PrTagChip(label: "external", color: PrsGlass.externalTop)
           }
 
           Spacer(minLength: 0)
 
-          PrMonoText(text: prRelativeTime(data.updatedAt), color: ADEColor.textMuted, size: 10)
+          PrMonoText(text: prRelativeTime(data.updatedAt), color: PrsGlass.textMuted, size: 10)
             .lineLimit(1)
         }
 
         Text(data.title)
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(PrsGlass.textPrimary)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
           .adeMatchedGeometry(id: isSelectedTransitionSource ? "pr-title-\(data.id)" : nil, in: transitionNamespace)
 
         metaLine
 
-        if let warn = data.warnMessage {
+        // Surface workflow warnings (queued, rebase-needed, merge-conflict,
+        // CI failing) on cached ADE-side PRs. Unmapped external rows already
+        // communicate their state via the UNLINKED pill + Link CTA — no need
+        // for an extra banner there.
+        if !data.isUnmapped, let warn = data.warnMessage {
           PrWarnBanner(text: warn)
             .padding(.top, 2)
         }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .padding(.vertical, 4)
-    .adeListCard()
+    .padding(.vertical, 2)
+    .prsGlassSurface(cornerRadius: 18, tint: PrsGlass.statusTint(data.state), padding: 14)
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "pr-container-\(data.id)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("PR #\(data.prNumber): \(data.title), state \(data.state)")
@@ -82,18 +94,18 @@ struct PrRowCard: View {
 
   @ViewBuilder
   private var metaLine: some View {
-    VStack(alignment: .leading, spacing: 3) {
+    VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 4) {
         Image(systemName: "arrow.triangle.branch")
           .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(ADEColor.textSecondary.opacity(0.7))
-        PrMonoText(text: data.branchDisplayLabel, color: ADEColor.textSecondary, size: 10)
+          .foregroundStyle(PrsGlass.textSecondary.opacity(0.8))
+        PrMonoText(text: data.branchDisplayLabel, color: PrsGlass.textSecondary, size: 10)
           .lineLimit(1)
           .truncationMode(.tail)
           .layoutPriority(1)
 
         if let author = data.authorLabel {
-          PrMonoText(text: "by \(author)", color: ADEColor.textMuted, size: 10)
+          PrMonoText(text: "by \(author)", color: PrsGlass.textMuted, size: 10)
             .lineLimit(1)
             .truncationMode(.tail)
         }
@@ -103,13 +115,13 @@ struct PrRowCard: View {
         if let checks = data.checkCounts {
           HStack(spacing: 5) {
             if checks.fail > 0 {
-              PrMonoText(text: "✗ \(checks.fail)", color: ADEColor.danger, size: 10)
+              PrMonoText(text: "✗ \(checks.fail)", color: PrsGlass.closedTop, size: 10)
             }
             if checks.pass > 0 {
-              PrMonoText(text: "✓ \(checks.pass)", color: ADEColor.success, size: 10)
+              PrMonoText(text: "✓ \(checks.pass)", color: PrsGlass.openTop, size: 10)
             }
             if checks.pending > 0 {
-              PrMonoText(text: "◐ \(checks.pending)", color: ADEColor.warning, size: 10)
+              PrMonoText(text: "◐ \(checks.pending)", color: PrsGlass.draftTop, size: 10)
             }
           }
         }
@@ -117,17 +129,36 @@ struct PrRowCard: View {
         if let approvals = data.approvals {
           PrMonoText(
             text: "✓ \(approvals.have)/\(approvals.need)",
-            color: approvals.have >= approvals.need ? ADEColor.success : ADEColor.textSecondary,
+            color: approvals.have >= approvals.need ? PrsGlass.openTop : PrsGlass.textSecondary,
             size: 10
           )
         }
 
-        if data.isUnmapped {
-          PrMonoText(text: "read before linking", color: ADEColor.warning, size: 10)
-            .lineLimit(1)
-        }
-
         Spacer(minLength: 0)
+
+        if data.isUnmapped, let onLink {
+          Button(action: onLink) {
+            HStack(spacing: 4) {
+              Image(systemName: "link")
+                .font(.system(size: 9, weight: .bold))
+              Text("Link")
+                .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(PrsGlass.accentTop)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+              Capsule(style: .continuous)
+                .fill(PrsGlass.accentTop.opacity(0.12))
+            )
+            .overlay(
+              Capsule(style: .continuous)
+                .stroke(PrsGlass.accentTop.opacity(0.45), lineWidth: 0.6)
+            )
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Link pull request to a lane")
+        }
 
         if let groupId = data.stackGroupId, let groupCount = data.stackGroupCount, groupCount > 0 {
           Button {
@@ -139,12 +170,75 @@ struct PrRowCard: View {
               Text("\(groupCount)")
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
             }
-            .foregroundStyle(ADEColor.textSecondary)
+            .foregroundStyle(PrsGlass.textSecondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background {
+              Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.06))
+            }
+            .overlay {
+              Capsule(style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+            }
           }
           .buttonStyle(.plain)
         }
       }
     }
+  }
+}
+
+/// Small capsule that mirrors the eyebrow state label on the pencil PR rows
+/// (OPEN, DRAFT, MERGED, CLOSED, QUEUED…) using the PrsGlass status tints.
+private struct PrsRowStateChip: View {
+  let state: String
+
+  var body: some View {
+    let tint = PrsGlass.statusTint(state)
+    Text(displayLabel.uppercased())
+      .font(.system(size: 9, weight: .bold))
+      .tracking(0.9)
+      .foregroundStyle(tint)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 3)
+      .background {
+        Capsule(style: .continuous)
+          .fill(tint.opacity(0.18))
+      }
+      .overlay {
+        Capsule(style: .continuous)
+          .stroke(tint.opacity(0.45), lineWidth: 0.75)
+      }
+  }
+
+  private var displayLabel: String {
+    switch state {
+    case "open": return "Open"
+    case "draft": return "Draft"
+    case "merged": return "Merged"
+    case "closed": return "Closed"
+    case "external": return "External"
+    default: return state
+    }
+  }
+}
+
+/// Small outline-only "UNLINKED" pill used on external GitHub PR rows, in place
+/// of the loud filled amber chip. Pairs with the row-level Link CTA on the
+/// right and (optionally) an EXTERNAL section header above.
+struct PrsUnlinkedPill: View {
+  var body: some View {
+    Text("UNLINKED")
+      .font(.system(size: 9, weight: .bold))
+      .tracking(0.9)
+      .foregroundStyle(PrsGlass.textMuted)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 3)
+      .overlay {
+        Capsule(style: .continuous)
+          .stroke(PrsGlass.textMuted.opacity(0.45), lineWidth: 0.6)
+      }
   }
 }
 

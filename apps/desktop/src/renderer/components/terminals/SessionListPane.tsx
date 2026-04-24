@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, Funnel, GitBranch, MagnifyingGlass, Plus, Terminal } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Funnel, GitBranch, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
@@ -87,10 +87,14 @@ export const SessionListPane = React.memo(function SessionListPane({
   q,
   setQ,
   selectedSessionId,
+  selectedSessionIds,
   draftKind: _draftKind,
   showingDraft: _showingDraft,
   onShowDraftKind,
   onSelectSession,
+  onClearSelection,
+  onBulkClose,
+  onBulkDelete,
   onResume,
   resumingSessionId,
   onInfoClick,
@@ -115,10 +119,14 @@ export const SessionListPane = React.memo(function SessionListPane({
   q: string;
   setQ: (v: string) => void;
   selectedSessionId: string | null;
+  selectedSessionIds?: Set<string>;
   draftKind: WorkDraftKind;
   showingDraft: boolean;
   onShowDraftKind: (kind: WorkDraftKind) => void;
-  onSelectSession: (id: string) => void;
+  onSelectSession: (id: string, event: React.MouseEvent, visibleSessionIds: string[]) => void;
+  onClearSelection?: () => void;
+  onBulkClose?: () => void;
+  onBulkDelete?: () => void;
   onResume: (session: TerminalSessionSummary) => void;
   resumingSessionId: string | null;
   onInfoClick: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
@@ -146,6 +154,13 @@ export const SessionListPane = React.memo(function SessionListPane({
     [runningFiltered, awaitingInputFiltered, endedFiltered],
   );
   const timeBuckets = useMemo(() => bucketByTime(allSessions), [allSessions]);
+  const selectedCount = selectedSessionIds?.size ?? 0;
+  const selectedSessions = useMemo(
+    () => allSessions.filter((session) => selectedSessionIds?.has(session.id)),
+    [allSessions, selectedSessionIds],
+  );
+  const selectedRunningCount = selectedSessions.filter((session) => session.status === "running").length;
+  const selectedEndedCount = selectedSessions.length - selectedRunningCount;
   const laneById = useMemo(() => {
     const map = new Map<string, LaneSummary>();
     for (const lane of lanes) map.set(lane.id, lane);
@@ -175,6 +190,46 @@ export const SessionListPane = React.memo(function SessionListPane({
         return leftName.localeCompare(rightName);
       });
   }, [lanes, sessionsGroupedByLane]);
+  const renderedSessionIds = useMemo(() => {
+    if (isByLane) {
+      const ids: string[] = [];
+      for (const lane of orderedLanes) {
+        if (workCollapsedLaneIds.includes(lane.id)) continue;
+        ids.push(...(sessionsGroupedByLane?.get(lane.id) ?? []).map((session) => session.id));
+      }
+      for (const [laneId, list] of missingLaneSessionGroups) {
+        if (workCollapsedLaneIds.includes(laneId)) continue;
+        ids.push(...list.map((session) => session.id));
+      }
+      return ids;
+    }
+    if (isByTime) {
+      const ids: string[] = [];
+      if (!workCollapsedSectionIds.includes("time:today")) ids.push(...timeBuckets.today.map((session) => session.id));
+      if (!workCollapsedSectionIds.includes("time:yesterday")) ids.push(...timeBuckets.yesterday.map((session) => session.id));
+      if (!workCollapsedSectionIds.includes("time:older")) ids.push(...timeBuckets.older.map((session) => session.id));
+      return ids;
+    }
+    const ids: string[] = [];
+    if (!workCollapsedSectionIds.includes("status:running")) ids.push(...runningFiltered.map((session) => session.id));
+    if (!workCollapsedSectionIds.includes("status:awaiting")) ids.push(...awaitingInputFiltered.map((session) => session.id));
+    if (!workCollapsedSectionIds.includes("status:ended")) ids.push(...endedFiltered.map((session) => session.id));
+    return ids;
+  }, [
+    awaitingInputFiltered,
+    endedFiltered,
+    isByLane,
+    isByTime,
+    missingLaneSessionGroups,
+    orderedLanes,
+    runningFiltered,
+    sessionsGroupedByLane,
+    timeBuckets.older,
+    timeBuckets.today,
+    timeBuckets.yesterday,
+    workCollapsedLaneIds,
+    workCollapsedSectionIds,
+  ]);
 
   // First-rendered card carries `data-tour="work.sessionItem"` so the Work
   // tab tour can anchor at a real session. We track whether we've already
@@ -190,7 +245,8 @@ export const SessionListPane = React.memo(function SessionListPane({
           session={session}
           lane={laneById.get(session.laneId) ?? null}
           isSelected={selectedSessionId === session.id}
-          onSelect={onSelectSession}
+          isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
+          onSelect={(id, event) => onSelectSession(id, event, renderedSessionIds)}
           onResume={() => onResume(session)}
           onInfoClick={(e) => onInfoClick(session, e)}
           onContextMenu={(e) => {
@@ -433,6 +489,47 @@ export const SessionListPane = React.memo(function SessionListPane({
                 />
               </div>
             </div>
+          </div>
+        ) : null}
+
+        {selectedCount > 0 ? (
+          <div className="ade-chat-drawer-glass flex items-center gap-1.5 p-1.5">
+            <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-fg/80">
+              {selectedCount} selected
+            </span>
+            {selectedRunningCount > 0 ? (
+              <SmartTooltip content={{ label: "Close selected", description: "Terminate selected running sessions." }}>
+                <button
+                  type="button"
+                  className="inline-flex h-6 items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 text-[10px] font-medium text-amber-200"
+                  onClick={onBulkClose}
+                >
+                  <Square size={10} />
+                  Close {selectedRunningCount}
+                </button>
+              </SmartTooltip>
+            ) : null}
+            {selectedEndedCount > 0 ? (
+              <SmartTooltip content={{ label: "Delete selected", description: "Permanently delete selected ended sessions." }}>
+                <button
+                  type="button"
+                  className="inline-flex h-6 items-center gap-1 rounded-md border border-red-500/25 bg-red-500/10 px-2 text-[10px] font-medium text-red-200"
+                  onClick={onBulkDelete}
+                >
+                  <Trash size={10} />
+                  Delete {selectedEndedCount}
+                </button>
+              </SmartTooltip>
+            ) : null}
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg"
+              onClick={onClearSelection}
+              aria-label="Clear selected sessions"
+              title="Clear selection"
+            >
+              <X size={10} />
+            </button>
           </div>
         ) : null}
       </div>

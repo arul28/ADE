@@ -11,7 +11,13 @@ import { GitHubTab } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
 import { isMissionLaneHiddenByDefault } from "../lanes/laneUtils";
-import { buildPrsRouteSearch, parsePrsRouteState, resolvePrsActiveTab } from "./prsRouteState";
+import {
+  buildPrsRouteSearch,
+  parsePrsRouteState,
+  resolvePrsActiveTab,
+  writeStoredPrsRoute,
+  type PrDetailRouteTab,
+} from "./prsRouteState";
 import { resolveRouteRebaseSelection } from "./shared/rebaseNeedUtils";
 import type { PrSummary } from "../../../shared/types";
 
@@ -20,6 +26,7 @@ type SurfaceMode = "github" | "workflows";
 function PRsPageInner() {
   const navigate = useNavigate();
   const location = useLocation();
+  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const {
     activeTab,
@@ -42,6 +49,13 @@ function PRsPageInner() {
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
   const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>("integration");
   const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
+  const [selectedDetailTab, setSelectedDetailTab] = React.useState<PrDetailRouteTab | null>(() => {
+    try {
+      return parsePrsRouteState({ search: window.location.search, hash: window.location.hash }).detailTab;
+    } catch {
+      return null;
+    }
+  });
   const visibleLanes = React.useMemo(
     () => lanes.filter((lane) => !isMissionLaneHiddenByDefault(lane)),
     [lanes],
@@ -94,6 +108,7 @@ function PRsPageInner() {
 
         if (!resolved.isWorkflowRoute) {
           setSelectedPrId(routeState.prId ?? null);
+          setSelectedDetailTab(routeState.detailTab);
         }
         if (resolved.effectiveWorkflow === "queue") {
           setSelectedQueueGroupId(routeState.queueGroupId ?? null);
@@ -132,6 +147,7 @@ function PRsPageInner() {
       selectedPrId,
       selectedQueueGroupId,
       selectedRebaseItemId,
+      detailTab: activeTab === "normal" ? selectedDetailTab : null,
       ...deepLinks,
     });
     if (location.search === nextSearch) return;
@@ -141,10 +157,16 @@ function PRsPageInner() {
     selectedPrId,
     selectedQueueGroupId,
     selectedRebaseItemId,
+    selectedDetailTab,
     location.pathname,
     location.search,
     navigate,
   ]);
+
+  React.useEffect(() => {
+    if (location.pathname !== "/prs") return;
+    writeStoredPrsRoute(`${location.pathname}${location.search}`, projectRoot);
+  }, [location.pathname, location.search, projectRoot]);
 
   const activeMode: SurfaceMode = activeTab === "normal" ? "github" : "workflows";
 
@@ -324,6 +346,8 @@ function PRsPageInner() {
             mergeMethod={mergeMethod}
             selectedPrId={selectedPrId}
             onSelectPr={setSelectedPrId}
+            selectedDetailTab={selectedDetailTab}
+            onDetailTabChange={setSelectedDetailTab}
             onRefreshAll={handleRefresh}
             onOpenRebaseTab={(laneId) => {
               if (laneId) setSelectedRebaseItemId(laneId);
