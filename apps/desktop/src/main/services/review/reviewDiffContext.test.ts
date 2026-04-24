@@ -66,4 +66,17 @@ describe("buildDiffContextForFinding", () => {
     expect(result!.lines.length).toBeGreaterThan(0);
     expect(result!.lines.find((line) => line.highlighted)).toBeUndefined();
   });
+
+  it("normalizes CRLF so no line text carries a trailing carriage return", () => {
+    const crlfPatch = SAMPLE_PATCH.replace(/\n/g, "\r\n");
+    const result = buildDiffContextForFinding({
+      filePath: "src/auth.ts",
+      anchoredLine: 13,
+      patches: [{ filePath: "src/auth.ts", excerpt: crlfPatch }],
+    });
+    expect(result).not.toBeNull();
+    for (const line of result!.lines) {
+      expect(line.text.includes("\r")).toBe(false);
+    }
+  });
 });

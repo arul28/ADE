@@ -189,6 +189,136 @@ describe("reviewSuppressionService", () => {
     expect(miss).toBeNull();
   });
 
+  it("path glob `src/**/*.ts` matches both shallow and nested files", async () => {
+    const svc = createReviewSuppressionService({
+      db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
+      logger,
+      projectId: "proj-1",
+    });
+    await svc.create({
+      scope: "path",
+      title: "Prefer named export over default in TS module",
+      pathPattern: "src/**/*.ts",
+      reason: "style_only",
+    });
+
+    const shallow = await svc.match({
+      finding: {
+        title: "prefer named export over default in ts module",
+        body: "",
+        filePath: "src/foo.ts",
+        findingClass: null,
+        severity: "low",
+      },
+      repoKey: "r",
+    });
+    expect(shallow).not.toBeNull();
+
+    const nested = await svc.match({
+      finding: {
+        title: "prefer named export over default in ts module",
+        body: "",
+        filePath: "src/a/b/c/foo.ts",
+        findingClass: null,
+        severity: "low",
+      },
+      repoKey: "r",
+    });
+    expect(nested).not.toBeNull();
+
+    const wrongExt = await svc.match({
+      finding: {
+        title: "prefer named export over default in ts module",
+        body: "",
+        filePath: "src/foo.tsx",
+        findingClass: null,
+        severity: "low",
+      },
+      repoKey: "r",
+    });
+    expect(wrongExt).toBeNull();
+  });
+
+  it("path glob `?` matches exactly one non-slash character", async () => {
+    const svc = createReviewSuppressionService({
+      db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
+      logger,
+      projectId: "proj-1",
+    });
+    await svc.create({
+      scope: "path",
+      title: "Numbered helper lint",
+      pathPattern: "src/helper?.ts",
+      reason: "style_only",
+    });
+
+    const single = await svc.match({
+      finding: {
+        title: "numbered helper lint",
+        body: "",
+        filePath: "src/helper1.ts",
+        findingClass: null,
+        severity: "low",
+      },
+      repoKey: "r",
+    });
+    expect(single).not.toBeNull();
+
+    const twoChars = await svc.match({
+      finding: {
+        title: "numbered helper lint",
+        body: "",
+        filePath: "src/helper12.ts",
+        findingClass: null,
+        severity: "low",
+      },
+      repoKey: "r",
+    });
+    expect(twoChars).toBeNull();
+
+    const slashed = await svc.match({
+      finding: {
+        title: "numbered helper lint",
+        body: "",
+        filePath: "src/helper/.ts",
+        findingClass: null,
+        severity: "low",
+      },
+      repoKey: "r",
+    });
+    expect(slashed).toBeNull();
+  });
+
+  it("title-match fallback fires when embeddings are weak/missing but tokens overlap", async () => {
+    // No embeddingService is provided, so both sides fall back to the
+    // title-token (Jaccard) path with the TITLE_SIM_THRESHOLD bar (0.55).
+    // The pre-fix logic applied the embedding threshold here and rejected.
+    const svc = createReviewSuppressionService({
+      db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
+      logger,
+      projectId: "proj-1",
+    });
+    await svc.create({
+      scope: "repo",
+      title: "Prefer async await over raw promise chains",
+      repoKey: "arul28/ade",
+      reason: "style_only",
+    });
+    const hit = await svc.match({
+      finding: {
+        title: "Prefer async await over raw promise chains",
+        body: "",
+        filePath: "src/anywhere.ts",
+        findingClass: null,
+        severity: "low",
+      },
+      repoKey: "arul28/ade",
+    });
+    expect(hit).not.toBeNull();
+    // Identical titles → Jaccard = 1.0, comfortably above TITLE_SIM_THRESHOLD.
+    expect(hit!.similarity).toBeGreaterThanOrEqual(0.55);
+  });
+
   it("removes a suppression", async () => {
     const svc = createReviewSuppressionService({
       db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,

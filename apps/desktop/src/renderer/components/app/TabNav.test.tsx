@@ -37,6 +37,7 @@ describe("TabNav", () => {
     globalThis.window.ade = {
       app: {
         revealPath: async () => undefined,
+        getInfo: async () => ({ isPackaged: false }) as any,
       },
     } as any;
   });

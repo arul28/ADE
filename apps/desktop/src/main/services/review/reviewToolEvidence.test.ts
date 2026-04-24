@@ -80,4 +80,67 @@ describe("buildToolBackedEvidence", () => {
     expect(out.length).toBe(1);
     expect(out[0]?.toolSignal?.kind).toBe("typecheck");
   });
+
+  it("does not attach a test-run signal whose only token overlap is a substring (test vs latest)", () => {
+    // Finding body mentions "latest" and "tested" but never the word "test"
+    // on its own. A substring match would have (incorrectly) attached this.
+    const out = buildToolBackedEvidence({
+      finding: {
+        filePath: null,
+        title: "Use the latest client",
+        body: "We have tested this carefully.",
+        line: null,
+      },
+      validation: emptyPayload({
+        signals: [
+          {
+            kind: "test_run_failure",
+            summary: "test suite failing",
+            filePaths: [],
+            sourceId: "suite:unit",
+          },
+        ],
+      }),
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("single-word summary (e.g. 'typecheck') needs only one token hit to qualify", () => {
+    const out = buildToolBackedEvidence({
+      finding: { filePath: null, title: "typecheck fails in shared types", body: "", line: null },
+      validation: emptyPayload({
+        signals: [
+          {
+            kind: "pr_check_failure",
+            summary: "typecheck",
+            filePaths: [],
+            sourceId: "check:typecheck",
+          },
+        ],
+      }),
+    });
+    expect(out.length).toBe(1);
+    expect(out[0]?.toolSignal?.kind).toBe("ci_check");
+  });
+
+  it("does not double-count duplicate tokens in the summary", () => {
+    // Summary repeats "handler" three times; title mentions "handler" once.
+    // Under the pre-dedup logic, three hits would satisfy the "required: 2"
+    // threshold even against a single real occurrence. With dedup, tokens
+    // are only counted once — so we still need a second distinct token match.
+    const out = buildToolBackedEvidence({
+      finding: { filePath: null, title: "Handler drops errors", body: "", line: null },
+      validation: emptyPayload({
+        signals: [
+          {
+            kind: "test_run_failure",
+            summary: "handler handler handler",
+            filePaths: [],
+            sourceId: "suite:x",
+          },
+        ],
+      }),
+    });
+    expect(out).toEqual([]);
+  });
 });

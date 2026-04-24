@@ -2451,6 +2451,50 @@ alter table review_findings add column originating_passes_json text;
 
 alter table review_findings add column adjudication_json text;
 
+alter table review_findings add column diff_context_json text;
+
+alter table review_findings add column suppression_match_json text;
+
+create table if not exists review_finding_feedback (
+      id text primary key,
+      finding_id text not null,
+      run_id text not null,
+      project_id text not null,
+      kind text not null,
+      reason text,
+      note text,
+      snooze_until text,
+      created_at text not null,
+      foreign key(finding_id) references review_findings(id) on delete cascade
+    );
+
+create index if not exists idx_review_feedback_finding on review_finding_feedback(finding_id);
+
+create index if not exists idx_review_feedback_project_created on review_finding_feedback(project_id, created_at desc);
+
+create table if not exists review_suppressions (
+      id text primary key,
+      project_id text not null,
+      scope text not null,
+      repo_key text,
+      path_pattern text,
+      title text not null,
+      title_norm text not null,
+      finding_class text,
+      severity text,
+      reason text,
+      note text,
+      embedding_json text,
+      source_finding_id text,
+      hit_count integer not null default 0,
+      created_at text not null,
+      last_matched_at text
+    );
+
+create index if not exists idx_review_suppressions_project on review_suppressions(project_id, created_at desc);
+
+create index if not exists idx_review_suppressions_repo on review_suppressions(project_id, repo_key);
+
 create table if not exists pr_issue_inventory (
       id text primary key,
       pr_id text not null,
