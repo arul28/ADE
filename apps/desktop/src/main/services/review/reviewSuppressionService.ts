@@ -13,6 +13,7 @@ import type { EmbeddingService } from "../memory/embeddingService";
 
 const TITLE_SIM_THRESHOLD = 0.55;
 const EMBEDDING_SIM_THRESHOLD = 0.78;
+const PATH_GLOB_CACHE_MAX = 256;
 const PATH_GLOB_CACHE = new Map<string, RegExp>();
 
 function globToRegExp(pattern: string): RegExp {
@@ -53,6 +54,10 @@ function globToRegExp(pattern: string): RegExp {
     i += 1;
   }
   const re = new RegExp(`^${source}$`);
+  if (PATH_GLOB_CACHE.size >= PATH_GLOB_CACHE_MAX) {
+    const oldest = PATH_GLOB_CACHE.keys().next().value;
+    if (oldest !== undefined) PATH_GLOB_CACHE.delete(oldest);
+  }
   PATH_GLOB_CACHE.set(pattern, re);
   return re;
 }

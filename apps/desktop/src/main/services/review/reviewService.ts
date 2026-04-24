@@ -1262,7 +1262,7 @@ function mapPublicationRow(row: ReviewRunPublicationRow): ReviewPublication {
       prNumber: 0,
       githubUrl: null,
     }),
-    reviewEvent: row.review_event === "COMMENT" ? "COMMENT" : "COMMENT",
+    reviewEvent: row.review_event as ReviewPublication["reviewEvent"],
     status: row.status === "published" ? "published" : "failed",
     reviewUrl: row.review_url,
     remoteReviewId: row.remote_review_id,
@@ -1910,7 +1910,7 @@ export function createReviewService({
         },
       });
 
-      const changedFilesByPath = new Map(materialized.changedFiles.map((entry) => [
+      const changedFilesByPath = new Map(changedFiles.map((entry) => [
         entry.filePath,
         {
           excerpt: entry.excerpt,

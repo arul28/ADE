@@ -124,6 +124,7 @@ function parseDiffFiles(patchText: string, fallbackPaths: string[]): ReviewMater
     const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunkMatch) {
       currentNewLine = Number(hunkMatch[1] ?? "0");
+      if (currentDiffPosition > 0) currentDiffPosition += 1;
       continue;
     }
     if (currentNewLine == null) continue;
