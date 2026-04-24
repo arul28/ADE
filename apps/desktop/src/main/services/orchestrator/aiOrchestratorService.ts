@@ -122,7 +122,6 @@ import type { MissionMemoryLifecycleService } from "../memory/missionMemoryLifec
 import type { MissionBudgetService } from "./missionBudgetService";
 import {
   buildComputerUseOwnerSnapshot,
-  collectRequiredComputerUseKindsFromPhases,
   getComputerUseArtifactKinds,
 } from "../computerUse/controlPlane";
 import { createMemoryService } from "../memory/memoryService";
@@ -517,7 +516,6 @@ export function normalizeCoordinatorUpdateForChat(message: string): string | nul
   if (
     /^\{/.test(compact)
     || /^tool\s+/i.test(compact)
-    || /^mcp__/i.test(compact)
     || /^assistant:/i.test(compact)
     || /^user:/i.test(compact)
   ) {
@@ -1688,7 +1686,7 @@ export function createAiOrchestratorService(args: {
       || /^cp\s+'.+worker-[a-f0-9-]+\.json'\s+'.+\.json'(\s+&&\s+exec\b.*)?$/i.test(compact)
       || /^ade_[a-z0-9_]+=.+/i.test(compact)
       || /(?:^|[\\/])(?:orchestrator[\\/])?worker-prompts[\\/]worker-[a-f0-9-]+(?:\.[A-Za-z0-9._-]+)?/i.test(compact)
-      || /\.ade-worker-mcp-[a-f0-9-]+\.json/i.test(compact)
+      || /\.ade-worker-[a-f0-9-]+\.json/i.test(compact)
       || /(?:^|[-*]\s+)?`?\.ade\/(?:step-output|checkpoints)-worker_[^`\s]+\.md`?/i.test(compact)
       || /[A-Za-z0-9._-]+\.(?:txt|json)['")]+$/i.test(compact)
       || /^"(?:missionId|runId|stepId|stepKey|laneId|attemptId)\b/i.test(compact)
@@ -1774,12 +1772,7 @@ export function createAiOrchestratorService(args: {
   };
 
   const normalizeCoordinatorToolEventName = (toolName: string): string => {
-    const trimmed = toolName.trim();
-    if (trimmed.startsWith("mcp__")) {
-      const parts = trimmed.split("__");
-      return (parts[2] ?? trimmed).trim();
-    }
-    return trimmed;
+    return toolName.trim();
   };
 
   const derivePlannerLifecycleFromDelegation = (contract: DelegationContract): {
@@ -1969,6 +1962,7 @@ export function createAiOrchestratorService(args: {
         projectId: coordinatorProjectId,
         projectRoot,
         workspaceRoot,
+        aiIntegrationService: aiIntegrationService ?? null,
         memoryService: plannerMemoryService,
         projectConfigService: projectConfigService ?? null,
         getMissionBudgetStatus: missionBudgetService
@@ -4271,6 +4265,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         skippedBlockedRuns += 1;
         continue;
       }
+      let ownsHealthSweepRun = false;
       if (activeHealthSweepRuns.has(run.id)) {
         // Interval/startup sweeps are opportunistic; manual/chat/status sweeps should wait briefly
         // so explicit health checks don't get dropped due to an in-flight background sweep.
@@ -4279,9 +4274,18 @@ Check all worker statuses and continue managing the mission from here. Read work
         while (activeHealthSweepRuns.has(run.id) && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 25));
         }
-        if (activeHealthSweepRuns.has(run.id)) continue;
+        if (activeHealthSweepRuns.has(run.id)) {
+          logger.debug("ai_orchestrator.health_sweep_explicit_overlap", {
+            runId: run.id,
+            reason
+          });
+          continue;
+        }
       }
-      activeHealthSweepRuns.add(run.id);
+      if (!activeHealthSweepRuns.has(run.id)) {
+        activeHealthSweepRuns.add(run.id);
+        ownsHealthSweepRun = true;
+      }
       try {
         if (disposed) break;
         sweeps += 1;
@@ -4595,7 +4599,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           error: error instanceof Error ? error.message : String(error)
         });
       } finally {
-        activeHealthSweepRuns.delete(run.id);
+        if (ownsHealthSweepRun) activeHealthSweepRuns.delete(run.id);
       }
     }
 
@@ -8973,8 +8977,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       ? buildComputerUseOwnerSnapshot({
           broker: computerUseArtifactBrokerService,
           owner: { kind: "mission", id: missionId },
-          policy: mission.computerUse,
-          requiredKinds: collectRequiredComputerUseKindsFromPhases(mission.phaseConfiguration?.selectedPhases ?? []),
           limit: 50,
         })
       : null;

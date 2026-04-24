@@ -1,13 +1,12 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ArrowCounterClockwise, PencilSimple } from "@phosphor-icons/react";
-import type { CtoCoreMemory, CtoIdentity, CtoSessionLogEntry, ExternalMcpAccessPolicy } from "../../../shared/types";
+import type { CtoCoreMemory, CtoIdentity, CtoSessionLogEntry } from "../../../shared/types";
 import { IdentityEditor } from "./IdentityEditor";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { inputCls, labelCls, textareaCls } from "./shared/designTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { ExternalMcpAccessEditor } from "../shared/ExternalMcpAccessEditor";
 import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
 import { getCtoPersonalityPreset } from "./identityPresets";
 import { CtoPromptPreview } from "./CtoPromptPreview";
@@ -41,7 +40,6 @@ export function CtoSettingsPanel({
   sessionLogs,
   onSaveIdentity,
   onSaveCoreMemory,
-  availableExternalMcpServers,
   onResetOnboarding,
 }: {
   identity: CtoIdentity | null;
@@ -49,7 +47,6 @@ export function CtoSettingsPanel({
   sessionLogs: CtoSessionLogEntry[];
   onSaveIdentity: (patch: Record<string, unknown>) => Promise<void>;
   onSaveCoreMemory: (patch: CoreMemoryPatch) => Promise<void>;
-  availableExternalMcpServers: string[];
   onResetOnboarding?: () => void;
 }) {
   const [identityEditing, setIdentityEditing] = useState(false);
@@ -57,9 +54,6 @@ export function CtoSettingsPanel({
   const [memoryDraft, setMemoryDraft] = useState({ projectSummary: "", criticalConventions: "", userPreferences: "", activeFocus: "", notes: "" });
   const [memorySaving, setMemorySaving] = useState(false);
   const [memoryError, setMemoryError] = useState<string | null>(null);
-  const [externalMcpDraft, setExternalMcpDraft] = useState<ExternalMcpAccessPolicy>({ allowAll: true, allowedServers: [], blockedServers: [] });
-  const [externalMcpSaving, setExternalMcpSaving] = useState(false);
-  const [externalMcpError, setExternalMcpError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!memoryEditing && coreMemory) {
@@ -72,14 +66,6 @@ export function CtoSettingsPanel({
       });
     }
   }, [coreMemory, memoryEditing]);
-
-  useEffect(() => {
-    setExternalMcpDraft({
-      allowAll: identity?.externalMcpAccess?.allowAll !== false,
-      allowedServers: [...new Set(identity?.externalMcpAccess?.allowedServers ?? [])],
-      blockedServers: [...new Set(identity?.externalMcpAccess?.blockedServers ?? [])],
-    });
-  }, [identity]);
 
   const handleSaveMemory = async () => {
     setMemorySaving(true); setMemoryError(null);
@@ -96,21 +82,12 @@ export function CtoSettingsPanel({
     finally { setMemorySaving(false); }
   };
 
-  const handleSaveExternalMcp = useCallback(async () => {
-    setExternalMcpSaving(true); setExternalMcpError(null);
-    try {
-      await onSaveIdentity({ externalMcpAccess: externalMcpDraft });
-    } catch (err) {
-      setExternalMcpError(err instanceof Error ? err.message : "Save failed.");
-    } finally { setExternalMcpSaving(false); }
-  }, [externalMcpDraft, onSaveIdentity]);
-
   const [settingsTab, setSettingsTab] = useState<"identity" | "brief" | "integrations">("identity");
 
   const SUB_TABS = [
     { id: "identity" as const, label: "Identity", tooltip: "CTO personality, model, and reasoning configuration." },
     { id: "brief" as const, label: "Brief", tooltip: "Project summary, conventions, and focus areas that persist across sessions." },
-    { id: "integrations" as const, label: "Integrations", tooltip: "MCP server access and OpenClaw bridge configuration." },
+    { id: "integrations" as const, label: "Integrations", tooltip: "OpenClaw bridge configuration." },
   ];
 
   return (
@@ -262,7 +239,7 @@ export function CtoSettingsPanel({
                     timestamp={s.createdAt}
                     title={s.summary}
                     status={s.capabilityMode}
-                    statusVariant={s.capabilityMode === "full_mcp" ? "success" : "muted"}
+                    statusVariant={s.capabilityMode === "full_tooling" ? "success" : "muted"}
                   />
                 ))}
               </div>
@@ -273,23 +250,6 @@ export function CtoSettingsPanel({
         {/* ── Integrations sub-tab ── */}
         {settingsTab === "integrations" && (
           <div className="space-y-4">
-            {/* MCP Access card */}
-            <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #3B82F6" }}>
-              <div className="text-xs font-semibold text-fg mb-3">MCP Access</div>
-              <ExternalMcpAccessEditor
-                value={externalMcpDraft}
-                availableServers={availableExternalMcpServers}
-                description="Controls which MCP servers the CTO and workers can access."
-                onChange={setExternalMcpDraft}
-              />
-              {externalMcpError && <div className="text-xs text-error mt-2">{externalMcpError}</div>}
-              <div className="flex justify-end mt-3">
-                <Button variant="outline" size="sm" disabled={externalMcpSaving} onClick={() => void handleSaveExternalMcp()}>
-                  {externalMcpSaving ? "Saving..." : "Save MCP Policy"}
-                </Button>
-              </div>
-            </div>
-
             {/* OpenClaw Bridge card */}
             <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #FB7185" }}>
               <div className="text-xs font-semibold text-fg mb-3">OpenClaw Bridge</div>

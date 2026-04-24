@@ -2,6 +2,9 @@ import type {
   AdeCleanupResult,
   AdeProjectEvent,
   AdeProjectSnapshot,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+  ProjectDetail,
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
   AttachLaneArgs,
@@ -62,8 +65,10 @@ import type {
   ExportHistoryResult,
   AgentTool,
   AgentChatApproveArgs,
+  AgentChatArchiveArgs,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
@@ -73,9 +78,12 @@ import type {
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
+  AgentChatParallelLaunchState,
+  AgentChatParallelLaunchStateArgs,
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
   AgentChatFileSearchArgs,
@@ -112,6 +120,7 @@ import type {
   ReviewRun,
   ReviewRunDetail,
   ReviewStartRunArgs,
+  AdeActionRegistryEntry,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -131,6 +140,8 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  AdeCliInstallResult,
+  AdeCliStatus,
   OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
@@ -139,6 +150,11 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
+  ApnsBridgeStatus,
+  ApnsBridgeSaveConfigArgs,
+  ApnsBridgeUploadKeyArgs,
+  ApnsBridgeSendTestPushArgs,
+  ApnsBridgeSendTestPushResult,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateCoreMemoryArgs,
@@ -204,16 +220,6 @@ import type {
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
   OpenclawBridgeStatus,
-  ExternalConnectionAuthRecord,
-  ExternalConnectionAuthRecordInput,
-  ExternalConnectionAuthStatus,
-  ExternalConnectionOAuthSessionResult,
-  ExternalConnectionOAuthSessionStartResult,
-  ExternalMcpManagedAuthConfig,
-  ExternalMcpServerConfig,
-  ExternalMcpServerSnapshot,
-  ExternalMcpEventPayload,
-  ExternalMcpUsageEvent,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   KeybindingOverride,
@@ -221,6 +227,8 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourProgress,
+  OnboardingTourVariant,
   GitActionResult,
   GitBranchSummary,
   GitCheckoutBranchArgs,
@@ -576,7 +584,6 @@ import type {
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
-  ComputerUseSettingsSnapshot,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -603,7 +610,7 @@ declare global {
         openPathInEditor: (args: {
           rootPath: string;
           relativePath?: string;
-          target: "finder" | "vscode" | "cursor" | "zed";
+          target: "default" | "finder" | "vscode" | "cursor" | "zed";
         }) => Promise<void>;
         logDebugEvent: (
           event: string,
@@ -616,6 +623,11 @@ declare global {
           title?: string;
           defaultPath?: string;
         }) => Promise<string | null>;
+        browseDirectories: (
+          args?: ProjectBrowseInput,
+        ) => Promise<ProjectBrowseResult>;
+        getDetail: (rootPath: string) => Promise<ProjectDetail>;
+        getDroppedPath: (file: File) => string;
         openAdeFolder: () => Promise<void>;
         clearLocalData: (
           args?: ClearLocalAdeDataArgs,
@@ -648,6 +660,7 @@ declare global {
       };
       sync: {
         getStatus: () => Promise<SyncRoleSnapshot>;
+        refreshDiscovery: () => Promise<SyncRoleSnapshot>;
         listDevices: () => Promise<SyncDeviceRuntimeState[]>;
         updateLocalDevice: (args: {
           name?: string;
@@ -660,49 +673,31 @@ declare global {
         forgetDevice: (deviceId: string) => Promise<SyncRoleSnapshot>;
         getTransferReadiness: () => Promise<SyncTransferReadiness>;
         transferBrainToLocal: () => Promise<SyncRoleSnapshot>;
+        getPin: () => Promise<{ pin: string | null }>;
+        setPin: (pin: string) => Promise<SyncRoleSnapshot>;
+        clearPin: () => Promise<SyncRoleSnapshot>;
+        setActiveLanePresence: (args: {
+          laneIds: string[];
+        }) => Promise<void>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };
-      externalMcp: {
-        listServers: () => Promise<ExternalMcpServerSnapshot[]>;
-        listConfigs: () => Promise<ExternalMcpServerConfig[]>;
-        getUsageEvents: (args?: {
-          limit?: number;
-        }) => Promise<ExternalMcpUsageEvent[]>;
-        listAuthRecords: () => Promise<ExternalConnectionAuthRecord[]>;
-        onEvent: (cb: (event: ExternalMcpEventPayload) => void) => () => void;
-        connectServer: (
-          serverName: string,
-        ) => Promise<ExternalMcpServerSnapshot>;
-        disconnectServer: (
-          serverName: string,
-        ) => Promise<ExternalMcpServerSnapshot | null>;
-        testServer: (
-          config: ExternalMcpServerConfig,
-        ) => Promise<ExternalMcpServerSnapshot>;
-        saveServer: (
-          config: ExternalMcpServerConfig,
-        ) => Promise<ExternalMcpServerConfig[]>;
-        removeServer: (
-          serverName: string,
-        ) => Promise<ExternalMcpServerConfig[]>;
-        saveAuthRecord: (
-          record: ExternalConnectionAuthRecordInput,
-        ) => Promise<ExternalConnectionAuthRecord>;
-        removeAuthRecord: (
-          authId: string,
-        ) => Promise<ExternalConnectionAuthRecord[]>;
-        getAuthStatus: (
-          binding?: ExternalMcpManagedAuthConfig | null,
-        ) => Promise<ExternalConnectionAuthStatus>;
-        startOAuthSession: (
-          authId: string,
-        ) => Promise<ExternalConnectionOAuthSessionStartResult>;
-        getOAuthSession: (
-          sessionId: string,
-        ) => Promise<ExternalConnectionOAuthSessionResult>;
+      notifications: {
+        apns: {
+          getStatus: () => Promise<ApnsBridgeStatus>;
+          saveConfig: (args: ApnsBridgeSaveConfigArgs) => Promise<ApnsBridgeStatus>;
+          uploadKey: (args: ApnsBridgeUploadKeyArgs) => Promise<ApnsBridgeStatus>;
+          clearKey: () => Promise<ApnsBridgeStatus>;
+          sendTestPush: (
+            args: ApnsBridgeSendTestPushArgs,
+          ) => Promise<ApnsBridgeSendTestPushResult>;
+        };
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
+      };
+      adeCli: {
+        getStatus: () => Promise<AdeCliStatus>;
+        installForUser: () => Promise<AdeCliInstallResult>;
       };
       devTools: {
         detect: (force?: boolean) => Promise<DevToolsCheckResult>;
@@ -713,6 +708,39 @@ declare global {
         detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
         setDismissed: (dismissed: boolean) => Promise<OnboardingStatus>;
         complete: () => Promise<OnboardingStatus>;
+        getTourProgress: () => Promise<OnboardingTourProgress>;
+        markWizardCompleted: () => Promise<OnboardingTourProgress>;
+        markWizardDismissed: () => Promise<OnboardingTourProgress>;
+        markTourCompleted: (tourId: string) => Promise<OnboardingTourProgress>;
+        markTourDismissed: (tourId: string) => Promise<OnboardingTourProgress>;
+        updateTourStep: (tourId: string, index: number) => Promise<OnboardingTourProgress>;
+        markGlossaryTermSeen: (termId: string) => Promise<OnboardingTourProgress>;
+        resetTourProgress: (tourId?: string) => Promise<OnboardingTourProgress>;
+        markTourCompletedVariant: (
+          tourId: string,
+          variant: OnboardingTourVariant,
+        ) => Promise<OnboardingTourProgress>;
+        markTourDismissedVariant: (
+          tourId: string,
+          variant: OnboardingTourVariant,
+        ) => Promise<OnboardingTourProgress>;
+        updateTourStepVariant: (
+          tourId: string,
+          variant: OnboardingTourVariant,
+          index: number,
+        ) => Promise<OnboardingTourProgress>;
+        tutorial: {
+          start: () => Promise<OnboardingTourProgress>;
+          dismiss: (permanent: boolean) => Promise<OnboardingTourProgress>;
+          complete: () => Promise<OnboardingTourProgress>;
+          updateAct: (
+            actIndex: number,
+            ctxSnapshot?: Record<string, unknown>,
+          ) => Promise<OnboardingTourProgress>;
+          setSilenced: (silenced: boolean) => Promise<OnboardingTourProgress>;
+          clearSessionDismissal: () => Promise<OnboardingTourProgress>;
+          shouldPrompt: () => Promise<boolean>;
+        };
       };
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;
@@ -757,6 +785,9 @@ declare global {
         startRun: (args: ReviewStartRunArgs) => Promise<ReviewRun>;
         rerun: (runId: string) => Promise<ReviewRun>;
         onEvent: (cb: (ev: ReviewEventPayload) => void) => () => void;
+      };
+      actions: {
+        listRegistry: () => Promise<AdeActionRegistryEntry[]>;
       };
       usage: {
         getSnapshot: () => Promise<UsageSnapshot | null>;
@@ -1011,6 +1042,7 @@ declare global {
           cb: (ev: RebaseSuggestionsEventPayload) => void,
         ) => () => void;
         listAutoRebaseStatuses: () => Promise<AutoRebaseLaneStatus[]>;
+        dismissAutoRebaseStatus: (args: { laneId: string }) => Promise<void>;
         onAutoRebaseEvent: (
           cb: (ev: AutoRebaseEventPayload) => void,
         ) => () => void;
@@ -1095,6 +1127,11 @@ declare global {
           args: AgentChatGetSummaryArgs,
         ) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
+        suggestLaneName: (args: AgentChatSuggestLaneNameArgs) => Promise<string>;
+        parallelLaunchState: {
+          get: (args: AgentChatParallelLaunchStateArgs) => Promise<AgentChatParallelLaunchState | null>;
+          set: (args: AgentChatSetParallelLaunchStateArgs) => Promise<void>;
+        };
         handoff: (
           args: AgentChatHandoffArgs,
         ) => Promise<AgentChatHandoffResult>;
@@ -1108,6 +1145,8 @@ declare global {
         respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
         dispose: (args: AgentChatDisposeArgs) => Promise<void>;
+        archive: (args: AgentChatArchiveArgs) => Promise<void>;
+        unarchive: (args: AgentChatArchiveArgs) => Promise<void>;
         delete: (args: AgentChatDeleteArgs) => Promise<void>;
         updateSession: (
           args: AgentChatUpdateSessionArgs,
@@ -1136,9 +1175,16 @@ declare global {
           data: string;
           filename: string;
         }) => Promise<{ path: string }>;
+        getEventHistory: (args: {
+          sessionId: string;
+          maxEvents?: number;
+        }) => Promise<{
+          sessionId: string;
+          events: AgentChatEventEnvelope[];
+          truncated: boolean;
+        }>;
       };
       computerUse: {
-        getSettings: () => Promise<ComputerUseSettingsSnapshot>;
         listArtifacts: (
           args?: ComputerUseArtifactListArgs,
         ) => Promise<ComputerUseArtifactView[]>;
@@ -1308,6 +1354,9 @@ declare global {
         getStatus: () => Promise<GitHubStatus>;
         setToken: (token: string) => Promise<GitHubStatus>;
         clearToken: () => Promise<GitHubStatus>;
+        detectRepo: () => Promise<{ owner: string; name: string } | null>;
+        listRepoLabels: (args: { owner: string; name: string }) => Promise<Array<{ name: string; color?: string }>>;
+        listRepoCollaborators: (args: { owner: string; name: string }) => Promise<Array<{ login: string; avatarUrl?: string }>>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;
@@ -1517,9 +1566,9 @@ declare global {
         listDefinitions: () => Promise<ProcessDefinition[]>;
         listRuntime: (laneId: string) => Promise<ProcessRuntime[]>;
         start: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
-        stop: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
+        stop: (args: ProcessActionArgs) => Promise<ProcessRuntime | null>;
         restart: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
-        kill: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
+        kill: (args: ProcessActionArgs) => Promise<ProcessRuntime | null>;
         startStack: (args: ProcessStackArgs) => Promise<void>;
         stopStack: (args: ProcessStackArgs) => Promise<void>;
         restartStack: (args: ProcessStackArgs) => Promise<void>;

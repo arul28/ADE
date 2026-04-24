@@ -1,6 +1,6 @@
 ---
 title: "Settings"
-description: "Complete reference for every setting in ADE — from AI provider management and budget caps to notifications, permissions, and developer tooling."
+description: "Reference for every section in ADE Settings — General, Appearance, Workspace, AI, Mobile Push, Integrations, Memory, Lane Templates, and Usage."
 icon: "sliders"
 ---
 
@@ -12,38 +12,42 @@ Access Settings from anywhere in ADE:
 - **Sidebar**: Click the gear icon (⚙) at the bottom of the left sidebar
 - **Menu bar**: ADE → Preferences
 
-Settings are organized into twelve sections in the left navigation panel. Changes in most sections take effect immediately — no restart required. Exceptions are noted in the relevant section below.
+Settings are organized into nine sections in the left navigation panel. Changes take effect immediately in most sections — no restart required. Exceptions are noted in the relevant section below.
 
 <CardGroup cols={3}>
-  <Card title="General" icon="sliders" href="#general">Project identity, theme, terminal preferences.</Card>
-  <Card title="AI Routing" icon="route" href="#ai-routing">Per-role models and context management.</Card>
-  <Card title="Context" icon="book" href="#context">Context doc generation and auto-refresh.</Card>
-  <Card title="Budget & Usage" icon="dollar-sign" href="#budget-usage">Caps, alerts, and spend graphs.</Card>
-  <Card title="AI Providers" icon="key" href="#ai-providers">API keys and default models per provider.</Card>
-  <Card title="Integrations" icon="plug" href="#integrations">GitHub, Linear, and external MCP.</Card>
-  <Card title="Computer Use" icon="desktop" href="#computer-use">Backend selection and proof requirements.</Card>
-  <Card title="CTO" icon="robot" href="#cto">Heartbeat, delegation, memory retention.</Card>
-  <Card title="Automations" icon="bolt" href="#automations">Global automation master switch.</Card>
-  <Card title="Permissions" icon="shield-check" href="#permissions">File, command, git, and network policy.</Card>
-  <Card title="Notifications" icon="bell" href="#notifications">Native and in-app event delivery.</Card>
-  <Card title="Developer" icon="code" href="#developer">Logs, DevTools, and database inspector.</Card>
+  <Card title="General" icon="sliders" href="#general">App-wide preferences, keybindings, onboarding, help.</Card>
+  <Card title="Appearance" icon="palette" href="#appearance">Theme, density, and visual options.</Card>
+  <Card title="Workspace" icon="folder-tree" href="#workspace">Project identity, paths, and context docs.</Card>
+  <Card title="AI" icon="brain" href="#ai">Providers, per-role models, context management.</Card>
+  <Card title="Mobile Push" icon="mobile" href="#mobile-push">iPhone pairing, tailnet discovery, and push notifications.</Card>
+  <Card title="Integrations" icon="plug" href="#integrations">GitHub, Linear, and proof backends.</Card>
+  <Card title="Memory" icon="database" href="#memory">Unified memory scopes, retention, consolidation.</Card>
+  <Card title="Lane Templates" icon="layer-group" href="#lane-templates">Reusable lane profiles and defaults.</Card>
+  <Card title="Usage" icon="bolt" href="#usage">Spend graphs and monthly totals across providers.</Card>
 </CardGroup>
+
+<Note>
+The former standalone **Sync** section has been folded into **Mobile Push**. Multi-device pairing, tailnet discovery, device registry, and push notification preferences now live in one place. Old links that pointed to `/settings/sync` automatically land on Mobile Push.
+</Note>
+
+<Note>
+Mobile Push is a local-only section that only appears in the desktop app (it manages device registration on this machine). Other sections sync across paired devices when multi-device sync is enabled.
+</Note>
 
 ---
 
 ## General
 
-Basic project identity and application-level preferences.
+App-wide preferences, keybindings, onboarding, and help shortcuts.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Project name | Display name shown in ADE's title bar | Derived from repository folder name |
-| Project description | Short description shown on Project Home | Empty |
-| Default working directory | Root directory for terminal sessions | Repository root |
-| Theme | UI color scheme | Default Dark |
 | Auto-update | Whether ADE checks for and installs updates automatically | On |
 | Beta channel | Opt in to receive pre-release builds | Off |
 | Telemetry | Anonymous usage metrics (no PII, no source code) | Opt-in prompt on first launch |
+| Keybindings | Review and customize keyboard shortcuts | Default mapping |
+| Tours | Re-trigger feature tours you have dismissed | — |
+| Help | Open the in-app help center | — |
 
 ### Terminal Preferences
 
@@ -57,9 +61,11 @@ Customize terminal rendering for all sessions (interactive, managed, and agent):
 
 Changes take effect immediately on all open terminal sessions without restart.
 
-### Themes
+---
 
-ADE ships with six themes selectable without restart:
+## Appearance
+
+Visual presentation of the ADE shell.
 
 <CardGroup cols={2}>
   <Card title="Default Dark" icon="moon">
@@ -82,27 +88,73 @@ ADE ships with six themes selectable without restart:
   </Card>
 </CardGroup>
 
+Theme changes take effect instantly and are saved per-device. Density and accent options live alongside the theme picker.
+
 ---
 
-## AI Routing
+## Workspace
 
-Control which model each agent role uses, and how ADE manages context windows.
+Project identity, file paths, and how ADE generates and refreshes context docs. This section combines what older builds split across a separate **Project** tab and **Context** tab.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Project name | Display name shown in ADE's title bar | Derived from repository folder name |
+| Project description | Short description shown on Project Home | Empty |
+| Default working directory | Root directory for terminal sessions | Repository root |
+| baseRef | Primary integration branch for PRs | `main` |
+| Context doc model | AI model used to regenerate project context docs | `claude-sonnet-4-6` |
+| Context doc reasoning effort | Depth of analysis during generation | Default (model decides) |
+| Auto-refresh events | Which project events trigger automatic doc regeneration | On PR create, On mission start |
+
+### Auto-Refresh Events
+
+Toggle individual events that trigger a context doc regeneration:
+
+- **On session end** — regenerate when a terminal/agent session ends
+- **On commit** — regenerate when a commit is created
+- **On PR create** — regenerate when a pull request is created or updated
+- **On PR land** — regenerate when a pull request is merged
+- **On mission start** — regenerate when a mission launches
+- **On mission end** — regenerate when a mission completes
+- **On lane create** — regenerate when a new lane is created
+
+Preferences are saved automatically and persist across sessions.
+
+---
+
+## AI
+
+Everything related to AI: provider credentials, per-role model overrides, context window management, and response streaming. This section replaces the older split between "AI Routing" and "AI Providers".
+
+### Providers
+
+Manage API keys for all configured providers. This section is a GUI layer over `local.secret.yaml`. Changes saved here write directly to that file.
+
+For full provider setup instructions, see [AI Providers](/configuration/ai-providers).
+
+| Action | How |
+|--------|-----|
+| Add API key | Click **Add Key** next to the provider, enter the key value |
+| Rotate key | Click **Rotate** — enter the new key. ADE swaps the key in memory immediately. |
+| Revoke key | Click **Revoke** — ADE removes the key from `local.secret.yaml` and memory. Agents using that provider will fail until a new key is added. |
+| Test connection | Click **Test Connection** — ADE sends a minimal request and reports success or the error message |
+| Set default model | Dropdown per provider — writes to `ade.yaml` (requires SHA re-approval if other fields changed) |
 
 ### Per-Role Model Overrides
 
-ADE's default model applies to all agents unless you set role-specific overrides. Role overrides let you optimize cost and quality by matching model capability to task complexity.
+ADE's default model applies to all agents unless you set role-specific overrides here.
 
 | Role | Description | Recommended Model |
 |------|-------------|-----------------|
-| Orchestrator | Mission planning and worker coordination | `claude-opus-4-6` |
+| Orchestrator | Mission planning and worker coordination | `claude-opus-4-7` |
 | Worker | Mission execution tasks | `claude-sonnet-4-6` |
 | Validator | Mission validation and review | `claude-sonnet-4-6` |
 | Automation | Event-driven automation runs | `claude-haiku-4-5` |
 | Chat | Interactive chat sessions | `claude-sonnet-4-6` |
-| CTO | Project-level memory and delegation | `claude-opus-4-6` |
+| CTO | Project-level memory and delegation | `claude-opus-4-7` |
 
 <Tip>
-Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-6` for mission planning is the single most impactful cost optimization for users running frequent automations. Most PR-review and routine triage tasks do not require Opus-level reasoning.
+Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-7` for mission planning is the single most impactful cost optimization for users running frequent automations. Most PR-review and routine triage tasks do not require Opus-level reasoning.
 </Tip>
 
 ### Context Management
@@ -123,90 +175,65 @@ Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-6` fo
 
 ---
 
-## Context
+## Mobile Push
 
-Settings for context doc generation and refresh behavior. Context docs (PRD, architecture overview) are synthesized from your codebase and injected into agent sessions as project-level context.
+One consolidated section for everything that talks to your phone and other devices — pairing, tailnet discovery, and push notifications. The former standalone Sync section has been folded into this panel.
+
+<Note>
+Mobile Push is local to the desktop install (it manages device registration on this machine). It is hidden on builds that do not ship the iOS companion.
+</Note>
+
+### Pair a device
+
+<Steps>
+  <Step title="Open Settings → Mobile Push">
+    Navigate to **Settings → Mobile Push**.
+  </Step>
+  <Step title="Scan the QR code on your iPhone">
+    Open the ADE iOS app and scan the registration QR code. The device is registered to your ADE install within a few seconds.
+  </Step>
+  <Step title="Choose which events trigger a push">
+    Toggle individual event types. The most useful defaults: mission complete, mission failed, and intervention required.
+  </Step>
+</Steps>
+
+Multiple iOS devices can be registered and each receives the same notifications. Devices are listed with their registration date and last-received timestamp. Tap **Remove** next to any device to deregister it.
+
+### Tailnet discovery
+
+If your Mac is on a Tailscale tailnet, ADE tries to publish a stable service name so phones can reconnect without a fresh QR scan each time. The panel surfaces one of three states:
+
+- **Direct Tailscale ready** — your Mac has a normal Tailscale address, so the QR code includes it. Phones can connect through Tailscale without any extra setup. Only the optional stable service shortcut is blocked.
+- **Published** — ADE has registered a stable service name on the tailnet and phones can discover it automatically.
+- **Tailscale setup needed** — automatic discovery is blocked because Tailscale policy requires a tagged node for service hosting. Local pairing still works; retry after a tailnet admin enables service hosting for this Mac.
+
+The panel hides itself entirely when Tailscale is not configured, so there is no noise on single-device installs.
+
+### Sync settings
+
+The pairing panel also surfaces everything the old Sync section managed:
 
 | Setting | Description | Default |
-|---------|-------------|---------|
-| Generation model | AI model used to generate context docs | `claude-sonnet-4-6` |
-| Reasoning effort | Depth of analysis during generation | Default (model decides) |
-| Auto-refresh events | Which project events trigger automatic doc regeneration | On PR create, On mission start |
+|---|---|---|
+| Sync enabled | Master switch for multi-device sync | Off until first pair |
+| Device name | Friendly name for this device in the registry | Hostname |
+| Paired devices | List of devices paired with this install | — |
+| Sync transport | How changes are exchanged (local WebSocket, relay) | Local |
+| Sync history | Per-domain last-synced timestamps | — |
 
-### Auto-Refresh Events
-
-Toggle individual events that trigger a context doc regeneration:
-
-- **On session end** — regenerate when a terminal/agent session ends
-- **On commit** — regenerate when a commit is created
-- **On PR create** — regenerate when a pull request is created or updated
-- **On PR land** — regenerate when a pull request is merged
-- **On mission start** — regenerate when a mission launches
-- **On mission end** — regenerate when a mission completes
-- **On lane create** — regenerate when a new lane is created
-
-Preferences are saved automatically and persist across sessions.
-
----
-
-## Budget & Usage
-
-Track and control AI spending across all agents and providers.
-
-### Budget Caps
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Per-session cap | Maximum USD per chat session | $1.00 |
-| Per-mission cap | Maximum USD across all workers in a single mission | $10.00 |
-| Per-automation cap | Maximum USD per automation trigger | $0.50 |
-| Monthly total cap | Hard ceiling across all providers, agents, and sessions | $100.00 |
-
-<Warning>
-The monthly cap is a hard stop. Once reached, all agent activity (chat, missions, automations, CTO heartbeats) pauses until either the cap is raised in Settings → Budget or the calendar month rolls over. ADE sends a notification when you reach 80% and again at 100% of the monthly cap.
-</Warning>
-
-### Alert Thresholds
-
-Configure when ADE notifies you of approaching budget limits:
-
-- **Session warning**: Alert at 80% of per-session cap (default on)
-- **Mission warning**: Alert at 80% of per-mission cap (default on)
-- **Monthly warning**: Alert at 80% and 95% of monthly cap (default on)
-
-### Usage Graphs
-
-The usage panel shows three graph views, each switchable between bar and line charts:
-
-- **Daily**: Per-day spend for the last 30 days, broken down by provider
-- **Weekly**: Per-week totals for the last 12 weeks, broken down by agent role
-- **Monthly**: Per-month totals for the last 12 months, broken down by lane
-
-Click any bar segment to drill into the individual sessions or missions that contributed to that spend.
-
----
-
-## AI Providers
-
-Manage API keys for all configured providers. This section is a GUI layer over `local.secret.yaml`. Changes saved here write directly to that file.
-
-For full provider setup instructions, see [AI Providers](/configuration/ai-providers).
-
-| Action | How |
-|--------|-----|
-| Add API key | Click **Add Key** next to the provider, enter the key value |
-| Rotate key | Click **Rotate** — enter the new key. ADE swaps the key in memory immediately. |
-| Revoke key | Click **Revoke** — ADE removes the key from `local.secret.yaml` and memory. Agents using that provider will fail until a new key is added. |
-| Test connection | Click **Test Connection** — ADE sends a minimal request and reports success or the error message |
-| Set default model | Dropdown per provider — writes to `ade.yaml` (requires SHA re-approval if other fields changed) |
+<Note>
+Sync uses cr-sqlite for CRDT replication. Missions, lanes, memory, and session history all replicate. `.ade/artifacts/` blobs are fetched on demand by the requesting device.
+</Note>
 
 ---
 
 ## Integrations
 
+External services ADE connects to.
+
 ### GitHub
 
-ADE uses GitHub OAuth for PR management. This is distinct from the GitHub MCP server (which uses a token).
+ADE uses GitHub OAuth for PR management. A GitHub token can also be supplied in `local.secret.yaml` for automation workflows that run without an interactive login.
 
 | Setting | Description |
 |---------|-------------|
@@ -218,7 +245,7 @@ ADE uses GitHub OAuth for PR management. This is distinct from the GitHub MCP se
 
 ### Linear
 
-ADE connects to Linear for bidirectional issue sync. Configure in Settings → Integrations → Linear.
+ADE connects to Linear for bidirectional issue sync.
 
 | Setting | Description |
 |---------|-------------|
@@ -228,131 +255,65 @@ ADE connects to Linear for bidirectional issue sync. Configure in Settings → I
 | Label mappings | Map ADE mission states to Linear issue labels |
 | Issue → Lane auto-create | Automatically create a lane when a Linear issue is assigned to you |
 
-### External MCP
+### Proof Backends
 
-Shortcut to the External MCP server management panel. For full documentation, see [MCP Servers](/configuration/mcp-servers).
+ADE stores intentional proof artifacts (screenshots, recordings, traces) that agents capture via the `ade proof` CLI. This panel shows which capture backends are available on the current machine and their health state.
+
+For full proof documentation, see [Proof](/computer-use/overview).
 
 ---
 
-## Computer Use
+## Memory
 
-Configure which computer-use backend ADE uses for agent-driven browser and desktop automation.
+ADE's unified memory system replaces the older context pack, CTO memory, and chat memory layers. Memory is organized into three scopes and three tiers.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Backend | `ghost-os`, `agent-browser`, or `ade-local` | `ade-local` |
-| Connection URL | URL for Ghost OS or remote backends | — |
-| Auto-connect on launch | Connect to the backend when ADE starts | On |
-| Default proof requirements | Which action types require screenshot proof | Screenshots for all write actions |
-| Proof storage location | Where captured screenshots and traces are saved | `.ade/artifacts/computer-use/` |
+| Project memory cap | Max entries at project scope | 2,000 |
+| Agent memory cap | Max entries per agent scope | 500 |
+| Mission memory cap | Max entries per mission scope | 200 |
+| Tier 1 cap | Max pinned entries per scope | 20 |
+| Consolidation schedule | How often ADE runs its weekly memory consolidation batch | Weekly |
+| Vector store | On-device sqlite-vec index with local embedding model | On |
 
-The capability matrix at the bottom of this section shows which features each backend supports (screenshots, video recording, DOM access, file download interception, etc.).
-
-For full computer use documentation, see [Computer Use](/computer-use/overview).
-
----
-
-## CTO
-
-Settings for the always-on CTO agent that monitors your project and manages workers.
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| CTO enabled | Enable or disable the CTO agent entirely | On |
-| Heartbeat interval | How often the CTO runs its check-in loop | 15 minutes |
-| Default worker budget | USD budget allocated to each worker the CTO spawns | $2.00 |
-| Memory retention | How long to retain project memory entries before summarizing | 30 days |
-| Linear sync | `bidirectional`, `read-only`, or `disabled` | bidirectional |
-| Auto-delegation | Allow CTO to spawn workers without asking for approval | Off |
-| Auto-delegation threshold | Only auto-delegate tasks with estimated cost below this value | $1.00 |
-
-<Note>
-The heartbeat interval controls how frequently the CTO agent wakes up to review open issues, pending missions, and project health. A shorter interval (e.g., 1 minute) gives more responsive CTO behavior but increases AI spend. For most projects, 15 minutes is the right balance.
-</Note>
+Entries are scored with a composite of semantic similarity, recency, importance, confidence, and access frequency. Temporal decay has a 30-day half-life; entries fall from Tier 2 to Tier 3 at 90 days and auto-archive at 180 days.
 
 ---
 
-## Automations
+## Lane Templates
 
-Global controls for the automation system.
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Automations enabled | Master switch for all automation rules | On |
-| View all automations | Link to the Automations tab | — |
-
----
-
-## Permissions
-
-High-level controls for what agents are allowed to do. For the full security model, see [Permissions](/configuration/permissions).
-
-### File Path Restrictions
-
-Configure which filesystem paths agents can read and write:
-
-- **Allowed paths**: Glob patterns. Agents can only access files matching these patterns. Empty = all paths accessible (within the worktree).
-- **Blocked paths**: Agents can never access files matching these patterns, regardless of `allowedPaths`.
-
-### Terminal Command Policy
+Reusable lane configurations. A template captures the default branch base, working directory pattern, environment overlays, terminal profile, and starting tool palette — so that new lanes can be created with a single click.
 
 | Setting | Description |
 |---------|-------------|
-| Command allow list | Agents may only run commands matching these patterns. Empty = all commands allowed. |
-| Command block list | Agents may never run commands matching these patterns. Takes precedence over allow list. |
-| Ask-first mode | Agents must request approval before running commands not on the allow list |
-
-### Git Restrictions
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Protected branches | Regex patterns for branches agents cannot push to | `main`, `master`, `production` |
-| Allow force push | Whether agents can run `git push --force` | Off (always) |
-| Require commit message template | Validate agent commits against a message format | Off |
-
-### Network Access
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Network policy | `allow-all`, `allow-list`, or `block-list` | allow-all |
-| Allowed domains | Domains agents can reach (allow-list mode only) | — |
-| Blocked domains | Domains agents can never reach (block-list mode only) | — |
+| Manage templates | Create, edit, or delete templates |
+| Default template | Which template is pre-selected in the New Lane dialog |
+| Starter content | Files or scripts that run the first time a lane is created from the template |
 
 ---
 
-## Notifications
+## Usage
 
-Control how and when ADE notifies you of important events.
+Spend tracking and monthly totals across all providers, agents, and sessions.
 
-| Event | macOS notification | In-app banner |
-|-------|-------------------|---------------|
-| Mission complete | Configurable | Always |
-| Mission failed | Configurable | Always |
-| Budget warning (80%) | Configurable | Always |
-| Budget cap reached | Always on | Always |
-| Conflict detected | Configurable | Configurable |
-| PR status change | Configurable | Configurable |
-| Automation triggered | Off | Configurable |
-| Automation completed | Configurable | Off |
-| CTO delegation request | Always on | Always on |
+The usage panel shows three graph views, each switchable between bar and line charts:
 
----
+- **Daily**: Per-day spend for the last 30 days, broken down by provider
+- **Weekly**: Per-week totals for the last 12 weeks, broken down by agent role
+- **Monthly**: Per-month totals for the last 12 months, broken down by lane
 
-## Developer
+Click any bar segment to drill into the individual sessions or missions that contributed to that spend.
 
-Settings for debugging, diagnostics, and low-level access.
+### Monthly Cap
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Log level | `error`, `warn`, `info`, `debug`, `verbose` | `info` |
-| Log file location | Where ADE writes its log files | `~/Library/Logs/ADE/` |
-| Open DevTools | Opens Electron DevTools for the renderer process | — |
-| MCP debug mode | Enables verbose JSON-RPC logging for all MCP calls | Off |
-| Database inspector | Opens a read-only browser of ADE's SQLite database | — |
-| Reset to defaults | Resets all settings to factory defaults (does not affect `local.secret.yaml`) | — |
+| Monthly total cap | Hard ceiling across all providers, agents, and sessions | $100.00 |
+| Warning threshold | Alert at this percentage of the monthly cap | 80% |
+| Hard stop | Pause all agent activity when the cap is reached | On |
 
 <Warning>
-`verbose` log level logs every MCP tool call including parameters. Do not use verbose logging in production environments — it may produce large log files and can expose non-secret parameters in plaintext. API keys are always redacted regardless of log level.
+The monthly cap is a hard stop. Once reached, all agent activity (chat, missions, automations, CTO heartbeats) pauses until either the cap is raised or the calendar month rolls over. ADE sends a notification when you reach 80% and again at 100%.
 </Warning>
 
 ---
@@ -364,33 +325,27 @@ Settings for debugging, diagnostics, and low-level access.
     Prioritize speed and cost efficiency:
 
     - **Default model**: `claude-sonnet-4-6`
-    - **Orchestrator model**: `claude-opus-4-6`
+    - **Orchestrator model**: `claude-opus-4-7`
     - **Automation model**: `claude-haiku-4-5`
-    - **Per-session budget**: $2.00
     - **Monthly cap**: $50.00
-    - **CTO heartbeat**: 15 minutes
-    - **Notifications**: Mission complete + Budget warning
+    - **Auto-refresh events**: On PR create + On mission start
   </Tab>
   <Tab title="Small Team">
     Emphasize observability and shared standards:
 
-    - Commit `ade.yaml` with agreed model defaults and budget caps
+    - Commit `ade.yaml` with agreed model defaults and monthly cap
     - Each developer maintains their own `local.yaml` with personal model preferences
-    - Set conservative `blockedTools` on external MCP servers (block destructive operations)
     - Enable **PR auto-link** in GitHub integration
     - Enable bidirectional Linear sync
-    - Turn on **Ask-first mode** for terminal commands in Permissions
-    - Set CTO auto-delegation to Off (manual approval for worker spawns)
+    - Keep lane templates in the repo so new teammates get the same defaults
   </Tab>
   <Tab title="Power User">
     Maximize throughput with fine-grained control:
 
     - Configure per-role model routing (Opus for planning, Sonnet for execution, Haiku for automation)
-    - Set a high monthly cap and use per-mission caps to control individual runs
-    - Enable multiple external MCP servers (GitHub, filesystem, Ghost OS)
+    - Set a high monthly cap and lean on the Usage panel to spot runaway spend
     - Set compaction threshold to 60% for earlier and more frequent compaction
-    - Enable verbose MCP debug logging only when diagnosing specific issues
-    - `autoStart: true` on all frequently-used MCP servers
+    - Pair an iPhone from **Mobile Push** so pages land on your phone when a mission needs intervention
   </Tab>
 </Tabs>
 
@@ -401,15 +356,15 @@ Settings for debugging, diagnostics, and low-level access.
 | Setting | Shared in `ade.yaml` | Personal in `local.yaml` |
 |---------|---------------------|-------------------------|
 | Default AI model | Yes | Override per-machine |
-| Budget caps | Yes (defaults) | Override per-machine |
-| Lane profiles | Yes | No |
+| Monthly cap | Yes (defaults) | Override per-machine |
+| Lane templates | Yes | No |
 | Automation definitions | Yes | No |
 | Process definitions | Yes | No |
 | Test suite config | Yes | No |
 | Theme | No | Yes |
 | Editor font size | No | Yes |
 | Terminal shell | No | Yes |
-| Notification preferences | No | Yes |
+| Mobile Push device list | No | Yes (local-only) |
 | API keys | Never | In `local.secret.yaml` |
 
 ---
@@ -420,9 +375,6 @@ Settings for debugging, diagnostics, and low-level access.
   <Card title="AI Providers" icon="robot" href="/configuration/ai-providers">
     Deep dive into configuring Anthropic, OpenAI, OpenRouter, and local models.
   </Card>
-  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
-    Connect and manage external MCP servers for GitHub, Slack, filesystem, and more.
-  </Card>
   <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
     Understand the full trust boundary model and configure per-agent access rules.
   </Card>
@@ -430,3 +382,5 @@ Settings for debugging, diagnostics, and low-level access.
     Review the .ade/ directory structure and the three config file layers.
   </Card>
 </CardGroup>
+</content>
+</invoke>

@@ -143,8 +143,8 @@ describe("chatTranscriptRows", () => {
         timestamp: "2026-03-17T10:00:00.000Z",
         event: {
           type: "tool_call",
-          tool: "mcp__ade__memory_search",
-          args: { query: "stash", title: "mcp__ade__memory_search", kind: "other" },
+          tool: "memory_search",
+          args: { query: "stash", title: "memory_search", kind: "other" },
           itemId: "tool-1",
           turnId: "turn-1",
         },
@@ -168,8 +168,8 @@ describe("chatTranscriptRows", () => {
     if (rows[0]!.event.type !== "work_log_entry") {
       throw new Error("Expected a work log entry");
     }
-    expect(rows[0]!.event.entry.toolName).toBe("mcp__ade__memory_search");
-    expect(rows[0]!.event.entry.label).toBe("mcp__ade__memory_search");
+    expect(rows[0]!.event.entry.toolName).toBe("memory_search");
+    expect(rows[0]!.event.entry.label).toBe("memory_search");
     expect(rows[0]!.event.entry.status).toBe("completed");
   });
 

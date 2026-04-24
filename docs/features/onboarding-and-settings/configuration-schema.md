@@ -28,6 +28,7 @@ trust metadata.
 type ProjectConfigFile = {
   version?: number;
   processes?: ConfigProcessDefinition[];
+  processGroups?: ConfigProcessGroupDefinition[];
   stackButtons?: ConfigStackButtonDefinition[];
   testSuites?: ConfigTestSuiteDefinition[];
   laneOverlayPolicies?: ConfigLaneOverlayPolicy[];
@@ -59,6 +60,7 @@ type ProcessDefinition = {
   command: string[];          // e.g. ["npm", "run", "dev"]
   cwd: string;                // relative to lane worktree
   env: Record<string, string>;
+  groupIds: string[];         // refs into processGroups, for Run-page filtering
   autostart: boolean;
   restart: "never" | "on-failure" | "always" | "on_crash";
   gracefulShutdownMs: number;
@@ -74,6 +76,32 @@ Consumed by `processService`. See
 [../terminals-and-sessions/pty-and-processes.md](../terminals-and-sessions/pty-and-processes.md)
 for the lifecycle and backoff details.
 
+`groupIds` is purely a UI organization concept. The Run page's group
+chip row filters the visible command cards to those whose `groupIds`
+include the active chip; it does **not** affect start order or
+dependency resolution (those belong to `dependsOn` and stacks). Shared
+and local configs merge `groupIds` by entry: if `local.yaml` specifies
+`groupIds` for a process, it replaces the shared value entirely;
+otherwise the shared value is preserved.
+
+## Process groups
+
+```ts
+type ProcessGroupDefinition = {
+  id: string;
+  name: string;
+};
+```
+
+`EffectiveProjectConfig.processGroups` is merged `by id` across shared
+and local, with `name` falling back to `id` when a group was declared
+without one. Validation requires non-empty `id`, unique `id` per array,
+non-empty `name` (pre-fallback), and any `ProcessDefinition.groupIds`
+entry to reference an existing group. Groups persist in shared config
+(`.ade/ade.yaml`) because they represent project-wide categorization;
+local config rarely introduces its own groups, but merging is supported
+for completeness.
+
 ## Stacks
 
 ```ts
@@ -85,8 +113,11 @@ type StackButtonDefinition = {
 };
 ```
 
-A stack is a named group of processes that start/stop together.
+A stack is a named collection of processes that start/stop together.
 `dependency` ordering runs topologically with cycle detection.
+Stacks and process groups are deliberately separate concepts: stacks
+define execution bundles (Start/Stop/Restart All), groups define
+filter categories in the Run page.
 
 ## Tests
 
@@ -234,7 +265,6 @@ type AiConfig = {
   apiKeys?: Record<string, string>;       // stored encrypted per provider
   localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
-  mcpServers?: Record<string, unknown>;
   featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   sessionIntelligence?: SessionIntelligenceConfig;
@@ -252,6 +282,12 @@ summaries:
 - `titles.refreshOnComplete`
 - `titles.modelId`
 - `summaries.enabled` and similar
+
+Legacy `ai.chat.autoTitleEnabled`, `ai.chat.autoTitleModelId`, and
+`ai.chat.autoTitleRefreshOnComplete` are read on load and migrated
+into `sessionIntelligence.titles.*` by `coerceAiConfig`. They are
+no longer written back — once a project is loaded, writes go to the
+`sessionIntelligence` tree only.
 
 ## Automations
 
@@ -298,9 +334,9 @@ The service does a shallow-first, deep-on-known-fields merge:
 
 1. `shared` is the base.
 2. `local` overlays per top-level field. For arrays (`processes`,
-   `stackButtons`, `testSuites`, `laneTemplates`, `automations`,
-   `laneOverlayPolicies`), entries are matched by `id`; matches are
-   deep-merged, non-matches from `local` are appended.
+   `processGroups`, `stackButtons`, `testSuites`, `laneTemplates`,
+   `automations`, `laneOverlayPolicies`), entries are matched by `id`;
+   matches are deep-merged, non-matches from `local` are appended.
 3. Scalar fields in `local` override `shared` when set.
 4. The merged result is normalized and strict-typed into
    `EffectiveProjectConfig`. Unknown fields produce validation

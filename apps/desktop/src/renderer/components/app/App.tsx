@@ -16,6 +16,8 @@ const Router = (window as any).__adeBrowserMock ? BrowserRouter : HashRouter;
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
+import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
+import { GlossaryPage } from "../onboarding/GlossaryPage";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 
 const LanesPage = React.lazy(() =>
@@ -39,6 +41,9 @@ const HistoryPage = React.lazy(() =>
 const AutomationsPage = React.lazy(() =>
   import("../automations/AutomationsPage").then((m) => ({ default: m.AutomationsPage }))
 );
+const AutomationsTemplatesPage = React.lazy(() =>
+  import("../automations/AutomationsTemplatesPage").then((m) => ({ default: m.AutomationsTemplatesPage }))
+);
 const SettingsPage = React.lazy(() =>
   import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
 );
@@ -61,7 +66,7 @@ const StartupSplashScreen = (
     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60vw] h-[60vw] max-w-[600px] max-h-[600px] rounded-full opacity-20 blur-[100px] pointer-events-none" style={{ background: "var(--color-accent)" }} />
     <div className="relative z-10 flex flex-col items-center animate-fade-in-up">
       <div className="flex items-center justify-center mb-6" style={{ animation: "pulse-glow 2.5s infinite ease-in-out" }}>
-        <img src="./logo.png" alt="ADE Logo" className="w-64 h-64 object-contain" />
+        <img src="./logo.png" alt="ADE Logo" className="h-[240px] w-[420px] max-w-[72vw] object-contain" />
       </div>
       <div className="flex flex-col items-center gap-2">
         <div className="text-xl font-bold tracking-tight text-fg">Starting ADE</div>
@@ -205,12 +210,14 @@ export function App() {
   return (
     <Router>
       <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
+        <OnboardingBootstrap />
         <Routes>
           <Route path="/startup" element={<Navigate to="/work" replace />} />
           <Route element={<ShellLayout />}>
             <Route path="/" element={<Navigate to="/work" replace />} />
             <Route path="/project" element={guarded(<RunPage />)} />
             <Route path="/onboarding" element={guarded(<ProjectSetupPage />)} />
+            <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
             <Route path="/lanes" element={guardedLazy(<LanesPage />)} />
             <Route path="/files" element={guardedLazy(<FilesPage />)} />
             <Route path="/work" element={guardedLazy(<TerminalsPage />)} />
@@ -219,6 +226,7 @@ export function App() {
             <Route path="/review" element={guardedLazy(<ReviewPage />)} />
             <Route path="/history" element={guardedLazy(<HistoryPage />)} />
             <Route path="/automations" element={guardedLazy(<AutomationsPage />)} />
+            <Route path="/automations/templates" element={guardedLazy(<AutomationsTemplatesPage />)} />
             <Route path="/missions" element={guardedLazy(<MissionsPage />)} />
             <Route path="/cto" element={guardedLazy(<CtoPage />)} />
             <Route path="/settings" element={guardedLazy(<SettingsPage />)} />

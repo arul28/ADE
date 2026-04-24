@@ -74,7 +74,7 @@ function readPendingInputQuestion(value: unknown): PendingInputQuestion | null {
   };
 }
 
-function readPendingInputRequest(value: unknown): PendingInputRequest | null {
+export function readPendingInputRequest(value: unknown): PendingInputRequest | null {
   const record = readRecord(value);
   if (!record) return null;
   const requestId = typeof record.requestId === "string" ? record.requestId.trim() : "";
@@ -105,7 +105,9 @@ function readPendingInputRequest(value: unknown): PendingInputRequest | null {
   };
 }
 
-function buildLegacyPendingInputFromApprovalEvent(envelope: AgentChatEventEnvelope): PendingInputRequest | null {
+export function buildLegacyPendingInputFromApprovalEvent(
+  envelope: AgentChatEventEnvelope | { event: AgentChatEventEnvelope["event"] },
+): PendingInputRequest | null {
   const event = envelope.event;
   if (event.type !== "approval_request") return null;
   const detail = readRecord(event.detail);

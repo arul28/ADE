@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { GitBranch, Plus } from "@phosphor-icons/react";
+import { Plus } from "@phosphor-icons/react";
 import {
-  createDefaultComputerUsePolicy,
   inferAttachmentType,
+  PARALLEL_CHAT_MAX_ATTACHMENTS,
   type AgentChatApprovalDecision,
   type AgentChatClaudePermissionMode,
   type AgentChatCodexApprovalPolicy,
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
+  type AgentChatCursorConfigValue,
   type AgentChatExecutionMode,
   type AgentChatEventEnvelope,
   type AgentChatFileRef,
@@ -18,17 +19,18 @@ import {
   type AiRuntimeConnectionStatus,
   type AgentChatSession,
   type AgentChatOpenCodePermissionMode,
+  type AgentChatParallelLaunchState,
   type AgentChatSessionProfile,
   type ChatSurfaceChip,
   type ChatSurfaceProfile,
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
   type ComputerUseOwnerSnapshot,
-  type ComputerUsePolicy,
   type AiSettingsStatus,
   type TerminalToolType,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -38,6 +40,7 @@ import {
   getModelById,
   getModelDescriptorForPermissionMode,
   parseLocalProviderFromModelId,
+  resolveProviderGroupForModel,
   resolveModelDescriptorForProvider,
   type LocalProviderFamily,
   type ModelDescriptor,
@@ -45,9 +48,8 @@ import {
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
-import { AgentChatComposer } from "./AgentChatComposer";
+import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
-import { AgentQuestionModal } from "./AgentQuestionModal";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -58,7 +60,7 @@ import {
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
-import { chatChipToneClass } from "./chatSurfaceTheme";
+import { chatChipToneClass, providerChatAccent } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
@@ -68,24 +70,28 @@ import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { useClickOutside } from "../../hooks/useClickOutside";
-import { useAppStore } from "../../state/appStore";
+import { DEFAULT_CHAT_FONT_SIZE_PX, useAppStore } from "../../state/appStore";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
+const PROJECT_CONTEXT_DOC_PATHS = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"] as const;
+export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
-const CHAT_HISTORY_READ_MAX_BYTES = 900_000;
+const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
-const MAX_SELECTED_CHAT_SESSION_EVENTS = 1_200;
-const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 240;
+const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
+const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
 
 type AiStatusSnapshot = AiSettingsStatus & {
   runtimeConnections?: Record<string, AiRuntimeConnectionStatus>;
@@ -163,13 +169,12 @@ function LocalRuntimeNoticeBlock(props: {
   );
 }
 
-export function resolveChatSessionProfile(_computerUsePolicy: ComputerUsePolicy): AgentChatSessionProfile {
+export function resolveChatSessionProfile(): AgentChatSessionProfile {
   return "workflow";
 }
 
 export function shouldPromoteSessionForComputerUse(
   session: Pick<AgentChatSessionSummary, "sessionProfile"> | null | undefined,
-  _computerUsePolicy: ComputerUsePolicy,
 ): boolean {
   return session?.sessionProfile !== "workflow";
 }
@@ -255,7 +260,13 @@ type NativeControlState = {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   cursorModeId: string | null;
-  cursorConfigValues: Record<string, string | boolean>;
+  cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
+};
+
+type ParallelModelRowState = NativeControlState & {
+  modelId: string;
+  reasoningEffort: string | null;
+  executionMode: AgentChatExecutionMode;
 };
 
 function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
@@ -286,16 +297,33 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
 type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "opencode";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
-  if (!desc?.isCliWrapped) return "opencode";
-  if (desc.family === "openai") return "codex";
-  if (desc.family === "cursor") return "cursor";
-  return "claude";
+  return desc ? resolveProviderGroupForModel(desc) : "opencode";
 }
 
 function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registryModelId: string): string {
   if (!desc?.isCliWrapped) return registryModelId;
   if (desc.family === "cursor" || desc.family === "openai") return desc.providerModelId || registryModelId;
   return desc.shortId ?? registryModelId;
+}
+
+function nativeControlSliceFromParallelSlot(slot: ParallelModelRowState): NativeControlState {
+  const { modelId: _, reasoningEffort: _re, executionMode: _em, ...native } = slot;
+  return native;
+}
+
+function cloneParallelSlotFromComposer(args: {
+  native: NativeControlState;
+  modelId: string;
+  reasoningEffort: string | null;
+  executionMode: AgentChatExecutionMode;
+}): ParallelModelRowState {
+  return {
+    ...args.native,
+    cursorConfigValues: { ...args.native.cursorConfigValues },
+    modelId: args.modelId,
+    reasoningEffort: args.reasoningEffort,
+    executionMode: args.executionMode,
+  };
 }
 
 function summarizeNativeControls(
@@ -328,9 +356,15 @@ function summarizeNativeControls(
       permissionMode = "config-toml";
     } else if (controls.codexApprovalPolicy === "never" && controls.codexSandbox === "danger-full-access") {
       permissionMode = "full-auto";
-    } else if (controls.codexApprovalPolicy === "on-failure" && controls.codexSandbox === "workspace-write") {
-      permissionMode = "edit";
-    } else if (controls.codexApprovalPolicy === "untrusted" && controls.codexSandbox === "read-only") {
+    } else if (
+      (controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "on-failure" || controls.codexApprovalPolicy === "untrusted")
+      && controls.codexSandbox === "workspace-write"
+    ) {
+      permissionMode = "default";
+    } else if (
+      (controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "untrusted")
+      && controls.codexSandbox === "read-only"
+    ) {
       permissionMode = "plan";
     }
     return {
@@ -461,10 +495,6 @@ function sortSessionSummariesByRecency(
   localTouchBySession: ReadonlyMap<string, string>,
 ): AgentChatSessionSummary[] {
   return [...rows].sort((left, right) => compareChatSessionsByEffectiveRecency(left, right, localTouchBySession));
-}
-
-function byStartedDesc(a: AgentChatSessionSummary, b: AgentChatSessionSummary): number {
-  return compareChatSessionsByEffectiveRecency(a, b, new Map());
 }
 
 export function resolveNextSelectedSessionId(args: {
@@ -638,6 +668,171 @@ function preferredChatLabel(raw: string | null | undefined): string | null {
   return stripOutcomePrefix(normalized);
 }
 
+function slugifyParallelLaneSegment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function parallelLaneProviderPrefix(descriptor: ModelDescriptor | null | undefined): string {
+  if (!descriptor) return "model";
+  if (descriptor.cliCommand === "codex" || (descriptor.isCliWrapped && descriptor.family === "openai")) return "codex";
+  if (descriptor.cliCommand === "claude" || (descriptor.isCliWrapped && descriptor.family === "anthropic")) return "claude";
+  if (descriptor.family === "cursor") return "cursor";
+  return slugifyParallelLaneSegment(descriptor.family) || "model";
+}
+
+export function parallelLaneModelSuffix(descriptor: ModelDescriptor | null | undefined): string {
+  if (!descriptor) return "model";
+  const prefix = parallelLaneProviderPrefix(descriptor);
+  const rawBase =
+    descriptor.providerModelId?.trim()
+    || descriptor.shortId?.trim()
+    || descriptor.displayName?.trim()
+    || descriptor.id;
+  const base = slugifyParallelLaneSegment(rawBase)
+    .replace(/^(claude|codex|cursor)-+/, "")
+    .replace(new RegExp(`^${prefix}-+`), "");
+  const candidate = [prefix, base].filter(Boolean).join("-");
+  return candidate.slice(0, 40) || prefix || "model";
+}
+
+function projectContextDocsPrelude(docPaths: readonly string[] = PROJECT_CONTEXT_DOC_PATHS): string {
+  return [
+    "[Project Context — generated from main branch, may not reflect in-progress lane work]",
+    "The following project-level docs are available for reference. Read them with read_file if you need project context:",
+    ...docPaths.map((path) => `- ${path}`),
+  ].join("\n");
+}
+
+function prependProjectContextDocs(text: string): string {
+  return `${projectContextDocsPrelude()}\n\n---\n\n${text}`;
+}
+
+export function buildParallelLaunchPrompt(args: {
+  text: string;
+  attachmentCount: number;
+  includeProjectDocs: boolean;
+}): { sendText: string; displayText: string } {
+  const trimmed = args.text.trim();
+  const displayText = trimmed.length
+    ? trimmed
+    : args.attachmentCount > 0
+      ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
+      : "";
+  if (!displayText.length) {
+    return { sendText: "", displayText: "" };
+  }
+  const sendText = args.includeProjectDocs && !trimmed.startsWith("/")
+    ? prependProjectContextDocs(displayText)
+    : displayText;
+  return { sendText, displayText };
+}
+
+export type ParallelLaunchCleanupIssue = {
+  phase: "delete" | "refresh";
+  laneId: string | null;
+  error: unknown;
+};
+
+function logParallelLaunchCleanupError({ phase, laneId, error }: ParallelLaunchCleanupIssue): void {
+  console.error("parallel launch cleanup failed", {
+    phase,
+    laneId,
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function isMissingParallelLaunchLaneError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found|no such lane|does not exist/i.test(message);
+}
+
+export function formatParallelLaunchFailureMessage(args: {
+  launchError: string;
+  cleanupIssues: ParallelLaunchCleanupIssue[];
+}): string {
+  const base = args.launchError.trim() || "Parallel launch failed.";
+  if (args.cleanupIssues.length === 0) return base;
+
+  const failedDeleteLaneIds = Array.from(new Set(
+    args.cleanupIssues
+      .filter((issue) => issue.phase === "delete" && typeof issue.laneId === "string" && issue.laneId.trim().length > 0)
+      .map((issue) => issue.laneId!.trim()),
+  ));
+  const refreshFailed = args.cleanupIssues.some((issue) => issue.phase === "refresh");
+  const cleanupSummary = [
+    failedDeleteLaneIds.length
+      ? `Cleanup could not delete lane${failedDeleteLaneIds.length === 1 ? "" : "s"} ${failedDeleteLaneIds.join(", ")}`
+      : null,
+    refreshFailed ? "lane list refresh also failed" : null,
+  ].filter((part): part is string => Boolean(part)).join("; ");
+
+  return cleanupSummary.length
+    ? `${base} ${cleanupSummary}. Check the lane list before retrying.`
+    : base;
+}
+
+export async function cleanupTransientParallelLaunchLanes(args: {
+  laneIds: string[];
+  deleteLane: (args: { laneId: string; force?: boolean }) => Promise<void>;
+  refreshLanes: () => Promise<void>;
+  onCleanupError?: (issue: ParallelLaunchCleanupIssue) => void;
+}): Promise<ParallelLaunchCleanupIssue[]> {
+  const issues: ParallelLaunchCleanupIssue[] = [];
+  if (args.laneIds.length === 0) return issues;
+  for (const laneId of args.laneIds) {
+    try {
+      await args.deleteLane({ laneId, force: true });
+    } catch (error) {
+      if (isMissingParallelLaunchLaneError(error)) continue;
+      const issue: ParallelLaunchCleanupIssue = { phase: "delete", laneId, error };
+      issues.push(issue);
+      args.onCleanupError?.(issue);
+    }
+  }
+  try {
+    await args.refreshLanes();
+  } catch (error) {
+    const issue: ParallelLaunchCleanupIssue = { phase: "refresh", laneId: null, error };
+    issues.push(issue);
+    args.onCleanupError?.(issue);
+  }
+  return issues;
+}
+
+function buildParallelLaunchState(args: {
+  parentLaneId: string;
+  createdLaneIds: string[];
+  sentLaneIds?: string[];
+  status: AgentChatParallelLaunchState["status"];
+  lastError?: string | null;
+}): AgentChatParallelLaunchState {
+  const createdLaneIds = Array.from(new Set(args.createdLaneIds.map((laneId) => laneId.trim()).filter(Boolean)));
+  const sentLaneIds = Array.from(new Set(
+    (args.sentLaneIds ?? [])
+      .map((laneId) => laneId.trim())
+      .filter((laneId) => createdLaneIds.includes(laneId)),
+  ));
+  return {
+    parentLaneId: args.parentLaneId.trim(),
+    createdLaneIds,
+    sentLaneIds,
+    status: args.status,
+    updatedAt: new Date().toISOString(),
+    lastError: args.lastError?.trim() || null,
+  };
+}
+
+function isCompletedParallelLaunchState(state: AgentChatParallelLaunchState): boolean {
+  return state.status === "completed" || (
+    state.createdLaneIds.length > 0 && state.sentLaneIds.length >= state.createdLaneIds.length
+  );
+}
+
 function chatSessionTitle(session: AgentChatSessionSummary): string {
   const explicitTitle = preferredChatLabel(session.title);
   if (explicitTitle) return explicitTitle;
@@ -670,6 +865,8 @@ export function AgentChatPane({
   initialSessionSummary,
   lockSessionId,
   hideSessionTabs = false,
+  hideNativeControls = false,
+  hideWorkspaceChrome = false,
   forceNewSession = false,
   forceDraftMode = false,
   availableModelIdsOverride,
@@ -678,6 +875,8 @@ export function AgentChatPane({
   presentation,
   embeddedWorkLayout = false,
   layoutVariant = "standard",
+  isTileActive = false,
+  shouldAutofocusComposer = false,
   onSessionCreated,
   availableLanes,
   onLaneChange,
@@ -688,6 +887,8 @@ export function AgentChatPane({
   initialSessionSummary?: AgentChatSessionSummary | null;
   lockSessionId?: string | null;
   hideSessionTabs?: boolean;
+  hideNativeControls?: boolean;
+  hideWorkspaceChrome?: boolean;
   forceNewSession?: boolean;
   forceDraftMode?: boolean;
   availableModelIdsOverride?: string[];
@@ -697,6 +898,8 @@ export function AgentChatPane({
   /** Work tab draft: flatter shell, no duplicate header chrome above the composer. */
   embeddedWorkLayout?: boolean;
   layoutVariant?: "standard" | "grid-tile";
+  isTileActive?: boolean;
+  shouldAutofocusComposer?: boolean;
   onSessionCreated?: (session: AgentChatSession) => void | Promise<void>;
   /** Available lanes for the lane selector in empty state */
   availableLanes?: Array<{ id: string; name: string; color?: string | null }>;
@@ -704,19 +907,29 @@ export function AgentChatPane({
   onLaneChange?: (laneId: string) => void;
 }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
+  const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
+  const agentTurnCompletionSoundQuietWhenFocused = useAppStore((s) => s.agentTurnCompletionSoundQuietWhenFocused);
+  const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
+  const chatUiScale = chatFontSizePx / DEFAULT_CHAT_FONT_SIZE_PX;
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
   const selectLane = useAppStore((s) => s.selectLane);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
+  const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
+  const refreshLanesStore = useAppStore((s) => s.refreshLanes);
   const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs);
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
   const surfaceProfile: ChatSurfaceProfile = presentation?.profile ?? "standard";
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
+  const showWorkspaceChrome = !hideWorkspaceChrome;
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
+  const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
@@ -735,8 +948,7 @@ export function AgentChatPane({
   const [opencodePermissionMode, setOpenCodePermissionMode] = useState<AgentChatOpenCodePermissionMode>(initialNativeControls.opencodePermissionMode);
   const prevModelDescRef = useRef<ModelDescriptor | null | undefined>(undefined);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
-  const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, string | boolean>>(initialNativeControls.cursorConfigValues);
-  const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
+  const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(initialNativeControls.cursorConfigValues);
   const [aiStatus, setAiStatus] = useState<AiStatusSnapshot | null>(null);
   const [providerConnections, setProviderConnections] = useState<{
     claude: AiProviderConnectionStatus | null;
@@ -768,10 +980,16 @@ export function AgentChatPane({
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
+  const [parallelChatMode, setParallelChatMode] = useState(false);
+  const [parallelModelSlots, setParallelModelSlots] = useState<ParallelModelRowState[]>([]);
+  const [parallelConfiguringIndex, setParallelConfiguringIndex] = useState<number | null>(null);
+  const [parallelLaunchBusy, setParallelLaunchBusy] = useState(false);
+  const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
-  const [composerMaxHeightPx, setComposerMaxHeightPx] = useState<number | null>(null);
-  const composerMaxHeightPxRef = useRef<number | null>(null);
+  const composerMaxHeightPx = layoutVariant === "grid-tile" ? 144 : null;
   const sessionsRef = useRef<AgentChatSessionSummary[]>(sessions);
+  const completionSoundPrevTurnActiveRef = useRef(false);
+  const completionSoundArmedRef = useRef(true);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
@@ -780,6 +998,12 @@ export function AgentChatPane({
   const pendingSelectedSessionIdRef = useRef<string | null>(null);
   const submitInFlightRef = useRef(false);
   const createSessionPromiseRef = useRef<Promise<string | null> | null>(null);
+  const pendingNativeControlUpdateRef = useRef<{
+    sessionId: string;
+    updateId: number;
+    promise: Promise<void>;
+  } | null>(null);
+  const nativeControlUpdateCounterRef = useRef(0);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const eventFlushTimerRef = useRef<number | null>(null);
@@ -792,6 +1016,7 @@ export function AgentChatPane({
   const handoffRef = useRef<HTMLDivElement | null>(null);
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
+  const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
@@ -819,6 +1044,148 @@ export function AgentChatPane({
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
+
+  const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
+    if (!projectRoot || !laneId) return;
+    try {
+      await window.ade.agentChat.parallelLaunchState.set({
+        projectRoot,
+        parentLaneId: laneId,
+        state,
+      });
+    } catch (persistError) {
+      console.error("parallel launch state persist failed", {
+        laneId,
+        projectRoot,
+        error: persistError instanceof Error ? persistError.message : String(persistError),
+      });
+    }
+  }, [laneId, projectRoot]);
+
+  useEffect(() => {
+    completionSoundPrevTurnActiveRef.current = false;
+    completionSoundArmedRef.current = true;
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (!projectRoot || !laneId) return;
+    if (lockSessionId || initialSessionId) return;
+    const recoveryKey = `${projectRoot}::${laneId}`;
+    if (recoveredParallelLaunchKeyRef.current === recoveryKey) return;
+    recoveredParallelLaunchKeyRef.current = recoveryKey;
+    let cancelled = false;
+
+    void (async () => {
+      let pendingState: AgentChatParallelLaunchState | null = null;
+      try {
+        pendingState = await window.ade.agentChat.parallelLaunchState.get({
+          projectRoot,
+          parentLaneId: laneId,
+        });
+      } catch {
+        return;
+      }
+      if (!pendingState) return;
+      if (isCompletedParallelLaunchState(pendingState)) {
+        await persistParallelLaunchState(null);
+        return;
+      }
+
+      if (!pendingState.createdLaneIds.length) {
+        await persistParallelLaunchState(null);
+        return;
+      }
+
+      if (cancelled) return;
+      setParallelLaunchBusy(true);
+      setParallelLaunchStatus("Cleaning up unfinished parallel launch…");
+      const cleanupIssues = await cleanupTransientParallelLaunchLanes({
+        laneIds: pendingState.createdLaneIds,
+        deleteLane: (args) => window.ade.lanes.delete(args),
+        refreshLanes: refreshLanesStore,
+        onCleanupError: logParallelLaunchCleanupError,
+      });
+
+      if (cleanupIssues.length === 0) {
+        await persistParallelLaunchState(null);
+      } else {
+        await persistParallelLaunchState(buildParallelLaunchState({
+          parentLaneId: pendingState.parentLaneId,
+          createdLaneIds: pendingState.createdLaneIds,
+          sentLaneIds: pendingState.sentLaneIds,
+          status: "cleanup_pending",
+          lastError: pendingState.lastError,
+        }));
+        if (!cancelled) {
+          setError(formatParallelLaunchFailureMessage({
+            launchError: "Recovered an unfinished parallel launch from before ADE closed.",
+            cleanupIssues,
+          }));
+        }
+      }
+
+      if (!cancelled) {
+        setParallelLaunchBusy(false);
+        setParallelLaunchStatus(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    initialSessionId,
+    laneId,
+    lockSessionId,
+    persistParallelLaunchState,
+    projectRoot,
+    refreshLanesStore,
+  ]);
+
+  useEffect(() => {
+    if (agentTurnCompletionSound === "off") {
+      completionSoundPrevTurnActiveRef.current = turnActive;
+      return;
+    }
+    if (turnActive) {
+      completionSoundArmedRef.current = true;
+    }
+    const sessionEnded = selectedSession?.status === "ended";
+    const settled =
+      Boolean(selectedSessionId)
+      && !selectedSessionAwaitingInput
+      && !sessionEnded;
+    const prevTurn = completionSoundPrevTurnActiveRef.current;
+    const becameIdle = settled && prevTurn && !turnActive;
+    completionSoundPrevTurnActiveRef.current = turnActive;
+    if (becameIdle && completionSoundArmedRef.current) {
+      completionSoundArmedRef.current = false;
+      let lastDoneStatus: "completed" | "interrupted" | "failed" | null = null;
+      for (let i = selectedEventsForDisplay.length - 1; i >= 0; i -= 1) {
+        const ev = selectedEventsForDisplay[i]?.event;
+        if (ev?.type === "done") {
+          lastDoneStatus = ev.status;
+          break;
+        }
+      }
+      if (lastDoneStatus === "completed") {
+        playAgentTurnCompletionSound(agentTurnCompletionSound, {
+          volume: agentTurnCompletionSoundVolume,
+          skipWhenFocused: agentTurnCompletionSoundQuietWhenFocused,
+        });
+      }
+    }
+  }, [
+    agentTurnCompletionSound,
+    agentTurnCompletionSoundVolume,
+    agentTurnCompletionSoundQuietWhenFocused,
+    selectedSessionId,
+    selectedSession?.status,
+    selectedSessionAwaitingInput,
+    turnActive,
+    selectedEventsForDisplay,
+  ]);
+
   const activeProviderConnection = selectedSession?.provider === "claude"
     ? (providerConnections?.claude ?? null)
     : selectedSession?.provider === "codex"
@@ -967,10 +1334,6 @@ export function AgentChatPane({
     sessionsRef.current = sessions;
   }, [sessions]);
 
-  useEffect(() => {
-    composerMaxHeightPxRef.current = composerMaxHeightPx;
-  }, [composerMaxHeightPx]);
-
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
 
   const sessionProvider = useMemo(() => {
@@ -994,6 +1357,79 @@ export function AgentChatPane({
       }),
     };
   }, [cursorConfigValues, cursorModeId, selectedSession?.cursorModeSnapshot, sessionProvider]);
+
+  const patchParallelSlot = useCallback((index: number, patch: Partial<ParallelModelRowState>) => {
+    setParallelModelSlots((prev) => {
+      if (index < 0 || index >= prev.length) return prev;
+      const next = [...prev];
+      next[index] = { ...next[index]!, ...patch };
+      return next;
+    });
+  }, []);
+
+  const parallelSlotCursorSnapshot = useMemo(() => {
+    if (parallelConfiguringIndex == null) return null;
+    const row = parallelModelSlots[parallelConfiguringIndex];
+    if (!row) return null;
+    if (resolveChatRuntimeProvider(getModelById(row.modelId)) !== "cursor") return null;
+    const base = buildFallbackCursorModeSnapshot(row.cursorModeId);
+    return {
+      ...base,
+      currentModeId: row.cursorModeId ?? base.currentModeId,
+      configOptions: base.configOptions?.map((option) => {
+        if (option.id === base.modeConfigId) {
+          return { ...option, currentValue: row.cursorModeId ?? option.currentValue };
+        }
+        if (Object.prototype.hasOwnProperty.call(row.cursorConfigValues, option.id)) {
+          return { ...option, currentValue: row.cursorConfigValues[option.id] ?? option.currentValue };
+        }
+        return option;
+      }),
+    };
+  }, [parallelConfiguringIndex, parallelModelSlots]);
+
+  const parallelComposerControlSlot = useMemo((): ParallelComposerControlSlot | null => {
+    if (parallelConfiguringIndex == null) return null;
+    const row = parallelModelSlots[parallelConfiguringIndex];
+    if (!row) return null;
+    const idx = parallelConfiguringIndex;
+    const prov = resolveChatRuntimeProvider(getModelById(row.modelId));
+    return {
+      sessionProvider: prov,
+      interactionMode: row.interactionMode,
+      claudePermissionMode: row.claudePermissionMode,
+      codexApprovalPolicy: row.codexApprovalPolicy,
+      codexSandbox: row.codexSandbox,
+      codexConfigSource: row.codexConfigSource,
+      opencodePermissionMode: row.opencodePermissionMode,
+      cursorModeSnapshot: parallelSlotCursorSnapshot,
+      onInteractionModeChange: (mode) => patchParallelSlot(idx, { interactionMode: mode }),
+      onClaudeModeChange: (mode) => patchParallelSlot(idx, {
+        claudePermissionMode: mode,
+        interactionMode: mode === 'plan' ? 'plan' : 'default',
+      }),
+      onClaudePermissionModeChange: (mode) => patchParallelSlot(idx, { claudePermissionMode: mode }),
+      onCodexPresetChange: (next) => patchParallelSlot(idx, {
+        codexApprovalPolicy: next.codexApprovalPolicy,
+        codexSandbox: next.codexSandbox,
+        codexConfigSource: next.codexConfigSource,
+      }),
+      onCodexApprovalPolicyChange: (policy) => patchParallelSlot(idx, { codexApprovalPolicy: policy }),
+      onCodexSandboxChange: (sandbox) => patchParallelSlot(idx, { codexSandbox: sandbox }),
+      onCodexConfigSourceChange: (source) => patchParallelSlot(idx, { codexConfigSource: source }),
+      onOpenCodePermissionModeChange: (mode) => patchParallelSlot(idx, { opencodePermissionMode: mode }),
+      onCursorModeChange: (modeId) => patchParallelSlot(idx, { cursorModeId: modeId }),
+      onCursorConfigChange: (configId, value) => patchParallelSlot(idx, {
+        cursorConfigValues: { ...row.cursorConfigValues, [configId]: value },
+      }),
+    };
+  }, [parallelConfiguringIndex, parallelModelSlots, parallelSlotCursorSnapshot, patchParallelSlot]);
+
+  const parallelConfiguringRow = parallelConfiguringIndex != null ? parallelModelSlots[parallelConfiguringIndex] ?? null : null;
+  const parallelSlotExecutionModeOptions = useMemo(
+    () => getExecutionModeOptions(parallelConfiguringRow ? getModelById(parallelConfiguringRow.modelId) : null),
+    [parallelConfiguringRow],
+  );
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
@@ -1027,7 +1463,6 @@ export function AgentChatPane({
           .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
       ),
     );
-    setComputerUsePolicy(session.computerUse ?? createDefaultComputerUsePolicy());
   }, [initialNativeControls]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
@@ -1037,10 +1472,7 @@ export function AgentChatPane({
     () => executionModeOptions.find((option) => option.value === executionMode) ?? executionModeOptions[0] ?? null,
     [executionMode, executionModeOptions],
   );
-  const hasComputerUseSelectionChanged = useMemo(() => {
-    const sessionPolicy = selectedSession?.computerUse ?? createDefaultComputerUsePolicy();
-    return JSON.stringify(sessionPolicy) !== JSON.stringify(computerUsePolicy);
-  }, [computerUsePolicy, selectedSession?.computerUse]);
+  const hasComputerUseSelectionChanged = false;
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : selectedSession ? chatSessionTitle(selectedSession) : "New chat");
@@ -1097,8 +1529,12 @@ export function AgentChatPane({
   });
 
   const refreshAvailableModels = useCallback(async () => {
+    const shouldRefreshOpenCodeInventory = sessionProvider === "opencode";
     try {
-      const status = await getAiStatusCached({ projectRoot });
+      const status = await getAiStatusCached({
+        projectRoot,
+        ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
+      });
       setAiStatus(status);
       setProviderConnections({
         claude: status.providerConnections?.claude ?? null,
@@ -1119,7 +1555,11 @@ export function AgentChatPane({
         getAgentChatModelsCached({ projectRoot, provider: "codex" }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "claude" }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "cursor" }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot, provider: "opencode" }).catch(() => []),
+        getAgentChatModelsCached({
+          projectRoot,
+          provider: "opencode",
+          activateRuntime: shouldRefreshOpenCodeInventory,
+        }).catch(() => []),
       ]);
       const available = new Set<string>();
 
@@ -1160,7 +1600,7 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-  }, [projectRoot]);
+  }, [projectRoot, sessionProvider]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
@@ -1179,6 +1619,7 @@ export function AgentChatPane({
   const refreshLockedSessionSummary = useCallback(async () => {
     if (!lockSessionId) {
       setSessions([]);
+      setArchivedSessions([]);
       return null;
     }
 
@@ -1218,7 +1659,12 @@ export function AgentChatPane({
       return;
     }
 
-    const rows = await window.ade.agentChat.list({ laneId });
+    const allRows = await window.ade.agentChat.list({ laneId });
+    const rows = allRows.filter((session) => !session.archivedAt);
+    setArchivedSessions(sortSessionSummariesByRecency(
+      allRows.filter((session) => Boolean(session.archivedAt)),
+      localTouchBySessionRef.current,
+    ));
     const nextRows = sortSessionSummariesByRecency(rows, localTouchBySessionRef.current);
     setSessions(nextRows);
     const retainedSessionIds = buildRetainedChatSessionIds({
@@ -1375,19 +1821,52 @@ export function AgentChatPane({
     loadedHistoryRef.current.add(sessionId);
 
     try {
-      const summary = await window.ade.sessions.get(sessionId);
-      if (!summary || !isChatToolType(summary.toolType)) return;
-      const raw = await window.ade.sessions.readTranscriptTail({
-        sessionId,
-        maxBytes: CHAT_HISTORY_READ_MAX_BYTES,
-        raw: true
-      });
-      const parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+      // Prefer the main-process snapshot API which merges the in-memory event
+      // ring buffer with the on-disk transcript. This recovers events that
+      // were emitted while the user was on a different project (IPC dropped),
+      // events that were still in fs.appendFile flight when a previous load
+      // ran, and the full history even when the transcript has been truncated
+      // for size. Fall back to the disk-only readTranscriptTail path if the
+      // snapshot call fails or the desktop app is running against an older
+      // main-process build that lacks the handler.
+      let parsed: AgentChatEventEnvelope[] = [];
+      let usedSnapshotPath = false;
+      try {
+        if (typeof window.ade.agentChat.getEventHistory === "function") {
+          const snapshot = await window.ade.agentChat.getEventHistory({
+            sessionId,
+            maxEvents: MAX_SELECTED_CHAT_SESSION_EVENTS,
+          });
+          if (snapshot?.events?.length || snapshot?.sessionId === sessionId) {
+            parsed = (snapshot.events ?? []).filter((entry) => entry.sessionId === sessionId);
+            usedSnapshotPath = true;
+          }
+        }
+      } catch {
+        usedSnapshotPath = false;
+      }
+      if (!usedSnapshotPath) {
+        const summary = await window.ade.sessions.get(sessionId);
+        if (!summary || !isChatToolType(summary.toolType)) {
+          // Clear the loaded flag so a subsequent remount/tab switch can retry.
+          // Without this, a transient lookup miss (e.g. session summary not yet
+          // propagated on project switch) would leave the UI permanently
+          // unable to hydrate history. Mirrors the catch-block recovery below.
+          loadedHistoryRef.current.delete(sessionId);
+          return;
+        }
+        const raw = await window.ade.sessions.readTranscriptTail({
+          sessionId,
+          maxBytes: CHAT_HISTORY_READ_MAX_BYTES,
+          raw: true
+        });
+        parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+      }
 
       // If real-time events have already been received for this session
-      // (via flushQueuedEvents), the on-disk transcript may be stale.
-      // Merge: use the loaded history as a base but keep any real-time
-      // events that arrived after the last event in the transcript.
+      // (via flushQueuedEvents), the snapshot may be stale by a few events.
+      // Merge: use the snapshot as a base but keep any real-time events that
+      // arrived after the last snapshot entry.
       const existing = eventsBySessionRef.current[sessionId] ?? [];
       let merged: AgentChatEventEnvelope[];
       if (existing.length && parsed.length) {
@@ -1427,7 +1906,11 @@ export function AgentChatPane({
       setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
       setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: derived.pendingSteers }));
     } catch {
-      // Ignore transcript history failures.
+      // Clear the loaded flag so the caller can retry on next remount or tab
+      // switch — otherwise a transient failure leaves the UI stuck with no
+      // events. Without this clearSessionView, a failed initial load
+      // permanently blocked re-entry until the chat received a new event.
+      loadedHistoryRef.current.delete(sessionId);
     }
   }, [initialSessionSummary, lockSessionId]);
 
@@ -1544,6 +2027,8 @@ export function AgentChatPane({
 
       try {
         await Promise.all([refreshAvailableModels(), refreshSessions()]);
+      } catch {
+        // boot-time refresh errors are swallowed here; individual callbacks fall back to empty state
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -1630,8 +2115,13 @@ export function AgentChatPane({
       void loadHistory(selectedSessionId, { force: true });
       return;
     }
+    // Locked-single-session mode (Work tab tile). Force-reload on every mount
+    // so that when the pane is unmounted and remounted (tab switch, project
+    // switch, session tile activation) we always pull the freshest snapshot
+    // rather than short-circuiting on a stale loadedHistoryRef from the
+    // previous component instance.
     const handle = window.setTimeout(() => {
-      void loadHistory(selectedSessionId);
+      void loadHistory(selectedSessionId, { force: true });
     }, 120);
     return () => window.clearTimeout(handle);
   }, [loadHistory, lockedSingleSessionMode, selectedSessionId]);
@@ -1883,17 +2373,6 @@ export function AgentChatPane({
   }, [refreshComputerUseSnapshot, selectedSessionId]);
 
   useEffect(() => {
-    const unsubscribe = window.ade.externalMcp.onEvent((event) => {
-      if (event.type !== "usage-recorded" || !selectedSessionId) return;
-      const usageEvent = event.usageEvent;
-      const usageChatSessionId = usageEvent?.chatSessionId ?? usageEvent?.callerId ?? null;
-      if (usageChatSessionId !== selectedSessionId) return;
-      void refreshComputerUseSnapshot(selectedSessionId, { force: true });
-    });
-    return unsubscribe;
-  }, [refreshComputerUseSnapshot, selectedSessionId]);
-
-  useEffect(() => {
     if (!selectedSessionId) {
       setProofDrawerOpen(false);
     }
@@ -1990,12 +2469,39 @@ export function AgentChatPane({
     nativeControlsRef.current = currentNativeControls;
   }, [currentNativeControls]);
 
+  useEffect(() => {
+    if (!parallelChatMode) return;
+    if (parallelModelSlots.length > 0) return;
+    setParallelModelSlots([
+      cloneParallelSlotFromComposer({
+        native: currentNativeControls,
+        modelId,
+        reasoningEffort,
+        executionMode,
+      }),
+      cloneParallelSlotFromComposer({
+        native: currentNativeControls,
+        modelId,
+        reasoningEffort,
+        executionMode,
+      }),
+    ]);
+  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, reasoningEffort, executionMode]);
+
   const buildNativeControlPayload = useCallback((provider: ChatRuntimeProviderKey) => {
     return {
       ...summarizeNativeControls(provider, currentNativeControls),
       ...(provider === "cursor" ? { cursorConfigValues: currentNativeControls.cursorConfigValues } : {}),
     };
   }, [currentNativeControls]);
+
+  const buildNativeControlPayloadForSlot = useCallback((slot: ParallelModelRowState, provider: ChatRuntimeProviderKey) => {
+    const native = nativeControlSliceFromParallelSlot(slot);
+    return {
+      ...summarizeNativeControls(provider, native),
+      ...(provider === "cursor" ? { cursorConfigValues: slot.cursorConfigValues } : {}),
+    };
+  }, []);
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
     const previousDesc = prevModelDescRef.current;
     const nextDesc = getModelById(nextModelId);
@@ -2047,7 +2553,7 @@ export function AgentChatPane({
       const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
       const model = provider === "opencode" ? modelId : runtimeFacingModelId(desc, modelId);
-      const sessionProfile = resolveChatSessionProfile(computerUsePolicy);
+      const sessionProfile = resolveChatSessionProfile();
       const harnessPermissionMode = provider === "opencode"
         ? recommendedOpenCodePermissionModeForModel(permissionDesc)
         : null;
@@ -2068,7 +2574,6 @@ export function AgentChatPane({
         sessionProfile,
         reasoningEffort,
         ...nativeControlPayload,
-        computerUse: computerUsePolicy,
       });
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
@@ -2095,7 +2600,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [buildNativeControlPayload, computerUsePolicy, currentNativeControls, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, currentNativeControls, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const handoffSession = useCallback(async () => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
@@ -2161,9 +2666,51 @@ export function AgentChatPane({
       });
   }, [refreshSessions, selectedSession, selectedSessionId]);
 
+  const handleArchiveChat = useCallback((sessionId: string) => {
+    setError(null);
+    void window.ade.agentChat.archive({ sessionId })
+      .then(async () => {
+        invalidateSessionListCache();
+        if (selectedSessionIdRef.current === sessionId) {
+          setSelectedSessionId(null);
+        }
+        await refreshSessions().catch(() => {});
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(`Archive failed: ${message}`);
+      });
+  }, [refreshSessions]);
+
+  const archiveConfirm = useConfirmDialog();
+  const requestArchiveChat = useCallback(
+    async (sessionId: string, title: string) => {
+      const ok = await archiveConfirm.confirmAsync({
+        title: `Archive "${title}"?`,
+        message: "Archived chats are hidden from the active chat tabs.",
+        confirmLabel: "ARCHIVE",
+      });
+      if (ok) handleArchiveChat(sessionId);
+    },
+    [archiveConfirm, handleArchiveChat],
+  );
+
+  const handleUnarchiveChat = useCallback((sessionId: string) => {
+    setError(null);
+    void window.ade.agentChat.unarchive({ sessionId })
+      .then(async () => {
+        invalidateSessionListCache();
+        await refreshSessions().catch(() => {});
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(`Restore failed: ${message}`);
+      });
+  }, [refreshSessions]);
+
   // ── Eager session creation ──
-  // Create a session as soon as we have a model + lane, so slash commands,
-  // MCP status, and other pre-chat metadata are available immediately.
+  // Create a session as soon as we have a model + lane, so slash commands
+  // and other pre-chat metadata are available immediately.
   // Computer-use-capable chats start as workflow sessions so ADE can wire the
   // Ghost/proof harness before the first turn.
   // Skip when the pane is locked to an existing session or in forced-draft mode.
@@ -2178,13 +2725,225 @@ export function AgentChatPane({
   }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
 
   const submit = useCallback(async () => {
-    if (submitInFlightRef.current || busy) return;
+    if (submitInFlightRef.current || busy || parallelLaunchBusy) return;
+
+    const isParallelLaunch =
+      !lockSessionId
+      && !initialSessionId
+      && forceDraft
+      && embeddedWorkLayout
+      && parallelChatMode
+      && selectedSessionId == null;
+
+    if (isParallelLaunch) {
+      const text = draft.trim();
+      if ((!text.length && attachments.length === 0) || !laneId || !projectRoot) return;
+      if (parallelModelSlots.length < 2) {
+        setError("Add at least two models for a parallel launch.");
+        return;
+      }
+      const emptySlot = parallelModelSlots.find(s => !s.modelId?.trim());
+      if (emptySlot) {
+        setError("All parallel lanes must have a model selected.");
+        return;
+      }
+      const modelKeys = parallelModelSlots.map((s) => s.modelId);
+      if (new Set(modelKeys).size !== modelKeys.length) {
+        setError("Each parallel lane needs a different model.");
+        return;
+      }
+      if (attachments.length > PARALLEL_CHAT_MAX_ATTACHMENTS) {
+        setError(`Parallel launch allows at most ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments. Remove some files or send in batches.`);
+        return;
+      }
+
+      const draftSnapshot = draft;
+      const attachmentsSnapshot = [...attachments];
+      const includeDocsSnapshot = includeProjectDocs;
+      submitInFlightRef.current = true;
+      setParallelLaunchBusy(true);
+      setParallelLaunchStatus("Naming lanes…");
+      setError(null);
+      const createdLaneIds: string[] = [];
+      const sentLaneIds: string[] = [];
+      const sessionByLane = new Map<string, string>();
+      try {
+        let namingSeed = text;
+        if (!text.length && attachmentsSnapshot.length) {
+          const imageCount = attachmentsSnapshot.filter((a) => a.type === "image").length;
+          const fileCount = attachmentsSnapshot.filter((a) => a.type === "file").length;
+          namingSeed = [
+            "Parallel attachment task",
+            imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : null,
+            fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
+          ].filter(Boolean).join(" · ");
+        }
+        const baseName = await window.ade.agentChat.suggestLaneName({
+          laneId,
+          prompt: namingSeed,
+          modelId: parallelModelSlots[0]!.modelId,
+        });
+        setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
+
+        for (const slot of parallelModelSlots) {
+          const desc = getModelById(slot.modelId);
+          const suffix = parallelLaneModelSuffix(desc);
+          const laneName = `${baseName}-${suffix}`;
+          const childLane = await window.ade.lanes.createChild({ parentLaneId: laneId, name: laneName });
+          createdLaneIds.push(childLane.id);
+          await persistParallelLaunchState(buildParallelLaunchState({
+            parentLaneId: laneId,
+            createdLaneIds,
+            sentLaneIds,
+            status: "creating_lanes",
+          }));
+          const provider = resolveChatRuntimeProvider(desc);
+          const model = provider === "opencode" ? slot.modelId : runtimeFacingModelId(desc, slot.modelId);
+          const created = await window.ade.agentChat.create({
+            laneId: childLane.id,
+            provider,
+            model,
+            modelId: slot.modelId,
+            sessionProfile: resolveChatSessionProfile(),
+            reasoningEffort: slot.reasoningEffort,
+            ...buildNativeControlPayloadForSlot(slot, provider),
+          });
+          sessionByLane.set(childLane.id, created.id);
+        }
+
+        await refreshLanesStore();
+
+        const { sendText, displayText: displayForSend } = buildParallelLaunchPrompt({
+          text,
+          attachmentCount: attachmentsSnapshot.length,
+          includeProjectDocs: includeDocsSnapshot,
+        });
+
+        setParallelLaunchStatus("Sending prompt to each lane…");
+        await persistParallelLaunchState(buildParallelLaunchState({
+          parentLaneId: laneId,
+          createdLaneIds,
+          sentLaneIds,
+          status: "sending",
+        }));
+        for (let idx = 0; idx < parallelModelSlots.length; idx += 1) {
+          const slot = parallelModelSlots[idx]!;
+          const childLaneId = createdLaneIds[idx];
+          const sessionId = childLaneId ? sessionByLane.get(childLaneId) : undefined;
+          if (!sessionId) continue;
+          const desc = getModelById(slot.modelId);
+          const provider = resolveChatRuntimeProvider(desc);
+          try {
+            await window.ade.agentChat.send({
+              sessionId,
+              text: sendText,
+              displayText: displayForSend,
+              attachments: attachmentsSnapshot,
+              reasoningEffort: slot.reasoningEffort,
+              executionMode: slot.executionMode,
+              interactionMode: provider === "claude" ? slot.interactionMode : null,
+            });
+          } catch (sendError) {
+            const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
+            const isBusyErr = /turn is already active|already active/i.test(sendMsg);
+            if (isBusyErr) {
+              await window.ade.agentChat.steer({
+                sessionId,
+                text: sendText,
+                ...(attachmentsSnapshot.length ? { attachments: attachmentsSnapshot } : {}),
+              });
+            } else {
+              throw sendError;
+            }
+          }
+          sentLaneIds.push(childLaneId);
+          await persistParallelLaunchState(buildParallelLaunchState({
+            parentLaneId: laneId,
+            createdLaneIds,
+            sentLaneIds,
+            status: sentLaneIds.length >= createdLaneIds.length ? "completed" : "sending",
+          }));
+          if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
+            window.ade.agentChat.warmupModel({ sessionId, modelId: slot.modelId }).catch(() => {});
+          }
+        }
+
+        setWorkViewState(projectRoot, (prev) => {
+          let nextOpen = [...prev.openItemIds];
+          for (const sid of sessionByLane.values()) {
+            if (!nextOpen.includes(sid)) nextOpen.push(sid);
+          }
+          return { ...prev, openItemIds: nextOpen };
+        });
+        for (const [childLaneId, sid] of sessionByLane) {
+          setLaneWorkViewState(projectRoot, childLaneId, {
+            activeItemId: sid,
+            selectedItemId: sid,
+            draftKind: "chat",
+            viewMode: "tabs",
+          });
+        }
+
+        setDraft("");
+        setAttachments([]);
+        setParallelChatMode(false);
+        setParallelModelSlots([]);
+        setParallelConfiguringIndex(null);
+        if (includeDocsSnapshot) setIncludeProjectDocs(false);
+        await persistParallelLaunchState(null);
+
+        const q = new URLSearchParams();
+        q.set("laneIds", createdLaneIds.join(","));
+        q.set("workFocus", "1");
+        navigate(`/lanes?${q.toString()}`);
+      } catch (submitError) {
+        setParallelLaunchStatus(createdLaneIds.length > 0 ? "Cleaning up child lanes…" : null);
+        const cleanupIssues = await cleanupTransientParallelLaunchLanes({
+          laneIds: createdLaneIds,
+          deleteLane: (args) => window.ade.lanes.delete(args),
+          refreshLanes: refreshLanesStore,
+          onCleanupError: logParallelLaunchCleanupError,
+        });
+        const message = submitError instanceof Error ? submitError.message : String(submitError);
+        if (cleanupIssues.length === 0) {
+          await persistParallelLaunchState(null);
+        } else {
+          await persistParallelLaunchState(buildParallelLaunchState({
+            parentLaneId: laneId,
+            createdLaneIds,
+            sentLaneIds,
+            status: "cleanup_pending",
+            lastError: message,
+          }));
+        }
+        setDraft((current) => (current.trim().length ? current : draftSnapshot));
+        setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+        setError(formatParallelLaunchFailureMessage({
+          launchError: message,
+          cleanupIssues,
+        }));
+      } finally {
+        submitInFlightRef.current = false;
+        setParallelLaunchBusy(false);
+        setParallelLaunchStatus(null);
+      }
+      return;
+    }
+
     if (!modelId) return;
     const text = draft.trim();
     if (!text.length || !laneId) return;
+    const pendingNativeControlUpdate = pendingNativeControlUpdateRef.current;
+    if (selectedSessionId && pendingNativeControlUpdate?.sessionId === selectedSessionId) {
+      try {
+        await pendingNativeControlUpdate.promise;
+      } catch {
+        return;
+      }
+    }
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
-    const isLiteralSlashCommand = text.startsWith("/");
+    const isLiteralSlashCommand = isProviderSlashCommandInput(text);
 
     submitInFlightRef.current = true;
     setBusy(true);
@@ -2198,18 +2957,12 @@ export function AgentChatPane({
 
       // Prepend project context docs if the user toggled the checkbox
       if (!isLiteralSlashCommand && includeProjectDocs) {
-        const docPaths = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"];
-        const docNote = [
-          "[Project Context — generated from main branch, may not reflect in-progress lane work]",
-          "The following project-level docs are available for reference. Read them with read_file if you need project context:",
-          ...docPaths.map((p) => `- ${p}`),
-        ].join("\n");
-        finalText = `${docNote}\n\n---\n\n${finalText}`;
+        finalText = prependProjectContextDocs(finalText);
         setIncludeProjectDocs(false);
       }
 
       let sessionId = selectedSessionId;
-      const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession, computerUsePolicy);
+      const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
       const selectedModelChanged =
         Boolean(selectedSessionId)
         && Boolean(selectedSessionModelId)
@@ -2235,7 +2988,6 @@ export function AgentChatPane({
           modelId,
           reasoningEffort,
           ...buildNativeControlPayload(provider),
-          computerUse: computerUsePolicy,
         });
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
@@ -2259,17 +3011,12 @@ export function AgentChatPane({
         lastActivityAt: new Date().toISOString(),
       });
 
-      const steerSupportsAttachments = sessionProvider === "claude" || sessionProvider === "codex";
-      const steerAttachments = steerSupportsAttachments ? selectedAttachments : [];
-      const steerText = selectedAttachments.length && !steerSupportsAttachments
-        ? `${finalText}\n\nAttached context:\n${selectedAttachments.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
-        : finalText;
       if (turnActiveBySession[sessionId]) {
         setOptimisticOutgoingMessage(null);
         await window.ade.agentChat.steer({
           sessionId,
-          text: steerText,
-          ...(steerAttachments.length ? { attachments: steerAttachments } : {}),
+          text: finalText,
+          ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
         });
       } else {
         try {
@@ -2292,8 +3039,8 @@ export function AgentChatPane({
           if (isBusy) {
             await window.ade.agentChat.steer({
               sessionId,
-              text: steerText,
-              ...(steerAttachments.length ? { attachments: steerAttachments } : {}),
+              text: finalText,
+              ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
             });
           } else {
             throw sendError;
@@ -2328,7 +3075,6 @@ export function AgentChatPane({
     buildNativeControlPayload,
     busy,
     createSession,
-    computerUsePolicy,
     draft,
     executionMode,
     hasComputerUseSelectionChanged,
@@ -2345,7 +3091,21 @@ export function AgentChatPane({
     sessionProvider,
     touchSession,
     turnActive,
-    turnActiveBySession
+    turnActiveBySession,
+    parallelLaunchBusy,
+    parallelChatMode,
+    parallelModelSlots,
+    lockSessionId,
+    initialSessionId,
+    forceDraft,
+    embeddedWorkLayout,
+    projectRoot,
+    navigate,
+    buildNativeControlPayloadForSlot,
+    refreshLanesStore,
+    persistParallelLaunchState,
+    setWorkViewState,
+    setLaneWorkViewState,
   ]);
 
   const interrupt = useCallback(async () => {
@@ -2430,20 +3190,57 @@ export function AgentChatPane({
       setSessionMutationKind("permission");
     }
 
-    try {
-      await window.ade.agentChat.updateSession({
-        sessionId: selectedSessionId,
-        ...nextSummary,
-      });
-      void refreshSessions().catch(() => {});
-    } catch (err) {
-      void refreshSessions().catch(() => {});
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (isPersistentIdentitySurface) {
-        setSessionMutationKind(null);
+    const previousUpdate = pendingNativeControlUpdateRef.current?.sessionId === selectedSessionId
+      ? pendingNativeControlUpdateRef.current.promise
+      : null;
+    const updateId = ++nativeControlUpdateCounterRef.current;
+
+    const updatePromise = (async () => {
+      if (previousUpdate) {
+        // Prior mutation already surfaced any error; wait for it to settle so the
+        // latest picker state still gets pushed to the backend.
+        await previousUpdate.catch(() => {});
       }
-    }
+
+      try {
+        const updatedSession = await window.ade.agentChat.updateSession({
+          sessionId: selectedSessionId,
+          ...nextSummary,
+        });
+        patchSessionSummary(selectedSessionId, {
+          permissionMode: updatedSession.permissionMode,
+          interactionMode: updatedSession.interactionMode ?? null,
+          claudePermissionMode: updatedSession.claudePermissionMode,
+          codexApprovalPolicy: updatedSession.codexApprovalPolicy,
+          codexSandbox: updatedSession.codexSandbox,
+          codexConfigSource: updatedSession.codexConfigSource,
+          opencodePermissionMode: updatedSession.opencodePermissionMode,
+          cursorModeId: updatedSession.cursorModeId,
+          cursorModeSnapshot: updatedSession.cursorModeSnapshot,
+        });
+        void refreshSessions().catch(() => {});
+      } catch (err) {
+        void refreshSessions().catch(() => {});
+        setError(err instanceof Error ? err.message : String(err));
+        throw err;
+      } finally {
+        const pending = pendingNativeControlUpdateRef.current;
+        if (pending?.sessionId === selectedSessionId && pending.updateId === updateId) {
+          pendingNativeControlUpdateRef.current = null;
+        }
+        if (isPersistentIdentitySurface) {
+          setSessionMutationKind(null);
+        }
+      }
+    })();
+
+    pendingNativeControlUpdateRef.current = {
+      sessionId: selectedSessionId,
+      updateId,
+      promise: updatePromise,
+    };
+
+    await updatePromise;
   }, [
     isPersistentIdentitySurface,
     patchSessionSummary,
@@ -2460,60 +3257,27 @@ export function AgentChatPane({
     });
   }, [updateNativeControls]);
 
-  const handleComputerUsePolicyChange = useCallback(async (nextPolicy: ComputerUsePolicy) => {
-    if (isPersistentIdentitySurface && sessionMutationKind) return;
-    setComputerUsePolicy(nextPolicy);
-    if (!selectedSessionId) return;
-    patchSessionSummary(selectedSessionId, { computerUse: nextPolicy });
-    if (isPersistentIdentitySurface) {
-      setSessionMutationKind("computer-use");
-    }
-    try {
-      await window.ade.agentChat.updateSession({
-        sessionId: selectedSessionId,
-        computerUse: nextPolicy,
-      });
-      await refreshSessions();
-      await refreshComputerUseSnapshot(selectedSessionId, { force: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (isPersistentIdentitySurface) {
-        setSessionMutationKind(null);
-      }
-    }
-  }, [isPersistentIdentitySurface, patchSessionSummary, refreshComputerUseSnapshot, refreshSessions, selectedSessionId, sessionMutationKind]);
-
-  useEffect(() => {
-    if (layoutVariant !== "grid-tile") {
-      setComposerMaxHeightPx(null);
-      return;
-    }
-    const node = shellRef.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      const next = Math.max(96, Math.min(168, Math.floor(entry.contentRect.height * 0.28)));
-      if (composerMaxHeightPxRef.current !== next) {
-        composerMaxHeightPxRef.current = next;
-        setComposerMaxHeightPx(next);
-      }
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [layoutVariant]);
+  const handleComputerUsePolicyChange = useCallback(async (_nextPolicy: unknown) => {
+    // Computer-use policy gating has been removed; this handler is a no-op retained for UI compat.
+  }, []);
 
   if (!laneId) {
     return (
-      <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor}>
+      <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor} contentScale={chatUiScale}>
         <div className="flex h-full items-center justify-center">
           <span className="font-sans text-[12px] text-muted-fg/30">Select a lane to start chatting</span>
         </div>
       </ChatSurfaceShell>
     );
   }
-  const draftAccent = selectedModelDesc?.color ?? "#A1A1AA";
+  // Provider-derived accent first so Claude is always amber, Codex always
+  // warm-white, etc. — keeps chat surfaces consistent across model variants
+  // and across desktop/mobile. Falls back to the per-model registry color
+  // when the provider isn't in the unified table.
+  const draftAccent =
+    providerChatAccent(selectedSession?.provider ?? selectedModelDesc?.family ?? null)
+    ?? selectedModelDesc?.color
+    ?? "#A1A1AA";
   const proofSessionId = selectedSessionId ?? "";
   const proofPanelContent = (
     <>
@@ -2550,10 +3314,10 @@ export function AgentChatPane({
           ) : null}
         </div>
 
-        {laneId ? <ChatGitToolbar laneId={laneId} /> : null}
+        {showWorkspaceChrome && laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
+          {showWorkspaceChrome && laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
           {resolvedChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -2676,6 +3440,10 @@ export function AgentChatPane({
                 <button
                   key={session.sessionId}
                   type="button"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    void requestArchiveChat(session.sessionId, title);
+                  }}
                   className={cn(
                     "inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-1.5 font-sans text-[11px] transition-all",
                     isActive
@@ -2726,11 +3494,29 @@ export function AgentChatPane({
               setSelectedSessionId(null);
               setDraft("");
               setAttachments([]);
-              setComputerUsePolicy(createDefaultComputerUsePolicy());
             }}
           >
             <Plus size={10} weight="bold" />
           </button>
+          {archivedSessions.length ? (
+            <select
+              className="h-7 max-w-[160px] shrink-0 rounded-md border border-white/[0.06] bg-black/20 px-2 font-sans text-[11px] text-muted-fg/60 outline-none transition-colors hover:border-white/[0.1] hover:text-fg"
+              title="Restore archived chat"
+              defaultValue=""
+              onChange={(event) => {
+                const sessionId = event.currentTarget.value;
+                event.currentTarget.value = "";
+                if (sessionId) handleUnarchiveChat(sessionId);
+              }}
+            >
+              <option value="">Archived ({archivedSessions.length})</option>
+              {archivedSessions.map((session) => (
+                <option key={session.sessionId} value={session.sessionId}>
+                  Restore {chatSessionTitle(session)}
+                </option>
+              ))}
+            </select>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -2745,6 +3531,8 @@ export function AgentChatPane({
             surfaceMode={surfaceMode}
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
+            isActive={layoutVariant === "grid-tile" ? isTileActive : false}
+            shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}
@@ -2765,13 +3553,13 @@ export function AgentChatPane({
             opencodePermissionMode={opencodePermissionMode}
             cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
-            computerUsePolicy={computerUsePolicy}
             computerUseSnapshot={computerUseSnapshot}
             proofOpen={proofDrawerOpen}
             proofArtifactCount={computerUseSnapshot?.artifacts.length ?? 0}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
+            hideNativeControls={hideNativeControls}
             messagePlaceholder={messagePlaceholder}
             onExecutionModeChange={setExecutionMode}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
@@ -2834,7 +3622,6 @@ export function AgentChatPane({
                 modelId: nextModelId,
                 reasoningEffort: snapshot.nextReasoningEffort,
                 ...nextNativeControlPayload,
-                computerUse: computerUsePolicy,
               }).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
                 patchSessionSummary(selectedSessionId, {
@@ -2851,7 +3638,6 @@ export function AgentChatPane({
                   opencodePermissionMode: updatedSession.opencodePermissionMode,
                   cursorModeId: updatedSession.cursorModeId,
                   cursorModeSnapshot: updatedSession.cursorModeSnapshot,
-                  computerUse: updatedSession.computerUse,
                 });
                 window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
                   .then(setSdkSlashCommands)
@@ -2914,6 +3700,82 @@ export function AgentChatPane({
               }
             }}
             sessionId={selectedSessionId}
+            showParallelChatToggle={Boolean(
+              embeddedWorkLayout && forceDraft && !lockSessionId && !initialSessionId && selectedSessionId == null,
+            )}
+            parallelChatMode={parallelChatMode}
+            onParallelChatModeChange={(enabled) => {
+              if (enabled && attachments.length > PARALLEL_CHAT_MAX_ATTACHMENTS) {
+                setError(`Parallel mode supports up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments. ${attachments.length - PARALLEL_CHAT_MAX_ATTACHMENTS} attachment(s) were removed.`);
+                setAttachments((prev) => prev.slice(0, PARALLEL_CHAT_MAX_ATTACHMENTS));
+              }
+              setParallelChatMode(enabled);
+              if (!enabled) {
+                setParallelModelSlots([]);
+                setParallelConfiguringIndex(null);
+              }
+            }}
+            parallelModelSlots={parallelModelSlots}
+            parallelConfiguringIndex={parallelConfiguringIndex}
+            onParallelConfiguringIndexChange={setParallelConfiguringIndex}
+            onParallelAddModel={() => {
+              setParallelModelSlots((prev) => [
+                ...prev,
+                cloneParallelSlotFromComposer({
+                  native: nativeControlsRef.current,
+                  modelId,
+                  reasoningEffort,
+                  executionMode,
+                }),
+              ]);
+            }}
+            onParallelRemoveModel={(index) => {
+              setParallelModelSlots((prev) => prev.filter((_, i) => i !== index));
+              setParallelConfiguringIndex((cur) => {
+                if (cur == null) return cur;
+                if (cur === index) return null;
+                if (cur > index) return cur - 1;
+                return cur;
+              });
+            }}
+            onParallelSlotModelChange={(index, nextModelId) => {
+              const desc = getModelById(nextModelId);
+              const tiers = desc?.reasoningTiers ?? [];
+              const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
+              const nextEffort = selectReasoningEffort({ tiers, preferred });
+              const previousPermissionDesc = getModelDescriptorForPermissionMode(parallelModelSlots[index]?.modelId ?? "");
+              const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
+              const nextRecommendedOpenCodeMode = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
+              const resetOpenCodePermissionToDefault = shouldResetOpenCodePermissionForModelSwitch(
+                previousPermissionDesc,
+                nextPermissionDesc,
+              );
+              const nextExecOpts = getExecutionModeOptions(desc);
+              patchParallelSlot(index, {
+                modelId: nextModelId,
+                reasoningEffort: nextEffort,
+                executionMode: nextExecOpts.some((o) => o.value === parallelModelSlots[index]?.executionMode)
+                  ? parallelModelSlots[index]!.executionMode
+                  : (nextExecOpts[0]?.value ?? "focused"),
+                ...(resetOpenCodePermissionToDefault
+                  ? {
+                    opencodePermissionMode: nextRecommendedOpenCodeMode ?? initialNativeControls.opencodePermissionMode,
+                  }
+                  : {}),
+              });
+            }}
+            onParallelSlotReasoningChange={(index, effort) => {
+              patchParallelSlot(index, { reasoningEffort: effort });
+            }}
+            parallelLaunchBusy={parallelLaunchBusy}
+            parallelLaunchStatus={parallelLaunchStatus}
+            parallelControlSlot={parallelComposerControlSlot}
+            parallelSlotExecutionModeOptions={parallelSlotExecutionModeOptions}
+            parallelSlotExecutionMode={parallelConfiguringRow?.executionMode ?? null}
+            onParallelSlotExecutionModeChange={(mode) => {
+              if (parallelConfiguringIndex == null) return;
+              patchParallelSlot(parallelConfiguringIndex, { executionMode: mode });
+            }}
           />
   );
 
@@ -2923,6 +3785,7 @@ export function AgentChatPane({
         containerRef={shellRef}
         mode={surfaceMode}
         accentColor={presentation?.accentColor ?? draftAccent}
+        contentScale={chatUiScale}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
         header={compactShell ? undefined : shellHeader}
         footer={isEmptyState ? undefined : composerElement}
@@ -3005,7 +3868,8 @@ export function AgentChatPane({
                     <AgentChatMessageList
                       key={selectedSessionId ?? "chat-draft"}
                       events={selectedEventsForDisplay}
-                      showStreamingIndicator={turnActive}
+                      showStreamingIndicator={turnActive && selectedSession?.status !== "ended"}
+                      sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
                       surfaceMode={surfaceMode}
                       surfaceProfile={surfaceProfile}
@@ -3039,11 +3903,13 @@ export function AgentChatPane({
                         sessionId={selectedSessionId}
                       />
                     ) : null}
-                    <ChatTerminalDrawer
-                      open={terminalDrawerOpen}
-                      onToggle={() => setTerminalDrawerOpen((v) => !v)}
-                      laneId={laneId}
-                    />
+                    {showWorkspaceChrome ? (
+                      <ChatTerminalDrawer
+                        open={terminalDrawerOpen}
+                        onToggle={() => setTerminalDrawerOpen((v) => !v)}
+                        laneId={laneId}
+                      />
+                    ) : null}
                   </div>
 
                   {/* Proof panel (push) */}
@@ -3066,19 +3932,19 @@ export function AgentChatPane({
                   exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } }}
                   className="absolute inset-0 flex flex-col items-center justify-center px-6"
                 >
-                  <div className="flex w-full max-w-2xl flex-col items-center gap-4 text-center">
+                  <div className="flex w-full max-w-[820px] flex-col items-center gap-4 text-center">
                     <motion.div
                       className="relative"
                       exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                     >
                       <div
-                        className="pointer-events-none absolute top-1/2 left-1/2 h-[360px] w-[360px] -translate-x-1/2 -translate-y-1/2 rounded-full"
-                        style={{ background: "var(--color-accent)", opacity: 0.08, filter: "blur(110px)" }}
+                        className="pointer-events-none absolute top-1/2 left-1/2 h-[560px] w-[560px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+                        style={{ background: "var(--color-accent)", opacity: 0.08, filter: "blur(140px)" }}
                       />
                       <img
                         src="./logo.png"
                         alt="ADE"
-                        className="relative z-10 h-96 w-96 object-contain"
+                        className="relative z-10 h-[300px] w-[560px] max-w-[78vw] object-contain"
                         style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
                       />
                     </motion.div>
@@ -3091,7 +3957,7 @@ export function AgentChatPane({
                     </p>
 
                     {/* Lane selector pill */}
-                    {availableLanes && availableLanes.length > 0 && onLaneChange ? (
+                    {showWorkspaceChrome && availableLanes && availableLanes.length > 0 && onLaneChange ? (
                       <motion.div
                         exit={{ opacity: 0, transition: { duration: 0.15 } }}
                       >
@@ -3116,7 +3982,7 @@ export function AgentChatPane({
                           ))}
                         </select>
                       </motion.div>
-                    ) : laneDisplayLabel ? (
+                    ) : showWorkspaceChrome && laneDisplayLabel ? (
                       <motion.div
                         className="flex items-center gap-2 rounded-full px-4 py-1.5"
                         style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
@@ -3128,7 +3994,7 @@ export function AgentChatPane({
                     ) : null}
 
                     {/* Inline composer for empty state */}
-                    <div className="w-full max-w-[640px]">
+                    <div className="w-full max-w-[820px]">
                       {composerElement}
                     </div>
                   </div>
@@ -3138,16 +4004,7 @@ export function AgentChatPane({
           )}
         </div>
       </ChatSurfaceShell>
-      {pendingInput
-        && (pendingInput.request.kind === "question" || pendingInput.request.kind === "structured_question")
-        && selectedSessionId ? (
-        <AgentQuestionModal
-          request={pendingInput.request}
-          onClose={() => { void approve("cancel"); }}
-          onSubmit={({ answers, responseText }) => { void approve("accept", responseText ?? null, answers); }}
-          onDecline={() => { void approve("decline"); }}
-        />
-      ) : null}
+      <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
     </>
   );
 }

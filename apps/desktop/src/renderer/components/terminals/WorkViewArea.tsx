@@ -8,17 +8,12 @@ import { AgentChatPane } from "../chat/AgentChatPane";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
 import { sessionStatusDot } from "../../lib/terminalAttention";
-import { PackedSessionGrid } from "./PackedSessionGrid";
 import type { WorkTabGroup } from "./useWorkSessions";
-import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
-import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { PaneTilingLayout, type PaneConfig } from "../ui/PaneTilingLayout";
+import { cn } from "../ui/cn";
 import { resolveTrackedCliResumeCommand } from "./cliLaunch";
-
-const CHAT_TILE_MIN_WIDTH = 440;
-const CHAT_TILE_MIN_HEIGHT = 340;
-const TERMINAL_TILE_MIN_WIDTH = 320;
-const TERMINAL_TILE_MIN_HEIGHT = 220;
+import { buildWorkSessionTilingTree } from "./workSessionTiling";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -34,7 +29,7 @@ function isRunningPtySession(
 function SessionSurface({
   session,
   isActive,
-  suspended = false,
+  shouldAutofocus = false,
   layoutVariant = "standard",
   terminalVisible = isActive,
   onOpenChatSession,
@@ -42,43 +37,12 @@ function SessionSurface({
 }: {
   session: TerminalSessionSummary;
   isActive: boolean;
-  suspended?: boolean;
+  shouldAutofocus?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   terminalVisible?: boolean;
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
   onResume?: (session: TerminalSessionSummary) => void;
 }) {
-  if (suspended) {
-    const secondary = secondarySessionLabel(session);
-    const status = sessionStatusDot(session);
-    const preview = session.summary?.trim()
-      || session.lastOutputPreview?.trim()
-      || (isChatToolType(session.toolType) ? "Select this tile to resume the live chat view." : "Select this tile to resume the live terminal view.");
-    return (
-      <div className="ade-work-glass-tile flex h-full w-full flex-col justify-between px-4 py-3 text-left">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-[11px] text-fg">
-              <ToolLogo toolType={session.toolType} size={12} />
-              <span className="truncate font-medium">{primarySessionLabel(session)}</span>
-            </div>
-            <div className="mt-1 text-[10px] text-muted-fg/70">
-              {session.laneName}
-              {secondary ? ` • ${truncateSessionLabel(secondary, 40)}` : ""}
-            </div>
-          </div>
-          <span
-            title={status.label}
-            className={`${status.cls} mt-0.5 h-2 w-2 shrink-0${status.spinning ? " animate-spin" : ""}`}
-          />
-        </div>
-        <div className="mt-3 line-clamp-6 text-[11px] leading-relaxed text-muted-fg/80">
-          {preview}
-        </div>
-      </div>
-    );
-  }
-
   const isChat = isChatToolType(session.toolType);
   if (isChat) {
     return (
@@ -89,6 +53,8 @@ function SessionSurface({
         hideSessionTabs
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
+        isTileActive={isActive}
+        shouldAutofocusComposer={shouldAutofocus}
       />
     );
   }
@@ -330,103 +296,72 @@ export function WorkViewArea({
     ? null
     : sessionsById.get(activeItemId) ?? tabVisibleSessions[0] ?? visibleSessions[0] ?? null;
   const activeRunningTerminalSession = isRunningPtySession(activeSession) ? activeSession : null;
-  const packedGridTiles = useMemo(() => visibleSessions.map((session) => {
-    const isActive = activeSession?.id === session.id;
-    const dot = sessionStatusDot(session);
-    const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-    const primary = primarySessionLabel(session);
-    const secondary = secondarySessionLabel(session);
-    const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
-      provider: session.toolType === "claude-chat" ? "claude" : null,
-      status: session.runtimeState === "idle" ? "idle" : "active",
-      idleSinceAt: session.chatIdleSinceAt,
-      awaitingInput: session.runtimeState === "waiting-input",
-    });
-    return {
-      id: session.id,
-      minWidth: isChatToolType(session.toolType) ? CHAT_TILE_MIN_WIDTH : TERMINAL_TILE_MIN_WIDTH,
-      minHeight: isChatToolType(session.toolType) ? CHAT_TILE_MIN_HEIGHT : TERMINAL_TILE_MIN_HEIGHT,
-      selected: isActive,
-      onSelect: () => onSelectItem(session.id),
-      className: isActive
-        ? "ade-work-glass-tile-active"
-        : "ade-work-glass-tile",
-      header: (
-        <div
-          className="ade-work-glass-tile-header flex items-center gap-2 px-2 py-1.5"
-          onContextMenu={(e) => handleContextMenu(session, e)}
-        >
-          <button
-            type="button"
-            className="min-w-0 flex-1 text-left"
-            onClick={() => onSelectItem(session.id)}
-          >
-            <span className="flex items-center gap-2 text-[11px]">
-              <span
-                title={dot.label}
-                className={`${dot.cls} h-2 w-2 shrink-0${dot.spinning ? " animate-spin" : ""}`}
-              />
-              <ToolLogo toolType={session.toolType} size={11} />
-              <span className="truncate text-fg">
-                {truncateSessionLabel(primary)}
-              </span>
-              {showClaudeCacheTimer ? (
-                <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} className="px-1 py-0.5 text-[8px]" />
-              ) : null}
-            </span>
-            <span className="mt-0.5 flex items-center gap-2 pl-[18px]">
-              <span className="text-[10px] text-muted-fg/50">
-                {session.laneName}
-              </span>
-              {secondary ? (
-                <span className="truncate text-[10px] text-muted-fg/60">
-                  {truncateSessionLabel(secondary, 36)}
-                </span>
-              ) : null}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onCloseItem(session.id)}
-            title={isBusy ? "Closing..." : "Close"}
-            disabled={isBusy}
-            className="inline-flex h-5 w-5 items-center justify-center text-muted-fg/50 transition-colors hover:text-fg"
-            style={{
-              border: "none",
-              background: "transparent",
-              cursor: isBusy ? "default" : "pointer",
-              opacity: isBusy ? 0.4 : 1,
-            }}
-          >
-            <X size={10} />
-          </button>
-        </div>
-      ),
-      children: (
-        <div className="min-h-0 h-full flex-1 overflow-hidden" onContextMenu={(e) => handleContextMenu(session, e)}>
-          <SessionSurface
-            session={session}
-            isActive={isActive}
-            suspended={!isActive && !isChatToolType(session.toolType)}
-            terminalVisible
-            layoutVariant="grid-tile"
-            onOpenChatSession={onOpenChatSession}
-            onResume={onResumeSession}
-          />
-        </div>
-      ),
-    };
-  }), [activeSession?.id, closingPtyIds, handleContextMenu, onCloseItem, onOpenChatSession, onSelectItem, visibleSessions]);
-  const resolvedTabGroups = tabGroups ?? [];
-  const hasGroupedTabs = resolvedTabGroups.length > 0;
-  const toggleTabGroupCollapsed = onToggleTabGroupCollapsed ?? (() => {});
-
-  function handleContextMenu(session: TerminalSessionSummary, e: React.MouseEvent): void {
+  const handleContextMenu = useCallback((session: TerminalSessionSummary, e: React.MouseEvent): void => {
     if (onContextMenu) {
       e.preventDefault();
       onContextMenu(session, e);
     }
-  }
+  }, [onContextMenu]);
+  const gridTree = useMemo(
+    () => buildWorkSessionTilingTree(visibleSessions.map((session) => session.id)),
+    [visibleSessions],
+  );
+  const tilingPanes = useMemo<Record<string, PaneConfig>>(() => Object.fromEntries(
+    visibleSessions.map((session) => {
+      const dot = sessionStatusDot(session);
+      const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
+      const isActive = activeItemId === session.id;
+      return [session.id, {
+        title: truncateSessionLabel(primarySessionLabel(session)),
+        meta: session.laneName,
+        minimizable: false,
+        className: cn("h-full ade-work-glass-tile", isActive && "ade-work-glass-tile-active"),
+        bodyClassName: "overflow-hidden",
+        headerActions: (
+          <>
+            <span
+              title={dot.label}
+              className={`${dot.cls} h-2 w-2 shrink-0${dot.spinning ? " animate-spin" : ""}`}
+            />
+            <button
+              type="button"
+              onClick={() => onCloseItem(session.id)}
+              onMouseDown={(e) => e.stopPropagation()}
+              title={isBusy ? "Closing..." : "Close"}
+              disabled={isBusy}
+              className="inline-flex h-5 w-5 items-center justify-center text-muted-fg/50 transition-colors hover:text-fg"
+              style={{
+                border: "none",
+                background: "transparent",
+                cursor: isBusy ? "default" : "pointer",
+                opacity: isBusy ? 0.4 : 1,
+              }}
+            >
+              <X size={10} />
+            </button>
+          </>
+        ),
+        onPaneMouseDown: () => onSelectItem(session.id),
+        onPaneContextMenu: (e) => handleContextMenu(session, e),
+        children: (
+          <div className="min-h-0 h-full flex-1 overflow-hidden">
+            <SessionSurface
+              session={session}
+              isActive={isActive}
+              shouldAutofocus={isActive}
+              terminalVisible
+              layoutVariant="grid-tile"
+              onOpenChatSession={onOpenChatSession}
+              onResume={onResumeSession}
+            />
+          </div>
+        ),
+      } satisfies PaneConfig];
+    }),
+  ), [activeItemId, closingPtyIds, handleContextMenu, onCloseItem, onOpenChatSession, onResumeSession, onSelectItem, visibleSessions]);
+  const resolvedTabGroups = tabGroups ?? [];
+  const hasGroupedTabs = resolvedTabGroups.length > 0;
+  const toggleTabGroupCollapsed = onToggleTabGroupCollapsed ?? (() => {});
 
   if (viewMode === "grid") {
     return (
@@ -454,9 +389,11 @@ export function WorkViewArea({
             </div>
           </div>
         ) : (
-          <PackedSessionGrid
+          <PaneTilingLayout
             layoutId={gridLayoutId}
-            tiles={packedGridTiles}
+            tree={gridTree}
+            panes={tilingPanes}
+            className="flex-1 min-h-0 px-2 pb-2"
           />
         )}
       </div>

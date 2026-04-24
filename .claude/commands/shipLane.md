@@ -1,6 +1,6 @@
 ---
 name: shipLane
-description: 'Autonomously drive a lane through CI + review until merged (automate → finalize → poll/fix loop, self-paced wake-ups, max 5 iterations)'
+description: 'Autonomously drive a lane through CI + review until ready or capped (automate → finalize → poll/fix loop, self-paced wake-ups, max 5 iterations)'
 ---
 
 # Ship Lane Command
@@ -77,7 +77,7 @@ If `TeamCreate` is genuinely not in scope for this session:
 
 ## Scheduling wake-ups
 
-Use `ScheduleWakeup` at the end of each iteration (playbook §5.3) with the same command re-invocation as the `prompt`:
+This wrapper is Claude Code-specific. Use `ScheduleWakeup` at the end of each iteration (playbook §5.3) with the same command re-invocation as the `prompt`:
 
 ```
 ScheduleWakeup({
@@ -88,6 +88,16 @@ ScheduleWakeup({
 ```
 
 Pass `$ARGUMENTS` through so a PR-number argument is preserved across wake-ups.
+
+Waiting must be token-idle. After scheduling a wake-up, stop the active agent turn completely and let the scheduler re-invoke this command later. Do not keep agents alive in polling loops, do not run `--watch` commands, and do not ask sub-agents to sleep while holding context. Poll only once per scheduled invocation, then either fix, exit, or schedule the next wake.
+
+Other agent CLIs have their own sleep/resume mechanisms. If a Claude Code scheduler is not available, follow the playbook's generic guidance instead of copying `ScheduleWakeup` literally. For Codex-style terminal work, the recommended fallback is a shell sleep that does not involve the model, followed by one one-shot status command, for example:
+
+```bash
+sleep 720 && gh pr checks 185 && gh run list --branch ade/cli-prs-fixes-747d7096 --limit 5
+```
+
+That shell process can wait without spending model tokens; the agent should only resume reasoning after the command produces output.
 
 Do NOT schedule a wake if `status` is `done-clean`, `done-max`, or `blocked` — print the summary and stop.
 

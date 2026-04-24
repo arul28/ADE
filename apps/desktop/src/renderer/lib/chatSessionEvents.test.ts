@@ -39,6 +39,7 @@ describe("shouldRefreshSessionListForChatEvent", () => {
   it("refreshes when a turn starts or user input lands mid-turn", () => {
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "status", turnStatus: "started", turnId: "turn-1" }))).toBe(true);
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "approval_request", itemId: "approval-1", kind: "tool_call", description: "Need approval" }))).toBe(true);
+    expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "pending_input_resolved", itemId: "approval-1", resolution: "accepted" }))).toBe(true);
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "user_message", text: "ship it" }))).toBe(true);
   });
 

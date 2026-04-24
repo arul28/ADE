@@ -6,14 +6,7 @@ icon: "code-branch"
 
 ## Why lanes matter
 
-A lane is ADE's unit of parallel work. Each lane maps to its own Git worktree and branch state, so separate tasks never collide. When you create a lane, ADE:
-
-- Runs `git worktree add` to create a physically separate copy of your repo
-- Allocates a unique port so dev servers in different lanes do not conflict
-- Generates an initial Lane Pack — the context bundle every agent in this lane will receive
-- Registers the lane in ADE's tracking system for conflict detection, status monitoring, and PR linking
-
-Without lanes, every agent would write to the same working directory simultaneously. Lanes make parallel development safe by default.
+A lane is ADE's unit of parallel work. Each lane has its own git worktree, branch, port allocation, Lane Pack, and conflict tracking. Without lanes, every agent would write to the same working directory simultaneously.
 
 <Note>
 The **Primary Lane** is your main repository checkout. It always exists and cannot be deleted. For agent-driven work, create a Worktree Lane — this keeps the primary checkout clean and lets you work manually without interference.
@@ -92,18 +85,6 @@ Prefer one lane per feature, fix, or experiment. If a task grows beyond what you
 </Tip>
 
 ---
-
-## What happens under the hood
-
-When you create a lane, ADE executes these steps in sequence:
-
-1. **`git worktree add .ade/worktrees/<name> -b <branch> <base>`** — creates the worktree
-2. **Port lease** — reserves a unique port from the configured range (default: 3001-3099)
-3. **Environment overlay** — merges your project `.env` with any lane-specific overrides
-4. **Lane Pack generation** — an AI-synthesized context bundle capturing the lane's intent, touched files, and diff summary
-5. **Registry update** — the lane is added to ADE's local database with full metadata
-
-The worktree directory is fully self-contained. An agent working in this lane sees exactly the files on its branch, with no interleaving from other branches.
 
 ---
 

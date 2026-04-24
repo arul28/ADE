@@ -802,7 +802,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
 
       <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
         {/* PR list sidebar */}
-        <div ref={listRef} style={{ width: 380, borderRight: "1px solid rgba(255,255,255,0.06)", overflow: "auto", flexShrink: 0 }}>
+        <div ref={listRef} data-tour="prs.list" style={{ width: 380, borderRight: "1px solid rgba(255,255,255,0.06)", overflow: "auto", flexShrink: 0 }}>
           {/* Section header */}
           <div style={{
             padding: "10px 14px",
@@ -855,7 +855,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
         </div>
 
         {/* Detail pane */}
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+        <div data-tour="prs.detailDrawer" style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
           {selectedItem && selectedLinkedPr ? (
             <PrDetailPane
               pr={selectedLinkedPr}
@@ -916,6 +916,7 @@ function GitHubTabPrRow({
   return (
     <button
       type="button"
+      data-tour="prs.listRow"
       onClick={() => onSelect(item)}
       style={{
         display: "flex",

@@ -97,8 +97,6 @@ export type SyncDesktopConnectionDraft = {
   authKind?: "bootstrap" | "paired";
   pairedDeviceId?: string | null;
   lastRemoteDbVersion?: number;
-  // Legacy draft field name retained to match the desktop/iOS saved contract.
-  lastBrainDeviceId?: string | null;
 };
 
 export type SyncClientStatus = {
@@ -151,6 +149,24 @@ export type SyncDeviceRuntimeState = SyncDeviceRecord & {
   syncLag: number | null;
 };
 
+export type SyncTailnetDiscoveryState =
+  | "disabled"
+  | "publishing"
+  | "published"
+  | "pending_approval"
+  | "unavailable"
+  | "failed";
+
+export type SyncTailnetDiscoveryStatus = {
+  state: SyncTailnetDiscoveryState;
+  serviceName: string;
+  servicePort: number;
+  target: string | null;
+  updatedAt: string | null;
+  error: string | null;
+  stderr: string | null;
+};
+
 export type SyncRoleSnapshot = {
   mode: SyncMode;
   role: SyncRole;
@@ -159,9 +175,11 @@ export type SyncRoleSnapshot = {
   currentBrain: SyncDeviceRecord | null;
   clusterState: SyncClusterState | null;
   bootstrapToken: string | null;
-  pairingSession: SyncPairingSession | null;
+  pairingPin: string | null;
+  pairingPinConfigured: boolean;
   pairingConnectInfo: SyncPairingConnectInfo | null;
   connectedPeers: SyncPeerConnectionState[];
+  tailnetDiscovery: SyncTailnetDiscoveryStatus;
   client: SyncClientStatus;
   transferReadiness: SyncTransferReadiness;
   survivableStateText: string;
@@ -176,10 +194,16 @@ export type SyncStatusEventPayload = {
 export type SyncFeatureFlags = {
   fileAccess: true;
   terminalStreaming: true;
+  chatStreaming: {
+    enabled: true;
+  };
+  projectCatalog: {
+    enabled: boolean;
+  };
   bootstrapAuth: true;
   pairingAuth: {
     enabled: true;
-    codeTtlMs: number;
+    pinDigits: 6;
   };
   commandRouting: {
     mode: "allowlisted";
@@ -194,6 +218,42 @@ export type SyncHelloPayload = {
   auth?: SyncHelloAuth;
 };
 
+export type SyncMobileProjectSummary = {
+  id: string;
+  displayName: string;
+  rootPath: string | null;
+  defaultBaseRef: string | null;
+  lastOpenedAt: string | null;
+  laneCount: number;
+  isAvailable: boolean;
+  isCached: boolean;
+  isOpen: boolean;
+};
+
+export type SyncProjectCatalogPayload = {
+  projects: SyncMobileProjectSummary[];
+};
+
+export type SyncProjectSwitchRequestPayload = {
+  projectId?: string | null;
+  rootPath?: string | null;
+};
+
+export type SyncProjectConnectionPayload = {
+  authKind: "bootstrap";
+  token: string;
+  hostIdentity: SyncPairingQrPayload["hostIdentity"];
+  port: number;
+  addressCandidates: SyncAddressCandidate[];
+};
+
+export type SyncProjectSwitchResultPayload = {
+  ok: boolean;
+  message?: string | null;
+  project?: SyncMobileProjectSummary | null;
+  connection?: SyncProjectConnectionPayload | null;
+};
+
 export type SyncHelloAuth =
   | { kind: "bootstrap"; token: string }
   | { kind: "paired"; deviceId: string; secret: string };
@@ -204,21 +264,16 @@ export type SyncHelloOkPayload = {
   serverDbVersion: number;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
+  projects?: SyncMobileProjectSummary[];
   features: SyncFeatureFlags;
 };
 
 export type SyncHelloErrorPayload = {
-  code: "auth_failed" | "invalid_hello" | "already_authenticated" | "unsupported_version";
+  code: "auth_failed" | "invalid_hello";
   message: string;
 };
 
-export type SyncPairingSession = {
-  code: string;
-  issuedAt: string;
-  expiresAt: string;
-};
-
-export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale";
+export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale" | "loopback";
 
 export type SyncAddressCandidate = {
   host: string;
@@ -226,7 +281,7 @@ export type SyncAddressCandidate = {
 };
 
 export type SyncPairingQrPayload = {
-  version: 1;
+  version: 2;
   hostIdentity: {
     deviceId: string;
     siteId: string;
@@ -235,16 +290,12 @@ export type SyncPairingQrPayload = {
     deviceType: SyncPeerDeviceType;
   };
   port: number;
-  pairingCode: string;
-  expiresAt: string;
   addressCandidates: SyncAddressCandidate[];
 };
 
 export type SyncPairingConnectInfo = {
   hostIdentity: SyncPairingQrPayload["hostIdentity"];
   port: number;
-  pairingCode: string;
-  expiresAt: string;
   addressCandidates: SyncAddressCandidate[];
   qrPayload: SyncPairingQrPayload;
   qrPayloadText: string;
@@ -260,7 +311,10 @@ export type SyncPairingResultPayload = {
   deviceId?: string;
   secret?: string;
   error?: {
-    code: "invalid_code" | "expired_code" | "pairing_unavailable" | "pairing_failed";
+    code:
+      | "invalid_pin"
+      | "pin_not_set"
+      | "pairing_failed";
     message: string;
   };
 };
@@ -387,11 +441,14 @@ export type SyncRunQuickCommandArgs = {
 
 export type SyncRemoteCommandAction =
   | "lanes.list"
+  | "lanes.presence.announce"
+  | "lanes.presence.release"
   | "lanes.refreshSnapshots"
   | "lanes.getDetail"
   | "lanes.create"
   | "lanes.createChild"
   | "lanes.createFromUnstaged"
+  | "lanes.importBranch"
   | "lanes.attach"
   | "lanes.adoptAttached"
   | "lanes.rename"
@@ -410,14 +467,21 @@ export type SyncRemoteCommandAction =
   | "lanes.dismissRebaseSuggestion"
   | "lanes.deferRebaseSuggestion"
   | "lanes.listAutoRebaseStatuses"
+  | "lanes.dismissAutoRebaseStatus"
   | "lanes.listTemplates"
   | "lanes.getDefaultTemplate"
   | "lanes.initEnv"
   | "lanes.getEnvStatus"
   | "lanes.applyTemplate"
   | "work.listSessions"
+  | "work.updateSessionMeta"
   | "work.runQuickCommand"
   | "work.closeSession"
+  | "processes.listDefinitions"
+  | "processes.listRuntime"
+  | "processes.start"
+  | "processes.stop"
+  | "processes.kill"
   | "chat.listSessions"
   | "chat.getSummary"
   | "chat.getTranscript"
@@ -425,12 +489,38 @@ export type SyncRemoteCommandAction =
   | "chat.send"
   | "chat.interrupt"
   | "chat.steer"
+  | "chat.cancelSteer"
+  | "chat.editSteer"
   | "chat.approve"
   | "chat.respondToInput"
   | "chat.resume"
+  | "chat.restart"
   | "chat.updateSession"
   | "chat.dispose"
+  | "chat.archive"
+  | "chat.unarchive"
+  | "chat.delete"
   | "chat.models"
+  | "cto.getRoster"
+  | "cto.ensureSession"
+  | "cto.ensureAgentSession"
+  | "cto.getState"
+  | "cto.listAgents"
+  | "cto.getBudgetSnapshot"
+  | "cto.getAgentCoreMemory"
+  | "cto.listAgentRuns"
+  | "cto.listAgentSessionLogs"
+  | "cto.listAgentRevisions"
+  | "cto.getFlowPolicy"
+  | "cto.getLinearConnectionStatus"
+  | "cto.getLinearSyncDashboard"
+  | "cto.listLinearSyncQueue"
+  | "cto.listLinearIngressEvents"
+  | "cto.updateIdentity"
+  | "cto.updateCoreMemory"
+  | "cto.setAgentStatus"
+  | "cto.triggerAgentWakeup"
+  | "cto.rollbackAgentRevision"
   | "git.getChanges"
   | "git.getFile"
   | "files.writeTextAtomic"
@@ -444,6 +534,7 @@ export type SyncRemoteCommandAction =
   | "git.generateCommitMessage"
   | "git.listRecentCommits"
   | "git.listCommitFiles"
+  | "git.getFileHistory"
   | "git.getCommitMessage"
   | "git.revertCommit"
   | "git.cherryPickCommit"
@@ -473,11 +564,56 @@ export type SyncRemoteCommandAction =
   | "prs.getReviews"
   | "prs.getComments"
   | "prs.getFiles"
+  | "prs.getGitHubSnapshot"
+  | "prs.getReviewThreads"
+  | "prs.getActionRuns"
+  | "prs.getActivity"
+  | "prs.getDeployments"
   | "prs.createFromLane"
+  | "prs.linkToLane"
+  | "prs.draftDescription"
   | "prs.land"
   | "prs.close"
   | "prs.reopen"
-  | "prs.requestReviewers";
+  | "prs.requestReviewers"
+  | "prs.rerunChecks"
+  | "prs.addComment"
+  | "prs.updateTitle"
+  | "prs.updateBody"
+  | "prs.setLabels"
+  | "prs.submitReview"
+  | "prs.replyToReviewThread"
+  | "prs.setReviewThreadResolved"
+  | "prs.reactToComment"
+  | "prs.aiReviewSummary"
+  | "prs.listIntegrationWorkflows"
+  | "prs.updateIntegrationProposal"
+  | "prs.deleteIntegrationProposal"
+  | "prs.dismissIntegrationCleanup"
+  | "prs.cleanupIntegrationWorkflow"
+  | "prs.createIntegrationLaneForProposal"
+  | "prs.startIntegrationResolution"
+  | "prs.recheckIntegrationStep"
+  | "prs.landQueueNext"
+  | "prs.pauseQueueAutomation"
+  | "prs.resumeQueueAutomation"
+  | "prs.cancelQueueAutomation"
+  | "prs.reorderQueue"
+  | "prs.issueInventory.sync"
+  | "prs.issueInventory.get"
+  | "prs.issueInventory.getNew"
+  | "prs.issueInventory.markFixed"
+  | "prs.issueInventory.markDismissed"
+  | "prs.issueInventory.markEscalated"
+  | "prs.issueInventory.getConvergence"
+  | "prs.issueInventory.reset"
+  | "prs.convergenceState.get"
+  | "prs.convergenceState.save"
+  | "prs.convergenceState.delete"
+  | "prs.pipelineSettings.get"
+  | "prs.pipelineSettings.save"
+  | "prs.pipelineSettings.delete"
+  | "prs.getMobileSnapshot";
 
 export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;
@@ -514,6 +650,166 @@ export type SyncCommandResultPayload = {
   };
 };
 
+// ---------------------------------------------------------------------------
+// Mobile push notification types (WS2)
+// ---------------------------------------------------------------------------
+
+export type ApnsEnvironment = "sandbox" | "production";
+
+export type ApnsPushTokenKind = "alert" | "activity-start" | "activity-update";
+
+/**
+ * Shape of the Mobile Push settings panel's read of the main-process APNs state.
+ * `keyStored` reflects whether a `.p8` is persisted via `safeStorage`; the bytes
+ * themselves never round-trip to the renderer.
+ */
+export type ApnsBridgeStatus = {
+  enabled: boolean;
+  configured: boolean;
+  keyStored: boolean;
+  keyId: string | null;
+  teamId: string | null;
+  bundleId: string | null;
+  env: ApnsEnvironment;
+};
+
+export type ApnsBridgeSaveConfigArgs = {
+  enabled: boolean;
+  keyId: string;
+  teamId: string;
+  bundleId: string;
+  env: ApnsEnvironment;
+};
+
+export type ApnsBridgeUploadKeyArgs = {
+  /** PEM-formatted `.p8` body. The main process encrypts before writing to disk. */
+  p8Pem: string;
+};
+
+/**
+ * Named category of the fake notification the Mobile Push panel sends.
+ * Each maps to a distinct APNs payload template so the user can exercise
+ * every iOS code path (awaiting-input banner, CI-failing retry, etc.)
+ * without having to trigger a real domain event.
+ */
+export type ApnsTestPushKind =
+  | "awaiting_input"
+  | "chat_failed"
+  | "chat_turn_completed"
+  | "ci_failing"
+  | "review_requested"
+  | "merge_ready"
+  | "cto_subagent_finished"
+  | "generic"
+  // Live Activity tests — drive the workspace-pill UI on the device.
+  | "la_update_running"
+  | "la_update_attention"
+  | "la_update_multi"
+  | "la_start"
+  | "la_end";
+
+export type ApnsBridgeSendTestPushArgs = {
+  /** Specific device to target. Null/undefined picks the first iOS peer with an alert token. */
+  deviceId?: string | null;
+  /** Which fake payload to fire. Defaults to `"generic"` for back-compat. */
+  kind?: ApnsTestPushKind;
+};
+
+export type ApnsBridgeSendTestPushResult = {
+  ok: boolean;
+  reason?: string;
+};
+
+/**
+ * Sent from an iOS peer to the desktop host whenever it registers or rotates
+ * an APNs token. Stored in the device registry metadata so subsequent pushes
+ * can target the correct device + token kind.
+ */
+export type SyncRegisterPushTokenPayload = {
+  token: string;
+  kind: ApnsPushTokenKind;
+  env: ApnsEnvironment;
+  bundleId: string;
+  /** Optional extra context that we may route on; kept open-ended. */
+  activityId?: string;
+  /** `true` once the peer has confirmed it actually received a previous test push. */
+  verified?: boolean;
+};
+
+/**
+ * 14 user-tunable toggles mirroring the iOS Notifications Center screen.
+ * The host uses these as a filter at send-time so toggles take effect live.
+ */
+export type NotificationPreferences = {
+  /** Master switch; if false, all of the below are short-circuited. */
+  enabled: boolean;
+  chat: {
+    awaitingInput: boolean;
+    chatFailed: boolean;
+    turnCompleted: boolean;
+  };
+  cto: {
+    subagentStarted: boolean;
+    subagentFinished: boolean;
+    missionPhaseChanged: boolean;
+  };
+  prs: {
+    ciFailing: boolean;
+    reviewRequested: boolean;
+    changesRequested: boolean;
+    mergeReady: boolean;
+  };
+  system: {
+    providerOutage: boolean;
+    authRateLimit: boolean;
+    hookFailure: boolean;
+  };
+  /** Optional quiet-hours gate in 24h `HH:MM` format, inclusive start / exclusive end. */
+  quietHours?: {
+    enabled: boolean;
+    start: string;
+    end: string;
+    timezone: string;
+  };
+  /** Per-session APNs routing overrides keyed by chat/session id. */
+  perSessionOverrides?: Record<string, {
+    muted?: boolean;
+    awaitingInputOnly?: boolean;
+  }>;
+  /** Global mute applied by the Control Widget ("snooze for N minutes"). */
+  muteUntil?: string | null;
+};
+
+export type SyncNotificationPrefsPayload = {
+  prefs: NotificationPreferences;
+};
+
+export type SyncSendTestPushPayload = {
+  kind: "alert" | "activity";
+  /** Optional override body for the test push; otherwise a canned message is used. */
+  title?: string;
+  body?: string;
+};
+
+/**
+ * Payload pushed to an iOS peer over the existing sync WebSocket when the
+ * desktop decides an event is foreground-only (no APNs fan-out needed) or
+ * when APNs is disabled.
+ */
+export type SyncInAppNotificationPayload = {
+  category: "chat" | "cto" | "pr" | "system";
+  title: string;
+  body: string;
+  /** Used by the client for de-duplication with any parallel APNs delivery. */
+  collapseId?: string;
+  /** Deep link target: `ade://session/<id>` / `ade://pr/<number>` / etc. */
+  deepLink?: string;
+  /** Optional routing hints used by the iOS notification formatter. */
+  metadata?: Record<string, string | number | boolean | null>;
+  /** ISO8601. Helps the client reason about stale notifications. */
+  generatedAt: string;
+};
+
 type SyncEnvelopeBase<TType extends string> = {
   version: SyncProtocolVersion;
   type: TType;
@@ -536,6 +832,10 @@ type SyncEnvelopeWithPayload<TType extends string, TPayload> =
 export type SyncHelloEnvelope = SyncEnvelopeWithPayload<"hello", SyncHelloPayload>;
 export type SyncHelloOkEnvelope = SyncEnvelopeWithPayload<"hello_ok", SyncHelloOkPayload>;
 export type SyncHelloErrorEnvelope = SyncEnvelopeWithPayload<"hello_error", SyncHelloErrorPayload>;
+export type SyncProjectCatalogRequestEnvelope = SyncEnvelopeWithPayload<"project_catalog_request", Record<string, never>>;
+export type SyncProjectCatalogEnvelope = SyncEnvelopeWithPayload<"project_catalog", SyncProjectCatalogPayload>;
+export type SyncProjectSwitchRequestEnvelope = SyncEnvelopeWithPayload<"project_switch_request", SyncProjectSwitchRequestPayload>;
+export type SyncProjectSwitchResultEnvelope = SyncEnvelopeWithPayload<"project_switch_result", SyncProjectSwitchResultPayload>;
 export type SyncPairingRequestEnvelope = SyncEnvelopeWithPayload<"pairing_request", SyncPairingRequestPayload>;
 export type SyncPairingResultEnvelope = SyncEnvelopeWithPayload<"pairing_result", SyncPairingResultPayload>;
 export type SyncChangesetBatchEnvelope = SyncEnvelopeWithPayload<"changeset_batch", SyncChangesetBatchPayload>;
@@ -554,11 +854,19 @@ export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", Sy
 export type SyncCommandEnvelope = SyncEnvelopeWithPayload<"command", SyncCommandPayload>;
 export type SyncCommandAckEnvelope = SyncEnvelopeWithPayload<"command_ack", SyncCommandAckPayload>;
 export type SyncCommandResultEnvelope = SyncEnvelopeWithPayload<"command_result", SyncCommandResultPayload>;
+export type SyncRegisterPushTokenEnvelope = SyncEnvelopeWithPayload<"register_push_token", SyncRegisterPushTokenPayload>;
+export type SyncNotificationPrefsEnvelope = SyncEnvelopeWithPayload<"notification_prefs", SyncNotificationPrefsPayload>;
+export type SyncSendTestPushEnvelope = SyncEnvelopeWithPayload<"send_test_push", SyncSendTestPushPayload>;
+export type SyncInAppNotificationEnvelope = SyncEnvelopeWithPayload<"in_app_notification", SyncInAppNotificationPayload>;
 
 export type SyncEnvelope =
   | SyncHelloEnvelope
   | SyncHelloOkEnvelope
   | SyncHelloErrorEnvelope
+  | SyncProjectCatalogRequestEnvelope
+  | SyncProjectCatalogEnvelope
+  | SyncProjectSwitchRequestEnvelope
+  | SyncProjectSwitchResultEnvelope
   | SyncPairingRequestEnvelope
   | SyncPairingResultEnvelope
   | SyncChangesetBatchEnvelope
@@ -576,4 +884,94 @@ export type SyncEnvelope =
   | SyncBrainStatusEnvelope
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope
-  | SyncCommandResultEnvelope;
+  | SyncCommandResultEnvelope
+  | SyncRegisterPushTokenEnvelope
+  | SyncNotificationPrefsEnvelope
+  | SyncSendTestPushEnvelope
+  | SyncInAppNotificationEnvelope;
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  enabled: true,
+  chat: {
+    awaitingInput: true,
+    chatFailed: true,
+    turnCompleted: false,
+  },
+  cto: {
+    subagentStarted: false,
+    subagentFinished: true,
+    missionPhaseChanged: true,
+  },
+  prs: {
+    ciFailing: true,
+    reviewRequested: true,
+    changesRequested: true,
+    mergeReady: true,
+  },
+  system: {
+    providerOutage: true,
+    authRateLimit: true,
+    hookFailure: false,
+  },
+  muteUntil: null,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function booleanOrDefault(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function stringOrDefault(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function normalizePrefsGroup<T extends Record<string, boolean>>(
+  input: unknown,
+  defaults: T,
+): T {
+  const raw = isRecord(input) ? input : {};
+  const next = { ...defaults };
+  for (const key of Object.keys(defaults) as Array<keyof T>) {
+    next[key] = booleanOrDefault(raw[key as string], defaults[key]) as T[keyof T];
+  }
+  return next;
+}
+
+export function normalizeNotificationPreferences(input: unknown): NotificationPreferences {
+  const raw = isRecord(input) ? input : {};
+  const quietHoursRaw = isRecord(raw.quietHours) ? raw.quietHours : null;
+  const perSessionRaw = isRecord(raw.perSessionOverrides) ? raw.perSessionOverrides : {};
+  const perSessionOverrides: NonNullable<NotificationPreferences["perSessionOverrides"]> = {};
+  for (const [sessionId, override] of Object.entries(perSessionRaw)) {
+    if (!isRecord(override) || !sessionId.trim()) continue;
+    perSessionOverrides[sessionId] = {
+      muted: booleanOrDefault(override.muted, false),
+      awaitingInputOnly: booleanOrDefault(override.awaitingInputOnly, false),
+    };
+  }
+  return {
+    enabled: booleanOrDefault(raw.enabled, DEFAULT_NOTIFICATION_PREFERENCES.enabled),
+    chat: normalizePrefsGroup(raw.chat, DEFAULT_NOTIFICATION_PREFERENCES.chat),
+    cto: normalizePrefsGroup(raw.cto, DEFAULT_NOTIFICATION_PREFERENCES.cto),
+    prs: normalizePrefsGroup(raw.prs, DEFAULT_NOTIFICATION_PREFERENCES.prs),
+    system: normalizePrefsGroup(raw.system, DEFAULT_NOTIFICATION_PREFERENCES.system),
+    ...(quietHoursRaw
+      ? {
+          quietHours: {
+            enabled: booleanOrDefault(quietHoursRaw.enabled, false),
+            start: stringOrDefault(quietHoursRaw.start, "22:00"),
+            end: stringOrDefault(quietHoursRaw.end, "07:00"),
+            timezone: stringOrDefault(
+              quietHoursRaw.timezone,
+              Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+            ),
+          },
+        }
+      : {}),
+    ...(Object.keys(perSessionOverrides).length > 0 ? { perSessionOverrides } : {}),
+    muteUntil: typeof raw.muteUntil === "string" || raw.muteUntil === null ? raw.muteUntil : DEFAULT_NOTIFICATION_PREFERENCES.muteUntil,
+  };
+}

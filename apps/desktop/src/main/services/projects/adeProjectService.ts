@@ -74,11 +74,6 @@ const DEFAULT_CTO_IDENTITY = YAML.stringify(
       preCompactionFlush: true,
       temporalDecayHalfLifeDays: 30,
     },
-    externalMcpAccess: {
-      allowAll: true,
-      allowedServers: [],
-      blockedServers: [],
-    },
     openclawContextPolicy: {
       shareMode: "filtered",
       blockedCategories: ["secret", "token", "system_prompt"],

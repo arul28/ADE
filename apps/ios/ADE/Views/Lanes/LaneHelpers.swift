@@ -65,10 +65,6 @@ private func parseLaneTimestamp(_ rawValue: String) -> Date? {
 func laneListSortSnapshots(_ lhs: LaneListSnapshot, _ rhs: LaneListSnapshot) -> Bool {
   if lhs.lane.laneType == "primary" && rhs.lane.laneType != "primary" { return true }
   if lhs.lane.laneType != "primary" && rhs.lane.laneType == "primary" { return false }
-  let lhsAwaiting = lhs.runtime.bucket == "awaiting-input"
-  let rhsAwaiting = rhs.runtime.bucket == "awaiting-input"
-  if lhsAwaiting && !rhsAwaiting { return true }
-  if !lhsAwaiting && rhsAwaiting { return false }
   if let ld = parseLaneTimestamp(lhs.lane.createdAt), let rd = parseLaneTimestamp(rhs.lane.createdAt), ld != rd {
     return ld > rd
   }
@@ -209,6 +205,35 @@ func flattenedString(_ value: RemoteJSONValue?) -> String? {
   }
 }
 
+func laneStackGraphOrder(_ snapshots: [LaneListSnapshot]) -> [LaneListSnapshot] {
+  let childrenByParent = Dictionary(grouping: snapshots) { snapshot in
+    snapshot.lane.parentLaneId ?? "__root__"
+  }
+  let primaryId = snapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id
+
+  func visit(parentId: String?) -> [LaneListSnapshot] {
+    let key = parentId ?? "__root__"
+    let children = (childrenByParent[key] ?? []).sorted { lhs, rhs in
+      lhs.lane.createdAt < rhs.lane.createdAt
+    }
+    return children.flatMap { child in
+      [child] + visit(parentId: child.lane.id)
+    }
+  }
+
+  let primaryBranch = primaryId.flatMap { id in snapshots.first(where: { $0.lane.id == id }) }.map { [$0] + visit(parentId: $0.lane.id) } ?? []
+  let seen = Set(primaryBranch.map(\.lane.id))
+  let remaining = snapshots.filter { !seen.contains($0.lane.id) }
+  let remainingIds = Set(remaining.map(\.lane.id))
+  let roots = remaining
+    .filter { ($0.lane.parentLaneId == nil) || !remainingIds.contains($0.lane.parentLaneId!) }
+    .sorted { $0.lane.createdAt < $1.lane.createdAt }
+  let groupedRemaining = roots.flatMap { root in
+    [root] + visit(parentId: root.lane.id).filter { remainingIds.contains($0.lane.id) }
+  }
+  return primaryBranch + groupedRemaining
+}
+
 func runtimeTint(bucket: String) -> Color {
   switch bucket {
   case "running":
@@ -248,6 +273,17 @@ func runtimeSymbol(_ bucket: String) -> String {
   default:
     return "circle"
   }
+}
+
+func devicePresenceSymbol(for devices: [DeviceMarker]) -> String {
+  let platforms = Set(devices.map { $0.platform.lowercased() })
+  if platforms.contains("ios") || platforms.contains("ipados") {
+    return "iphone"
+  }
+  if platforms.contains("macos") || platforms.contains("darwin") {
+    return "laptopcomputer"
+  }
+  return "rectangle.on.rectangle"
 }
 
 private let cachedISO8601Formatter: ISO8601DateFormatter = {

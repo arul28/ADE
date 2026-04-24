@@ -1,71 +1,73 @@
 ---
-title: "Creating & Managing Lanes"
-description: "Step-by-step instructions for creating, renaming, archiving, and deleting lanes, plus keyboard shortcuts and common edge cases."
+title: "Creating and managing lanes"
+description: "Create a lane from the primary branch, from an existing branch, or as a child of another lane — then rename, archive, or delete it."
 icon: "plus"
 ---
 
-## Creating a Lane
+## Create a lane
+
+The New Lane dialog walks you through three ways to start, selected by tabs at the top of the dialog.
 
 <Steps>
-  <Step title="Open the New Lane dialog">
-    Click the **+ New Lane** button at the top of the lane list, or use the keyboard shortcut `Cmd+Shift+L`.
+  <Step title="Open the dialog">
+    Click **+ New Lane** at the top of the lane list, or press `Cmd+Shift+L`. The dialog description reads *"Create a lane from Primary, an existing branch, or another lane."*
   </Step>
-  <Step title="Choose a name and base branch">
-    Enter a lane name (used as both the lane identifier and the worktree directory name). Select the base branch this lane will branch from — typically `main` or `develop`, or an existing lane branch if you are building a stack.
+  <Step title="Name the lane">
+    The name is used for both the lane identifier and the worktree directory name. Keep it task-oriented (`add-health-endpoint`, `fix-auth-redirect`) rather than generic.
+  </Step>
+  <Step title="Pick a source mode">
+    Three tabs, one picks the base:
 
+    - **Primary** — branch off the primary lane's current HEAD. Default and best for most work.
+    - **Branch** — attach to an existing remote or local branch. ADE checks the branch into a new worktree.
+    - **Child** — stack onto another lane. The new lane's base becomes the parent lane's branch; PRs auto-target the parent.
   </Step>
   <Step title="Configure the environment (optional)">
-    Expand the **Advanced** section to set:
-    - Environment variable overlays (key-value pairs applied only to this lane)
-    - A startup command (e.g., `npm run dev`) that ADE runs when the lane initializes
-    - A custom port offset, if the default allocation doesn't suit your setup
+    Expand **Advanced** to set:
+
+    - Environment variable overlays — key-value pairs applied only in this lane
+    - Startup command — run when the lane initializes (for example `npm run dev`)
+    - Port offset — override the auto-assigned allocation
   </Step>
-  <Step title="Create the lane">
-    Click **Create Lane**. ADE will:
-    1. Run `git worktree add` to create the isolated worktree
-    2. Initialize the lane environment (port lease, env overlay, startup command if configured)
-    3. Generate an initial Lane Pack from the branch state
-    4. Add the lane to the list with `idle` status
+  <Step title="Create">
+    Click **Create Lane**. ADE runs `git worktree add`, initializes the lane environment (port lease, env overlay, startup command), generates the first Lane Pack, and adds the lane with `idle` status.
   </Step>
 </Steps>
 
-### Attaching an Existing Worktree
+### Attaching an existing worktree
 
-If you already have a git worktree at a custom path, use **Attach Lane** instead of New Lane. You will be prompted to select the worktree directory. ADE validates that it is a valid git worktree belonging to the current repository, then registers it as an Attached lane.
-
----
-
-## Managing Lanes
-
-### Renaming a Lane
-
-Right-click a lane in the list and select **Rename**. The lane's internal name, worktree directory path, and pack metadata are updated. The branch name is not changed — renaming a lane is an ADE-level operation only.
-
-### Archiving a Lane
-
-Archiving hides a lane from the active list while preserving its full history — commits, sessions, packs, and checkpoints. Archived lanes are accessible via the **Archived** filter in the lane list. You can restore an archived lane at any time.
-
-Use archiving when work is complete or paused long-term but you want the context preserved.
-
-### Deleting a Lane
-
-<Warning>Deleting a Worktree lane runs `git worktree remove` on the underlying directory. Any uncommitted changes in that worktree will be lost. ADE will warn you if the lane has uncommitted work and ask for confirmation before proceeding.</Warning>
-
-To delete a lane:
-1. Right-click the lane and select **Delete Lane**, or open the lane's kebab menu (...) in the detail header.
-2. ADE checks for uncommitted changes. If found, a confirmation dialog lists the modified files and asks you to confirm.
-3. Type the lane name to confirm deletion. ADE removes the worktree, releases the port lease, and removes the lane from the registry.
-
-Deleted lane history (packs, checkpoints, sessions) is retained in ADE's local database for 30 days and can be browsed in the History tab.
-
-**Branches are not deleted.** Deleting a lane does not delete the associated git branch. You can recreate a lane from the same branch at any time.
+If you already have a git worktree at a custom path, use **Attach Lane** instead. Select the worktree directory — ADE validates it belongs to the current repo and registers it as an Attached lane.
 
 ---
 
-## Keyboard Shortcuts
+## Managing lanes
+
+The Manage Lane dialog replaces the old right-click-to-rename flow for most operations. Right-click a lane in the list and pick **Manage lane** to open it, or use the lane's kebab menu (⋯).
+
+### Rename, archive, delete
+
+The Manage Lane dialog groups everything in one place:
+
+- **Lane info** — current name, branch, type, and worktree path
+- **Archive** — hides the lane from the active list while preserving history (commits, sessions, packs, checkpoints)
+- **Delete** — runs `git worktree remove`. You must type the lane name in the confirm field before the button activates
+
+The Primary lane cannot be archived or deleted; the dialog shows a notice instead of destructive controls.
+
+<Warning>
+Deleting a Worktree lane runs `git worktree remove` and uncommitted changes in that worktree are lost. ADE warns when the lane has uncommitted work and requires you to type the lane name to confirm.
+</Warning>
+
+Deleted lane history (packs, checkpoints, sessions) stays in ADE's local database for 30 days and can be browsed in the History tab.
+
+**Branches are not deleted.** Removing a lane does not delete its git branch — you can recreate the lane from the same branch at any time.
+
+---
+
+## Keyboard shortcuts
 
 | Action | Shortcut |
-|--------|----------|
+|---|---|
 | New Lane | `Cmd+Shift+L` |
 | Focus lane list | `Cmd+1` |
 | Next lane | `Cmd+]` |
@@ -78,27 +80,25 @@ Deleted lane history (packs, checkpoints, sessions) is retained in ADE's local d
 
 ---
 
-## Edge Cases and Gotchas
+## Edge cases
 
 <AccordionGroup>
   <Accordion title="Deleting a lane with uncommitted work" icon="triangle-exclamation">
-    ADE checks for uncommitted changes before deleting a Worktree lane. If changes exist, a confirmation dialog lists every modified file and warns that they will be permanently lost. You must type the lane name to confirm. There is no undo.
-
-    If you want to preserve the work, commit or stash before deleting, or archive the lane instead.
+    The Manage Lane dialog checks for uncommitted changes. If any exist, the confirmation field requires the lane name and surfaces the list of modified files. If you want to keep the work, commit, stash, or archive instead.
   </Accordion>
   <Accordion title="Primary lane cannot be deleted" icon="lock">
-    The Primary lane represents the main repository directory. Deleting it would mean deleting your entire working tree, which ADE prevents. You can hide the Primary lane from the list (via the kebab menu > Hide), but it always exists in the registry.
+    Deleting Primary would mean deleting your main working tree. ADE prevents this; Primary can only be hidden from the list. The Manage dialog replaces destructive controls with a "Primary lane cannot be archived or deleted" notice.
   </Accordion>
-  <Accordion title="Branch and lane names diverge" icon="code-branch">
-    Renaming a lane in ADE does not rename the underlying git branch. The lane name is purely an ADE metadata concept. If you rename the branch externally (e.g., via `git branch -m`), ADE will detect the branch-name mismatch on the next sync and prompt you to update the lane's branch reference.
+  <Accordion title="Renaming a lane vs. renaming a branch" icon="code-branch">
+    Lane name is ADE metadata. Renaming a lane in ADE does not rename the underlying git branch. If you rename the branch externally (`git branch -m`), ADE detects the mismatch on the next sync and prompts you to update the lane's branch reference.
   </Accordion>
   <Accordion title="Stale Lane Packs after fast-forward merges" icon="rotate">
-    If a base branch advances via a fast-forward (no new commits in the lane), the Lane Pack freshness indicator may briefly appear stale before the next pack regeneration cycle runs. Manually triggering pack regeneration from the Packs sub-tab resolves this immediately.
+    After a fast-forward merge with no new commits in the lane, the pack freshness indicator may show stale briefly before the next regeneration cycle. Regenerate from the Packs sub-tab to refresh immediately.
   </Accordion>
   <Accordion title="Port conflicts with external processes" icon="plug">
-    ADE's port allocator only tracks leases it manages. If an external process (e.g., a Docker container, a globally installed dev server) is already bound to a port in ADE's allocation range, ADE may attempt to assign that port to a lane. The lane's startup command will fail with an `EADDRINUSE` error. Use the Runtime Diagnostics panel to identify the conflict and either stop the external process or configure a different port range in Settings > Lanes > Port Allocation.
+    ADE tracks the leases it issues. If an external process is bound to a port inside ADE's allocation range, a lane may be assigned the same port and its startup command will fail with `EADDRINUSE`. Use Runtime Diagnostics to spot the conflict, or set a different range under Settings → Lanes → Port Allocation.
   </Accordion>
-  <Accordion title="Attaching a worktree from a different repository" icon="xmark">
-    ADE validates that any Attached lane's worktree belongs to the current project's repository (by checking the `.git` reference). Attempting to attach a worktree from a different repository will fail with a validation error. Each project's ADE instance manages only its own repository.
+  <Accordion title="Attaching a worktree from another repository" icon="xmark">
+    ADE validates that an Attached lane's worktree belongs to the current project. Attaching from a different repository fails with a validation error — each project's ADE instance manages only its own repo.
   </Accordion>
 </AccordionGroup>

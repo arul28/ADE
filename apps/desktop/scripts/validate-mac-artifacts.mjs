@@ -154,18 +154,24 @@ async function validatePackagedRuntime(appPath, description) {
   const resourcesPath = path.join(appPath, "Contents", "Resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
+  const adeCliPath = path.join(resourcesPath, "ade-cli", "cli.cjs");
+  const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
+  const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
-  const adeMcpProxyPath = path.join(unpackedPath, "dist", "main", "adeMcpProxy.cjs");
 
   console.log(`[release:mac] Smoke testing packaged runtime payload for ${description}`);
   await assertPathExists(executablePath, "packaged app executable");
   await assertPathExists(appAsarPath, "app.asar payload");
   await assertPathExists(unpackedPath, "app.asar.unpacked runtime payload");
+  await assertPathExists(adeCliPath, "bundled ADE CLI entry");
+  await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
+  await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
+  await assertExecutable(adeCliBinPath, "bundled ADE CLI wrapper");
+  await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
-  await assertPathExists(adeMcpProxyPath, "unpacked ADE MCP proxy script");
 
   const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);
   if (!nodePtyAddon) {
@@ -220,28 +226,15 @@ async function validatePackagedRuntime(appPath, description) {
   if (payload?.codexExecutable !== "function") {
     throw new Error(`[release:mac] Packaged smoke expected Codex executable resolver to be available, got ${String(payload?.codexExecutable)}`);
   }
-  if (payload?.launchMode !== "bundled_proxy") {
-    throw new Error(`[release:mac] Packaged smoke expected bundled_proxy launch mode, got ${String(payload?.launchMode)}`);
-  }
-  if (!payload?.proxyProbe?.ok) {
-    throw new Error("[release:mac] Packaged smoke failed to launch the bundled ADE MCP proxy in probe mode");
-  }
-  // Do not rely on probe mode alone here. The regression we fixed still let
-  // the packaged proxy start, but chat MCP failed once Claude/Codex attempted
-  // the first initialize handshake through that launch path.
-  if (!payload?.proxyInitialize?.ok) {
-    throw new Error(
-      `[release:mac] Packaged smoke failed to complete MCP initialize through the bundled ADE proxy: ${
-        String(payload?.proxyInitialize?.error || payload?.proxyInitialize?.stderr || "unknown error")
-      }`
-    );
-  }
-  if (payload?.proxyInitialize?.response?.result?.serverInfo?.name !== "ade-mcp-server") {
-    throw new Error(
-      `[release:mac] Packaged smoke expected ADE MCP initialize to report ade-mcp-server, got ${
-        JSON.stringify(payload?.proxyInitialize?.response ?? null)
-      }`
-    );
+
+  const { stdout: adeCliHelp } = await execFileAsync(adeCliBinPath, ["--help"], {
+    cwd: resourcesPath,
+    env: {
+      ...process.env,
+    },
+  });
+  if (!adeCliHelp.includes("Agent-focused command-line interface for ADE")) {
+    throw new Error("[release:mac] Bundled ADE CLI wrapper did not print ADE CLI help");
   }
 
   console.log(`[release:mac] Packaged runtime smoke passed for ${description}: ${path.relative(appPath, nodePtyAddon)}`);

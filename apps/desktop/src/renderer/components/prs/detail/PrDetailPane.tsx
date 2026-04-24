@@ -34,6 +34,7 @@ import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
 import { describePrTargetDiff } from "../shared/laneBranchTargets";
 import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { usePrs } from "../state/PrsContext";
+import { modifierKeyLabel } from "../../../lib/platform";
 
 // ---- Sub-tab type ----
 type DetailTab = "overview" | "convergence" | "files" | "checks" | "activity";
@@ -436,6 +437,18 @@ export function PrDetailPane({
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
   const timelineRailsRef = React.useRef<PrDetailTimelineRailsRef | null>(null);
+
+  React.useEffect(() => {
+    const onTourTab = (event: Event) => {
+      const tab = (event as CustomEvent<DetailTab>).detail;
+      if (tab === "overview" || tab === "convergence" || tab === "files" || tab === "checks" || tab === "activity") {
+        setActiveTab(tab);
+      }
+    };
+    window.addEventListener("ade:tour-pr-detail-tab", onTourTab);
+    return () => window.removeEventListener("ade:tour-pr-detail-tab", onTourTab);
+  }, []);
+
   const deepLinkState = React.useMemo(() => {
     try {
       const parsed = parsePrsRouteState({ search: window.location.search, hash: window.location.hash });
@@ -1928,6 +1941,7 @@ export function PrDetailPane({
             {queueContext && onOpenQueueView ? (
               <button
                 type="button"
+                data-tour="prs.stackingIndicator"
                 onClick={() => onOpenQueueView(queueContext.groupId)}
                 style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}
                 title={queueContext.label ?? "Open queue"}
@@ -2026,6 +2040,8 @@ export function PrDetailPane({
           />
         )}
         {activeTab === "convergence" && (
+          // tour anchor — closest viable: PrConvergencePanel surfaces the rebase/conflict simulation UI.
+          <div data-tour="prs.conflictSim" style={{ display: "contents" }}>
           <PrConvergencePanel
             prNumber={pr.githubPrNumber}
             prTitle={pr.title}
@@ -2106,11 +2122,13 @@ export function PrDetailPane({
               });
             }}
           />
+          </div>
         )}
         {activeTab === "files" && (
           <FilesTab files={files} expandedFile={expandedFile} setExpandedFile={setExpandedFile} />
         )}
         {activeTab === "checks" && (
+          <div data-tour="prs.checksPanel" style={{ display: "contents" }}>
           <ChecksTab
             checks={checks} actionRuns={actionRuns}
             actionBusy={actionBusy}
@@ -2118,6 +2136,7 @@ export function PrDetailPane({
             showIssueResolverAction={issueResolutionAvailability.hasAnyActionableIssues}
             onOpenIssueResolver={handleOpenIssueResolver}
           />
+          </div>
         )}
         {activeTab === "activity" && (
           <ActivityTab
@@ -2728,7 +2747,7 @@ function OverviewTab(props: OverviewTabProps) {
             <textarea
               value={props.commentDraft}
               onChange={(e) => props.setCommentDraft(e.target.value)}
-              placeholder="Leave a comment... Supports Markdown. Cmd+Enter to submit."
+              placeholder={`Leave a comment... Supports Markdown. ${modifierKeyLabel}+Enter to submit.`}
               onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void props.onAddComment(); }}
               style={{
                 width: "100%", minHeight: 80, resize: "vertical", padding: "14px 14px 36px",
@@ -2943,7 +2962,7 @@ function OverviewTab(props: OverviewTabProps) {
                 </button>
 
                 {pr.state === "open" && (
-                  <button type="button" disabled={actionBusy} onClick={() => void props.onClose()} style={dangerButton({ height: 40, opacity: actionBusy ? 0.4 : 1, padding: "0 16px" })}>
+                  <button type="button" data-tour="prs.closeBtn" disabled={actionBusy} onClick={() => void props.onClose()} style={dangerButton({ height: 40, opacity: actionBusy ? 0.4 : 1, padding: "0 16px" })}>
                     <XCircle size={14} /> Close
                   </button>
                 )}
@@ -3547,7 +3566,7 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
           <textarea
             value={commentDraft}
             onChange={(e) => setCommentDraft(e.target.value)}
-            placeholder="Write a comment... (Cmd+Enter to submit)"
+            placeholder={`Write a comment... (${modifierKeyLabel}+Enter to submit)`}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void onAddComment(); }}
             style={{
               flex: 1, minHeight: 60, resize: "vertical", padding: 12,

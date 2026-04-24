@@ -41,11 +41,10 @@ function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | nu
 }
 
 function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
-  if (permissionMode === "full-auto") return ["--full-auto"];
-  if (permissionMode === "edit") return ["-c", "approval_policy=on-failure", "-c", "sandbox_mode=workspace-write"];
-  if (permissionMode === "default" || permissionMode === "plan") {
-    return ["-c", "approval_policy=untrusted", "-c", "sandbox_mode=read-only"];
-  }
+  if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
+  if (permissionMode === "default") return ["--full-auto"];
+  if (permissionMode === "edit") return ["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"];
+  if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
   return [];
 }
 
@@ -59,10 +58,23 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
     return undefined;
   }
 
-  if (normalized.includes("--full-auto")) return "full-auto";
+  if (normalized.includes("--dangerously-bypass-approvals-and-sandbox") || normalized.includes("--yolo")) return "full-auto";
+  if (normalized.includes("--full-auto")) return "default";
+  if (
+    (normalized.includes("--ask-for-approval untrusted") || normalized.includes("-a untrusted") || normalized.includes("approval_policy=untrusted"))
+    && (normalized.includes("--sandbox workspace-write") || normalized.includes("-s workspace-write") || normalized.includes("sandbox_mode=workspace-write"))
+  ) return "edit";
+  if (
+    (normalized.includes("--ask-for-approval on-request") || normalized.includes("-a on-request") || normalized.includes("approval_policy=on-request"))
+    && (normalized.includes("--sandbox read-only") || normalized.includes("-s read-only") || normalized.includes("sandbox_mode=read-only"))
+  ) return "plan";
+  if (
+    (normalized.includes("--ask-for-approval on-request") || normalized.includes("-a on-request") || normalized.includes("approval_policy=on-request"))
+    && (normalized.includes("--sandbox workspace-write") || normalized.includes("-s workspace-write") || normalized.includes("sandbox_mode=workspace-write"))
+  ) return "default";
   if (normalized.includes("approval_policy=on-failure") || normalized.includes("sandbox_mode=workspace-write")) return "edit";
-  if (normalized.includes("approval_policy=untrusted") || normalized.includes("sandbox_mode=read-only")) return "default";
-  if (normalized.includes("approval_policy=") || normalized.includes("sandbox_mode=")) return "plan";
+  if (normalized.includes("approval_policy=untrusted") || normalized.includes("sandbox_mode=read-only")) return "plan";
+  if (normalized.includes("approval_policy=") || normalized.includes("sandbox_mode=") || normalized.includes("--ask-for-approval") || normalized.includes("--sandbox")) return "plan";
   return "config-toml";
 }
 
@@ -105,16 +117,25 @@ export function parseTrackedCliLaunchConfig(
   if (permissionMode === "edit") {
     return {
       permissionMode,
-      codexApprovalPolicy: "on-failure",
+      codexApprovalPolicy: "untrusted",
       codexSandbox: "workspace-write",
       codexConfigSource: "flags",
     };
   }
 
-  if (permissionMode === "default" || permissionMode === "plan") {
+  if (permissionMode === "default") {
     return {
       permissionMode,
-      codexApprovalPolicy: "untrusted",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    };
+  }
+
+  if (permissionMode === "plan") {
+    return {
+      permissionMode,
+      codexApprovalPolicy: "on-request",
       codexSandbox: "read-only",
       codexConfigSource: "flags",
     };
@@ -145,7 +166,7 @@ export function parseTrackedCliResumeCommand(
     return { provider, targetId: match[1] ?? null };
   }
 
-  const match = normalized.match(/^codex(?:(?:\s+--no-alt-screen)|(?:\s+--full-auto)|(?:\s+-c\s+[^\s]+))*\s+resume(?:\s+([^\s]+))?(?:\s|$)/i);
+  const match = normalized.match(/^codex(?:(?:\s+--no-alt-screen)|(?:\s+--full-auto)|(?:\s+--dangerously-bypass-approvals-and-sandbox)|(?:\s+--yolo)|(?:\s+--sandbox\s+[^\s]+)|(?:\s+-s\s+[^\s]+)|(?:\s+--ask-for-approval\s+[^\s]+)|(?:\s+-a\s+[^\s]+)|(?:\s+-c\s+[^\s]+))*\s+resume(?:\s+([^\s]+))?(?:\s|$)/i);
   if (!match) return { provider, targetId: null };
   return { provider, targetId: match[1] ?? null };
 }

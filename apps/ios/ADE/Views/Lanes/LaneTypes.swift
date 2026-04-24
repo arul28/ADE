@@ -46,10 +46,7 @@ enum LaneRuntimeFilter: String, CaseIterable, Identifiable {
 }
 
 enum LaneDetailSection: String, CaseIterable, Identifiable {
-  case overview
-  case work
   case git
-  case manage
 
   var id: String { rawValue }
 
@@ -59,10 +56,121 @@ enum LaneDetailSection: String, CaseIterable, Identifiable {
 
   var symbol: String {
     switch self {
-    case .overview: return "square.grid.2x2"
     case .git: return "arrow.triangle.branch"
-    case .work: return "terminal"
-    case .manage: return "slider.horizontal.3"
+    }
+  }
+}
+
+enum LaneGitConfirmation: Identifiable {
+  case rebaseLane
+  case rebaseDescendants
+  case forcePush
+  case rebaseAndPush
+
+  var id: String {
+    switch self {
+    case .rebaseLane: return "rebase-lane"
+    case .rebaseDescendants: return "rebase-descendants"
+    case .forcePush: return "force-push"
+    case .rebaseAndPush: return "rebase-and-push"
+    }
+  }
+
+  var title: String {
+    switch self {
+    case .rebaseLane: return "Rebase this lane?"
+    case .rebaseDescendants: return "Rebase lane and descendants?"
+    case .forcePush: return "Force push?"
+    case .rebaseAndPush: return "Rebase and push?"
+    }
+  }
+
+  var message: String {
+    switch self {
+    case .rebaseLane:
+      return "ADE will replay this lane on top of its parent. Review the lane status before continuing."
+    case .rebaseDescendants:
+      return "ADE will replay this lane and child lanes. Review affected lanes before continuing."
+    case .forcePush:
+      return "This updates the remote branch with force-with-lease. Review the lane status before continuing."
+    case .rebaseAndPush:
+      return "ADE will rebase this lane, inspect upstream state, then push. If the branch diverged, it may use force-with-lease."
+    }
+  }
+
+  var confirmTitle: String {
+    switch self {
+    case .rebaseLane: return "Rebase lane"
+    case .rebaseDescendants: return "Rebase all"
+    case .forcePush: return "Force push"
+    case .rebaseAndPush: return "Rebase and push"
+    }
+  }
+
+  var actionLabel: String {
+    switch self {
+    case .rebaseLane: return "rebase lane"
+    case .rebaseDescendants: return "rebase descendants"
+    case .forcePush: return "force push"
+    case .rebaseAndPush: return "rebase and push"
+    }
+  }
+}
+
+enum LaneFileConfirmation: Identifiable {
+  case discardUnstaged(FileChange)
+  case discardAllUnstaged([FileChange])
+  case restoreStaged(FileChange)
+
+  var id: String {
+    switch self {
+    case .discardUnstaged(let file): return "discard:\(file.id)"
+    case .discardAllUnstaged(let files): return "discard-all:\(files.count):\(files.map(\.id).joined(separator: ","))"
+    case .restoreStaged(let file): return "restore:\(file.id)"
+    }
+  }
+
+  var title: String {
+    switch self {
+    case .discardUnstaged: return "Discard changes?"
+    case .discardAllUnstaged: return "Discard all unstaged changes?"
+    case .restoreStaged: return "Restore staged file?"
+    }
+  }
+
+  var message: String {
+    switch self {
+    case .discardUnstaged:
+      return "Unstaged changes to this file will be permanently lost."
+    case .discardAllUnstaged(let files):
+      return "Unstaged changes to \(files.count) file\(files.count == 1 ? "" : "s") will be permanently lost."
+    case .restoreStaged:
+      return "The staged version of this file will be restored from HEAD."
+    }
+  }
+
+  var confirmTitle: String {
+    switch self {
+    case .discardUnstaged: return "Discard"
+    case .discardAllUnstaged: return "Discard all"
+    case .restoreStaged: return "Restore"
+    }
+  }
+
+  var actionLabel: String {
+    switch self {
+    case .discardUnstaged: return "discard file"
+    case .discardAllUnstaged: return "discard all"
+    case .restoreStaged: return "restore staged file"
+    }
+  }
+
+  var file: FileChange? {
+    switch self {
+    case .discardUnstaged(let file), .restoreStaged(let file):
+      return file
+    case .discardAllUnstaged:
+      return nil
     }
   }
 }

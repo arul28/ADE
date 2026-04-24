@@ -36,6 +36,18 @@ describe("buildClaudeV2Message", () => {
     expect(result).toBe("Hello, Claude!");
   });
 
+  it("can force text-only input into an SDK user message", () => {
+    const result = buildClaudeV2Message("/automate is a command, right?", [], {
+      sessionId: "claude-sdk-session",
+      forceUserMessage: true,
+    });
+
+    expect(typeof result).toBe("object");
+    const msg = result as SDKUserMessagePartial;
+    expect(msg.session_id).toBe("claude-sdk-session");
+    expect(msg.message.content).toEqual([{ type: "text", text: "/automate is a command, right?" }]);
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // 2. Non-image attachments -> string with file hints
   // ─────────────────────────────────────────────────────────────────────────
@@ -49,6 +61,21 @@ describe("buildClaudeV2Message", () => {
     expect(result).toContain("Analyze these files");
     expect(result).toContain("[File attached: /some/dir/data.csv]");
     expect(result).toContain("[File attached: /some/dir/script.py]");
+  });
+
+  it("can force non-image attachments into an SDK user message", () => {
+    const attachments: AgentChatFileRef[] = [
+      { path: "/some/dir/data.csv", type: "file" },
+    ];
+    const result = buildClaudeV2Message("/automate is available?", attachments, {
+      forceUserMessage: true,
+    });
+
+    const msg = result as SDKUserMessagePartial;
+    expect(msg.message.content).toEqual([{
+      type: "text",
+      text: "/automate is available?\n\n[File attached: /some/dir/data.csv]",
+    }]);
   });
 
   // ─────────────────────────────────────────────────────────────────────────

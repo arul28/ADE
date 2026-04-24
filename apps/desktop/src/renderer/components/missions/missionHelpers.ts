@@ -181,14 +181,9 @@ export const DEFAULT_ORCHESTRATOR_MODEL: ModelConfig = {
 export const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
   providers: {
     claude: "full-auto",
-    codex: "full-auto",
+    codex: "default",
     opencode: "full-auto",
     codexSandbox: "workspace-write",
-  },
-  externalMcp: {
-    enabled: false,
-    selectedServers: [],
-    selectedTools: [],
   },
 };
 
@@ -254,7 +249,7 @@ export function plannerProviderToModelConfig(provider: PlannerProvider): ModelCo
   if (provider === "codex") {
     return {
       provider: "codex",
-      modelId: getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex",
+      modelId: getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex",
       thinkingLevel: "medium",
     };
   }
@@ -311,7 +306,6 @@ export function looksLikeLowSignalNoise(text: string): boolean {
   if (!trimmed.length) return true;
   if (/^streaming(?:\.\.\.)?$/i.test(trimmed)) return true;
   if (/^usage$/i.test(trimmed)) return true;
-  if (/^mcp:/i.test(trimmed)) return true;
   if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
   if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
   if (!/\s/.test(trimmed) && trimmed.length < 24 && !/[.!?]/.test(trimmed)) return true;
@@ -718,7 +712,7 @@ export const ERROR_SOURCE_COLORS: Record<ErrorSource, string> = {
 /**
  * Classify an error message into its source. (VAL-UX-008)
  * ADE = orchestrator / internal bugs. Provider = AI API / rate-limit / quota.
- * Executor = CLI / process spawn. Runtime = env / config / MCP / sandbox.
+ * Executor = CLI / process spawn. Runtime = env / config / sandbox.
  */
 export function classifyErrorSource(message: string): ErrorSource {
   const m = message.toLowerCase();
@@ -755,9 +749,8 @@ export function classifyErrorSource(message: string): ErrorSource {
   ) {
     return "Executor";
   }
-  // Runtime errors (env, MCP, config, sandbox)
+  // Runtime errors (env, config, sandbox)
   if (
-    m.includes("mcp") ||
     m.includes("sandbox") ||
     m.includes("permission") ||
     m.includes("config") ||

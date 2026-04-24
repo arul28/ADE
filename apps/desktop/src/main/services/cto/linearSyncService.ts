@@ -61,6 +61,7 @@ export function createLinearSyncService(args: {
   let disposed = false;
   let timer: NodeJS.Timeout | null = null;
   let inFlight = false;
+  const pendingIssueIds = new Set<string>();
   let lastSkipReason: string | null = null;
   const reconciliationIntervalSec = Math.max(15, Math.floor(args.reconciliationIntervalSec ?? 30));
 
@@ -132,6 +133,42 @@ export function createLinearSyncService(args: {
 
   const clearSkipReason = () => {
     lastSkipReason = null;
+  };
+
+  const addPendingIssue = (issueId: string): void => {
+    const trimmed = issueId.trim();
+    if (!trimmed) return;
+    pendingIssueIds.add(trimmed);
+  };
+
+  const replayPendingIssues = async (): Promise<void> => {
+    if (disposed || inFlight || pendingIssueIds.size === 0) return;
+    inFlight = true;
+    try {
+      while (pendingIssueIds.size > 0 && !disposed) {
+        const issueIds = [...pendingIssueIds];
+        pendingIssueIds.clear();
+        const failedIssueIds: string[] = [];
+        for (const issueId of issueIds) {
+          if (disposed) break;
+          try {
+            await processIssueUpdateNow(issueId);
+          } catch (error) {
+            failedIssueIds.push(issueId);
+            args.logger?.warn("linear_workflow.issue_update_replay_failed", {
+              issueId,
+              error: getErrorMessage(error),
+            });
+          }
+        }
+        if (failedIssueIds.length > 0) {
+          for (const issueId of failedIssueIds) addPendingIssue(issueId);
+          break;
+        }
+      }
+    } finally {
+      inFlight = false;
+    }
   };
 
   const setSyncState = (patch: {
@@ -370,10 +407,11 @@ export function createLinearSyncService(args: {
       });
     } finally {
       inFlight = false;
+      await replayPendingIssues();
     }
   };
 
-  const processIssueUpdate = async (issueId: string): Promise<void> => {
+  const processIssueUpdateNow = async (issueId: string): Promise<void> => {
     if (disposed) return;
     if (!(args.hasCredentials?.() ?? true) && !args.dispatcherService.hasActiveRuns()) {
       args.logger?.info("linear_workflow.issue_update_skipped", {
@@ -434,6 +472,21 @@ export function createLinearSyncService(args: {
         lastError: message,
       });
       throw error;
+    }
+  };
+
+  const processIssueUpdate = async (issueId: string): Promise<void> => {
+    if (disposed) return;
+    if (inFlight) {
+      addPendingIssue(issueId);
+      return;
+    }
+    inFlight = true;
+    try {
+      await processIssueUpdateNow(issueId);
+    } finally {
+      inFlight = false;
+      await replayPendingIssues();
     }
   };
 

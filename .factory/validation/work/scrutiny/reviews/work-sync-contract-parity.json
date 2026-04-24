@@ -1,0 +1,34 @@
+{
+  "featureId": "work-sync-contract-parity",
+  "reviewedAt": "2026-04-16T15:02:15Z",
+  "commitId": "f059932f37b13e01f4c166e4b8b7757c78f68204",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature usefully extends the Work contract with requested-cwd navigation context, richer create/update payload parsing, and terminal cache metadata, but it still leaves one of the promised parity gaps unresolved: pending-input state is only emitted for live in-memory chat sessions. That means restored or disconnected Work sessions can lose their waiting-for-input marker even though the mobile Work browser depends on that field to prioritize operator action.",
+    "issues": [
+      {
+        "file": "apps/desktop/src/main/services/chat/agentChatService.ts",
+        "line": 12672,
+        "severity": "blocking",
+        "description": "`summarizeSessionRow()` still sets `awaitingInput` only when `hasLivePendingInput(liveManaged)` is true, and `hasLivePendingInput()` only inspects live runtime/local approval state (`agentChatService.ts:592-600,12672-12677`). The persisted session metadata read just above this block has no pending-input field at all (`agentChatService.ts:218-261,4969-5107`). As a result, any restored/disconnected chat session loses its waiting-input signal in the emitted `AgentChatSessionSummary`, even though the iOS Work browser uses `summary.awaitingInput` to classify and prioritize those sessions (`apps/ios/ADE/Views/Work/WorkStatusAndFormattingHelpers.swift:82-115`). That misses the feature's explicit pending-input/offline-contract requirement and can hide operator-blocked work after reconnects or desktop restarts."
+      },
+      {
+        "file": "apps/desktop/src/main/services/sync/syncRemoteCommandService.test.ts",
+        "line": 675,
+        "severity": "non_blocking",
+        "description": "The added desktop coverage only verifies command parsing/forwarding for `chat.create` and `chat.updateSession` (`syncRemoteCommandService.test.ts:675-768`). It does not add any producer-side assertion for the new summary fields emitted from `summarizeSessionRow()` in `agentChatService.ts` (`requestedCwd`, `cursorConfigValues`, or the intended waiting-input signal), so the core mobile-facing Work summary contract remains only partially covered on the desktop side despite the feature's requirement that desktop tests cover the new contract shape before UI work consumes it."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The `sync-parity-worker` skill still tells workers to run `npm --prefix apps/desktop run test -- --maxWorkers=7`, even though this repo now documents that the bundled Vitest/CAC CLI rejects that flag.",
+      "evidence": "`.factory/skills/sync-parity-worker/SKILL.md:76` still prescribes `npm --prefix apps/desktop run test -- --maxWorkers=7`, while `.factory/library/work-sync-validation.md:3` says that command currently fails because `--maxWorkers` is unsupported. The reviewed handoff's `skillFeedback.deviations` also records that mismatch as the reason the worker could not follow the procedure verbatim."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the contract additions for requested cwd, cursor settings, and terminal metadata are useful, but pending-input parity is still incomplete because `awaitingInput` is only derived from live in-memory runtime state. Non-blocking: the new desktop tests cover command parsing but not the emitted Work session summaries, and the `sync-parity-worker` skill still references the repo's invalid `--maxWorkers=7` desktop test command."
+}

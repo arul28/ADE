@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { OrchestratorExecutorAdapter } from "./orchestratorService";
-import { buildFullPrompt, createBaseOrchestratorAdapter, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
+import { buildFullPrompt, createBaseOrchestratorAdapter, shellEscapeArg, shellInlineDecodedArg, type AdapterLaunchCommand } from "./baseOrchestratorAdapter";
 import {
   classifyWorkerExecutionPath,
   getModelById,
@@ -14,12 +14,13 @@ import {
 import type {
   AgentChatExecutionMode,
   AgentChatPermissionMode,
-  ComputerUsePolicy,
   TeamRuntimeConfig,
 } from "../../../shared/types";
 import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createAgentChatService } from "../chat/agentChatService";
 import {
   mapPermissionToClaude,
@@ -27,11 +28,23 @@ import {
   normalizeMissionPermissions,
   providerPermissionsToLegacyConfig,
 } from "./permissionMapping";
-import { type AdeMcpLaunch, resolveDesktopAdeMcpLaunch, resolveRepoRuntimeRoot } from "../runtime/adeMcpLaunch";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
+
+const WORKER_ENV_KEYS = [
+  "ADE_MISSION_ID",
+  "ADE_RUN_ID",
+  "ADE_STEP_ID",
+  "ADE_ATTEMPT_ID",
+  "ADE_DEFAULT_ROLE",
+  "ADE_OWNER_ID",
+] as const;
+
+type WorkerEnvKey = typeof WORKER_ENV_KEYS[number];
+type WorkerEnvVars = Partial<Record<WorkerEnvKey, string>> & Record<string, string>;
 
 /**
- * Build environment variable assignments for worker identity.
- * These env vars allow the MCP server to auto-populate caller context.
+ * Build worker identity env vars. ADE-aware CLIs and child processes use these
+ * to resolve caller context without POSIX-only inline assignment syntax.
  */
 function buildWorkerEnvVars(args: {
   missionId: string;
@@ -39,40 +52,31 @@ function buildWorkerEnvVars(args: {
   stepId: string;
   attemptId: string;
   ownerId?: string | null;
-}): string[] {
-  return [
-    `ADE_MISSION_ID=${shellEscapeArg(args.missionId)}`,
-    `ADE_RUN_ID=${shellEscapeArg(args.runId)}`,
-    `ADE_STEP_ID=${shellEscapeArg(args.stepId)}`,
-    `ADE_ATTEMPT_ID=${shellEscapeArg(args.attemptId)}`,
-    `ADE_DEFAULT_ROLE=agent`,
-    ...(args.ownerId ? [`ADE_OWNER_ID=${shellEscapeArg(args.ownerId)}`] : []),
-  ];
+}): WorkerEnvVars {
+  return {
+    ADE_MISSION_ID: args.missionId,
+    ADE_RUN_ID: args.runId,
+    ADE_STEP_ID: args.stepId,
+    ADE_ATTEMPT_ID: args.attemptId,
+    ADE_DEFAULT_ROLE: "agent",
+    ...(args.ownerId ? { ADE_OWNER_ID: args.ownerId } : {}),
+  };
+}
+
+function previewWorkerEnvVars(env: WorkerEnvVars): string[] {
+  const parts: string[] = [];
+  for (const key of WORKER_ENV_KEYS) {
+    const value = env[key];
+    if (!value) continue;
+    parts.push(key === "ADE_DEFAULT_ROLE" ? `${key}=agent` : `${key}=${shellEscapeArg(value)}`);
+  }
+  return parts;
 }
 
 function resolveWorkerOwnerId(metadata: Record<string, unknown> | null | undefined): string | null {
   return typeof metadata?.employeeAgentId === "string" && metadata.employeeAgentId.trim().length > 0
     ? metadata.employeeAgentId.trim()
     : null;
-}
-
-export function resolveAdeMcpServerLaunch(args: {
-  projectRoot: string;
-  workspaceRoot: string;
-  workspaceBinding?: "explicit" | "project_root";
-  runtimeRoot: string;
-  missionId?: string;
-  runId?: string;
-  stepId?: string;
-  attemptId?: string;
-  chatSessionId?: string;
-  defaultRole?: string;
-  ownerId?: string;
-  computerUsePolicy?: ComputerUsePolicy | null;
-  bundledProxyPath?: string;
-  preferBundledProxy?: boolean;
-}): AdeMcpLaunch {
-  return resolveDesktopAdeMcpLaunch(args);
 }
 
 export function getProviderAdapterUnsupportedModelReason(modelRef: string): string | null {
@@ -86,80 +90,85 @@ export function getProviderAdapterUnsupportedModelReason(modelRef: string): stri
   return `Model '${descriptor.id}' requires ${executionPath} provider-owned execution (${descriptor.family}), but the shell-startup fallback only supports Claude/Codex CLI models. Use the managed OpenCode path for API and local models.`;
 }
 
-/**
- * Write a temporary MCP config JSON file for Claude CLI's --mcp-config flag.
- * The config tells Claude CLI to connect to the ADE MCP server via stdio.
- */
-function writeMcpConfigFile(args: {
-  projectRoot: string;
-  workspaceRoot: string;
-  runtimeRoot: string;
-  runId: string;
-  attemptId: string;
-  missionId: string;
-  stepId: string;
-  ownerId?: string | null;
-}): string {
-  const configDir = resolveAdeLayout(args.projectRoot).mcpConfigsDir;
-  fs.mkdirSync(configDir, { recursive: true });
-
-  const configPath = path.join(configDir, `worker-${args.attemptId}.json`);
-
-  const launch = resolveAdeMcpServerLaunch({
-    projectRoot: args.projectRoot,
-    workspaceRoot: args.workspaceRoot,
-    runtimeRoot: args.runtimeRoot,
-    missionId: args.missionId,
-    runId: args.runId,
-    stepId: args.stepId,
-    attemptId: args.attemptId,
-    defaultRole: "agent",
-    ownerId: args.ownerId ?? undefined,
-  });
-
-  const config = {
-    mcpServers: {
-      ade: {
-        command: launch.command,
-        args: launch.cmdArgs,
-        env: launch.env
-      }
-    }
-  };
-
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
-  return configPath;
-}
-
-function workerLocalMcpConfigFileName(attemptId: string): string {
-  const sanitized = attemptId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return `.ade-worker-mcp-${sanitized}.json`;
-}
-
 function workerPromptFilePath(projectRoot: string, attemptId: string): string {
   return path.join(resolveAdeLayout(projectRoot).workerPromptsDir, `worker-${attemptId}.txt`);
 }
+
+function workerLaunchFilePath(projectRoot: string, attemptId: string): string {
+  return path.join(resolveAdeLayout(projectRoot).workerPromptsDir, `worker-${attemptId}.launch.json`);
+}
+
+const WORKER_CLI_LAUNCHER_SCRIPT = `
+const fs = require("fs");
+const { spawn, spawnSync } = require("child_process");
+const specPath = process.argv[1];
+let done = false;
+let child = null;
+function terminateChild() {
+  if (!child || !child.pid) return;
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+    } else {
+      child.kill("SIGTERM");
+    }
+  } catch {}
+}
+function finish(code) {
+  if (done) return;
+  done = true;
+  process.exit(typeof code === "number" ? code : 1);
+}
+process.on("SIGTERM", () => {
+  terminateChild();
+  finish(143);
+});
+process.on("SIGINT", () => {
+  terminateChild();
+  finish(130);
+});
+process.on("exit", () => {
+  terminateChild();
+});
+const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+const childEnv = { ...process.env, ...(spec.env || {}) };
+delete childEnv.ELECTRON_RUN_AS_NODE;
+child = spawn(spec.command, Array.isArray(spec.args) ? spec.args : [], {
+  cwd: spec.cwd || process.cwd(),
+  env: childEnv,
+  shell: false,
+  stdio: [spec.stdinFilePath ? "pipe" : "inherit", "inherit", "inherit"],
+  windowsHide: false,
+  windowsVerbatimArguments: !!spec.windowsVerbatimArguments
+});
+child.on("error", (err) => {
+  console.error("[ADE] Failed to launch worker CLI: " + (err && err.message ? err.message : String(err)));
+  finish(127);
+});
+child.on("exit", (code, signal) => {
+  if (signal) {
+    console.error("[ADE] Worker CLI exited from signal " + signal + ".");
+    finish(1);
+    return;
+  }
+  finish(code == null ? 0 : code);
+});
+if (spec.stdinFilePath && child.stdin) {
+  child.stdin.on("error", () => {});
+  const stream = fs.createReadStream(spec.stdinFilePath);
+  stream.on("error", (err) => {
+    console.error("[ADE] Failed to read worker prompt: " + (err && err.message ? err.message : String(err)));
+    try { child.kill(); } catch {}
+    finish(1);
+  });
+  stream.pipe(child.stdin);
+}
+`;
 
 const CLAUDE_READ_ONLY_NATIVE_TOOLS = [
   "Read",
   "Glob",
   "Grep",
-] as const;
-
-const CLAUDE_READ_ONLY_WORKER_MCP_TOOLS = [
-  "mcp__ade__get_mission",
-  "mcp__ade__get_run_graph",
-  "mcp__ade__stream_events",
-  "mcp__ade__get_timeline",
-  "mcp__ade__get_pending_messages",
-  "mcp__ade__get_computer_use_backend_status",
-  "mcp__ade__list_computer_use_artifacts",
-  "mcp__ade__ingest_computer_use_artifacts",
-  "mcp__ade__report_status",
-  "mcp__ade__report_result",
-  "mcp__ade__ask_user",
-  "mcp__ade__memory_search",
-  "mcp__ade__memory_add",
 ] as const;
 
 function dedupeAllowedTools(entries: readonly string[]): string[] {
@@ -174,20 +183,14 @@ function dedupeAllowedTools(entries: readonly string[]): string[] {
   return out;
 }
 
-export function buildClaudeReadOnlyWorkerAllowedTools(serverName = "ade", extraToolNames: readonly string[] = []): string[] {
-  const trimmedServerName = serverName.trim();
-  const resolvedServerName = trimmedServerName.length > 0 ? trimmedServerName : "ade";
-  const mcpTools = CLAUDE_READ_ONLY_WORKER_MCP_TOOLS.map((tool) =>
-    tool.replace("mcp__ade__", `mcp__${resolvedServerName}__`),
-  );
+export function buildClaudeReadOnlyWorkerAllowedTools(extraToolNames: readonly string[] = []): string[] {
   return dedupeAllowedTools([
     ...CLAUDE_READ_ONLY_NATIVE_TOOLS,
-    ...mcpTools,
-    ...extraToolNames.map((tool) => `mcp__${resolvedServerName}__${tool}`),
+    ...extraToolNames,
   ]);
 }
 
-function writeWorkerPromptFile(args: {
+export function writeWorkerPromptFile(args: {
   projectRoot: string;
   attemptId: string;
   prompt: string;
@@ -198,85 +201,90 @@ function writeWorkerPromptFile(args: {
   return promptPath;
 }
 
-/** Resolve the monorepo runtime root (delegates to the shared adeMcpLaunch resolver). */
-export function resolveOpenCodeRuntimeRoot(): string {
-  return resolveRepoRuntimeRoot();
-}
-
-/**
- * Build Codex CLI `-c` config override flags to inject the ADE MCP server.
- * Codex reads MCP servers from `mcp_servers.<name>` in its config, and the
- * `-c key=value` flag overrides individual dotted TOML paths.
- */
-export function buildCodexMcpConfigFlags(args: {
+export function writeWorkerLaunchFile(args: {
   projectRoot: string;
-  workspaceRoot: string;
-  runtimeRoot: string;
-  missionId?: string;
-  runId?: string;
-  stepId?: string;
-  attemptId?: string;
-  ownerId?: string | null;
-  defaultRole?: string;
-  bundledProxyPath?: string;
-  preferBundledProxy?: boolean;
-}): string[] {
-  const launch = resolveAdeMcpServerLaunch({
-    projectRoot: args.projectRoot,
-    workspaceRoot: args.workspaceRoot,
-    runtimeRoot: args.runtimeRoot,
-    missionId: args.missionId,
-    runId: args.runId,
-    stepId: args.stepId,
-    attemptId: args.attemptId,
-    defaultRole: args.defaultRole ?? "agent",
-    ownerId: args.ownerId ?? undefined,
-    bundledProxyPath: args.bundledProxyPath,
-    preferBundledProxy: args.preferBundledProxy,
-  });
-
-  // Codex -c flag parses values as TOML
-  const argsToml = `[${launch.cmdArgs.map((a) => `"${a.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}]`;
-  const flags: string[] = [
-    "-c", shellEscapeArg(`mcp_servers.ade.command="${launch.command}"`),
-    "-c", shellEscapeArg(`mcp_servers.ade.args=${argsToml}`),
-    ...Object.entries(launch.env)
-      .filter(([, value]) => value.trim().length > 0)
-      .flatMap(([key, value]) => [
-        "-c",
-        shellEscapeArg(`mcp_servers.ade.env.${key}="${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`),
-      ]),
-  ];
-  return flags;
+  attemptId: string;
+  command: string;
+  commandArgs: string[];
+  promptFilePath: string;
+  env?: Record<string, string>;
+}): string {
+  const launchPath = workerLaunchFilePath(args.projectRoot, args.attemptId);
+  fs.mkdirSync(path.dirname(launchPath), { recursive: true });
+  const invocation = resolveCliSpawnInvocation(
+    args.command,
+    args.commandArgs,
+    { ...process.env, ...(args.env ?? {}) },
+  );
+  fs.writeFileSync(
+    launchPath,
+    JSON.stringify({
+      command: invocation.command,
+      args: invocation.args,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments ?? false,
+      stdinFilePath: args.promptFilePath,
+      env: args.env ?? {},
+    }),
+    "utf8",
+  );
+  return launchPath;
 }
 
-/**
- * Remove a single worker MCP config file created by writeMcpConfigFile.
- */
-export function cleanupMcpConfigFile(projectRoot: string, attemptId: string, laneWorktreePath?: string | null): void {
-  const configPath = path.join(resolveAdeLayout(projectRoot).mcpConfigsDir, `worker-${attemptId}.json`);
-  try {
-    fs.unlinkSync(configPath);
-  } catch {
-    // Ignore — file may already be removed or never created
-  }
-  const localConfigName = workerLocalMcpConfigFileName(attemptId);
-  if (laneWorktreePath && laneWorktreePath.trim().length > 0) {
-    try {
-      fs.unlinkSync(path.join(laneWorktreePath, localConfigName));
-    } catch {
-      // Ignore — lane-local config may not exist.
+export function nodeWorkerLaunch(args: {
+  startupCommand: string;
+  launchFilePath: string;
+  env?: Record<string, string>;
+}): AdapterLaunchCommand {
+  return {
+    startupCommand: args.startupCommand,
+    command: process.execPath,
+    args: ["-e", WORKER_CLI_LAUNCHER_SCRIPT, args.launchFilePath],
+    env: {
+      ELECTRON_RUN_AS_NODE: "1",
+      ...(args.env ?? {}),
+    },
+  };
+}
+
+export function resolveOpenCodeRuntimeRoot(): string {
+  const startPoints = [
+    process.cwd(),
+    typeof __dirname === "string" ? __dirname : null,
+    path.resolve(process.cwd(), ".."),
+    path.resolve(process.cwd(), "..", ".."),
+  ];
+
+  for (const start of startPoints) {
+    if (!start) continue;
+    let dir = path.resolve(start);
+    for (let i = 0; i < 12; i += 1) {
+      if (fs.existsSync(path.join(dir, "apps", "ade-cli", "package.json"))) {
+        return dir;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
   }
+
+  return path.resolve(process.cwd());
+}
+
+export function cleanupWorkerRuntimeFiles(projectRoot: string, attemptId: string, _laneWorktreePath?: string | null): void {
   try {
     fs.unlinkSync(workerPromptFilePath(projectRoot, attemptId));
   } catch {
     // Ignore — prompt file may already be removed or never created.
   }
+  try {
+    fs.unlinkSync(workerLaunchFilePath(projectRoot, attemptId));
+  } catch {
+    // Ignore — launch file may already be removed or never created.
+  }
 }
 
 /**
- * Remove all stale MCP config files from previous runs.
+ * Remove stale worker prompt files from previous runs.
  * Called at adapter creation time.
  */
 function cleanupStaleFilesInDir(dir: string, prefix: string, suffix: string): void {
@@ -291,15 +299,15 @@ function cleanupStaleFilesInDir(dir: string, prefix: string, suffix: string): vo
   }
 }
 
-function cleanupStaleMcpConfigFiles(projectRoot: string): void {
+function cleanupStaleWorkerRuntimeFiles(projectRoot: string): void {
   const layout = resolveAdeLayout(projectRoot);
-  cleanupStaleFilesInDir(
-    layout.mcpConfigsDir,
-    "worker-", ".json",
-  );
   cleanupStaleFilesInDir(
     layout.workerPromptsDir,
     "worker-", ".txt",
+  );
+  cleanupStaleFilesInDir(
+    layout.workerPromptsDir,
+    "worker-", ".launch.json",
   );
 }
 
@@ -348,8 +356,9 @@ function mapPermissionModeToNativeFields(
   }
   if (provider === "codex") {
     if (mode === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" };
-    if (mode === "edit") return { codexApprovalPolicy: "on-failure", codexSandbox: "workspace-write" };
-    return { codexApprovalPolicy: "untrusted", codexSandbox: "read-only" };
+    if (mode === "edit") return { codexApprovalPolicy: "untrusted", codexSandbox: "workspace-write" };
+    if (mode === "default") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" };
+    return { codexApprovalPolicy: "on-request", codexSandbox: "read-only" };
   }
   const umap: Record<string, import("../../../shared/types").AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",
@@ -421,9 +430,6 @@ export function createProviderOrchestratorAdapter(options?: {
   workspaceRoot?: string;
   runtimeRoot?: string;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
-  externalMcpService?: {
-    getSnapshots: () => Array<{ tools: Array<{ namespacedName: string; enabled: boolean; safety: "read" | "write" | "unknown" }> }>;
-  } | null;
 }): OrchestratorExecutorAdapter {
   const runtimeRoot = typeof options?.runtimeRoot === "string" && options.runtimeRoot.trim().length
     ? options.runtimeRoot.trim()
@@ -435,10 +441,7 @@ export function createProviderOrchestratorAdapter(options?: {
     ? options.workspaceRoot.trim()
     : (projectRoot ?? runtimeRoot);
   const canonicalProjectRoot = projectRoot ?? workspaceRoot;
-  const externalMcpService = options?.externalMcpService ?? null;
-
-  // Clean up stale MCP config files from previous runs
-  cleanupStaleMcpConfigFiles(canonicalProjectRoot);
+  cleanupStaleWorkerRuntimeFiles(canonicalProjectRoot);
 
   const shellAdapter = createBaseOrchestratorAdapter({
     executorKind: "opencode",
@@ -447,7 +450,12 @@ export function createProviderOrchestratorAdapter(options?: {
     buildOverrideCommand: ({ prompt }) => {
       // For override commands, try to detect the best CLI
       // Default to claude since it's the most common
-      return `exec claude -p ${shellInlineDecodedArg(prompt)}`;
+      const resolvedClaude = resolveClaudeCodeExecutable();
+      return {
+        startupCommand: `exec claude -p ${shellInlineDecodedArg(prompt)}`,
+        command: resolvedClaude.path,
+        args: ["-p", prompt],
+      };
     },
 
     buildStartupCommand: ({ prompt, model, step, run, attempt, permissionConfig, teamRuntime }) => {
@@ -463,21 +471,6 @@ export function createProviderOrchestratorAdapter(options?: {
         attemptId: attempt.id,
         ownerId: resolveWorkerOwnerId(run.metadata),
       });
-      const workerOwnerId = resolveWorkerOwnerId(run.metadata);
-      const laneWorkspaceRoot = typeof step.metadata?.laneWorktreePath === "string" && step.metadata.laneWorktreePath.trim().length > 0
-        ? step.metadata.laneWorktreePath.trim()
-        : workspaceRoot;
-      const mcpIdentity = {
-        projectRoot: canonicalProjectRoot,
-        workspaceRoot: laneWorkspaceRoot,
-        runtimeRoot,
-        missionId: run.missionId,
-        runId: run.id,
-        stepId: step.id,
-        attemptId: attempt.id,
-        ownerId: workerOwnerId,
-      };
-
       // Determine which CLI to use based on the model
       if (descriptor?.isCliWrapped && descriptor.family === "anthropic") {
         // Claude CLI path — use per-provider permission when available
@@ -490,99 +483,133 @@ export function createProviderOrchestratorAdapter(options?: {
           : mappedClaude;
         const configuredAllowedTools =
           effectivePermissionConfig?._providers?.allowedTools ?? effectivePermissionConfig?.cli?.allowedTools ?? [];
-        const readOnlyExternalTools = externalMcpService
-          ? externalMcpService
-              .getSnapshots()
-              .flatMap((snapshot) => snapshot.tools)
-              .filter((tool) => tool.enabled && tool.safety !== "write")
-              .map((tool) => tool.namespacedName)
-          : [];
         const allowedTools = readOnlyExecution
-          ? buildClaudeReadOnlyWorkerAllowedTools("ade", readOnlyExternalTools)
+          ? buildClaudeReadOnlyWorkerAllowedTools()
           : dedupeAllowedTools(configuredAllowedTools);
 
-        const parts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
+        const resolvedClaude = resolveClaudeCodeExecutable();
+        const commandArgs: string[] = ["--model", cliModel];
+        const previewParts: string[] = ["claude", "--model", shellEscapeArg(cliModel)];
 
         if (dangerouslySkip) {
-          parts.push("--dangerously-skip-permissions");
+          commandArgs.push("--dangerously-skip-permissions");
+          previewParts.push("--dangerously-skip-permissions");
         } else {
-          parts.push("--permission-mode", shellEscapeArg(permissionMode));
+          commandArgs.push("--permission-mode", permissionMode);
+          previewParts.push("--permission-mode", shellEscapeArg(permissionMode));
         }
 
         if (allowedTools.length > 0) {
-          parts.push("--allowedTools", shellEscapeArg(allowedTools.join(",")));
+          commandArgs.push("--allowedTools", allowedTools.join(","));
+          previewParts.push("--allowedTools", shellEscapeArg(allowedTools.join(",")));
         }
 
-        // Bind ADE MCP server to worker via --mcp-config. Mirror config into worker CWD
-        // so Claude native teammates inherit an MCP config path available from that directory.
-        const mcpConfigPath = writeMcpConfigFile(mcpIdentity);
-        const localMcpConfigName = workerLocalMcpConfigFileName(attempt.id);
         const promptFilePath = writeWorkerPromptFile({
           projectRoot: canonicalProjectRoot,
           attemptId: attempt.id,
           prompt,
         });
-        parts.push("--mcp-config", shellEscapeArg(localMcpConfigName));
-        parts.push("-p", `"$(cat ${shellEscapeArg(promptFilePath)})"`);
+        commandArgs.push("-p");
+        previewParts.push("-p");
 
-        const envParts: string[] = [...workerEnv];
+        const launchEnv: Record<string, string> = { ...workerEnv };
+        const envParts = previewWorkerEnvVars(workerEnv);
         if (
           teamRuntime?.enabled
           && teamRuntime.allowClaudeAgentTeams !== false
           && (teamRuntime.targetProvider === "claude" || teamRuntime.targetProvider === "auto")
         ) {
+          launchEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
           envParts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
         }
 
-        const cmd = parts.join(" ");
-        const copyMcpIntoCwd = `cp ${shellEscapeArg(mcpConfigPath)} ${shellEscapeArg(localMcpConfigName)}`;
-        const startup = `${copyMcpIntoCwd} && exec ${cmd}`;
-        return envParts.length > 0 ? `${envParts.join(" ")} ${startup}` : startup;
+        const cmd = previewParts.join(" ");
+        const startup = `exec ${cmd} < ${shellEscapeArg(promptFilePath)}`;
+        const startupCommand = envParts.length > 0 ? `${envParts.join(" ")} ${startup}` : startup;
+        const launchFilePath = writeWorkerLaunchFile({
+          projectRoot: canonicalProjectRoot,
+          attemptId: attempt.id,
+          command: resolvedClaude.path,
+          commandArgs,
+          promptFilePath,
+          env: launchEnv,
+        });
+        return nodeWorkerLaunch({
+          startupCommand,
+          launchFilePath,
+          env: launchEnv,
+        });
       }
 
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
         // Codex CLI path — use per-provider permission when available
         const codexProviderMode = effectivePermissionConfig?._providers?.codex;
         const mappedCodex = mapPermissionToCodex(codexProviderMode);
-        const approvalPolicy = mappedCodex?.approvalPolicy ?? "untrusted";
+        const useCodexConfig = codexProviderMode === "config-toml" || mappedCodex == null;
+        const approvalPolicy = mappedCodex?.approvalPolicy ?? "on-request";
         const sandboxMode = readOnlyExecution
           ? "read-only"
-          : effectivePermissionConfig?._providers?.codexSandbox ?? effectivePermissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
+          : codexProviderMode === "full-auto"
+            ? mappedCodex?.sandbox ?? "danger-full-access"
+            : mappedCodex?.sandbox ?? effectivePermissionConfig?._providers?.codexSandbox ?? effectivePermissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
         const writablePaths = effectivePermissionConfig?._providers?.writablePaths ?? effectivePermissionConfig?.cli?.writablePaths ?? [];
 
-        const parts: string[] = [
+        const resolvedCodex = resolveCodexExecutable();
+        const commandArgs: string[] = ["--model", resolveCodexCliModel(descriptor.providerModelId)];
+        const previewParts: string[] = [
           "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.providerModelId)),
-          "-a", shellEscapeArg(approvalPolicy),
-          "-s", shellEscapeArg(sandboxMode)
         ];
-
-        // Inject ADE MCP server config via -c overrides
-        parts.push(...buildCodexMcpConfigFlags(mcpIdentity));
-
-        parts.push("exec");
-
-        for (const wp of writablePaths) {
-          if (wp.trim().length) parts.push("--add-dir", shellEscapeArg(wp.trim()));
+        if (!useCodexConfig) {
+          commandArgs.push("-a", approvalPolicy, "-s", sandboxMode);
+          previewParts.push("-a", shellEscapeArg(approvalPolicy), "-s", shellEscapeArg(sandboxMode));
         }
 
-        parts.push("-");
+        commandArgs.push("exec");
+        previewParts.push("exec");
 
-        const envParts = [...workerEnv];
-        const cmd = parts.join(" ");
+        for (const wp of writablePaths) {
+          if (!wp.trim().length) continue;
+          commandArgs.push("--add-dir", wp.trim());
+          previewParts.push("--add-dir", shellEscapeArg(wp.trim()));
+        }
+
+        commandArgs.push("-");
+        previewParts.push("-");
+
+        const launchEnv: Record<string, string> = { ...workerEnv };
+        const envParts = previewWorkerEnvVars(workerEnv);
+        const cmd = previewParts.join(" ");
         const promptFilePath = writeWorkerPromptFile({
           projectRoot: canonicalProjectRoot,
           attemptId: attempt.id,
           prompt,
         });
-        const startup = `${envParts.length > 0 ? `${envParts.join(" ")} ` : ""}exec ${cmd} < ${shellEscapeArg(promptFilePath)}`;
-        return startup;
+        const startupCommand = `${envParts.length > 0 ? `${envParts.join(" ")} ` : ""}exec ${cmd} < ${shellEscapeArg(promptFilePath)}`;
+        const launchFilePath = writeWorkerLaunchFile({
+          projectRoot: canonicalProjectRoot,
+          attemptId: attempt.id,
+          command: resolvedCodex.path,
+          commandArgs,
+          promptFilePath,
+          env: launchEnv,
+        });
+        return nodeWorkerLaunch({
+          startupCommand,
+          launchFilePath,
+          env: launchEnv,
+        });
       }
 
       // Non-CLI or unknown models can still run via the managed chat path.
       // This shell fallback only exists for CLI-wrapped workers.
       const unsupportedReason = getProviderAdapterUnsupportedModelReason(model) ?? `Model '${model}' is not supported by the provider adapter.`;
       const failureMessage = `[ADE] Shell-startup fallback for the provider adapter only supports CLI-wrapped Anthropic/OpenAI models. ${unsupportedReason}`;
-      return `printf '%s\\n' ${shellEscapeArg(failureMessage)} >&2; exit 64`;
+      return {
+        startupCommand: `printf '%s\\n' ${shellEscapeArg(failureMessage)} >&2; exit 64`,
+        command: process.execPath,
+        args: ["-e", "console.error(process.argv[1]); process.exit(64);", failureMessage],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      };
     },
 
     buildAcceptedMetadata: ({ model, filePatterns, steeringDirectiveCount, promptLength, reasoningEffort, startupCommandPreview }) => {
@@ -677,6 +704,9 @@ export function createProviderOrchestratorAdapter(options?: {
       const workerOwnerId = resolveWorkerOwnerId(args.run.metadata);
 
       try {
+        const configTomlFields = provider === "codex" && permissionMode === "config-toml"
+          ? { permissionMode, codexConfigSource: "config-toml" as const }
+          : {};
         const session = await agentChatService.createSession({
           laneId: args.step.laneId,
           provider,
@@ -684,6 +714,7 @@ export function createProviderOrchestratorAdapter(options?: {
           modelId: descriptor.id,
           reasoningEffort: reasoningEffort ?? null,
           ...mapPermissionModeToNativeFields(provider, permissionMode),
+          ...configTomlFields,
           ...(workerOwnerId ? { identityKey: `agent:${workerOwnerId}` as const } : {}),
         });
         return {

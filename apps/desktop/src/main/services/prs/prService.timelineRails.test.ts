@@ -465,3 +465,65 @@ describe("prService.getDeployments", () => {
     }
   });
 });
+
+describe("prService.refreshSnapshots commits", () => {
+  it("stores the newest PR commits when GitHub returns more than 30", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-prs-commits-"));
+    const { db, projectId, lane } = await buildService(root);
+    try {
+      const commits = Array.from({ length: 35 }, (_, index) => {
+        const n = String(index + 1).padStart(2, "0");
+        return {
+          sha: `sha-${n}`,
+          commit: {
+            message: `commit ${n}\n\nbody`,
+            author: {
+              name: `Author ${n}`,
+              email: `a${n}@example.test`,
+              date: `2026-04-14T00:${n}:00.000Z`,
+            },
+          },
+          author: { login: `author-${n}` },
+        };
+      });
+      const apiRequest = vi.fn(async ({ path: p }: any) => {
+        if (p === "/repos/arul28/ADE/pulls/42") {
+          return { data: { head: { sha: "sha-35" }, base: { sha: "base" }, state: "open" } };
+        }
+        if (p === "/repos/arul28/ADE/pulls/42/commits") {
+          return { data: commits };
+        }
+        if (p.endsWith("/check-runs")) {
+          return { data: { check_runs: [] } };
+        }
+        if (p.endsWith("/status")) {
+          return { data: { state: "success", statuses: [] } };
+        }
+        return { data: [] };
+      });
+      const service = createPrService({
+        db,
+        logger: createLogger() as any,
+        projectId,
+        projectRoot: root,
+        laneService: { list: async () => [lane] } as any,
+        operationService: {} as any,
+        githubService: { apiRequest } as any,
+        aiIntegrationService: undefined,
+        projectConfigService: {} as any,
+        conflictService: undefined,
+        openExternal: async () => {},
+      });
+
+      await service.refreshSnapshots({ prId: "pr-1" });
+      const [snapshot] = service.listSnapshots({ prId: "pr-1" });
+
+      expect(snapshot.commits).toHaveLength(30);
+      expect(snapshot.commits[0].sha).toBe("sha-06");
+      expect(snapshot.commits.at(-1)?.sha).toBe("sha-35");
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

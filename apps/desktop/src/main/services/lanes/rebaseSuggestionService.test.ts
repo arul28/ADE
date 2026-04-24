@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createRebaseSuggestionService } from "./rebaseSuggestionService";
 
@@ -430,5 +430,93 @@ describe("rebaseSuggestionService", () => {
     expect(suggestions).toHaveLength(2);
     expect(suggestions.map((suggestion) => suggestion.laneId)).toEqual(["lane-2", "lane-3"]);
     expect(suggestions.every((suggestion) => suggestion.baseLabel === "queue target main")).toBe(true);
+  });
+
+  it("dismiss short-circuits when existing state is present", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rebase-dismiss-short-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = "proj-dismiss-short";
+    const laneId = "lane-X";
+    const previouslySuggestedAt = "2026-03-20T08:00:00.000Z";
+
+    db.setJson(`rebase:suggestion:${laneId}`, {
+      laneId,
+      parentLaneId: "lane-parent",
+      parentHeadSha: "abc123",
+      behindCount: 2,
+      lastSuggestedAt: previouslySuggestedAt,
+      deferredUntil: null,
+      dismissedAt: null,
+    });
+
+    const listMock = vi.fn(() => {
+      throw new Error("laneService.list must not be called on dismiss short-circuit");
+    });
+
+    const service = createRebaseSuggestionService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: repoRoot,
+      laneService: { list: listMock } as any,
+    });
+
+    await service.dismiss({ laneId });
+
+    expect(listMock).not.toHaveBeenCalled();
+    const saved = db.getJson(`rebase:suggestion:${laneId}`) as any;
+    expect(saved.dismissedAt).toBeTruthy();
+    expect(typeof saved.dismissedAt).toBe("string");
+    expect(saved.lastSuggestedAt).toBe(previouslySuggestedAt);
+    expect(saved.deferredUntil).toBeNull();
+    expect(saved.parentHeadSha).toBe("abc123");
+    expect(saved.behindCount).toBe(2);
+  });
+
+  it("defer short-circuits when existing state is present", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rebase-defer-short-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = "proj-defer-short";
+    const laneId = "lane-Y";
+    const previouslySuggestedAt = "2026-03-20T08:00:00.000Z";
+
+    db.setJson(`rebase:suggestion:${laneId}`, {
+      laneId,
+      parentLaneId: "lane-parent",
+      parentHeadSha: "def456",
+      behindCount: 3,
+      lastSuggestedAt: previouslySuggestedAt,
+      deferredUntil: null,
+      dismissedAt: "2026-03-20T09:00:00.000Z",
+    });
+
+    const listMock = vi.fn(() => {
+      throw new Error("laneService.list must not be called on defer short-circuit");
+    });
+
+    const service = createRebaseSuggestionService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: repoRoot,
+      laneService: { list: listMock } as any,
+    });
+
+    const before = Date.now();
+    await service.defer({ laneId, minutes: 30 });
+    const after = Date.now();
+
+    expect(listMock).not.toHaveBeenCalled();
+    const saved = db.getJson(`rebase:suggestion:${laneId}`) as any;
+    expect(saved.dismissedAt).toBeNull();
+    expect(typeof saved.deferredUntil).toBe("string");
+    const deferMs = Date.parse(saved.deferredUntil);
+    expect(Number.isFinite(deferMs)).toBe(true);
+    // 30 minutes in future, allow wide tolerance
+    expect(deferMs).toBeGreaterThanOrEqual(before + 29 * 60_000);
+    expect(deferMs).toBeLessThanOrEqual(after + 31 * 60_000);
+    expect(saved.lastSuggestedAt).toBe(previouslySuggestedAt);
+    expect(saved.parentHeadSha).toBe("def456");
+    expect(saved.behindCount).toBe(3);
   });
 });

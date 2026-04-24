@@ -24,6 +24,8 @@ type ClaudeV2Session = {
   supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
 };
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
+import { discoverClaudeSlashCommands, resolveClaudeSlashCommandInvocation } from "./claudeSlashCommandDiscovery";
+import { discoverCodexSlashCommands, resolveCodexSlashCommandInvocation } from "./codexSlashCommandDiscovery";
 import type {
   RuntimeFilePart as FilePart,
   RuntimeImagePart as ImagePart,
@@ -36,6 +38,11 @@ import {
   shouldFlushBufferedAssistantTextForEvent,
   type BufferedAssistantText,
 } from "./chatTextBatching";
+import {
+  isPrimaryPinnedIdentity,
+  normalizeIdentityPermissionMode,
+  resolveIdentityExecutionLane,
+} from "./identitySessionPolicy";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
@@ -55,14 +62,15 @@ import {
   readFileWithinRootSecure,
   resolvePathWithinRoot,
 } from "../shared/utils";
+import {
+  resolveCliSpawnInvocation,
+  terminateProcessTree,
+} from "../shared/processExecution";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import { DEFAULT_FLUSH_PROMPT } from "../memory/compactionFlushPrompt";
-import {
-  createDefaultComputerUsePolicy,
-  normalizeComputerUsePolicy,
-} from "../../../shared/types";
 import type {
   AgentChatApprovalDecision,
+  AgentChatArchiveArgs,
   AgentChatCancelSteerArgs,
   AgentChatClaudePermissionMode,
   AgentChatCompletionReport,
@@ -98,6 +106,7 @@ import type {
   AgentChatSteerArgs,
   AgentChatSteerResult,
   AgentChatSendArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
@@ -107,7 +116,6 @@ import type {
   PendingInputSource,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
-  ComputerUsePolicy,
   ThinkingLevel,
   TerminalSessionStatus,
   TerminalToolType,
@@ -131,14 +139,13 @@ import {
 } from "../../../shared/modelRegistry";
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
-import { buildCodexAppServerMcpConfigOverrides } from "../ai/codexAppServerConfig";
-import { createUniversalToolSet, type AskUserToolInput, type PermissionMode } from "../ai/tools/universalTools";
+import type { PermissionMode } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
-import { decideFrontendRepoToolExposure, filterFrontendRepoDiscoveryTools } from "../ai/toolExposurePolicy";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import {
   getProviderRuntimeHealth,
   reportProviderRuntimeAuthFailure,
@@ -146,7 +153,9 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import type { createMemoryService, Memory } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
@@ -159,7 +168,6 @@ import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
-import { createProofObserver } from "../computerUse/proofObserver";
 import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
 import {
   buildOpenCodePromptParts,
@@ -172,13 +180,10 @@ import {
   type DiscoveredLocalModelEntry,
   type OpenCodeSessionHandle,
 } from "../opencode/openCodeRuntime";
-import { probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
-import { inspectLocalProvider, type DiscoveredLocalModel } from "../ai/localModelDiscovery";
-import { resolveAdeMcpServerLaunch, resolveOpenCodeRuntimeRoot } from "../orchestrator/providerOrchestratorAdapter";
-import type { McpServer, PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
-import type { ExternalMcpServerConfig } from "../../../shared/types/externalMcp";
+import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
+import { inspectLocalProvider } from "../ai/localModelDiscovery";
+import type { PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
-import { externalMcpConfigsToAcpStdio } from "./cursorAcpMcp";
 import {
   acquireCursorAcpConnection,
   releaseCursorAcpConnection,
@@ -240,7 +245,6 @@ type PersistedChatState = {
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
-  computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   threadId?: string;
   /** Cursor ACP session id for resume across app restarts (best-effort). */
@@ -254,6 +258,7 @@ type PersistedChatState = {
   selectedExecutionLaneId?: string | null;
   lastLaneDirectiveKey?: string | null;
   manuallyNamed?: boolean;
+  awaitingInput?: boolean;
   requestedCwd?: string | null;
   idleSinceAt?: string | null;
   /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
@@ -271,7 +276,7 @@ type PendingCodexApproval = {
   kind: "command" | "file_change" | "permissions" | "structured_question" | "plan_approval";
   request?: PendingInputRequest;
   permissions?: Record<string, unknown> | null;
-  questionResponseKind?: "native_request_user_input" | "mcp_elicitation";
+  questionResponseKind?: "native_request_user_input";
 };
 
 type PendingClaudeApproval = {
@@ -292,6 +297,7 @@ type CodexRuntime = {
   approvals: Map<string, PendingCodexApproval>;
   activeTurnId: string | null;
   startedTurnId: string | null;
+  awaitingTurnStart: boolean;
   threadResumed: boolean;
   itemTurnIdByItemId: Map<string, string>;
   commandOutputByItemId: Map<string, string>;
@@ -299,6 +305,7 @@ type CodexRuntime = {
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
   activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
   interruptedTurnIds: Set<string>;
+  ignoredTurnIds: Set<string>;
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   recentNotificationKeys: Set<string>;
@@ -344,25 +351,95 @@ type ClaudeRuntime = {
   turnMemoryPolicyState: TurnMemoryPolicyState | null;
   /** Tool names the user has approved for the session via "Allow for Session". */
   approvalOverrides: Set<string>;
-  /** Pending MCP elicitation resolvers keyed by elicitation_id. */
-  pendingElicitations: Map<string, () => void>;
   /** SDK tool_use IDs resolved by canUseTool (e.g. answered AskUserQuestion). */
   resolvedToolUseIds: Set<string>;
   /** Suspend the active-turn idle watchdog while ADE is waiting on human input. */
   pauseIdleWatchdog?: (() => void) | null;
   /** Resume the active-turn idle watchdog after the blocking wait finishes. */
   resumeIdleWatchdog?: (() => void) | null;
-  /**
-   * Set while the SDK is running its auto-compaction flow. During compaction
-   * the PreCompact hook nudges the model to persist memories via MCP tools,
-   * which would normally surface an approval prompt. Auto-compaction runs
-   * without a user present, so we bypass MCP approvals while this is true.
-   * Reset by a timeout since the SDK does not emit a PostCompact signal.
-   */
-  compactionInProgress?: boolean;
-  /** Timer used to clear compactionInProgress after a reasonable window. */
-  compactionResetTimer?: ReturnType<typeof setTimeout> | null;
 };
+
+const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
+  { name: "/permissions", description: "Set what Codex can do without asking first.", source: "sdk" },
+  { name: "/sandbox-add-read-dir", description: "Grant sandbox read access to an extra directory.", source: "sdk" },
+  { name: "/agent", description: "Switch the active agent thread.", source: "sdk" },
+  { name: "/apps", description: "Browse apps and insert them into your prompt.", source: "sdk" },
+  { name: "/plugins", description: "Browse installed and discoverable plugins.", source: "sdk" },
+  { name: "/clear", description: "Clear the terminal and start a fresh chat.", source: "sdk" },
+  { name: "/compact", description: "Summarize the visible conversation to free tokens.", source: "sdk" },
+  { name: "/copy", description: "Copy the latest completed Codex output.", source: "sdk" },
+  { name: "/diff", description: "Show the Git diff, including untracked files.", source: "sdk" },
+  { name: "/exit", description: "Exit the CLI.", source: "sdk" },
+  { name: "/experimental", description: "Toggle experimental features.", source: "sdk" },
+  { name: "/feedback", description: "Send logs to the Codex maintainers.", source: "sdk" },
+  { name: "/init", description: "Generate an AGENTS.md scaffold in the current directory.", source: "sdk" },
+  { name: "/logout", description: "Sign out of Codex.", source: "sdk" },
+  { name: "/mcp", description: "List configured MCP tools.", source: "sdk" },
+  { name: "/mention", description: "Attach a file to the conversation.", source: "sdk" },
+  { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
+  { name: "/fast", description: "Toggle Fast mode for supported models.", source: "sdk" },
+  { name: "/plan", description: "Switch to plan mode and optionally send a prompt.", source: "sdk" },
+  { name: "/personality", description: "Choose a communication style for responses.", source: "sdk" },
+  { name: "/ps", description: "Show experimental background terminals and recent output.", source: "sdk" },
+  { name: "/stop", description: "Stop all background terminals.", source: "sdk" },
+  { name: "/fork", description: "Fork the current conversation into a new thread.", source: "sdk" },
+  { name: "/resume", description: "Resume a saved conversation from your session list.", source: "sdk" },
+  { name: "/new", description: "Start a new conversation inside the same CLI session.", source: "sdk" },
+  { name: "/quit", description: "Exit the CLI.", source: "sdk" },
+  { name: "/review", description: "Ask Codex to review your working tree.", source: "sdk" },
+  { name: "/status", description: "Display session configuration and token usage.", source: "sdk" },
+  { name: "/debug-config", description: "Print config layer and requirements diagnostics.", source: "sdk" },
+  { name: "/statusline", description: "Configure TUI status-line fields.", source: "sdk" },
+  { name: "/title", description: "Configure terminal window or tab title fields.", source: "sdk" },
+];
+
+const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
+  { name: "/add-dir", description: "Add a working directory for file access.", source: "sdk", argumentHint: "<path>" },
+  { name: "/agents", description: "Manage agent configurations.", source: "sdk" },
+  { name: "/batch", description: "Orchestrate large-scale changes across a codebase in parallel.", source: "sdk", argumentHint: "<instruction>" },
+  { name: "/branch", description: "Create a branch of the current conversation.", source: "sdk", argumentHint: "[name]" },
+  { name: "/clear", description: "Start a new conversation with empty context.", source: "sdk" },
+  { name: "/compact", description: "Free up context by summarizing the conversation so far.", source: "sdk", argumentHint: "[instructions]" },
+  { name: "/config", description: "Open settings.", source: "sdk" },
+  { name: "/context", description: "Visualize current context usage.", source: "sdk" },
+  { name: "/copy", description: "Copy the last assistant response to clipboard.", source: "sdk", argumentHint: "[N]" },
+  { name: "/cost", description: "Alias for usage.", source: "sdk" },
+  { name: "/debug", description: "Enable debug logging and troubleshoot issues.", source: "sdk", argumentHint: "[description]" },
+  { name: "/diff", description: "Open an interactive diff viewer.", source: "sdk" },
+  { name: "/doctor", description: "Diagnose and verify Claude Code installation and settings.", source: "sdk" },
+  { name: "/effort", description: "Set the model effort level.", source: "sdk", argumentHint: "[level|auto]" },
+  { name: "/exit", description: "Exit the CLI.", source: "sdk" },
+  { name: "/export", description: "Export the current conversation as plain text.", source: "sdk", argumentHint: "[filename]" },
+  { name: "/fast", description: "Toggle fast mode on or off.", source: "sdk", argumentHint: "[on|off]" },
+  { name: "/feedback", description: "Submit feedback about Claude Code.", source: "sdk", argumentHint: "[report]" },
+  { name: "/help", description: "Show help and available commands.", source: "sdk" },
+  { name: "/hooks", description: "View hook configurations for tool events.", source: "sdk" },
+  { name: "/ide", description: "Manage IDE integrations and show status.", source: "sdk" },
+  { name: "/init", description: "Initialize project with a CLAUDE.md guide.", source: "sdk" },
+  { name: "/login", description: "Sign in to Claude Code for this chat runtime", source: "sdk" },
+  { name: "/logout", description: "Sign out from Anthropic.", source: "sdk" },
+  { name: "/mcp", description: "Manage MCP server connections and OAuth authentication.", source: "sdk" },
+  { name: "/memory", description: "Edit CLAUDE.md memory files and memory settings.", source: "sdk" },
+  { name: "/model", description: "Select or change the AI model.", source: "sdk", argumentHint: "[model]" },
+  { name: "/permissions", description: "Manage allow, ask, and deny rules for tool permissions.", source: "sdk" },
+  { name: "/plan", description: "Enter plan mode directly from the prompt.", source: "sdk", argumentHint: "[description]" },
+  { name: "/plugin", description: "Manage Claude Code plugins.", source: "sdk" },
+  { name: "/quit", description: "Exit the CLI.", source: "sdk" },
+  { name: "/resume", description: "Resume a conversation by ID or name.", source: "sdk", argumentHint: "[session]" },
+  { name: "/review", description: "Review a pull request locally in the current session.", source: "sdk", argumentHint: "[PR]" },
+  { name: "/rewind", description: "Rewind the conversation and/or code to a previous point.", source: "sdk" },
+  { name: "/security-review", description: "Analyze pending changes for security vulnerabilities.", source: "sdk" },
+  { name: "/simplify", description: "Review recently changed files for reuse, quality, and efficiency issues.", source: "sdk", argumentHint: "[focus]" },
+  { name: "/skills", description: "List available skills.", source: "sdk" },
+  { name: "/status", description: "Show version, model, account, and connectivity.", source: "sdk" },
+  { name: "/statusline", description: "Configure Claude Code status line.", source: "sdk" },
+  { name: "/tasks", description: "List and manage background tasks.", source: "sdk" },
+  { name: "/theme", description: "Change the color theme.", source: "sdk" },
+  { name: "/usage", description: "Show session cost, plan usage limits, and activity stats.", source: "sdk" },
+];
+
+const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
+const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
 
 type PendingOpenCodeApproval = {
   category: "bash" | "write";
@@ -434,6 +511,13 @@ function extractCodexTurnId(value: unknown): string | undefined {
   if (!record) return undefined;
   const nestedTurn = asRecord(record.turn);
   return pickCodexTurnId(record.turnId, record.turn_id, nestedTurn?.id);
+}
+
+function extractCodexThreadId(value: unknown): string | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const nestedThread = asRecord(record.thread);
+  return pickCodexTurnId(record.threadId, record.thread_id, nestedThread?.id);
 }
 
 function readCodexNotificationItemId(params: Record<string, unknown>): string | null {
@@ -523,6 +607,9 @@ function isCurrentCodexLifecycleTurn(
   turnId: string | null | undefined,
 ): boolean {
   const activeTurnId = runtime.activeTurnId ?? runtime.startedTurnId;
+  if (runtime.awaitingTurnStart && turnId) {
+    return activeTurnId ? activeTurnId === turnId : false;
+  }
   if (!activeTurnId || !turnId) return true;
   return activeTurnId === turnId;
 }
@@ -637,8 +724,12 @@ function signalChildProcessTree(
   child: ChildProcessWithoutNullStreams,
   signal: NodeJS.Signals,
 ): boolean {
+  if (process.platform === "win32") {
+    return terminateProcessTree(child, signal);
+  }
+
   const pid = child.pid ?? null;
-  if (process.platform !== "win32" && pid != null && Number.isInteger(pid) && pid > 0) {
+  if (pid != null && Number.isInteger(pid) && pid > 0) {
     try {
       process.kill(-pid, signal);
       return true;
@@ -685,12 +776,12 @@ function terminateChildProcessTree(
   }
 
   const timer = setTimeout(() => {
-    if (process.platform !== "win32") {
-      if (!isProcessGroupAlive(pid)) return;
+    if (process.platform === "win32") {
+      if (!isProcessAlive(pid)) return;
       signalChildProcessTree(child, "SIGKILL");
       return;
     }
-    if (!isProcessAlive(pid)) return;
+    if (!isProcessGroupAlive(pid)) return;
     signalChildProcessTree(child, "SIGKILL");
   }, killAfterMs);
   timer.unref?.();
@@ -840,6 +931,8 @@ type PreparedSendMessage = {
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
+  providerSlashCommand?: boolean;
+  forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
   turnId?: string;
   optimisticCursorTurnStart?: boolean;
@@ -856,9 +949,9 @@ type ResolvedChatConfig = {
   claudePermissionMode: AgentChatClaudePermissionMode;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   sessionBudgetUsd: number | null;
-  autoTitleEnabled: boolean;
-  autoTitleModelId: string | null;
-  autoTitleRefreshOnComplete: boolean;
+  titleGenerationEnabled: boolean;
+  titleModelId: string | null;
+  titleRefreshOnComplete: boolean;
   summaryEnabled: boolean;
   summaryModelId: string | null;
 };
@@ -870,7 +963,7 @@ const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
 const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
 const DEFAULT_OPENCODE_DESCRIPTOR = getDefaultModelDescriptor("opencode");
 const DEFAULT_CURSOR_DESCRIPTOR = getDefaultModelDescriptor("cursor");
-const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-5.4";
+const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-5.5";
 const DEFAULT_CLAUDE_MODEL = DEFAULT_CLAUDE_DESCRIPTOR?.providerModelId ?? DEFAULT_CLAUDE_DESCRIPTOR?.shortId ?? "sonnet";
 const DEFAULT_OPENCODE_MODEL_ID = DEFAULT_OPENCODE_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-4-6";
 const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto";
@@ -893,7 +986,8 @@ const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 // stream events are emitted while the SDK waits for tool results. The user
 // can always interrupt manually if something is genuinely stuck.
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000; // check every 60 seconds
+const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
+const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const MAX_SESSION_MAP_ENTRIES = 200;
@@ -916,6 +1010,13 @@ Return only the title text.
 - No quotes.
 - No emoji.
 - No trailing punctuation.`;
+
+const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `You name git worktree lanes for a software project.
+Return only the base name text (no model suffixes).
+- Use 2 to 5 words, lowercase except proper nouns if needed.
+- Slug-friendly: letters, numbers, spaces, and hyphens only (no slashes).
+- Describe the task or feature from the user's message.
+- No quotes, no emoji, no trailing punctuation.`;
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "low", description: "Fastest turn-around with shallow reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
@@ -934,6 +1035,11 @@ const CLAUDE_EFFORT_TO_TOKENS: Record<string, number> = {
   low: 1024,
   medium: 4096,
   high: 16384,
+};
+
+const CLAUDE_THINKING_SETTINGS = {
+  showThinkingSummaries: true,
+  alwaysThinkingEnabled: true,
 };
 
 const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
@@ -1043,18 +1149,6 @@ function normalizeUsagePayload(
   return { inputTokens, outputTokens };
 }
 
-function mergeUsagePayloads(
-  left: { inputTokens?: number | null; outputTokens?: number | null } | undefined,
-  right: { inputTokens?: number | null; outputTokens?: number | null } | undefined,
-): { inputTokens?: number | null; outputTokens?: number | null } | undefined {
-  if (!left) return right;
-  if (!right) return left;
-  const inputTokens = (left.inputTokens ?? 0) + (right.inputTokens ?? 0);
-  const outputTokens = (left.outputTokens ?? 0) + (right.outputTokens ?? 0);
-  if (!inputTokens && !outputTokens) return undefined;
-  return { inputTokens, outputTokens };
-}
-
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
 
 const EFFORT_ALIASES: Record<string, Record<string, string>> = {
@@ -1068,6 +1162,27 @@ function validateReasoningEffort(provider: "codex" | "claude", effort: string | 
   const known = provider === "codex" ? KNOWN_CODEX_EFFORTS : KNOWN_CLAUDE_EFFORTS;
   const fallback = provider === "codex" ? DEFAULT_REASONING_EFFORT : "medium";
   return known.has(aliased) ? aliased : fallback;
+}
+
+function buildClaudeV2ExecutableArgs(args: {
+  supportsReasoning: boolean;
+  effort?: string | null;
+}): string[] {
+  const executableArgs = [
+    "--include-partial-messages",
+    "--settings",
+    JSON.stringify(CLAUDE_THINKING_SETTINGS),
+  ];
+
+  if (args.supportsReasoning) {
+    executableArgs.push("--thinking", "adaptive", "--thinking-display", "summarized");
+    const effort = args.effort;
+    if (effort === "low" || effort === "medium" || effort === "high" || effort === "max") {
+      executableArgs.push("--effort", effort);
+    }
+  }
+
+  return executableArgs;
 }
 
 function describeClaudeModel(value: string): string | null {
@@ -1214,6 +1329,35 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
   if (/^(session closed|chat completed)\b/u.test(collapsed)) return null;
 
   return normalized.length > maxChars ? normalized.slice(0, maxChars).trimEnd() : normalized;
+}
+
+function fallbackLaneNameFromPrompt(prompt: string): string {
+  const collapsed = prompt.replace(/\s+/g, " ");
+  if (!collapsed.length) return "parallel-task";
+  const words = collapsed.split(/\s+/).filter(Boolean).slice(0, 4);
+  const slug = words
+    .join("-")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug.length ? slug.slice(0, 48) : "parallel-task";
+}
+
+function normalizeSuggestedLaneName(raw: string): string | null {
+  const sanitized = sanitizeAutoTitle(raw.trim(), 56);
+  if (!sanitized) return null;
+
+  const normalized = sanitized
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 60)
+    .replace(/^-+|-+$/g, "");
+
+  return normalized.length > 0 ? normalized : null;
 }
 
 function defaultChatSessionTitle(provider: AgentChatProvider): string {
@@ -1587,27 +1731,13 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
   return `${filtered.join("\n\n")}\n\nUser request:\n${baseText}`;
 }
 
-function extractSlashCommand(text: string): string | null {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("/")) return null;
-  const [command] = trimmed.split(/\s+/, 1);
-  return command?.trim().toLowerCase() || null;
-}
-
-function isLiteralSlashCommand(text: string): boolean {
-  return extractSlashCommand(text) != null;
-}
-
 export function buildComputerUseDirective(
-  policy: ComputerUsePolicy | null | undefined,
   backendStatus: ComputerUseBackendStatus | null,
 ): string | null {
-  const effective = createDefaultComputerUsePolicy(policy ?? undefined);
-
   const hasExternalBackends = backendStatus
     ? backendStatus.backends.some((b) => b.available)
     : false;
-  const hasLocalFallback = effective.allowLocalFallback;
+  const hasLocalFallback = backendStatus?.localFallback.available ?? true;
 
   // No backends and no local fallback → skip the directive entirely.
   if (!hasExternalBackends && !hasLocalFallback && backendStatus != null) {
@@ -1720,6 +1850,59 @@ import {
 /** Spread-ready codex policy args (approvalPolicy + sandbox) or empty object if null. */
 function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Record<string, string> {
   return policy ? { approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox } : {};
+}
+
+type CodexThreadLifecycleResponse = {
+  thread?: { id?: string };
+  approvalPolicy?: unknown;
+  sandbox?: unknown;
+  reasoningEffort?: unknown;
+};
+
+const CODEX_SANDBOX_CAMEL_CASE_ALIASES: Record<string, AgentChatCodexSandbox> = {
+  readOnly: "read-only",
+  workspaceWrite: "workspace-write",
+  dangerFullAccess: "danger-full-access",
+};
+
+function normalizeCodexRuntimeSandbox(value: unknown): AgentChatCodexSandbox | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return normalizePersistedCodexSandbox(trimmed) ?? CODEX_SANDBOX_CAMEL_CASE_ALIASES[trimmed];
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const type = (value as Record<string, unknown>).type;
+  return typeof type === "string" ? CODEX_SANDBOX_CAMEL_CASE_ALIASES[type] : undefined;
+}
+
+function applyCodexEffectiveThreadState(
+  managed: ManagedChatSession,
+  response: CodexThreadLifecycleResponse | null | undefined,
+): void {
+  if (!response) return;
+
+  const approvalPolicy = normalizePersistedCodexApprovalPolicy(response.approvalPolicy);
+  if (approvalPolicy) {
+    managed.session.codexApprovalPolicy = approvalPolicy;
+  }
+
+  const sandbox = normalizeCodexRuntimeSandbox(response.sandbox);
+  if (sandbox) {
+    managed.session.codexSandbox = sandbox;
+  }
+
+  const reasoningEffort = validateReasoningEffort(
+    "codex",
+    normalizeReasoningEffort(
+      typeof response.reasoningEffort === "string" ? response.reasoningEffort : null,
+    ),
+  );
+  if (reasoningEffort) {
+    managed.session.reasoningEffort = reasoningEffort;
+  }
+
+  managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
 }
 
 function normalizeOpenCodePermissionMode(mode: string | undefined): PermissionMode | undefined {
@@ -1874,8 +2057,15 @@ function syncLegacyPermissionMode(session: Pick<
   if (session.provider === "codex") {
     if (session.codexConfigSource === "config-toml") return "config-toml";
     if (session.codexApprovalPolicy === "never" && session.codexSandbox === "danger-full-access") return "full-auto";
-    if (session.codexApprovalPolicy === "on-failure" && session.codexSandbox === "workspace-write") return "edit";
-    if (session.codexApprovalPolicy === "untrusted" && session.codexSandbox === "read-only") return "plan";
+    if (session.codexApprovalPolicy === "untrusted" && session.codexSandbox === "workspace-write") return "edit";
+    if (
+      (session.codexApprovalPolicy === "on-request" || session.codexApprovalPolicy === "on-failure")
+      && session.codexSandbox === "workspace-write"
+    ) return "default";
+    if (
+      (session.codexApprovalPolicy === "on-request" || session.codexApprovalPolicy === "untrusted")
+      && session.codexSandbox === "read-only"
+    ) return "plan";
     return undefined;
   }
 
@@ -2003,9 +2193,32 @@ type CodexCollaborationModePayload = {
   settings: {
     model: string;
     reasoning_effort: string | null;
-    developer_instructions: null;
+    developer_instructions: string | null;
   };
 };
+
+function toHarnessPermissionMode(
+  mode: AgentChatSession["permissionMode"] | undefined,
+): "plan" | "edit" | "full-auto" {
+  if (mode === "plan" || mode === "full-auto") return mode;
+  return "edit";
+}
+
+function buildCodexDeveloperInstructions(args: {
+  laneWorktreePath: string;
+  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">;
+  collaborationMode: "default" | "plan";
+}): string {
+  const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
+    ? "planning"
+    : "coding";
+  return buildCodingAgentSystemPrompt({
+    cwd: args.laneWorktreePath,
+    mode: promptMode,
+    permissionMode: toHarnessPermissionMode(args.session.permissionMode),
+    interactive: true,
+  });
+}
 
 function buildCodexCollaborationMode(
   session: Pick<
@@ -2013,6 +2226,7 @@ function buildCodexCollaborationMode(
     "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource"
   >,
   supportedModes: Set<string> | null,
+  laneWorktreePath: string,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
@@ -2031,7 +2245,11 @@ function buildCodexCollaborationMode(
     settings: {
       model: session.model,
       reasoning_effort: session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-      developer_instructions: null,
+      developer_instructions: buildCodexDeveloperInstructions({
+        laneWorktreePath,
+        session,
+        collaborationMode: mode,
+      }),
     },
   };
 }
@@ -2047,56 +2265,6 @@ function resolveRequestedCodexCollaborationMode(
   return session.interactionMode === "plan" || session.permissionMode === "plan"
     ? "plan"
     : "default";
-}
-
-function coerceCodexMcpElicitationContent(
-  request: PendingInputRequest | undefined,
-  normalizedAnswers: Record<string, string[]>,
-): Record<string, string | number | boolean | string[]> {
-  const content: Record<string, string | number | boolean | string[]> = {};
-  const providerMetadata = request?.providerMetadata && typeof request.providerMetadata === "object"
-    ? request.providerMetadata as Record<string, unknown>
-    : null;
-  const requestedSchema = providerMetadata?.requestedSchema && typeof providerMetadata.requestedSchema === "object"
-    ? providerMetadata.requestedSchema as Record<string, unknown>
-    : null;
-  const schemaProperties = requestedSchema?.properties && typeof requestedSchema.properties === "object"
-    ? requestedSchema.properties as Record<string, unknown>
-    : null;
-
-  for (const [questionId, values] of Object.entries(normalizedAnswers)) {
-    if (!values.length) continue;
-    const property = schemaProperties?.[questionId] && typeof schemaProperties[questionId] === "object"
-      ? schemaProperties[questionId] as Record<string, unknown>
-      : null;
-    const propertyType = typeof property?.type === "string" ? property.type : null;
-
-    if (propertyType === "array") {
-      content[questionId] = values;
-      continue;
-    }
-
-    const [firstValue] = values;
-    if (!firstValue) continue;
-
-    if (propertyType === "boolean") {
-      const normalized = firstValue.trim().toLowerCase();
-      content[questionId] = normalized === "true" || normalized === "yes";
-      continue;
-    }
-
-    if (propertyType === "number" || propertyType === "integer") {
-      const parsed = Number(firstValue);
-      if (Number.isFinite(parsed)) {
-        content[questionId] = propertyType === "integer" ? Math.trunc(parsed) : parsed;
-        continue;
-      }
-    }
-
-    content[questionId] = firstValue;
-  }
-
-  return content;
 }
 
 function parseCodexCollaborationModes(value: unknown): Set<string> | null {
@@ -2212,7 +2380,6 @@ function resolveCursorAcpLaunchSettings(
         mode: null,
         sandbox: "disabled",
         force: true,
-        approveMcps: true,
       };
     }
   }
@@ -2223,8 +2390,16 @@ function resolveCursorAcpLaunchSettings(
     })(),
     sandbox: "enabled",
     force: false,
-    approveMcps: false,
   };
+}
+
+const CURSOR_ACP_SERVER_LIST_KEY = ["m", "cpServers"].join("");
+
+function cursorAcpSessionRequest<T extends Record<string, unknown>>(request: T): T {
+  return {
+    ...request,
+    [CURSOR_ACP_SERVER_LIST_KEY]: [],
+  } as T;
 }
 
 function normalizeCursorConfigValueRecord(
@@ -2236,6 +2411,10 @@ function normalizeCursorConfigValueRecord(
     const key = rawKey.trim();
     if (!key.length) continue;
     if (typeof rawValue === "boolean") {
+      normalized[key] = rawValue;
+      continue;
+    }
+    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
       normalized[key] = rawValue;
       continue;
     }
@@ -2356,10 +2535,6 @@ function normalizePersistedInteractionMode(value: unknown): AgentChatInteraction
   return normalizePersistedEnum(value, VALID_INTERACTION_MODES);
 }
 
-function normalizePersistedComputerUse(value: unknown): ComputerUsePolicy {
-  return normalizeComputerUsePolicy(value, createDefaultComputerUsePolicy());
-}
-
 function normalizePersistedCompletion(value: unknown): AgentChatCompletionReport | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
@@ -2414,7 +2589,7 @@ function resolveWorkerIdentityAgentId(identityKey: AgentChatIdentityKey | undefi
 }
 
 function normalizeCapabilityMode(value: unknown): CtoCapabilityMode | undefined {
-  if (value === "full_mcp" || value === "fallback") {
+  if (value === "full_tooling" || value === "fallback") {
     return value;
   }
   return undefined;
@@ -2427,30 +2602,12 @@ function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefin
 }
 
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
-  return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "opencode" ? "full_mcp" : "fallback";
-}
-
-function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
-  return "plan";
-}
-
-function normalizeIdentityPermissionMode(
-  mode: AgentChatSession["permissionMode"] | undefined,
-  provider: AgentChatProvider,
-): AgentChatSession["permissionMode"] {
-  return mode === "plan" ? "plan" : guardedIdentityPermissionModeForProvider(provider);
+  return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "opencode" ? "full_tooling" : "fallback";
 }
 
 function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">): boolean {
   return session.sessionProfile === "light";
 }
-
-function resolveMcpRuntimeRoot(): string {
-  // Only use the trusted ADE install path — never walk up user repo trees
-  // which could match apps/mcp-server/package.json by coincidence.
-  return resolveOpenCodeRuntimeRoot();
-}
-
 
 export function createAgentChatService(args: {
   projectRoot: string;
@@ -2485,11 +2642,12 @@ export function createAgentChatService(args: {
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   appVersion: string;
+  getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   onEvent?: (event: AgentChatEventEnvelope) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
-  getExternalMcpConfigs: () => ExternalMcpServerConfig[];
   getDirtyFileTextForPath: (absPath: string) => string | undefined | Promise<string | undefined>;
 }) {
   const {
@@ -2524,17 +2682,15 @@ export function createAgentChatService(args: {
     laneService,
     sessionService,
     projectConfigService,
+    aiIntegrationService,
     logger,
     appVersion,
+    getAdeCliAgentEnv,
     onEvent,
     onSessionEnded,
-    getExternalMcpConfigs,
     getDirtyFileTextForPath,
   } = args;
 
-  if (!getExternalMcpConfigs) {
-    throw new Error("createAgentChatService: getExternalMcpConfigs is required");
-  }
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
   }
@@ -2542,11 +2698,27 @@ export function createAgentChatService(args: {
     throw new Error("Issue inventory service is required to initialize agent chat.");
   }
 
-  let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
+  const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
 
-  let proofObserver = computerUseArtifactBrokerRef
-    ? createProofObserver({ broker: computerUseArtifactBrokerRef })
-    : null;
+  // In-memory ring buffer of recent chat events per session. Populated on every
+  // emitted event (see emitChatEvent → commitChatEvent) and merged with the
+  // persisted transcript when a snapshot is requested. The transcript recovers
+  // older project/tab-switch history; the ring contributes events that may not
+  // have reached fs.appendFile yet.
+  const CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION = 4_000;
+  const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
+  const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
+
+  const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
+    const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
+    current.push(envelope);
+    if (current.length > CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION) {
+      current.splice(0, current.length - CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION);
+    }
+    eventHistoryBySession.set(envelope.sessionId, current);
+  };
+
+  let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
 
   const layout = resolveAdeLayout(projectRoot);
   const chatSessionsDir = layout.chatSessionsDir;
@@ -2554,6 +2726,24 @@ export function createAgentChatService(args: {
   fs.mkdirSync(chatSessionsDir, { recursive: true });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
+
+  const runSessionIntelligencePrompt = async (args: {
+    cwd: string;
+    modelId: string;
+    prompt: string;
+    systemPrompt?: string;
+    timeoutMs?: number;
+    taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
+  }) => {
+    return await aiIntegrationService.summarizeTerminal({
+      cwd: args.cwd,
+      model: args.modelId,
+      prompt: args.prompt,
+      systemPrompt: args.systemPrompt,
+      timeoutMs: args.timeoutMs,
+      taskType: args.taskType,
+    });
+  };
 
   const stageAttachmentForCodexInput = (attachment: ResolvedAgentChatFileRef): string => {
     const content = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
@@ -2823,8 +3013,6 @@ export function createAgentChatService(args: {
       || normalized.includes("agent") || normalized.includes("notebookedit")) {
       return true;
     }
-    // MCP tools → prompt
-    if (normalized.startsWith("mcp_") || normalized.startsWith("mcp__")) return true;
     return false;
   };
 
@@ -3253,12 +3441,14 @@ export function createAgentChatService(args: {
     // allow or deny individual tool calls (matching the opencode runtime pattern).
     const effectivePermMode = managed.session.claudePermissionMode ?? "default";
     const normalizedToolName = normalizeToolNameForApproval(toolName);
-    // During auto-compaction the PreCompact hook asks the model to persist
-    // memories via ADE MCP memory tools. No user is present to approve, so
-    // only those specific tools are auto-allowed — not every MCP tool.
-    const bypassForCompaction = runtime.compactionInProgress === true
-      && normalizedToolName.startsWith("mcp_ade_memory_");
-    if (!bypassForCompaction && claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
+    // Auto-allow ADE `ask_user`: the inline question card carries its
+    // own dedicated answer UI, so surfacing a generic "Allow this tool?" permission
+    // prompt just hides the real question behind an extra click. Gated by
+    // `ai.chat.autoAllowAskUser` (default: true) so policy can flip it off.
+    if (isAskUserToolName(toolName) && isAutoAllowAskUserEnabled()) {
+      return { behavior: "allow", updatedInput: input };
+    }
+    if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
       // Check session-wide overrides — user already said "Allow for Session" for this tool
       if (runtime.approvalOverrides.has(normalizedToolName)) {
         return { behavior: "allow", updatedInput: input };
@@ -3400,8 +3590,7 @@ export function createAgentChatService(args: {
     laneId,
     sessionProfile,
     identityKey,
-    computerUse,
-  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey" | "computerUse">): string[] => {
+  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey">): string[] => {
     const effectiveSessionProfile = sessionProfile ?? "workflow";
     if (effectiveSessionProfile === "light") return [];
 
@@ -3411,7 +3600,6 @@ export function createAgentChatService(args: {
       laneService,
       prService: prService ?? undefined,
       computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? undefined,
-      computerUsePolicy: computerUse,
       onReportCompletion: null,
       sessionId,
       laneId,
@@ -3503,97 +3691,6 @@ export function createAgentChatService(args: {
     supportsReviewMode: Boolean(managed && managed.session.provider === "codex"),
   });
 
-  const buildAdeMcpServers = (
-    workspaceRoot: string,
-    provider: "claude" | "codex",
-    defaultRole: "agent" | "cto",
-    ownerId?: string | null,
-    chatSessionId?: string | null,
-    computerUsePolicy?: ComputerUsePolicy | null,
-  ): Record<string, Record<string, unknown>> => {
-    // Chat surfaces should use ADE's standard MCP launch resolution so both
-    // packaged and dev builds can route through the proxy when needed.
-    const launch = resolveAdeMcpServerLaunch({
-      projectRoot,
-      workspaceRoot,
-      runtimeRoot: resolveMcpRuntimeRoot(),
-      defaultRole,
-      ownerId: ownerId ?? undefined,
-      chatSessionId: chatSessionId ?? undefined,
-      computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
-    });
-    return normalizeCliMcpServers(provider, {
-      ade: {
-        command: launch.command,
-        args: launch.cmdArgs,
-        env: launch.env,
-        ...(provider === "codex"
-          ? {
-              required: true,
-              startup_timeout_sec: 30,
-              tool_timeout_sec: 120,
-            }
-          : {}),
-      }
-    }) ?? {};
-  };
-
-  const normalizeCliMcpServers = (
-    provider: "claude" | "codex",
-    mcpServers?: Record<string, Record<string, unknown>>,
-  ): Record<string, Record<string, unknown>> | undefined => {
-    if (!mcpServers) return undefined;
-
-    const firstNonEmptyString = (...candidates: unknown[]): string | undefined => {
-      for (const value of candidates) {
-        if (typeof value === "string" && value.trim().length > 0) return value;
-      }
-      return undefined;
-    };
-
-    return Object.fromEntries(
-      Object.entries(mcpServers).map(([name, server]) => {
-        if (!server || typeof server !== "object") {
-          return [name, server];
-        }
-
-        const record = server as Record<string, unknown>;
-        const { type, transport, ...rest } = record;
-        if (provider === "codex") {
-          return [name, { ...rest, transport: firstNonEmptyString(transport, type) ?? "stdio" }];
-        }
-
-        const resolvedType = firstNonEmptyString(type, transport)
-          ?? (typeof rest.command === "string" && rest.command.trim().length > 0 ? "stdio" : undefined);
-        return [name, resolvedType ? { ...rest, type: resolvedType } : { ...rest }];
-      }),
-    );
-  };
-
-  const buildCursorAcpMcpServers = (managed: ManagedChatSession): McpServer[] => {
-    const list: McpServer[] = [];
-    const external = getExternalMcpConfigs();
-    list.push(...externalMcpConfigsToAcpStdio(external));
-    const adeWrapped = buildAdeMcpServers(
-      managed.laneWorktreePath,
-      "claude",
-      managed.session.identityKey === "cto" ? "cto" : "agent",
-      resolveWorkerIdentityAgentId(managed.session.identityKey),
-      managed.session.id,
-      managed.session.computerUse,
-    );
-    for (const [name, cfg] of Object.entries(adeWrapped)) {
-      const r = cfg as Record<string, unknown>;
-      const command = typeof r.command === "string" ? r.command : "";
-      if (!command.trim()) continue;
-      const args = Array.isArray(r.args) ? (r.args as unknown[]).map((x) => String(x)) : [];
-      const envRec = r.env && typeof r.env === "object" ? (r.env as Record<string, string>) : {};
-      const env = Object.entries(envRec).map(([n, v]) => ({ name: n, value: String(v ?? "") }));
-      list.push({ name, command, args, env });
-    }
-    return list;
-  };
-
   const getClaudeV2SessionControl = (
     session: ClaudeV2Session | null | undefined,
   ): {
@@ -3617,81 +3714,6 @@ export function createAgentChatService(args: {
         ? sessionRecord.supportedCommands.bind(sessionRecord)
         : (typeof query?.supportedCommands === "function" ? query.supportedCommands.bind(query) : undefined),
     };
-  };
-
-  const attachClaudeV2McpServers = async (
-    managed: ManagedChatSession,
-    session: ClaudeV2Session | null | undefined,
-    mcpServers: Record<string, Record<string, unknown>> | undefined,
-  ): Promise<void> => {
-    if (!mcpServers || Object.keys(mcpServers).length === 0) return;
-
-    const control = getClaudeV2SessionControl(session);
-    if (typeof control.setMcpServers !== "function") {
-      logger.warn("agent_chat.claude_v2_mcp_attach_unavailable", {
-        sessionId: managed.session.id,
-        serverNames: Object.keys(mcpServers),
-      });
-      return;
-    }
-
-    try {
-      const result = await control.setMcpServers(mcpServers);
-      const errors = Object.entries(result?.errors ?? {}).filter(([, message]) => typeof message === "string" && message.trim().length > 0);
-      if (errors.length > 0) {
-        logger.warn("agent_chat.claude_v2_mcp_attach_failed", {
-          sessionId: managed.session.id,
-          errors: Object.fromEntries(errors),
-        });
-        return;
-      }
-      logger.info("agent_chat.claude_v2_mcp_attach", {
-        sessionId: managed.session.id,
-        added: result?.added ?? [],
-        removed: result?.removed ?? [],
-      });
-    } catch (error) {
-      logger.warn("agent_chat.claude_v2_mcp_attach_failed", {
-        sessionId: managed.session.id,
-        error,
-      });
-    }
-  };
-
-  const buildClaudeAllowedTools = (
-    mcpServers: Record<string, Record<string, unknown>> | undefined,
-  ): string[] => Object.keys(mcpServers ?? {})
-    .map((serverName) => serverName.trim())
-    .filter((serverName) => serverName.length > 0)
-    .map((serverName) => `mcp__${serverName}__*`);
-
-  const summarizeAdeMcpLaunch = (args: {
-    workspaceRoot: string;
-    defaultRole: "agent" | "cto" | "external";
-    ownerId?: string | null;
-    computerUsePolicy?: ComputerUsePolicy | null;
-  }) => {
-    const { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath } = resolveAdeMcpServerLaunch({
-      projectRoot,
-      workspaceRoot: args.workspaceRoot,
-      runtimeRoot: resolveMcpRuntimeRoot(),
-      defaultRole: args.defaultRole,
-      ownerId: args.ownerId ?? undefined,
-      computerUsePolicy: normalizeComputerUsePolicy(args.computerUsePolicy, createDefaultComputerUsePolicy()),
-    });
-    return { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath };
-  };
-
-  /** Best-effort diagnostic: resolve the MCP launch config for a session, returning undefined on failure. */
-  const tryDiagnosticMcpLaunch = (managed: ManagedChatSession): ReturnType<typeof summarizeAdeMcpLaunch> | undefined => {
-    try {
-      return summarizeAdeMcpLaunch({
-        workspaceRoot: managed.laneWorktreePath,
-        defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
-        ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
-        computerUsePolicy: managed.session.computerUse,
-      });
-    } catch { return undefined; }
   };
 
   const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
@@ -3837,6 +3859,128 @@ export function createAgentChatService(args: {
     } catch {
       return [];
     }
+  };
+
+  // Read the full on-disk transcript for a session without requiring an active
+  // ManagedChatSession. Used by getChatEventHistory to hydrate the in-memory
+  // ring buffer on first read, even for sessions that haven't been resumed yet
+  // (e.g. a chat whose runtime was torn down by idle_ttl / budget_eviction).
+  const readTranscriptEnvelopesForSessionId = (sessionId: string): AgentChatEventEnvelope[] => {
+    const managed = managedSessions.get(sessionId);
+    if (managed?.transcriptPath) {
+      try {
+        return parseAgentChatTranscript(fs.readFileSync(managed.transcriptPath, "utf8"))
+          .filter((entry) => entry.sessionId === sessionId);
+      } catch {
+        return [];
+      }
+    }
+    // Fall back to the known transcript layout so sessions that were never
+    // ensured into managedSessions (e.g. because they were torn down and
+    // haven't been reopened yet) still surface their history.
+    const candidates = [
+      path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
+      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
+    ];
+    for (const candidatePath of candidates) {
+      try {
+        if (!fs.existsSync(candidatePath)) continue;
+        const raw = fs.readFileSync(candidatePath, "utf8");
+        return parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+      } catch {
+        // try next candidate
+      }
+    }
+    return [];
+  };
+
+  const envelopeDedupKey = (entry: AgentChatEventEnvelope): string => {
+    // Cross-run-safe key: two envelopes are true duplicates iff timestamp,
+    // type, AND payload all match. Sequence numbers can't be trusted (they
+    // restart per run), and Claude streaming emits multiple text/reasoning
+    // fragments within the same millisecond + type — timestamp+type alone
+    // would wrongly collapse those into one. JSON.stringify is fine at our
+    // scale (≤2000 events, events typically <1KB).
+    return `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
+  };
+
+  const mergeEnvelopeStreams = (
+    base: AgentChatEventEnvelope[],
+    tail: AgentChatEventEnvelope[],
+  ): AgentChatEventEnvelope[] => {
+    if (!base.length) return tail.slice();
+    if (!tail.length) return base.slice();
+    const baseKeys = new Set(base.map(envelopeDedupKey));
+    const merged = base.slice();
+    for (const entry of tail) {
+      if (baseKeys.has(envelopeDedupKey(entry))) continue;
+      merged.push(entry);
+    }
+    merged.sort((left, right) => {
+      // Timestamp is cross-run consistent; sequence is only a tiebreak
+      // within the same run.
+      const leftTime = Date.parse(left.timestamp);
+      const rightTime = Date.parse(right.timestamp);
+      if (leftTime !== rightTime) return leftTime - rightTime;
+      if (typeof left.sequence === "number" && typeof right.sequence === "number") {
+        return left.sequence - right.sequence;
+      }
+      return 0;
+    });
+    return merged;
+  };
+
+  /**
+   * Return the complete, ordered event history for a chat session.
+   *
+   * On first call (or any call that can tolerate a larger read), we merge the
+   * on-disk transcript with the in-memory ring buffer so that:
+   *   - events that were emitted while the renderer was on a different project
+   *     (and therefore dropped by emitProjectEvent) are still recovered;
+   *   - events that are still in fs.appendFile flight but already recorded in
+   *     the buffer are still delivered;
+   *   - truncating the persistent transcript for size does not lose recent
+   *     events that the buffer still has.
+   *
+   * This is the canonical snapshot path for renderer resubscribe / remount.
+   */
+  const getChatEventHistory = (
+    sessionId: string,
+    options?: { maxEvents?: number },
+  ): { sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean } => {
+    const trimmedId = sessionId.trim();
+    if (!trimmedId.length) {
+      return { sessionId: trimmedId, events: [], truncated: false };
+    }
+    // Validate the session belongs to an agent chat before reading any
+    // transcript path — this function is reachable via IPC and builds
+    // filesystem paths from `trimmedId` downstream.
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) {
+      return { sessionId: trimmedId, events: [], truncated: false };
+    }
+    const maxEvents = Math.max(
+      1,
+      Math.min(
+        CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION,
+        Math.floor(options?.maxEvents ?? CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION),
+      ),
+    );
+
+    // Re-read disk on every snapshot. A long-running background chat can age
+    // older entries out of the live ring buffer; the persisted transcript is
+    // the durable source for project/tab switch recovery, while the buffer
+    // contributes events that fs.appendFile may not have flushed yet.
+    const bufferExisting = eventHistoryBySession.get(trimmedId) ?? [];
+    let merged = mergeEnvelopeStreams(readTranscriptEnvelopesForSessionId(trimmedId), bufferExisting);
+    if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
+      merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
+    }
+    eventHistoryBySession.set(trimmedId, merged.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION));
+
+    const truncated = merged.length > maxEvents;
+    const windowed = truncated ? merged.slice(-maxEvents) : merged;
+    return { sessionId: trimmedId, events: windowed, truncated };
   };
 
   const deriveTranscriptTurnActive = (entries: AgentChatEventEnvelope[]): boolean => {
@@ -4001,12 +4145,11 @@ export function createAgentChatService(args: {
 
     managed.continuitySummaryInFlight = true;
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: managed.laneWorktreePath,
-        title: "ADE continuity summary",
-        modelDescriptor: descriptor,
+      const result = await runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId: descriptor.id,
         prompt,
-        projectConfig: projectConfigService.get().effective,
+        taskType: "continuity_summary",
       });
       const text = result.text.trim();
       if (text.length) {
@@ -4269,12 +4412,11 @@ export function createAgentChatService(args: {
     ].filter(Boolean).join("\n");
 
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: args.managed.laneWorktreePath,
-        title: "ADE handoff brief",
-        modelDescriptor: descriptor,
+      const result = await runSessionIntelligencePrompt({
+        cwd: args.managed.laneWorktreePath,
+        modelId: descriptor.id,
         prompt,
-        projectConfig: projectConfigService.get().effective,
+        taskType: "handoff_summary",
       });
       const brief = result.text.trim();
       if (!brief.length) {
@@ -4328,12 +4470,12 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     if (managed.deleted) return;
     const config = resolveChatConfig();
-    if (!config.autoTitleEnabled) return;
+    if (!config.titleGenerationEnabled) return;
     if (managed.manuallyNamed) return;
     if (managed.autoTitleInFlight) return;
     if (args.stage === "initial" && managed.autoTitleStage !== "none") return;
     if (args.stage === "final") {
-      if (!config.autoTitleRefreshOnComplete) return;
+      if (!config.titleRefreshOnComplete) return;
       if (managed.autoTitleStage === "final") return;
     }
 
@@ -4346,7 +4488,7 @@ export function createAgentChatService(args: {
 
     const preferredModelId =
       [
-        config.autoTitleModelId,
+        config.titleModelId,
         DEFAULT_AUTO_TITLE_MODEL_ID,
         "anthropic/claude-haiku-4-5",
         "openai/gpt-5.4-mini",
@@ -4381,18 +4523,17 @@ export function createAgentChatService(args: {
 
     managed.autoTitleInFlight = true;
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: managed.laneWorktreePath,
-        title: args.stage === "final" ? "ADE final chat title" : "ADE initial chat title",
-        modelDescriptor: descriptor,
-        system: AUTO_TITLE_SYSTEM_PROMPT,
+      const result = await runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId: descriptor.id,
+        systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
         prompt: [
           args.stage === "final"
             ? "Write a final concise title for this completed coding chat."
             : "Write a concise title for this new coding chat.",
           titleContext.join("\n"),
         ].join("\n\n"),
-        projectConfig: projectConfigService.get().effective,
+        taskType: "session_title",
       });
       // Re-check after async — user may have manually renamed while the request was in flight.
       if (managed.manuallyNamed) return;
@@ -4492,17 +4633,7 @@ export function createAgentChatService(args: {
       chatConfig.opencodePermissionMode,
     );
     const configSnapshot = projectConfigService.get();
-    const runtimeRoot = resolveOpenCodeRuntimeRoot();
     const persisted = readPersistedState(managed.session.id);
-    const mcpLaunch = resolveAdeMcpServerLaunch({
-      projectRoot,
-      workspaceRoot: managed.laneWorktreePath,
-      workspaceBinding: "project_root",
-      runtimeRoot,
-      chatSessionId: managed.session.id,
-      defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
-      computerUsePolicy: managed.session.computerUse,
-    });
     // Discover loaded local models so OpenCode's provider config includes them.
     // inspectLocalProvider results are cached (30s TTL) so this is near-instant
     // when aiIntegrationService has already probed recently.
@@ -4530,7 +4661,6 @@ export function createAgentChatService(args: {
       title: sessionService.get(managed.session.id)?.title ?? defaultChatSessionTitle("opencode"),
       sessionId: persisted?.providerSessionId,
       projectConfig: configSnapshot.effective,
-      dynamicMcpLaunch: isLightweightSession(managed.session) ? undefined : mcpLaunch,
       discoveredLocalModels,
       ownerKind: "chat",
       ownerId: managed.session.id,
@@ -4556,7 +4686,12 @@ export function createAgentChatService(args: {
     };
     handle.setEvictionHandler((reason) => {
       if (managed.runtime?.kind === "opencode" && managed.runtime.handle === handle) {
-        teardownRuntime(managed, reason === "error" || reason === "config_changed" ? "handle_close" : reason);
+        teardownRuntime(
+          managed,
+          reason === "error" || reason === "config_changed" || reason === "attach_failed"
+            ? "handle_close"
+            : reason,
+        );
       }
     });
     handle.setBusy(false);
@@ -4574,13 +4709,24 @@ export function createAgentChatService(args: {
     managed.session.opencodePermissionMode = permMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     enforceManagedLocalHarnessPermissionMode(managed, descriptor);
-    managed.session.capabilityMode = isLightweightSession(managed.session) ? "fallback" : "full_mcp";
+    managed.session.capabilityMode = isLightweightSession(managed.session) ? "fallback" : "full_tooling";
     persistChatState(managed);
     return "handled";
   };
 
   const isCliWrappedModelId = (modelId: string): boolean =>
     (getModelById(modelId) ?? resolveModelAlias(modelId))?.isCliWrapped ?? false;
+
+  const isAutoAllowAskUserEnabled = (): boolean => {
+    const chat = projectConfigService.get().effective.ai?.chat;
+    return chat?.autoAllowAskUser !== false;
+  };
+
+  const isAskUserToolName = (toolName: string | null | undefined): boolean => {
+    if (!toolName) return false;
+    const normalized = normalizeToolNameForApproval(toolName);
+    return normalized === "ask_user";
+  };
 
   const resolveChatConfig = (): ResolvedChatConfig => {
     const snapshot = projectConfigService.get();
@@ -4595,14 +4741,20 @@ export function createAgentChatService(args: {
       if (chat.defaultApprovalPolicy === "auto") return "never" as const;
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
+      // Codex chat defaults should match the documented "Default permissions"
+      // preset: workspace-write + on-request. Legacy shared CLI edit-mode
+      // fallbacks map to "untrusted", but that represents the explicit Codex
+      // edit preset rather than the default chat preset.
       if (cliMode === "full-auto") return "never" as const;
-      if (cliMode === "read-only") return "untrusted" as const;
+      if (cliMode === "read-only") return "on-request" as const;
       return "on-request" as const;
     })();
 
     const sandboxMode = (() => {
       if (chat.codexSandbox) return chat.codexSandbox;
       if (permissions.cli?.sandboxPermissions) return permissions.cli.sandboxPermissions;
+      if (cliMode === "full-auto") return "danger-full-access" as const;
+      if (cliMode === "read-only") return "read-only" as const;
       return "workspace-write" as const;
     })();
 
@@ -4628,13 +4780,17 @@ export function createAgentChatService(args: {
     const budget = Number(chat.sessionBudgetUsd ?? permissions.cli?.maxBudgetUsd ?? NaN);
     const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? budget : null;
 
-    // Session-intelligence titles with chat.autoTitle* fallback
-    const autoTitleEnabled = si?.titles?.enabled ?? chat.autoTitleEnabled ?? true;
-    const autoTitleModelIdRaw = si?.titles?.modelId ?? chat.autoTitleModelId;
-    const autoTitleModelId = typeof autoTitleModelIdRaw === "string" && autoTitleModelIdRaw.trim().length
-      ? autoTitleModelIdRaw.trim()
+    const legacyChat = chat as Record<string, unknown>;
+    const titleGenerationEnabled = si?.titles?.enabled
+      ?? (typeof legacyChat.autoTitleEnabled === "boolean" ? legacyChat.autoTitleEnabled : undefined)
+      ?? true;
+    const titleModelIdRaw = si?.titles?.modelId ?? legacyChat.autoTitleModelId;
+    const titleModelId = typeof titleModelIdRaw === "string" && titleModelIdRaw.trim().length
+      ? titleModelIdRaw.trim()
       : null;
-    const autoTitleRefreshOnComplete = si?.titles?.refreshOnComplete ?? chat.autoTitleRefreshOnComplete ?? true;
+    const titleRefreshOnComplete = si?.titles?.refreshOnComplete
+      ?? (typeof legacyChat.autoTitleRefreshOnComplete === "boolean" ? legacyChat.autoTitleRefreshOnComplete : undefined)
+      ?? true;
 
     // Session-intelligence summaries
     const summaryEnabled = si?.summaries?.enabled ?? true;
@@ -4649,12 +4805,77 @@ export function createAgentChatService(args: {
       claudePermissionMode,
       opencodePermissionMode,
       sessionBudgetUsd,
-      autoTitleEnabled,
-      autoTitleModelId,
-      autoTitleRefreshOnComplete,
+      titleGenerationEnabled,
+      titleModelId,
+      titleRefreshOnComplete,
       summaryEnabled,
       summaryModelId,
     };
+  };
+
+  const suggestLaneNameFromPrompt = async (args: AgentChatSuggestLaneNameArgs): Promise<string> => {
+    const prompt = String(args.prompt ?? "").trim();
+    const requestedModelId = String(args.modelId ?? "").trim();
+    const sourceLaneId = String(args.laneId ?? "").trim();
+    const fallback = () => fallbackLaneNameFromPrompt(prompt);
+
+    if (!prompt.length) {
+      return fallback();
+    }
+
+    let cwd = projectRoot;
+    try {
+      ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
+        laneService,
+        laneId: sourceLaneId,
+        purpose: "name a lane from prompt",
+      }));
+    } catch {
+      cwd = projectRoot;
+    }
+
+    try {
+      const auth = await detectAuth();
+      const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+      if (!availableModels.length) return fallback();
+
+      const config = resolveChatConfig();
+      const preferredModelId =
+        [
+          requestedModelId,
+          config.titleModelId,
+          DEFAULT_AUTO_TITLE_MODEL_ID,
+          "anthropic/claude-haiku-4-5",
+          "openai/gpt-5.4-mini",
+          "openai/gpt-5.2",
+          "openai/gpt-5.4",
+          availableModels[0]?.id,
+        ].find((candidate) => {
+          const modelId = typeof candidate === "string" ? candidate.trim() : "";
+          return modelId.length > 0 && availableModels.some((descriptor) => descriptor.id === modelId);
+        }) ?? null;
+
+      if (!preferredModelId) return fallback();
+
+      const descriptor = getModelById(preferredModelId);
+      if (!descriptor) return fallback();
+
+      const result = await runOpenCodeTextPrompt({
+        directory: cwd,
+        title: "ADE lane name from prompt",
+        modelDescriptor: descriptor,
+        system: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
+        prompt: `User message to parallelize across models:\n${prompt.slice(0, 2000)}`,
+        projectConfig: projectConfigService.get().effective,
+      });
+      return normalizeSuggestedLaneName(result.text) ?? fallback();
+    } catch (error) {
+      logger.warn("agent_chat.suggest_lane_name_failed", {
+        modelId: requestedModelId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return fallback();
+    }
   };
 
   const computeHeadShaBestEffort = async (laneId: string): Promise<string | null> => {
@@ -4816,9 +5037,12 @@ export function createAgentChatService(args: {
   const resolvePrimaryIdentityLane = async (): Promise<string> => {
     await laneService.ensurePrimaryLane?.().catch(() => {});
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
-    const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
+    // Identity sessions (CTO + worker agents) must pin to the actual primary
+    // lane. Never fall back to lanes[0] — that would silently land the
+    // identity on a foreign lane, defeating the whole contract.
+    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
     if (!primary?.id) {
-      throw new Error("No lane is available to host the canonical identity chat session.");
+      throw new Error("No primary lane is available to host the canonical identity chat session.");
     }
     return primary.id;
   };
@@ -4862,6 +5086,16 @@ export function createAgentChatService(args: {
     }
   };
 
+  const rejectActiveSessionTurnCollector = (sessionId: string, message: string): void => {
+    const activeCollector = sessionTurnCollectors.get(sessionId);
+    if (!activeCollector) return;
+    if (activeCollector.timeout) {
+      clearTimeout(activeCollector.timeout);
+    }
+    sessionTurnCollectors.delete(sessionId);
+    activeCollector.reject(new Error(message));
+  };
+
   const persistChatState = (managed: ManagedChatSession): void => {
     // Tombstoned sessions (deleted while async work was in flight) must not be
     // re-persisted — otherwise the file recreates after deleteSession removed it.
@@ -4900,7 +5134,6 @@ export function createAgentChatService(args: {
       ...(managed.session.automationId ? { automationId: managed.session.automationId } : {}),
       ...(managed.session.automationRunId ? { automationRunId: managed.session.automationRunId } : {}),
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
-      ...(managed.session.computerUse ? { computerUse: managed.session.computerUse } : {}),
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "cursor" && managed.runtime.acpSessionId
@@ -4936,6 +5169,7 @@ export function createAgentChatService(args: {
           const trimmedTitle = String(sessionService.get(managed.session.id)?.title || "").trim();
           return trimmedTitle.length > 0 && !DEFAULT_SESSION_TITLES.has(trimmedTitle);
         })(),
+      ...(hasLivePendingInput(managed) ? { awaitingInput: true } : {}),
       ...(managed.session.requestedCwd != null && String(managed.session.requestedCwd).trim().length
         ? { requestedCwd: String(managed.session.requestedCwd).trim() }
         : {}),
@@ -4969,8 +5203,9 @@ export function createAgentChatService(args: {
       }
       const laneId = String(record.laneId ?? "").trim();
       const model = String(record.model ?? "").trim();
-      const modelId = typeof record.modelId === "string" && record.modelId.trim().length
-        ? (getModelById(record.modelId.trim()) ? record.modelId.trim() : undefined)
+      const storedModelId = typeof record.modelId === "string" ? record.modelId.trim() : "";
+      const modelId = storedModelId.length
+        ? (getModelById(storedModelId) ?? resolveModelAlias(storedModelId))?.id
         : resolveModelIdFromStoredValue(model, provider);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
@@ -4995,7 +5230,6 @@ export function createAgentChatService(args: {
       const identityKey = normalizeIdentityKey(record.identityKey);
       const surface = record.surface === "automation" ? "automation" : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
-      const computerUse = normalizePersistedComputerUse(record.computerUse);
       const completion = normalizePersistedCompletion(record.completion);
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
@@ -5044,7 +5278,6 @@ export function createAgentChatService(args: {
           ? { automationRunId: record.automationRunId.trim() }
           : {}),
         ...(capabilityMode ? { capabilityMode } : {}),
-        ...(computerUse ? { computerUse } : {}),
         ...(completion ? { completion } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
@@ -5072,6 +5305,7 @@ export function createAgentChatService(args: {
           ? { lastLaneDirectiveKey: record.lastLaneDirectiveKey.trim() }
           : {}),
         ...(record.manuallyNamed === true ? { manuallyNamed: true } : {}),
+        ...(record.awaitingInput === true ? { awaitingInput: true } : {}),
         ...(typeof record.requestedCwd === "string" && record.requestedCwd.trim().length
           ? { requestedCwd: record.requestedCwd.trim() }
           : {}),
@@ -5260,11 +5494,17 @@ export function createAgentChatService(args: {
     };
 
     writeTranscript(managed, envelope);
+    recordChatEventInHistory(envelope);
     onEvent?.(envelope);
-
-    // Passive proof capture: observe tool results for screenshots/artifacts.
-    if (proofObserver && event.type === "tool_result") {
-      proofObserver.observe(event, managed.session.id);
+    for (const subscriber of eventSubscribers) {
+      try {
+        subscriber(envelope);
+      } catch (error) {
+        logger.warn("agent_chat.event_subscriber_failed", {
+          sessionId: envelope.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     const collector = sessionTurnCollectors.get(managed.session.id);
@@ -5468,6 +5708,7 @@ export function createAgentChatService(args: {
       },
       turnId: request.turnId ?? undefined,
     });
+    persistChatState(managed);
   };
 
   const emitPendingInputResolved = (
@@ -5478,17 +5719,18 @@ export function createAgentChatService(args: {
       turnId?: string | null;
     },
   ): void => {
+    const resolution: "cancelled" | "declined" | "accepted" = (() => {
+      if (args.decision === "cancel") return "cancelled";
+      if (args.decision === "decline") return "declined";
+      return "accepted";
+    })();
     emitChatEvent(managed, {
       type: "pending_input_resolved",
       itemId: args.itemId,
-      resolution:
-        args.decision === "cancel"
-          ? "cancelled"
-          : args.decision === "decline"
-            ? "declined"
-            : "accepted",
+      resolution,
       ...(typeof args.turnId === "string" && args.turnId.trim().length ? { turnId: args.turnId.trim() } : {}),
     });
+    persistChatState(managed);
   };
 
   const normalizePendingInputAnswers = (
@@ -5668,10 +5910,35 @@ export function createAgentChatService(args: {
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
   const teardownRuntime = (
     managed: ManagedChatSession,
-    openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "paused_run" | "shutdown" = "handle_close",
+    openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "pool_compaction" | "paused_run" | "shutdown" = "handle_close",
   ): void => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
+
+    const reasonAllowsPreservation =
+      openCodeReason === "idle_ttl"
+      || openCodeReason === "budget_eviction"
+      || openCodeReason === "pool_compaction"
+      || openCodeReason === "paused_run"
+      || openCodeReason === "project_close"
+      || openCodeReason === "shutdown";
+
+    // If a prior teardown (e.g., idle_ttl) already released the runtime:
+    //  - Non-terminal reasons keep the prior teardown's preserved resume
+    //    metadata on disk (bail).
+    //  - Terminal reasons (handle_close, ended_session, model_switch) must
+    //    still invalidate so a future resume can't reattach to a session
+    //    the user actually closed.
+    if (!managed.runtime) {
+      if (!reasonAllowsPreservation) {
+        managed.runtimeInvalidated = true;
+        clearLaneDirectiveKey(managed);
+      }
+      return;
+    }
+
+    const preserveClaudeResumeState =
+      managed.runtime.kind === "claude" && reasonAllowsPreservation;
     if (managed.runtime?.kind === "codex") {
       managed.runtime.suppressExitError = true;
       try { managed.runtime.reader.close(); } catch { /* ignore */ }
@@ -5686,11 +5953,11 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "claude") {
       // Mark interrupted so the streaming catch block takes the graceful path
       managed.runtime.interrupted = true;
-      cancelClaudeWarmup(managed, managed.runtime, "teardown");
-      if (managed.runtime.compactionResetTimer) {
-        clearTimeout(managed.runtime.compactionResetTimer);
-        managed.runtime.compactionResetTimer = null;
+      if (preserveClaudeResumeState) {
+        managed.runtime.sdkSessionId = managed.runtime.sdkSessionId ?? managed.runtime.v2Session?.sessionId ?? null;
+        persistChatState(managed);
       }
+      cancelClaudeWarmup(managed, managed.runtime, "teardown");
       try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
       managed.runtime.v2Session = null;
       managed.runtime.v2WarmupDone = null;
@@ -5731,8 +5998,10 @@ export function createAgentChatService(args: {
       if (rt.pooled) releaseCursorAcpConnection(rt.poolKey);
       managed.runtime = null;
     }
-    managed.runtimeInvalidated = true;
-    clearLaneDirectiveKey(managed);
+    managed.runtimeInvalidated = !preserveClaudeResumeState;
+    if (!preserveClaudeResumeState) {
+      clearLaneDirectiveKey(managed);
+    }
   };
 
   const keepChatSessionOpen = (
@@ -5782,6 +6051,13 @@ export function createAgentChatService(args: {
     managed.endedNotified = false;
     sessionService.reopen(managed.session.id);
     persistChatState(managed);
+  };
+
+  const getSessionInactivityTimeoutMs = (managed: ManagedChatSession): number => {
+    if (managed.runtime?.kind === "opencode") {
+      return OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS;
+    }
+    return SESSION_INACTIVITY_TIMEOUT_MS;
   };
 
   const maybeGenerateSessionSummary = async (
@@ -5840,12 +6116,11 @@ export function createAgentChatService(args: {
 
     managed.summaryInFlight = true;
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: managed.laneWorktreePath,
-        title: "ADE session summary",
-        modelDescriptor: descriptor,
+      const result = await runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId: descriptor.id,
         prompt,
-        projectConfig: projectConfigService.get().effective,
+        taskType: "session_summary",
       });
       const text = result.text.trim();
       if (text.length) {
@@ -6019,7 +6294,6 @@ export function createAgentChatService(args: {
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
-        computerUse: normalizePersistedComputerUse(persisted?.computerUse),
         completion: persisted?.completion ?? null,
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
@@ -6124,6 +6398,8 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
+      providerSlashCommand?: boolean;
+      forceClaudeUserMessage?: boolean;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -6157,18 +6433,29 @@ export function createAgentChatService(args: {
       type: "activity",
       ...initialTurnActivity(managed.session),
     });
-    const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, attachments);
-    const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+    const providerSlashCommand = args.providerSlashCommand === true;
+    const autoMemoryPlan = providerSlashCommand
+      ? null
+      : await buildAutoMemoryTurnPlan(managed, displayText, attachments);
+    const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
 
     // Intercept /review command — route to review/start RPC instead of turn/start
     if (args.promptText.trim().startsWith("/review")) {
-      const reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
-        threadId: managed.session.threadId,
-        target: "uncommittedChanges",
-      });
+      runtime.awaitingTurnStart = true;
+      let reviewResult: { turn?: { id?: string } };
+      try {
+        reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
+          threadId: managed.session.threadId,
+          target: "uncommittedChanges",
+        });
+      } catch (error) {
+        runtime.awaitingTurnStart = false;
+        throw error;
+      }
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
       if (reviewTurnId) {
+        runtime.awaitingTurnStart = false;
         runtime.activeTurnId = reviewTurnId;
       }
       return;
@@ -6176,7 +6463,7 @@ export function createAgentChatService(args: {
 
     const input: Array<Record<string, unknown>> = [];
 
-    const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
+    const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
     if (reconstructionContext.length) {
       input.push({
         type: "text",
@@ -6188,7 +6475,7 @@ export function createAgentChatService(args: {
       });
       managed.pendingReconstructionContext = null;
     }
-    if (autoMemoryPlan.contextText.length) {
+    if (autoMemoryPlan?.contextText.length) {
       input.push({
         type: "text",
         text: autoMemoryPlan.contextText,
@@ -6220,9 +6507,14 @@ export function createAgentChatService(args: {
       });
     }
 
+    resolveCodexThreadParams(managed);
     await runtime.collaborationModesReady?.catch(() => {});
     const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
-    const collaborationMode = buildCodexCollaborationMode(managed.session, runtime.collaborationModes);
+    const collaborationMode = buildCodexCollaborationMode(
+      managed.session,
+      runtime.collaborationModes,
+      managed.laneWorktreePath,
+    );
     if (
       requestedCollaborationMode === "plan"
       && collaborationMode?.mode !== "plan"
@@ -6237,16 +6529,24 @@ export function createAgentChatService(args: {
     } else if (collaborationMode?.mode === "plan") {
       runtime.planModeFallbackNotified = false;
     }
-    const result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
-      threadId: managed.session.threadId,
-      input,
-      ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
-      ...(collaborationMode ? { collaborationMode } : {}),
-    });
+    managed.runtime.awaitingTurnStart = true;
+    let result: { turn?: { id?: string } };
+    try {
+      result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
+        threadId: managed.session.threadId,
+        input,
+        ...(managed.session.reasoningEffort ? { effort: managed.session.reasoningEffort } : {}),
+        ...(collaborationMode ? { collaborationMode } : {}),
+      });
+    } catch (error) {
+      managed.runtime.awaitingTurnStart = false;
+      throw error;
+    }
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
     const turnId = typeof result?.turn?.id === "string" ? result.turn.id : null;
     if (turnId) {
+      managed.runtime.awaitingTurnStart = false;
       managed.runtime.activeTurnId = turnId;
       if (managed.runtime.startedTurnId !== turnId) {
         managed.runtime.startedTurnId = turnId;
@@ -6358,6 +6658,8 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
+      providerSlashCommand?: boolean;
+      forceClaudeUserMessage?: boolean;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -6412,6 +6714,27 @@ export function createAgentChatService(args: {
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedSyntheticItemIds = new Set<string>();
+    const streamedClaudeTextContentKeys = new Set<string>();
+    const streamedClaudeThinkingContentKeys = new Set<string>();
+    let currentClaudeStreamMessageId: string | null = null;
+    // Track a running boundary for assistant messages whose snapshot has no id
+    // (and whose stream preamble didn't carry a `message_start` id either — real
+    // Claude streams always do, but mocks and older SDK paths don't). Each new
+    // id-less assistant snapshot bumps the boundary so sequential assistants in
+    // the same turn don't collide at the same content index.
+    let claudeAssistantBoundary = 0;
+    let claudeAssistantBoundarySealed = false;
+    const claudeDedupeKey = (
+      messageId: string | null | undefined,
+      contentIndex: number | null | undefined,
+    ): string | null => {
+      if (typeof contentIndex !== "number" || !Number.isFinite(contentIndex)) return null;
+      const trimmed = messageId?.trim();
+      const id = trimmed && trimmed.length
+        ? trimmed
+        : `${turnId}:b${claudeAssistantBoundary}`;
+      return `${id}:${contentIndex}`;
+    };
     const openClaudeToolUses = new Map<string, { toolName: string }>();
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
@@ -6511,12 +6834,15 @@ export function createAgentChatService(args: {
     runtime.resumeIdleWatchdog = () => {};
 
     try {
+      const providerSlashCommand = args.providerSlashCommand === true;
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
-      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+      const autoMemoryPlan = providerSlashCommand
+        ? null
+        : await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
+      const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
       runtime.turnMemoryPolicyState = {
-        classification: autoMemoryPlan.classification,
-        orientationSatisfied: autoMemoryPlan.telemetry.searched,
+        classification: autoMemoryPlan?.classification ?? "none",
+        orientationSatisfied: autoMemoryPlan?.telemetry.searched ?? true,
         explicitSearchPerformed: false,
       };
       if (autoMemoryNotice) {
@@ -6529,17 +6855,19 @@ export function createAgentChatService(args: {
         });
       }
 
-      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-      const basePromptText = [
-        reconstructionContext.length
-          ? [
-              "System context (identity reconstruction, do not echo verbatim):",
-              reconstructionContext,
-            ].join("\n")
-          : null,
-        autoMemoryPlan.contextText.length ? autoMemoryPlan.contextText : null,
-        args.promptText,
-      ].filter((section): section is string => Boolean(section)).join("\n\n");
+      const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+      const basePromptText = providerSlashCommand
+        ? args.promptText
+        : [
+            reconstructionContext.length
+              ? [
+                  "System context (identity reconstruction, do not echo verbatim):",
+                  reconstructionContext,
+                ].join("\n")
+              : null,
+            autoMemoryPlan?.contextText.length ? autoMemoryPlan.contextText : null,
+            args.promptText,
+          ].filter((section): section is string => Boolean(section)).join("\n\n");
       if (reconstructionContext.length) {
         managed.pendingReconstructionContext = null;
         persistChatState(managed);
@@ -6564,11 +6892,6 @@ export function createAgentChatService(args: {
         } else {
           runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
         }
-        await attachClaudeV2McpServers(
-          managed,
-          runtime.v2Session,
-          v2Opts.mcpServers as Record<string, Record<string, unknown>> | undefined,
-        );
       }
 
       // Build the message — plain string for text-only, or SDKUserMessage with
@@ -6576,6 +6899,7 @@ export function createAgentChatService(args: {
       const messageToSend = buildClaudeV2Message(basePromptText, resolvedAttachments, {
         baseDir: managed.laneWorktreePath,
         sessionId: runtime.sdkSessionId,
+        forceUserMessage: args.forceClaudeUserMessage,
       });
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
@@ -6729,25 +7053,6 @@ export function createAgentChatService(args: {
           continue;
         }
 
-        // system:elicitation_complete — MCP URL-mode authentication finished
-        if (msg.type === "system" && (msg as any).subtype === "elicitation_complete") {
-          const elicitMsg = msg as any;
-          const elicitationId = typeof elicitMsg.elicitation_id === "string" ? elicitMsg.elicitation_id : "";
-          const serverName = typeof elicitMsg.mcp_server_name === "string" ? elicitMsg.mcp_server_name : "MCP server";
-          // Resolve any pending URL-mode elicitation promise
-          if (elicitationId && runtime.pendingElicitations.has(elicitationId)) {
-            runtime.pendingElicitations.get(elicitationId)!();
-            runtime.pendingElicitations.delete(elicitationId);
-          }
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "info",
-            message: `MCP authentication complete: ${serverName}`,
-            turnId,
-          });
-          continue;
-        }
-
         // system:local_command_output — output from local slash commands (/voice, /cost, etc.)
         if (msg.type === "system" && (msg as any).subtype === "local_command_output") {
           const cmdMsg = msg as any;
@@ -6847,31 +7152,65 @@ export function createAgentChatService(args: {
         if (msg.type === "assistant") {
           const assistantMsg = msg as any;
           const betaMessage = assistantMsg.message;
+          const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
+          // If the snapshot has no id, advance the id-less boundary once the
+          // prior snapshot is sealed — so two back-to-back id-less assistants
+          // don't alias to the same key. While the stream preamble is actively
+          // filling in the current boundary (via content_block_delta), we keep
+          // the boundary intact so the snapshot still dedupes against deltas.
+          if (!assistantMessageId && !currentClaudeStreamMessageId && claudeAssistantBoundarySealed) {
+            claudeAssistantBoundary += 1;
+            claudeAssistantBoundarySealed = false;
+          }
           reportedAssistantModel = normalizeReportedModelName(betaMessage?.model) ?? reportedAssistantModel;
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               if (block.type === "text") {
-                assistantText += block.text ?? "";
-                emitChatEvent(managed, {
-                  type: "text",
-                  text: block.text ?? "",
-                  turnId,
-                });
+                // Check both the real-id key AND the id-less fallback key. When
+                // content_block_delta fires before message_start (or when the
+                // SDK omits message_start entirely), streamed deltas record
+                // fallback keys `${turnId}:b${N}:${idx}` into the set. The
+                // snapshot then arrives with a real id and would otherwise miss
+                // the dedup, re-emitting the same text and producing a doubled
+                // bubble in the renderer.
+                const textKey = claudeDedupeKey(assistantMessageId, blockIndex);
+                const fallbackTextKey = assistantMessageId ? claudeDedupeKey(null, blockIndex) : null;
+                const alreadyStreamed =
+                  (textKey ? streamedClaudeTextContentKeys.has(textKey) : false)
+                  || (fallbackTextKey ? streamedClaudeTextContentKeys.has(fallbackTextKey) : false);
+                if (!textKey || !alreadyStreamed) {
+                  assistantText += block.text ?? "";
+                  emitChatEvent(managed, {
+                    type: "text",
+                    text: block.text ?? "",
+                    turnId,
+                  });
+                  if (textKey) streamedClaudeTextContentKeys.add(textKey);
+                }
               } else if (block.type === "thinking") {
                 const thinkingText = block.thinking ?? block.text ?? "";
                 const reasoningItemId = buildClaudeContentItemId("thinking", blockIndex);
-                emitChatEvent(managed, {
-                  type: "activity",
-                  activity: "thinking",
-                  detail: REASONING_ACTIVITY_DETAIL,
-                  turnId,
-                });
-                emitChatEvent(managed, {
-                  type: "reasoning",
-                  text: thinkingText,
-                  ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
-                  turnId,
-                });
+                // Same snapshot-vs-delta dedup race as the text branch above.
+                const thinkingKey = claudeDedupeKey(assistantMessageId, blockIndex);
+                const fallbackThinkingKey = assistantMessageId ? claudeDedupeKey(null, blockIndex) : null;
+                const alreadyStreamedThinking =
+                  (thinkingKey ? streamedClaudeThinkingContentKeys.has(thinkingKey) : false)
+                  || (fallbackThinkingKey ? streamedClaudeThinkingContentKeys.has(fallbackThinkingKey) : false);
+                if (thinkingText.trim().length > 0 && (!thinkingKey || !alreadyStreamedThinking)) {
+                  emitChatEvent(managed, {
+                    type: "activity",
+                    activity: "thinking",
+                    detail: REASONING_ACTIVITY_DETAIL,
+                    turnId,
+                  });
+                  emitChatEvent(managed, {
+                    type: "reasoning",
+                    text: thinkingText,
+                    ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
+                    turnId,
+                  });
+                  if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
+                }
               } else if (block.type === "tool_use") {
                 const toolName = String(block.name ?? "tool");
                 const itemId = buildClaudeContentItemId(
@@ -6915,6 +7254,9 @@ export function createAgentChatService(args: {
               outputTokens: betaMessage.usage.output_tokens ?? null,
             };
           }
+          // Snapshot consumed — the next id-less assistant should get a fresh
+          // boundary so it doesn't collide on the same turn-scoped key.
+          claudeAssistantBoundarySealed = true;
           continue;
         }
 
@@ -6930,12 +7272,16 @@ export function createAgentChatService(args: {
             if (delta?.type === "text_delta") {
               const text = delta.text ?? "";
               if (text.length) {
+                const textKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                if (textKey) streamedClaudeTextContentKeys.add(textKey);
                 assistantText += text;
                 emitChatEvent(managed, { type: "text", text, turnId });
               }
             } else if (delta?.type === "thinking_delta") {
               const text = delta.thinking ?? delta.text ?? "";
               if (text.length) {
+                const thinkingKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
                 const reasoningItemId = buildClaudeContentItemId("thinking", contentIndex);
                 emitChatEvent(managed, {
                   type: "activity",
@@ -6982,6 +7328,8 @@ export function createAgentChatService(args: {
               // Some SDK versions include initial thinking text on block start
               const startText = block.thinking ?? block.text ?? "";
               if (startText.length) {
+                const thinkingKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
                 emitChatEvent(managed, {
                   type: "reasoning",
                   text: startText,
@@ -7056,6 +7404,7 @@ export function createAgentChatService(args: {
               }
             }
           } else if (event.type === "message_start") {
+            currentClaudeStreamMessageId = typeof event.message?.id === "string" ? event.message.id : null;
             const msgUsage = event.message?.usage;
             if (msgUsage) {
               usage = {
@@ -7251,8 +7600,9 @@ export function createAgentChatService(args: {
           : "failed";
       flushOpenClaudeToolUses(finalToolStatus);
 
-      // Only close V2 session on genuine errors. Interrupted turns keep the
-      // session alive for the next send()+stream() cycle.
+      // Only close V2 session on genuine errors. User interrupts close and
+      // clear the session immediately in interrupt() so the next turn cannot
+      // consume buffered events from the abandoned stream.
       if (!runtime.interrupted) {
         try { runtime.v2Session?.close(); } catch { /* ignore */ }
         runtime.v2Session = null;
@@ -7371,6 +7721,8 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
+      providerSlashCommand?: boolean;
+      forceClaudeUserMessage?: boolean;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -7438,13 +7790,16 @@ export function createAgentChatService(args: {
     };
 
     try {
+      const providerSlashCommand = args.providerSlashCommand === true;
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
-      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+      const autoMemoryPlan = providerSlashCommand
+        ? null
+        : await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
+      const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
       const turnMemoryPolicyState: TurnMemoryPolicyState | undefined = memoryService && projectId
         ? {
-            classification: autoMemoryPlan.classification,
-            orientationSatisfied: autoMemoryPlan.telemetry.searched,
+            classification: autoMemoryPlan?.classification ?? "none",
+            orientationSatisfied: autoMemoryPlan?.telemetry.searched ?? true,
             explicitSearchPerformed: false,
           }
         : undefined;
@@ -7461,15 +7816,17 @@ export function createAgentChatService(args: {
       const attachmentHint = attachments.length
         ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
         : "";
-      const userContent = [
-        managed.pendingReconstructionContext?.trim().length
-          ? "System context (ADE continuity, do not echo verbatim):\n" + managed.pendingReconstructionContext.trim()
-          : null,
-        autoMemoryPlan.contextText.length ? autoMemoryPlan.contextText : null,
-        `${args.promptText}${attachmentHint}`,
-      ].filter((section): section is string => Boolean(section)).join("\n\n");
+      const userContent = providerSlashCommand
+        ? args.promptText
+        : [
+            managed.pendingReconstructionContext?.trim().length
+              ? "System context (ADE continuity, do not echo verbatim):\n" + managed.pendingReconstructionContext.trim()
+              : null,
+            autoMemoryPlan?.contextText.length ? autoMemoryPlan.contextText : null,
+            `${args.promptText}${attachmentHint}`,
+          ].filter((section): section is string => Boolean(section)).join("\n\n");
 
-      managed.pendingReconstructionContext = null;
+      if (!providerSlashCommand) managed.pendingReconstructionContext = null;
 
       const abortController = new AbortController();
       runtime.eventAbortController = abortController;
@@ -8044,6 +8401,23 @@ export function createAgentChatService(args: {
       const description = typeof params.reason === "string" && params.reason.trim().length
         ? params.reason.trim()
         : "Codex requested additional permissions";
+      // Auto-allow the ADE `ask_user` tool so the inline question card surfaces
+      // immediately instead of being shadowed by a generic "Allow additional
+      // permissions?" prompt. Gated by `ai.chat.autoAllowAskUser` (default: true).
+      if (isAutoAllowAskUserEnabled()) {
+        const permRecord = params.permissions && typeof params.permissions === "object"
+          ? params.permissions as Record<string, unknown>
+          : null;
+        const rawTool = permRecord?.tool ?? permRecord?.toolName;
+        const permTool = typeof rawTool === "string" ? rawTool : null;
+        if (isAskUserToolName(permTool) || isAskUserToolName(description)) {
+          runtime.sendResponse(id, {
+            permissions: params.permissions ?? {},
+            scope: "turn",
+          });
+          return;
+        }
+      }
       const request: PendingInputRequest = {
         requestId: String(id),
         itemId,
@@ -8150,137 +8524,6 @@ export function createAgentChatService(args: {
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: request.description ?? "Codex requested input",
-      });
-      return;
-    }
-
-    // ── MCP Elicitation (used by mcp__ade__ask_user for standalone chat) ──
-    if (method === "mcpServer/elicitation/request") {
-      const params = (payload.params as {
-        serverName?: string;
-        message?: string;
-        turnId?: string;
-        requestedSchema?: Record<string, unknown>;
-      } | null) ?? {};
-      const serverName = typeof params.serverName === "string" ? params.serverName.trim() : "MCP";
-      const message = typeof params.message === "string" ? params.message.trim() : "The agent needs input.";
-      const itemId = randomUUID();
-      const requestedSchema = params.requestedSchema && typeof params.requestedSchema === "object"
-        ? params.requestedSchema
-        : null;
-
-      const inferQuestionsFromSchema = (): PendingInputQuestion[] => {
-        const properties = requestedSchema && typeof requestedSchema.properties === "object" && requestedSchema.properties
-          ? requestedSchema.properties as Record<string, unknown>
-          : null;
-        if (!properties) {
-          return [{
-            id: "elicitation_answer",
-            header: "Question",
-            question: message,
-            allowsFreeform: true,
-          }];
-        }
-
-        const entries = Object.entries(properties).flatMap(([propertyKey, rawProperty], index) => {
-          if (!rawProperty || typeof rawProperty !== "object") return [];
-          const property = rawProperty as Record<string, unknown>;
-          const header = typeof property.title === "string" && property.title.trim().length
-            ? property.title.trim()
-            : `Question ${index + 1}`;
-          const enumOptions = Array.isArray(property.enum)
-            ? property.enum.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-            : [];
-          const itemEnumOptions = property.type === "array"
-            && property.items
-            && typeof property.items === "object"
-            && Array.isArray((property.items as Record<string, unknown>).enum)
-              ? ((property.items as Record<string, unknown>).enum as unknown[])
-                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-              : [];
-          const questionText = typeof property.description === "string" && property.description.trim().length
-            ? property.description.trim()
-            : Object.keys(properties).length === 1
-              ? message
-              : `${message} (${header})`;
-
-          if (enumOptions.length > 0) {
-            return [{
-              id: propertyKey,
-              header,
-              question: questionText,
-              options: enumOptions.map((value) => ({ label: value, value })),
-              allowsFreeform: false,
-            }];
-          }
-
-          if (itemEnumOptions.length > 0) {
-            return [{
-              id: propertyKey,
-              header,
-              question: questionText,
-              multiSelect: true,
-              options: itemEnumOptions.map((value) => ({ label: value, value })),
-              allowsFreeform: false,
-            }];
-          }
-
-          if (property.type === "boolean") {
-            return [{
-              id: propertyKey,
-              header,
-              question: questionText,
-              options: [
-                { label: "Yes", value: "true" },
-                { label: "No", value: "false" },
-              ],
-              allowsFreeform: false,
-            }];
-          }
-
-          return [{
-            id: propertyKey,
-            header,
-            question: questionText,
-            allowsFreeform: true,
-          }];
-        });
-
-        return entries.length > 0
-          ? entries
-          : [{
-              id: "elicitation_answer",
-              header: "Question",
-              question: message,
-              allowsFreeform: true,
-            }];
-      };
-
-      const questions = inferQuestionsFromSchema();
-
-      const request: PendingInputRequest = {
-        requestId: String(id),
-        itemId,
-        source: "codex",
-        kind: "structured_question",
-        title: `Question from ${serverName}`,
-        description: questions[0]?.question ?? message,
-        questions,
-        allowsFreeform: true,
-        blocking: true,
-        canProceedWithoutAnswer: false,
-        providerMetadata: requestedSchema ? { serverName, requestedSchema } : { serverName },
-        turnId: typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null,
-      };
-      runtime.approvals.set(itemId, {
-        requestId: id,
-        kind: "structured_question",
-        request,
-        questionResponseKind: "mcp_elicitation",
-      });
-      emitPendingInputRequest(managed, request, {
-        kind: "tool_call",
-        description: message,
       });
       return;
     }
@@ -8544,7 +8787,7 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (itemType === "mcpToolCall") {
+    if (itemType === "toolCall") {
       const nextActivity = activityForToolName(String(item.tool ?? "tool"));
       emitChatEvent(managed, {
         type: "activity",
@@ -8777,6 +9020,47 @@ export function createAgentChatService(args: {
     const method = typeof payload.method === "string" ? payload.method : "";
     const params = (payload.params as Record<string, unknown> | null) ?? {};
     const turnIdFromParams = extractCodexTurnId(params);
+    const threadIdFromParams = extractCodexThreadId(params);
+
+    if (
+      threadIdFromParams
+      && managed.session.threadId
+      && threadIdFromParams !== managed.session.threadId
+    ) {
+      logger.debug("agent_chat.codex_ignored_foreign_thread_notification", {
+        sessionId: managed.session.id,
+        method,
+        threadId: threadIdFromParams,
+        expectedThreadId: managed.session.threadId,
+      });
+      return;
+    }
+
+    const isIgnoredTurn = turnIdFromParams ? runtime.ignoredTurnIds.has(turnIdFromParams) : false;
+    const isTerminalTurnNotification =
+      method === "turn/completed"
+      || method === "turn/aborted"
+      || method === "codex/event/turn_aborted";
+    if (isIgnoredTurn) {
+      if (isTerminalTurnNotification && turnIdFromParams) {
+        runtime.ignoredTurnIds.delete(turnIdFromParams);
+      }
+      return;
+    }
+
+    const isExpectedTurnStart =
+      method === "turn/started"
+      && runtime.awaitingTurnStart
+      && !runtime.activeTurnId
+      && !runtime.startedTurnId;
+    if (
+      turnIdFromParams
+      && !isExpectedTurnStart
+      && !isCurrentCodexLifecycleTurn(runtime, turnIdFromParams)
+    ) {
+      logger.warn(`[codex] ignoring ${method} for inactive turn ${turnIdFromParams} in session ${managed.session.id}`);
+      return;
+    }
 
     if (shouldSkipDuplicateCodexNotification(runtime, payload)) {
       return;
@@ -8785,6 +9069,18 @@ export function createAgentChatService(args: {
     if (method === "turn/started") {
       const turn = (params.turn as { id?: unknown } | null) ?? null;
       const turnId = typeof turn?.id === "string" ? turn.id : null;
+      if (!runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId) {
+        logger.warn(`[codex] ignoring unsolicited turn/started for session ${managed.session.id}`);
+        if (turnId) {
+          runtime.ignoredTurnIds.add(turnId);
+          if (runtime.ignoredTurnIds.size > 64) {
+            const [first] = runtime.ignoredTurnIds;
+            if (first) runtime.ignoredTurnIds.delete(first);
+          }
+        }
+        return;
+      }
+      runtime.awaitingTurnStart = false;
       runtime.activeTurnId = turnId;
       resetAssistantMessageStream(managed);
       runtime.agentMessageScopeByTurn.clear();
@@ -8825,8 +9121,10 @@ export function createAgentChatService(args: {
         return;
       }
       const turnId = resolvedTurnId ?? randomUUID();
+      runtime.awaitingTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
+      runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
       runtime.itemTurnIdByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
@@ -8924,10 +9222,19 @@ export function createAgentChatService(args: {
     if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
       const delta = String((params.delta as string | undefined) ?? "");
       if (!delta.length) return;
+      const turnId = typeof params.turnId === "string"
+        ? params.turnId
+        : turnIdFromParams ?? runtime.activeTurnId ?? undefined;
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "thinking",
+        detail: REASONING_ACTIVITY_DETAIL,
+        turnId,
+      });
       emitChatEvent(managed, {
         type: "reasoning",
         text: delta,
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        turnId,
         itemId: typeof params.itemId === "string" ? params.itemId : undefined,
         summaryIndex: typeof params.summaryIndex === "number" ? params.summaryIndex : undefined
       });
@@ -9049,8 +9356,10 @@ export function createAgentChatService(args: {
       }
       const turnId = resolvedAbortTurnId ?? randomUUID();
       rememberInterruptedCodexTurn(runtime, turnId);
+      runtime.awaitingTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
+      runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
       runtime.itemTurnIdByItemId.clear();
       runtime.commandOutputByItemId.clear();
@@ -9100,7 +9409,6 @@ export function createAgentChatService(args: {
     if (
       method === "thread/status/changed"
       || method === "codex/event/task_started"
-      || method === "codex/event/mcp_startup_update"
     ) {
       return;
     }
@@ -9213,15 +9521,13 @@ export function createAgentChatService(args: {
   };
 
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
-    const adeMcpLaunch = tryDiagnosticMcpLaunch(managed);
-
     logger.info("agent_chat.codex_runtime_start", {
       sessionId: managed.session.id,
       cwd: managed.laneWorktreePath,
       shellPath: process.env.SHELL ?? "",
       path: process.env.PATH ?? "",
-      ...(adeMcpLaunch ? { adeMcpLaunch } : {}),
     });
+    const spawnEnv = getAdeCliAgentEnv?.(process.env) ?? process.env;
     let codexExecutable: string;
     try {
       codexExecutable = resolveCodexExecutable().path;
@@ -9236,10 +9542,13 @@ export function createAgentChatService(args: {
       });
       throw error;
     }
-    const proc = spawn(codexExecutable, ["app-server"], {
+    const invocation = resolveCliSpawnInvocation(codexExecutable, ["app-server"]);
+    const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
+      env: spawnEnv,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
 
     const reader = readline.createInterface({ input: proc.stdout });
@@ -9256,6 +9565,7 @@ export function createAgentChatService(args: {
       approvals: new Map<string, PendingCodexApproval>(),
       activeTurnId: null,
       startedTurnId: null,
+      awaitingTurnStart: false,
       threadResumed: false,
       itemTurnIdByItemId: new Map<string, string>(),
       commandOutputByItemId: new Map<string, string>(),
@@ -9263,6 +9573,7 @@ export function createAgentChatService(args: {
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
       activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
       interruptedTurnIds: new Set<string>(),
+      ignoredTurnIds: new Set<string>(),
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
       recentNotificationKeys: new Set<string>(),
@@ -9458,7 +9769,6 @@ export function createAgentChatService(args: {
 
   const resolveCodexThreadParams = (managed: ManagedChatSession): {
     codexPolicy: CodexPolicy;
-    mcpServers: Record<string, Record<string, unknown>>;
   } => {
     const config = resolveChatConfig();
     const codexConfigSource = resolveSessionCodexConfigSource(managed.session);
@@ -9477,37 +9787,22 @@ export function createAgentChatService(args: {
       delete managed.session.codexSandbox;
     }
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
-    const mcpServers = isLightweightSession(managed.session)
-      ? {}
-      : buildAdeMcpServers(
-          managed.laneWorktreePath,
-          "codex",
-          managed.session.identityKey === "cto" ? "cto" : "agent",
-          resolveWorkerIdentityAgentId(managed.session.identityKey),
-          managed.session.id,
-          managed.session.computerUse,
-        );
-    return { codexPolicy, mcpServers };
+    return { codexPolicy };
   };
 
   const startFreshCodexThread = async (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
     codexPolicy: CodexPolicy,
-    mcpServers: Record<string, Record<string, unknown>>,
   ): Promise<void> => {
-    const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
-    const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
+    const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
-      ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       cwd: managed.laneWorktreePath,
-      ...(mcpConfig ? { config: mcpConfig } : {}),
-      mcpServers,
-      mcp_servers: mcpServers,
       ...codexPolicyArgs(codexPolicy),
       experimentalRawEvents: false,
       persistExtendedHistory: true
     });
+    applyCodexEffectiveThreadState(managed, startResponse);
     const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
     if (newThreadId) {
       managed.session.threadId = newThreadId;
@@ -9557,13 +9852,16 @@ export function createAgentChatService(args: {
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
     const claudeExecutable = resolveClaudeCodeExecutable();
+    const claudeEnv = getAdeCliAgentEnv?.(process.env) ?? process.env;
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
+      env: claudeEnv,
       permissionMode: claudePermissionMode as any,
       ...(claudePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } as any : {}),
       includePartialMessages: true,
       agentProgressSummaries: true,
       promptSuggestions: true,
+      settings: CLAUDE_THINKING_SETTINGS,
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
       model: resolveClaudeCliModel(managed.session.model),
       pathToClaudeCodeExecutable: claudeExecutable.path,
@@ -9583,53 +9881,26 @@ export function createAgentChatService(args: {
           "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
           "",
           "## ADE Memory",
-          "You have access to ADE's persistent project memory via MCP tools (memory_search, memory_add, memory_pin).",
-          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls.",
+          "Use the ADE CLI (`ade memory search`, `ade memory add`, `ade memory pin`) when you need project memory from a terminal-capable session.",
+          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls when the CLI is available.",
           "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
           "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
           "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
           "",
-          "## ADE Tooling",
-          "ADE and MCP tools are runtime tool calls, not shell commands.",
-          "Do not probe tool availability with `which`, `command -v`, `.mcp.json`, or project settings files.",
-          "Use the exact tool identifier exposed in this session's tool list. MCP-backed ADE tools may appear in namespaced form like `mcp__ade__pr_refresh_issue_inventory`.",
+          ADE_CLI_AGENT_GUIDANCE,
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
-      opts.mcpServers = buildAdeMcpServers(
-        managed.laneWorktreePath,
-        "claude",
-        managed.session.identityKey === "cto" ? "cto" : "agent",
-        resolveWorkerIdentityAgentId(managed.session.identityKey),
-        managed.session.id,
-        managed.session.computerUse,
-      ) as any;
-      const allowedTools = buildClaudeAllowedTools(opts.mcpServers as Record<string, Record<string, unknown>> | undefined);
-      if (allowedTools.length > 0) {
-        opts.allowedTools = allowedTools;
-      }
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
 
       // PreCompact hook: nudge the model to save durable discoveries into
       // ADE memory before the SDK compacts context. Runs inside the SDK's
       // compaction flow so the text never surfaces as a visible user turn.
-      //
-      // Mark the runtime as in-compaction so the canUseTool gate auto-allows
-      // MCP memory tools the model calls in response to the flush prompt.
-      // Auto-compaction runs unattended; surfacing an approval prompt would
-      // hang the flow waiting on a user who may not be present. Flag is
-      // cleared by a timer since the SDK does not emit a PostCompact signal.
       (opts as any).hooks = {
         PreCompact: [
           {
             hooks: [
               async () => {
-                runtime.compactionInProgress = true;
-                if (runtime.compactionResetTimer) clearTimeout(runtime.compactionResetTimer);
-                runtime.compactionResetTimer = setTimeout(() => {
-                  runtime.compactionInProgress = false;
-                  runtime.compactionResetTimer = null;
-                }, 60_000);
                 return {
                   continue: true,
                   systemMessage: DEFAULT_FLUSH_PROMPT,
@@ -9640,171 +9911,9 @@ export function createAgentChatService(args: {
         ],
       };
 
-      // Handle MCP elicitation requests (form input or OAuth URL flows).
-      (opts as any).onElicitation = async (
-        elicitReq: { serverName: string; message: string; mode?: "form" | "url"; url?: string; elicitationId?: string; requestedSchema?: Record<string, unknown> },
-        _elicitOpts: { signal: AbortSignal },
-      ): Promise<{ action: "accept" | "decline" | "cancel"; content?: Record<string, string | number | boolean | string[]> }> => {
-        const approvalItemId = randomUUID();
-        const turnId = runtime.activeTurnId ?? undefined;
-
-        if (elicitReq.mode === "url" && elicitReq.url) {
-          // URL mode: open browser and wait for elicitation_complete stream event
-          try {
-            const parsed = new URL(elicitReq.url);
-            if (parsed.protocol === "https:" || parsed.protocol === "http:") {
-              require("electron").shell.openExternal(elicitReq.url);
-            } else {
-              logger.warn("agent_chat.blocked_open_external", { protocol: parsed.protocol });
-            }
-          } catch { /* best effort */ }
-
-          const request: PendingInputRequest = {
-            requestId: approvalItemId,
-            itemId: approvalItemId,
-            source: "claude",
-            kind: "question",
-            title: `Authentication: ${elicitReq.serverName}`,
-            description: `${elicitReq.message}\n\nA browser window has been opened for authentication. Click "Done" once you have completed the authentication flow.`,
-            questions: [{
-              id: "auth_action",
-              header: elicitReq.serverName,
-              question: elicitReq.message,
-              options: [
-                { label: "Done", value: "done", recommended: true },
-                { label: "Cancel", value: "cancel" },
-              ],
-              allowsFreeform: false,
-            }],
-            allowsFreeform: false,
-            blocking: true,
-            canProceedWithoutAnswer: false,
-            providerMetadata: { serverName: elicitReq.serverName, mode: "url", elicitationId: elicitReq.elicitationId },
-            turnId: turnId ?? null,
-          };
-
-          emitPendingInputRequest(managed, request, {
-            kind: "tool_call",
-            description: `MCP authentication: ${elicitReq.serverName}`,
-            detail: { serverName: elicitReq.serverName },
-          });
-
-          // Also register a resolver that the elicitation_complete stream event can trigger
-          if (elicitReq.elicitationId) {
-            const waitForComplete = new Promise<void>((resolve) => {
-              runtime.pendingElicitations.set(elicitReq.elicitationId!, resolve);
-            });
-            // Race: user clicks "Done" OR elicitation_complete arrives
-            let userResponse: { decision?: AgentChatApprovalDecision };
-            try {
-              runtime.pauseIdleWatchdog?.();
-              userResponse = await Promise.race([
-                new Promise<{ decision?: AgentChatApprovalDecision }>((resolve) => {
-                  runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-                }),
-                waitForComplete.then(() => ({ decision: "accept" as AgentChatApprovalDecision })),
-              ]);
-            } finally {
-              runtime.approvals.delete(approvalItemId);
-              runtime.pendingElicitations.delete(elicitReq.elicitationId);
-              runtime.resumeIdleWatchdog?.();
-            }
-            if (userResponse.decision === "cancel" || userResponse.decision === "decline") {
-              return { action: "cancel" };
-            }
-            return { action: "accept" };
-          }
-
-          // No elicitationId — just wait for user click
-          let elicitResponse: { decision?: AgentChatApprovalDecision };
-          try {
-            runtime.pauseIdleWatchdog?.();
-            elicitResponse = await new Promise<typeof elicitResponse>((resolve) => {
-              runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-            });
-          } finally {
-            runtime.approvals.delete(approvalItemId);
-            runtime.resumeIdleWatchdog?.();
-          }
-          return elicitResponse.decision === "cancel" || elicitResponse.decision === "decline"
-            ? { action: "cancel" }
-            : { action: "accept" };
-        }
-
-        // Form mode: map requestedSchema to structured questions
-        const questions: PendingInputRequest["questions"] = [];
-        const schema = elicitReq.requestedSchema ?? {};
-        const properties = (schema as any).properties as Record<string, { type?: string; description?: string; enum?: string[] }> | undefined;
-        if (properties) {
-          for (const [key, prop] of Object.entries(properties)) {
-            questions.push({
-              id: key,
-              header: key,
-              question: prop.description ?? key,
-              ...(prop.enum ? { options: prop.enum.map((v) => ({ label: v, value: v })) } : {}),
-              allowsFreeform: !prop.enum,
-              isSecret: key.toLowerCase().includes("password") || key.toLowerCase().includes("secret") || key.toLowerCase().includes("token"),
-            });
-          }
-        }
-        if (questions.length === 0) {
-          questions.push({
-            id: "input",
-            header: elicitReq.serverName,
-            question: elicitReq.message,
-            allowsFreeform: true,
-          });
-        }
-
-        const request: PendingInputRequest = {
-          requestId: approvalItemId,
-          itemId: approvalItemId,
-          source: "claude",
-          kind: "structured_question",
-          title: `Input requested: ${elicitReq.serverName}`,
-          description: elicitReq.message,
-          questions,
-          allowsFreeform: true,
-          blocking: true,
-          canProceedWithoutAnswer: false,
-          providerMetadata: { serverName: elicitReq.serverName, mode: "form" },
-          turnId: turnId ?? null,
-        };
-
-        emitPendingInputRequest(managed, request, {
-          kind: "tool_call",
-          description: `MCP input: ${elicitReq.serverName}`,
-          detail: { serverName: elicitReq.serverName },
-        });
-
-        let formResponse: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
-        try {
-          runtime.pauseIdleWatchdog?.();
-          formResponse = await new Promise<typeof formResponse>((resolve) => {
-            runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-          });
-        } finally {
-          runtime.approvals.delete(approvalItemId);
-          runtime.resumeIdleWatchdog?.();
-        }
-
-        if (formResponse.decision === "cancel" || formResponse.decision === "decline") {
-          return { action: "decline" };
-        }
-
-        // Map answers to the expected content shape
-        const content: Record<string, string | number | boolean | string[]> = {};
-        if (formResponse.answers) {
-          for (const [key, value] of Object.entries(formResponse.answers)) {
-            content[key] = value;
-          }
-        }
-        return { action: "accept", content };
-      };
-
-      // Enable MCP tool search for non-CTO sessions with many MCP tools.
-      // When enabled, the SDK defers tool definitions and loads them on-demand
-      // via the ToolSearch tool, keeping the context window lean.
+      // Enable provider tool search for non-CTO sessions with large tool catalogs.
+      // When enabled, the SDK defers tool definitions and loads them on demand
+      // via its ToolSearch capability, keeping the context window lean.
       // CTO sessions disable deferral so operator tools (spawnChat, gitCommit, etc.)
       // are always visible without needing ToolSearch.
       opts.env = {
@@ -9815,6 +9924,10 @@ export function createAgentChatService(args: {
     }
     const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
+    opts.executableArgs = buildClaudeV2ExecutableArgs({
+      supportsReasoning: claudeSupportsReasoning,
+      effort: managed.session.reasoningEffort,
+    });
     if (claudeSupportsReasoning) {
       const effort = managed.session.reasoningEffort;
       if (effort === "low" || effort === "medium" || effort === "high" || effort === "max") {
@@ -9822,16 +9935,16 @@ export function createAgentChatService(args: {
       }
       const tokens = effort ? CLAUDE_EFFORT_TO_TOKENS[effort] : undefined;
       if (tokens) {
-        opts.thinking = { type: "enabled", budgetTokens: tokens };
+        opts.thinking = { type: "enabled", budgetTokens: tokens, display: "summarized" } as any;
       } else {
         // Use adaptive thinking when no specific budget applies (e.g. "max",
         // "xhigh", or no effort set). The SDK defaults to adaptive for models
         // that support it, but being explicit ensures thinking is always active
         // for reasoning-capable models.
-        opts.thinking = { type: "adaptive" };
+        opts.thinking = { type: "adaptive", display: "summarized" } as any;
       }
     }
-    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? "claude-sonnet-4-6";
+    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? DEFAULT_CLAUDE_MODEL;
     return { ...opts, model };
   };
 
@@ -9943,7 +10056,8 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     commands: Array<string | { name?: string; description?: string; argumentHint?: string }>,
   ): void => {
-    runtime.slashCommands = commands
+    const existing = new Map(runtime.slashCommands.map((command) => [command.name, command]));
+    for (const command of commands
       .map((command) => {
         if (typeof command === "string") {
           const normalized = command.trim();
@@ -9961,7 +10075,13 @@ export function createAgentChatService(args: {
           argumentHint: typeof command.argumentHint === "string" ? command.argumentHint : undefined,
         };
       })
-      .filter((command): command is { name: string; description: string; argumentHint?: string } => Boolean(command));
+      .filter((command): command is { name: string; description: string; argumentHint?: string } => Boolean(command))) {
+      existing.set(command.name, {
+        ...existing.get(command.name),
+        ...command,
+      });
+    }
+    runtime.slashCommands = [...existing.values()].sort((a, b) => a.name.localeCompare(b.name));
   };
 
   const deliverNextQueuedSteer = async (
@@ -10115,12 +10235,6 @@ export function createAgentChatService(args: {
         } else {
           runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
         }
-        await attachClaudeV2McpServers(
-          managed,
-          runtime.v2Session,
-          v2Opts.mcpServers as Record<string, Record<string, unknown>> | undefined,
-        );
-
         if (runtime.v2WarmupCancelled) {
           try { runtime.v2Session?.close(); } catch { /* ignore */ }
           runtime.v2Session = null;
@@ -10198,12 +10312,10 @@ export function createAgentChatService(args: {
         try {
           diagClaudePath = runtime.v2Session ? undefined : buildClaudeV2SessionOpts(managed, runtime).pathToClaudeCodeExecutable;
         } catch { /* best-effort diagnostic */ }
-        const diagMcpLaunch = tryDiagnosticMcpLaunch(managed);
         logger.warn("agent_chat.claude_v2_prewarm_failed", {
           sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),
           claudeExecutablePath: diagClaudePath,
-          ...(diagMcpLaunch ? { adeMcpLaunch: diagMcpLaunch } : {}),
         });
         try { runtime.v2Session?.close(); } catch { /* ignore */ }
         runtime.v2Session = null;
@@ -10261,7 +10373,6 @@ export function createAgentChatService(args: {
       interruptEventsEmitted: false,
       turnMemoryPolicyState: null,
       approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
-      pendingElicitations: new Map<string, () => void>(),
       resolvedToolUseIds: new Set<string>(),
     };
     managed.runtime = runtime;
@@ -10277,7 +10388,7 @@ export function createAgentChatService(args: {
         laneId: "temporary",
         provider: "codex",
         model: DEFAULT_CODEX_MODEL,
-        capabilityMode: "full_mcp",
+        capabilityMode: "full_tooling",
         status: "idle",
         idleSinceAt: null,
         createdAt: nowIso(),
@@ -10376,13 +10487,15 @@ export function createAgentChatService(args: {
         .filter((entry): entry is AgentChatModelInfo => entry != null);
 
       if (models.length) {
+        const preferredIdx = models.findIndex((entry) => entry.id === DEFAULT_CODEX_MODEL);
+        if (preferredIdx >= 0) {
+          return models.map((entry, index) => ({
+            ...entry,
+            isDefault: index === preferredIdx,
+          }));
+        }
         if (!models.some((entry) => entry.isDefault)) {
-          const preferredIdx = models.findIndex((entry) => entry.id === DEFAULT_CODEX_MODEL);
-          if (preferredIdx >= 0) {
-            models[preferredIdx] = { ...models[preferredIdx]!, isDefault: true };
-          } else {
-            models[0] = { ...models[0]!, isDefault: true };
-          }
+          models[0] = { ...models[0]!, isDefault: true };
         }
         return models;
       }
@@ -10463,7 +10576,6 @@ export function createAgentChatService(args: {
     surface,
     automationId,
     automationRunId,
-    computerUse,
     requestedCwd,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
@@ -10488,9 +10600,9 @@ export function createAgentChatService(args: {
             ? DEFAULT_CURSOR_MODEL
             : "");
     // Resolve modelId from registry if provided
-    const resolvedModelId = modelId && getModelById(modelId)
-      ? modelId
-      : resolveModelIdFromStoredValue(normalizedInputModel, provider);
+    const requestedModelDescriptor = modelId ? getModelById(modelId) ?? resolveModelAlias(modelId) : undefined;
+    const resolvedModelId = requestedModelDescriptor?.id
+      ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
 
     if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
       throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
@@ -10500,7 +10612,7 @@ export function createAgentChatService(args: {
       throw new Error("Cursor chat requires a known model. Pick a Cursor model from the model list.");
     }
 
-    const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
+    const resolvedDescriptor = requestedModelDescriptor ?? (resolvedModelId ? getModelById(resolvedModelId) : undefined);
     if (resolvedModelId && !resolvedDescriptor) {
       throw new Error(`Unknown model '${resolvedModelId}'.`);
     }
@@ -10534,12 +10646,22 @@ export function createAgentChatService(args: {
         : undefined;
     const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
-    const computerUsePolicy = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
+    // Identity-pinned sessions (CTO + worker agents) are locked to full-auto.
+    // Discard the native provider permission overrides supplied by callers so
+    // they cannot smuggle `plan` / `ask` / read-only sandboxes past the lock
+    // via claudePermissionMode / codexApprovalPolicy / codexSandbox /
+    // opencodePermissionMode.
+    const identityPinned = isPrimaryPinnedIdentity(identityKey);
+    const effectiveInteractionMode = identityPinned ? undefined : requestedInteractionMode;
+    const effectiveClaudePermissionMode = identityPinned ? undefined : requestedClaudePermissionMode;
+    const effectiveCodexApprovalPolicy = identityPinned ? undefined : requestedCodexApprovalPolicy;
+    const effectiveCodexSandbox = identityPinned ? undefined : requestedCodexSandbox;
+    const effectiveCodexConfigSource = identityPinned ? undefined : requestedCodexConfigSource;
     let effectivePermissionMode = identityKey
-      ? normalizeIdentityPermissionMode(requestedPermMode, effectiveProvider)
+      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
       : requestedPermMode;
     const chatConfig = resolveChatConfig();
-    let requestedOpenCodePermissionMode = requestedOpenCodePermissionModeArg;
+    let requestedOpenCodePermissionMode = identityPinned ? undefined : requestedOpenCodePermissionModeArg;
     const localHarnessPermissions = applyLocalHarnessPermissionMode({
       descriptor: resolvedDescriptor,
       requestedPermissionMode: effectivePermissionMode,
@@ -10550,14 +10672,14 @@ export function createAgentChatService(args: {
 
     const nativePermissionFields = (() => {
       if (effectiveProvider === "claude") {
-        const interactionMode = requestedInteractionMode
-          ?? (requestedClaudePermissionMode === "plan" ? "plan" : undefined)
+        const interactionMode = effectiveInteractionMode
+          ?? (effectiveClaudePermissionMode === "plan" ? "plan" : undefined)
           ?? (effectivePermissionMode === "plan" ? "plan" : undefined)
           ?? (chatConfig.claudePermissionMode === "plan" ? "plan" : undefined)
           ?? "default";
-        const claudePermissionMode = requestedClaudePermissionMode
+        const claudePermissionMode = effectiveClaudePermissionMode
           ? resolveSessionClaudeAccessMode(
-              { claudePermissionMode: requestedClaudePermissionMode, permissionMode: undefined },
+              { claudePermissionMode: effectiveClaudePermissionMode, permissionMode: undefined },
               chatConfig.claudePermissionMode,
             )
           : resolveSessionClaudeAccessMode(
@@ -10567,17 +10689,17 @@ export function createAgentChatService(args: {
         return { interactionMode, claudePermissionMode };
       }
       if (effectiveProvider === "codex") {
-        const codexConfigSource = requestedCodexConfigSource
+        const codexConfigSource = effectiveCodexConfigSource
           ?? legacyPermissionModeToCodexConfigSource(effectivePermissionMode)
           ?? "flags";
         if (codexConfigSource === "config-toml") {
           return { codexConfigSource };
         }
         return {
-          codexApprovalPolicy: requestedCodexApprovalPolicy
+          codexApprovalPolicy: effectiveCodexApprovalPolicy
             ?? legacyPermissionModeToCodexApprovalPolicy(effectivePermissionMode)
             ?? chatConfig.codexApprovalPolicy,
-          codexSandbox: requestedCodexSandbox
+          codexSandbox: effectiveCodexSandbox
             ?? legacyPermissionModeToCodexSandbox(effectivePermissionMode)
             ?? chatConfig.codexSandboxMode,
           codexConfigSource,
@@ -10629,7 +10751,6 @@ export function createAgentChatService(args: {
         automationId: automationId?.trim() ? automationId.trim() : null,
         automationRunId: automationRunId?.trim() ? automationRunId.trim() : null,
         capabilityMode,
-        computerUse: computerUsePolicy,
         completion: null,
         status: "idle",
         idleSinceAt: null,
@@ -10777,7 +10898,6 @@ export function createAgentChatService(args: {
       opencodePermissionMode: managed.session.opencodePermissionMode,
       permissionMode: managed.session.permissionMode,
       surface: managed.session.surface,
-      computerUse: managed.session.computerUse,
     });
 
     const createdManaged = ensureManagedSession(created.id);
@@ -10819,10 +10939,12 @@ export function createAgentChatService(args: {
     reasoningEffort,
     executionMode,
     interactionMode,
-  }: AgentChatSendArgs): PreparedSendMessage | null => {
+    allowActiveSession = false,
+  }: AgentChatSendArgs & { allowActiveSession?: boolean }): PreparedSendMessage | null => {
     const trimmed = text.trim();
     if (!trimmed.length) return null;
-    const slashCommand = extractSlashCommand(trimmed);
+    const slashCommand = extractLeadingSlashCommand(trimmed);
+    const providerSlashCommand = isProviderSlashCommandInput(trimmed);
     const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
 
     const managed = ensureManagedSession(sessionId);
@@ -10875,7 +10997,7 @@ export function createAgentChatService(args: {
       refreshReconstructionContext(managed);
     }
 
-    if (managed.session.provider === "cursor" && managed.session.status === "active") {
+    if (managed.session.provider === "cursor" && managed.session.status === "active" && !allowActiveSession) {
       throw new Error("Turn is already active.");
     }
 
@@ -10892,8 +11014,37 @@ export function createAgentChatService(args: {
     }
     const laneDirectiveKey = executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
-    const promptText = isLiteralSlashCommand(trimmed)
-      ? trimmed
+    // Guidance injection is capability-based, not session-state-based:
+    // Claude sessions already receive ADE_CLI_AGENT_GUIDANCE in their
+    // persistent system prompt (see buildClaudeV2SessionOpts), so we skip the
+    // first-user-message copy there. Every other provider (Codex, OpenCode,
+    // Cursor…) has no persistent system prompt, so the guidance must be
+    // prepended even on resumed sessions where `shouldInjectLaneDirective` is
+    // false (review 3134504183 / 3134403060).
+    const providerHasPersistentGuidance = managed.session.provider === "claude";
+    const shouldInjectGuidance = !providerHasPersistentGuidance;
+    const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
+      ? new Set(managed.runtime.slashCommands.map((command) => command.name))
+      : new Set<string>();
+    const codexRuntimeSlashCommandNames = managed.runtime?.kind === "codex"
+      ? new Set((managed.runtime as { slashCommands?: Array<{ name: string }> }).slashCommands?.map((command) => command.name) ?? [])
+      : new Set<string>();
+    const expandedClaudeSlashCommand = providerSlashCommand
+      && managed.session.provider === "claude"
+      && slashCommand != null
+      && !CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
+      && !claudeRuntimeSlashCommandNames.has(slashCommand)
+      ? resolveClaudeSlashCommandInvocation(managed.laneWorktreePath, trimmed)
+      : null;
+    const expandedCodexSlashCommand = providerSlashCommand
+      && managed.session.provider === "codex"
+      && slashCommand != null
+      && !CODEX_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
+      && !codexRuntimeSlashCommandNames.has(slashCommand)
+      ? resolveCodexSlashCommandInvocation(managed.laneWorktreePath, trimmed)
+      : null;
+    const promptText = providerSlashCommand
+      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? trimmed
       : composeLaunchDirectives(trimmed, [
           shouldInjectLaneDirective
             ? buildLaneWorktreeDirective({
@@ -10903,8 +11054,8 @@ export function createAgentChatService(args: {
             : null,
           buildExecutionModeDirective(executionMode, managed.session.provider),
           buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
+          shouldInjectGuidance ? ADE_CLI_AGENT_GUIDANCE : null,
           buildComputerUseDirective(
-            managed.session.computerUse,
             computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
           ),
         ]);
@@ -10923,7 +11074,9 @@ export function createAgentChatService(args: {
       resolvedAttachments,
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
-      laneDirectiveKey: isLiteralSlashCommand(trimmed) ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
+      laneDirectiveKey: providerSlashCommand ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
+      providerSlashCommand,
+      forceClaudeUserMessage: managed.session.provider === "claude" && !providerSlashCommand && slashCommand != null,
     };
   };
 
@@ -11002,7 +11155,6 @@ export function createAgentChatService(args: {
       launch.mode ?? "default",
       launch.sandbox,
       launch.force ? "force" : "guarded",
-      launch.approveMcps ? "mcp-auto" : "mcp-ask",
     ].join(":");
   };
 
@@ -11247,7 +11399,7 @@ export function createAgentChatService(args: {
           configId: option.id,
           ...(typeof desiredValue === "boolean"
             ? { type: "boolean" as const, value: desiredValue }
-            : { value: desiredValue }),
+            : { value: typeof desiredValue === "number" ? String(desiredValue) : desiredValue }),
         });
         applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(response.configOptions));
       } catch (error) {
@@ -11276,11 +11428,10 @@ export function createAgentChatService(args: {
     if (!loadSession) return;
 
     try {
-      const loaded = await loadSession({
+      const loaded = await loadSession(cursorAcpSessionRequest({
         sessionId,
         cwd: managed.laneWorktreePath,
-        mcpServers: buildCursorAcpMcpServers(managed),
-      });
+      }) as Parameters<typeof loadSession>[0]);
       const loadedAvailableModelIds = loaded.models?.availableModels
         ?.map((entry) => String(entry?.modelId ?? "").trim())
         .filter(Boolean) ?? [];
@@ -11495,6 +11646,18 @@ export function createAgentChatService(args: {
         return { outcome: { outcome: "cancelled" } };
       }
       const cursorRt = owner.runtime;
+      // Auto-allow the ADE `ask_user` tool — the inline question card
+      // provides its own answer UI, and the permission prompt just hides it.
+      const rawInput = req.toolCall.rawInput as Record<string, unknown> | null | undefined;
+      const rawToolCandidate = rawInput?.name ?? rawInput?.tool ?? rawInput?.toolName;
+      const rawToolName = typeof rawToolCandidate === "string" ? rawToolCandidate : null;
+      const toolCallTitle = typeof req.toolCall.title === "string" ? req.toolCall.title : "";
+      if (isAutoAllowAskUserEnabled() && (isAskUserToolName(rawToolName) || isAskUserToolName(toolCallTitle))) {
+        const allow = req.options.find((option) => option.kind === "allow_once" || option.kind === "allow_always");
+        if (allow) {
+          return { outcome: { outcome: "selected", optionId: allow.optionId } };
+        }
+      }
       const itemId = randomUUID();
       return new Promise<RequestPermissionResponse>((outerResolve) => {
         cursorRt.permissionWaiters.set(itemId, {
@@ -11600,7 +11763,6 @@ export function createAgentChatService(args: {
         const resumed = await pooled.connection.unstable_resumeSession({
           sessionId: persistedAcp,
           cwd: managed.laneWorktreePath,
-          mcpServers: buildCursorAcpMcpServers(managed),
         });
         const resumedAvailableModelIds = resumed.models?.availableModels
           ?.map((entry) => String(entry?.modelId ?? "").trim())
@@ -11706,10 +11868,9 @@ export function createAgentChatService(args: {
 
       if (!runtime.acpSessionId) {
         if (!runtime.pooled) throw new Error("Cursor ACP connection not available");
-        const created = await runtime.pooled.connection.newSession({
+        const created = await runtime.pooled.connection.newSession(cursorAcpSessionRequest({
           cwd: managed.laneWorktreePath,
-          mcpServers: buildCursorAcpMcpServers(managed),
-        });
+        }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
         const createdAvailableModelIds = created.models?.availableModels
           ?.map((entry) => String(entry?.modelId ?? "").trim())
           .filter(Boolean) ?? [];
@@ -11878,6 +12039,8 @@ export function createAgentChatService(args: {
       resolvedAttachments,
       reasoningEffort,
       laneDirectiveKey,
+      providerSlashCommand,
+      forceClaudeUserMessage,
       onDispatched,
       turnId,
       optimisticCursorTurnStart,
@@ -11912,6 +12075,7 @@ export function createAgentChatService(args: {
         attachments,
         resolvedAttachments,
         laneDirectiveKey,
+        providerSlashCommand,
         onDispatched,
       });
       return;
@@ -11965,24 +12129,25 @@ export function createAgentChatService(args: {
 
       if (!runtime.threadResumed) {
         const threadIdToResume = managed.session.threadId || readPersistedState(sessionId)?.threadId;
-        const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
-        const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
+        const { codexPolicy } = resolveCodexThreadParams(managed);
 
         if (threadIdToResume) {
           try {
-            await runtime.request("thread/resume", {
+            const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
               threadId: threadIdToResume,
               model: managed.session.model,
-              ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
               cwd: managed.laneWorktreePath,
-              ...(mcpConfig ? { config: mcpConfig } : {}),
-              mcpServers,
-              mcp_servers: mcpServers,
               ...codexPolicyArgs(codexPolicy),
               persistExtendedHistory: true
             });
-            managed.session.threadId = threadIdToResume;
+            applyCodexEffectiveThreadState(managed, resumeResponse);
+            const resumedThreadId = typeof resumeResponse.thread?.id === "string"
+              ? resumeResponse.thread.id
+              : threadIdToResume;
+            managed.session.threadId = resumedThreadId;
+            sessionService.setResumeCommand(managed.session.id, `chat:codex:${resumedThreadId}`);
             runtime.threadResumed = true;
+            persistChatState(managed);
             // Fetch skills after resume if not already fetched
             if (runtime.slashCommands.length === 0) {
               runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
@@ -12012,10 +12177,10 @@ export function createAgentChatService(args: {
               threadId: threadIdToResume,
               error: resumeError instanceof Error ? resumeError.message : String(resumeError)
             });
-            await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
+            await startFreshCodexThread(managed, runtime, codexPolicy);
           }
         } else {
-          await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
+          await startFreshCodexThread(managed, runtime, codexPolicy);
         }
       }
 
@@ -12025,6 +12190,7 @@ export function createAgentChatService(args: {
         attachments,
         resolvedAttachments,
         laneDirectiveKey,
+        providerSlashCommand,
         onDispatched,
       });
       return;
@@ -12042,6 +12208,8 @@ export function createAgentChatService(args: {
       attachments,
       resolvedAttachments,
       laneDirectiveKey,
+      providerSlashCommand,
+      forceClaudeUserMessage,
       onDispatched,
     });
   };
@@ -12083,6 +12251,11 @@ export function createAgentChatService(args: {
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
       captureTurnBeforeSha(prepared.managed);
+      emitChatEvent(prepared.managed, {
+        type: "activity",
+        ...initialTurnActivity(prepared.managed.session),
+        turnId,
+      });
       setSessionActive(prepared.managed);
       persistChatState(prepared.managed);
       // NOTE: onDispatched is NOT called here. It will be called inside
@@ -12121,22 +12294,36 @@ export function createAgentChatService(args: {
     }
 
     const managed = ensureManagedSession(sessionId);
-    if (attachments.length && managed.session.provider !== "claude" && managed.session.provider !== "codex") {
-      throw new Error("Attachments are only supported for Claude and Codex follow-up messages right now.");
-    }
 
     // OpenCode runtime steer
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
       if (runtime.busy) {
-        enqueueSteerOrDrop(managed, runtime, sessionId, steerId, trimmed);
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: trimmed,
+          attachments,
+        });
+        if (!preparedSteer) {
+          return { steerId, queued: false };
+        }
+        enqueueSteerOrDrop(
+          managed,
+          runtime,
+          sessionId,
+          steerId,
+          preparedSteer.visibleText,
+          preparedSteer.attachments,
+          preparedSteer.resolvedAttachments,
+        );
         return { steerId, queued: true };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
         text: trimmed,
         displayText: trimmed,
-        attachments: [],
+        attachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -12148,6 +12335,16 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "cursor") {
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
         const rt = managed.runtime;
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: trimmed,
+          attachments,
+          allowActiveSession: true,
+        });
+        if (!preparedSteer) {
+          return { steerId, queued: false };
+        }
         if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
           logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
           emitChatEvent(managed, {
@@ -12158,10 +12355,16 @@ export function createAgentChatService(args: {
           });
           return { steerId, queued: false };
         }
-        rt.pendingSteers.push({ steerId, text: trimmed, attachments: [], resolvedAttachments: [] });
+        rt.pendingSteers.push({
+          steerId,
+          text: preparedSteer.visibleText,
+          attachments: preparedSteer.attachments,
+          resolvedAttachments: preparedSteer.resolvedAttachments,
+        });
         emitChatEvent(managed, {
           type: "user_message",
-          text: trimmed,
+          text: preparedSteer.visibleText,
+          ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -12180,7 +12383,7 @@ export function createAgentChatService(args: {
         sessionId,
         text: trimmed,
         displayText: trimmed,
-        attachments: [],
+        attachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -12389,7 +12592,7 @@ export function createAgentChatService(args: {
       warmupInFlight: Boolean(runtime.v2WarmupDone),
     });
     // Set interrupted before touching the runtime so the streaming loop can
-    // break cleanly without tearing the session down.
+    // break cleanly while the underlying SDK stream is aborted below.
     runtime.interrupted = true;
     const interruptedTurnId = runtime.activeTurnId;
     if (runtime.busy && interruptedTurnId) {
@@ -12404,13 +12607,19 @@ export function createAgentChatService(args: {
       });
     }
     cancelClaudeWarmup(managed, runtime, "interrupt");
+    const interruptedSession = runtime.v2Session;
+    if (interruptedSession) {
+      runtime.sdkSessionId = runtime.sdkSessionId ?? interruptedSession.sessionId ?? null;
+      try { interruptedSession.close(); } catch { /* ignore */ }
+      runtime.v2Session = null;
+      runtime.v2WarmupDone = null;
+    }
     cancelQueuedSteers(managed, runtime, "interrupted");
     // Drain pending approvals so their promises settle instead of hanging forever
     for (const pending of runtime.approvals.values()) {
       pending.resolve({ decision: "cancel" });
     }
     runtime.approvals.clear();
-    runtime.pendingElicitations.clear();
 
     // Emit subagent_result "stopped" for every active subagent so the UI
     // properly transitions them from "running" → "stopped" (matching Claude Code CLI behaviour).
@@ -12435,7 +12644,21 @@ export function createAgentChatService(args: {
   };
 
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
-    const managed = ensureManagedSession(sessionId);
+    let managed = ensureManagedSession(sessionId);
+
+    // Identity-pinned sessions (CTO + worker agents) must always run on the
+    // canonical primary lane. If a persisted row points at a foreign lane
+    // (e.g. pre-pinning session, or the previous primary was archived),
+    // migrate it to the canonical lane before we spin up a runtime.
+    if (isPrimaryPinnedIdentity(managed.session.identityKey) && managed.session.laneId) {
+      const canonicalLaneId = await resolvePrimaryIdentityLane();
+      if (canonicalLaneId && managed.session.laneId !== canonicalLaneId) {
+        sessionService.updateMeta({ sessionId, laneId: canonicalLaneId });
+        managedSessions.delete(sessionId);
+        managed = ensureManagedSession(sessionId);
+      }
+    }
+
     refreshManagedLaneLaunchContext(managed, { purpose: "resume this chat" });
     const persisted = readPersistedState(sessionId);
     managed.session.capabilityMode = managed.session.capabilityMode ?? inferCapabilityMode(managed.session.provider);
@@ -12448,23 +12671,23 @@ export function createAgentChatService(args: {
       }
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
-        const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
-        const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
+        const { codexPolicy } = resolveCodexThreadParams(managed);
         try {
-          await runtime.request("thread/resume", {
+          const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
             threadId,
             model: managed.session.model,
-            ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
-            ...(mcpConfig ? { config: mcpConfig } : {}),
-            mcpServers,
-            mcp_servers: mcpServers,
             ...codexPolicyArgs(codexPolicy),
             persistExtendedHistory: true
           });
-          managed.session.threadId = threadId;
+          applyCodexEffectiveThreadState(managed, resumeResponse);
+          const resumedThreadId = typeof resumeResponse.thread?.id === "string"
+            ? resumeResponse.thread.id
+            : threadId;
+          managed.session.threadId = resumedThreadId;
           runtime.threadResumed = true;
-          sessionService.setResumeCommand(sessionId, `chat:codex:${threadId}`);
+          sessionService.setResumeCommand(sessionId, `chat:codex:${resumedThreadId}`);
+          persistChatState(managed);
           // Fetch skills after resume if not already fetched
           if (runtime.slashCommands.length === 0) {
             runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
@@ -12494,12 +12717,9 @@ export function createAgentChatService(args: {
             threadId,
             error: resumeError instanceof Error ? resumeError.message : String(resumeError)
           });
-          await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
+          await startFreshCodexThread(managed, runtime, codexPolicy);
         }
       }
-      // Re-sync codex approval policy from persisted/config settings
-      managed.session.codexApprovalPolicy = persisted?.codexApprovalPolicy ?? managed.session.codexApprovalPolicy;
-      managed.session.codexSandbox = persisted?.codexSandbox ?? managed.session.codexSandbox;
       managed.session.codexConfigSource = persisted?.codexConfigSource ?? managed.session.codexConfigSource;
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     } else if (managed.session.provider === "cursor") {
@@ -12623,6 +12843,9 @@ export function createAgentChatService(args: {
       ...(liveSession?.cursorModeId !== undefined || persisted?.cursorModeId !== undefined
         ? { cursorModeId: liveSession?.cursorModeId ?? persisted?.cursorModeId ?? null }
         : {}),
+      ...(liveSession?.cursorConfigValues || persisted?.cursorConfigValues
+        ? { cursorConfigValues: liveSession?.cursorConfigValues ?? persisted?.cursorConfigValues }
+        : {}),
       ...(liveSession?.permissionMode || persisted?.permissionMode
         ? { permissionMode: liveSession?.permissionMode ?? persisted?.permissionMode }
         : {}),
@@ -12633,7 +12856,6 @@ export function createAgentChatService(args: {
       automationId: liveSession?.automationId ?? persisted?.automationId ?? null,
       automationRunId: liveSession?.automationRunId ?? persisted?.automationRunId ?? null,
       capabilityMode: liveSession?.capabilityMode ?? persisted?.capabilityMode ?? inferCapabilityMode(provider),
-      computerUse: liveSession?.computerUse ?? normalizePersistedComputerUse(persisted?.computerUse),
       completion: liveSession?.completion ?? persisted?.completion ?? null,
       status: liveSession?.status ?? (row.status === "running" ? "idle" : "ended"),
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
@@ -12641,12 +12863,16 @@ export function createAgentChatService(args: {
         : null,
       startedAt: row.startedAt,
       endedAt: row.endedAt,
+      archivedAt: row.archivedAt ?? null,
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? null,
-      ...(hasLivePendingInput(liveManaged) ? { awaitingInput: true } : {}),
+      ...((hasLivePendingInput(liveManaged) || persisted?.awaitingInput === true) ? { awaitingInput: true } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
+        : {}),
+      ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
+        ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
         : {})
     } satisfies AgentChatSessionSummary;
   };
@@ -12688,7 +12914,11 @@ export function createAgentChatService(args: {
     }
 
     const canonicalLaneId = await resolvePrimaryIdentityLane();
-    const selectedExecutionLaneId = requestedLaneId || null;
+    const selectedExecutionLaneId = resolveIdentityExecutionLane(
+      args.identityKey,
+      requestedLaneId,
+      canonicalLaneId,
+    );
     const existing = await listSessions(undefined, { includeIdentity: true });
     const identitySessions = existing
       .filter((entry) => entry.identityKey === args.identityKey)
@@ -12700,6 +12930,11 @@ export function createAgentChatService(args: {
 
     const preferred = canonicalExisting;
     if (preferred) {
+      // `canonicalExisting` is already filtered to `entry.laneId === canonicalLaneId`,
+      // so `preferred` is guaranteed to be on the canonical lane here — no
+      // migration guard needed. Foreign-lane legacy sessions are left untouched
+      // (see the `does not reuse a foreign-lane identity session` test); a
+      // fresh canonical session will be created below when none is found.
       const managed = ensureManagedSession(preferred.sessionId);
       managed.session.identityKey = args.identityKey;
       managed.session.capabilityMode = inferCapabilityMode(managed.session.provider);
@@ -12707,6 +12942,7 @@ export function createAgentChatService(args: {
         managed.session.reasoningEffort = normalizeReasoningEffort(args.reasoningEffort);
       }
       managed.session.permissionMode = normalizeIdentityPermissionMode(
+        args.identityKey,
         args.permissionMode ?? managed.session.permissionMode,
         managed.session.provider,
       );
@@ -12774,7 +13010,7 @@ export function createAgentChatService(args: {
       model: preferredModel,
       ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
       reasoningEffort: args.reasoningEffort ?? pref?.reasoningEffort ?? null,
-      permissionMode: args.permissionMode ?? "plan",
+      ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
       identityKey: args.identityKey
     });
 
@@ -12883,19 +13119,11 @@ export function createAgentChatService(args: {
       }
       if (pending.kind === "structured_question") {
         if (resolvedDecision === "decline" || resolvedDecision === "cancel") {
-          if (pending.questionResponseKind === "mcp_elicitation") {
-            ensureWritable();
-            runtime.sendResponse(pending.requestId, {
-              action: resolvedDecision === "cancel" ? "cancel" : "decline",
-              content: null,
-            });
-          } else {
-            // Native Codex request_user_input only accepts an answers map.
-            // Empty answers represent a declined/cancelled prompt without
-            // interrupting the surrounding turn.
-            ensureWritable();
-            runtime.sendResponse(pending.requestId, { answers: {} });
-          }
+          // Native Codex request_user_input only accepts an answers map.
+          // Empty answers represent a declined/cancelled prompt without
+          // interrupting the surrounding turn.
+          ensureWritable();
+          runtime.sendResponse(pending.requestId, { answers: {} });
           runtime.approvals.delete(itemId);
           emitPendingInputResolved(managed, {
             itemId,
@@ -12906,18 +13134,11 @@ export function createAgentChatService(args: {
         }
         const normalizedAnswers = normalizePendingInputAnswers(pending.request, answers, responseText);
         ensureWritable();
-        if (pending.questionResponseKind === "mcp_elicitation") {
-          runtime.sendResponse(pending.requestId, {
-            action: "accept",
-            content: coerceCodexMcpElicitationContent(pending.request, normalizedAnswers),
-          });
-        } else {
-          runtime.sendResponse(pending.requestId, {
-            answers: Object.fromEntries(
-              Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
-            ),
-          });
-        }
+        runtime.sendResponse(pending.requestId, {
+          answers: Object.fromEntries(
+            Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
+          ),
+        });
         runtime.approvals.delete(itemId);
         emitPendingInputResolved(managed, {
           itemId,
@@ -13050,9 +13271,13 @@ export function createAgentChatService(args: {
     });
   };
 
-  const availableModelsRequests = new Map<AgentChatProvider, Promise<AgentChatModelInfo[]>>();
+  const availableModelsRequests = new Map<string, Promise<AgentChatModelInfo[]>>();
 
-  const loadAvailableModels = async (provider: AgentChatProvider): Promise<AgentChatModelInfo[]> => {
+  const loadAvailableModels = async (args: {
+    provider: AgentChatProvider;
+    activateRuntime?: boolean;
+  }): Promise<AgentChatModelInfo[]> => {
+    const provider = args.provider;
     if (provider === "codex") {
       return listCodexModelsFromAppServer();
     }
@@ -13082,12 +13307,37 @@ export function createAgentChatService(args: {
 
     if (provider === "opencode") {
       try {
-        const { modelIds, error } = await probeOpenCodeProviderInventory({
-          projectRoot,
-          projectConfig: projectConfigService.get().effective,
-          logger,
-          force: false,
-        });
+        const effectiveConfig = projectConfigService.get().effective;
+        let modelIds: string[];
+        let error: string | null;
+        if (args.activateRuntime) {
+          const inventory = await probeOpenCodeProviderInventory({
+            projectRoot,
+            projectConfig: effectiveConfig,
+            logger,
+            force: false,
+          });
+          modelIds = inventory.modelIds;
+          error = inventory.error;
+        } else {
+          const peeked = peekOpenCodeInventoryCache({
+            projectRoot,
+            projectConfig: effectiveConfig,
+          });
+          if (peeked) {
+            modelIds = peeked.modelIds;
+            error = peeked.error;
+          } else {
+            const inventory = await probeOpenCodeProviderInventory({
+              projectRoot,
+              projectConfig: effectiveConfig,
+              logger,
+              force: false,
+            });
+            modelIds = inventory.modelIds;
+            error = inventory.error;
+          }
+        }
         if (error) {
           logger.warn("agent_chat.opencode_inventory_empty", { error });
         }
@@ -13150,19 +13400,26 @@ export function createAgentChatService(args: {
     return [];
   };
 
-  const getAvailableModels = async ({ provider }: { provider: AgentChatProvider }): Promise<AgentChatModelInfo[]> => {
-    const existingRequest = availableModelsRequests.get(provider);
+  const getAvailableModels = async ({
+    provider,
+    activateRuntime,
+  }: {
+    provider: AgentChatProvider;
+    activateRuntime?: boolean;
+  }): Promise<AgentChatModelInfo[]> => {
+    const requestKey = `${provider}:${activateRuntime === true ? "active" : "passive"}`;
+    const existingRequest = availableModelsRequests.get(requestKey);
     if (existingRequest) {
       return existingRequest;
     }
 
-    const request = loadAvailableModels(provider);
-    availableModelsRequests.set(provider, request);
+    const request = loadAvailableModels({ provider, activateRuntime });
+    availableModelsRequests.set(requestKey, request);
     try {
       return await request;
     } finally {
-      if (availableModelsRequests.get(provider) === request) {
-        availableModelsRequests.delete(provider);
+      if (availableModelsRequests.get(requestKey) === request) {
+        availableModelsRequests.delete(requestKey);
       }
     }
   };
@@ -13255,14 +13512,7 @@ export function createAgentChatService(args: {
     const current = sessionService.get(trimmedSessionId);
     if (!current) return;
 
-    const activeCollector = sessionTurnCollectors.get(trimmedSessionId);
-    if (activeCollector) {
-      if (activeCollector.timeout) {
-        clearTimeout(activeCollector.timeout);
-      }
-      sessionTurnCollectors.delete(trimmedSessionId);
-      activeCollector.reject(new Error(`Chat session '${trimmedSessionId}' was deleted.`));
-    }
+    rejectActiveSessionTurnCollector(trimmedSessionId, `Chat session '${trimmedSessionId}' was deleted.`);
 
     const managed = managedSessions.get(trimmedSessionId);
     if (managed) {
@@ -13283,6 +13533,7 @@ export function createAgentChatService(args: {
     } else {
       clearSubagentSnapshots(trimmedSessionId);
     }
+    eventHistoryBySession.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
@@ -13298,6 +13549,24 @@ export function createAgentChatService(args: {
     sessionService.deleteSession(trimmedSessionId);
   };
 
+  const archiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
+    const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!trimmedSessionId.length) throw new Error("Chat session id is required.");
+    const existing = sessionService.get(trimmedSessionId);
+    if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
+    if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
+    sessionService.archiveSession(trimmedSessionId);
+  };
+
+  const unarchiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
+    const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!trimmedSessionId.length) throw new Error("Chat session id is required.");
+    const existing = sessionService.get(trimmedSessionId);
+    if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
+    if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
+    sessionService.unarchiveSession(trimmedSessionId);
+  };
+
   const disposeAll = async (): Promise<void> => {
     clearInterval(sessionCleanupTimer);
     for (const sessionId of [...managedSessions.keys()]) {
@@ -13309,6 +13578,32 @@ export function createAgentChatService(args: {
     }
   };
 
+  const forceDisposeAll = (): void => {
+    clearInterval(sessionCleanupTimer);
+    for (const sessionId of [...sessionTurnCollectors.keys()]) {
+      rejectActiveSessionTurnCollector(sessionId, `Chat session '${sessionId}' was closed during shutdown.`);
+    }
+    for (const [sessionId, managed] of managedSessions) {
+      try {
+        clearSubagentSnapshots(sessionId);
+        for (const pending of managed.localPendingInputs.values()) {
+          pending.resolve({ decision: "cancel" });
+        }
+        managed.localPendingInputs.clear();
+        managed.closed = true;
+        managed.endedNotified = true;
+        managed.ctoSessionStartedAt = null;
+        // teardownRuntime must run before `deleted = true` so its persistChatState()
+        // call can write the preserved Claude resume metadata for "shutdown".
+        teardownRuntime(managed, "shutdown");
+        managed.deleted = true;
+      } catch {
+        // ignore emergency shutdown failures
+      }
+    }
+    managedSessions.clear();
+  };
+
   // --- Session inactivity cleanup ---
   const sessionCleanupTimer = setInterval(() => {
     const now = Date.now();
@@ -13318,7 +13613,7 @@ export function createAgentChatService(args: {
         && !managed.closed
         && managed.session.status === "idle"
         && !hasLivePendingInput(managed)
-        && now - managed.lastActivityTimestamp > SESSION_INACTIVITY_TIMEOUT_MS
+        && now - managed.lastActivityTimestamp > getSessionInactivityTimeoutMs(managed)
       ) {
         teardownRuntime(managed, "idle_ttl");
       }
@@ -13361,16 +13656,15 @@ export function createAgentChatService(args: {
     cursorModeId,
     cursorConfigValues,
     permissionMode,
-    computerUse,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const managed = ensureManagedSession(sessionId);
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
+    const identityPinned = isPrimaryPinnedIdentity(managed.session.identityKey);
     const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
     const prevCodexConfigSource = managed.session.codexConfigSource;
-    let resetRuntimeForComputerUse = false;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -13433,6 +13727,7 @@ export function createAgentChatService(args: {
 
       if (isIdentitySession) {
         managed.session.permissionMode = normalizeIdentityPermissionMode(
+          managed.session.identityKey,
           managed.session.permissionMode,
           nextProvider,
         );
@@ -13488,16 +13783,20 @@ export function createAgentChatService(args: {
 
     if (permissionMode !== undefined) {
       managed.session.permissionMode = isIdentitySession
-        ? normalizeIdentityPermissionMode(permissionMode, managed.session.provider)
+        ? normalizeIdentityPermissionMode(managed.session.identityKey, permissionMode, managed.session.provider)
         : permissionMode;
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
     }
 
-    if (interactionMode !== undefined) {
+    // Identity-pinned sessions (CTO + worker agents) are locked to full-auto.
+    // Ignore incoming native permission overrides — applyLegacyPermissionMode-
+    // ToNativeControls() has already derived the correct native fields from
+    // full-auto, and we must not let callers layer a stricter mode on top.
+    if (interactionMode !== undefined && !identityPinned) {
       managed.session.interactionMode = interactionMode;
     }
 
-    if (claudePermissionMode !== undefined) {
+    if (claudePermissionMode !== undefined && !identityPinned) {
       if (claudePermissionMode === "plan") {
         managed.session.interactionMode = "plan";
       } else {
@@ -13505,19 +13804,19 @@ export function createAgentChatService(args: {
       }
     }
 
-    if (codexApprovalPolicy !== undefined) {
+    if (codexApprovalPolicy !== undefined && !identityPinned) {
       managed.session.codexApprovalPolicy = codexApprovalPolicy;
     }
 
-    if (codexSandbox !== undefined) {
+    if (codexSandbox !== undefined && !identityPinned) {
       managed.session.codexSandbox = codexSandbox;
     }
 
-    if (codexConfigSource !== undefined) {
+    if (codexConfigSource !== undefined && !identityPinned) {
       managed.session.codexConfigSource = codexConfigSource;
     }
 
-    if (opencodePermissionMode !== undefined) {
+    if (opencodePermissionMode !== undefined && !identityPinned) {
       managed.session.opencodePermissionMode = opencodePermissionMode;
     }
 
@@ -13594,25 +13893,6 @@ export function createAgentChatService(args: {
       }
     }
 
-    if (computerUse !== undefined) {
-      const nextComputerUse = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
-      const prevComputerUse = managed.session.computerUse;
-      managed.session.computerUse = nextComputerUse;
-      const nextSessionProfile = "workflow" as const;
-      if (managed.session.sessionProfile !== nextSessionProfile) {
-        managed.session.sessionProfile = nextSessionProfile;
-        resetRuntimeForComputerUse = true;
-      }
-      if (JSON.stringify(prevComputerUse) !== JSON.stringify(nextComputerUse)) {
-        resetRuntimeForComputerUse = true;
-      }
-    }
-
-    if (resetRuntimeForComputerUse && managed.runtime) {
-      teardownRuntime(managed, "model_switch");
-      refreshReconstructionContext(managed);
-    }
-
     if (title !== undefined) {
       const normalizedTitle = String(title ?? "").trim();
       const hasExplicitTitle = normalizedTitle.length > 0;
@@ -13672,10 +13952,9 @@ export function createAgentChatService(args: {
       const runtime = await ensureCursorRuntime(managed);
       if (!runtime.pooled) return;
       if (!runtime.acpSessionId) {
-        const created = await runtime.pooled.connection.newSession({
+        const created = await runtime.pooled.connection.newSession(cursorAcpSessionRequest({
           cwd: managed.laneWorktreePath,
-          mcpServers: buildCursorAcpMcpServers(managed),
-        });
+        }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
         const createdAvailableModelIds = created.models?.availableModels
           ?.map((entry) => String(entry?.modelId ?? "").trim())
           .filter(Boolean) ?? [];
@@ -13733,47 +14012,53 @@ export function createAgentChatService(args: {
     if (!managed) return [];
     const provider = managed.session.provider;
 
-    // Local commands available to all providers
-    const localCommands: AgentChatSlashCommand[] = [
-      { name: "/clear", description: "Clear chat history", source: "local" },
-    ];
-    if (provider === "claude") {
-      localCommands.push({
-        name: "/login",
-        description: "Sign in to Claude Code for this chat runtime",
-        source: "local",
-      });
-    }
+    const localCommands: AgentChatSlashCommand[] = provider === "claude" || provider === "codex"
+      ? []
+      : [{ name: "/clear", description: "Clear chat history", source: "local" }];
 
-    // Claude SDK commands
-    if (provider === "claude" && managed.runtime?.kind === "claude") {
-      const rt = managed.runtime;
-      const sdkCmds: AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+    const mergeSlashCommands = (groups: AgentChatSlashCommand[][]): AgentChatSlashCommand[] => {
+      const merged = new Map<string, AgentChatSlashCommand>();
+      for (const group of groups) {
+        for (const command of group) {
+          merged.set(command.name, command);
+        }
+      }
+      return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+    };
+
+    // Claude SDK commands plus filesystem-backed Claude Code commands/skills.
+    if (provider === "claude") {
+      const runtimeCommands: AgentChatSlashCommand[] = (managed.runtime?.kind === "claude" ? managed.runtime.slashCommands : []).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
-      // Merge: SDK commands first, then local commands that don't conflict
-      const sdkNames = new Set(sdkCmds.map((c: AgentChatSlashCommand) => c.name));
-      return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
+      const projectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+        name: cmd.name,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        source: "sdk" as const,
+      }));
+      return mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]);
     }
 
     // Codex SDK commands
-    if (provider === "codex" && managed.runtime?.kind === "codex") {
-      const rt = managed.runtime;
-      const sdkCmds: AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+    if (provider === "codex") {
+      const rt = managed.runtime?.kind === "codex" ? managed.runtime : null;
+      const dynamicCommands: AgentChatSlashCommand[] = (rt?.slashCommands ?? []).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
-      // Add /review as a built-in Codex command if not already in skills
-      if (!sdkCmds.some((c) => c.name === "/review")) {
-        sdkCmds.push({ name: "/review", description: "Review uncommitted changes", source: "sdk" as const });
-      }
-      const sdkNames = new Set(sdkCmds.map((c: AgentChatSlashCommand) => c.name));
-      return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
+      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(managed.laneWorktreePath).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+        name: cmd.name,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        source: "sdk" as const,
+      }));
+      return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
     // OpenCode / Cursor — only local commands
@@ -13905,7 +14190,7 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Create a blocking pending-input request for a chat session (used by MCP ask_user
+   * Create a blocking pending-input request for a chat session (used by ADE ask_user
    * when no missionId is available).  Returns the user's answer.
    */
   const requestChatInput = async (args: {
@@ -14073,6 +14358,7 @@ export function createAgentChatService(args: {
 
   return {
     createSession,
+    suggestLaneNameFromPrompt,
     handoffSession,
     sendMessage,
     runSessionTurn,
@@ -14084,6 +14370,7 @@ export function createAgentChatService(args: {
     listSessions,
     getSessionSummary,
     getChatTranscript,
+    getChatEventHistory,
     ensureIdentitySession,
     approveToolUse,
     respondToInput,
@@ -14093,12 +14380,21 @@ export function createAgentChatService(args: {
     codexFuzzyFileSearch,
     dispose,
     deleteSession,
+    archiveSession,
+    unarchiveSession,
     disposeAll,
+    forceDisposeAll,
     updateSession,
     warmupModel,
     listSubagents,
     getSessionCapabilities,
     previewSessionToolNames,
+    subscribeToEvents(callback: (event: AgentChatEventEnvelope) => void) {
+      eventSubscribers.add(callback);
+      return () => {
+        eventSubscribers.delete(callback);
+      };
+    },
     /** Clean up temp attachment files older than 7 days. Call on app startup. */
     cleanupStaleAttachments() {
       try {
@@ -14126,7 +14422,6 @@ export function createAgentChatService(args: {
     },
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {
       computerUseArtifactBrokerRef = svc;
-      proofObserver = createProofObserver({ broker: svc });
     },
   };
 }

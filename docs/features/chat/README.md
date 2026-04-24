@@ -11,16 +11,21 @@ machinery layered on top.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff. Large orchestrator file. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, and prompt-derived lane-name suggestions for parallel launch. Large orchestrator file. |
 | `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds the message payload the Claude Agent SDK V2 session consumes. Handles base64 image content blocks and MIME inference. |
+| `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers per-project (`.claude/commands/**`) and per-user (`~/.claude/commands/**`) slash commands, including `.md` command files and `.skill` user-invocable skills, parsing YAML frontmatter for description and argument hints. Consumed by `agentChatService` to enrich the `chat.slashCommands` response so the composer's picker lists local Claude commands alongside SDK-provided ones. |
 | `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming assistant text fragments (100 ms) before emission to reduce renderer re-renders. |
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
 | `apps/desktop/src/shared/chatTranscript.ts` | Pure JSON-lines parser for `AgentChatEventEnvelope` values. Used by both the main process and the renderer. |
-| `apps/desktop/src/shared/types/chat.ts` | All chat types: `AgentChatSession`, `AgentChatEvent` union, permission modes, pending input, completion reports. |
-| `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Top-level renderer surface: state derivation, IPC wiring, composer mount, message-list mount, End/Delete chat controls in the header. Mounts `AgentQuestionModal` when the active pending input is a question/structured-question. |
+| `apps/desktop/src/shared/types/chat.ts` | All chat types: `AgentChatSession`, `AgentChatEvent` union, permission modes, pending input, completion reports, `PARALLEL_CHAT_MAX_ATTACHMENTS`, and parallel launch state DTOs. |
+| `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Top-level renderer surface: state derivation, IPC wiring, composer mount, message-list mount, End/Delete chat controls in the header, parallel multi-model lane launch orchestration, transient-lane cleanup, and multi-lane deep-link navigation. Mounts `AgentQuestionModal` when the active pending input is a question/structured-question. Resolves the surface accent colour through `providerChatAccent(provider)` so Claude/Codex/Cursor stay visually consistent regardless of model variant. |
+| `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Composer UI: single-session prompt entry, attachments, model/permission controls, slash commands, pending input answering, and parallel launch slot configuration. |
+| `apps/desktop/src/renderer/components/chat/ChatSurfaceShell.tsx` | Shell that wraps every chat surface (desktop pane, mobile lane, CTO mission) with a unified header/footer slot and `--chat-accent` CSS variable. Supports a `layoutVariant="mobile"` mode that the iOS companion mirrors. |
+| `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Chat chrome tokens. Exports `PROVIDER_CHAT_ACCENTS` (claude → amber, codex → warm white, cursor → violet, opencode → blue, etc.) and `providerChatAccent(provider)`. iOS mirrors this table in `ADEDesignSystem.swift`. |
 | `apps/desktop/src/renderer/components/chat/AgentQuestionModal.tsx` | Floating modal surface for question / structured-question pending inputs. Rendered above the transcript so the user can type or pick an option without losing the chat context. |
 | `apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts` | Two-layer event-to-row pipeline (render events + grouped envelopes) that powers the message list. |
 | `apps/desktop/src/main/services/ai/tools/` | Tool tiers consumed by the service when it provisions a Claude/Codex/OpenCode runtime (see [Tool System](tool-system.md)). |
+| `apps/desktop/src/main/services/ipc/registerIpc.ts` | Validates chat IPC args, exposes `agentChat.*` handlers, and persists/retrieves parallel launch recovery state in `kv`. |
 | `apps/desktop/src/shared/ipc.ts` | `ade.agentChat.*` IPC channel constants. |
 
 ## Key concepts
@@ -45,6 +50,11 @@ machinery layered on top.
   `"agent:<id>"`) are filtered out of the Work tab list and rendered by
   dedicated surfaces (CTO tab, worker detail). See [Agent Routing and
   Identity](agent-routing.md).
+- **Parallel multi-model launch.** From an empty embedded Work composer,
+  the user can enable parallel mode, select two or more model/control
+  slots, and send one prompt. ADE creates child lanes, starts one chat
+  in each lane, sends the same prompt and attachments to every session,
+  then opens the Lanes view focused on the new lane set.
 
 See the detail docs for the specifics:
 
@@ -77,6 +87,57 @@ See the detail docs for the specifics:
    buffered text, and pulls the next queued steer.
 6. `dispose({ sessionId })` ends the runtime and persists the final state.
 
+Parallel launch is a renderer-orchestrated workflow layered on the same
+session primitives:
+
+1. `AgentChatPane` asks `ade.agentChat.suggestLaneName` for a slug base
+   derived from the user's prompt. The service uses a lightweight
+   OpenCode text call when an eligible model is available and falls back
+   to a deterministic first-four-words slug (`parallel-task` for empty
+   prompts).
+2. The pane creates one child lane per selected model slot using a
+   unique `<base>-<model-family>` style name and persists progress under
+   `agent-chat-parallel-launch:<projectRoot>:<parentLaneId>` in `kv`.
+3. For each child lane it creates an `AgentChatSession`, sends the same
+   prompt and attachments, and records `sentLaneIds` after each
+   successful dispatch.
+4. When all sends succeed, the persisted state is cleared and the app
+   navigates to `/lanes?laneIds=<ids>&inspectorTab=work`, which opens
+   the new lanes side-by-side with the Work pane emphasized.
+5. If lane creation or send fails, unsent transient child lanes are
+   cleaned up best-effort. On reload, unfinished persisted launch state
+   is recovered and cleaned up before the user can start another launch.
+
+Inactivity eviction runs every 15 s (`SESSION_CLEANUP_INTERVAL_MS`). A
+runtime is torn down when its session is idle, has no live pending
+input, and has exceeded its provider-specific inactivity window:
+`SESSION_INACTIVITY_TIMEOUT_MS = 5 min` for Claude/Codex/Cursor runtimes,
+`OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 s` for OpenCode runtimes
+(OpenCode holds a pooled server, so its idle window is much shorter to
+free the underlying server sooner). Teardown routes through
+`teardownRuntime(managed, "idle_ttl")`.
+
+`teardownRuntime` distinguishes **terminal** close reasons
+(`handle_close`, `ended_session`, `model_switch`) from **non-terminal**
+ones (`idle_ttl`, `budget_eviction`, `pool_compaction`, `paused_run`,
+`project_close`, `shutdown`). For Claude runtimes only, a non-terminal
+teardown preserves resume state: the service pins
+`runtime.sdkSessionId` to the last known V2 session id before releasing
+the session, persists chat state immediately, and skips the usual
+`runtimeInvalidated = true` + `clearLaneDirectiveKey` cleanup. The next
+turn on that chat can therefore rehydrate the same Claude V2 session
+instead of creating a fresh one, even though the SDK process was
+released to reclaim budget or compact the pool. Terminal closes still
+run the full invalidation path so "End chat" and explicit model
+switches don't leave stale resume pointers behind.
+
+On app shutdown the service exposes `forceDisposeAll()` — called from
+`runImmediateProcessCleanup()` in `main.ts`. It stops the cleanup timer,
+rejects every outstanding `sessionTurnCollector` with a "closed during
+shutdown" error so IPC callers don't hang, resolves local pending-input
+promises with a `cancel` decision, and tears down every managed runtime
+with reason `"shutdown"`.
+
 ## IPC surface
 
 All channel constants live in `apps/desktop/src/shared/ipc.ts`; service
@@ -87,6 +148,8 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.list` | invoke | List sessions with optional `includeIdentity`, `includeAutomation`. |
 | `ade.agentChat.getSummary` | invoke | Fetch `AgentChatSessionSummary` for a single session. |
 | `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. |
+| `ade.agentChat.suggestLaneName` | invoke | Derive a slug-safe base lane name from a parallel prompt using a lightweight model call with deterministic fallback. |
+| `ade.agentChat.parallelLaunchState.get` / `.set` | invoke | Read/write crash-recovery state for renderer-orchestrated parallel launches. State is scoped by project root and parent lane id. |
 | `ade.agentChat.handoff` | invoke | End current session and create a new one with summarized context. |
 | `ade.agentChat.send` | invoke | Dispatch a user message + attachments into an active session. |
 | `ade.agentChat.steer` | invoke | Send a follow-up message mid-turn; queued when appropriate. |
@@ -102,6 +165,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.fileSearch` | invoke | Debounced attachment picker backend. |
 | `ade.agentChat.saveTempAttachment` | invoke | Write pasted/dropped image bytes to a temp file (10 MB cap). |
 | `ade.agentChat.listSubagents` | invoke | Claude subagent snapshot list. |
+| `ade.agentChat.models` | invoke | `{ provider, activateRuntime? }`. For OpenCode `activateRuntime: true` is required to *launch* a probe server; otherwise the main process only returns the cached inventory (via `peekOpenCodeInventoryCache`) and an empty list until a real probe has been run. The renderer cache (`aiDiscoveryCache.ts`) keys on `(projectRoot, provider, activateRuntime)` so passive and active reads don't collide. |
 | `ade.agentChat.getSessionCapabilities` | invoke | Discover supported subagent/review features. |
 | `ade.agentChat.getTurnFileDiff` | invoke | Lazy diff expansion for a turn-file-summary row. |
 | `ade.agentChat.event` | push | Stream of `AgentChatEventEnvelope` into the renderer. |
@@ -123,7 +187,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 - **Pending input derivation.** The renderer's `derivePendingInputRequests`
   in `pendingInput.ts` must handle: (a) legacy `askUser` tool calls, (b)
   Claude `AskUserQuestion` SDK events, (c) Codex `permissions` requests,
-  (d) Codex MCP elicitation responses (JSON-schema coercion), (e)
+  (d) Codex ADE CLI elicitation responses (JSON-schema coercion), (e)
   explicit `pending_input_resolved` events, and (f) `done` events which
   clear approvals but preserve plan-approval/question inputs when the
   turn was `completed`.
@@ -135,22 +199,51 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   identity session undergoes context compaction, the service calls
   `refreshReconstructionContext()` to re-inject persona + core memory +
   protocols. Missing this path loses CTO identity mid-session.
-- **MCP approval bypass during auto-compaction.** The Claude runtime
+- **ADE CLI approval bypass during auto-compaction.** The Claude runtime
   sets `compactionInProgress` when the SDK `PreCompact` hook fires and
   keeps it set for 60 s (the SDK emits no `PostCompact` signal). While
-  the flag is true, `canUseTool` auto-approves MCP tools (notably
+  the flag is true, `canUseTool` auto-approves ADE CLI tools (notably
   `memory_add`) so the compaction flush can persist memories without
   blocking on an approval prompt that no user is present to answer.
-  Non-MCP tools still go through the normal approval gate.
+  Non-ADE CLI tools still go through the normal approval gate.
 - **Transcript persistence.** Sessions persist version-2 state under the
   `.ade` layout. Re-derivation goes through `sessionRecovery.ts`;
   changing the on-disk format without bumping the version silently
   drops entries on next load.
+- **Parallel launch recovery.** The renderer owns the multi-lane launch
+  loop, but crash recovery lives behind IPC in `kv`. Update
+  `AgentChatParallelLaunchState` in `shared/types/chat.ts`,
+  `registerIpc.ts`, `preload.ts`, and `global.d.ts` together whenever
+  the state shape changes. The cleanup path must tolerate lanes that
+  were already deleted.
 - **Identity session filtering.** `listSessions` with
   `includeIdentity: true` is the only way to surface CTO and worker
   chats. Regular renderer surfaces pass `undefined` to exclude them;
   CTO and worker pages pass `true`. Double-check when wiring new chat
   lists.
+- **OpenCode passive vs. active inventory reads.** `loadAvailableModels`
+  for `provider: "opencode"` no longer unconditionally starts a probe
+  server. A passive call (the default for Settings page mounts, model
+  dropdown hydration, etc.) hits `peekOpenCodeInventoryCache` and
+  returns whatever was last probed; only explicit `activateRuntime: true`
+  calls (chat pane refresh for a Claude-to-OpenCode switch, sync
+  remote command resolution for a `chat.create` missing an explicit
+  model) will spin up the shared server. This avoids repeatedly
+  launching an OpenCode process just to render chrome. The registered
+  request key in `availableModelsRequests` is `${provider}:${mode}`
+  so an active probe and a passive peek can be in flight concurrently
+  without cross-resolving.
+- **OpenCode shared server pool compaction.** Acquiring a shared
+  OpenCode server (`acquireSharedOpenCodeServer`) now calls
+  `pruneIdleSharedEntries(excludeKey)` which shuts down every other
+  idle shared entry with reason `"pool_compaction"`. The runtime /
+  coordinator shutdown-reason union was widened accordingly
+  (`teardownRuntime` in the chat service and
+  `releaseOpenCodeCoordinatorSession` in `coordinatorAgent.ts` both
+  accept `"pool_compaction"`). The effect: only one shared OpenCode
+  server runs at a time per project; switching provider config or
+  between chats with different configs recycles the pool instead of
+  stacking processes.
 
 ## Configuration
 
@@ -159,8 +252,8 @@ config service):
 
 - `ai.mode` -- `subscription` vs `guest`; gates auto-title, tool
   availability, and provider selection.
-- `ai.chat.autoTitleEnabled`, `ai.chat.autoTitleReasoningEffort`,
-  `ai.chat.autoTitleRefreshOnComplete` -- AI title generation.
+- `ai.sessionIntelligence.titles.*` and
+  `ai.chat.autoTitleReasoningEffort` -- AI title generation.
 - `ai.permissions.*` -- per-provider permission defaults
   (`claudePermissionMode`, Codex approval/sandbox defaults, OpenCode
   permission).
@@ -176,5 +269,3 @@ config service):
 - [History README](../history/README.md) -- chat sessions are not
   recorded in the operations timeline, but the turns that cause git
   state changes (lane creation, PR creation, commits) are.
-</content>
-</invoke>

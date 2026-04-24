@@ -9,7 +9,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createConflictService } from "../conflicts/conflictService";
-import { mapPermissionMode, readRecentCommits } from "./resolverUtils";
+import { mapPermissionModeForModelFamily, readRecentCommits } from "./resolverUtils";
 
 export type RebaseResolutionLaunchDeps = {
   laneService: Pick<ReturnType<typeof createLaneService>, "list" | "getLaneBaseAndBranch">;
@@ -147,7 +147,7 @@ export async function launchRebaseResolutionChat(
     model,
     modelId: descriptor.id,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    permissionMode: mapPermissionMode(args.permissionMode),
+    permissionMode: mapPermissionModeForModelFamily(args.permissionMode, descriptor.family),
     surface: "work",
     sessionProfile: "workflow",
     requestedCwd: lane.worktreePath,
@@ -158,6 +158,10 @@ export async function launchRebaseResolutionChat(
   await deps.agentChatService.sendMessage({
     sessionId: session.id,
     text: prompt,
+    // Show the short human-readable title in the transcript instead of the
+    // full composed prompt (which is long and technical). Mirrors
+    // prIssueResolver's pattern; agentChatService falls back to `text` when
+    // displayText is absent, which would surface the raw prompt to the user.
     displayText: title,
     ...(reasoningEffort ? { reasoningEffort } : {}),
   });

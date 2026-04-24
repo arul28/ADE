@@ -3,15 +3,16 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
-import {
-  createDefaultComputerUsePolicy,
-  type AgentChatEventEnvelope,
-  type AgentChatSession,
-  type AgentChatSessionSummary,
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import type {
+  AgentChatEventEnvelope,
+  AgentChatParallelLaunchState,
+  AgentChatSession,
+  AgentChatSessionSummary,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "./AgentChatPane";
 
 function escapeRegExp(value: string): string {
@@ -36,7 +37,6 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     goal: null,
     completion: null,
     reasoningEffort: "xhigh",
-    computerUse: createDefaultComputerUsePolicy(),
     executionMode: "focused",
     interactionMode: null,
     ...overrides,
@@ -54,7 +54,6 @@ function buildCreatedSession(sessionId: string, overrides: Partial<AgentChatSess
     sessionProfile: "workflow",
     reasoningEffort: "xhigh",
     executionMode: "focused",
-    computerUse: createDefaultComputerUsePolicy(),
     createdAt: "2026-03-24T05:57:45.700Z",
     lastActivityAt: "2026-03-24T05:57:45.700Z",
     ...overrides,
@@ -99,6 +98,7 @@ function installAdeMocks(options?: {
   handoffResult?: { session: AgentChatSession; usedFallbackSummary: boolean };
   sessions?: AgentChatSessionSummary[];
   includeClaudeModel?: boolean;
+  parallelLaunchState?: AgentChatParallelLaunchState | null;
 }) {
   const send = options?.sendError
     ? vi.fn().mockRejectedValue(options.sendError)
@@ -114,6 +114,9 @@ function installAdeMocks(options?: {
     usedFallbackSummary: false,
   });
   const create = vi.fn().mockResolvedValue(buildCreatedSession("created-session"));
+  const suggestLaneName = vi.fn().mockResolvedValue("parallel-task");
+  const parallelLaunchStateGet = vi.fn().mockResolvedValue(options?.parallelLaunchState ?? null);
+  const parallelLaunchStateSet = vi.fn().mockResolvedValue(undefined);
   const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
 
   globalThis.window.ade = {
@@ -149,6 +152,11 @@ function installAdeMocks(options?: {
       send,
       steer,
       list,
+      suggestLaneName,
+      parallelLaunchState: {
+        get: parallelLaunchStateGet,
+        set: parallelLaunchStateSet,
+      },
       getSummary: vi.fn().mockImplementation(async ({ sessionId }: { sessionId: string }) => {
         const sessions = options?.sessions ?? [buildSession("session-1")];
         return sessions.find((s) => s.sessionId === sessionId) ?? null;
@@ -172,14 +180,14 @@ function installAdeMocks(options?: {
       getOwnerSnapshot: vi.fn().mockResolvedValue(null),
       onEvent: vi.fn().mockImplementation(() => () => undefined),
     },
-    externalMcp: {
-      onEvent: vi.fn().mockImplementation(() => () => undefined),
-    },
     files: {
       listWorkspaces: vi.fn().mockResolvedValue([]),
     },
     lanes: {
       list: vi.fn().mockResolvedValue([]),
+      listSnapshots: vi.fn().mockResolvedValue([]),
+      createChild: vi.fn(),
+      delete: vi.fn().mockResolvedValue(undefined),
     },
     git: {
       listBranches: vi.fn().mockResolvedValue([]),
@@ -206,6 +214,9 @@ function installAdeMocks(options?: {
     steer,
     list,
     create,
+    suggestLaneName,
+    parallelLaunchStateGet,
+    parallelLaunchStateSet,
     handoff,
     emitChatEvent: (event: AgentChatEventEnvelope) => {
       for (const listener of chatEventListeners) {
@@ -215,11 +226,31 @@ function installAdeMocks(options?: {
   };
 }
 
+function resetChatTestStore() {
+  useAppStore.setState({
+    project: null,
+    laneSnapshots: [],
+    lanes: [],
+    selectedLaneId: null,
+    runLaneId: null,
+    focusedSessionId: null,
+    laneInspectorTabs: {},
+    workViewByProject: {},
+    laneWorkViewByScope: {},
+  });
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
+}
+
 const originalAde = globalThis.window.ade;
 
 beforeEach(() => {
   invalidateAiDiscoveryCache();
   window.localStorage.clear();
+  resetChatTestStore();
 });
 
 afterEach(() => {
@@ -267,6 +298,45 @@ function renderTabbedPane(session: AgentChatSessionSummary) {
         initialSessionId={session.sessionId}
         initialSessionSummary={session}
       />
+    </MemoryRouter>,
+  );
+}
+
+function renderParallelDraftPane(args?: {
+  laneId?: string;
+  availableModelIdsOverride?: string[];
+}) {
+  const laneId = args?.laneId ?? "lane-1";
+  useAppStore.setState({
+    project: { rootPath: "/tmp/project-under-test" } as any,
+    lanes: [{
+      id: laneId,
+      name: "parent-lane",
+      laneType: "worktree",
+      branchRef: "refs/heads/parent-lane",
+      worktreePath: "/tmp/project-under-test/parent-lane",
+    } as any],
+    selectedLaneId: laneId,
+  });
+
+  return render(
+    <MemoryRouter initialEntries={["/work"]}>
+      <Routes>
+        <Route
+          path="*"
+          element={(
+            <>
+              <AgentChatPane
+                laneId={laneId}
+                forceDraftMode
+                embeddedWorkLayout
+                availableModelIdsOverride={args?.availableModelIdsOverride}
+              />
+              <LocationProbe />
+            </>
+          )}
+        />
+      </Routes>
     </MemoryRouter>,
   );
 }
@@ -349,7 +419,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship the transcript cleanup." } });
-    fireEvent.click(await screen.findByTitle("Send"));
+    fireEvent.click(await screen.findByRole("button", { name: /^Send$/i }));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -378,7 +448,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship the optimistic bubble." } });
-    fireEvent.click(await screen.findByTitle("Send"));
+    fireEvent.click(await screen.findByRole("button", { name: /^Send$/i }));
 
     await waitFor(() => {
       expect(screen.getByText(/Queued — will be delivered after this turn/i)).toBeTruthy();
@@ -428,7 +498,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Retry after the failure." } });
-    fireEvent.click(await screen.findByTitle("Send"));
+    fireEvent.click(await screen.findByRole("button", { name: /^Send$/i }));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalled();
@@ -464,7 +534,8 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Plan" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Plan mode" }));
 
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -475,13 +546,74 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Just plan the implementation." } });
-    fireEvent.click(await screen.findByTitle("Send"));
+    fireEvent.click(await screen.findByRole("button", { name: /^Send$/i }));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Just plan the implementation.",
         interactionMode: "plan",
+      }));
+    });
+  });
+
+  it("waits for Codex permission updates before sending the next turn", async () => {
+    const session = buildSession("session-1", {
+      status: "idle",
+      permissionMode: "default",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
+    const sessions = [session];
+    let resolveUpdateSession: (() => void) | null = null;
+    const updateSession = vi.fn().mockImplementation((args: any) => new Promise((resolve) => {
+      resolveUpdateSession = () => {
+        sessions[0] = {
+          ...sessions[0]!,
+          permissionMode: args.permissionMode ?? sessions[0]!.permissionMode,
+          codexApprovalPolicy: args.codexApprovalPolicy ?? sessions[0]!.codexApprovalPolicy,
+          codexSandbox: args.codexSandbox ?? sessions[0]!.codexSandbox,
+          codexConfigSource: args.codexConfigSource ?? sessions[0]!.codexConfigSource,
+        };
+        resolve(sessions[0]);
+      };
+    }));
+    const { send } = installAdeMocks({
+      sessions,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Full access" }));
+
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      }));
+    });
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Make the change now." } });
+    fireEvent.click(await screen.findByTitle("Send"));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(send).not.toHaveBeenCalled();
+
+    const flushUpdateSession = resolveUpdateSession as (() => void) | null;
+    expect(flushUpdateSession).toBeTypeOf("function");
+    flushUpdateSession?.();
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Make the change now.",
       }));
     });
   });
@@ -504,8 +636,8 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const planButton = await screen.findByRole("button", { name: "Plan" });
-    expect(planButton.getAttribute("aria-pressed")).toBe("false");
+    const trigger = await screen.findByRole("button", { name: "Claude permission mode" });
+    expect(trigger.textContent ?? "").not.toContain("Plan mode");
 
     sessions[0] = {
       ...session,
@@ -528,7 +660,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Plan" }).getAttribute("aria-pressed")).toBe("true");
+      expect(trigger.textContent ?? "").toContain("Plan mode");
     });
   });
 
@@ -605,7 +737,6 @@ describe("AgentChatPane submit recovery", () => {
       permissionMode: "default",
       interactionMode: "default",
       claudePermissionMode: "default",
-      computerUse: session.computerUse,
     };
     sessions[0] = updatedSession;
     resolveUpdateSession(updatedSession);
@@ -744,7 +875,9 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    const handoffBtn = await screen.findByRole("button", { name: "Handoff" }) as HTMLButtonElement;
+    await waitFor(() => expect(handoffBtn.disabled).toBe(false));
+    fireEvent.click(handoffBtn);
     fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
 
     await waitFor(() => {
@@ -779,7 +912,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship the instant route fix." } });
-    fireEvent.click(await screen.findByTitle("Send"));
+    fireEvent.click(await screen.findByRole("button", { name: /^Send$/i }));
 
     await waitFor(() => {
       expect(create).toHaveBeenCalled();
@@ -845,7 +978,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship it." } });
-    fireEvent.click(await screen.findByTitle("Send"));
+    fireEvent.click(await screen.findByRole("button", { name: /^Send$/i }));
 
     await waitFor(() => {
       expect(create).toHaveBeenCalled();
@@ -1033,5 +1166,248 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.queryByText("Commit")).toBeNull();
     });
+  });
+
+  it("launches one child lane per parallel model and opens work-focus tiling", async () => {
+    const createdLanes: Array<Record<string, unknown>> = [];
+    const { send, suggestLaneName, parallelLaunchStateSet } = installAdeMocks({ sessions: [], includeClaudeModel: true });
+    const createChild = vi.fn().mockImplementation(async ({ name, parentLaneId }: { name: string; parentLaneId: string }) => {
+      const lane = {
+        id: `lane-child-${createdLanes.length + 1}`,
+        name,
+        laneType: "worktree",
+        branchRef: `refs/heads/${name}`,
+        worktreePath: `/tmp/project-under-test/${name}`,
+        parentLaneId,
+      };
+      createdLanes.push(lane);
+      return lane;
+    });
+    const create = vi.fn().mockImplementation(async (args: Record<string, unknown>) => buildCreatedSession(
+      `session-${String(args.laneId)}`,
+      {
+        laneId: String(args.laneId),
+        provider: args.provider as AgentChatSession["provider"],
+        model: String(args.model),
+        modelId: String(args.modelId),
+        reasoningEffort: (args.reasoningEffort as string | null | undefined) ?? null,
+      },
+    ));
+    suggestLaneName.mockResolvedValue("fix-login");
+    window.ade.lanes.createChild = createChild as any;
+    window.ade.lanes.list = vi.fn().mockImplementation(async () => ([
+      {
+        id: "lane-1",
+        name: "parent-lane",
+        laneType: "worktree",
+        branchRef: "refs/heads/parent-lane",
+        worktreePath: "/tmp/project-under-test/parent-lane",
+      },
+      ...createdLanes,
+    ])) as any;
+    window.ade.agentChat.create = create as any;
+
+    renderParallelDraftPane({
+      availableModelIdsOverride: [
+        "openai/gpt-5.4-codex",
+        "anthropic/claude-sonnet-4-6",
+      ],
+    });
+
+    const baseModelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
+    fireEvent.click(baseModelTrigger);
+    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Parallel models/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Configure" })[1]!);
+
+    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix the login bug" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Send to lanes/i }));
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-1",
+        prompt: "Fix the login bug",
+        modelId: "openai/gpt-5.4-codex",
+      }));
+      expect(createChild).toHaveBeenCalledTimes(2);
+    });
+    expect(createChild.mock.calls.map(([args]) => args.name)).toEqual([
+      "fix-login-codex-gpt-5-4",
+      "fix-login-claude-sonnet",
+    ]);
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenCalledTimes(2);
+    });
+    expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      laneId: "lane-child-1",
+      provider: "codex",
+      modelId: "openai/gpt-5.4-codex",
+    }));
+    expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      laneId: "lane-child-2",
+      provider: "claude",
+      modelId: "anthropic/claude-sonnet-4-6",
+    }));
+    expect(send).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      sessionId: "session-lane-child-1",
+      text: "Fix the login bug",
+      displayText: "Fix the login bug",
+    }));
+    expect(send).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      sessionId: "session-lane-child-2",
+      text: "Fix the login bug",
+      displayText: "Fix the login bug",
+    }));
+    expect(parallelLaunchStateSet.mock.calls.some(([args]) =>
+      args.projectRoot === "/tmp/project-under-test"
+      && args.parentLaneId === "lane-1"
+      && args.state?.status === "creating_lanes"
+      && args.state.createdLaneIds.includes("lane-child-1"),
+    )).toBe(true);
+    expect(parallelLaunchStateSet.mock.calls.some(([args]) =>
+      args.projectRoot === "/tmp/project-under-test"
+      && args.parentLaneId === "lane-1"
+      && args.state?.status === "completed"
+      && args.state.sentLaneIds.includes("lane-child-2"),
+    )).toBe(true);
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("/lanes?laneIds=lane-child-1%2Clane-child-2&workFocus=1");
+      expect(parallelLaunchStateSet).toHaveBeenLastCalledWith({
+        projectRoot: "/tmp/project-under-test",
+        parentLaneId: "lane-1",
+        state: null,
+      });
+    });
+  });
+
+  it("cleans up a recovered unfinished parallel launch when the parent draft reopens", async () => {
+    const deleteLane = vi.fn().mockResolvedValue(undefined);
+    const { parallelLaunchStateGet, parallelLaunchStateSet } = installAdeMocks({
+      parallelLaunchState: {
+        parentLaneId: "lane-1",
+        createdLaneIds: ["lane-child-1"],
+        sentLaneIds: [],
+        status: "sending",
+        updatedAt: "2026-04-23T00:00:00.000Z",
+        lastError: null,
+      },
+    });
+    window.ade.lanes.delete = deleteLane as any;
+
+    renderParallelDraftPane();
+
+    await waitFor(() => {
+      expect(parallelLaunchStateGet).toHaveBeenCalledWith({
+        projectRoot: "/tmp/project-under-test",
+        parentLaneId: "lane-1",
+      });
+      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-child-1", force: true });
+    });
+    expect(parallelLaunchStateSet).toHaveBeenCalledWith({
+      projectRoot: "/tmp/project-under-test",
+      parentLaneId: "lane-1",
+      state: null,
+    });
+  });
+
+  it("surfaces partial rollback failures when a parallel launch cannot clean up", async () => {
+    const createdLanes: Array<Record<string, unknown>> = [];
+    const send = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Lane 2 failed to send."));
+    const deleteLane = vi.fn().mockImplementation(async ({ laneId }: { laneId: string }) => {
+      if (laneId === "lane-child-1") {
+        throw new Error("worktree locked");
+      }
+      const index = createdLanes.findIndex((lane) => lane.id === laneId);
+      if (index >= 0) createdLanes.splice(index, 1);
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { suggestLaneName, parallelLaunchStateSet } = installAdeMocks({ sessions: [], includeClaudeModel: true });
+    const createChild = vi.fn().mockImplementation(async ({ name, parentLaneId }: { name: string; parentLaneId: string }) => {
+      const lane = {
+        id: `lane-child-${createdLanes.length + 1}`,
+        name,
+        laneType: "worktree",
+        branchRef: `refs/heads/${name}`,
+        worktreePath: `/tmp/project-under-test/${name}`,
+        parentLaneId,
+      };
+      createdLanes.push(lane);
+      return lane;
+    });
+    const create = vi.fn().mockImplementation(async (args: Record<string, unknown>) => buildCreatedSession(
+      `session-${String(args.laneId)}`,
+      {
+        laneId: String(args.laneId),
+        provider: args.provider as AgentChatSession["provider"],
+        model: String(args.model),
+        modelId: String(args.modelId),
+      },
+    ));
+    suggestLaneName.mockResolvedValue("fix-login");
+    window.ade.agentChat.send = send as any;
+    window.ade.agentChat.create = create as any;
+    window.ade.lanes.createChild = createChild as any;
+    window.ade.lanes.delete = deleteLane as any;
+    window.ade.lanes.list = vi.fn().mockImplementation(async () => ([
+      {
+        id: "lane-1",
+        name: "parent-lane",
+        laneType: "worktree",
+        branchRef: "refs/heads/parent-lane",
+        worktreePath: "/tmp/project-under-test/parent-lane",
+      },
+      ...createdLanes,
+    ])) as any;
+
+    renderParallelDraftPane({
+      availableModelIdsOverride: [
+        "openai/gpt-5.4-codex",
+        "anthropic/claude-sonnet-4-6",
+      ],
+    });
+
+    const baseModelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
+    fireEvent.click(baseModelTrigger);
+    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Parallel models/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Configure" })[1]!);
+    fireEvent.click(await screen.findByRole("button", { name: "Select model" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    await clickEnabledModelOption(/Claude Sonnet 4\.6/i);
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix the login bug" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Send to lanes/i }));
+
+    expect(await screen.findByText(/Lane 2 failed to send\./i)).toBeTruthy();
+    expect(screen.getByText(/Cleanup could not delete lane lane-child-1/i)).toBeTruthy();
+    expect(deleteLane).toHaveBeenNthCalledWith(1, { laneId: "lane-child-1", force: true });
+    expect(deleteLane).toHaveBeenNthCalledWith(2, { laneId: "lane-child-2", force: true });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "parallel launch cleanup failed",
+      expect.objectContaining({ laneId: "lane-child-1" }),
+    );
+    expect(parallelLaunchStateSet.mock.calls.some(([args]) =>
+      args.projectRoot === "/tmp/project-under-test"
+      && args.parentLaneId === "lane-1"
+      && args.state?.status === "cleanup_pending"
+      && args.state.createdLaneIds.includes("lane-child-1"),
+    )).toBe(true);
+    errorSpy.mockRestore();
   });
 });

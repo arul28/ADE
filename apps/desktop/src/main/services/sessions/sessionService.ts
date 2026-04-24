@@ -33,6 +33,7 @@ type SessionRow = {
   status: TerminalSessionStatus;
   startedAt: string;
   endedAt: string | null;
+  archivedAt: string | null;
   exitCode: number | null;
   transcriptPath: string;
   headShaStart: string | null;
@@ -57,6 +58,7 @@ const SESSION_COLUMNS = `
   s.status as status,
   s.started_at as startedAt,
   s.ended_at as endedAt,
+  s.archived_at as archivedAt,
   s.exit_code as exitCode,
   s.transcript_path as transcriptPath,
   s.head_sha_start as headShaStart,
@@ -213,6 +215,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       runtimeState: runtimeStateFromStatus(row.status),
       resumeMetadata,
       resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),
+      archivedAt: row.archivedAt ?? null,
     };
   };
 
@@ -333,6 +336,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (typeof args.manuallyNamed === "boolean") {
         sets.push("manually_named = ?");
         params.push(args.manuallyNamed ? 1 : 0);
+      }
+
+      if (typeof args.laneId === "string") {
+        const nextLaneId = args.laneId.trim();
+        if (nextLaneId.length) {
+          sets.push("lane_id = ?");
+          params.push(nextLaneId);
+        }
       }
 
       if (args.title !== undefined) {
@@ -542,6 +553,32 @@ export function createSessionService({ db }: { db: AdeDb }) {
         status,
         sessionId
       ]);
+    },
+
+    archiveSession(sessionId: string, archivedAt: string = new Date().toISOString()): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      db.run("update terminal_sessions set archived_at = coalesce(archived_at, ?) where id = ?", [archivedAt, trimmed]);
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
+    },
+
+    unarchiveSession(sessionId: string): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      db.run("update terminal_sessions set archived_at = null where id = ?", [trimmed]);
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
     },
 
     deleteSession(sessionId: string): boolean {

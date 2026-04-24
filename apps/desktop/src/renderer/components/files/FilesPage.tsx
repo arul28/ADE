@@ -34,10 +34,12 @@ import type {
 import { MonacoDiffView, type MonacoDiffHandle } from "../lanes/MonacoDiffView";
 import { useAppStore } from "../../state/appStore";
 import { clearDirtyBuffersForWorkspace, replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
-import { revealLabel } from "../../lib/platform";
+import { modifierKeyLabel, revealLabel } from "../../lib/platform";
+import { arePathsEqual, normalizePath, normalizePathForWorkspaceComparison, isPathEqualOrDescendant, remapPathForRename } from "../../lib/pathUtils";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, outlineButton, primaryButton, dangerButton, cardStyle } from "../lanes/laneDesignTokens";
 import { cn } from "../ui/cn";
+import { HelpChip } from "../onboarding/HelpChip";
 import { SmartTooltip } from "../ui/SmartTooltip";
 type OpenTab = {
   path: string;
@@ -53,6 +55,7 @@ type FilesPageNavState = {
   preferPrimaryWorkspace?: boolean;
   mode?: "edit" | "diff";
   startLine?: number;
+  startColumn?: number;
 };
 
 type ConflictHunk = {
@@ -82,7 +85,7 @@ type TextPromptState = {
 
 type EditorViewMode = "edit" | "diff" | "conflict";
 type EditorThemeMode = "dark" | "light";
-type ExternalEditorTarget = "finder" | "vscode" | "cursor" | "zed";
+type ExternalEditorTarget = "default" | "finder" | "vscode" | "cursor" | "zed";
 type FilesPaneConfig = {
   title: string;
   icon?: React.ElementType;
@@ -299,31 +302,28 @@ function applyConflictChoice(text: string, hunk: ConflictHunk, choice: "ours" | 
 }
 
 function parentDirOfPath(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, "/");
+  const normalized = normalizePath(filePath);
+  if (!normalized) return "";
+  if (/^[A-Za-z]:\/$/.test(normalized)) return "";
+  if (/^\/\/[^/]+\/[^/]+$/.test(normalized)) return "";
+  if (/^[A-Za-z]:\/[^/]+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
   const idx = normalized.lastIndexOf("/");
   if (idx <= 0) return "";
   return normalized.slice(0, idx);
 }
 
-function normalizePath(filePath: string): string {
-  return filePath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+function areWorkspacePathsEqual(left: string | null | undefined, right: string | null | undefined, workspaceRoot?: string | null): boolean {
+  if (left == null || right == null) return left === right;
+  return arePathsEqual(left, right, workspaceRoot);
 }
 
-function isPathEqualOrDescendant(filePath: string, rootPath: string): boolean {
-  const normalizedPath = normalizePath(filePath);
-  const normalizedRoot = normalizePath(rootPath);
-  if (!normalizedRoot) return normalizedPath.length === 0;
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
-}
-
-function remapPathForRename(filePath: string, oldPath: string, newPath: string): string {
-  const normalizedPath = normalizePath(filePath);
-  const normalizedOld = normalizePath(oldPath);
-  const normalizedNew = normalizePath(newPath);
-  if (!normalizedOld || !normalizedNew) return normalizedPath;
-  if (normalizedPath === normalizedOld) return normalizedNew;
-  if (!normalizedPath.startsWith(`${normalizedOld}/`)) return normalizedPath;
-  return `${normalizedNew}${normalizedPath.slice(normalizedOld.length)}`;
+function findItemByWorkspacePath<T extends { path: string }>(
+  items: ReadonlyArray<T>,
+  targetPath: string | null | undefined,
+  workspaceRoot?: string | null,
+): T | undefined {
+  if (!targetPath) return undefined;
+  return items.find((item) => areWorkspacePathsEqual(item.path, targetPath, workspaceRoot));
 }
 
 const FILE_ICON_COLORS = {
@@ -403,7 +403,16 @@ export function FilesPage() {
   const [tree, setTree] = useState<FileTreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(initialSession?.selectedNodePath ?? null);
-  const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; preferPrimaryWorkspace: boolean; key: string; mode?: "edit" | "diff"; startLine?: number } | null>(null);
+  const pendingOpenRef = useRef<{
+    filePath: string;
+    laneId: string | null;
+    preferPrimaryWorkspace: boolean;
+    key: string;
+    mode?: "edit" | "diff";
+    startLine?: number;
+    startColumn?: number;
+  } | null>(null);
+  const pendingRevealRef = useRef<{ mode: EditorViewMode; startLine: number; startColumn?: number; targetPath?: string } | null>(null);
   const diffViewRef = useRef<MonacoDiffHandle | null>(null);
   const treeRefreshStateRef = useRef<{
     inFlight: boolean;
@@ -453,9 +462,50 @@ export function FilesPage() {
   const setEditorHostRef = useCallback((node: HTMLDivElement | null) => {
     setEditorHostEl(node);
   }, []);
+  const revealPendingLocation = useCallback((): boolean => {
+    const pendingReveal = pendingRevealRef.current;
+    if (!pendingReveal) return false;
+    const activeRevealPath = activeTabPathRef.current;
+    if (
+      pendingReveal.targetPath
+      && activeRevealPath
+      && !arePathsEqual(activeRevealPath, pendingReveal.targetPath)
+    ) {
+      return false;
+    }
+
+    if (pendingReveal.mode === "diff") {
+      const handle = diffViewRef.current;
+      if (!handle) return false;
+      try {
+        handle.revealLineInCenter(pendingReveal.startLine);
+      } catch {
+        return false;
+      }
+      pendingRevealRef.current = null;
+      return true;
+    }
+
+    const editor = editorRef.current;
+    if (!editor) return false;
+    try {
+      editor.revealLineInCenter(pendingReveal.startLine);
+      if (typeof pendingReveal.startColumn === "number" && pendingReveal.startColumn > 0) {
+        editor.setPosition({ lineNumber: pendingReveal.startLine, column: pendingReveal.startColumn });
+      }
+    } catch {
+      return false;
+    }
+    pendingRevealRef.current = null;
+    return true;
+  }, []);
 
   const activeWorkspace = useMemo(() => workspaces.find((ws) => ws.id === workspaceId) ?? null, [workspaces, workspaceId]);
-  const activeTab = useMemo(() => openTabs.find((tab) => tab.path === activeTabPath) ?? null, [openTabs, activeTabPath]);
+  const workspaceComparisonRoot = activeWorkspace?.rootPath ?? null;
+  const activeTab = useMemo(
+    () => findItemByWorkspacePath(openTabs, activeTabPath, workspaceComparisonRoot) ?? null,
+    [openTabs, activeTabPath, workspaceComparisonRoot],
+  );
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
   const liveWatchEnabled = openTabs.length > 0;
 
@@ -606,23 +656,27 @@ export function FilesPage() {
     return true;
   }, [workspaceId, hasUnsavedTabs]);
 
-  const nodeByPath = useMemo(() => {
+  const nodeByComparablePath = useMemo(() => {
     const out = new Map<string, FileTreeNode>();
     const walk = (nodes: FileTreeNode[]) => {
       for (const node of nodes) {
-        out.set(node.path, node);
+        out.set(normalizePathForWorkspaceComparison(node.path, workspaceComparisonRoot), node);
         if (node.children?.length) walk(node.children);
       }
     };
     walk(tree);
     return out;
-  }, [tree]);
+  }, [tree, workspaceComparisonRoot]);
   const selectedTreeNodePath = useMemo(() => {
     if (!selectedNodePath) return null;
-    return nodeByPath.has(selectedNodePath) ? selectedNodePath : null;
-  }, [nodeByPath, selectedNodePath]);
+    return nodeByComparablePath.get(normalizePathForWorkspaceComparison(selectedNodePath, workspaceComparisonRoot))?.path ?? null;
+  }, [nodeByComparablePath, selectedNodePath, workspaceComparisonRoot]);
   const activeContextPath = contextMenu?.nodePath ?? selectedTreeNodePath ?? activeTabPath;
-  const activeContextNodeType = contextMenu?.nodeType ?? (activeContextPath ? nodeByPath.get(activeContextPath)?.type : undefined);
+  const activeContextNodeType = contextMenu?.nodeType ?? (
+    activeContextPath
+      ? nodeByComparablePath.get(normalizePathForWorkspaceComparison(activeContextPath, workspaceComparisonRoot))?.type
+      : undefined
+  );
   const laneWorkspaces = useMemo(() => workspaces.filter((ws) => ws.kind !== "primary"), [workspaces]);
   const suggestedLaneWorkspace = useMemo(() => {
     if (!laneWorkspaces.length) return null;
@@ -666,17 +720,29 @@ export function FilesPage() {
   }, [workspaceId, tree.length, openTabs.length, activeTabPath, mode, editorStatus, searchQuery, showQuickOpen]);
 
   useEffect(() => {
-    activeTabPathRef.current = activeTabPath;
-  }, [activeTabPath]);
+    activeTabPathRef.current = activeTab?.path ?? activeTabPath;
+  }, [activeTab?.path, activeTabPath]);
 
   useEffect(() => {
     openTabsRef.current = openTabs;
   }, [openTabs]);
 
   useEffect(() => {
+    void revealPendingLocation();
+  }, [revealPendingLocation, mode, editorStatus, activeTab?.path]);
+
+  useEffect(() => {
     const st = (location.state as FilesPageNavState | null) ?? null;
     const openFilePath = st?.openFilePath?.trim();
     if (!openFilePath) return;
+    if (typeof st?.startLine === "number" && st.startLine > 0) {
+      pendingRevealRef.current = {
+        mode: st?.mode ?? "edit",
+        startLine: st.startLine,
+        startColumn: st?.startColumn,
+        targetPath: openFilePath,
+      };
+    }
     pendingOpenRef.current = {
       key: location.key,
       filePath: openFilePath,
@@ -684,6 +750,7 @@ export function FilesPage() {
       preferPrimaryWorkspace: st?.preferPrimaryWorkspace === true,
       mode: st?.mode,
       startLine: st?.startLine,
+      startColumn: st?.startColumn,
     };
   }, [location.key, location.state]);
 
@@ -774,21 +841,23 @@ export function FilesPage() {
   }, [refreshTreeNow, workspaceId]);
 
   const openFile = useCallback(async (filePath: string, options: { forceReload?: boolean; preserveMode?: boolean } = {}) => {
-    if (!workspaceId) return;
-    const normalizedPath = normalizePath(filePath);
+    if (!workspaceId) return null;
+    const requestedPath = normalizePath(filePath);
+    const normalizedPath = nodeByComparablePath.get(normalizePathForWorkspaceComparison(requestedPath, workspaceComparisonRoot))?.path ?? requestedPath;
     try {
       const loaded = await window.ade.files.readFile({ workspaceId, path: normalizedPath });
       if (loaded.isBinary) {
         setError("Binary files are read-only and cannot be edited in this view.");
       }
       setOpenTabs((prev) => {
-        const existing = prev.find((tab) => tab.path === normalizedPath);
+        const existing = findItemByWorkspacePath(prev, normalizedPath, workspaceComparisonRoot);
         if (existing && !options.forceReload) return prev;
         if (existing && options.forceReload) {
           return prev.map((tab) => (
-            tab.path === normalizedPath
+            areWorkspacePathsEqual(tab.path, normalizedPath, workspaceComparisonRoot)
               ? {
                 ...tab,
+                path: normalizedPath,
                 content: loaded.content,
                 savedContent: loaded.content,
                 languageId: loaded.languageId,
@@ -813,16 +882,21 @@ export function FilesPage() {
       }
       setActiveTabPath(normalizedPath);
       setSelectedNodePath(normalizedPath);
+      return normalizedPath;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return null;
     }
-  }, [workspaceId]);
+  }, [workspaceId, nodeByComparablePath, workspaceComparisonRoot]);
 
   const syncCleanTabFromDisk = useCallback(async (filePathRaw: string) => {
     if (!workspaceId) return;
-    const filePath = normalizePath(filePathRaw);
+    const requestedPath = normalizePath(filePathRaw);
+    const filePath = nodeByComparablePath.get(normalizePathForWorkspaceComparison(requestedPath, workspaceComparisonRoot))?.path ?? requestedPath;
     if (!filePath) return;
-    const hasCleanOpenTab = openTabsRef.current.some((tab) => tab.path === filePath && tab.content === tab.savedContent);
+    const hasCleanOpenTab = openTabsRef.current.some((tab) => (
+      areWorkspacePathsEqual(tab.path, filePath, workspaceComparisonRoot) && tab.content === tab.savedContent
+    ));
     if (!hasCleanOpenTab) return;
 
     try {
@@ -830,9 +904,10 @@ export function FilesPage() {
       setOpenTabs((prev) => {
         let changed = false;
         const next = prev.map((tab) => {
-          if (tab.path !== filePath) return tab;
+          if (!areWorkspacePathsEqual(tab.path, filePath, workspaceComparisonRoot)) return tab;
           if (tab.content !== tab.savedContent) return tab;
           if (
+            areWorkspacePathsEqual(tab.path, filePath, workspaceComparisonRoot) &&
             tab.content === loaded.content &&
             tab.savedContent === loaded.content &&
             tab.languageId === loaded.languageId &&
@@ -843,6 +918,7 @@ export function FilesPage() {
           changed = true;
           return {
             ...tab,
+            path: filePath,
             content: loaded.content,
             savedContent: loaded.content,
             languageId: loaded.languageId,
@@ -854,7 +930,7 @@ export function FilesPage() {
     } catch {
       // A deleted or renamed path can race this sync; ignore quietly.
     }
-  }, [workspaceId]);
+  }, [workspaceId, workspaceComparisonRoot, nodeByComparablePath]);
 
   useEffect(() => {
     const pending = pendingOpenRef.current;
@@ -880,24 +956,23 @@ export function FilesPage() {
 
     const pendingMode = pending.mode;
     const pendingStartLine = pending.startLine;
+    const pendingStartColumn = pending.startColumn;
     let cancelled = false;
     let pendingTimer: ReturnType<typeof setTimeout> | null = null;
     openFile(pending.filePath)
-      .then(() => {
+      .then((openedPath) => {
         if (cancelled) return;
         if (pendingMode === "diff") setMode("diff");
         if (typeof pendingStartLine === "number" && pendingStartLine > 0) {
+          pendingRevealRef.current = {
+            mode: pendingMode ?? "edit",
+            startLine: pendingStartLine,
+            startColumn: pendingStartColumn,
+            targetPath: openedPath ?? pending.filePath,
+          };
           const attemptReveal = (attemptsLeft: number) => {
             if (cancelled) return;
-            const handle = diffViewRef.current;
-            if (handle) {
-              try {
-                handle.revealLineInCenter(pendingStartLine);
-              } catch {
-                /* ignore */
-              }
-              return;
-            }
+            if (revealPendingLocation()) return;
             if (attemptsLeft > 0) {
               pendingTimer = setTimeout(() => attemptReveal(attemptsLeft - 1), 80);
             }
@@ -912,29 +987,31 @@ export function FilesPage() {
       cancelled = true;
       if (pendingTimer !== null) clearTimeout(pendingTimer);
     };
-  }, [workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname]);
+  }, [workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname, revealPendingLocation]);
 
   const closeTab = useCallback((filePath: string) => {
     setOpenTabs((prev) => {
-      const tab = prev.find((t) => t.path === filePath);
+      const tab = findItemByWorkspacePath(prev, filePath, workspaceComparisonRoot);
       if (!tab) return prev;
       if (tab.content !== tab.savedContent) {
-        const ok = window.confirm(`"${filePath}" has unsaved changes. Close anyway?`);
+        const ok = window.confirm(`"${tab.path}" has unsaved changes. Close anyway?`);
         if (!ok) return prev;
       }
-      const next = prev.filter((t) => t.path !== filePath);
-      if (activeTabPath === filePath) {
+      const next = prev.filter((t) => !areWorkspacePathsEqual(t.path, filePath, workspaceComparisonRoot));
+      if (areWorkspacePathsEqual(activeTabPath, filePath, workspaceComparisonRoot)) {
         setActiveTabPath(next[next.length - 1]?.path ?? null);
       }
       return next;
     });
-  }, [activeTabPath]);
+  }, [activeTabPath, workspaceComparisonRoot]);
 
   const saveActive = useCallback(async () => {
     if (!activeTab || !workspaceId || !canEdit || activeTab.isBinary) return;
     await window.ade.files.writeText({ workspaceId, path: activeTab.path, text: activeTab.content });
-    setOpenTabs((prev) => prev.map((tab) => (tab.path === activeTab.path ? { ...tab, savedContent: tab.content } : tab)));
-  }, [activeTab, workspaceId, canEdit]);
+    setOpenTabs((prev) => prev.map((tab) => (
+      areWorkspacePathsEqual(tab.path, activeTab.path, workspaceComparisonRoot) ? { ...tab, savedContent: tab.content } : tab
+    )));
+  }, [activeTab, workspaceId, canEdit, workspaceComparisonRoot]);
 
   const laneIdForWorkspace = activeWorkspace?.laneId ?? null;
 
@@ -968,10 +1045,10 @@ export function FilesPage() {
     if (!ok) return;
     await window.ade.git.discardFile({ laneId: laneIdForWorkspace, path: filePath });
     await refreshTree();
-    if (activeTabPath === filePath) {
+    if (areWorkspacePathsEqual(activeTabPath, filePath, workspaceComparisonRoot)) {
       await openFile(filePath, { forceReload: true });
     }
-  }, [canEdit, laneIdForWorkspace, refreshTree, activeTabPath, openFile]);
+  }, [canEdit, laneIdForWorkspace, refreshTree, activeTabPath, openFile, workspaceComparisonRoot]);
 
   const renamePath = useCallback(async (targetPath: string) => {
     if (!canEdit) {
@@ -990,13 +1067,15 @@ export function FilesPage() {
         return null;
       }
     });
-    if (!next || next === targetPath) return;
+    if (!next || areWorkspacePathsEqual(next, targetPath, workspaceComparisonRoot)) return;
     await window.ade.files.rename({ workspaceId, oldPath: targetPath, newPath: next });
-    setOpenTabs((prev) => prev.map((tab) => (tab.path === targetPath ? { ...tab, path: next } : tab)));
-    if (activeTabPath === targetPath) setActiveTabPath(next);
+    setOpenTabs((prev) => prev.map((tab) => (
+      areWorkspacePathsEqual(tab.path, targetPath, workspaceComparisonRoot) ? { ...tab, path: next } : tab
+    )));
+    if (areWorkspacePathsEqual(activeTabPath, targetPath, workspaceComparisonRoot)) setActiveTabPath(next);
     setSelectedNodePath(next);
     await refreshTree();
-  }, [canEdit, workspaceId, requestTextInput, activeTabPath, refreshTree]);
+  }, [canEdit, workspaceId, requestTextInput, activeTabPath, refreshTree, workspaceComparisonRoot]);
 
   const deletePath = useCallback(async (targetPath: string) => {
     if (!canEdit) {
@@ -1007,11 +1086,11 @@ export function FilesPage() {
     const ok = window.confirm(`Delete ${targetPath}?`);
     if (!ok) return;
     await window.ade.files.delete({ workspaceId, path: targetPath });
-    setOpenTabs((prev) => prev.filter((tab) => tab.path !== targetPath));
-    if (activeTabPath === targetPath) setActiveTabPath(null);
+    setOpenTabs((prev) => prev.filter((tab) => !areWorkspacePathsEqual(tab.path, targetPath, workspaceComparisonRoot)));
+    if (areWorkspacePathsEqual(activeTabPath, targetPath, workspaceComparisonRoot)) setActiveTabPath(null);
     setSelectedNodePath(null);
     await refreshTree();
-  }, [canEdit, workspaceId, activeTabPath, refreshTree]);
+  }, [canEdit, workspaceId, activeTabPath, refreshTree, workspaceComparisonRoot]);
 
   const createFileAt = useCallback(async (basePath?: string) => {
     if (!canEdit) {
@@ -1160,7 +1239,7 @@ export function FilesPage() {
         setOpenTabs((prev) => {
           let changed = false;
           const next = prev.map((tab) => {
-            const mappedPath = remapPathForRename(tab.path, oldPath, nextPath);
+            const mappedPath = remapPathForRename(tab.path, oldPath, nextPath, workspaceComparisonRoot);
             if (mappedPath === tab.path) return tab;
             changed = true;
             if (tab.content === tab.savedContent) pendingTabSyncPaths.add(mappedPath);
@@ -1168,13 +1247,13 @@ export function FilesPage() {
           });
           return changed ? next : prev;
         });
-        setActiveTabPath((current) => (current ? remapPathForRename(current, oldPath, nextPath) : current));
-        setSelectedNodePath((current) => (current ? remapPathForRename(current, oldPath, nextPath) : current));
+        setActiveTabPath((current) => (current ? remapPathForRename(current, oldPath, nextPath, workspaceComparisonRoot) : current));
+        setSelectedNodePath((current) => (current ? remapPathForRename(current, oldPath, nextPath, workspaceComparisonRoot) : current));
         setExpanded((prev) => {
           let changed = false;
           const next = new Set<string>();
           for (const path of prev) {
-            const mappedPath = remapPathForRename(path, oldPath, nextPath);
+            const mappedPath = remapPathForRename(path, oldPath, nextPath, workspaceComparisonRoot);
             next.add(mappedPath);
             if (mappedPath !== path) changed = true;
           }
@@ -1188,18 +1267,18 @@ export function FilesPage() {
 
       if (ev.type === "deleted" && nextPath) {
         setOpenTabs((prev) => {
-          const next = prev.filter((tab) => !isPathEqualOrDescendant(tab.path, nextPath));
+          const next = prev.filter((tab) => !isPathEqualOrDescendant(tab.path, nextPath, workspaceComparisonRoot));
           if (next.length !== prev.length) {
             const activePath = activeTabPathRef.current;
-            if (activePath && !next.some((tab) => tab.path === activePath)) {
+            if (activePath && !next.some((tab) => areWorkspacePathsEqual(tab.path, activePath, workspaceComparisonRoot))) {
               setActiveTabPath(next[next.length - 1]?.path ?? null);
             }
           }
           return next.length === prev.length ? prev : next;
         });
-        setSelectedNodePath((current) => (current && isPathEqualOrDescendant(current, nextPath) ? null : current));
+        setSelectedNodePath((current) => (current && isPathEqualOrDescendant(current, nextPath, workspaceComparisonRoot) ? null : current));
         setExpanded((prev) => {
-          const next = new Set(Array.from(prev).filter((path) => !isPathEqualOrDescendant(path, nextPath)));
+          const next = new Set(Array.from(prev).filter((path) => !isPathEqualOrDescendant(path, nextPath, workspaceComparisonRoot)));
           return next.size === prev.size ? prev : next;
         });
       } else if (nextPath) {
@@ -1259,7 +1338,7 @@ export function FilesPage() {
           });
         });
     };
-  }, [workspaceId, liveWatchEnabled, refreshTree, syncCleanTabFromDisk]);
+  }, [workspaceId, liveWatchEnabled, refreshTree, syncCleanTabFromDisk, workspaceComparisonRoot]);
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -1384,9 +1463,12 @@ export function FilesPage() {
         const targetPath = activeTabPathRef.current;
         if (!targetPath || editorApplyingRef.current) return;
         const next = editor.getValue();
-        setOpenTabs((prev) => prev.map((tab) => (tab.path === targetPath ? { ...tab, content: next } : tab)));
+        setOpenTabs((prev) => prev.map((tab) => (
+          areWorkspacePathsEqual(tab.path, targetPath, workspaceComparisonRoot) ? { ...tab, content: next } : tab
+        )));
       });
       setEditorStatus("ready");
+      void revealPendingLocation();
       logRendererDebugEvent("renderer.files.monaco_load.done", {
         path: activeTab.path,
       });
@@ -1424,7 +1506,7 @@ export function FilesPage() {
   // canEdit intentionally excluded — the updateOptions effect below handles
   // readOnly toggling without destroying and recreating the entire editor.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab?.path, mode, editorHostEl, editorTheme]);
+  }, [activeTab?.path, mode, editorHostEl, editorTheme, revealPendingLocation]);
 
   useEffect(() => {
     const monaco = monacoRef.current;
@@ -1460,6 +1542,7 @@ export function FilesPage() {
     const modelKey = `${activeTab.path}::${language}`;
     if (modelRef.current && modelKeyRef.current === modelKey) {
       editor.updateOptions({ readOnly: !canEdit || activeTab.isBinary });
+      void revealPendingLocation();
       return;
     }
 
@@ -1477,7 +1560,8 @@ export function FilesPage() {
     modelKeyRef.current = modelKey;
     editor.setModel(modelRef.current);
     editor.updateOptions({ readOnly: !canEdit || activeTab.isBinary });
-  }, [activeTab?.path, activeTab?.languageId, activeTab?.isBinary, mode, canEdit, editorStatus]);
+    void revealPendingLocation();
+  }, [activeTab?.path, activeTab?.languageId, activeTab?.isBinary, mode, canEdit, editorStatus, revealPendingLocation]);
 
   useEffect(() => {
     if (!activeTab || !editorRef.current || mode !== "edit") return;
@@ -1496,7 +1580,8 @@ export function FilesPage() {
     <div>
       {nodes.map((node) => {
         const isExpanded = expanded.has(node.path);
-        const isActive = activeTabPath === node.path || selectedTreeNodePath === node.path;
+        const isActive = areWorkspacePathsEqual(activeTabPath, node.path, workspaceComparisonRoot)
+          || areWorkspacePathsEqual(selectedTreeNodePath, node.path, workspaceComparisonRoot);
         const statusColor = changeStatusColor(node.changeStatus ?? null);
         const fileIcon = node.type === "file" ? getFileIcon(node.name) : null;
         const FileIcon = fileIcon?.icon;
@@ -1599,7 +1684,9 @@ export function FilesPage() {
   const conflictHunks = activeTab ? parseConflictHunks(activeTab.content) : [];
   const laneIdForDiff = activeWorkspace?.laneId;
   const hasConflictMarkers = conflictHunks.length > 0;
-  const activeContextNode = activeContextPath ? nodeByPath.get(activeContextPath) ?? null : null;
+  const activeContextNode = activeContextPath
+    ? nodeByComparablePath.get(normalizePathForWorkspaceComparison(activeContextPath, workspaceComparisonRoot)) ?? null
+    : null;
   const activeContextChangeStatus = activeContextNode?.changeStatus ?? null;
   const editorModeHint =
     mode === "edit"
@@ -1672,7 +1759,7 @@ export function FilesPage() {
       children: (
         <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: 12 }}>
           {/* Search bar */}
-          <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }}>
+          <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }} data-tour="files.searchBar">
             <div className="relative flex items-center">
               <Search size={14} weight="regular" className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
               <input
@@ -1743,7 +1830,7 @@ export function FilesPage() {
             </div>
           ) : null}
           {/* File tree */}
-          <div className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }}>{renderTree(tree)}</div>
+          <div className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }} data-tour="files.fileTree">{renderTree(tree)}</div>
         </div>
       )
     },
@@ -1754,7 +1841,7 @@ export function FilesPage() {
       headerActions: (
         <div className="flex items-center gap-1.5">
           {/* Mode toggle group */}
-          <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, overflow: "hidden" }}>
+          <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, overflow: "hidden" }} data-tour="files.modeToggle">
             {(["edit", "diff", "conflict"] as const).map((m) => {
               const label = m === "edit" ? "CODE" : m === "diff" ? "CHANGES" : "MERGE";
               const description = m === "edit" ? "View and edit the file content." : m === "diff" ? "View the diff between working changes and the last commit." : "View and resolve merge conflicts.";
@@ -1820,7 +1907,7 @@ export function FilesPage() {
             ) : null}
             {openTabs.map((tab, idx) => {
               const dirty = tab.content !== tab.savedContent;
-              const isActiveTab = activeTabPath === tab.path;
+              const isActiveTab = areWorkspacePathsEqual(activeTabPath, tab.path, workspaceComparisonRoot);
               const tabNumber = String(idx + 1).padStart(2, "0");
               const tabFileIcon = getFileIcon(tab.path.split("/").pop() ?? "");
               const TabFileIcon = tabFileIcon.icon;
@@ -1869,7 +1956,7 @@ export function FilesPage() {
           </div>
 
           {/* Breadcrumb + git actions */}
-          <div className="flex items-center justify-between shrink-0" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "4px 12px" }}>
+          <div className="flex items-center justify-between shrink-0" data-tour="files.breadcrumb" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "4px 12px" }}>
             <div className="truncate flex items-center gap-1" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
               {breadcrumbs.length ? breadcrumbs.map((part, i) => (
                 <React.Fragment key={i}>
@@ -1906,8 +1993,9 @@ export function FilesPage() {
             </div>
           </div>
           {/* Mode hint */}
-          <div className="shrink-0" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "3px 12px", ...LABEL_STYLE, fontSize: 9, color: COLORS.textDim }}>
-            {editorModeHint.toUpperCase()}
+          <div className="flex items-center gap-1 shrink-0" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "3px 12px" }}>
+            <span style={{ ...LABEL_STYLE, fontSize: 9, color: COLORS.textDim }}>{editorModeHint.toUpperCase()}</span>
+            <HelpChip termId="dirty" side="top" />
           </div>
 
           {/* Editor content */}
@@ -2153,7 +2241,7 @@ export function FilesPage() {
   return (
     <div className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
-      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: "transparent", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: "transparent", borderBottom: `1px solid ${COLORS.border}` }} data-tour="files.header">
         {/* Numbered title group */}
         <div className="flex items-center gap-2 shrink-0">
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>03</span>
@@ -2163,23 +2251,26 @@ export function FilesPage() {
         </div>
 
         {/* Workspace selector */}
-        <select
-          value={workspaceId}
-          onChange={(e) => switchWorkspace(e.target.value)}
-          style={{
-            height: 32, padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-            color: COLORS.success, background: COLORS.recessedBg, borderRadius: 8,
-            border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer", outline: "none",
-          }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
-          onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
-        >
-          {workspaces.map((ws) => (
-            <option key={ws.id} value={ws.id}>
-              {ws.name} ({ws.kind})
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-1" data-tour="files.workspaceSelector">
+          <select
+            value={workspaceId}
+            onChange={(e) => switchWorkspace(e.target.value)}
+            style={{
+              height: 32, padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
+              color: COLORS.success, background: COLORS.recessedBg, borderRadius: 8,
+              border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer", outline: "none",
+            }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
+          >
+            {workspaces.map((ws) => (
+              <option key={ws.id} value={ws.id}>
+                {ws.name} ({ws.kind})
+              </option>
+            ))}
+          </select>
+          <HelpChip termId="worktree" side="bottom" />
+        </div>
 
         {/* Read-only badge */}
         {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
@@ -2207,8 +2298,8 @@ export function FilesPage() {
         <div style={{ flex: 1, height: 1 }} />
 
         {/* Open in external editor */}
-        <div className="relative shrink-0" ref={openInMenuRef}>
-          <SmartTooltip content={{ label: "Open In", description: "Open the current file in an external editor or Finder." }}>
+        <div className="relative shrink-0" ref={openInMenuRef} data-tour="files.openIn">
+          <SmartTooltip content={{ label: "Open In", description: "Open the current file in an external editor or file browser." }}>
             <button
               type="button"
               style={{
@@ -2228,6 +2319,7 @@ export function FilesPage() {
             <div className="ade-liquid-glass-menu absolute right-0 top-full z-50 mt-1 overflow-hidden" style={{ width: 220, padding: "2px 0" }}>
               {(
                 [
+                  { key: "default", label: "SYSTEM DEFAULT" },
                   { key: "finder", label: revealLabel.toUpperCase() },
                   { key: "vscode", label: "VS CODE" },
                   { key: "cursor", label: "CURSOR" },
@@ -2324,14 +2416,14 @@ export function FilesPage() {
           tiling shell while Files-route crashes are under investigation. */}
       <div className="flex-1 min-h-0 p-3">
         <div className="flex h-full min-h-0 min-w-0 gap-3">
-          <div className="min-h-0 min-w-0 shrink-0" style={{ width: 320, maxWidth: "28vw" }}>
+          <div className="min-h-0 min-w-0 shrink-0" style={{ width: 320, maxWidth: "28vw" }} data-tour="files.explorerPane">
             {renderPane("explorer")}
           </div>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-            <div className="min-h-0 min-w-0" style={{ flex: "1 1 0%", minHeight: 0 }}>
+            <div className="min-h-0 min-w-0" style={{ flex: "1 1 0%", minHeight: 0 }} data-tour="files.editorPane">
               {renderPane("editor")}
             </div>
-            <div className="min-h-0 min-w-0" style={{ flex: "0 0 34%", minHeight: 180 }}>
+            <div className="min-h-0 min-w-0" style={{ flex: "0 0 34%", minHeight: 180 }} data-tour="files.terminalsPane">
               {renderPane("terminals")}
             </div>
           </div>
@@ -2349,7 +2441,7 @@ export function FilesPage() {
             <>
               <div style={{ ...LABEL_STYLE, padding: "4px 12px", fontSize: 8 }}>FILE</div>
               {[
-                { label: "OPEN", action: async () => openFile(contextMenu.nodePath), color: COLORS.textSecondary },
+                { label: "OPEN", action: async () => { await openFile(contextMenu.nodePath); }, color: COLORS.textSecondary },
                 { label: "OPEN DIFF", action: async () => { await openFile(contextMenu.nodePath); setMode("diff"); }, color: COLORS.info },
               ].map((item) => (
                 <button
@@ -2398,7 +2490,7 @@ export function FilesPage() {
                 autoFocus
                 value={quickOpen}
                 onChange={(e) => setQuickOpen(e.target.value)}
-                placeholder="Type to search files... (Cmd+P)"
+                placeholder={`Type to search files... (${modifierKeyLabel}+P)`}
                 style={{
                   height: 36, width: "100%", padding: "0 36px 0 32px",
                   fontSize: 12, fontFamily: MONO_FONT, fontWeight: 500,

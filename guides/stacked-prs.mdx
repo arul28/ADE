@@ -70,7 +70,7 @@ Drag-reparent lanes in the Graph to reorganize your stack. ADE updates the base-
 When you update an upstream lane (e.g., push new commits to `feature/auth-models`), ADE detects that downstream lanes are out of date.
 
 - **Rebase suggestion** — ADE surfaces a rebase suggestion on each affected child lane with a preview of the changes
-- **Accept or defer** — click **Rebase** to apply, or **Defer** to handle it later
+- **Open the Rebase tab** — click **View in Rebase tab** on the lane-list banner to open the full rebase workspace, pick the scope, run the rebase, and resolve any conflicts. The banner surfaces suggestions only — it no longer runs the rebase in one click or offers a deferral option.
 - **Conflict detection** — if the rebase would cause conflicts, ADE flags them before you attempt the rebase
 
 <Note>ADE runs merge simulations automatically between stacked lanes. Conflicts are surfaced in the Conflicts view before they block your work.</Note>

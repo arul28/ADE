@@ -30,7 +30,7 @@ const resolvedArg2 =
   async (_a: any, _b: any) =>
     v;
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
-  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
 
 const MOCK_PROJECT = {
   id: "browser-mock",
@@ -1662,6 +1662,35 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     project: {
       openRepo: resolved(MOCK_PROJECT),
       chooseDirectory: resolvedArg(null),
+      browseDirectories: async (args?: { inputPath?: string }) => {
+        const inputPath =
+          typeof args?.inputPath === "string" && args.inputPath.trim().length > 0
+            ? args.inputPath
+            : "~/";
+        return {
+          inputPath,
+          resolvedPath: "/tmp/mock",
+          directoryPath: "/tmp/mock",
+          parentPath: "/tmp",
+          exactDirectoryPath: "/tmp/mock",
+          openableProjectRoot: "/tmp/mock",
+          entries: [],
+        };
+      },
+      getDetail: resolvedArg({
+        rootPath: "/tmp/mock",
+        isGitRepo: true,
+        branchName: "main",
+        dirtyCount: 0,
+        aheadBehind: null,
+        lastCommit: null,
+        readmeExcerpt: null,
+        languages: [],
+        laneCount: null,
+        lastOpenedAt: null,
+        subdirectoryCount: null,
+      }),
+      getDroppedPath: (_file: unknown) => "",
       openAdeFolder: resolved(undefined),
       clearLocalData: resolved({
         deletedPaths: [],
@@ -2213,6 +2242,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       }),
       onEvent: noop,
     },
+    actions: {
+      listRegistry: resolved([]),
+    },
     missions: {
       list: resolved([]),
       get: resolvedArg(null),
@@ -2473,6 +2505,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       deferRebaseSuggestion: resolvedArg(undefined),
       onRebaseSuggestionsEvent: noop,
       listAutoRebaseStatuses: resolved([]),
+      dismissAutoRebaseStatus: resolvedArg(undefined),
       onAutoRebaseEvent: noop,
       openFolder: resolvedArg(undefined),
       initEnv: resolvedArg({
@@ -2565,6 +2598,11 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onEvent: noop,
       slashCommands: resolvedArg([]),
       fileSearch: resolvedArg([]),
+      getEventHistory: async (arg: { sessionId: string; maxEvents?: number }) => ({
+        sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : "",
+        events: [],
+        truncated: false,
+      }),
     },
     cto: {
       getState: resolvedArg({
@@ -2598,7 +2636,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         provider: "claude",
         model: "sonnet",
         identityKey: "cto",
-        capabilityMode: "full_mcp",
+        capabilityMode: "full_tooling",
         status: "idle",
         createdAt: now,
         lastActivityAt: now,
@@ -2718,7 +2756,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         provider: "claude",
         model: "sonnet",
         identityKey: "cto",
-        capabilityMode: "full_mcp",
+        capabilityMode: "full_tooling",
         status: "idle",
         createdAt: now,
         lastActivityAt: now,
@@ -2975,6 +3013,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       getStatus: resolved({ authenticated: true, user: "arul" }),
       setToken: resolvedArg({ authenticated: true, user: "arul" }),
       clearToken: resolved({ authenticated: false, user: null }),
+      detectRepo: resolved({ owner: "arul28", name: "ADE" }),
+      listRepoLabels: resolved([]),
+      listRepoCollaborators: resolved([]),
     },
     prs: {
       createFromLane: resolvedArg(NORMAL_PRS[0]),
@@ -3290,63 +3331,44 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       diffAgainstDisk: resolved({ changed: false }),
       confirmTrust: resolved({ trusted: true }),
     },
-    externalMcp: {
-      listServers: resolved([]),
-      listConfigs: resolved([]),
-      getUsageEvents: resolvedArg([]),
-      listAuthRecords: resolved([]),
-      connectServer: resolvedArg({
-        config: { name: "mock-server", transport: "stdio", command: "mock" },
-        state: "connected",
-        toolCount: 0,
-        tools: [],
-        lastConnectedAt: now,
-        lastHealthCheckAt: now,
-        consecutivePingFailures: 0,
-        lastError: null,
-        autoStart: true,
+    adeCli: {
+      getStatus: resolved({
+        command: "ade",
+        platform: "darwin",
+        isPackaged: false,
+        bundledAvailable: true,
+        bundledBinDir: "/tmp/mock/ADE/apps/ade-cli/bin",
+        bundledCommandPath: "/tmp/mock/ADE/apps/ade-cli/bin/ade",
+        installerPath: null,
+        agentPathReady: true,
+        terminalInstalled: false,
+        terminalCommandPath: null,
+        installAvailable: false,
+        installTargetPath: "~/.local/bin/ade",
+        installTargetDirOnPath: false,
+        message: "ADE-launched agents can use ade. Terminal access is not installed yet.",
+        nextAction: "Run npm link in apps/ade-cli for local development.",
       }),
-      disconnectServer: resolvedArg(null),
-      testServer: resolvedArg({
-        config: { name: "mock-server", transport: "stdio", command: "mock" },
-        state: "connected",
-        toolCount: 0,
-        tools: [],
-        lastConnectedAt: now,
-        lastHealthCheckAt: now,
-        consecutivePingFailures: 0,
-        lastError: null,
-        autoStart: true,
-      }),
-      saveServer: resolvedArg([]),
-      removeServer: resolvedArg([]),
-      saveAuthRecord: resolvedArg({
-        id: "mock-auth",
-        displayName: "Mock auth",
-        mode: "bearer",
-        secretId: "mock-secret",
-        createdAt: now,
-        updatedAt: now,
-      }),
-      removeAuthRecord: resolvedArg([]),
-      getAuthStatus: resolvedArg({
-        authId: "mock-auth",
-        mode: "bearer",
-        state: "ready",
-        summary: "Stored credential is ready.",
-        materializationPreview: ["Authorization: Bearer [stored credential]"],
-        updatedAt: now,
-      }),
-      startOAuthSession: resolvedArg({
-        sessionId: "mock-oauth-session",
-        authId: "mock-auth",
-        authUrl: "https://example.com/oauth",
-        redirectUri: "http://127.0.0.1:9999/oauth/external-mcp/callback",
-      }),
-      getOAuthSession: resolvedArg({
-        authId: "mock-auth",
-        status: "completed",
-        error: null,
+      installForUser: resolved({
+        ok: false,
+        message: "Terminal install is available from packaged ADE builds.",
+        status: {
+          command: "ade",
+          platform: "darwin",
+          isPackaged: false,
+          bundledAvailable: true,
+          bundledBinDir: "/tmp/mock/ADE/apps/ade-cli/bin",
+          bundledCommandPath: "/tmp/mock/ADE/apps/ade-cli/bin/ade",
+          installerPath: null,
+          agentPathReady: true,
+          terminalInstalled: false,
+          terminalCommandPath: null,
+          installAvailable: false,
+          installTargetPath: "~/.local/bin/ade",
+          installTargetDirOnPath: false,
+          message: "ADE-launched agents can use ade. Terminal access is not installed yet.",
+          nextAction: "Run npm link in apps/ade-cli for local development.",
+        },
       }),
     },
     memory: {

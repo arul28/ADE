@@ -1,128 +1,74 @@
 ---
-title: "Computer Use Overview"
-description: "ADE is the control plane for computer use — it discovers backends, injects guidance, ingests proof artifacts, and links them to missions, chats, PRs, and Linear issues."
-icon: "desktop"
+title: "Proof Overview"
+description: "Proof is ADE's intentional evidence system. Agents capture screenshots, recordings, traces, and logs via the `ade proof` CLI; ADE stores and links them to missions, chats, PRs, and Linear issues."
+icon: "camera"
 ---
+
 ## Overview
 
-ADE does not perform computer use directly. Instead, it acts as the **control plane** — the orchestration layer between your AI agents and external automation backends. This architecture means:
+Proof is ADE's way of collecting **intentional evidence** during agent work. Workers and chat agents capture screenshots, short recordings, browser traces, verification snapshots, and console logs through the `ade proof` CLI. ADE stores the resulting artifacts, normalizes them, and links them to the mission, chat session, PR, or Linear issue that produced them.
 
-- ADE works with any computer-use backend, not just one vendor.
-- Agents can request browser or desktop actions through a unified API regardless of which backend is active.
-- All proof artifacts (screenshots, traces, recordings) are normalized, stored, and linked to the relevant mission, chat, PR, or Linear issue.
-- Backend health, capability coverage, and proof requirements are visible at a glance in Settings.
+There is no separate computer-use broker, no backend negotiation, and no per-session policy chip. Agents simply call `ade proof` when they want to leave a trail.
 
 <CardGroup cols={2}>
-  <Card title="Backend Agnostic" icon="plug">
-    Connect Ghost OS, agent-browser, or use the built-in ADE Local fallback. Switch backends without changing automation code.
+  <Card title="Intentional Evidence" icon="camera">
+    Proof is explicit. Agents decide when a piece of work deserves a screenshot or recording — there is no background recording of every action.
   </Card>
-  <Card title="Proof Collection" icon="camera">
-    Every computer-use action can be required to produce proof — screenshots, video recordings, browser traces, or DOM verifications.
+  <Card title="Unified Artifacts" icon="database">
+    Every proof is stored with a canonical record: kind, owner, storage path, MIME type, and metadata. The same normalized schema powers mission artifact tabs, chat session history, and PR attachments.
   </Card>
-  <Card title="Artifact Ownership" icon="link">
-    Artifacts are linked to lanes, missions, chat sessions, PRs, and Linear issues. Review and publish them from a single panel.
+  <Card title="Single CLI Surface" icon="terminal">
+    Agents use `ade proof capture`, `ade proof record`, `ade proof list`, and a few related commands. See the [Setup](/computer-use/setup) page for the full command list.
   </Card>
-  <Card title="Policy Control" icon="sliders">
-    Per-session policies control when computer use is active: Off, Auto, On, Fallback, or Proof-required mode.
+  <Card title="Routed to Owners" icon="link">
+    Proofs are linked to lanes, missions, chat sessions, PRs, and Linear issues. Review and publish them from the Mission Artifacts tab or the chat artifact panel.
   </Card>
 </CardGroup>
 
 ---
 
-## Supported Backends
+## Proof Kinds
 
-<Tabs>
-  <Tab title="Ghost OS (Recommended)">
-    Ghost OS is an external MCP server for full macOS desktop automation. It provides complete control over the desktop environment — browsers, native apps, file dialogs, and system UI.
+ADE recognizes five proof kinds. All kinds share the same storage, ownership, and routing model — the kind only changes what the CLI captures and what the viewer shows.
 
-    **Capabilities:**
-    - Full desktop automation (not just browser)
-    - Native macOS accessibility API integration
-    - Multi-display support
-    - App-level isolation per mission
+| Kind | What it is |
+|---|---|
+| `screenshot` | A static PNG/JPEG of the current screen or browser viewport |
+| `video_recording` | A short screen recording captured by `ade proof record` |
+| `browser_trace` | A machine-readable record of browser interactions ingested from an external tool |
+| `browser_verification` | An assertion result (did an expected DOM element exist, did the page contain expected text) |
+| `console_logs` | Captured browser or application console output |
 
-    **Connection:** HTTP transport via `.ade/local.secret.yaml`
+Screenshots and short recordings are the most common kinds, because they can be captured directly by `ade proof` without any external dependency.
 
-    ```yaml
-    externalMcp:
-      - name: ghost-os
-        transport: http
-        url: https://ghost-os.local/mcp
-        autoStart: true
-    ```
+---
 
-    <Tip>
-    Ghost OS is the recommended backend for mission-critical automation where high reliability and proof coverage are required. Its structured trace format integrates most deeply with ADE's artifact system.
-    </Tip>
-  </Tab>
+## Where Proofs Show Up
 
-  <Tab title="agent-browser">
-    `agent-browser` is a CLI-native browser automation tool. ADE launches it as a subprocess via stdio transport. It is limited to web automation but requires no external server setup.
+| Context | Where proofs appear |
+|---|---|
+| Missions | The **Artifacts tab** on every mission detail view lists every proof captured during that mission |
+| Agent Chat | The session artifact panel surfaces proofs captured inside a chat session |
+| Pull Requests | Proofs routed to a PR appear in the **Path to Merge** tab as inline attachments |
+| Linear Issues | Published proofs are posted as attachments on the linked Linear issue |
+| Lanes | Every proof retains a link back to the lane the agent was working in |
 
-    **Capabilities:**
-    - Chromium-based browser automation
-    - DOM interaction, form filling, navigation
-    - Network request interception
-    - Console log capture
-
-    **Connection:** stdio subprocess via `.ade/local.secret.yaml`
-
-    ```yaml
-    externalMcp:
-      - name: agent-browser
-        transport: stdio
-        command: npx
-        args: ["-y", "@agent-browser/cli"]
-        autoStart: true
-    ```
-
-    <Note>
-    `agent-browser` requires Node.js 18+ and a Chromium installation. ADE will attempt to use the system Chromium or download a compatible version on first launch.
-    </Note>
-  </Tab>
-
-  <Tab title="ADE Local (Fallback)">
-    ADE Local is the built-in fallback backend. It provides limited computer-use capabilities when neither Ghost OS nor agent-browser is available. It is not recommended for production automation workflows.
-
-    **Capabilities:**
-    - Basic screenshot capture
-    - System clipboard read/write
-    - URL open in default browser
-
-    **Configuration:** No configuration required. ADE Local activates automatically when no other backend is connected.
-
-    <Warning>
-    ADE Local does not support browser traces, DOM verification, or video recording. It is intended as a minimal compatibility shim, not a primary backend. For any serious automation, configure Ghost OS or agent-browser.
-    </Warning>
-  </Tab>
-</Tabs>
-
-### Backend Capability Matrix
-
-| Capability | Ghost OS | agent-browser | ADE Local |
-|---|---|---|---|
-| Browser automation | Yes | Yes | No |
-| Desktop automation | Yes | No | No |
-| Screenshot capture | Yes | Yes | Yes |
-| Video recording | Yes | Yes | No |
-| Browser trace | Yes | Yes | No |
-| DOM verification | Yes | Yes | No |
-| Console log capture | Yes | Yes | No |
-| Multi-display | Yes | No | No |
-| Native app control | Yes | No | No |
+Agents attach proofs to owners when they capture them, or later via `ade proof` subcommands. You can also promote a proof from the UI — for example, sending a before/after screenshot from a chat session to a PR with a single click.
 
 ---
 
 ## Next Steps
 
 <CardGroup cols={3}>
-  <Card title="Connecting Backends" icon="plug" href="/computer-use/setup">
-    Step-by-step setup guides for Ghost OS and agent-browser, plus computer use policy reference.
+  <Card title="Setup & CLI" icon="terminal" href="/computer-use/setup">
+    Install prerequisites and walk through the `ade proof` commands agents use.
   </Card>
-  <Card title="Proofs & Artifacts" icon="camera" href="/computer-use/proofs">
-    Proof kinds, artifact ownership, and how computer use integrates with missions and chat.
+  <Card title="Proof Workflow" icon="camera" href="/computer-use/proofs">
+    How proofs are owned, reviewed, and published to PRs and Linear issues.
   </Card>
   <Card title="Configuration" icon="sliders" href="/computer-use/config">
-    Proof requirement profiles and troubleshooting common issues.
+    Storage paths, retention, and troubleshooting common capture issues.
   </Card>
 </CardGroup>
+</content>
+</invoke>

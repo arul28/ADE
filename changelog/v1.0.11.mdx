@@ -13,14 +13,14 @@ Largest release to date — 102 commits across 12 merged PRs.
 - **Agent session binding** — Chat sessions are now bound to the selected lane's worktree directory with the binding persisted across restarts. ADE launch directive injected into initial turns so agents know which lane/worktree they operate in
 - **Chat interrupt & subagent cancellation** — Interrupt signal cancels all active subagents spawned by the interrupted session. Queued steers cancelled on error/interrupt. Pending elicitations and approval promises drained on interrupt
 - **Claude tool approvals** — Per-session approval overrides for Claude tool calls with "Allow for Session" option. `canUseTool` blocks mutating calls unless explicitly approved
-- **MCP elicitation handler** — Supports URL and form-based auth flows with pending resolvers and UI requests
+- **ADE CLI elicitation handler** — Supports URL and form-based auth flows with pending resolvers and UI requests
 - **Chat tool calling with lane navigation** — Lane navigation integrated directly into the chat pane with `chatDraftStore` preserving unsent drafts per lane/session
 - **Chat title summaries** — Automatic AI-generated title summaries with manual naming support (`manuallyNamed` flag persisted across rehydration)
 - **Session resumption** — Resume previous chat sessions instead of always starting fresh, with per-session model tracking
 - **Plan mode auto-approval** — `ExitPlanMode` tool calls automatically approved when a session is in "plan" interaction mode
 - **Synthetic tool results** — `syntheticToolResult` module scans tool arguments for file paths and generates synthetic `tool_result` events for proof observer ingestion
 - **`ade-artifact://` protocol** — Custom protocol registered in the main process with MIME detection and HTTP Range support for video seeking
-- **MCP tools in unified chat sessions** — Unified sessions now spawn the ADE MCP server via stdio and bridge tools through the AI SDK `tool()` wrapper with approval guards
+- **ADE CLI tools in unified chat sessions** — Unified sessions now spawn the ADE ADE CLI via stdio and bridge tools through the AI SDK `tool()` wrapper with approval guards
 - **CLI executable resolver** — Cross-platform support (Windows PATHEXT, POSIX shell lookups) for Claude and Codex CLI detection
 - **Onboarding improvements** — Refactored `DevToolsSection` and `EmbeddingsSection` with improved UX, GitHub scope parsing with classic vs fine-grained permission normalization
 - **Auto-rebase engine overhaul** — `RebaseNeed` types with explicit `kind` field, root sweeping with debounce, auto-push after successful rebase with rollback on failure, chain-resolution for stacked lane hierarchies
@@ -28,7 +28,7 @@ Largest release to date — 102 commits across 12 merged PRs.
 ## Changed
 
 - **UI overhaul** — Redesigned chat composer footer, message list, session cards, and session list pane. Reordered tab navigation to prioritize Work and Lanes tabs. Work log blocks show only the latest tool call by default (expandable "Show N more")
-- **Agent chat service** — Expanded by +3,848 lines with Cursor ACP, unified MCP bridging, convergence runtime, approval/elicitation flows, and initial turn activity centralization
+- **Agent chat service** — Expanded by +3,848 lines with Cursor ACP, unified ADE CLI bridging, convergence runtime, approval/elicitation flows, and initial turn activity centralization
 - **Rebase flow** — Runtime lifecycle cleanup on worktree switch, `getRebaseNeed` throws on lookup errors (instead of returning null), rebase attention states preserved across emits
 - **Lane import logic** — Detects and reuses existing local branches, only creates tracking branches when needed, attempts parent lane detection via merge-base
 - **PR service** — Expanded with retarget error tracking, auto-rebase land support, and convergence state management
@@ -50,7 +50,7 @@ Largest release to date — 102 commits across 12 merged PRs.
 - **Rewritten history detection** — Reflog heuristic recommends force push correctly
 - **Stale embedding loads** — Fixed race conditions in embedding service
 - **Chat title race** — Re-checks `manuallyNamed` after async title generation
-- **MCP role escalation** — Headless MCP now guards `electron.safeStorage` access
+- **ADE CLI role escalation** — Headless ADE CLI now guards `electron.safeStorage` access
 - **kvDb CRR operations** — Added `crsqliteLoaded` guard for CRR alter operations
 
 ## Removed

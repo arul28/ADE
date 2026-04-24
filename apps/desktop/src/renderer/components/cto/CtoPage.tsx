@@ -37,6 +37,7 @@ import { OnboardingBanner } from "./OnboardingBanner";
 import { WorkerCreationWizard } from "./WorkerCreationWizard";
 import { shellBodyCls } from "./shared/designTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
 
 /* ── Tab types ── */
 
@@ -75,7 +76,6 @@ function statusDotCls(status: AgentStatus): string {
 
 export function CtoPage() {
   const lanes = useAppStore((s) => s.lanes);
-  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
 
   const [activeTab, setActiveTab] = useState<TabId>("chat");
   const [session, setSession] = useState<AgentChatSession | null>(null);
@@ -86,6 +86,17 @@ export function CtoPage() {
   const [coreMemory, setCoreMemory] = useState<CtoCoreMemory | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
   const [openclawStatus, setOpenclawStatus] = useState<OpenclawBridgeStatus | null>(null);
+
+  useEffect(() => {
+    const onTourTab = (event: Event) => {
+      const tab = (event as CustomEvent<TabId>).detail;
+      if (tab === "chat" || tab === "team" || tab === "workflows" || tab === "settings") {
+        setActiveTab(tab);
+      }
+    };
+    window.addEventListener("ade:tour-cto-tab", onTourTab);
+    return () => window.removeEventListener("ade:tour-cto-tab", onTourTab);
+  }, []);
 
   // Onboarding state
   const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
@@ -102,7 +113,6 @@ export function CtoPage() {
   const [workerWakeStatus, setWorkerWakeStatus] = useState<string | null>(null);
   const [workerWakeError, setWorkerWakeError] = useState<string | null>(null);
   const [wakingWorker, setWakingWorker] = useState(false);
-  const [externalMcpServerNames, setExternalMcpServerNames] = useState<string[]>([]);
   const [budgetLoading, setBudgetLoading] = useState(false);
 
   // Worker creation wizard
@@ -116,10 +126,7 @@ export function CtoPage() {
   const lastBudgetLoadAtRef = useRef(0);
   const ctoDisplayName = "CTO";
 
-  const laneId = useMemo(() => {
-    if (selectedLaneId && lanes.some((lane) => lane.id === selectedLaneId)) return selectedLaneId;
-    return lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null;
-  }, [lanes, selectedLaneId]);
+  const primaryLaneId = useMemo(() => resolveCtoPrimaryLaneId(lanes), [lanes]);
 
   const selectedWorker = useMemo(
     () => (selectedAgentId ? agents.find((a) => a.id === selectedAgentId) ?? null : null),
@@ -200,16 +207,6 @@ export function CtoPage() {
     }
   }, [budgetLoading, budgetSnapshot]);
 
-  const loadExternalMcpRegistry = useCallback(async () => {
-    if (!window.ade?.externalMcp) return;
-    try {
-      const configs = await window.ade.externalMcp.listConfigs();
-      setExternalMcpServerNames(configs.map((entry) => entry.name).sort((a, b) => a.localeCompare(b)));
-    } catch {
-      setExternalMcpServerNames([]);
-    }
-  }, []);
-
   useEffect(() => {
     void loadCtoSummary();
   }, [loadCtoSummary]);
@@ -238,12 +235,6 @@ export function CtoPage() {
     if ((activeTab !== "team" && activeTab !== "settings") || ctoHistoryLoadedRef.current) return;
     void loadCtoHistory();
   }, [activeTab, loadCtoHistory]);
-
-  useEffect(() => {
-    if (activeTab !== "settings" && !editorOpen) return;
-    if (externalMcpServerNames.length > 0) return;
-    void loadExternalMcpRegistry();
-  }, [activeTab, editorOpen, externalMcpServerNames.length, loadExternalMcpRegistry]);
 
   useEffect(() => {
     const unsubscribe = window.ade?.cto?.onOpenclawConnectionStatus?.((status) => {
@@ -300,18 +291,18 @@ export function CtoPage() {
       setSession(null);
       return;
     }
-    if (!laneId) { setSession(null); return; }
+    if (!primaryLaneId) { setSession(null); return; }
     let cancelled = false;
     setLoading(true); setError(null);
     const promise = selectedAgentId
-      ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId, laneId })
-      : window.ade.cto.ensureSession({ laneId });
+      ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId })
+      : window.ade.cto.ensureSession();
     void promise
       .then((next) => { if (!cancelled) setSession(next); })
       .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : String(err)); setSession(null); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activeTab, laneId, needsOnboarding, onboardingState, selectedAgentId, showOnboarding]);
+  }, [activeTab, needsOnboarding, onboardingState, primaryLaneId, selectedAgentId, showOnboarding]);
 
   // Deep links for guided setup flows
   useEffect(() => {
@@ -339,15 +330,15 @@ export function CtoPage() {
   /* ── Callbacks ── */
 
   const refreshPersistentCtoSession = useCallback(async () => {
-    if (!window.ade?.cto || !laneId || showOnboarding || needsOnboarding) {
+    if (!window.ade?.cto || !primaryLaneId || showOnboarding || needsOnboarding) {
       return null;
     }
-    const next = await window.ade.cto.ensureSession({ laneId });
+    const next = await window.ade.cto.ensureSession();
     if (!selectedAgentId) {
       setSession(next);
     }
     return next;
-  }, [laneId, needsOnboarding, selectedAgentId, showOnboarding]);
+  }, [needsOnboarding, primaryLaneId, selectedAgentId, showOnboarding]);
 
   const handleSaveCoreMemory = useCallback(async (patch: Record<string, unknown>) => {
     if (!window.ade?.cto) throw new Error("CTO bridge unavailable.");
@@ -418,11 +409,6 @@ export function CtoPage() {
                 }
               : {}
           ),
-          externalMcpAccess: {
-            allowAll: workerDraft.externalMcpAllowAll,
-            allowedServers: workerDraft.externalMcpAllowedServers,
-            blockedServers: workerDraft.externalMcpBlockedServers,
-          },
           budgetMonthlyCents: Math.max(0, Math.round(workerDraft.budgetDollars * 100)),
         },
       });
@@ -543,7 +529,6 @@ export function CtoPage() {
       executionMode: session.executionMode ?? null,
       identityKey: session.identityKey,
       capabilityMode: session.capabilityMode,
-      computerUse: session.computerUse,
       status: session.status,
       startedAt: session.createdAt,
       endedAt: session.status === "ended" ? session.lastActivityAt : null,
@@ -617,6 +602,8 @@ export function CtoPage() {
       )}
 
       {/* Agent sidebar */}
+      {/* tour anchor — wraps AgentSidebar so data-tour attaches to a stable container */}
+      <div data-tour="cto.sidebar" style={{ display: "contents" }}>
       <AgentSidebar
         agents={agents}
         selectedAgentId={selectedAgentId}
@@ -627,6 +614,7 @@ export function CtoPage() {
         onHireWorker={handleHireWorker}
         ctoModelInfo={sidebarCtoModelInfo}
       />
+      </div>
 
       {/* Main content */}
       <div className="flex flex-1 flex-col min-w-0 min-h-0">
@@ -691,9 +679,9 @@ export function CtoPage() {
           <div className={cn("h-full min-h-0 flex-col p-4 pt-0", activeTab === "chat" ? "flex" : "hidden")}>
             {loading && <div className="px-1 py-2 text-xs text-muted-fg/55" data-testid="cto-loading">Connecting persistent session...</div>}
             {error && <div className="px-1 py-2 text-xs text-error" data-testid="cto-error">{error}</div>}
-            {!laneId && (
+            {!primaryLaneId && (
               <div className="px-1 py-2 text-xs text-muted-fg/55" data-testid="cto-no-lane">
-                Create a lane to start the persistent CTO session.
+                ADE could not resolve the primary lane for the persistent CTO session.
               </div>
             )}
 
@@ -726,10 +714,12 @@ export function CtoPage() {
                 </div>
               ) : (
                 <AgentChatPane
-                  laneId={laneId}
+                  laneId={primaryLaneId}
                   lockSessionId={session?.id ?? null}
                   initialSessionSummary={lockedSessionSummary}
                   hideSessionTabs
+                  hideNativeControls
+                  hideWorkspaceChrome
                   presentation={persistentIdentityPresentation}
                 />
               )}
@@ -738,7 +728,7 @@ export function CtoPage() {
 
           {/* Team tab */}
           {activeTab === "team" && (
-            <div className="flex flex-col h-full min-h-0 overflow-y-auto">
+            <div className="flex flex-col h-full min-h-0 overflow-y-auto" data-tour="cto.teamPanel">
               {showWorkerWizard ? (
                 <div className="p-4">
                   <WorkerCreationWizard
@@ -757,7 +747,6 @@ export function CtoPage() {
                     draft={workerDraft}
                     setDraft={setWorkerDraft}
                     agents={agents}
-                    availableExternalMcpServers={externalMcpServerNames}
                     saving={savingWorker}
                     error={workerError}
                     onSave={() => void saveWorker()}
@@ -871,19 +860,24 @@ export function CtoPage() {
           )}
 
           {/* Linear tab */}
-          {activeTab === "workflows" && <LinearSyncPanel lanes={lanes} selectedLaneId={laneId} />}
+          {activeTab === "workflows" && (
+            <div data-tour="cto.linearPanel" className="h-full min-h-0">
+              <LinearSyncPanel lanes={lanes} selectedLaneId={primaryLaneId} />
+            </div>
+          )}
 
           {/* Settings tab */}
           {activeTab === "settings" && (
-                <CtoSettingsPanel
-                  identity={ctoIdentity}
-                  coreMemory={coreMemory}
-                  sessionLogs={sessionLogs}
-                  availableExternalMcpServers={externalMcpServerNames}
-                  onSaveIdentity={handleSaveCtoIdentity}
-                  onSaveCoreMemory={handleSaveCoreMemory}
-                  onResetOnboarding={handleResetOnboarding}
-            />
+            <div data-tour="cto.settingsPanel" className="h-full min-h-0">
+              <CtoSettingsPanel
+                identity={ctoIdentity}
+                coreMemory={coreMemory}
+                sessionLogs={sessionLogs}
+                onSaveIdentity={handleSaveCtoIdentity}
+                onSaveCoreMemory={handleSaveCoreMemory}
+                onResetOnboarding={handleResetOnboarding}
+              />
+            </div>
           )}
         </div>
       </div>

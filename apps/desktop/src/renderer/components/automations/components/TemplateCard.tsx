@@ -16,16 +16,21 @@ export function TemplateCard({
   template,
   onUse,
   className,
+  disabled = false,
+  disabledReason,
 }: {
   template: AutomationTemplate;
   onUse: () => void;
   className?: string;
+  disabled?: boolean;
+  disabledReason?: string;
 }) {
   const Icon = template.icon;
   return (
     <div
       className={cn(
         "group p-4 flex flex-col gap-3 transition-all duration-150 hover:-translate-y-[1px]",
+        disabled && "opacity-55",
         className,
       )}
       style={CARD_STYLE}
@@ -58,10 +63,12 @@ export function TemplateCard({
       <Button
         size="sm"
         variant="outline"
+        disabled={disabled}
+        title={disabledReason}
         onClick={onUse}
         className="self-end opacity-0 group-hover:opacity-100 transition-opacity duration-150"
       >
-        Use Template
+        {disabled ? "Coming Soon" : "Use Template"}
       </Button>
     </div>
   );

@@ -25,6 +25,10 @@ export type GraphNodeData = {
   autoRebaseStatus: AutoRebaseLaneStatus | null;
   activeSessions: number;
   collapsedChildCount: number;
+  /** Steps from the workspace primary lane along parent links (0 = primary). */
+  hierarchyDepth: number;
+  /** Immediate parent lane name when parent exists in the workspace. */
+  parentLaneName: string | null;
   dimmed: boolean;
   activityBucket: "min" | "low" | "medium" | "high";
   viewMode: GraphViewMode;

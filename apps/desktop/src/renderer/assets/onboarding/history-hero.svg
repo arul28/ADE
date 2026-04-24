@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160" fill="none">
+  <line x1="60" y1="80" x2="260" y2="80" stroke="var(--color-separator, rgba(255,255,255,0.12))" stroke-width="2"/>
+  <circle cx="80" cy="80" r="6" fill="var(--color-accent, #A78BFA)"/>
+  <circle cx="130" cy="80" r="6" fill="var(--color-accent, #A78BFA)"/>
+  <circle cx="180" cy="80" r="6" fill="var(--color-accent, #A78BFA)"/>
+  <circle cx="240" cy="80" r="6" fill="var(--color-fg, #F0F0F2)"/>
+  <text x="75" y="110" font-family="var(--font-mono, monospace)" font-size="9" fill="var(--color-muted-fg, #908FA0)">lane</text>
+  <text x="115" y="110" font-family="var(--font-mono, monospace)" font-size="9" fill="var(--color-muted-fg, #908FA0)">commit</text>
+  <text x="167" y="110" font-family="var(--font-mono, monospace)" font-size="9" fill="var(--color-muted-fg, #908FA0)">push</text>
+  <text x="225" y="110" font-family="var(--font-mono, monospace)" font-size="9" fill="var(--color-muted-fg, #908FA0)">now</text>
+</svg>

@@ -132,11 +132,19 @@ export function CreateLaneDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Create lane"
+      description="Create a lane from Primary, an existing branch, or another lane."
       icon={Plus}
       widthClassName="w-[min(560px,calc(100vw-24px))]"
       busy={busy}
+      onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        const target = document.querySelector<HTMLElement>(
+          '[data-tour="lanes.laneTab"], [data-tour="lanes.newLane"]',
+        );
+        target?.focus?.();
+      }}
     >
-      <div className="space-y-3">
+      <div className="space-y-3" data-tour="lanes.createDialog">
         {/* Lane name */}
         <section className={SECTION_CLASS_NAME}>
           <label className="block">
@@ -148,6 +156,7 @@ export function CreateLaneDialog({
               className={INPUT_CLASS_NAME}
               autoFocus
               disabled={busy || laneCreated}
+              data-tour="lanes.createDialog.name"
             />
           </label>
         </section>
@@ -156,7 +165,7 @@ export function CreateLaneDialog({
         <section className={SECTION_CLASS_NAME}>
           <span className={LABEL_CLASS_NAME}>Start from</span>
 
-          <div className="mt-2 grid grid-cols-3 gap-2">
+          <div className="mt-2 grid grid-cols-3 gap-2" data-tour="lanes.createDialog.tabs">
             {MODE_ORDER.map((mode) => {
               const meta = MODE_META[mode];
               const Icon = meta.icon;
@@ -170,6 +179,11 @@ export function CreateLaneDialog({
                   type="button"
                   aria-pressed={active}
                   disabled={busy || laneCreated}
+                  {...(mode === "primary"
+                    ? { "data-tour": "lanes.createDialog.primaryTab" }
+                    : mode === "existing"
+                      ? { "data-tour": "lanes.createDialog.branchTab" }
+                      : { "data-tour": "lanes.createDialog.childTab" })}
                   onClick={() => {
                     setCreateMode(mode);
                     if (mode !== "child") {
@@ -206,6 +220,7 @@ export function CreateLaneDialog({
                     className={SELECT_CLASS_NAME + " !mt-0"}
                     disabled={busy || laneCreated}
                     aria-label="Base branch"
+                    data-tour="lanes.createDialog.branchBase"
                   >
                     {localBranches.map((b) => (
                       <option key={b.name} value={b.name}>
@@ -396,7 +411,7 @@ export function CreateLaneDialog({
           >
             Cancel
           </Button>
-          <Button variant="primary" disabled={isSubmitDisabled} onClick={onSubmit}>
+          <Button variant="primary" data-tour="lanes.createDialog.create" disabled={isSubmitDisabled} onClick={onSubmit}>
             {submitLabel(busy, createMode, createBaseBranch, laneCreated)}
           </Button>
         </div>

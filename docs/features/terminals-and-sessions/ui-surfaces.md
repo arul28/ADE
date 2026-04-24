@@ -34,6 +34,18 @@ Lists sessions grouped by one of three modes (controlled by
 Each group uses a `StickyGroupHeader` with collapsed-state persistence
 via `workCollapsedLaneIds` / `workCollapsedSectionIds`.
 
+In `by-lane` mode, any session whose `laneId` is not in the current
+lanes list is still rendered under its own sticky "orphan lane" group
+below the active lane groups. The list is built from
+`missingLaneSessionGroups`: every `laneId` from `sessionsGroupedByLane`
+that's absent from the `lanes` set becomes a group, labelled with the
+session's `laneName` (falling back to the raw `laneId`) and sorted by
+most-recent `startedAt`, with ties broken alphabetically. These groups
+reuse the same `workCollapsedLaneIds` persistence, so a user who
+collapses an orphan group sees it stay collapsed on reload. This keeps
+sessions reachable when their lane has been archived, deleted, or not
+yet loaded, instead of quietly dropping them from the sidebar.
+
 Also renders:
 
 - draft-kind switcher (chat vs terminal) at the top
@@ -70,9 +82,12 @@ Owns the render target for open sessions. Supports three modes tied to
 `viewMode`:
 
 - `tabs` — tab-strip + single `SessionSurface` for the active tab, plus
-  a "New Chat" button in the tab strip.
-- `grid` — packed grid layout, each tile is a `SessionSurface` in
-  `grid-tile` variant.
+  a "New Chat" button in the tab strip. A second sub-mode (`hasGroupedTabs`)
+  renders lane-grouped tab chips with per-group collapse.
+- `grid` — tiled pane layout. Each session becomes a `PaneConfig` that
+  mounts a `SessionSurface` in `grid-tile` variant. The tiling tree is
+  rendered by `PaneTilingLayout`, seeded by
+  `buildWorkSessionTilingTree(visibleSessionIds)`.
 - `single` — a single focused session with no tab chrome.
 
 ### `SessionSurface` (internal component)
@@ -95,35 +110,101 @@ Props that matter:
 - `layoutVariant` — `"standard"` (single tab) vs `"grid-tile"`
   (compact chrome, smaller fonts).
 
+Grid mode keeps running PTY sessions mounted so multiple terminals can
+stay live at once; `isActive` only controls focus/input, not whether the
+terminal renderer exists.
+
 Constants:
 
 - `CHAT_TILE_MIN_WIDTH = 440`, `CHAT_TILE_MIN_HEIGHT = 340`
 - `TERMINAL_TILE_MIN_WIDTH = 320`, `TERMINAL_TILE_MIN_HEIGHT = 220`
 
-## Packed grid: `PackedSessionGrid.tsx` + `packedSessionGridMath.ts`
+## Grid mode: `PaneTilingLayout` + `workSessionTiling.ts`
 
-Resizable tile layout. Each tile has an independent `colSpan` and
-`rowSpan`; the math module bin-packs tiles into rows/columns to minimize
-gaps:
+The Work grid is a standard `PaneTilingLayout` instance with one leaf
+per visible session. Two helpers build the inputs:
 
-- `computeGridColumnCount(containerWidth, tileCount, minTileWidth)`
-- `computeMinimumRowSpan()` / `computeMinimumColSpan()`
-- `clampPackedGridSpan()` — enforces per-tile min/max spans
-- `packGridItems(items)` — places each tile in the first available
-  slot scanning rows then columns
-- `computePackedGridRowHeight(containerHeight, rowCount)` — distributes
-  height evenly, min `GRID_BASE_ROW_PX = 120`
-- `reconcilePackedGridLayout(persistedLayout, activeIds)` — preserves
-  spans for tiles that come back later
+- `buildWorkSessionTilingTree(sessionIds)` (in `workSessionTiling.ts`)
+  returns the seed `PaneSplit` used when nothing has been persisted for
+  the current `gridLayoutId`. It biases toward near-square layouts:
+  `columnCount = ceil(sqrt(n))`, `rowCount = ceil(n / columnCount)`,
+  then `rowSizes(n, rowCount)` spreads sessions across rows so
+  earlier rows absorb the remainder. The outer split is vertical; each
+  row becomes an inline horizontal split (or a single leaf when the row
+  has one session). `minSize: 8%` (MIN_PANE_SIZE) / `12%` (MIN_ROW_SIZE)
+  floors protect against accidentally collapsing a row.
+- `WorkViewArea` builds one `PaneConfig` per visible session (keyed by
+  `session.id`) with title, status dot, close button, mouse/context
+  handlers that forward to `onSelectItem` / `onContextMenu`, and a
+  `SessionSurface` child in `grid-tile` variant.
 
-Spans are persisted per session via `readPackedGridSpan` /
-`reconcilePackedGridLayout` and survive session switches.
+The actual split tree, resize state, and pane origin are owned by
+`PaneTilingLayout`. See the next section for invariants the layout
+enforces.
+
+## Pane tiling layout primitives
+
+`PaneTilingLayout` (`apps/desktop/src/renderer/components/ui/PaneTilingLayout.tsx`)
+and its pure operations (`paneTreeOps.ts`) are shared across the Work
+grid, `LanesPage`, `TerminalsPage` itself, and history detail views.
+Reconciliation invariants the layout guarantees:
+
+- **Seed tree.** Consumers pass a `tree: PaneSplit` prop that describes
+  the default layout for the current set of pane IDs. `collectLeafIds(tree)`
+  is the canonical `expectedPaneIds` list.
+- **Persistence.** On mount the layout reads a persisted tree from
+  `window.ade.tilingTree.get(layoutId)`. Every user-driven change
+  (drop-edge split, swap, reconciliation) is written back with a 300 ms
+  debounce. Panel sizes use a separate `DockLayoutState` store keyed by
+  `layoutId` + positional path; any tree mutation resets that panel-size
+  store so newly-split panels start from their `defaultSize` instead of
+  inheriting a stale saved percentage.
+- **Tree reconciliation.** `reconcilePaneTree(candidate, expectedPaneIds,
+  fallback)` is called both on load (against the persisted tree) and on
+  prop-tree changes. It drops leaves that are no longer expected,
+  flattens any single-child splits produced by that removal, and
+  inserts missing pane IDs by splitting the leaf with the largest
+  computed weight (direction alternates: a missing pane added to a
+  horizontal parent becomes a vertical split, and vice versa).
+  Duplicate leaves or unknown IDs surviving the cleanup pass cause the
+  whole tree to be replaced with the fallback.
+- **Drop-edge detection.** `detectDropEdge(rect, clientX, clientY)`
+  maps a pointer position to `top | bottom | left | right | center`
+  using a 25 % edge threshold. The center zone triggers a swap
+  (`swapPanes`); the four edges trigger `splitPaneAtEdge(tree, targetId,
+  draggedId, edge)`, which prunes the dragged leaf, coerces the
+  remaining tree to a split in the correct orientation, and replaces
+  the target leaf with a two-child split whose child order follows the
+  edge (`right`/`bottom` keep the target first; `left`/`top` put the
+  dragged pane first).
+- **Minimization.** Each leaf can minimize via its `FloatingPane`
+  header. `PaneTilingLayout` runs two compaction passes off the
+  `minimized` map: an individual-leaf pass that shrinks the leaf's
+  containing panel to `LEAF_MINIMIZED_{HEIGHT,WIDTH}_PX`, and a
+  split-level pass that compacts an entire subtree when every
+  descendant leaf is minimized (`COMPACTED_WIDTH_PX` for horizontal
+  parents, `COMPACTED_HEIGHT_PER_LEAF_PX × leafCount` for vertical
+  parents). Both paths restore the previous panel size on un-minimize
+  via `PanelImperativeHandle.resize`.
+
+`FloatingPane` now also accepts `onPaneMouseDown` / `onPaneContextMenu`
+so consumers (like the Work grid) can run selection / context-menu
+logic on the wrapper without subscribing through drag handlers.
+`PaneConfig` exposes a `className` pass-through so callers can apply
+their own tile chrome classes (e.g. `ade-work-glass-tile`) alongside
+the floating-pane defaults.
 
 ## Terminal renderer: `TerminalView.tsx`
 
 Thin wrapper over xterm.js + `FitAddon`. Caches `Terminal` instances in
 a module-level map keyed by `(ptyId, sessionId)` so a remount does not
-rebuild the emulator.
+rebuild the emulator. Each cached entry also records the
+`(projectRoot, projectRevision)` it was created under; on mount,
+`disposeStaleRuntimes(activeProjectRoot, activeProjectRevision)` tears
+down any entries whose project context no longer matches, which is how
+terminal cache state gets cleared on project switch or close without
+ever leaking PTYs between projects. The `projectRevision` counter
+lives in `useAppStore` and is bumped on every real project change.
 
 Renderer strategy: WebGL-first, fall back to the DOM renderer on any
 init failure or context loss. Canvas renderer is intentionally skipped
@@ -150,6 +231,13 @@ Key behaviors:
   `terminalPreferences` changes and applies font family, font size,
   line height, and scrollback to the live terminal, clearing the
   texture atlas to force glyph re-rasterization for WebGL.
+- **Frame-write scheduling** — pending frame writes are coalesced on
+  `requestAnimationFrame` when the runtime is visible and the page is
+  foregrounded; a 16 ms `setTimeout` fallback takes over whenever the
+  runtime is parked (no refs), hidden, or the document is
+  backgrounded, so background terminals don't stall on `rAF` ticks
+  that the browser suppresses. `flushPendingFrameWrites` / `clearFrameWriteSchedule`
+  own both code paths.
 
 Font stack defaults: `ui-monospace`, `SFMono-Regular`, `Menlo`,
 `Monaco`, `Cascadia Mono`, `JetBrains Mono`, `Geist Mono`, `monospace`.
@@ -242,9 +330,12 @@ nothing when no delta is available.
 - The Work tab and the Lanes tab share the hook; changes to
   `useWorkSessions` ripple. Keep lane-scoped persistence keyed by
   `projectRoot::laneId` or the Lanes tab state leaks across projects.
-- `PackedSessionGrid` renders all tiles; only suspended tiles become
-  preview cards. The decision is driven by `terminalVisible` via
-  `IntersectionObserver` wiring inside the grid component.
+- The Work grid is `PaneTilingLayout` — every visible session has a
+  leaf and stays mounted. Grid tiles pass `terminalVisible={true}`;
+  `isActive` controls input but not mount state, so multiple PTYs can
+  stay live at once. The gridLayoutId is namespaced
+  (`work:grid:tiling:v1:<projectRoot>[::<laneId>]`) so a persisted
+  layout travels with the project/lane pair.
 
 ## Cross-links
 

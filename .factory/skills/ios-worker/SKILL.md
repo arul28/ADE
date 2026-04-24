@@ -1,6 +1,6 @@
 ---
 name: ios-worker
-description: Implements and tests SwiftUI views and components for the iOS app
+description: Implements and tests SwiftUI views, navigation flows, and shared iOS design-system work for ADE
 ---
 
 # iOS Worker
@@ -9,7 +9,16 @@ NOTE: Startup and cleanup are handled by `worker-base`. This skill defines the W
 
 ## When to Use This Skill
 
-Use for any feature that involves creating or modifying Swift/SwiftUI code in the iOS app at `apps/ios/ADE/`. This includes view extraction, UI redesign, component creation, and performance optimization.
+Use for features that are primarily iOS UI work inside `apps/ios/ADE/`, including:
+
+- SwiftUI screen extraction and file splitting
+- mobile information architecture changes inside existing tabs
+- shared iOS design-system and Liquid Glass component work
+- accessibility and motion-polish work
+- iOS-side performance cleanup in view code
+- iOS tests in `apps/ios/ADETests/`
+
+Do not use this skill for desktop sync-host, shared contract, `SyncService`, `RemoteModels`, or database features. Those belong to a sync/backend worker.
 
 ## Work Procedure
 
@@ -20,16 +29,18 @@ Read the feature description, preconditions, expectedBehavior, and verificationS
 - Read `mission.md` for overall mission context
 - Read `AGENTS.md` for boundaries and conventions
 - Read `.factory/library/architecture.md` for app architecture and patterns
-- Read the existing code files you'll be modifying
-- If the feature modifies or replaces existing views, read the FULL original `LanesTabView.swift` to understand the complete existing implementation before making changes
+- Read `.factory/library/tab-parity.md` and `.factory/library/performance.md` when the feature touches parity or lag-sensitive flows
+- Read the existing code files you'll be modifying in full
+- If the feature touches a tab other than Lanes, still read the relevant Lanes benchmark components to match the established mobile quality bar
 
 ### 2. Plan the Changes
 
 Before writing any code:
 - List every file you'll create or modify
 - Identify which existing code to preserve vs. rewrite
-- Note which SyncService methods the views need to call
-- Check that your plan doesn't violate any boundary (no changes to SyncService, RemoteModels, Database)
+- Note which existing `syncService` methods the views need to call
+- Identify which shared components should be promoted into `Views/Components/` instead of duplicated inside a tab
+- Check that your plan stays on the iOS/UI side of the boundary; if the feature needs `SyncService`, `RemoteModels`, `Database`, or desktop host changes, stop and return to the orchestrator
 
 ### 3. Write Tests First (Red)
 
@@ -42,13 +53,14 @@ For any testable logic (filters, computed properties, data transformations, dire
 ### 4. Implement (Green)
 
 Write the SwiftUI code:
-- **File organization**: Each major view gets its own file under `apps/ios/ADE/Views/Lanes/`. Keep files under 500 lines.
-- **Design system**: Use `ADEColor.*` for colors, `ADEMotion.*` for animations, `.adeGlassCard()` for card surfaces, `.adeInsetField()` for inputs, `ADENoticeCard` for notices, `ADEStatusPill` for badges, `ADEEmptyStateView` for empty states, `ADESkeletonView`/`ADECardSkeleton` for loading.
+- **File organization**: Each major screen or slice gets its own file under the relevant tab folder (`Views/Lanes/`, `Views/Files/`, `Views/Work/`, `Views/PRs/`, `Views/Settings/`). Keep files under 500 lines; if a feature leaves a file bigger than that, split again before handing off.
+- **Design system**: Use `ADEColor.*`, `ADEMotion.*`, `.adeGlassCard()`, `.adeInsetField()`, `.adeNavigationGlass()`, `.adeScreenBackground()`, `ADENoticeCard`, `ADEStatusPill`, `ADEEmptyStateView`, `ADESkeletonView`, `ADECardSkeleton`, and shared glass helpers instead of ad-hoc styling.
+- **Liquid Glass**: Prefer shared glass primitives and matched navigation transitions over one-off background/stroke recipes. When adding repeated chips or buttons, prefer reusable shared components instead of tab-local copies.
 - **Accessibility**: Add `.accessibilityLabel` to all interactive elements. Use `ADEMotion` which respects `reduceMotion`. Preserve `.sensoryFeedback` on appropriate interactions.
 - **Data access**: Use `@EnvironmentObject var syncService: SyncService`. Call existing SyncService methods — never add new ones.
-- **State management**: Use `@State` for local view state. Use `.task(id: syncService.localStateRevision)` for reactive data loading.
-- **Lazy loading**: Use `LazyVStack` for lists with many items (file changes, commits, lane list).
-- **No changes** to SyncService.swift, RemoteModels.swift, Database.swift, or DatabaseBootstrap.sql.
+- **State management**: Use `@State` for local state. Prefer debounced `.task(id: syncService.localStateRevision)` patterns matching the Lanes benchmark when reloading cached projections.
+- **Performance**: Use lazy containers for large lists, avoid heavy parsing/computation in `body`, cache expensive derived values in state/view-model helpers, and preserve source-tab context on return navigation.
+- **Boundary**: No changes to `SyncService.swift`, `RemoteModels.swift`, `Database.swift`, desktop services, or shared sync contracts from this skill.
 
 ### 5. Update Xcode Project
 
@@ -62,31 +74,30 @@ When creating new Swift files, you MUST add them to the Xcode project:
 Run these commands and fix any issues:
 
 ```bash
-# Pick an available simulator pair on the current machine first.
-xcrun simctl list runtimes
-xcrun simctl list devices available
-DESTINATION="platform=iOS Simulator,name=<available iPhone>,OS=<available iOS runtime>"
+# Mission simulator target
+DESTINATION="platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1"
 
-# Build
+# Build / test / analyzer
 xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination "$DESTINATION" -quiet
-
-# Test
 xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination "$DESTINATION" -quiet
+xcodebuild -project apps/ios/ADE.xcodeproj -scheme ADE -destination "$DESTINATION" -derivedDataPath /tmp/ade-build analyze
 
 # Check file sizes (no file should exceed 500 lines)
 find apps/ios/ADE -name '*.swift' -exec wc -l {} + | sort -rn | head -20
 ```
 
-All must pass. If build fails, fix immediately. If tests fail, fix immediately. If any file exceeds 500 lines, split it.
+All must pass for the touched surface. If build or tests fail, fix immediately. If a failure is clearly pre-existing and outside the feature boundary, return to the orchestrator with evidence instead of hand-waving past it.
 
 ### 7. Manual Verification
 
-Since the app requires a paired desktop host for runtime testing:
-- Review your code for correctness by tracing data flow from SyncService through to the view
-- Verify all SyncService method calls match the existing API exactly (check method signatures)
-- Verify all RemoteModels properties are accessed correctly (check property names and types)
-- Ensure no unused imports, dead code, or TODO placeholders remain
-- Confirm view hierarchy is correct (NavigationStack, sheets, navigation links)
+Do the strongest manual verification the feature allows:
+
+- Trace the full data flow from `SyncService` through the view hierarchy
+- Verify `syncService` method calls and model property names match the existing API exactly
+- If the feature can be checked in the simulator without a live host, do so
+- If the feature depends on live sync data, validate against the paired desktop host when that service is available in the mission
+- Check that navigation back/return preserves the source context for mobile triage flows
+- Ensure no unused imports, dead code, placeholder copy, or TODO markers remain
 
 ### 8. Commit
 
@@ -96,8 +107,8 @@ Commit with a clear message describing what was implemented.
 
 ```json
 {
-  "salientSummary": "Extracted LaneDetailScreen, LaneCreateSheet, LaneAttachSheet, LaneDiffScreen, LaneBatchManageSheet, LaneStackGraphSheet, and shared components from the monolithic LanesTabView.swift into 12 separate files under Views/Lanes/. Created LaneTypes.swift for shared enums/structs and LaneHelpers.swift for utility functions. All 50 existing tests pass. No file exceeds 500 lines. Build succeeds.",
-  "whatWasImplemented": "Split LanesTabView.swift (3,749 lines) into 12 files: LanesTabView.swift (thin coordinator, ~300 lines), LaneDetailScreen.swift (~450 lines), LaneCreateSheet.swift (~180 lines), LaneAttachSheet.swift (~90 lines), LaneDiffScreen.swift (~200 lines), LaneBatchManageSheet.swift (~150 lines), LaneStackGraphSheet.swift (~80 lines), LaneChatLaunchSheet.swift (~120 lines), LaneSessionTranscriptView.swift (~100 lines), LaneChatSessionView.swift (~100 lines), LaneComponents.swift (~350 lines, shared small components), LaneTypes.swift (~80 lines, enums and model structs), LaneHelpers.swift (~120 lines, search/format helpers). Updated project.pbxproj with all new file references.",
+  "salientSummary": "Split the Work tab into mobile-first subviews, added a reusable glass section/chip stack in Views/Components, and stabilized session list/detail navigation so filters and context survive round-trips. Build, tests, and analyzer passed on the mission simulator target.",
+  "whatWasImplemented": "Refactored WorkTabView.swift into focused files under Views/Work/, promoted reusable glass chips/section containers into Views/Components/, and updated the Work list/detail flows to preserve lane/search/filter context when opening sessions and returning. The new UI keeps chat/terminal sessions readable on iPhone, uses shared glass styling, and removes several hot-path computations from SwiftUI body evaluation.",
   "whatWasLeftUndone": "",
   "verification": {
     "commandsRun": [
@@ -109,22 +120,27 @@ Commit with a clear message describing what was implemented.
       {
         "command": "xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet",
         "exitCode": 0,
-        "observation": "All 50 tests passed"
+        "observation": "The iOS test suite passed on the mission destination"
+      },
+      {
+        "command": "xcodebuild -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build analyze",
+        "exitCode": 0,
+        "observation": "Static analysis completed without blocking diagnostics"
       },
       {
         "command": "find apps/ios/ADE -name '*.swift' -exec wc -l {} + | sort -rn | head -20",
         "exitCode": 0,
-        "observation": "Largest file is LaneDetailScreen.swift at 448 lines. All files under 500 line limit."
+        "observation": "New and modified Swift files stayed within the file-size limit after extraction"
       }
     ],
     "interactiveChecks": [
       {
-        "action": "Traced data flow from SyncService.fetchLaneListSnapshots through LanesTabView to LaneListRow",
-        "observed": "All property accesses match RemoteModels.LaneListSnapshot fields. No missing or renamed properties."
+        "action": "Traced session list → session detail → back navigation on the refactored Work surface",
+        "observed": "The source lane/filter/search context remained intact after returning from detail"
       },
       {
-        "action": "Verified all SyncService method calls in extracted views match original signatures",
-        "observed": "All 35 service calls preserved with correct parameter names and types."
+        "action": "Reviewed all promoted shared components and the new Work subviews against the existing SyncService API",
+        "observed": "All property and method accesses remained within the existing iOS/UI boundary and matched current signatures"
       }
     ]
   },
@@ -137,9 +153,8 @@ Commit with a clear message describing what was implemented.
 
 ## When to Return to Orchestrator
 
-- SyncService method signatures don't match what the view expects (API contract issue)
-- RemoteModels properties are missing or have different types than expected
-- Xcode project file is corrupted or in an unrecoverable state
-- Build fails due to issues outside the lanes tab code
-- A feature requires changes to SyncService, RemoteModels, or Database (boundary violation)
-- File exceeds 500 lines and cannot be reasonably split without changing the feature boundary
+- The feature requires changes to `SyncService`, `RemoteModels`, `Database`, desktop services, or shared sync contracts
+- The existing API/data shape cannot support the feature without backend or contract work
+- Xcode project state becomes corrupted or unrecoverable
+- Build/test/analyzer failures are outside the touched iOS surface and cannot be repaired safely inside the feature boundary
+- A file still exceeds 500 lines after a reasonable split attempt

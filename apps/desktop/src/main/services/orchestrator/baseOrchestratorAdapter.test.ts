@@ -268,6 +268,6 @@ describe("buildFullPrompt", () => {
     expect(prompt.prompt).toContain("This worker is running in-process.");
     expect(prompt.prompt).toContain("RUNTIME LIMITS:");
     expect(prompt.prompt).not.toContain("ALWAYS call `report_result`");
-    expect(prompt.prompt).not.toContain("ADE MCP TOOLS:");
+    expect(prompt.prompt).not.toContain("ADE TOOLING:");
   });
 });

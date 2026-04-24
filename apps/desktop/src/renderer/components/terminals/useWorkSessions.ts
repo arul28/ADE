@@ -278,6 +278,8 @@ export function useWorkSessions() {
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
+  const appliedUrlFilterKeyRef = useRef<string | null>(null);
+  const partiallyAppliedUrlFilterKeyRef = useRef<string | null>(null);
   const hasLoadedOnceRef = useRef(false);
   const projectRootRef = useRef<string | null>(projectRoot);
 
@@ -592,6 +594,8 @@ export function useWorkSessions() {
     hasLoadedOnceRef.current = false;
     hasRunningSessionsRef.current = false;
     appliedQuerySessionIdRef.current = null;
+    appliedUrlFilterKeyRef.current = null;
+    partiallyAppliedUrlFilterKeyRef.current = null;
     if (!projectRoot) return;
     refresh({ showLoading: true, force: true }).catch(() => {});
   }, [projectRoot, refresh]);
@@ -601,16 +605,57 @@ export function useWorkSessions() {
   }, [sessions]);
 
   useEffect(() => {
+    const sessionParam = (searchParams.get("sessionId") ?? "").trim();
     const laneParam = (searchParams.get("laneId") ?? searchParams.get("lane") ?? "").trim();
+    const statusParam = (searchParams.get("status") ?? "").trim();
+    // When a sessionId is requested, only skip the lane/status fallback if
+    // that session actually exists. If it's stale/missing (after the first
+    // load completes) we fall through so the URL's laneId/status hints still
+    // narrow the view instead of dumping the user into an unrelated context.
+    if (sessionParam) {
+      const sessionExists = sessions.some((s) => s.id === sessionParam);
+      if (sessionExists) {
+        appliedUrlFilterKeyRef.current = null;
+        partiallyAppliedUrlFilterKeyRef.current = null;
+        return;
+      }
+      if (!hasLoadedOnceRef.current) return;
+    }
+    // Apply URL-derived filters at most once per URL signature so later
+    // session-list refreshes (which add sessions to our deps) don't stomp
+    // on a user's manually-changed lane/status filters.
+    const urlKey = `${sessionParam}|${laneParam}|${statusParam}`;
+    if (appliedUrlFilterKeyRef.current === urlKey) return;
     const laneExists = laneParam && lanes.some((lane) => lane.id === laneParam);
-    const status = mapUrlStatusFilter(searchParams.get("status") ?? "");
-    if (!laneExists && !status) return;
+    const status = mapUrlStatusFilter(statusParam);
+    if (!laneExists && !status) {
+      appliedUrlFilterKeyRef.current = null;
+      partiallyAppliedUrlFilterKeyRef.current = null;
+      return;
+    }
+    // When the URL specifies a laneId but lanes haven't populated yet (e.g. on
+    // project open/switch the store resets lanes to [] then repopulates async),
+    // we can't tell whether the lane is missing-for-good or just-not-yet-loaded.
+    // In that case, apply any status hint but don't cache the URL signature —
+    // come back once lanes populate so the lane portion can apply too. We only
+    // mark the key applied when the lane portion was definitively applied, or
+    // when lanes are loaded (non-empty) so "not found" is an authoritative
+    // negative signal.
+    const laneDeterminable = !laneParam || laneExists || lanes.length > 0;
+    const wasPartiallyApplied = partiallyAppliedUrlFilterKeyRef.current === urlKey;
+    if (!laneDeterminable && wasPartiallyApplied) return;
+    if (laneDeterminable) {
+      appliedUrlFilterKeyRef.current = urlKey;
+      partiallyAppliedUrlFilterKeyRef.current = null;
+    } else {
+      partiallyAppliedUrlFilterKeyRef.current = urlKey;
+    }
     setProjectViewState((prev) => ({
       ...prev,
       laneFilter: laneExists ? laneParam : prev.laneFilter,
-      statusFilter: status ?? prev.statusFilter,
+      statusFilter: status && !wasPartiallyApplied ? status : prev.statusFilter,
     }));
-  }, [lanes, searchParams, setProjectViewState]);
+  }, [lanes, sessions, searchParams, setProjectViewState]);
 
   // Migrate legacy org modes to supported modes
   useEffect(() => {
@@ -666,7 +711,9 @@ export function useWorkSessions() {
   }, [focusSession, searchParams, selectLane, sessions, setProjectViewState]);
 
   useEffect(() => {
-    const unsubExit = window.ade.pty.onExit(() => {
+    const unsubExit = window.ade.pty.onExit((event) => {
+      const currentProjectRoot = projectRootRef.current;
+      if (event.projectRoot && event.projectRoot !== currentProjectRoot) return;
       scheduleBackgroundRefresh(120);
     });
     const t = setInterval(() => {
@@ -688,6 +735,7 @@ export function useWorkSessions() {
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
       if (document.visibilityState !== "visible") return;
       if (!shouldRefreshSessionListForChatEvent(payload)) return;
+      invalidateSessionListCache();
       scheduleBackgroundRefresh(220);
     });
     return unsubscribe;
@@ -709,6 +757,20 @@ export function useWorkSessions() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const refreshVisibleWork = () => {
+      if (document.visibilityState !== "visible") return;
+      invalidateSessionListCache();
+      scheduleBackgroundRefresh(120);
+    };
+    window.addEventListener("focus", refreshVisibleWork);
+    document.addEventListener("visibilitychange", refreshVisibleWork);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleWork);
+      document.removeEventListener("visibilitychange", refreshVisibleWork);
+    };
+  }, [scheduleBackgroundRefresh]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -777,7 +839,7 @@ export function useWorkSessions() {
   );
 
   const gridLayoutId = useMemo(
-    () => `work:grid:v2:${projectRoot ?? "global"}`,
+    () => `work:grid:tiling:v1:${projectRoot ?? "global"}`,
     [projectRoot],
   );
 

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160" fill="none">
+  <line x1="90" y1="50" x2="230" y2="50" stroke="var(--color-separator, rgba(255,255,255,0.15))" stroke-width="2"/>
+  <line x1="90" y1="80" x2="230" y2="80" stroke="var(--color-separator, rgba(255,255,255,0.15))" stroke-width="2"/>
+  <line x1="90" y1="110" x2="230" y2="110" stroke="var(--color-separator, rgba(255,255,255,0.15))" stroke-width="2"/>
+  <circle cx="140" cy="50" r="7" fill="var(--color-accent, #A78BFA)"/>
+  <circle cx="195" cy="80" r="7" fill="var(--color-accent, #A78BFA)"/>
+  <circle cx="120" cy="110" r="7" fill="var(--color-accent, #A78BFA)"/>
+</svg>

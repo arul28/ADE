@@ -75,24 +75,24 @@ This path is used for "what would this rule do?" dry runs — nothing persists e
 
 ## Run status
 
-`AutomationRunStatus` values: `queued`, `running`, `succeeded`, `failed`, `cancelled`, `paused`, `needs_review`.
+`AutomationRunStatus` values: `queued`, `running`, `succeeded`, `failed`, `cancelled`, `paused`.
 
 Status mapping:
 
-- `mapMissionStatus(status, verificationRequired)` — maps mission runtime status into run status. When `verificationRequired` is true and the mission would otherwise be `succeeded`, the run is `needs_review`.
-- `mapWorkerStatus(status, verificationRequired)` — same pattern for worker-backed runs.
+- Mission and worker-backed runs map runtime state into the shared run statuses above.
+- Legacy `needs_review` rows are normalized to `succeeded`; publish review now lives in queue status and verification metadata.
 
-The key invariant: when a rule has `verifyBeforePublish`, completion surfaces as `needs_review` rather than `succeeded`, keeping the run in the queue until a human acts.
+The key invariant: when a rule has `verifyBeforePublish`, completion keeps the run in the queue through `verification-required` rather than inventing a separate run status.
 
 ## Publish disposition
 
 `AutomationRule.outputs.disposition`:
 
 - `comment-only` — write a comment.
-- `open-pr` — open a draft PR.
-- `linear-comment` — Linear comment via CTO's Linear client.
-- `in-app-notification` — desktop notification.
-- `evidence-only` — record only; no external effects.
+- `open-task` — create a follow-up task.
+- `open-lane` — open a lane for follow-up implementation.
+- `prepare-patch` — prepare changes without publishing them.
+- `open-pr-draft` — open a draft PR.
 
 Publish is only allowed when:
 
@@ -101,7 +101,7 @@ Publish is only allowed when:
 3. `guardrails.requireHuman` is not set, or a reviewer has approved.
 4. The disposition-specific path is available (e.g. Linear credentials exist for `linear-comment`).
 
-`PUBLISH_CAPABLE_TOOL_FAMILIES` (`github`, `linear`, `browser`, `external-mcp`) is the set of families that can publish — built-in palettes like `repo`, `git`, `tests`, `memory`, `mission` cannot publish externally regardless of disposition.
+`PUBLISH_CAPABLE_TOOL_FAMILIES` (`github`, `linear`, `browser`, `external-cli`) is the set of families that can publish — built-in palettes like `repo`, `git`, `tests`, `memory`, `mission` cannot publish externally regardless of disposition.
 
 ## Human review
 
@@ -135,7 +135,9 @@ Mission-execution rules inherit the mission runtime's sandbox (`WorkerSandboxCon
 
 ## Budget caps
 
-Shared with Missions via Settings > Usage. Automations also support rule-level caps:
+Shared with Missions via Settings > Usage. The usage/budget UI (`UsageGuardrailsSection`, `BudgetCapEditor`, `CostSummaryCard`, `UsageMeter`, `UsagePacingBadge`) lives under `apps/desktop/src/renderer/components/settings/` — it is not rendered from the Automations page. The Automations page focuses on rules, history, and ingress.
+
+Automations also support rule-level caps:
 
 - `guardrails.maxDurationMin` — duration cap.
 - Billing codes (`billingCode`) flag spend so operators can slice usage by rule.

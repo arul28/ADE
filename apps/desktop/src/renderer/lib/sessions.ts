@@ -4,11 +4,14 @@ import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, Termi
 
 /** Returns true if the tool type represents an AI chat session. */
 export function isChatToolType(toolType: string | null | undefined): boolean {
+  if (!toolType) return false;
+  const t = toolType.trim().toLowerCase();
   return (
-    toolType === "codex-chat"
-    || toolType === "claude-chat"
-    || toolType === "opencode-chat"
-    || toolType === "cursor"
+    t === "codex-chat"
+    || t === "claude-chat"
+    || t === "opencode-chat"
+    || t === "cursor"
+    || t.endsWith("-chat")
   );
 }
 

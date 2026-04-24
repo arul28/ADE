@@ -31,6 +31,7 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
 
 function resolveAutomationCwdBase(
@@ -388,15 +389,18 @@ async function runCodexExec(args: {
   }
   const commandPreview = [quoteIfNeeded(codexExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
-  const child = spawn(codexExecutable, cliArgs, {
+  const env = {
+    ...process.env,
+    // Keep output parseable.
+    NO_COLOR: "1",
+    TERM: "dumb"
+  };
+  const invocation = resolveCliSpawnInvocation(codexExecutable, cliArgs, env);
+  const child = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
-    env: {
-      ...process.env,
-      // Keep output parseable.
-      NO_COLOR: "1",
-      TERM: "dumb"
-    },
-    stdio: ["ignore", "pipe", "pipe"]
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
 
   let stderr = "";
@@ -469,14 +473,17 @@ async function runClaudeHeadless(args: {
   const claudeExecutable = resolveClaudeCodeExecutable().path;
   const commandPreview = [quoteIfNeeded(claudeExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
-  const child = spawn(claudeExecutable, cliArgs, {
+  const env = {
+    ...process.env,
+    NO_COLOR: "1",
+    TERM: "dumb"
+  };
+  const invocation = resolveCliSpawnInvocation(claudeExecutable, cliArgs, env);
+  const child = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
-    env: {
-      ...process.env,
-      NO_COLOR: "1",
-      TERM: "dumb"
-    },
-    stdio: ["ignore", "pipe", "pipe"]
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
 
   let stdout = "";
@@ -556,27 +563,7 @@ function normalizeDraft(args: {
   const triggers = inputTriggers.slice(0, 1).map((raw, index) => {
     const triggerType = safeTrim(raw?.type) as any;
     const trigger: Record<string, unknown> = { type: triggerType };
-    if (
-      triggerType !== "session-end" &&
-      triggerType !== "commit" &&
-      triggerType !== "git.commit" &&
-      triggerType !== "git.push" &&
-      triggerType !== "git.pr_opened" &&
-      triggerType !== "git.pr_updated" &&
-      triggerType !== "git.pr_merged" &&
-      triggerType !== "git.pr_closed" &&
-      triggerType !== "file.change" &&
-      triggerType !== "lane.created" &&
-      triggerType !== "lane.archived" &&
-      triggerType !== "schedule" &&
-      triggerType !== "manual" &&
-      triggerType !== "linear.issue_created" &&
-      triggerType !== "linear.issue_updated" &&
-      triggerType !== "linear.issue_assigned" &&
-      triggerType !== "linear.issue_status_changed" &&
-      triggerType !== "github-webhook" &&
-      triggerType !== "webhook"
-    ) {
+    if (!AUTOMATION_TRIGGER_TYPES.includes(triggerType)) {
       issues.push({ level: "error", path: `triggers[${index}].type`, message: "Invalid trigger type." });
     }
     const cronExpr = safeTrim(raw?.cron);
@@ -603,6 +590,14 @@ function normalizeDraft(args: {
     if (paths.length) trigger.paths = paths;
     const keywords = Array.isArray(raw?.keywords) ? raw.keywords.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
     if (keywords.length) trigger.keywords = keywords;
+    const authors = Array.isArray(raw?.authors) ? raw.authors.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
+    if (authors.length) trigger.authors = authors;
+    const titleRegex = safeTrim(raw?.titleRegex);
+    if (titleRegex) trigger.titleRegex = titleRegex;
+    const bodyRegex = safeTrim(raw?.bodyRegex);
+    if (bodyRegex) trigger.bodyRegex = bodyRegex;
+    const repo = safeTrim(raw?.repo);
+    if (repo) trigger.repo = repo;
     const namePattern = safeTrim(raw?.namePattern);
     if (namePattern) trigger.namePattern = namePattern;
     const project = safeTrim(raw?.project);
@@ -615,6 +610,12 @@ function normalizeDraft(args: {
     if (stateTransition) trigger.stateTransition = stateTransition;
     const changedFields = Array.isArray(raw?.changedFields) ? raw.changedFields.map((value: unknown) => safeTrim(value)).filter(Boolean) : [];
     if (changedFields.length) trigger.changedFields = changedFields;
+    if (raw?.activeHours && typeof raw.activeHours === "object") {
+      const start = safeTrim(raw.activeHours.start);
+      const end = safeTrim(raw.activeHours.end);
+      const timezone = safeTrim(raw.activeHours.timezone) || "local";
+      if (start && end) trigger.activeHours = { start, end, timezone };
+    }
     const secretRef = safeTrim(raw?.secretRef);
     if ((triggerType === "webhook" || triggerType === "github-webhook") && !secretRef) {
       issues.push({ level: "error", path: `triggers[${index}].secretRef`, message: "Webhook triggers require secretRef." });
@@ -648,9 +649,50 @@ function normalizeDraft(args: {
     if (
       type !== "predict-conflicts" &&
       type !== "run-tests" &&
-      type !== "run-command"
+      type !== "run-command" &&
+      type !== "ade-action" &&
+      type !== "agent-session" &&
+      type !== "launch-mission"
     ) {
       issues.push({ level: "error", path: `actions[${idx}].type`, message: `Unknown action type '${safeTrim(action?.type)}'.` });
+      continue;
+    }
+
+    if (type === "ade-action") {
+      const adeAction = action?.adeAction;
+      const domain = safeTrim(adeAction?.domain);
+      const actionName = safeTrim(adeAction?.action);
+      if (!domain || !actionName) {
+        issues.push({ level: "error", path: `actions[${idx}].adeAction`, message: "ade-action requires domain and action." });
+        continue;
+      }
+      normalizedActions.push({
+        ...(base as AutomationAction),
+        adeAction: {
+          domain,
+          action: actionName,
+          ...(adeAction?.args !== undefined ? { args: adeAction.args } : {}),
+          ...(adeAction?.resolvers && typeof adeAction.resolvers === "object" ? { resolvers: adeAction.resolvers } : {}),
+        },
+      });
+      continue;
+    }
+
+    if (type === "agent-session") {
+      const prompt = safeTrim(action?.prompt);
+      normalizedActions.push({
+        ...(base as AutomationAction),
+        ...(prompt ? { prompt } : {}),
+        ...(safeTrim(action?.sessionTitle) ? { sessionTitle: safeTrim(action?.sessionTitle) } : {}),
+      });
+      continue;
+    }
+
+    if (type === "launch-mission") {
+      normalizedActions.push({
+        ...(base as AutomationAction),
+        ...(safeTrim(action?.sessionTitle) ? { sessionTitle: safeTrim(action?.sessionTitle) } : {}),
+      });
       continue;
     }
 
@@ -761,6 +803,11 @@ function normalizeDraft(args: {
     return { normalized: null, issues, ambiguities, resolutions };
   }
 
+  const includeProjectContext = typeof args.draft.includeProjectContext === "boolean"
+    ? args.draft.includeProjectContext
+    : Boolean(args.draft.memory?.mode && args.draft.memory.mode !== "none")
+      || Boolean(args.draft.contextSources?.length);
+
   const normalized: AutomationRuleDraftNormalized = {
     ...(args.draft.id ? { id: safeTrim(args.draft.id) } : {}),
     name,
@@ -786,7 +833,7 @@ function normalizeDraft(args: {
     toolPalette: Array.isArray(args.draft.toolPalette) && args.draft.toolPalette.length
       ? [...new Set(args.draft.toolPalette)]
       : ["repo", "memory", "mission"],
-    contextSources: Array.isArray(args.draft.contextSources) && args.draft.contextSources.length
+    contextSources: includeProjectContext && Array.isArray(args.draft.contextSources) && args.draft.contextSources.length
       ? args.draft.contextSources.map((source) => ({
           type: source.type,
           ...(safeTrim(source.path) ? { path: safeTrim(source.path) } : {}),
@@ -794,13 +841,17 @@ function normalizeDraft(args: {
           ...(safeTrim(source.label) ? { label: safeTrim(source.label) } : {}),
           ...(typeof source.required === "boolean" ? { required: source.required } : {}),
         }))
-      : [{ type: "project-memory" }, { type: "procedures" }],
-    memory: args.draft.memory?.mode
+      : includeProjectContext
+        ? [{ type: "project-memory" }, { type: "procedures" }]
+        : [],
+    memory: includeProjectContext && args.draft.memory?.mode
       ? {
           mode: args.draft.memory.mode,
           ...(safeTrim(args.draft.memory.ruleScopeKey) ? { ruleScopeKey: safeTrim(args.draft.memory.ruleScopeKey) } : {}),
         }
-      : { mode: "automation-plus-project", ruleScopeKey: safeTrim(args.draft.id) || slugify(name) },
+      : includeProjectContext
+        ? { mode: "automation-plus-project", ruleScopeKey: safeTrim(args.draft.id) || slugify(name) }
+        : { mode: "none" },
     guardrails: {
       ...(typeof args.draft.guardrails?.budgetUsd === "number" ? { budgetUsd: args.draft.guardrails.budgetUsd } : {}),
       ...(typeof args.draft.guardrails?.maxDurationMin === "number" ? { maxDurationMin: args.draft.guardrails.maxDurationMin } : {}),
@@ -819,6 +870,7 @@ function normalizeDraft(args: {
       mode: "intervention",
     },
     billingCode: safeTrim(args.draft.billingCode) || `auto:${slugify(name)}`,
+    includeProjectContext,
     actions: execution.kind === "built-in" ? normalizedActions : [],
     legacy: {
       trigger: triggers[0],
@@ -1156,6 +1208,7 @@ export function createAutomationPlannerService({
         verification: normalized.verification,
         billingCode: normalized.billingCode,
         ...(normalized.queueStatus ? { queueStatus: normalized.queueStatus } : {}),
+        includeProjectContext: normalized.includeProjectContext,
         ...(execution.kind === "built-in" && normalized.actions.length ? { actions: normalized.actions } : {}),
       };
       if (idx >= 0) rules[idx] = nextRule;

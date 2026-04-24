@@ -1,382 +1,459 @@
-import {
-  ArrowUpRight,
-  BookOpen,
-  Download,
-  Github,
-  GitMerge,
-  Layers,
-  MonitorCheck,
-  Package,
-  Workflow,
-  Zap,
-} from "lucide-react";
-import { Fragment } from "react";
-import { Container } from "../../components/Container";
-import { Card } from "../../components/Card";
-import { LinkButton } from "../../components/LinkButton";
-import { Reveal } from "../../components/Reveal";
-import { Page } from "../../components/Page";
-import { LINKS } from "../../lib/links";
+import { motion, useReducedMotion } from "framer-motion";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { Page } from "../../components/Page";
 
-import { ImageAutoSlider } from "../../components/ui/ImageAutoSlider";
-import { ProductShowcase } from "../../components/ProductShowcase";
-import { ProviderOrbit } from "../../components/ProviderOrbit";
+import { Masthead } from "../../components/editorial/Masthead";
+import { CompetitorEquation } from "../../components/editorial/CompetitorEquation";
+import { Lede } from "../../components/editorial/Lede";
+import { DeviceComposition } from "../../components/editorial/DeviceComposition";
+import { FadeBand } from "../../components/editorial/FadeBand";
+import {
+  Chapter,
+  ChapterBody,
+  Byline,
+} from "../../components/editorial/Chapter";
+import { ChapterHeadline } from "../../components/editorial/ChapterHeadline";
+import { Cutout } from "../../components/editorial/Cutout";
+import { PullQuote } from "../../components/editorial/PullQuote";
+import { IPhoneFrame } from "../../components/editorial/IPhoneFrame";
+import { FeatureGrid } from "../../components/editorial/FeatureGrid";
+import { IndexPage } from "../../components/editorial/IndexPage";
+import { BackCover } from "../../components/editorial/BackCover";
 
-/* ──────────────────────────────────────────────
-   Competitor apps that ADE replaces
-   ────────────────────────────────────────────── */
+const MOBILE_BYLINE_DATE = "April 2026 · iOS 17+";
 
-// Logos: apps/web/public/images/competitors/*.png (or change paths below).
-const COMPETITORS = [
-  { name: "Claude Code", logo: "/images/competitors/claude-code.png" },
-  { name: "Codex", logo: "/images/competitors/codex.png" },
-  { name: "OpenCode", logo: "/images/competitors/opencode.png" },
-  { name: "T3 Code", logo: "/images/competitors/t3-code.png" },
-  { name: "Cursor", logo: "/images/competitors/cursor.png" },
-  { name: "Superset", logo: "/images/competitors/superset.png" },
-  { name: "Conductor", logo: "/images/competitors/conductor.png" },
-  { name: "Factory", logo: "/images/competitors/factory.png" },
-  { name: "Paperclip", logo: "/images/competitors/paperclip.png" },
-  { name: "OpenClaw", logo: "/images/competitors/openclaw.png" },
-  { name: "GitHub", logo: "/images/competitors/github.png" },
-] as const;
-
-const ALSO_BUILT_IN = [
-  {
-    icon: Workflow,
-    label: "Missions",
-    detail: "Coordinated multi-step runs with visibility across phases — planning, testing, and PRs.",
-    docsPath: "/missions/overview",
-  },
-  {
-    icon: Package,
-    label: "Unified memory",
-    detail: "Vector-indexed memory across projects and agents so work compounds instead of resetting.",
-    docsPath: "/cto/memory",
-  },
-  {
-    icon: Zap,
-    label: "Automations",
-    detail: "Event-driven agents on git events, PR activity, or schedules — with guardrails while you are away.",
-    docsPath: "/automations/overview",
-  },
-  {
-    icon: GitMerge,
-    label: "Merge conflicts",
-    detail: "Resolve conflicts with side-by-side diffs and a focused flow so you can land merges in one place.",
-    docsPath: "/tools/conflicts",
-  },
-  {
-    icon: MonitorCheck,
-    label: "Computer use",
-    detail: "Screenshot-based verification of agent output when you need proof, not just prose.",
-    docsPath: "/computer-use/overview",
-  },
-  {
-    icon: Layers,
-    label: "35+ MCP tools",
-    detail: "Built-in server for file ops, git, search, and more — desktop and headless paths.",
-    docsPath: "/configuration/mcp-servers",
-  },
-] as const;
-
-/* ──────────────────────────────────────────────
-   Quickstart copy command
-   ────────────────────────────────────────────── */
-
-function QuickstartBlock() {
+function AgentBadge({
+  src,
+  name,
+  className = "",
+  rotate = 0,
+  variant = "light",
+}: {
+  src: string;
+  name: string;
+  className?: string;
+  rotate?: number;
+  variant?: "light" | "dark";
+}) {
+  const reduceMotion = useReducedMotion() ?? true;
+  const bg =
+    variant === "dark"
+      ? "bg-[#0f0d0a] border-[color:var(--color-ink)]"
+      : "bg-[color:var(--color-paper)] border-[color:var(--color-ink-hairline-strong)]";
   return (
-    <div className="space-y-6">
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-fg">
-          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">
-            1
-          </span>
-          Download the latest release
-        </div>
-        <LinkButton to={LINKS.releases} variant="secondary" size="md" target="_blank" rel="noreferrer">
-          <Download className="h-4 w-4" /> Download DMG from GitHub{" "}
-          <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
-        </LinkButton>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-fg">
-          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">
-            2
-          </span>
-          Move ADE into Applications
-        </div>
-        <p className="text-sm text-muted-fg">
-          Drag <strong>ADE</strong> into your Applications folder before first launch so macOS can
-          keep it on the normal update path.
-        </p>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-fg">
-          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">
-            3
-          </span>
-          Open ADE and point it at your project
-        </div>
-        <p className="text-sm text-muted-fg">
-          No account needed. Add your own API keys for Claude, Codex, or other providers in settings.
-        </p>
-      </div>
-    </div>
+    <motion.div
+      initial={reduceMotion ? false : { opacity: 0, scale: 0.6, rotate: 0 }}
+      whileInView={reduceMotion ? undefined : { opacity: 1, scale: 1, rotate }}
+      viewport={{ once: true, amount: 0.3 }}
+      transition={{ duration: 0.6, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
+      style={{ transform: `rotate(${rotate}deg)` }}
+      className={`absolute z-10 flex h-[54px] w-[54px] items-center justify-center rounded-full border shadow-[0_10px_24px_-12px_rgba(24,21,15,0.5)] ${bg} ${className}`}
+      aria-label={name}
+      title={name}
+    >
+      <img
+        src={src}
+        alt={name}
+        loading="lazy"
+        decoding="async"
+        className="h-[34px] w-[34px] object-contain"
+      />
+    </motion.div>
   );
 }
-
-/* ──────────────────────────────────────────────
-   Page
-   ────────────────────────────────────────────── */
 
 export function HomePage() {
   useDocumentTitle("ADE — Agentic Development Environment");
 
   return (
     <Page>
-      {/* ── HERO — Logo Equation + ADE ─────────── */}
-      <section className="relative overflow-x-hidden">
-        {/* Background: gradient mesh + dot texture */}
+      {/* ═══════ DARK COVER ═══════ */}
+      <section className="relative overflow-hidden bg-[color:var(--color-bg)] text-[color:var(--color-cream)]">
         <div
+          aria-hidden
           className="pointer-events-none absolute inset-0"
           style={{
             background: [
-              "radial-gradient(ellipse 80% 50% at 50% -5%, rgba(124,58,237,0.18) 0%, transparent 100%)",
-              "radial-gradient(ellipse 40% 40% at 0% 0%, rgba(59,130,246,0.10) 0%, transparent 100%)",
-              "radial-gradient(ellipse 40% 40% at 100% 5%, rgba(236,72,153,0.07) 0%, transparent 100%)",
-              "radial-gradient(ellipse 50% 30% at 50% 60%, rgba(124,58,237,0.08) 0%, transparent 100%)",
-              "radial-gradient(ellipse 30% 30% at 80% 80%, rgba(16,185,129,0.05) 0%, transparent 100%)",
+              "radial-gradient(ellipse 70% 50% at 70% 45%, rgba(124,58,237,0.3) 0%, transparent 70%)",
+              "radial-gradient(ellipse 45% 55% at 10% 0%, rgba(167,139,250,0.08) 0%, transparent 70%)",
+              "radial-gradient(ellipse 40% 30% at 40% 90%, rgba(124,58,237,0.08) 0%, transparent 70%)",
             ].join(", "),
           }}
         />
         <div
+          aria-hidden
           className="pointer-events-none absolute inset-0 opacity-[0.035]"
           style={{
-            backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.7) 1px, transparent 1px)",
-            backgroundSize: "20px 20px",
+            backgroundImage:
+              "radial-gradient(circle, rgba(255,255,255,0.7) 1px, transparent 1px)",
+            backgroundSize: "22px 22px",
           }}
         />
 
-        <Container className="relative pt-5 pb-10 sm:pt-8 sm:pb-16 text-center">
-          {/* Logo Equation — single row, no wrap */}
-          <Reveal>
-            <div className="flex items-center justify-center gap-1 sm:gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-              {COMPETITORS.map((app, i) => (
-                <Fragment key={app.name}>
-                  {i > 0 && (
-                    <span className="text-base sm:text-lg font-bold text-accent/40 shrink-0">
-                      +
-                    </span>
-                  )}
-                  <div className="flex flex-col items-center gap-0.5 shrink-0">
-                    <div className="group/logo h-11 w-11 sm:h-14 sm:w-14 rounded-xl border border-border/50 bg-white/[0.05] p-1 sm:p-1.5 flex items-center justify-center overflow-hidden transition-all duration-300 hover:scale-110 hover:border-accent/50 hover:bg-white/[0.1] hover:shadow-[0_0_20px_rgba(124,58,237,0.2)]">
-                      <img
-                        src={app.logo}
-                        alt={app.name}
-                        className="h-full w-full object-contain rounded-lg"
-                      />
-                    </div>
-                    <span className="text-[9px] sm:text-[10px] font-medium text-muted-fg text-center leading-tight max-w-[52px] sm:max-w-[60px] mt-1">
-                      {app.name}
-                    </span>
-                  </div>
-                </Fragment>
-              ))}
-            </div>
-          </Reveal>
+        <Masthead />
 
-          {/* = ADE app icon */}
-          <Reveal delay={0.08}>
-            <div className="mt-3 flex flex-col items-center">
-              <span className="text-2xl sm:text-3xl font-black text-accent/70 mb-2">=</span>
-              <div className="relative">
-                <img
-                  src="/images/ade-dock-icon.png"
-                  alt="ADE"
-                  className="relative h-32 w-32 sm:h-40 sm:w-40 rounded-[22%] object-contain drop-shadow-[0_8px_40px_rgba(124,58,237,0.45)]"
-                />
-              </div>
-            </div>
-          </Reveal>
-
-          {/* Headline */}
-          <Reveal delay={0.14}>
-            <h1 className="mt-4 mx-auto max-w-4xl text-4xl font-bold tracking-tight text-fg sm:text-5xl lg:text-6xl leading-[1.15]">
-              Every AI coding tool.{" "}
-              <span className="bg-gradient-to-r from-violet-400 via-accent to-indigo-400 bg-clip-text text-transparent animate-gradient-text">
-                One app.
-              </span>
-            </h1>
-          </Reveal>
-
-          {/* Subtitle */}
-          <Reveal delay={0.18}>
-            <p className="mx-auto mt-3 max-w-2xl text-base leading-relaxed text-muted-fg sm:text-lg">
-              ADE replaces all your AI tools with a single Agentic Development Environment.
-              Use your existing subscriptions, API keys, or even local models. Fully Open Source!
-            </p>
-          </Reveal>
-
-          {/* CTAs */}
-          <Reveal delay={0.22}>
-            <div className="mt-4 flex flex-wrap justify-center gap-2.5">
-              <LinkButton to={LINKS.releases} variant="primary" size="lg" target="_blank" rel="noreferrer">
-                <Download className="h-5 w-5" /> Download from GitHub <ArrowUpRight className="h-4 w-4" />
-              </LinkButton>
-              <LinkButton to={LINKS.github} variant="secondary" size="lg" target="_blank" rel="noreferrer">
-                <Github className="h-5 w-5" /> View on GitHub
-              </LinkButton>
-              <LinkButton to={LINKS.docs} variant="secondary" size="lg" target="_blank" rel="noreferrer">
-                <BookOpen className="h-4 w-4" /> Docs <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
-              </LinkButton>
-            </div>
-            <div className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-muted-fg/40">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Open source &middot; Local-first &middot; macOS &middot; No account required
-            </div>
-          </Reveal>
-
-          {/* Hero app visual */}
-          <Reveal delay={0.26} className="overflow-visible">
-            <div className="relative left-1/2 mt-5 w-screen max-w-[100vw] -translate-x-1/2 sm:mt-6 lg:mt-7">
-              <ImageAutoSlider />
-            </div>
-          </Reveal>
-        </Container>
-      </section>
-
-      <ProductShowcase />
-
-      <ProviderOrbit />
-
-      {/* ── MORE CAPABILITIES ─────────────────── */}
-      <section className="border-y border-border/70 bg-card/20 py-16 sm:py-20">
-        <Container>
-          <Reveal>
-            <h2 className="text-2xl font-bold tracking-tight text-fg sm:text-3xl">Also built in</h2>
-            <p className="mt-2 max-w-2xl text-sm text-muted-fg sm:text-base">
-              More capabilities that ship in the same app — no plugins or extensions required.
-            </p>
-          </Reveal>
-
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {ALSO_BUILT_IN.map((cap, idx) => (
-              <Reveal key={cap.label} delay={idx * 0.03}>
-                <a
-                  href={`https://www.ade-app.dev/docs${cap.docsPath}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="group flex flex-col rounded-xl border border-border/70 bg-card/40 p-5 transition-all duration-200 hover:bg-card/60 hover:border-accent/30 hover:shadow-[0_0_30px_rgba(124,58,237,0.08)]"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
-                      <cap.icon className="h-4.5 w-4.5" />
-                    </div>
-                    <div className="text-sm font-semibold text-fg">{cap.label}</div>
-                  </div>
-                  <div className="mt-3 flex-1 text-sm leading-relaxed text-muted-fg">{cap.detail}</div>
-                  <div className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent/70 transition-colors group-hover:text-accent">
-                    Read docs <ArrowUpRight className="h-3 w-3" />
-                  </div>
-                </a>
-              </Reveal>
-            ))}
+        <div className="relative mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)]">
+          <div className="border-b border-[color:var(--color-hairline)]">
+            <CompetitorEquation />
           </div>
-        </Container>
+
+          <div className="grid grid-cols-1 items-center gap-[clamp(24px,3vw,48px)] py-[clamp(20px,3vw,40px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+            <Lede />
+            <DeviceComposition />
+          </div>
+
+          <div className="flex items-center justify-center gap-3 border-t border-[color:var(--color-hairline)] py-[clamp(18px,2vw,26px)] text-[11px] uppercase tracking-[0.34em] text-[color:var(--color-cream-faint)]">
+            Turn the page
+            <span
+              className="ade-turn-page-arrow font-serif italic text-[color:var(--color-violet-bright)]"
+              style={{
+                fontSize: "15px",
+                animation: "nudge 2.4s ease-in-out infinite",
+              }}
+            >
+              ↓
+            </span>
+            Chapter I · Worktrees
+            <style>{`
+              @keyframes nudge {
+                0%, 100% { transform: translateY(0); }
+                50% { transform: translateY(4px); }
+              }
+              @media (prefers-reduced-motion: reduce) {
+                .ade-turn-page-arrow { animation: none !important; }
+              }
+            `}</style>
+          </div>
+        </div>
       </section>
 
-      {/* ── QUICKSTART ────────────────────────── */}
-      <section id="quickstart" className="scroll-mt-20 py-16 sm:py-24">
-        <Container>
-          <div className="grid gap-12 lg:grid-cols-2 lg:items-start">
-            <div>
-              <Reveal>
-                <h2 className="text-3xl font-bold tracking-tight text-fg sm:text-4xl">
-                  Get started in 30 seconds
-                </h2>
-                <p className="mt-3 max-w-lg text-base text-muted-fg">
-                  Download the latest macOS release, move ADE into Applications, and open. No account required.
-                </p>
-              </Reveal>
+      {/* ═══════ FADE dark → cream ═══════ */}
+      <FadeBand direction="to-cream" />
 
-              <Reveal delay={0.05}>
-                <div className="mt-8">
-                  <QuickstartBlock />
-                </div>
-              </Reveal>
+      {/* ═══════ CHAPTER I — WORKTREES ═══════ */}
+      <Chapter
+        chapterNumber="Chapter I"
+        chapterTitle="Worktrees"
+        pageNumber="04"
+        id="chapter-lanes"
+      >
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,8fr)_minmax(0,4fr)] lg:items-center">
+          <Cutout
+            src="/images/screenshots/lanes.png"
+            alt="ADE worktrees — parallel git branches on macOS"
+            figNumber="Fig. 2"
+            caption="Worktrees in parallel — each its own git branch. Switch in a click."
+            rotate={0.4}
+            tone="ink"
+          />
+
+          <div>
+            <ChapterHeadline
+              line1="Manage worktrees."
+              line2="In parallel."
+              deck="Every task gets its own git worktree. Branch, edit, test, and commit side by side — no stashing, no rebasing, no context switch."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                Each worktree is a fresh branch you flip between in a click.
+                Tests running in one don&rsquo;t block code in another. When a
+                worktree ships, commit it and move on.
+              </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;Parallel branches. One repo. No stash, no rebase.&rdquo;
+              </PullQuote>
+              <Byline tone="ink" />
+            </div>
+          </div>
+        </div>
+      </Chapter>
+
+      {/* ═══════ CHAPTER II — WORK ═══════ */}
+      <Chapter
+        chapterNumber="Chapter II"
+        chapterTitle="Work"
+        pageNumber="10"
+        id="chapter-work"
+      >
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)] lg:items-center">
+          <div>
+            <ChapterHeadline
+              line1="Every coding agent."
+              line2="One workspace."
+              deck="Claude Code, Codex, Cursor, opencode — pick whichever model fits the task. All of them run against the same worktree, with live diffs and approval gates."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                Attach a prompt to a worktree, pick your agent, and step through
+                every file change, test run, and tool call as it happens.
+                Approve the diff before it commits, or step in and steer.
+              </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;Every agent worth using. On one surface.&rdquo;
+              </PullQuote>
+              <Byline tone="ink" />
+            </div>
+          </div>
+
+          <div className="relative">
+            <Cutout
+              src="/images/screenshots/run.png"
+              alt="ADE run view — an agent executing a task live"
+              figNumber="Fig. 3"
+              caption="An agent executing — tool calls, test output, and a diff ready for review."
+              rotate={-0.5}
+              tone="ink"
+            />
+            <AgentBadge
+              src="/images/models/claude-color.svg"
+              name="Claude"
+              className="-top-6 -left-5"
+              rotate={-8}
+            />
+            <AgentBadge
+              src="/images/models/openai.svg"
+              name="OpenAI"
+              className="-top-7 left-[28%]"
+              rotate={5}
+            />
+            <AgentBadge
+              src="/images/models/gemini-color.svg"
+              name="Gemini"
+              className="-top-5 -right-6"
+              rotate={10}
+            />
+            <AgentBadge
+              src="/images/models/grok.svg"
+              name="Grok"
+              className="top-[18%] -left-8"
+              rotate={-5}
+            />
+            <AgentBadge
+              src="/images/models/deepseek-color.svg"
+              name="DeepSeek"
+              className="top-[22%] -right-8"
+              rotate={7}
+            />
+            <AgentBadge
+              src="/images/models/mistral-color.svg"
+              name="Mistral"
+              className="top-[46%] -left-10"
+              rotate={4}
+            />
+            <AgentBadge
+              src="/images/models/meta-color.svg"
+              name="Meta Llama"
+              className="top-[50%] -right-9"
+              rotate={-6}
+            />
+            <AgentBadge
+              src="/images/models/cohere-color.svg"
+              name="Cohere"
+              className="top-[72%] -left-7"
+              rotate={-4}
+            />
+            <AgentBadge
+              src="/images/models/qwen-color.svg"
+              name="Qwen"
+              className="top-[74%] -right-6"
+              rotate={8}
+            />
+            <AgentBadge
+              src="/images/models/perplexity-color.svg"
+              name="Perplexity"
+              className="bottom-[18%] left-[22%]"
+              rotate={-7}
+            />
+            <AgentBadge
+              src="/images/models/ollama.svg"
+              name="Ollama"
+              className="bottom-[14%] right-[22%]"
+              rotate={6}
+            />
+            <AgentBadge
+              src="/images/models/anthropic.svg"
+              name="Anthropic"
+              className="top-[40%] left-[8%]"
+              rotate={-3}
+            />
+          </div>
+        </div>
+      </Chapter>
+
+      {/* ═══════ CHAPTER III — PULL REQUESTS ═══════ */}
+      <Chapter
+        chapterNumber="Chapter III"
+        chapterTitle="Pull Requests"
+        pageNumber="16"
+        id="chapter-prs"
+      >
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,8fr)_minmax(0,4fr)] lg:items-center">
+          <Cutout
+            src="/images/screenshots/prs.png"
+            alt="ADE pull request review"
+            figNumber="Fig. 4"
+            caption="Pull requests — diff, CI status, and review comments on the same page as the worktree."
+            rotate={0.5}
+            tone="ink"
+          />
+
+          <div>
+            <ChapterHeadline
+              line1="Open, review,"
+              line2="and merge PRs."
+              deck="Every PR your agents open lands in ADE — diff, CI, comments, merge button. No GitHub tab. Auto-merge when green."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                Read the diff, check CI, comment, approve, merge &mdash; all
+                inside ADE, connected to the worktree, the branch, and the
+                agent that wrote the code.
+              </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;Green build. One click. Merged.&rdquo;
+              </PullQuote>
+              <Byline tone="ink" />
+            </div>
+          </div>
+        </div>
+      </Chapter>
+
+      {/* ═══════ CHAPTER IV — CTO ═══════ */}
+      <Chapter
+        chapterNumber="Chapter IV"
+        chapterTitle="CTO"
+        pageNumber="22"
+        id="chapter-cto"
+      >
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)] lg:items-center">
+          <div>
+            <ChapterHeadline
+              line1="The conductor"
+              line2="for your agents."
+              deck="One CTO, always on, with context across every worktree. Pulls work from Linear, dispatches to the right worker, reports back when it's done."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                The CTO knows what each worker is good at, what&rsquo;s in
+                flight, and what Linear wants next. It dispatches, tracks, and
+                posts results &mdash; turning a pile of prompts into a shipping
+                team.
+              </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;A team of agents. On payroll. On call.&rdquo;
+              </PullQuote>
+              <Byline tone="ink" />
+            </div>
+          </div>
+
+          <Cutout
+            src="/images/screenshots/cto.png"
+            alt="ADE CTO — org chart of worker agents"
+            figNumber="Fig. 5"
+            caption="The CTO — an org chart of worker agents, each with its own memory and budget."
+            rotate={-0.4}
+            tone="ink"
+          />
+        </div>
+      </Chapter>
+
+      {/* ═══════ CHAPTER V — IN YOUR POCKET ═══════ */}
+      <Chapter
+        chapterNumber="Chapter V"
+        chapterTitle="In Your Pocket"
+        pageNumber="28"
+        id="chapter-mobile"
+      >
+        <div className="grid grid-cols-1 items-center gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+          <div>
+            <ChapterHeadline
+              line1="Everything above."
+              line2="On your phone."
+              deck="Every worktree, every agent, every PR — synced to iOS over cr-sqlite. Start a task on macOS, approve the diff from the train."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                The desktop is where code gets written. The pocket is where
+                decisions get made. ADE syncs both so a worktree you started on
+                macOS continues on iOS without a refresh.
+              </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;None of the eleven apps we replace have a mobile client.
+                We built the one that does.&rdquo;
+              </PullQuote>
+              <Byline tone="ink" date={MOBILE_BYLINE_DATE} />
+            </div>
+          </div>
+
+          <div className="relative mx-auto w-full max-w-[560px]">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 -m-10"
+              style={{
+                background:
+                  "radial-gradient(ellipse 65% 55% at 50% 45%, rgba(124,58,237,0.38) 0%, rgba(124,58,237,0.08) 48%, transparent 78%)",
+                filter: "blur(14px)",
+              }}
+            />
+
+            {/* Left phone (behind) */}
+            <div className="absolute left-[-4%] top-[48px] z-[1] hidden md:block">
+              <IPhoneFrame
+                src="/images/screenshots/mobile-worktrees.png"
+                alt="ADE on iPhone — worktrees"
+                rotate={-13}
+                width="w-[180px] lg:w-[200px]"
+              />
             </div>
 
-            <Reveal delay={0.08}>
-              <Card className="p-6">
-                <h3 className="text-base font-semibold text-fg">Or build from source</h3>
-                <p className="mt-2 text-sm text-muted-fg">
-                  Clone the repo and run with Vite + Electron. Also the fastest way to contribute.
-                </p>
-                <div className="mt-4 rounded-xl border border-border/70 bg-[#0c0a10] p-4 font-mono text-sm leading-relaxed text-muted-fg">
-                  <div>
-                    <span className="text-accent/70">$</span> git clone https://github.com/
-                    {LINKS.repo}.git
-                  </div>
-                  <div>
-                    <span className="text-accent/70">$</span> cd ADE/apps/desktop
-                  </div>
-                  <div>
-                    <span className="text-accent/70">$</span> npm install
-                  </div>
-                  <div>
-                    <span className="text-accent/70">$</span> npm run dev
-                  </div>
-                </div>
+            {/* Right phone (behind) */}
+            <div className="absolute right-[-4%] top-[72px] z-[1] hidden md:block">
+              <IPhoneFrame
+                src="/images/screenshots/mobile-pr.png"
+                alt="ADE on iPhone — pull requests"
+                rotate={11}
+                width="w-[180px] lg:w-[200px]"
+              />
+            </div>
 
-                <div className="mt-6 flex flex-wrap gap-3">
-                  <LinkButton to={LINKS.docs} variant="secondary" size="sm" target="_blank" rel="noreferrer">
-                    <BookOpen className="h-4 w-4" /> Docs{" "}
-                    <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
-                  </LinkButton>
-                  <LinkButton to={LINKS.github} variant="secondary" size="sm" target="_blank" rel="noreferrer">
-                    <Github className="h-4 w-4" /> Repo{" "}
-                    <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
-                  </LinkButton>
-                </div>
-              </Card>
-            </Reveal>
+            {/* Center phone (front, with caption) */}
+            <div className="relative z-[3] flex justify-center">
+              <IPhoneFrame
+                src="/images/screenshots/agent-chat.png"
+                alt="ADE on iPhone — agent chat"
+                rotate={-2}
+                width="w-[260px] sm:w-[280px]"
+                figCaption={{
+                  figNumber: "Fig. 6",
+                  caption:
+                    "A worktree, synced from desktop — edit, approve, comment from anywhere.",
+                  tone: "ink",
+                }}
+              />
+            </div>
           </div>
-        </Container>
-      </section>
+        </div>
+      </Chapter>
 
-      {/* ── CTA ───────────────────────────────── */}
-      <section className="py-16 sm:py-24">
-        <Container>
-          <Reveal>
-            <Card className="relative overflow-hidden p-10 sm:p-14 text-center">
-              {/* Subtle radial gradient */}
-              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--color-accent)_0%,_transparent_70%)] opacity-[0.06]" />
+      {/* ═══════ CATALOG — the rest of the IDE ═══════ */}
+      <FeatureGrid />
 
-              <div className="relative">
-                <h2 className="text-3xl font-bold tracking-tight text-fg sm:text-4xl">
-                  The last AI coding app you'll download.
-                </h2>
-                <p className="mt-3 mx-auto max-w-lg text-base text-muted-fg">
-                  Free. Open source. Your code never leaves your machine.
-                </p>
+      {/* ═══════ FADE cream → dark ═══════ */}
+      <FadeBand direction="to-dark" />
 
-                <div className="mt-8 flex flex-wrap justify-center gap-3">
-                  <LinkButton to={LINKS.releases} variant="primary" size="lg" target="_blank" rel="noreferrer">
-                    <Download className="h-5 w-5" /> Download from GitHub <ArrowUpRight className="h-4 w-4" />
-                  </LinkButton>
-                  <LinkButton to={LINKS.github} variant="secondary" size="lg" target="_blank" rel="noreferrer">
-                    <Github className="h-5 w-5" /> Star on GitHub
-                  </LinkButton>
-                </div>
-              </div>
-            </Card>
-          </Reveal>
-        </Container>
-      </section>
+      {/* ═══════ BACK COVER ═══════ */}
+      <BackCover />
+
+      {/* ═══════ FADE dark → cream ═══════ */}
+      <FadeBand direction="to-cream" />
+
+      {/* ═══════ INDEX ═══════ */}
+      <IndexPage />
     </Page>
   );
 }

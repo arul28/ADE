@@ -4,7 +4,6 @@
 
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
-import type { ComputerUsePolicy } from "./computerUseArtifacts";
 import type { FileDiff } from "./git";
 import type { DelegationContract } from "./orchestrator";
 
@@ -78,6 +77,9 @@ export type AgentChatFileRef = {
   path: string;
   type: "file" | "image";
 };
+
+/** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
+export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
 
 /** Infer whether a file path points to an image or a generic file. */
 export function inferAttachmentType(
@@ -391,7 +393,7 @@ export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "tea
 export type AgentChatInteractionMode = "default" | "plan";
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
 export type AgentChatSurface = "work" | "automation";
-export type AgentChatCursorConfigValue = string | boolean;
+export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {
   value: string;
   label: string;
@@ -482,10 +484,10 @@ export type AgentChatSession = {
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
-  computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
+  archivedAt?: string | null;
   threadId?: string;
   /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
   requestedCwd?: string | null;
@@ -513,22 +515,24 @@ export type AgentChatSessionSummary = {
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
-  computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
   startedAt: string;
   endedAt: string | null;
+  archivedAt?: string | null;
   lastActivityAt: string;
   lastOutputPreview: string | null;
   summary: string | null;
   awaitingInput?: boolean;
   threadId?: string;
+  requestedCwd?: string | null;
 };
 
 export type AgentChatTranscriptEntry = {
@@ -603,7 +607,6 @@ export type AgentChatCreateArgs = {
   surface?: AgentChatSurface;
   automationId?: string | null;
   automationRunId?: string | null;
-  computerUse?: ComputerUsePolicy | null;
   requestedCwd?: string;
 };
 
@@ -620,6 +623,39 @@ export type AgentChatHandoffResult = {
 export type AgentChatListArgs = {
   laneId?: string;
   includeAutomation?: boolean;
+};
+
+export type AgentChatSuggestLaneNameArgs = {
+  /** Lane the user is launching from (worktree path for the naming model call). */
+  laneId: string;
+  /** User prompt for the parallel chat launch (used to derive a short lane name prefix). */
+  prompt: string;
+  /** Registry model ID used to run the naming call (e.g. first selected model). */
+  modelId: string;
+};
+
+export type AgentChatParallelLaunchStateStatus =
+  | "creating_lanes"
+  | "sending"
+  | "completed"
+  | "cleanup_pending";
+
+export type AgentChatParallelLaunchState = {
+  parentLaneId: string;
+  createdLaneIds: string[];
+  sentLaneIds: string[];
+  status: AgentChatParallelLaunchStateStatus;
+  updatedAt: string;
+  lastError?: string | null;
+};
+
+export type AgentChatParallelLaunchStateArgs = {
+  projectRoot: string;
+  parentLaneId: string;
+};
+
+export type AgentChatSetParallelLaunchStateArgs = AgentChatParallelLaunchStateArgs & {
+  state: AgentChatParallelLaunchState | null;
 };
 
 export type AgentChatGetSummaryArgs = {
@@ -683,6 +719,7 @@ export type AgentChatRespondToInputArgs = {
 
 export type AgentChatModelsArgs = {
   provider: AgentChatProvider;
+  activateRuntime?: boolean;
 };
 
 export type AgentChatDisposeArgs = {
@@ -690,6 +727,10 @@ export type AgentChatDisposeArgs = {
 };
 
 export type AgentChatDeleteArgs = {
+  sessionId: string;
+};
+
+export type AgentChatArchiveArgs = {
   sessionId: string;
 };
 
@@ -708,7 +749,6 @@ export type AgentChatUpdateSessionArgs = {
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
-  computerUse?: ComputerUsePolicy | null;
 };
 
 export type AgentChatSlashCommand = {

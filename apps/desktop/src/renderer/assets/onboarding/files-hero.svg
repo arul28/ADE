@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160" fill="none">
+  <rect x="70" y="35" width="180" height="100" rx="10" fill="var(--color-surface-2, rgba(255,255,255,0.04))" stroke="var(--color-separator, rgba(255,255,255,0.08))"/>
+  <path d="M90 55 L110 55 L115 60 L165 60" stroke="var(--color-fg, #F0F0F2)" stroke-width="1.5" fill="none" opacity="0.8"/>
+  <line x1="90" y1="75" x2="180" y2="75" stroke="var(--color-muted-fg, #908FA0)" stroke-width="1.2" opacity="0.6"/>
+  <line x1="100" y1="90" x2="170" y2="90" stroke="var(--color-muted-fg, #908FA0)" stroke-width="1.2" opacity="0.6"/>
+  <line x1="100" y1="105" x2="150" y2="105" stroke="var(--color-accent, #A78BFA)" stroke-width="1.2" opacity="0.9"/>
+  <line x1="100" y1="120" x2="175" y2="120" stroke="var(--color-muted-fg, #908FA0)" stroke-width="1.2" opacity="0.4"/>
+</svg>

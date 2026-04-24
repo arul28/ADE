@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mapPermissionMode, readRecentCommits } from "./resolverUtils";
+import { mapPermissionMode, mapPermissionModeForModelFamily, readRecentCommits } from "./resolverUtils";
 
 vi.mock("../git/git", () => ({
   runGit: vi.fn(),
@@ -28,6 +28,16 @@ describe("mapPermissionMode", () => {
 
   it("maps an unrecognized value to edit", () => {
     expect(mapPermissionMode("some_other_value" as any)).toBe("edit");
+  });
+});
+
+describe("mapPermissionModeForModelFamily", () => {
+  it("maps guarded_edit to Codex default permissions for OpenAI CLI models", () => {
+    expect(mapPermissionModeForModelFamily("guarded_edit", "openai")).toBe("default");
+  });
+
+  it("keeps guarded_edit as edit for non-OpenAI models", () => {
+    expect(mapPermissionModeForModelFamily("guarded_edit", "anthropic")).toBe("edit");
   });
 });
 

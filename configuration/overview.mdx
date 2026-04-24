@@ -5,7 +5,7 @@ icon: "folder-tree"
 ---
 ## The `.ade/` Directory
 
-When you open a repository in ADE for the first time, ADE initializes a `.ade/` directory at the project root. This directory is the single source of truth for all ADE configuration, runtime artifacts, and worktree management for that project.
+ADE initializes a `.ade/` directory at the project root on first open. It is the single source of truth for all ADE configuration, runtime artifacts, and worktree management.
 
 ```
 .ade/
@@ -24,7 +24,7 @@ When you open a repository in ADE for the first time, ADE initializes a `.ade/` 
 Never commit `local.yaml` or `local.secret.yaml` to git. ADE automatically adds both to `.gitignore` on initialization, but verify this if you manage `.gitignore` manually. Committing secrets is irreversible once pushed to a remote.
 </Warning>
 
-The `worktrees/` and `artifacts/` subdirectories are fully managed by ADE. Do not edit files inside them directly — use ADE's UI or MCP tools instead.
+The `worktrees/` and `artifacts/` subdirectories are ADE-managed. Do not edit them directly.
 
 ---
 
@@ -40,15 +40,11 @@ ADE resolves configuration through three layers applied in order. Lower layers o
     **Personal preferences.** Gitignored. Overrides any value in `ade.yaml` for your machine only. Contains preferred model, theme, editor settings, and notification preferences.
   </Card>
   <Card title="local.secret.yaml" icon="key">
-    **Secrets.** Always gitignored. Contains API keys, OAuth tokens, and MCP server credentials. Only the main process reads this file — the renderer UI never has access to its contents.
+    **Secrets.** Always gitignored. Contains API keys, OAuth tokens, and other credentials. Only the main process reads this file — the renderer UI never has access to its contents.
   </Card>
 </CardGroup>
 
-When ADE resolves a config value, it checks `local.secret.yaml` first, then `local.yaml`, then `ade.yaml`. If a value exists in `local.yaml`, it shadows the same key in `ade.yaml` for that machine.
-
-<Note>
-The layering order means a developer can override the team's default AI model (set in `ade.yaml`) by specifying `ai.preferredModel` in their own `local.yaml` — without touching the shared config.
-</Note>
+When resolving a value, ADE checks `local.secret.yaml` first, then `local.yaml`, then `ade.yaml`. A value in `local.yaml` shadows the same key in `ade.yaml` for that machine only.
 
 ---
 
@@ -80,7 +76,7 @@ To re-approve the currently loaded config (e.g., after a manual edit): **Setting
 
 ## `ade.yaml` — Full Schema Reference
 
-This file is shared with your team. Commit it. Every field is optional except `name`.
+Shared team config — commit this file. Every field is optional except `name`.
 
 ```yaml
 # .ade/ade.yaml
@@ -90,7 +86,7 @@ description: "Optional project description shown in ADE's title bar"
 
 # ── AI Defaults ───────────────────────────────────────────────────────────────
 ai:
-  defaultModel: "claude-opus-4-6"       # or "claude-sonnet-4-6", "gpt-4o", etc.
+  defaultModel: "claude-opus-4-7"       # or "claude-sonnet-4-6", "gpt-4o", etc.
   defaultBudgetPerSession: 1.00         # USD cap per chat session
   defaultBudgetPerMission: 5.00         # USD cap per mission run
   defaultBudgetPerAutomation: 0.50      # USD cap per automation execution
@@ -172,7 +168,7 @@ trust:
 
 ## `local.yaml` — Full Schema Reference
 
-This file is yours alone. It is gitignored and never shared. Use it to override team defaults for your own machine.
+Personal preferences — gitignored, never shared. Overrides `ade.yaml` values for your machine only.
 
 ```yaml
 # .ade/local.yaml
@@ -205,7 +201,7 @@ trust:
 
 ## `local.secret.yaml` — Full Schema Reference
 
-This file holds your API keys and MCP credentials. It is always gitignored. Only the Electron main process reads it — the renderer (React UI) never has access to its raw contents.
+API keys and service credentials. Always gitignored. Only the Electron main process reads it — the renderer never has access to its raw contents.
 
 ```yaml
 # .ade/local.secret.yaml
@@ -228,22 +224,6 @@ linear:
 # Optional: local model endpoint (no key needed for Ollama)
 localModels:
   baseUrl: "http://localhost:11434/v1"
-
-# External MCP server connections
-externalMcp:
-  - name: "github"
-    transport: "stdio"
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-github"]
-    autoStart: true
-    env:
-      GITHUB_TOKEN: "ghp_..."
-
-  - name: "ghost-os"
-    transport: "http"
-    url: "https://ghost-os.local/mcp"
-    healthCheckInterval: "30s"
-    autoStart: false
 ```
 
 <Warning>
@@ -260,7 +240,7 @@ ADE watches all three config files using filesystem events (debounced 500ms). Ch
 |------|------------------------|
 | `ade.yaml` | ADE detects the change, diffs against the approved SHA, and suspends commands until you approve the new version |
 | `local.yaml` | Applied immediately; UI reflects changes (theme, font, notification preferences) within one render cycle |
-| `local.secret.yaml` | API key changes take effect on the next agent call; MCP server credential changes trigger reconnection of the affected server |
+| `local.secret.yaml` | API key changes take effect on the next agent call; GitHub and Linear token changes trigger a refresh of the affected integration |
 
 <Tip>
 If you update an API key in `local.secret.yaml` while an agent is mid-session, the new key is used on the next API call. The in-flight request completes with the old key. No session restart is needed.
@@ -298,9 +278,6 @@ If you update an API key in `local.secret.yaml` while an agent is mid-session, t
 <CardGroup cols={2}>
   <Card title="AI Providers" icon="robot" href="/configuration/ai-providers">
     Configure Anthropic, OpenAI, OpenRouter, and local models. Set budgets and context preferences.
-  </Card>
-  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
-    Connect external MCP servers like GitHub, Slack, and Ghost OS to give agents additional tools.
   </Card>
   <Card title="Settings" icon="gear" href="/configuration/settings">
     Full reference for every setting in ADE's Settings page.

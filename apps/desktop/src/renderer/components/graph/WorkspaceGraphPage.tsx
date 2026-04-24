@@ -1,13 +1,14 @@
 // @refresh reset — GraphInner has 100+ hooks; force clean remount on HMR.
 import "@xyflow/react/dist/style.css";
 import React from "react";
+import type {
+  Edge,
+  Node} from "@xyflow/react";
 import {
   Background,
   BackgroundVariant,
-  Edge,
   MarkerType,
   MiniMap,
-  Node,
   Panel,
   ReactFlow,
   ReactFlowProvider,
@@ -21,7 +22,6 @@ import {
   Funnel,
   Plus,
   MagnifyingGlass,
-  CheckCircle,
   ClockCounterClockwise,
   ChatText,
   CaretDown,
@@ -45,7 +45,6 @@ import type {
   PrCheck,
   PrComment,
   PrReview,
-  PrStatus,
   PrWithConflicts,
   IntegrationProposal
 } from "../../../shared/types";
@@ -101,7 +100,8 @@ import {
   createGraphPreferences,
   createSessionState,
   normalizeGraphPreferences,
-  computeAutoLayout
+  computeAutoLayout,
+  laneHierarchyFromPrimary
 } from "./graphLayout";
 import { GraphLaneNode } from "./graphNodes/LaneNode";
 import { GraphProposalNode } from "./graphNodes/ProposalNode";
@@ -336,6 +336,12 @@ function GraphInner() {
   const [textPromptError, setTextPromptError] = React.useState<string | null>(null);
   const [singleActionsOpen, setSingleActionsOpen] = React.useState(false);
   const [batchActionsOpen, setBatchActionsOpen] = React.useState(false);
+  /** In Overview, risk edges are hidden by default so the tree stays readable. */
+  const [showOverviewRiskEdges, setShowOverviewRiskEdges] = React.useState(false);
+
+  React.useEffect(() => {
+    if (viewMode !== "all") setShowOverviewRiskEdges(false);
+  }, [viewMode]);
 
   React.useEffect(() => {
     void refreshEnvironmentMappings();
@@ -463,7 +469,8 @@ function GraphInner() {
   }, [collapsedLaneIds, lanes]);
 
   const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane] as const)), [lanes]);
-  const primaryLaneId = React.useMemo(() => lanes.find((lane) => lane.laneType === "primary")?.id ?? null, [lanes]);
+  const primaryHierarchyMeta = React.useMemo(() => laneHierarchyFromPrimary(lanes), [lanes]);
+  const primaryLaneId = primaryHierarchyMeta.primary?.id ?? null;
   const laneIdByBranchRef = React.useMemo(() => {
     const map = new Map<string, string>();
     for (const lane of lanes) {
@@ -514,7 +521,7 @@ function GraphInner() {
     (laneId: string): string | null => {
       const lane = laneById.get(laneId);
       if (!lane) return null;
-      return resolvePrBaseLaneId(lane, lane.baseRef);
+      return resolvePrBaseLaneId(lane, lane.baseRef) ?? null;
     },
     [laneById, resolvePrBaseLaneId]
   );
@@ -902,6 +909,7 @@ function GraphInner() {
     if (!focusParam || !loadedGraphPreferences || lanes.length === 0) return;
     const targetLane = lanes.find((lane) => lane.id === focusParam);
     if (!targetLane) return;
+    setSelectedLaneIds([focusParam]);
     setFocusLaneId(focusParam);
     // Center on the focused node
     let glowTimer: number | undefined;
@@ -1050,11 +1058,16 @@ function GraphInner() {
       reportGraphIssue("Conflict prediction live updates are unavailable in the graph.", error);
     }
     try {
-      unsubPtyData = window.ade.pty.onData(() => {
+      const currentProjectRoot = project?.rootPath ?? null;
+      const isCurrentProjectEvent = (event: { projectRoot?: string | null }) =>
+        !event.projectRoot || event.projectRoot === currentProjectRoot;
+      unsubPtyData = window.ade.pty.onData((event) => {
+        if (!isCurrentProjectEvent(event)) return;
         if (activeGraphSessionsRef.current === 0) return;
         scheduleRefreshActivity(1_200, { includeOperations: false });
       });
-      unsubPtyExit = window.ade.pty.onExit(() => {
+      unsubPtyExit = window.ade.pty.onExit((event) => {
+        if (!isCurrentProjectEvent(event)) return;
         scheduleRefreshActivity(220, { includeOperations: true });
       });
     } catch (error) {
@@ -1119,7 +1132,7 @@ function GraphInner() {
         prRefreshTimerRef.current = null;
       }
     };
-  }, [refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
+  }, [project?.rootPath, refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
 
   const baseGraph = React.useMemo(() => {
     if (!loadedGraphPreferences) {
@@ -1130,7 +1143,13 @@ function GraphInner() {
       };
     }
 
-    const autoPositions = computeAutoLayout(lanes, viewMode, activityScoreByLaneId, environmentByLaneId);
+    const autoPositions = computeAutoLayout(
+      lanes,
+      viewMode,
+      activityScoreByLaneId,
+      environmentByLaneId,
+      primaryHierarchyMeta.depthByLaneId
+    );
     const savedPositions = activeSnapshot.nodePositions;
     const positions = Object.keys(savedPositions).length > 0 ? { ...autoPositions, ...savedPositions } : autoPositions;
     const nextNodes: Array<Node<GraphNodeData>> = [];
@@ -1161,6 +1180,8 @@ function GraphInner() {
           autoRebaseStatus: autoRebaseByLaneId[lane.id] ?? null,
           activeSessions: activeSessionsByLaneId[lane.id] ?? 0,
           collapsedChildCount,
+          hierarchyDepth: primaryHierarchyMeta.depthByLaneId.get(lane.id) ?? 0,
+          parentLaneName: primaryHierarchyMeta.parentNameByLaneId.get(lane.id) ?? null,
           dimmed: false,
           activityBucket: activityBucketByLaneId[lane.id] ?? "medium",
           viewMode,
@@ -1241,6 +1262,8 @@ function GraphInner() {
           autoRebaseStatus: null,
           activeSessions: 0,
           collapsedChildCount: 0,
+          hierarchyDepth: 0,
+          parentLaneName: null,
           dimmed: false,
           activityBucket: "medium",
           viewMode,
@@ -1269,7 +1292,7 @@ function GraphInner() {
     }
 
     const nextEdges: Array<Edge<GraphEdgeData>> = [];
-    const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    const primaryLane = primaryHierarchyMeta.primary;
     const riskPairsWithVisibleEdge = new Set<string>();
     const laneHasProposalConflict = (proposal: IntegrationProposal, sourceLaneId: string): boolean => {
       const steps = proposalSteps(proposal);
@@ -1287,7 +1310,7 @@ function GraphInner() {
       );
     };
 
-    if (viewMode === "all" || viewMode === "risk") {
+    if (viewMode === "risk" || (viewMode === "all" && showOverviewRiskEdges)) {
       for (const [key, risk] of riskByPair.entries()) {
         if (risk.riskLevel === "none" && risk.overlapCount === 0) continue;
         const [laneAId, laneBId] = key.split("::");
@@ -1301,6 +1324,8 @@ function GraphInner() {
     if (viewMode === "all" || viewMode === "stack") {
       for (const lane of lanes) {
         if (!primaryLane || lane.id === primaryLane.id) continue;
+        // In Overview, stack edges already show the tree; skip redundant "primary → lane" spokes.
+        if (viewMode === "all" && lane.parentLaneId && visibleNodeIds.has(lane.parentLaneId)) continue;
         if (!visibleNodeIds.has(primaryLane.id) || !visibleNodeIds.has(lane.id)) continue;
         const pair = edgePairKey(primaryLane.id, lane.id);
         const pr = prOverlayByPair.get(pair);
@@ -1336,7 +1361,7 @@ function GraphInner() {
       }
     }
 
-    if (viewMode === "all" || viewMode === "risk") {
+    if (viewMode === "risk" || (viewMode === "all" && showOverviewRiskEdges)) {
       for (const [key, risk] of riskByPair.entries()) {
         if (risk.riskLevel === "none" && risk.overlapCount === 0) continue;
         const [laneAId, laneBId] = key.split("::");
@@ -1428,7 +1453,9 @@ function GraphInner() {
     loadedGraphPreferences,
     prOverlayByPair,
     prOverlayByLaneId,
+    primaryHierarchyMeta,
     riskByPair,
+    showOverviewRiskEdges,
     statusByLane,
     syncByLaneId,
     viewMode,
@@ -2677,7 +2704,7 @@ function GraphInner() {
   const allNodesHidden = baseGraph.nodes.length > 0 && baseGraph.visibleNodeIds.size === 0;
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" data-tour="graph.canvas">
       <ConfirmDialog state={graphConfirm.state} onClose={graphConfirm.close} />
       <div className="absolute inset-0 h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
 
@@ -2917,6 +2944,18 @@ function GraphInner() {
             Reset View
           </Button>
 
+          {viewMode === "all" ? (
+            <Button
+              size="sm"
+              variant={showOverviewRiskEdges ? "primary" : "outline"}
+              className="h-7 px-2 text-[11px]"
+              title="Show or hide predicted file-overlap links between lanes. Stack links stay visible."
+              onClick={() => setShowOverviewRiskEdges((prev) => !prev)}
+            >
+              {showOverviewRiskEdges ? "Hide overlap web" : "Show overlap web"}
+            </Button>
+          ) : null}
+
           <Button
             size="sm"
             variant={showRiskMatrix ? "primary" : "outline"}
@@ -2935,6 +2974,8 @@ function GraphInner() {
           edges={edges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
+          onlyRenderVisibleElements
+          nodesConnectable={false}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeDragStart={onNodeDragStart}
@@ -3164,9 +3205,10 @@ function GraphInner() {
               borderRadius: 14,
               boxShadow: "var(--shadow-card)"
             }}
+            data-tour="graph.pan"
           />
           <Panel position="bottom-left">
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2" data-tour="graph.zoom">
               <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-1 shadow-card">
                 <div className="flex flex-col gap-1">
                   <button
@@ -3237,7 +3279,7 @@ function GraphInner() {
             </Panel>
           ) : null}
           <Panel position="top-right">
-            <div className="flex w-[280px] flex-col gap-2 text-[11px]">
+            <div className="flex w-[280px] flex-col gap-2 text-[11px]" data-tour="graph.legend">
               <div className="rounded-xl bg-white/[0.03] backdrop-blur-xl p-3 shadow-card">
                 <div className="mb-2 font-sans font-semibold text-fg">Environments</div>
                 {environmentLegendEntries.length === 0 ? (

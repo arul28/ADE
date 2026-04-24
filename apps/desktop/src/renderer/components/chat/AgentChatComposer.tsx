@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen } from "@phosphor-icons/react";
+import { createPortal } from "react-dom";
+import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen, SquareSplitHorizontal, Plus, Trash } from "@phosphor-icons/react";
+import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
+  PARALLEL_CHAT_MAX_ATTACHMENTS,
   type AgentChatApprovalDecision,
   type AgentChatClaudePermissionMode,
   type AgentChatCursorConfigOption,
@@ -12,11 +15,10 @@ import {
   type AgentChatExecutionMode,
   type AgentChatFileRef,
   type AgentChatInteractionMode,
-  type AgentChatSlashCommand,
   type AgentChatOpenCodePermissionMode,
+  type AgentChatSlashCommand,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
-  type ComputerUsePolicy,
   type PendingInputRequest,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -30,6 +32,7 @@ import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
+import { modifierKeyLabel } from "../../lib/platform";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
@@ -49,26 +52,42 @@ type SlashCommandEntry = {
   source: "sdk" | "local";
 };
 
+/** When set, permission/runtime controls bind to this slot (parallel model row configuration). */
+export type ParallelComposerControlSlot = {
+  sessionProvider: string;
+  interactionMode: AgentChatInteractionMode;
+  claudePermissionMode: AgentChatClaudePermissionMode;
+  codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+  codexSandbox: AgentChatCodexSandbox;
+  codexConfigSource: AgentChatCodexConfigSource;
+  opencodePermissionMode: AgentChatOpenCodePermissionMode;
+  cursorModeSnapshot: AgentChatCursorModeSnapshot | null;
+  onInteractionModeChange: (mode: AgentChatInteractionMode) => void;
+  onClaudeModeChange: (mode: AgentChatClaudePermissionMode) => void;
+  onClaudePermissionModeChange: (mode: AgentChatClaudePermissionMode) => void;
+  onCodexPresetChange: (next: {
+    codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+    codexSandbox: AgentChatCodexSandbox;
+    codexConfigSource: AgentChatCodexConfigSource;
+  }) => void;
+  onCodexApprovalPolicyChange: (policy: AgentChatCodexApprovalPolicy) => void;
+  onCodexSandboxChange: (sandbox: AgentChatCodexSandbox) => void;
+  onCodexConfigSourceChange: (source: AgentChatCodexConfigSource) => void;
+  onOpenCodePermissionModeChange: (mode: AgentChatOpenCodePermissionMode) => void;
+  onCursorModeChange: (modeId: string) => void;
+  onCursorConfigChange: (configId: string, value: string | boolean) => void;
+};
+
 /** Local-only commands that are always available regardless of provider. */
 const LOCAL_SLASH_COMMANDS: SlashCommandEntry[] = [
   { command: "/clear", label: "Clear", description: "Clear chat history", source: "local" },
 ];
 
-/** Well-known defaults shown before the SDK session is initialized. */
-const CLAUDE_DEFAULT_COMMANDS: SlashCommandEntry[] = [];
-
-const CODEX_DEFAULT_COMMANDS: SlashCommandEntry[] = [
-  { command: "/review", label: "Review", description: "Review uncommitted changes", source: "sdk" },
-  { command: "/help", label: "Help", description: "Show available commands", source: "sdk" },
-];
-
-const DEFAULT_COMMANDS_BY_FAMILY: Record<string, SlashCommandEntry[]> = {
-  anthropic: CLAUDE_DEFAULT_COMMANDS,
-  openai: CODEX_DEFAULT_COMMANDS,
-};
-
 /** Build the effective slash command list by merging SDK-provided commands with local ones. */
-function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: string): SlashCommandEntry[] {
+function buildSlashCommands(
+  sdkCommands: AgentChatSlashCommand[],
+  options: { includeLocalClear: boolean },
+): SlashCommandEntry[] {
   const result: SlashCommandEntry[] = [];
   const seen = new Set<string>();
 
@@ -86,19 +105,11 @@ function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: 
     });
   }
 
-  // If no SDK commands loaded yet, show well-known defaults for the provider
-  if (sdkCommands.length === 0) {
-    const defaults = (modelFamily ? DEFAULT_COMMANDS_BY_FAMILY[modelFamily] : undefined) ?? [];
-    for (const cmd of defaults) {
-      if (!seen.has(cmd.command)) {
-        seen.add(cmd.command);
-        result.push(cmd);
-      }
-    }
-  }
-
-  // Local commands that aren't already provided by SDK
+  // Local commands that aren't already provided by SDK. Skip /clear when no
+  // handler is wired up — otherwise selecting it falls through to the generic
+  // draft path and sends literal "/clear" text to the model.
   for (const cmd of LOCAL_SLASH_COMMANDS) {
+    if (cmd.command === "/clear" && !options.includeLocalClear) continue;
     if (!seen.has(cmd.command)) {
       result.push(cmd);
     }
@@ -107,23 +118,72 @@ function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: 
   return result;
 }
 
-const CLAUDE_MODE_OPTIONS: Array<{ value: AgentChatClaudePermissionMode; label: string; detail: string; safety: "safe" | "semi-auto" | "danger" }> = [
-  { value: "default", label: "Default", detail: "Claude uses the normal approval flow for reads, edits, and tools.", safety: "safe" },
-  { value: "plan", label: "Plan", detail: "Read-only Claude turns for analysis and implementation planning.", safety: "safe" },
-  { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", safety: "semi-auto" },
-  { value: "bypassPermissions", label: "Bypass", detail: "Skip Claude permission prompts for this chat.", safety: "danger" },
+type ClaudeModeTone = "green" | "blue" | "purple" | "red";
+
+type ClaudeModeOption = {
+  value: AgentChatClaudePermissionMode;
+  label: string;
+  detail: string;
+  tone: ClaudeModeTone;
+};
+
+const CLAUDE_MODE_OPTIONS: ClaudeModeOption[] = [
+  { value: "default", label: "Ask permissions", detail: "Claude asks before edits, Bash, and other sensitive tools.", tone: "green" },
+  { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", tone: "blue" },
+  { value: "plan", label: "Plan mode", detail: "Read-only Claude turns for analysis and implementation planning.", tone: "purple" },
+  { value: "bypassPermissions", label: "Bypass permissions", detail: "Skip every Claude permission prompt for this chat.", tone: "red" },
 ];
 
-type CodexPermissionPreset = "plan" | "edit" | "full-auto" | "custom";
+const CLAUDE_MODE_TONE_STYLES: Record<
+  ClaudeModeTone,
+  {
+    activeBg: string;
+    activeText: string;
+    activeBorder: string;
+    dot: string;
+    hoverBg: string;
+  }
+> = {
+  green: {
+    activeBg: "bg-emerald-500/12",
+    activeText: "text-emerald-200",
+    activeBorder: "border-emerald-500/35",
+    dot: "bg-emerald-400",
+    hoverBg: "hover:bg-emerald-500/10 hover:text-emerald-100",
+  },
+  blue: {
+    activeBg: "bg-sky-500/14",
+    activeText: "text-sky-200",
+    activeBorder: "border-sky-500/35",
+    dot: "bg-sky-400",
+    hoverBg: "hover:bg-sky-500/10 hover:text-sky-100",
+  },
+  purple: {
+    activeBg: "bg-violet-500/14",
+    activeText: "text-violet-200",
+    activeBorder: "border-violet-500/35",
+    dot: "bg-violet-400",
+    hoverBg: "hover:bg-violet-500/10 hover:text-violet-100",
+  },
+  red: {
+    activeBg: "bg-red-500/14",
+    activeText: "text-red-200",
+    activeBorder: "border-red-500/35",
+    dot: "bg-red-400",
+    hoverBg: "hover:bg-red-500/10 hover:text-red-100",
+  },
+};
+
+type CodexPermissionPreset = "default" | "plan" | "full-auto" | "config-toml" | "custom";
 
 function resolveCodexPermissionPreset(args: {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
 }): CodexPermissionPreset {
-  if (args.codexConfigSource === "config-toml") return "custom";
-  if (args.codexApprovalPolicy === "untrusted" && args.codexSandbox === "read-only") return "plan";
-  if (args.codexApprovalPolicy === "on-failure" && args.codexSandbox === "workspace-write") return "edit";
+  if (args.codexConfigSource === "config-toml") return "config-toml";
+  if ((args.codexApprovalPolicy === "on-request" || args.codexApprovalPolicy === "untrusted" || args.codexApprovalPolicy === "on-failure") && args.codexSandbox === "workspace-write") return "default";
+  if ((args.codexApprovalPolicy === "on-request" || args.codexApprovalPolicy === "untrusted") && args.codexSandbox === "read-only") return "plan";
   if (args.codexApprovalPolicy === "never" && args.codexSandbox === "danger-full-access") return "full-auto";
   return "custom";
 }
@@ -266,6 +326,8 @@ export function AgentChatComposer({
   surfaceMode = "standard",
   layoutVariant = "standard",
   composerMaxHeightPx = null,
+  isActive = false,
+  shouldAutofocus = isActive,
   sdkSlashCommands = [],
   modelId,
   availableModelIds,
@@ -286,13 +348,13 @@ export function AgentChatComposer({
   opencodePermissionMode,
   cursorModeSnapshot,
   executionMode,
-  computerUsePolicy,
   computerUseSnapshot,
   proofOpen = false,
   proofArtifactCount = 0,
   executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
+  hideNativeControls = false,
   messagePlaceholder,
   onModelChange,
   onReasoningEffortChange,
@@ -317,7 +379,6 @@ export function AgentChatComposer({
   onCursorConfigChange,
   includeProjectDocs,
   onIncludeProjectDocsChange,
-  onComputerUsePolicyChange,
   onToggleProof,
   onClearEvents,
   promptSuggestion,
@@ -327,10 +388,28 @@ export function AgentChatComposer({
   onEditSteer,
   onOpenAiSettings,
   sessionId,
+  parallelChatMode = false,
+  onParallelChatModeChange,
+  parallelModelSlots = [],
+  parallelConfiguringIndex = null,
+  onParallelConfiguringIndexChange,
+  onParallelAddModel,
+  onParallelRemoveModel,
+  onParallelSlotModelChange,
+  onParallelSlotReasoningChange,
+  parallelLaunchBusy = false,
+  parallelLaunchStatus = null,
+  parallelControlSlot = null,
+  parallelSlotExecutionModeOptions = [],
+  parallelSlotExecutionMode = null,
+  onParallelSlotExecutionModeChange,
+  showParallelChatToggle = false,
 }: {
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
   composerMaxHeightPx?: number | null;
+  isActive?: boolean;
+  shouldAutofocus?: boolean;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
@@ -351,13 +430,13 @@ export function AgentChatComposer({
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
-  computerUsePolicy: ComputerUsePolicy;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
   proofOpen?: boolean;
   proofArtifactCount?: number;
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
+  hideNativeControls?: boolean;
   messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
@@ -386,7 +465,7 @@ export function AgentChatComposer({
   onCursorConfigChange?: (configId: string, value: string | boolean) => void;
   includeProjectDocs?: boolean;
   onIncludeProjectDocsChange?: (checked: boolean) => void;
-  onComputerUsePolicyChange: (policy: ComputerUsePolicy) => void;
+  onComputerUsePolicyChange?: (policy: unknown) => void;
   onToggleProof?: () => void;
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
@@ -396,6 +475,22 @@ export function AgentChatComposer({
   onEditSteer?: (steerId: string, text: string) => void;
   onOpenAiSettings?: () => void;
   sessionId?: string | null;
+  parallelChatMode?: boolean;
+  onParallelChatModeChange?: (enabled: boolean) => void;
+  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null }>;
+  parallelConfiguringIndex?: number | null;
+  onParallelConfiguringIndexChange?: (index: number | null) => void;
+  onParallelAddModel?: () => void;
+  onParallelRemoveModel?: (index: number) => void;
+  onParallelSlotModelChange?: (index: number, modelId: string) => void;
+  onParallelSlotReasoningChange?: (index: number, effort: string | null) => void;
+  parallelLaunchBusy?: boolean;
+  parallelLaunchStatus?: string | null;
+  parallelControlSlot?: ParallelComposerControlSlot | null;
+  parallelSlotExecutionModeOptions?: ExecutionModeOption[];
+  parallelSlotExecutionMode?: AgentChatExecutionMode | null;
+  onParallelSlotExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
+  showParallelChatToggle?: boolean;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -404,11 +499,12 @@ export function AgentChatComposer({
   const [attachmentCursor, setAttachmentCursor] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
 
-  const [slashPickerOpen, setSlashPickerOpen] = useState(false);
-  const [slashQuery, setSlashQuery] = useState("");
-  const [slashCursor, setSlashCursor] = useState(0);
   const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
-  const [hoveredCodexPreset, setHoveredCodexPreset] = useState<"plan" | "edit" | "full-auto" | null>(null);
+  const [hoveredCodexPreset, setHoveredCodexPreset] = useState<Exclude<CodexPermissionPreset, "custom"> | null>(null);
+  const [claudeModePickerOpen, setClaudeModePickerOpen] = useState(false);
+  const claudeModePickerRef = useRef<HTMLDivElement | null>(null);
+  const [codexPresetPickerOpen, setCodexPresetPickerOpen] = useState(false);
+  const codexPresetPickerRef = useRef<HTMLDivElement | null>(null);
 
   const [dragActive, setDragActive] = useState(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "at" | "slash"; query: string; cursorIndex: number } | null>(null);
@@ -419,7 +515,10 @@ export function AgentChatComposer({
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileAddInProgressRef = useRef(false);
-  const canAttach = !turnActive || sessionProvider === "claude" || sessionProvider === "codex";
+  const canAttach = !parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS;
+  const attachBlockedReason = parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
+    ? `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`
+    : null;
 
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current;
@@ -430,28 +529,20 @@ export function AgentChatComposer({
     el.style.height = `${next}px`;
     el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
   }, [layoutVariant, composerMaxHeightPx]);
+  useEffect(() => {
+    resizeTextarea();
+    if (!shouldAutofocus) return;
+    textareaRef.current?.focus({ preventScroll: true });
+  }, [resizeTextarea, shouldAutofocus]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
-  const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
-
   const effectiveSlashCommands = useMemo(
-    () => buildSlashCommands(sdkSlashCommands, selectedModel?.family),
-    [sdkSlashCommands, selectedModel?.family],
+    () => buildSlashCommands(sdkSlashCommands, { includeLocalClear: typeof onClearEvents === "function" }),
+    [sdkSlashCommands, onClearEvents],
   );
-
-  const filteredSlashCommands = useMemo(() => {
-    if (!slashQuery.length) return effectiveSlashCommands;
-    const q = slashQuery.toLowerCase();
-    return effectiveSlashCommands.filter(
-      (cmd) =>
-        cmd.command.toLowerCase().includes(q) ||
-        cmd.label.toLowerCase().includes(q) ||
-        cmd.description.toLowerCase().includes(q)
-    );
-  }, [slashQuery, effectiveSlashCommands]);
 
   /* ── Attachment picker effects ── */
   useEffect(() => {
@@ -465,6 +556,10 @@ export function AgentChatComposer({
     const timeout = window.setTimeout(() => attachmentInputRef.current?.focus(), 0);
     return () => window.clearTimeout(timeout);
   }, [attachmentPickerOpen]);
+
+  useEffect(() => {
+    setAttachmentCursor((c) => Math.min(c, Math.max(attachmentResults.length - 1, 0)));
+  }, [attachmentResults.length]);
 
   useEffect(() => {
     if (!attachmentPickerOpen) return;
@@ -492,23 +587,35 @@ export function AgentChatComposer({
 
   const selectAttachment = (attachment: AgentChatFileRef) => {
     setAttachError(null);
+    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+      setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
+      return;
+    }
     onAddAttachment(attachment);
     setAttachmentPickerOpen(false);
   };
 
   const addFileAttachments = async (files: FileList | null | undefined) => {
-    if (!canAttach || !files?.length) return;
+    if (!files?.length) return;
+    if (turnActive) return;
+    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     try {
+      let addedInBatch = 0;
       for (const file of Array.from(files)) {
+        if (parallelChatMode && attachments.length + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+          setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
+          break;
+        }
         const fileWithPath = file as File & { path?: string };
         const hasRealPath = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length > 0;
 
         if (hasRealPath) {
           const filePath = fileWithPath.path!;
           onAddAttachment({ path: filePath, type: inferAttachmentType(filePath, file.type) });
+          addedInBatch += 1;
           continue;
         }
 
@@ -530,6 +637,7 @@ export function AgentChatComposer({
             filename: file.name || "clipboard.png",
           });
           onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
+          addedInBatch += 1;
         } catch {
           setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
         }
@@ -539,42 +647,56 @@ export function AgentChatComposer({
     }
   };
 
-  const handleSlashSelect = (cmd: SlashCommandEntry) => {
-    setSlashPickerOpen(false);
-    setSlashQuery("");
+  const handleSlashSelect = useCallback((cmd: SlashCommandEntry) => {
     // Local-only commands handled client-side
-    if (cmd.command === "/clear" && onClearEvents) { onClearEvents(); onDraftChange(""); return; }
+    if (cmd.command === "/clear" && cmd.source === "local" && onClearEvents) { onClearEvents(); onDraftChange(""); return; }
     // SDK and all other commands: set as draft text to be sent to the agent
     const suffix = cmd.argumentHint ? ` ${cmd.argumentHint}` : "";
     onDraftChange(`${cmd.command}${suffix} `);
-  };
+  }, [onClearEvents, onDraftChange]);
 
   const nativeControlsDisabled = permissionModeLocked;
-  const claudeSelectionMode = claudePermissionMode === "plan" || interactionMode === "plan"
+  const slot = parallelControlSlot;
+  const sp = slot?.sessionProvider ?? sessionProvider ?? "opencode";
+  const im = slot?.interactionMode ?? interactionMode ?? "default";
+  const cpmUse = slot?.claudePermissionMode ?? claudePermissionMode;
+  const capUse = slot?.codexApprovalPolicy ?? codexApprovalPolicy;
+  const csUse = slot?.codexSandbox ?? codexSandbox;
+  const ccsUse = slot?.codexConfigSource ?? codexConfigSource;
+  const opmUse = slot?.opencodePermissionMode ?? opencodePermissionMode;
+  const cmsUse = slot?.cursorModeSnapshot ?? cursorModeSnapshot;
+
+  const claudeSelectionMode = cpmUse === "plan" || im === "plan"
     ? "plan"
-    : claudePermissionMode ?? "default";
+    : cpmUse ?? "default";
   const codexPreset = resolveCodexPermissionPreset({
-    codexApprovalPolicy,
-    codexSandbox,
-    codexConfigSource,
+    codexApprovalPolicy: capUse,
+    codexSandbox: csUse,
+    codexConfigSource: ccsUse,
   });
   const codexPresetOptions = useMemo(
     () => getPermissionOptions({ family: "openai", isCliWrapped: true })
-      .filter((option) => option.value === "plan" || option.value === "edit" || option.value === "full-auto"),
+      .filter((option) => option.value === "default" || option.value === "plan" || option.value === "full-auto" || option.value === "config-toml"),
     [],
   );
   const applyCodexPreset = useCallback((preset: Exclude<CodexPermissionPreset, "custom">) => {
-    const next = preset === "plan"
+    const next = preset === "default"
       ? {
-          codexApprovalPolicy: "untrusted" as const,
+          codexApprovalPolicy: "on-request" as const,
+          codexSandbox: "workspace-write" as const,
+          codexConfigSource: "flags" as const,
+        }
+      : preset === "plan"
+      ? {
+          codexApprovalPolicy: "on-request" as const,
           codexSandbox: "read-only" as const,
           codexConfigSource: "flags" as const,
         }
-      : preset === "edit"
+      : preset === "config-toml"
         ? {
-            codexApprovalPolicy: "on-failure" as const,
-            codexSandbox: "workspace-write" as const,
-            codexConfigSource: "flags" as const,
+            codexApprovalPolicy: codexApprovalPolicy ?? "on-request",
+            codexSandbox: codexSandbox ?? "workspace-write",
+            codexConfigSource: "config-toml" as const,
           }
         : {
             codexApprovalPolicy: "never" as const,
@@ -582,6 +704,10 @@ export function AgentChatComposer({
             codexConfigSource: "flags" as const,
           };
 
+    if (parallelControlSlot) {
+      parallelControlSlot.onCodexPresetChange(next);
+      return;
+    }
     if (onCodexPresetChange) {
       onCodexPresetChange(next);
       return;
@@ -590,36 +716,87 @@ export function AgentChatComposer({
     onCodexApprovalPolicyChange?.(next.codexApprovalPolicy);
     onCodexSandboxChange?.(next.codexSandbox);
   }, [
+    codexApprovalPolicy,
+    codexSandbox,
     onCodexApprovalPolicyChange,
     onCodexConfigSourceChange,
     onCodexPresetChange,
     onCodexSandboxChange,
+    parallelControlSlot,
   ]);
   const claudeControlDetail = useMemo(() => {
-    if (sessionProvider !== "claude") return null;
+    if (sp !== "claude") return null;
     const option = CLAUDE_MODE_OPTIONS.find((item) => item.value === (hoveredClaudeMode ?? claudeSelectionMode));
     return option?.detail ?? null;
-  }, [claudeSelectionMode, hoveredClaudeMode, sessionProvider]);
+  }, [claudeSelectionMode, hoveredClaudeMode, sp]);
+
+  useEffect(() => {
+    if (!codexPresetPickerOpen) return;
+    const handleClick = (event: MouseEvent) => {
+      if (!codexPresetPickerRef.current) return;
+      if (codexPresetPickerRef.current.contains(event.target as Node)) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("[data-codex-preset-picker-dropdown]")) return;
+      setCodexPresetPickerOpen(false);
+      setHoveredCodexPreset(null);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setCodexPresetPickerOpen(false);
+        setHoveredCodexPreset(null);
+      }
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [codexPresetPickerOpen]);
+
+  useEffect(() => {
+    if (!claudeModePickerOpen) return;
+    const handleClick = (event: MouseEvent) => {
+      if (!claudeModePickerRef.current) return;
+      if (claudeModePickerRef.current.contains(event.target as Node)) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("[data-claude-mode-picker-dropdown]")) return;
+      setClaudeModePickerOpen(false);
+      setHoveredClaudeMode(null);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setClaudeModePickerOpen(false);
+        setHoveredClaudeMode(null);
+      }
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [claudeModePickerOpen]);
   const codexCustomSummary = useMemo(() => {
-    if (sessionProvider !== "codex" || codexPreset !== "custom") return null;
-    if (codexConfigSource === "config-toml") {
+    if (sp !== "codex" || codexPreset !== "custom") return null;
+    if (ccsUse === "config-toml") {
       return "Custom Codex mode: config.toml controls approval and sandbox.";
     }
     const approvalLabel = {
-      "untrusted": "Plan",
+      "untrusted": "Untrusted",
       "on-request": "On request",
-      "on-failure": "Guarded edit",
-      "never": "Full auto",
-    }[codexApprovalPolicy ?? "on-request"];
+      "on-failure": "On failure",
+      "never": "Never",
+    }[capUse ?? "on-request"];
     const sandboxLabel = {
       "read-only": "Read only",
       "workspace-write": "Workspace write",
       "danger-full-access": "Danger full access",
-    }[codexSandbox ?? "workspace-write"];
-    return `Custom Codex mode: ${codexConfigSource === "flags" ? "ADE flags" : "config.toml"} · ${approvalLabel} · ${sandboxLabel}`;
-  }, [codexApprovalPolicy, codexConfigSource, codexPreset, codexSandbox, sessionProvider]);
+    }[csUse ?? "workspace-write"];
+    return `Custom Codex mode: ${ccsUse === "flags" ? "ADE flags" : "config.toml"} - ${approvalLabel} - ${sandboxLabel}`;
+  }, [capUse, ccsUse, codexPreset, csUse, sp]);
   const codexControlDetail = useMemo(() => {
-    if (sessionProvider !== "codex") return null;
+    if (sp !== "codex") return null;
     if (hoveredCodexPreset) {
       return codexPresetOptions.find((option) => option.value === hoveredCodexPreset)?.detail ?? null;
     }
@@ -627,8 +804,11 @@ export function AgentChatComposer({
       return codexCustomSummary;
     }
     return codexPresetOptions.find((option) => option.value === codexPreset)?.detail ?? null;
-  }, [codexCustomSummary, codexPreset, codexPresetOptions, hoveredCodexPreset, sessionProvider]);
+  }, [codexCustomSummary, codexPreset, codexPresetOptions, hoveredCodexPreset, sp]);
   const nativeControlPanel = useMemo(() => {
+    if (hideNativeControls) {
+      return null;
+    }
     const renderButtonGroup = <T extends string,>(
       label: string,
       value: T | undefined,
@@ -671,83 +851,231 @@ export function AgentChatComposer({
       </div>
     );
 
-    if (sessionProvider === "claude") {
+    if (sp === "claude") {
+      const selectedOption =
+        CLAUDE_MODE_OPTIONS.find((option) => option.value === claudeSelectionMode) ?? CLAUDE_MODE_OPTIONS[0];
+      const selectedTone = CLAUDE_MODE_TONE_STYLES[selectedOption.tone];
+      const applyClaudeMode = (mode: AgentChatClaudePermissionMode) => {
+        if (parallelControlSlot) {
+          if (mode === "plan") {
+            parallelControlSlot.onInteractionModeChange("plan");
+            parallelControlSlot.onClaudePermissionModeChange("plan");
+            return;
+          }
+          parallelControlSlot.onInteractionModeChange("default");
+          parallelControlSlot.onClaudePermissionModeChange(mode);
+          return;
+        }
+        if (onClaudeModeChange) {
+          onClaudeModeChange(mode);
+          return;
+        }
+        if (mode === "plan") {
+          onInteractionModeChange?.("plan");
+          onClaudePermissionModeChange?.("plan");
+          return;
+        }
+        onInteractionModeChange?.("default");
+        onClaudePermissionModeChange?.(mode);
+      };
       return (
         <div className="flex flex-wrap items-start gap-2">
-          {renderButtonGroup("Claude", claudeSelectionMode, CLAUDE_MODE_OPTIONS, (mode) => {
-            if (onClaudeModeChange) {
-              onClaudeModeChange(mode);
-              return;
-            }
-            if (mode === "plan") {
-              onInteractionModeChange?.("plan");
-              onClaudePermissionModeChange?.("plan");
-              return;
-            }
-            onInteractionModeChange?.("default");
-            onClaudePermissionModeChange?.(mode);
-          }, nativeControlsDisabled, setHoveredClaudeMode)}
-        </div>
-      );
-    }
-
-    if (sessionProvider === "codex") {
-      return (
-        <div className="flex flex-wrap items-start gap-2">
-          <div className="flex items-center gap-px rounded-md border border-white/[0.06] bg-[#1a1a22] p-0.5">
-            {codexPresetOptions.map((option) => {
-              const active = codexPreset === option.value;
-              const colors = safetyColors(option.safety);
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={cn(
-                    "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
-                    active ? `${colors.activeBg} text-fg/80` : "text-muted-fg/35 hover:text-muted-fg/60",
-                    nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "",
-                  )}
-                  disabled={nativeControlsDisabled}
-                  onClick={() => applyCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
-                  onMouseEnter={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
-                  onMouseLeave={() => setHoveredCodexPreset(null)}
-                  onFocus={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
-                  onBlur={() => setHoveredCodexPreset(null)}
-                  title={option.detail}
-                  aria-pressed={active}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-            <div
+          <div ref={claudeModePickerRef} className="relative">
+            <button
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded={claudeModePickerOpen}
+              aria-label="Claude permission mode"
+              disabled={nativeControlsDisabled}
+              onClick={() => {
+                if (nativeControlsDisabled) return;
+                setClaudeModePickerOpen((open) => !open);
+              }}
               className={cn(
-                "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider",
-                codexPreset === "custom" ? "bg-white/[0.06] text-fg/80" : "text-muted-fg/35",
+                "inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 font-sans text-[11px] transition-colors",
+                selectedTone.activeBorder,
+                selectedTone.activeBg,
+                selectedTone.activeText,
+                nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:brightness-110",
               )}
-              title={codexCustomSummary ?? "Custom Codex approval/sandbox combination"}
+              title={selectedOption.detail}
             >
-              Custom
-            </div>
+              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", selectedTone.dot)} aria-hidden />
+              <span className="font-sans text-[11px] leading-none">{selectedOption.label}</span>
+              <CaretDown size={10} weight="bold" className="opacity-70" />
+            </button>
+            {claudeModePickerOpen && claudeModePickerRef.current ? createPortal(
+              (() => {
+                const rect = claudeModePickerRef.current.getBoundingClientRect();
+                return (
+                  <div
+                    role="listbox"
+                    aria-label="Claude permission mode"
+                    data-claude-mode-picker-dropdown
+                    className="fixed z-[80] w-56 overflow-hidden rounded-lg border border-white/[0.08] bg-[#15151c] shadow-lg shadow-black/40"
+                    style={{
+                      left: rect.left,
+                      bottom: window.innerHeight - rect.top + 8,
+                    }}
+                  >
+                    <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
+                      Mode
+                    </div>
+                    <ul className="py-1">
+                      {CLAUDE_MODE_OPTIONS.map((option) => {
+                        const tone = CLAUDE_MODE_TONE_STYLES[option.tone];
+                        const active = option.value === claudeSelectionMode;
+                        return (
+                          <li key={option.value}>
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={active}
+                              onClick={() => {
+                                applyClaudeMode(option.value);
+                                setClaudeModePickerOpen(false);
+                                setHoveredClaudeMode(null);
+                              }}
+                              onMouseEnter={() => setHoveredClaudeMode(option.value)}
+                              onMouseLeave={() => setHoveredClaudeMode(null)}
+                              onFocus={() => setHoveredClaudeMode(option.value)}
+                              onBlur={() => setHoveredClaudeMode(null)}
+                              className={cn(
+                                "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[11px] transition-colors",
+                                active ? cn(tone.activeBg, tone.activeText) : "text-fg/72",
+                                tone.hoverBg,
+                              )}
+                              title={option.detail}
+                            >
+                              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tone.dot)} aria-hidden />
+                              <span className="flex-1 truncate leading-none">{option.label}</span>
+                              {active ? <Check size={10} weight="bold" className="opacity-80" /> : null}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })(),
+              document.body,
+            ) : null}
           </div>
         </div>
       );
     }
 
-    const cursorModeOption = resolveCursorModeOption(cursorModeSnapshot);
-    const cursorExtraOptions = (cursorModeSnapshot?.configOptions ?? []).filter((option) => {
-      if (option.id === cursorModeSnapshot?.modelConfigId) return false;
+    if (sp === "codex") {
+      const activePreset = codexPresetOptions.find((option) => option.value === codexPreset);
+      const presetLabel = codexPreset === "custom"
+        ? "Custom"
+        : activePreset?.label ?? "Plan";
+      const activeColors = activePreset ? safetyColors(activePreset.safety) : null;
+      return (
+        <div ref={codexPresetPickerRef} className="relative">
+          <button
+            type="button"
+            aria-haspopup="listbox"
+            aria-expanded={codexPresetPickerOpen}
+            aria-label="Codex approval preset"
+            disabled={nativeControlsDisabled}
+            onClick={() => {
+              if (nativeControlsDisabled) return;
+              setCodexPresetPickerOpen((open) => !open);
+            }}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 font-sans text-[11px] transition-colors",
+              activeColors ? `${activeColors.activeBg} text-fg/88 border-white/[0.08]` : "bg-white/[0.06] text-fg/80 border-white/[0.08]",
+              nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:brightness-110",
+            )}
+            title={activePreset?.detail ?? codexCustomSummary ?? "Codex approval preset"}
+          >
+            <span className="font-sans text-[11px] leading-none">{presetLabel}</span>
+            <CaretDown size={10} weight="bold" className="opacity-70" />
+          </button>
+          {codexPresetPickerOpen && codexPresetPickerRef.current ? createPortal(
+            (() => {
+              const rect = codexPresetPickerRef.current.getBoundingClientRect();
+              return (
+                <div
+                  role="listbox"
+                  aria-label="Codex approval preset"
+                  data-codex-preset-picker-dropdown
+                  className="fixed z-[80] w-56 overflow-hidden rounded-lg border border-white/[0.08] bg-[#15151c] shadow-lg shadow-black/40"
+                  style={{
+                    left: rect.left,
+                    bottom: window.innerHeight - rect.top + 8,
+                  }}
+                >
+                  <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
+                    Preset
+                  </div>
+                  <ul className="py-1">
+                    {codexPresetOptions.map((option) => {
+                      const active = codexPreset === option.value;
+                      const colors = safetyColors(option.safety);
+                      return (
+                        <li key={option.value}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={active}
+                            onClick={() => {
+                              applyCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">);
+                              setCodexPresetPickerOpen(false);
+                              setHoveredCodexPreset(null);
+                            }}
+                            onMouseEnter={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
+                            onMouseLeave={() => setHoveredCodexPreset(null)}
+                            onFocus={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
+                            onBlur={() => setHoveredCodexPreset(null)}
+                            className={cn(
+                              "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[11px] transition-colors",
+                              active ? `${colors.activeBg} text-fg/88` : "text-fg/72 hover:bg-white/[0.04]",
+                            )}
+                            title={option.detail}
+                          >
+                            <span className="flex-1 truncate leading-none">{option.label}</span>
+                            {active ? <Check size={10} weight="bold" className="opacity-80" /> : null}
+                          </button>
+                        </li>
+                      );
+                    })}
+                    {codexPreset === "custom" ? (
+                      <li>
+                        <div
+                          className="flex w-full items-center gap-2 px-3 py-1.5 font-sans text-[11px] bg-white/[0.06] text-fg/88"
+                          title={codexCustomSummary ?? "Custom Codex approval/sandbox combination"}
+                        >
+                          <span className="flex-1 truncate leading-none">Custom</span>
+                          <Check size={10} weight="bold" className="opacity-80" />
+                        </div>
+                      </li>
+                    ) : null}
+                  </ul>
+                </div>
+              );
+            })(),
+            document.body,
+          ) : null}
+        </div>
+      );
+    }
+
+    const cursorModeOption = resolveCursorModeOption(cmsUse);
+    const cursorExtraOptions = (cmsUse?.configOptions ?? []).filter((option) => {
+      if (option.id === cmsUse?.modelConfigId) return false;
       if (option.id === cursorModeOption?.id) return false;
       return true;
     });
 
-    if (sessionProvider === "cursor" && (cursorModeSnapshot?.availableModeIds?.length || cursorModeOption)) {
+    if (sp === "cursor" && (cmsUse?.availableModeIds?.length || cursorModeOption)) {
       const modeValue = typeof cursorModeOption?.currentValue === "string"
         ? cursorModeOption.currentValue
-        : cursorModeSnapshot?.currentModeId ?? "";
+        : cmsUse?.currentModeId ?? "";
       const modeChoices = cursorModeOption?.options?.length
         ? cursorModeOption.options.map((option) => ({ value: option.value, label: option.label }))
-        : (cursorModeSnapshot?.availableModeIds ?? []).map((modeId) => ({
+        : (cmsUse?.availableModeIds ?? []).map((modeId) => ({
             value: modeId,
             label: cursorModeLabel(modeId),
           }));
@@ -758,8 +1086,11 @@ export function AgentChatComposer({
               <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">Mode</span>
               <select
                 value={modeValue}
-                disabled={nativeControlsDisabled || !onCursorModeChange}
-                onChange={(event) => onCursorModeChange?.(event.target.value)}
+                disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
+                onChange={(event) => {
+                  if (parallelControlSlot) parallelControlSlot.onCursorModeChange(event.target.value);
+                  else onCursorModeChange?.(event.target.value);
+                }}
                 className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
               >
                 {modeChoices.map((option) => (
@@ -777,8 +1108,11 @@ export function AgentChatComposer({
                 <button
                   key={option.id}
                   type="button"
-                  disabled={nativeControlsDisabled || !onCursorConfigChange}
-                  onClick={() => onCursorConfigChange?.(option.id, !active)}
+                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
+                  onClick={() => {
+                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, !active);
+                    else onCursorConfigChange?.(option.id, !active);
+                  }}
                   className={cn(
                     "inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 font-sans text-[11px] transition-colors",
                     active
@@ -810,8 +1144,11 @@ export function AgentChatComposer({
                 </span>
                 <select
                   value={typeof option.currentValue === "string" ? option.currentValue : ""}
-                  disabled={nativeControlsDisabled || !onCursorConfigChange}
-                  onChange={(event) => onCursorConfigChange?.(option.id, event.target.value)}
+                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
+                  onChange={(event) => {
+                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, event.target.value);
+                    else onCursorConfigChange?.(option.id, event.target.value);
+                  }}
                   className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
                 >
                   {choices.map((choice) => (
@@ -827,14 +1164,18 @@ export function AgentChatComposer({
       );
     }
 
-    const runtimeLabel = sessionProvider === "cursor" ? "Cursor" : "ADE";
+    const runtimeLabel = sp === "cursor" ? "Mode" : "Permissions";
     return (
       <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
         <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>
         <select
-          value={opencodePermissionMode}
-          disabled={nativeControlsDisabled || !onOpenCodePermissionModeChange}
-          onChange={(event) => onOpenCodePermissionModeChange?.(event.target.value as AgentChatOpenCodePermissionMode)}
+          value={opmUse}
+          disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
+          onChange={(event) => {
+            const v = event.target.value as AgentChatOpenCodePermissionMode;
+            if (parallelControlSlot) parallelControlSlot.onOpenCodePermissionModeChange(v);
+            else onOpenCodePermissionModeChange?.(v);
+          }}
           className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
         >
           {OPENCODE_PERMISSION_OPTIONS.map((option) => (
@@ -848,23 +1189,26 @@ export function AgentChatComposer({
   }, [
     claudeSelectionMode,
     claudePermissionMode,
+    claudeModePickerOpen,
+    codexPresetPickerOpen,
     applyCodexPreset,
     codexPreset,
     codexPresetOptions,
     codexCustomSummary,
-    codexConfigSource,
     hoveredClaudeMode,
     hoveredCodexPreset,
     nativeControlsDisabled,
+    hideNativeControls,
     onClaudeModeChange,
     onClaudePermissionModeChange,
     onInteractionModeChange,
     onCursorConfigChange,
     onCursorModeChange,
     onOpenCodePermissionModeChange,
-    cursorModeSnapshot,
-    sessionProvider,
-    opencodePermissionMode,
+    cmsUse,
+    sp,
+    opmUse,
+    parallelControlSlot,
   ]);
 
   const composerGlowColor = useMemo(() => {
@@ -881,25 +1225,6 @@ export function AgentChatComposer({
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
 
-    /* Slash picker keyboard */
-    if (slashPickerOpen) {
-      if (event.key === "Escape") { event.preventDefault(); setSlashPickerOpen(false); setSlashQuery(""); return; }
-      if (event.key === "ArrowDown") { event.preventDefault(); setSlashCursor((v) => Math.min(v + 1, Math.max(filteredSlashCommands.length - 1, 0))); return; }
-      if (event.key === "ArrowUp") { event.preventDefault(); setSlashCursor((v) => Math.max(v - 1, 0)); return; }
-      if (event.key === "Enter" || event.key === "Tab") {
-        const cmd = filteredSlashCommands[slashCursor];
-        if (cmd) { event.preventDefault(); handleSlashSelect(cmd); return; }
-      }
-    }
-
-    /* Trigger pickers — let "/" be typed so onChange can filter */
-    if (event.key === "/" && draft.length === 0 && !commandModified && !event.altKey) {
-      setSlashPickerOpen(true);
-      setSlashQuery("");
-      setSlashCursor(0);
-      // Don't preventDefault — the "/" will appear in the textarea and onChange will
-      // see val.startsWith("/"), keeping the picker open and enabling type-to-filter.
-    }
     /* Command menu keyboard navigation */
     if (commandMenuTrigger) {
       if (event.key === "Escape") { event.preventDefault(); setCommandMenuTrigger(null); return; }
@@ -970,16 +1295,26 @@ export function AgentChatComposer({
 
   const handleCommandMenuSelect = useCallback((item: ChatCommandMenuItem) => {
     if (item.type === "file" && commandMenuTrigger) {
+      if (!canAttach) {
+        setAttachError(attachBlockedReason ?? "Attachments are unavailable right now.");
+        setCommandMenuTrigger(null);
+        return;
+      }
       // Replace the @query with @filepath
       const before = draft.slice(0, commandMenuTrigger.cursorIndex);
       const after = draft.slice(commandMenuTrigger.cursorIndex + commandMenuTrigger.query.length + 1); // +1 for @
       onDraftChange(`${before}@${item.path} ${after}`);
       onAddAttachment({ path: item.path, type: inferAttachmentType(item.path) });
     } else if (item.type === "command") {
-      onDraftChange(`/${item.name} `);
+      const selected = effectiveSlashCommands.find((cmd) => cmd.command.replace(/^\//, "") === item.name);
+      if (selected) {
+        handleSlashSelect(selected);
+      } else {
+        onDraftChange(`/${item.name} `);
+      }
     }
     setCommandMenuTrigger(null);
-  }, [commandMenuTrigger, draft, onDraftChange, onAddAttachment]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, effectiveSlashCommands, handleSlashSelect, onDraftChange, onAddAttachment]);
 
   const submitComposerDraft = useCallback(() => {
     const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
@@ -990,30 +1325,64 @@ export function AgentChatComposer({
       onDraftChange("");
       return;
     }
+    if (parallelChatMode) {
+      if (busy || parallelLaunchBusy) return;
+      if (parallelModelSlots.length < 2) return;
+      const hasPrompt = draft.trim().length > 0;
+      const hasAttachments = attachments.length > 0;
+      if (!hasPrompt && !hasAttachments) return;
+      onSubmit();
+      return;
+    }
     if (busy || !modelId || !draft.trim().length) return;
     onSubmit();
-  }, [busy, draft, modelId, onApproval, onDraftChange, onSubmit, pendingInput]);
+  }, [attachments, busy, draft, modelId, onApproval, onDraftChange, onSubmit, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
 
-  let composerHintText: string;
-  if (turnActive) {
-    composerHintText = "Steer the active turn, or press Cmd+. to stop it";
-  } else if (sendOnEnter) {
-    composerHintText = "Enter sends. Shift+Enter adds a newline.";
-  } else {
-    composerHintText = "Cmd+Enter sends. Enter keeps a newline.";
+  const composerBeamActive = layoutVariant !== "grid-tile" && (turnActive || !chatHasMessages);
+  const composerBeamVariant = turnActive ? "ocean" : "colorful";
+  const composerBeamDuration = turnActive ? 20 : 5;
+  const composerBeamStrength = turnActive ? 0.26 : 0.44;
+
+  const parallelReady =
+    parallelChatMode
+    && parallelModelSlots.length >= 2
+    && (draft.trim().length > 0 || attachments.length > 0);
+  const singleReady = !parallelChatMode && Boolean(modelId) && draft.trim().length > 0;
+  const sendEnabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
+
+  function sendButtonTitle(): string {
+    if (parallelChatMode) {
+      if (parallelModelSlots.length < 2) return "Add at least two models";
+      if (draft.trim().length === 0 && attachments.length === 0) return "Add a message or at least one attachment";
+      return "Send to all lanes";
+    }
+    if (!modelId) return "Select a model first";
+    return "Send";
   }
 
   return (
     <>
+      <BorderBeam
+        size="md"
+        colorVariant={composerBeamVariant}
+        duration={composerBeamDuration}
+        strength={composerBeamStrength}
+        active={composerBeamActive}
+        borderRadius={18}
+        className={cn(
+          "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
+          layoutVariant === "grid-tile" ? "m-0" : "",
+        )}
+        style={{ overflow: "visible" }}
+      >
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
       className={cn(
-        "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
-        layoutVariant === "grid-tile" ? "m-0 rounded-none border-0 bg-transparent shadow-none" : "",
+        layoutVariant === "grid-tile" ? "border-0 bg-transparent shadow-none" : "",
       )}
       pendingBanner={pendingInput ? (
         pendingInput.kind === "plan_approval" ? (
@@ -1054,8 +1423,8 @@ export function AgentChatComposer({
               <div className="flex items-center gap-1.5">
                 <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
                   {showPendingInputOptionsHint
-                    ? "Answer in the question window above, or pick an option there."
-                    : "Answer in the question window above, or type below."}
+                    ? "Answer in the inline question card, or pick an option there."
+                    : "Answer in the inline question card, or type below."}
                 </span>
                 <button
                   type="button"
@@ -1107,35 +1476,6 @@ export function AgentChatComposer({
               event.currentTarget.value = "";
             }}
           />
-          {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-            <div className="ade-chat-drawer-glass absolute bottom-full left-3 z-10 mb-3 w-80 overflow-hidden">
-              <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/40">
-                Commands
-              </div>
-              <div className="max-h-52 overflow-auto py-1">
-                {filteredSlashCommands.map((cmd, index) => (
-                  <button
-                    key={cmd.command}
-                    type="button"
-                    data-active={index === slashCursor}
-                    className={cn(
-                      "ade-chat-drawer-row mx-1 flex w-[calc(100%-0.5rem)] items-center gap-3 rounded-lg px-3 py-2.5 text-left font-mono text-[10px]",
-                      index === slashCursor ? "text-fg" : "text-fg/55",
-                    )}
-                    onMouseEnter={() => setSlashCursor(index)}
-                    onClick={() => handleSlashSelect(cmd)}
-                  >
-                    <span className="w-16 shrink-0 text-accent/70">{cmd.command}</span>
-                    <span className="flex-1 truncate text-fg/45">{cmd.description}</span>
-                    {cmd.source === "sdk" ? (
-                      <span className="shrink-0 rounded-sm bg-violet-500/10 px-1 py-px text-[8px] text-violet-300/60">sdk</span>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
           {attachmentPickerOpen ? (
             <div className="ade-chat-drawer-glass absolute bottom-full left-3 z-10 mb-3 w-80 overflow-hidden">
               <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2.5">
@@ -1148,7 +1488,11 @@ export function AgentChatComposer({
                   className="h-5 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
                   onKeyDown={(event) => {
                     if (event.key === "Escape") { event.preventDefault(); setAttachmentPickerOpen(false); return; }
-                    if (event.key === "ArrowDown") { event.preventDefault(); setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0))); return; }
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0)));
+                      return;
+                    }
                     if (event.key === "ArrowUp") { event.preventDefault(); setAttachmentCursor((v) => Math.max(v - 1, 0)); return; }
                     if (event.key === "Enter") {
                       const candidate = attachmentResults[attachmentCursor];
@@ -1188,11 +1532,159 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3.5 py-2">
+        <div className="flex flex-col gap-2 px-3 py-1.5">
+          {showParallelChatToggle && !parallelChatMode ? (
+            <button
+              type="button"
+              disabled={turnActive || busy}
+              onClick={() => onParallelChatModeChange?.(true)}
+              className={cn(
+                "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
+                "border-white/[0.08] bg-white/[0.02] hover:border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)]",
+                turnActive || busy ? "cursor-not-allowed opacity-40" : "",
+              )}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-[var(--chat-accent)]">
+                <SquareSplitHorizontal size={18} weight="regular" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-sans text-[12px] font-medium text-fg/85">Parallel models</span>
+                <span className="mt-0.5 block font-sans text-[11px] leading-snug text-muted-fg/55">
+                  Same prompt and attachments in one child lane per model
+                </span>
+              </span>
+            </button>
+          ) : null}
+          {parallelChatMode ? (
+            <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-sans text-[12px] font-semibold text-fg/88">Parallel launch</div>
+                  <p className="mt-1 font-sans text-[11px] leading-relaxed text-muted-fg/55">
+                    Configure each model, then send once. Attachments go to every lane (max {PARALLEL_CHAT_MAX_ATTACHMENTS}).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={parallelLaunchBusy}
+                  className="shrink-0 rounded-lg border border-white/[0.1] px-2 py-1 font-sans text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
+                  onClick={() => {
+                    onParallelChatModeChange?.(false);
+                    onParallelConfiguringIndexChange?.(null);
+                  }}
+                >
+                  Single model
+                </button>
+              </div>
+              <div className="mt-3 flex flex-col gap-2">
+                {parallelModelSlots.map((slotRow, idx) => {
+                  const desc = getModelById(slotRow.modelId);
+                  const configuring = parallelConfiguringIndex === idx;
+                  return (
+                    <div
+                      key={`parallel-slot-${idx}`}
+                      className={cn(
+                        "flex flex-wrap items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors",
+                        configuring
+                          ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_12%,transparent)]"
+                          : "border-white/[0.07] bg-white/[0.02]",
+                      )}
+                    >
+                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-white/[0.06] font-mono text-[10px] font-bold text-muted-fg/50">
+                        {idx + 1}
+                      </span>
+                      <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[12px] font-medium text-fg/82">
+                        {(desc?.displayName ?? slotRow.modelId) || "Pick a model"}
+                      </span>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
+                          configuring
+                            ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
+                            : "text-muted-fg/55 hover:bg-white/[0.06] hover:text-fg/75",
+                        )}
+                        disabled={parallelLaunchBusy}
+                        onClick={() => onParallelConfiguringIndexChange?.(configuring ? null : idx)}
+                      >
+                        {configuring ? "Editing" : "Configure"}
+                      </button>
+                      {parallelModelSlots.length > 2 ? (
+                        <button
+                          type="button"
+                          className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 font-sans text-[10px] text-red-400/75 transition-colors hover:bg-red-500/10"
+                          disabled={parallelLaunchBusy}
+                          onClick={() => onParallelRemoveModel?.(idx)}
+                          title="Remove this model from the parallel set"
+                        >
+                          <Trash size={12} />
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.12] px-2.5 py-1.5 font-sans text-[11px] font-medium text-muted-fg/65 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04] hover:text-fg/75 disabled:opacity-40"
+                disabled={parallelLaunchBusy}
+                onClick={() => onParallelAddModel?.()}
+              >
+                <Plus size={14} weight="bold" />
+                Add model
+              </button>
+              {parallelLaunchBusy && parallelLaunchStatus ? (
+                <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                  <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--chat-accent)]" />
+                  <span className="font-sans text-[11px] text-fg/70">{parallelLaunchStatus}</span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
           {/* Left: permission + model controls */}
-          <div className="ade-liquid-glass-pill flex min-w-0 flex-wrap items-center gap-1.5 px-2 py-1.5">
-            {nativeControlPanel}
-            <ProviderModelSelector
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            {(!parallelChatMode || (parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex]))
+              ? nativeControlPanel
+              : null}
+            {parallelChatMode && parallelConfiguringIndex != null && parallelSlotExecutionModeOptions.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-px rounded-md border border-white/[0.06] bg-[#1a1a22] p-0.5">
+                {parallelSlotExecutionModeOptions.map((option) => {
+                  const active = parallelSlotExecutionMode === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={cn(
+                        "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                        active ? "bg-white/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
+                        parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
+                      )}
+                      disabled={parallelLaunchBusy}
+                      onClick={() => onParallelSlotExecutionModeChange?.(option.value)}
+                      title={option.helper}
+                      aria-pressed={active}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex] ? (
+              <ProviderModelSelector
+                value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
+                onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
+                availableModelIds={availableModelIds}
+                disabled={parallelLaunchBusy}
+                showReasoning
+                reasoningEffort={parallelModelSlots[parallelConfiguringIndex]!.reasoningEffort}
+                onReasoningEffortChange={(effort) => onParallelSlotReasoningChange?.(parallelConfiguringIndex, effort)}
+                onOpenAiSettings={onOpenAiSettings}
+              />
+            ) : !parallelChatMode ? (
+              <ProviderModelSelector
               value={modelId}
               onChange={onModelChange}
               availableModelIds={availableModelIds}
@@ -1202,22 +1694,22 @@ export function AgentChatComposer({
               onReasoningEffortChange={onReasoningEffortChange}
               onOpenAiSettings={onOpenAiSettings}
             />
+            ) : null}
           </div>
 
-          <div className="hidden min-w-0 flex-1 items-center justify-center xl:flex">
-            <span className="truncate font-mono text-[10px] uppercase tracking-[0.16em] text-fg/34">
-              {composerHintText}
-            </span>
-          </div>
 
           {/* Right: attachment, commands, proof, context, send */}
-          <div className="ade-liquid-glass-pill ml-auto flex shrink-0 items-center gap-0.5 p-1">
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
             <button
               type="button"
               className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               disabled={!canAttach}
               onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-              title="Attach files or images (@)"
+              title={
+                parallelChatMode
+                  ? attachBlockedReason ?? "Search repo for files (@)"
+                  : "Attach files or images (@)"
+              }
               aria-label="Open attachment picker"
             >
               @
@@ -1227,7 +1719,7 @@ export function AgentChatComposer({
               className="rounded-md px-1 py-1 text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               disabled={!canAttach}
               onClick={openUploadPicker}
-              title="Upload file from disk"
+              title={parallelChatMode ? (attachBlockedReason ?? "Upload files") : "Upload file from disk"}
               aria-label="Upload file from disk"
             >
               <Paperclip size={11} />
@@ -1235,7 +1727,19 @@ export function AgentChatComposer({
             <button
               type="button"
               className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-              onClick={() => { const d = textareaRef.current?.value ?? ""; if (!d.length) { onDraftChange("/"); } setSlashPickerOpen(true); setSlashQuery(d.startsWith("/") ? d.slice(1) : ""); setSlashCursor(0); textareaRef.current?.focus(); }}
+              onClick={() => {
+                const el = textareaRef.current;
+                const currentDraft = el?.value ?? "";
+                if (!currentDraft.length) onDraftChange("/");
+                const rect = el?.getBoundingClientRect();
+                setCommandMenuTrigger({
+                  type: "slash",
+                  query: currentDraft.startsWith("/") ? currentDraft.slice(1).match(/^[^\s/]*/)?.[0] ?? "" : "",
+                  cursorIndex: 0,
+                });
+                if (rect) setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                el?.focus();
+              }}
               title="Commands (/)"
               aria-label="Open command picker"
             >
@@ -1310,7 +1814,7 @@ export function AgentChatComposer({
                 <button
                   type="button"
                   className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-red-500/25 bg-red-500/[0.08] text-red-400/80 transition-all hover:border-red-500/40 hover:bg-red-500/[0.14] hover:text-red-400"
-                  title="Stop the active turn only (Cmd+.)"
+                  title={`Stop the active turn only (${modifierKeyLabel}+.)`}
                   aria-label="Stop active turn"
                   onClick={onInterrupt}
                 >
@@ -1322,18 +1826,21 @@ export function AgentChatComposer({
                 type="button"
                 className={cn(
                   "inline-flex h-8 items-center justify-center rounded-lg border px-4 transition-all",
-                  busy || !draft.trim().length || !modelId
-                    ? "border-white/[0.04] bg-white/[0.02] text-muted-fg/15"
-                    : "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]",
+                  sendEnabled
+                    ? "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]"
+                    : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
                 )}
-                disabled={busy || !draft.trim().length || !modelId}
+                disabled={!sendEnabled}
                 onClick={submitComposerDraft}
-                title={!modelId ? "Select a model first" : "Send"}
+                title={sendButtonTitle()}
               >
-                <PaperPlaneTilt size={11} weight="fill" />
-                <span className="ml-1.5 font-sans text-[11px] font-semibold">Send</span>
+                <PaperPlaneTilt size={10} weight="fill" />
+                <span className="ml-1 font-sans text-[10px]">
+                  {parallelChatMode ? "Send to lanes" : "Send"}
+                </span>
               </button>
             )}
+          </div>
           </div>
         </div>
       }
@@ -1364,8 +1871,14 @@ export function AgentChatComposer({
         {dragActive ? (
           <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,rgba(5,5,8,0.58))] backdrop-blur-sm">
             <div className="rounded-[var(--chat-radius-card)] border border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)] bg-card/92 px-5 py-4 text-center shadow-[var(--chat-composer-shadow)]">
-              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Drop files to attach</div>
-              <div className="mt-1 text-[12px] text-fg/74">Images and files will be added to this turn.</div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">
+                Drop files to attach
+              </div>
+              <div className="mt-1 text-[12px] text-fg/74">
+                {parallelChatMode
+                  ? `Up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files, sent to every parallel lane.`
+                  : "Images and files will be added to this turn."}
+              </div>
             </div>
           </div>
         ) : null}
@@ -1388,7 +1901,12 @@ export function AgentChatComposer({
           <ChatCommandMenu
             ref={commandMenuRef}
             trigger={commandMenuTrigger}
-            slashCommands={effectiveSlashCommands.map((c) => ({ name: c.command.replace(/^\//, ""), description: c.description }))}
+            slashCommands={effectiveSlashCommands.map((c) => ({
+              name: c.command.replace(/^\//, ""),
+              description: c.description,
+              argumentHint: c.argumentHint,
+              source: c.source,
+            }))}
             sessionId={sessionId ?? null}
             anchor={commandMenuAnchor}
             onSelect={handleCommandMenuSelect}
@@ -1400,15 +1918,29 @@ export function AgentChatComposer({
             onChange={(event) => {
               const val = event.target.value;
               onDraftChange(val);
-              if (slashPickerOpen && !val.startsWith("/")) { setSlashPickerOpen(false); setSlashQuery(""); }
-              if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
+              const rect = event.target.getBoundingClientRect();
+
+              if (val.startsWith("/") && !val.slice(1).includes("\n")) {
+                // Once the user types a space after the command name they have
+                // entered the arguments section — keep the menu only while
+                // they're still typing the command name itself, so Enter/Tab
+                // submits the slash command instead of being stolen by the menu.
+                const afterSlash = val.slice(1);
+                if (!/\s/.test(afterSlash)) {
+                  const query = afterSlash.match(/^[^\s/]*/)?.[0] ?? "";
+                  setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
+                  setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                  return;
+                }
+                setCommandMenuTrigger(null);
+                return;
+              }
 
               // Detect @mention trigger
               const cursorPos = event.target.selectionStart ?? val.length;
               const textBeforeCursor = val.slice(0, cursorPos);
               const atMatch = textBeforeCursor.match(/@([^\s@]*)$/);
               if (atMatch) {
-                const rect = event.target.getBoundingClientRect();
                 setCommandMenuTrigger({ type: "at", query: atMatch[1], cursorIndex: cursorPos - atMatch[0].length });
                 setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
               } else {
@@ -1417,9 +1949,15 @@ export function AgentChatComposer({
             }}
             rows={1}
             onInput={resizeTextarea}
+            disabled={parallelLaunchBusy}
+            autoComplete="on"
+            autoCorrect="on"
+            autoCapitalize="sentences"
+            spellCheck={true}
             className={cn(
               "block w-full resize-none bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
               dragActive ? "opacity-30" : "",
+              parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
             )}
             data-chat-layout-variant={layoutVariant}
             placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode..."))}
@@ -1429,6 +1967,7 @@ export function AgentChatComposer({
         </div>
       </div>
       </ChatComposerShell>
+      </BorderBeam>
     </>
   );
 }

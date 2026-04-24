@@ -1,7 +1,7 @@
 create virtual table if not exists unified_memories_fts using fts4(
-        content,
-        content='unified_memories'
-      );
+      content,
+      content='unified_memories'
+    );
 
 create table if not exists kv (key text primary key, value text not null);
 
@@ -91,6 +91,7 @@ create table if not exists terminal_sessions (
       summary text,
       resume_command text,
       resume_metadata_json text,
+      archived_at text,
       foreign key(lane_id) references lanes(id)
     );
 
@@ -107,6 +108,8 @@ alter table terminal_sessions add column resume_command text;
 alter table terminal_sessions add column resume_metadata_json text;
 
 alter table terminal_sessions add column manually_named integer not null default 0;
+
+alter table terminal_sessions add column archived_at text;
 
 create table if not exists process_definitions (
       id text primary key,
@@ -377,6 +380,8 @@ alter table pull_requests add column last_polled_at text;
 
 alter table pull_requests add column head_sha text;
 
+alter table pull_requests add column creation_strategy text;
+
 create table if not exists pull_request_ai_summaries (
       pr_id text not null,
       head_sha text not null,
@@ -401,6 +406,65 @@ create table if not exists pull_request_snapshots (
     );
 
 create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at);
+
+alter table pull_request_snapshots add column commits_json text;
+
+create table if not exists files_workspaces (
+      id text primary key,
+      kind text not null,
+      lane_id text,
+      name text not null,
+      root_path text not null,
+      is_read_only_by_default integer not null default 1,
+      mobile_read_only integer not null default 1,
+      updated_at text not null
+    );
+
+create table if not exists file_directory_snapshots (
+      workspace_id text not null,
+      parent_path text not null default '',
+      include_hidden integer not null default 0,
+      nodes_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, parent_path, include_hidden),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create table if not exists file_content_snapshots (
+      workspace_id text not null,
+      relative_path text not null,
+      blob_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, relative_path),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create table if not exists file_diff_snapshots (
+      workspace_id text not null,
+      relative_path text not null,
+      mode text not null,
+      diff_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, relative_path, mode),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create table if not exists file_history_snapshots (
+      workspace_id text not null,
+      relative_path text not null,
+      entries_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, relative_path),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create index if not exists idx_file_directory_snapshots_workspace on file_directory_snapshots(workspace_id, updated_at desc);
+
+create index if not exists idx_file_content_snapshots_workspace on file_content_snapshots(workspace_id, updated_at desc);
+
+create index if not exists idx_file_diff_snapshots_workspace on file_diff_snapshots(workspace_id, updated_at desc);
+
+create index if not exists idx_file_history_snapshots_workspace on file_history_snapshots(workspace_id, updated_at desc);
 
 create table if not exists checkpoints (
       id text primary key,
@@ -565,6 +629,10 @@ alter table integration_proposals add column completed_at text;
 alter table integration_proposals add column cleanup_declined_at text;
 
 alter table integration_proposals add column cleanup_completed_at text;
+
+alter table integration_proposals add column preferred_integration_lane_id text;
+
+alter table integration_proposals add column merge_into_head_sha text;
 
 create table if not exists queue_landing_state (
       id text primary key,
@@ -2274,37 +2342,6 @@ create table if not exists cto_flow_policy_revisions (
     );
 
 create index if not exists idx_cto_flow_policy_revisions_project_created on cto_flow_policy_revisions(project_id, created_at);
-
-create table if not exists external_mcp_usage_events (
-      id text primary key,
-      project_id text not null,
-      server_name text not null,
-      tool_name text not null,
-      namespaced_tool_name text not null,
-      safety text not null,
-      caller_role text not null,
-      caller_id text not null,
-      chat_session_id text,
-      mission_id text,
-      run_id text,
-      step_id text,
-      attempt_id text,
-      owner_id text,
-      cost_cents integer not null default 0,
-      estimated integer not null default 0,
-      occurred_at text not null,
-      created_at text not null
-    );
-
-alter table external_mcp_usage_events add column chat_session_id text;
-
-create index if not exists idx_external_mcp_usage_events_project_occurred on external_mcp_usage_events(project_id, occurred_at);
-
-create index if not exists idx_external_mcp_usage_events_chat on external_mcp_usage_events(project_id, chat_session_id, occurred_at);
-
-create index if not exists idx_external_mcp_usage_events_mission on external_mcp_usage_events(project_id, mission_id, occurred_at);
-
-create index if not exists idx_external_mcp_usage_events_run on external_mcp_usage_events(project_id, run_id, occurred_at);
 
 create table if not exists budget_usage_records (
       id text primary key,

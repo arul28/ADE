@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LinearArtifactMode, NormalizedLinearIssue } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -277,24 +278,62 @@ export function createLinearOutboundService(args: {
     const rawEntries = uniqueStrings(params.artifactPaths.map((entry) => entry.trim()).filter((entry) => entry.length > 0));
     if (!rawEntries.length) return [];
     const uploaded: string[] = [];
+    let projectRootReal: string;
+    try {
+      projectRootReal = fs.realpathSync(args.projectRoot);
+    } catch (error) {
+      args.logger?.warn("linear_outbound.project_root_resolution_failed", {
+        projectRoot: args.projectRoot,
+        error: getErrorMessage(error),
+      });
+      return [];
+    }
 
     for (const entry of rawEntries) {
-      if (/^(https?|file):\/\//i.test(entry)) {
+      if (/^https?:\/\//i.test(entry)) {
         uploaded.push(entry);
         continue;
       }
 
-      const artifactPath = path.resolve(entry);
+      let artifactPath: string;
+      try {
+        artifactPath = /^file:\/\//i.test(entry)
+          ? fileURLToPath(entry)
+          : path.resolve(args.projectRoot, entry);
+      } catch (error) {
+        args.logger?.warn("linear_outbound.artifact_file_uri_invalid", {
+          issueId: params.issueId,
+          artifactPath: entry,
+          error: getErrorMessage(error),
+        });
+        continue;
+      }
+      let artifactPathReal: string;
+      try {
+        artifactPathReal = fs.realpathSync(artifactPath);
+      } catch {
+        continue;
+      }
+      const relativePath = path.relative(projectRootReal, artifactPathReal);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        args.logger?.warn("linear_outbound.artifact_path_outside_project_root", {
+          issueId: params.issueId,
+          artifactPath: entry,
+          resolvedPath: artifactPathReal,
+          projectRoot: projectRootReal,
+        });
+        continue;
+      }
       let stat: fs.Stats;
       try {
-        stat = fs.statSync(artifactPath);
+        stat = fs.statSync(artifactPathReal);
       } catch {
         continue;
       }
       if (!stat.isFile()) continue;
 
       if (params.mode === "links") {
-        uploaded.push(`file://${artifactPath}`);
+        uploaded.push(pathToFileURL(artifactPathReal).href);
         continue;
       }
 

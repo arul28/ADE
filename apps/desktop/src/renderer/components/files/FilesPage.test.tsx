@@ -12,12 +12,16 @@ type MockEditorInstance = {
   setModel: (next: any) => void;
   getValue: () => string;
   setValue: (next: string) => void;
+  revealLineInCenter: ReturnType<typeof vi.fn>;
+  setPosition: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
   updateOptions: ReturnType<typeof vi.fn>;
   onDidChangeModelContent: (cb: () => void) => { dispose: ReturnType<typeof vi.fn> };
   dispose: ReturnType<typeof vi.fn>;
 };
 
 let latestMockEditor: MockEditorInstance | null = null;
+let createdMockEditors: MockEditorInstance[] = [];
 
 vi.mock("../lanes/MonacoDiffView", () => ({
   MonacoDiffView: () => <div data-testid="monaco-diff" />,
@@ -57,6 +61,9 @@ vi.mock("monaco-editor", () => {
             element.textContent = next;
             onChange?.();
           },
+          revealLineInCenter: vi.fn(),
+          setPosition: vi.fn(),
+          focus: vi.fn(),
           updateOptions: vi.fn(),
           onDidChangeModelContent(cb: () => void) {
             onChange = cb;
@@ -64,6 +71,7 @@ vi.mock("monaco-editor", () => {
           },
           dispose: vi.fn(),
         };
+        createdMockEditors.push(latestMockEditor);
         return latestMockEditor;
       }),
       createModel: vi.fn(createModel),
@@ -192,6 +200,7 @@ describe("FilesPage", () => {
     projectRoot = `/Users/arul/ADE-${projectCounter}`;
     resetStore();
     latestMockEditor = null;
+    createdMockEditors = [];
     changeListener = null;
     currentTree = cloneTree(ignoredTree);
     fileContents = {
@@ -227,7 +236,8 @@ describe("FilesPage", () => {
           };
         }),
         readFile: vi.fn(async ({ path }: { path: string }) => {
-          const content = fileContents[path];
+          const content = fileContents[path]
+            ?? fileContents[Object.keys(fileContents).find((candidate) => candidate.toLowerCase() === path.toLowerCase()) ?? ""];
           if (content == null) {
             throw new Error(`ENOENT: ${path}`);
           }
@@ -271,6 +281,7 @@ describe("FilesPage", () => {
   afterEach(() => {
     cleanup();
     latestMockEditor = null;
+    createdMockEditors = [];
     changeListener = null;
     window.localStorage.clear();
     globalThis.window.confirm = originalConfirm;
@@ -481,5 +492,110 @@ describe("FilesPage", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("treats Windows workspace paths case-insensitively for open tabs and watcher events", async () => {
+    projectRoot = "C:/Repo";
+    resetStore();
+    currentTree = [
+      {
+        name: "src",
+        path: "src",
+        type: "directory",
+        children: [
+          {
+            name: "Main.ts",
+            path: "src/Main.ts",
+            type: "file",
+          },
+        ],
+      },
+    ];
+    fileContents = {
+      "src/Main.ts": "export const value = 7;\n",
+      "src/Renamed.ts": "export const value = 8;\n",
+    };
+    vi.mocked(window.ade.files.listWorkspaces).mockResolvedValue([
+      {
+        id: "primary",
+        kind: "primary",
+        laneId: null,
+        name: "ADE",
+        rootPath: "C:\\Repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderFilesPage({
+      openFilePath: "src/main.ts",
+    });
+
+    await waitForEditorText("value = 7");
+    await waitForFilesWatcherStartup();
+    expect((window.ade.files.readFile as any).mock.calls.some(([arg]: [{ path: string }]) => arg.path.toLowerCase() === "src/main.ts")).toBe(true);
+
+    emitFileChange({
+      workspaceId: "primary",
+      type: "renamed",
+      oldPath: "SRC\\MAIN.ts",
+      path: "src\\Renamed.ts",
+      ts: new Date().toISOString(),
+    });
+
+    await waitForEditorText("value = 8");
+    await waitFor(() => {
+      expect(screen.getAllByText("Renamed.ts").length).toBeGreaterThan(0);
+    });
+    expect(screen.queryAllByText("Main.ts")).toHaveLength(0);
+
+    emitFileChange({
+      workspaceId: "primary",
+      type: "deleted",
+      path: "SRC\\RENAMED.ts",
+      ts: new Date().toISOString(),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/OPEN A FILE TO START EDITING/i)).toBeTruthy();
+    });
+  });
+
+  it("reveals navigation line targets in the editor view", async () => {
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+      preferPrimaryWorkspace: true,
+      startLine: 3,
+      startColumn: 7,
+    });
+
+    await waitForEditorText("value = 1");
+    await waitFor(() => {
+      expect(createdMockEditors.some((editor) =>
+        editor.revealLineInCenter.mock.calls.some(([line]) => line === 3)
+      )).toBe(true);
+      expect(createdMockEditors.some((editor) =>
+        editor.setPosition.mock.calls.some(([position]) =>
+          position?.lineNumber === 3 && position?.column === 7
+        )
+      )).toBe(true);
+    });
+  });
+
+  it("opens the active file in the system default app", async () => {
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+      preferPrimaryWorkspace: true,
+    });
+
+    await waitForEditorText("value = 1");
+
+    fireEvent.click(screen.getByRole("button", { name: /open in/i }));
+    fireEvent.click(await screen.findByText("SYSTEM DEFAULT"));
+
+    expect(window.ade.app.openPathInEditor).toHaveBeenCalledWith({
+      rootPath: projectRoot,
+      relativePath: "src/index.ts",
+      target: "default",
+    });
   });
 });

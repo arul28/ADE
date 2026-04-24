@@ -3,6 +3,7 @@ import { ArrowsClockwise, GitBranch } from "@phosphor-icons/react";
 import type { DevToolsCheckResult, DevToolStatus } from "../../../shared/types";
 import { COLORS, SANS_FONT, MONO_FONT, inlineBadge } from "../lanes/laneDesignTokens";
 import { Button } from "../ui/Button";
+import { AdeCliSection } from "../settings/AdeCliSection";
 
 type Props = {
   onStatusChange: (gitInstalled: boolean) => void;
@@ -52,10 +53,15 @@ export function DevToolsSection({ onStatusChange }: Props) {
             <GitBranch size={12} weight="bold" style={{ color: COLORS.success, flexShrink: 0 }} />
             <span><strong style={{ color: COLORS.textSecondary }}>git</strong> — version control, branching, and lane isolation</span>
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 12, display: "inline-flex", justifyContent: "center", color: COLORS.info }}>$</span>
+            <span><strong style={{ color: COLORS.textSecondary }}>ade</strong> — bundled command for agent sessions, optional Terminal install</span>
+          </div>
         </div>
       </div>
 
       <ToolCard tool={git} platform={platform} loading={loading && !result} />
+      <AdeCliSection compact />
 
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <Button size="sm" variant="outline" disabled={loading} onClick={() => void detect(true)}>

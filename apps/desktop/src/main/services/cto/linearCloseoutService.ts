@@ -5,6 +5,7 @@ import type {
   NormalizedLinearIssue,
 } from "../../../shared/types";
 import { resolveOrchestratorArtifactUri } from "../../../shared/proofArtifacts";
+import type { Logger } from "../logging/logger";
 import type { createLinearOutboundService } from "./linearOutboundService";
 import type { IssueTracker } from "./issueTracker";
 import type { createMissionService } from "../missions/missionService";
@@ -44,6 +45,7 @@ export function createLinearCloseoutService(args: {
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   prService: ReturnType<typeof createPrService>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
+  logger?: Logger | null;
 }) {
   const isNonEmptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 
@@ -58,6 +60,14 @@ export function createLinearCloseoutService(args: {
       out.push(normalized);
     }
     return out;
+  };
+
+  const logLabelWarning = (issueId: string, label: string, error: unknown): void => {
+    args.logger?.warn("linear_closeout.add_label_failed", {
+      issueId,
+      label,
+      error: error instanceof Error ? error.message : String(error),
+    });
   };
 
   const collectBrokerArtifactUris = (owners: ComputerUseArtifactOwner[]): string[] => uniqueStrings(
@@ -126,6 +136,7 @@ export function createLinearCloseoutService(args: {
     }
 
     const owners: ComputerUseArtifactOwner[] = [];
+    owners.push({ kind: "orchestrator_run", id: input.run.id });
     if (input.run.linkedSessionId) {
       owners.push({ kind: "chat_session", id: input.run.linkedSessionId });
     }
@@ -198,7 +209,11 @@ export function createLinearCloseoutService(args: {
     }
 
     for (const label of uniqueStrings([...(closeout?.applyLabels ?? []), ...(closeout?.labels ?? [])])) {
-      await args.issueTracker.addLabel(input.issue.id, label);
+      try {
+        await args.issueTracker.addLabel(input.issue.id, label);
+      } catch (error) {
+        logLabelWarning(input.issue.id, label, error);
+      }
     }
 
     const renderedTemplate = closeout?.commentTemplate?.trim()

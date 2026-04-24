@@ -8,16 +8,7 @@ host-side services, and replies with `command_ack` and then
 `command_result`.
 
 Source file: `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts`
-(1,207 lines).
-
-> **Branch-modified note:** this file is currently modified on the
-> working branch relative to `main`. The diff adds
-> `AgentChatFileRef` parsing to `chat.send` and `chat.steer` payloads
-> (attachments, displayText, reasoningEffort, executionMode,
-> interactionMode). Treat the action set in this doc as authoritative
-> for the branch state; on `main` the `chat.send`/`chat.steer` payload
-> parsers are narrower. See the diff summary at the bottom of this
-> file.
+(~1,920 lines).
 
 ## Shape
 
@@ -96,8 +87,8 @@ Listed in order of appearance in the registry:
 
 **Lanes** (`lanes.*`)
 - `list`, `refreshSnapshots`, `getDetail`
-- `create`, `createChild`, `createFromUnstaged`, `attach`,
-  `adoptAttached`
+- `create`, `createChild`, `createFromUnstaged`, `importBranch`,
+  `attach`, `adoptAttached`
 - `rename`, `reparent`, `updateAppearance`
 - `archive`, `unarchive`, `delete`
 - `getStackChain`, `getChildren`
@@ -107,13 +98,19 @@ Listed in order of appearance in the registry:
 - `listAutoRebaseStatuses`
 - `listTemplates`, `getDefaultTemplate`
 - `initEnv`, `getEnvStatus`, `applyTemplate`
+- `presence.announce`, `presence.release` — controller marks a lane
+  as currently open / no longer open; the host decorates
+  `LaneSummary.devicesOpen` with a 60 s TTL and fans out updates via
+  `brain_status`.
 
 **Work** (`work.*`)
-- `listSessions`, `runQuickCommand`, `closeSession`
+- `listSessions`, `updateSessionMeta`, `runQuickCommand`,
+  `closeSession`
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
-- `create`, `send`, `interrupt`, `steer`, `approve`, `respondToInput`
+- `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
+  `approve`, `respondToInput`
 - `resume`, `updateSession`, `dispose`, `models`
 
 **Git** (`git.*`)
@@ -121,7 +118,7 @@ Listed in order of appearance in the registry:
 - `stageFile`, `stageAll`, `unstageFile`, `unstageAll`,
   `discardFile`, `restoreStagedFile`
 - `commit`, `generateCommitMessage`, `listRecentCommits`,
-  `listCommitFiles`, `getCommitMessage`
+  `listCommitFiles`, `getCommitMessage`, `getFileHistory`
 - `revertCommit`, `cherryPickCommit`
 - `stashPush`, `stashList`, `stashApply`, `stashPop`, `stashDrop`
 - `fetch`, `pull`, `sync`, `push`, `getSyncStatus`
@@ -137,7 +134,12 @@ Listed in order of appearance in the registry:
 **PRs** (`prs.*`)
 - `list`, `refresh`, `getDetail`, `getStatus`
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
-- `createFromLane`, `land`, `close`, `reopen`, `requestReviewers`
+- `createFromLane`, `draftDescription`, `land`, `close`, `reopen`,
+  `requestReviewers`, `rerunChecks`, `addComment`
+- `getMobileSnapshot` — aggregate read that returns
+  `PrMobileSnapshot` (summaries, stacks, per-PR capabilities,
+  create-PR eligibility, workflow cards). Consumed by the iOS PRs
+  tab; see `ios-companion.md` for the shape.
 
 The canonical list is typed as `SyncRemoteCommandAction` in
 `apps/desktop/src/shared/types/sync.ts`.
@@ -190,6 +192,25 @@ A handful have more logic:
 - **`prs.refresh`** — delegates to `prService.refresh`, then
   re-lists PRs and returns both the PR list and the snapshots in a
   single response.
+- **`prs.getMobileSnapshot`** — calls `prService.getMobileSnapshot`,
+  which builds stack chains from `laneService.list`, classifies each
+  PR's action capabilities, resolves per-lane create-PR eligibility
+  (using `resolveStableLaneBaseBranch`), and collects queue /
+  integration / rebase workflow cards from the DB and
+  `rebaseSuggestionService`.
+- **`lanes.presence.announce` / `lanes.presence.release`** — handled
+  in `syncHostService` directly (not in the remote command
+  registry); the host upserts a per-lane `DeviceMarker` map and
+  decorates outgoing `LaneSummary` payloads with `devicesOpen`.
+
+### Lane response decoration
+
+`syncHostService` wraps command results for `lanes.list`,
+`lanes.getDetail`, `lanes.refreshSnapshots`, `lanes.getChildren`,
+`lanes.create`, `lanes.createChild`, `lanes.createFromUnstaged`,
+`lanes.importBranch`, `lanes.attach`, and `lanes.adoptAttached` to
+inject `LaneSummary.devicesOpen` from the presence map. Controllers
+therefore see up-to-date presence without a separate query.
 
 ## Service dependencies
 
@@ -219,7 +240,7 @@ services:
 
 Optional services that are missing cause their dependent actions to
 throw `"<service> not available."` at call time. The `requireService`
-helper centralises that check. This pattern lets the headless MCP
+helper centralises that check. This pattern lets the headless ADE CLI
 server construct a narrower service set without crashing at command
 registration.
 
@@ -266,31 +287,23 @@ can be sensitive.
   payloads and streaming reads outside the command surface to avoid
   bloating the command envelope.
 
-## Branch modifications (current working branch)
+## Chat command payload shape
 
-The repository is currently on a branch with the following changes
-to `syncRemoteCommandService.ts` relative to `main`:
+`parseAgentChatSendArgs` and `parseAgentChatSteerArgs` accept the full
+`AgentChatSendArgs` surface: `sessionId`, `text`, `attachments` (via
+`parseAgentChatFileRefs`, array of `{ path, type: "file" | "image" }`),
+`displayText`, `reasoningEffort`, `executionMode`, `interactionMode`.
+Steers accept `sessionId`, `text`, and `attachments`. Controllers
+(phones and desktop peers) can therefore attach files/images and
+specify reasoning / execution / interaction modes remotely; the
+host-side `agentChatService` consumes the same shape end-to-end.
 
-1. Import added: `AgentChatFileRef`.
-2. New helper `parseAgentChatFileRefs(value)` that accepts an array
-   of `{ path, type: "file" | "image" }` entries.
-3. `parseAgentChatSendArgs` extended to accept and forward
-   `attachments`, `displayText`, `reasoningEffort`, `executionMode`,
-   `interactionMode`.
-4. `parseAgentChatSteerArgs` extended to accept and forward
-   `attachments`.
-
-The effect: controllers (phones and desktop peers) can attach
-files/images to a chat send or steer, and specify reasoning effort
-/ execution mode / interaction mode from the controller side. The
-corresponding host-side agent chat service must accept those
-`AgentChatSendArgs` fields; treat these parsers as the contract at
-the sync boundary on this branch.
-
-If you back out the branch changes, `chat.send` and `chat.steer`
-accept only `{ sessionId, text }`. Consumers on the controller side
-that rely on attachment passthrough need to check `AgentChatSendArgs`
-in the shared types to see whether the fields exist at all.
+`parseChatModelsArgs` accepts `{ provider, activateRuntime? }`. When
+`chat.create` is missing an explicit model, `resolveChatCreateArgs`
+forwards `activateRuntime: true` only for the `opencode` provider so
+the host actually launches the OpenCode probe server before resolving
+a default model. All other providers use passive (cache-only) resolution;
+see the chat README for the passive/active contract.
 
 ## Gotchas
 
@@ -303,19 +316,26 @@ in the shared types to see whether the fields exist at all.
   reconnect. Be aware when reasoning about "why did this lane
   disappear" — check the command queue, not just the local DB.
 - **`prs.createFromLane` requires the host's GitHub token.** On a
-  headless MCP host with no `ADE_GITHUB_TOKEN` /
+  headless ADE CLI host with no `ADE_GITHUB_TOKEN` /
   `GITHUB_TOKEN` / `GH_TOKEN`, the command fails with a clear
   error before reaching GitHub. This is deliberate fail-fast behavior.
 - **`work.runQuickCommand` always creates a PTY.** There is no
   "run a command, give me just the output" variant; the controller
   must subscribe to the terminal stream and tear down with
-  `work.closeSession`. This is why headless MCP mode provides a
+  `work.closeSession`. This is why headless ADE CLI mode provides a
   stub PTY service that throws on `.create` — the action is not
   supported there.
 - **`files.writeTextAtomic` does not invoke git hooks or editors.**
   It writes atomically to the lane worktree and that is all.
   Services that care about post-write side effects (lint,
   formatters) watch the filesystem independently.
+- **Mobile file mutations respect `mobileReadOnly`.** The iOS app
+  gates mutating file envelopes locally via
+  `ensureMobileFileMutationsAllowed`, checking
+  `FilesWorkspace.mobileReadOnly` before sending a `writeText`,
+  `createFile`, `createDirectory`, `rename`, or `deletePath` request.
+  The host's `MOBILE_MUTATING_FILE_ACTIONS` set mirrors this list so
+  a hostile controller cannot bypass it.
 - **`requireService` throws lazily.** A host missing a service does
   not cause registration to fail; it causes the first invocation of
   a command that needs that service to fail with a specific message.

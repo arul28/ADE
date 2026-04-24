@@ -1,10 +1,8 @@
 ---
 title: "Key Concepts"
-description: "A comprehensive reference for every core ADE concept: Lanes, Stacks, Packs, Checkpoints, Sessions, the CTO, Missions, Automations, Workers, MCP, the Job Engine, Conflicts, and Artifacts."
+description: "A comprehensive reference for every core ADE concept: Lanes, Stacks, Packs, Checkpoints, Sessions, the CTO, Missions, Automations, Workers, ADE CLI, the Job Engine, Conflicts, and Artifacts."
 icon: "lightbulb"
 ---
-
-Understanding ADE's vocabulary is the fastest path to using it effectively. This page defines every core concept, explains how they relate to each other, and points to the deeper feature documentation for each.
 
 <CardGroup cols={3}>
   <Card title="Lane" icon="code-branch" href="#lane">Isolated worktree + environment.</Card>
@@ -16,7 +14,7 @@ Understanding ADE's vocabulary is the fastest path to using it effectively. This
   <Card title="Mission" icon="bullseye" href="#mission">Structured multi-step AI unit.</Card>
   <Card title="Automation" icon="bolt" href="#automation">Trigger-driven execution rule.</Card>
   <Card title="Worker" icon="user-gear" href="#worker-employee-agent">Scoped sub-agent that writes code.</Card>
-  <Card title="MCP" icon="plug" href="#mcp-model-context-protocol">Tool-exposure protocol for agents.</Card>
+  <Card title="ADE CLI" icon="plug" href="#ade-cli-and-actions">Native action surface for agents.</Card>
   <Card title="Job Engine" icon="gears" href="#job-engine">Background task scheduler.</Card>
   <Card title="PR Convergence" icon="code-pull-request" href="#pr-convergence">Automated PR-to-merge loop.</Card>
   <Card title="Conflict" icon="triangle-exclamation" href="#conflict">Predicted or actual merge conflict.</Card>
@@ -27,7 +25,7 @@ Understanding ADE's vocabulary is the fastest path to using it effectively. This
 
 ## Lane
 
-A **Lane** is the fundamental unit of parallel work in ADE. Every lane is an isolated execution environment: it has its own git branch, its own working directory, its own terminal sessions, its own agent context, and its own process environment variables.
+A **Lane** is ADE's unit of parallel work — an isolated execution environment with its own git branch, working directory, terminal sessions, agent context, and environment variables.
 
 <CardGroup cols={3}>
   <Card title="Primary Lane" icon="house">
@@ -41,22 +39,17 @@ A **Lane** is the fundamental unit of parallel work in ADE. Every lane is an iso
   </Card>
 </CardGroup>
 
-Each lane stores:
-- **Branch name** and base branch reference
-- **Appearance** (color, icon) for identification in the UI
-- **Environment status** — whether the lane's dev server, ports, and dependencies are initialized
-- **Active sessions** — current terminal and agent sessions running in this lane's directory
-- **Pack reference** — the context pack currently associated with this lane
+Each lane stores its branch name, appearance (color/icon), environment status, active sessions, and pack reference.
 
 <Tip>
-Think of lanes the way you think of browser tabs — each is an isolated context, and switching between them does not disrupt the others. Unlike browser tabs, lanes persist their state even when you are not looking at them.
+Think of lanes like browser tabs — each is an isolated context that persists even when you are not looking at it.
 </Tip>
 
 ---
 
 ## Stack
 
-A **Stack** is a layered arrangement of lanes for **stacked PR workflows**. Each lane in a stack targets the lane directly above it as its base branch, forming a dependency chain.
+A **Stack** is a chain of lanes for stacked PR workflows — each lane targets the lane directly above it as its base branch.
 
 ```
   main
@@ -65,22 +58,19 @@ A **Stack** is a layered arrangement of lanes for **stacked PR workflows**. Each
              └── feature/auth-tests  ← Lane 3 (targets feature/auth-ui)
 ```
 
-Stacks are visualized as a connected chain in the Workspace Graph. ADE understands the stack topology and can:
-- Automatically rebase downstream lanes when an upstream lane is updated
-- Suggest rebase operations when the upstream branch moves
-- Show the full stack chain in the lane inspector
+ADE tracks the stack topology and automatically rebases downstream lanes when an upstream lane is updated, surfaces rebase suggestions, and shows the full chain in the inspector.
 
-To create a stacked lane, use **Lanes → New Child Lane** and select the parent lane. ADE sets the child's base branch to the parent's current branch automatically.
+To create a stacked lane, use **Lanes → New Child Lane**. ADE sets the child's base branch to the parent's current branch automatically.
 
 <Note>
-ADE tracks rebase suggestions per-lane. When an upstream branch changes, ADE surfaces a rebase suggestion with a preview of the affected commits. You can accept, defer, or dismiss it.
+ADE tracks rebase suggestions per-lane. When an upstream branch changes, a compact banner above the lane list surfaces each affected child. From there you can open the full workspace with **View in Rebase tab**, or dismiss the suggestion if it is not relevant.
 </Note>
 
 ---
 
 ## Pack
 
-A **Pack** is a durable context bundle that carries project or lane knowledge to AI agents. Packs are structured documents stored in `.ade/artifacts/packs/` and injected into agent system prompts to give agents meaningful project awareness before they write a single line of code.
+A **Pack** is a durable context bundle injected into agent system prompts, stored in `.ade/artifacts/packs/`. Packs give agents project awareness before they write any code.
 
 ADE defines several pack types:
 
@@ -123,34 +113,13 @@ ADE defines several pack types:
 
 ## Checkpoint
 
-A **Checkpoint** is an immutable execution snapshot created at session or commit boundaries. Checkpoints are the mechanism ADE uses to make work replayable and auditable.
-
-Each checkpoint contains:
-- **SHA anchors** — the git commit SHAs for every lane at the time of the checkpoint
-- **Deltas** — the set of changes since the previous checkpoint
-- **Metadata** — timing, actor (human or agent), session ID, and trigger reason
-- **Validation context** — whether the checkpoint passed any validation gate
-
-Checkpoints appear in the **History** view as a timeline you can navigate. You can replay any checkpoint to restore a lane's state to that exact moment.
-
-<Note>
-Checkpoints are append-only. ADE never deletes them (unless you explicitly clear project data). This makes the History view a complete audit trail of all work done in a project.
-</Note>
+A **Checkpoint** is an immutable snapshot created at session or commit boundaries, containing the git SHA, file deltas, timing, and actor metadata. Checkpoints appear in the **History** view and can be replayed to restore any lane's state. They are append-only — ADE never deletes them unless you explicitly clear project data.
 
 ---
 
 ## Session
 
-A **Session** is a terminal session with rich metadata attached. In ADE, every terminal window — whether you opened it manually or an agent spawned it — is recorded as a session.
-
-Session metadata includes:
-- **Transcript** — the full input/output stream, stored to disk
-- **Timing** — start time, end time, duration
-- **Agent attribution** — whether this session was opened by a human, the CTO, a Mission worker, or an Automation
-- **Delta computation** — which files changed during this session, derived from git status snapshots at open/close
-- **Mission and step linkage** — if the session was opened by a Mission worker, it is linked to the specific step and attempt
-
-Sessions are the atomic unit of terminal work. The History view groups sessions by lane, by mission, and by date.
+A **Session** is a terminal session with metadata attached — full transcript, timing, agent attribution, file delta computation, and mission/step linkage. Every terminal window ADE opens is recorded. The History view groups sessions by lane, mission, and date.
 
 ---
 
@@ -166,7 +135,7 @@ The CTO can:
 - **Surface risks** — proactively flag conflict risks, stale lanes, and budget overruns
 - **Conduct retrospectives** — periodically review what missions succeeded and what failed, and update project memory accordingly
 
-The CTO is configured in **Settings → CTO**. You can set its model, budget limit, Linear workspace, and how aggressively it spawns workers without asking you first.
+The CTO is configured from the **CTO** tab (model, budget limit, Linear workspace, worker-spawning policy). Related global preferences — per-role models, monthly caps, Linear integration — live under **Settings → AI**, **Settings → Usage**, and **Settings → Integrations**.
 
 <Tip>
 If you are a solo developer, think of the CTO as your always-on senior engineer who is watching your project while you sleep. Brief it on your goals at the start of the week; it will decompose the work, assign it to agents, and present you with completed PRs.
@@ -177,6 +146,10 @@ If you are a solo developer, think of the CTO as your always-on senior engineer 
 ## Mission
 
 A **Mission** is a structured AI execution unit for complex, multi-step work. Missions provide accountability, cost tracking, and a formal lifecycle that ad-hoc chat sessions do not.
+
+<Note>
+Missions are visible in every build, but **creation and live runs are paused in packaged releases** until the orchestration flow is production-ready. Dev and internal builds run missions end-to-end. The Automations tab mirrors this: the mission execution surface is shown but disabled in packaged builds.
+</Note>
 
 ### Mission Lifecycle
 
@@ -283,11 +256,11 @@ ADE supports parallel workers — multiple workers executing different plan step
 
 ---
 
-## MCP (Model Context Protocol)
+## ADE CLI and Actions
 
-**MCP** is the protocol ADE uses to expose its capabilities to AI agents as callable tools. ADE's built-in MCP server speaks **JSON-RPC 2.0** over a Unix domain socket and implements the Model Context Protocol 2025-06-18 specification.
+**ADE CLI** is the native action surface agents use to operate ADE. The desktop app exposes a private ADE RPC socket at `.ade/ade.sock`, and `ade` falls back to a headless local runtime when the desktop socket is unavailable.
 
-When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or the in-process API), it can call ADE's MCP tools to perform operations that go beyond simple text generation:
+When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or the in-process API), it can run `ade` commands — which hit the desktop socket when available and fall back to the headless runtime — to perform operations that go beyond simple text generation:
 
 <AccordionGroup>
   <Accordion title="Git operations" icon="git-alt">
@@ -388,7 +361,7 @@ A **Proof** (also called an **Artifact**) is evidence produced during AI-driven 
 | `screenshot` | A static image of the browser or desktop at a specific moment |
 | `browser_verification` | A structured record of a browser-based verification test |
 | `browser_trace` | A full Playwright/CDP trace recording of a browser session |
-| `video_recording` | A screen recording of an agent executing computer-use tasks |
+| `video_recording` | A short screen recording captured via `ade proof record` |
 | `console_logs` | Browser or Node.js console output captured during testing |
 | `test_report` | A structured test run result (pass/fail per test case) |
 | `summary` | A human-readable summary of completed work |
@@ -396,15 +369,15 @@ A **Proof** (also called an **Artifact**) is evidence produced during AI-driven 
 | `patch` | A raw git patch file |
 | `plan` | The generated mission plan document |
 
-### Computer-Use Flow
+### Proof Capture Flow
 
-When a computer-use backend (Ghost OS, agent-browser, or local fallback) produces an artifact:
+Agents capture intentional evidence by calling the `ade proof` CLI — screenshot, short recording, or ingestion of an external browser trace:
 
-1. The artifact is received by ADE's **Computer Use Broker** in the main process
-2. It is normalized into a standard `ComputerUseArtifact` record with kind, owner, and metadata
-3. It is **routed** to its owner — a mission step, a PR, a Linear issue, or a chat session
-4. It is stored under `.ade/artifacts/` and linked in the database
-5. It appears in the **Mission Artifacts tab**, the PR review panel, or the Linear issue sidebar, depending on routing
+1. The agent runs `ade proof screenshot`, `ade proof record`, or `ade proof ingest` from a terminal inside its lane.
+2. ADE's artifact broker in the main process normalizes the input into a standard `ComputerUseArtifact` record with kind, owner, and metadata.
+3. The artifact is **routed** to its owner — a mission step, a PR, a Linear issue, or a chat session — based on the flags passed to the CLI.
+4. The file is stored under `.ade/artifacts/computer-use/` and linked in the database.
+5. It appears in the **Mission Artifacts tab**, the PR attachments panel, the chat session artifact panel, or the Linear issue sidebar, depending on routing.
 
 ---
 
@@ -465,12 +438,12 @@ Project
 | **Automation** | A trigger → executor rule that fires an agent in response to an event. |
 | **Automation execution surface** | `agent-session`, `mission`, or `built-in-task`; each determines where results are stored and how much workflow structure is available. |
 | **Intervention** | A mission pause point requiring human input to continue. |
-| **MCP** | Model Context Protocol — the JSON-RPC 2.0 protocol ADE uses to expose tools to agents. |
+| **ADE CLI** | The native action surface for agents — a local `ade` binary plus a JSON-RPC 2.0 server exposed by the desktop app at `.ade/ade.sock`. |
 | **Job Engine** | ADE's background scheduler for pack refresh, conflict prediction, and automation execution. |
 | **PR Convergence** | ADE's automated loop for resolving PR issues (review comments, CI failures) through AI-driven rounds until the PR is ready to merge. |
 | **Path to Merge** | The dedicated convergence workspace tab inside each PR detail view. |
 | **Conflict** | A predicted or actual merge conflict between two lanes. |
-| **Artifact / Proof** | Evidence produced by computer-use agents (screenshots, traces, videos, test reports). |
+| **Artifact / Proof** | Evidence captured via `ade proof` (screenshots, recordings, browser traces, console logs, test reports). |
 | **Plan** | The structured execution document generated by a Mission's planner agent. |
 | **Phase** | A stage in a Mission's lifecycle (Planning, Execution, Validation, etc.). |
 | **Phase Profile** | A reusable configuration of phases and their settings, applied to missions at launch. |
@@ -492,7 +465,7 @@ Project
   <Card title="CTO Agent" icon="robot" href="/cto/overview">
     Configure the CTO with Linear sync, persistent memory, and worker spawning policies.
   </Card>
-  <Card title="MCP Server Reference" icon="server" href="/configuration/mcp-servers">
-    Full reference for every ADE MCP tool, authentication roles, and connecting external clients.
+  <Card title="ADE CLI" icon="terminal" href="/configuration/settings">
+    Review the native ADE CLI action surface and project readiness settings.
   </Card>
 </CardGroup>

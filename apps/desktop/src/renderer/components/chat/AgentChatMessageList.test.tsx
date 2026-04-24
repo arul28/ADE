@@ -5,6 +5,45 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type { AgentChatApprovalDecision, AgentChatEventEnvelope } from "../../../shared/types";
 import * as modelRegistry from "../../../shared/modelRegistry";
+
+vi.mock("lottie-react", () => ({
+  useLottie: () => ({
+    View: null,
+    play: () => {},
+    stop: () => {},
+    pause: () => {},
+    setSpeed: () => {},
+    goToAndStop: () => {},
+    goToAndPlay: () => {},
+    setDirection: () => {},
+    getDuration: () => 0,
+    destroy: () => {},
+    animationItem: null,
+  }),
+  default: () => null,
+}));
+
+vi.mock("@lobehub/icons", () => {
+  const brand = () => {
+    const Component = () => null;
+    Object.assign(Component, {
+      Avatar: () => null,
+      Color: () => null,
+      Combine: () => null,
+      Text: () => null,
+      colorPrimary: "#888",
+      title: "stub",
+    });
+    return Component;
+  };
+  return {
+    Claude: brand(),
+    Codex: brand(),
+    Cursor: brand(),
+    OpenCode: brand(),
+  };
+});
+
 import {
   AgentChatMessageList,
   calculateVirtualWindow,
@@ -325,6 +364,293 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
   });
 
+  it("maps Windows drive-letter file references into Files navigation targets", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-windows",
+        kind: "worktree",
+        laneId: "lane-win",
+        name: "Windows lane",
+        rootPath: "C:\\Users\\me\\repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `C:\\Users\\me\\repo\\src\\main.ts`.",
+            itemId: "text-windows-absolute",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-win" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "C:\\Users\\me\\repo\\src\\main.ts" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
+    );
+  });
+
+  it("matches Windows drive-letter file references case-insensitively", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-windows",
+        kind: "worktree",
+        laneId: "lane-win",
+        name: "Windows lane",
+        rootPath: "C:\\Users\\Me\\Repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `c:\\users\\me\\repo\\src\\main.ts`.",
+            itemId: "text-windows-case",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-win" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "c:\\users\\me\\repo\\src\\main.ts" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
+    );
+  });
+
+  it("maps Windows markdown links into Files navigation targets", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-windows",
+        kind: "worktree",
+        laneId: "lane-win",
+        name: "Windows lane",
+        rootPath: "C:\\Users\\me\\repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Open [main.ts](C:/Users/me/repo/src/main.ts).",
+            itemId: "text-windows-link",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-win" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "main.ts" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
+    );
+  });
+
+  it("passes Windows line and column suffixes through to Files navigation", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-windows",
+        kind: "worktree",
+        laneId: "lane-win",
+        name: "Windows lane",
+        rootPath: "C:\\Users\\me\\repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `C:\\Users\\me\\repo\\src\\main.ts:42:5`.",
+            itemId: "text-windows-line-column",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-win" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "C:\\Users\\me\\repo\\src\\main.ts:42:5" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\",\"startLine\":42,\"startColumn\":5}",
+    );
+  });
+
+  it("normalizes Windows dot segments before navigating to Files", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-windows",
+        kind: "worktree",
+        laneId: "lane-win",
+        name: "Windows lane",
+        rootPath: "C:\\Users\\me\\repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `C:\\Users\\me\\repo\\src\\..\\main.ts:42`.",
+            itemId: "text-windows-dot-segments",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-win" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "C:\\Users\\me\\repo\\src\\..\\main.ts:42" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"main.ts\",\"laneId\":\"lane-win\",\"startLine\":42}",
+    );
+  });
+
+  it("maps backslash UNC file references into Files navigation targets", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-unc",
+        kind: "worktree",
+        laneId: "lane-unc",
+        name: "UNC lane",
+        rootPath: "\\\\server\\share\\repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `\\\\server\\share\\repo\\src\\main.ts`.",
+            itemId: "text-unc-absolute",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-unc" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "\\\\server\\share\\repo\\src\\main.ts" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-unc\"}",
+    );
+  });
+
+  it("preserves UNC authorities in file URI references", async () => {
+    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
+      {
+        id: "workspace-unc",
+        kind: "worktree",
+        laneId: "lane-unc",
+        name: "UNC lane",
+        rootPath: "//server/share/repo",
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Inspect `file://server/share/repo/src/main.ts#line=12`.",
+            itemId: "text-unc-file-uri",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        initialState: { laneId: "lane-unc" },
+      },
+    );
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "file://server/share/repo/src/main.ts#line=12" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-unc\",\"startLine\":12}",
+    );
+  });
+
   it("does not coalesce text fragments across command boundaries", () => {
     const view = renderMessageList([
       {
@@ -443,6 +769,45 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(transcriptOnly.container.textContent).not.toContain("Running command: npm test");
   });
 
+  it("keeps thinking activity visible after a duplicate started status", () => {
+    const rendered = renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "status",
+            turnStatus: "started",
+            turnId: "turn-1",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: {
+            type: "activity",
+            activity: "thinking",
+            detail: "Thinking through the answer",
+            turnId: "turn-1",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:02.000Z",
+          event: {
+            type: "status",
+            turnStatus: "started",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      { showStreamingIndicator: true },
+    );
+
+    expect(rendered.container.textContent).toContain("Thinking: Thinking through the answer");
+    expect(rendered.container.innerHTML).toContain("bg-violet-400");
+  });
+
   it("keeps the live assistant bubble stable until the turn finishes", () => {
     const live = renderMessageList(
       [
@@ -460,7 +825,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: true },
     );
 
-    expect(live.container.innerHTML).toContain("min-h-[5.5rem]");
+    expect(live.container.innerHTML).toContain("ade-glow-pulse");
 
     cleanup();
 
@@ -490,7 +855,83 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: false },
     );
 
-    expect(settled.container.innerHTML).not.toContain("min-h-[5.5rem]");
+    expect(settled.container.innerHTML).not.toContain("ade-glow-pulse");
+  });
+
+  it("shows streamed live reasoning text instead of only a thinking placeholder", () => {
+    const rendered = renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "status",
+            turnStatus: "started",
+            turnId: "turn-live",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: {
+            type: "reasoning",
+            text: "Checking both imports before editing.",
+            itemId: "reasoning-live",
+            turnId: "turn-live",
+          },
+        },
+      ],
+      { showStreamingIndicator: true },
+    );
+
+    expect(rendered.container.textContent).toContain("Checking both imports before editing.");
+    expect(rendered.container.textContent).not.toContain("Thinking...");
+  });
+
+  it("does not show a fake one-second duration for un-timed completed reasoning", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "reasoning",
+          text: "Checked the import graph.",
+          itemId: "reasoning-complete",
+          turnId: "turn-complete",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-complete",
+          status: "completed",
+        },
+      },
+    ]);
+
+    expect(rendered.container.textContent).toContain("Thought");
+    expect(rendered.container.textContent).not.toContain("1s");
+  });
+
+  it("keeps work-log cards bounded to content width", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "tool_call",
+          tool: "functions.exec_command",
+          args: { cmd: "pwd" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(rendered.container.textContent).toContain("Run pwd");
+    expect(rendered.container.innerHTML).toContain("max-w-[min(100%,70ch)]");
   });
 
   it("renders a bottom turn summary card with task, file, and background-agent totals", () => {
@@ -556,6 +997,56 @@ describe("AgentChatMessageList transcript rendering", () => {
   // "renders ask-user requests with an amber waiting icon" and
   // "renders structured question blocks" tests removed: tested specific
   // CSS classes and rendering details that change with UI iterations.
+
+  it("renders structured ask-user requests inline and submits option answers", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "approval_request",
+          itemId: "approval-structured",
+          kind: "tool_call",
+          description: "Choose how to proceed",
+          turnId: "turn-1",
+          detail: {
+            request: {
+              requestId: "request-structured",
+              itemId: "approval-structured",
+              source: "codex",
+              kind: "structured_question",
+              title: "Input needed",
+              description: "Choose how to proceed",
+              questions: [
+                {
+                  id: "focus_area",
+                  header: "Focus",
+                  question: "Which area should we test first?",
+                  options: [
+                    { label: "Question flow", value: "question_flow", description: "Check plan-mode input." },
+                    { label: "Plan updates", value: "plan_updates" },
+                  ],
+                  allowsFreeform: true,
+                },
+              ],
+              allowsFreeform: true,
+              blocking: true,
+              canProceedWithoutAnswer: false,
+            },
+          },
+        },
+      },
+    ], { onApproval });
+
+    expect(screen.getByText("Which area should we test first?")).toBeTruthy();
+
+    fireEvent.click(findButtonByTextContent(/^Question flow/));
+
+    expect(onApproval).toHaveBeenCalledWith("approval-structured", "accept", null, {
+      focus_area: "question_flow",
+    });
+  });
 
   it("shows structured questions as declined once the first resolution arrives and disables stale option chips", () => {
     const onApproval = vi.fn();
@@ -792,5 +1283,152 @@ describe("deriveTurnModelState", () => {
 
     expect(nextState.map.get("turn-2")?.label).toContain("Codex");
     expect(getModelByIdSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("AgentChatMessageList inline ask-user card", () => {
+  const buildStructuredApprovalEvent = (overrides: {
+    questions: Array<Record<string, unknown>>;
+  }): AgentChatEventEnvelope => ({
+    sessionId: "session-ask",
+    timestamp: "2026-04-20T10:00:00.000Z",
+    event: {
+      type: "approval_request",
+      itemId: "approval-ask",
+      kind: "tool_call",
+      description: "Select plan for branch",
+      turnId: "turn-ask",
+      detail: {
+        request: {
+          requestId: "req-ask",
+          itemId: "approval-ask",
+          source: "ade",
+          kind: "structured_question",
+          title: "Choose plan",
+          description: "Which plan should we follow?",
+          questions: overrides.questions,
+          allowsFreeform: true,
+          blocking: true,
+          canProceedWithoutAnswer: false,
+        },
+      },
+    },
+  });
+
+  it("renders option chips with recommended marker and full question metadata", () => {
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "plan_choice",
+            header: "Plan",
+            question: "Which plan should we follow?",
+            options: [
+              { label: "Rebase", value: "rebase", description: "Fast-forward replay.", recommended: true },
+              { label: "Merge", value: "merge", description: "Preserve history." },
+            ],
+            allowsFreeform: true,
+            defaultAssumption: "Rebase keeps history linear",
+            impact: "Tests must re-run after rebase",
+          },
+        ],
+      }),
+    ]);
+
+    expect(screen.getAllByText("Which plan should we follow?").length).toBeGreaterThan(0);
+    const rebaseButton = findButtonByTextContent(/^Rebase\s*\(Recommended\)/);
+    expect(rebaseButton).toBeTruthy();
+    expect(rebaseButton.textContent ?? "").toContain("Fast-forward replay.");
+    expect(findButtonByTextContent(/^Merge/)).toBeTruthy();
+    expect(screen.getByText(/Default: Rebase keeps history linear/)).toBeTruthy();
+    expect(screen.getByText(/Tests must re-run after rebase/)).toBeTruthy();
+  });
+
+  it("tap-submits single-select answers through onApproval", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "plan_choice",
+            header: "Plan",
+            question: "Which plan should we follow?",
+            options: [
+              { label: "Rebase", value: "rebase" },
+              { label: "Merge", value: "merge" },
+            ],
+            allowsFreeform: false,
+          },
+        ],
+      }),
+    ], { onApproval });
+
+    fireEvent.click(findButtonByTextContent(/^Rebase/));
+    expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, { plan_choice: "rebase" });
+  });
+
+  it("accumulates multi-select values and submits as an array when Send is clicked", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "areas",
+            header: "Areas",
+            question: "Which surfaces should regression tests cover?",
+            multiSelect: true,
+            options: [
+              { label: "Desktop", value: "desktop" },
+              { label: "iOS", value: "ios" },
+              { label: "Sync", value: "sync" },
+            ],
+            allowsFreeform: false,
+          },
+        ],
+      }),
+    ], { onApproval });
+
+    fireEvent.click(findButtonByTextContent(/^Desktop/));
+    fireEvent.click(findButtonByTextContent(/^Sync/));
+    expect(onApproval).not.toHaveBeenCalled();
+
+    fireEvent.click(findButtonByTextContent(/^Send answer/i));
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    const call = onApproval.mock.calls[0]!;
+    expect(call[0]).toBe("approval-ask");
+    expect(call[1]).toBe("accept");
+    expect(call[2]).toBeNull();
+    expect(call[3]).toEqual({ areas: ["desktop", "sync"] });
+  });
+
+  it("renders the option preview panel when an option with preview is selected", () => {
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "strategy",
+            header: "Strategy",
+            question: "Pick a merge strategy",
+            multiSelect: true,
+            options: [
+              {
+                label: "Squash",
+                value: "squash",
+                preview: "**Squash merge**\n\nCollapses to one commit.",
+                previewFormat: "markdown",
+              },
+              { label: "Rebase", value: "rebase" },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    expect(screen.queryByTestId("inline-question-preview-strategy")).toBeNull();
+    fireEvent.click(findButtonByTextContent(/^Squash/));
+    const preview = screen.getByTestId("inline-question-preview-strategy");
+    expect(preview).toBeTruthy();
+    expect(preview.textContent ?? "").toContain("Squash merge");
+    expect(preview.textContent ?? "").toContain("Collapses to one commit.");
   });
 });

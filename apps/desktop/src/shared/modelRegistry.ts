@@ -88,7 +88,7 @@ export function isModelProviderGroup(value: string | null | undefined): value is
 const ALL_CAPS: ModelCapabilities = { tools: true, vision: true, reasoning: true, streaming: true };
 const NO_REASONING: ModelCapabilities = { tools: true, vision: true, reasoning: false, streaming: true };
 const BASIC_CAPS: ModelCapabilities = { tools: true, vision: false, reasoning: false, streaming: true };
-/** Human-readable names for Ollama / LM Studio (shared across main, renderer, and MCP). */
+/** Human-readable names for Ollama / LM Studio shared across main and renderer. */
 export const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
   ollama: "Ollama",
   lmstudio: "LM Studio",
@@ -106,18 +106,45 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ---- Anthropic (CLI-wrapped via claude) ----
   // Claude chat surfaces in ADE use the native low/medium/high effort ladder.
   {
-    id: "anthropic/claude-opus-4-6",
+    id: "anthropic/claude-opus-4-7",
     shortId: "opus",
-    displayName: "Claude Opus 4.6",
+    aliases: ["claude-opus-4-7", "anthropic/claude-opus-4-6", "claude-opus-4-6"],
+    displayName: "Claude Opus 4.7",
     family: "anthropic",
     authTypes: ["cli-subscription"],
-    contextWindow: 200_000,
-    maxOutputTokens: 32_000,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "max"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "opus",
+    providerModelId: "claude-opus-4-7",
+    cliCommand: "claude",
+    isCliWrapped: true,
+    inputPricePer1M: 5,
+    outputPricePer1M: 25,
+    costTier: "very_high",
+  },
+  {
+    id: "anthropic/claude-opus-4-7-1m",
+    shortId: "opus-1m",
+    aliases: [
+      "opus[1m]",
+      "claude-opus-4-7[1m]",
+      "anthropic/claude-opus-4-6-1m",
+      "claude-opus-4-6-1m",
+      "claude-opus-4-6[1m]",
+    ],
+    displayName: "Claude Opus 4.7 1M",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    color: "#B45309",
+    providerRoute: "claude-cli",
+    providerModelId: "claude-opus-4-7[1m]",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 5,
@@ -165,6 +192,24 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ---- OpenAI (CLI-wrapped via codex) ----
   // ADE codex chat surfaces expose a consistent ladder:
   // low | medium | high | xhigh, except GPT-5.1-Codex-Mini which only exposes medium | high.
+  {
+    id: "openai/gpt-5.5-codex",
+    shortId: "gpt-5.5-codex",
+    aliases: ["gpt-5.5-codex"],
+    displayName: "GPT-5.5",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#10A37F",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.5",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    costTier: "high",
+  },
   {
     id: "openai/gpt-5.4-codex",
     shortId: "gpt-5.4-codex",
@@ -753,22 +798,26 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
 // ---------------------------------------------------------------------------
 
 export function getModelById(id: string): ModelDescriptor | undefined {
-  const cached = byId.get(id);
+  const normalized = id.trim();
+  const normalizedLower = normalized.toLowerCase();
+  const cached = byId.get(normalized) ?? byId.get(normalizedLower);
   if (cached) return cached;
-  const dynamicOpenCode = dynamicOpenCodeById.get(id);
+  const aliased = byAlias.get(normalizedLower) ?? dynamicOpenCodeByAlias.get(normalizedLower);
+  if (aliased) return aliased;
+  const dynamicOpenCode = dynamicOpenCodeById.get(normalized);
   if (dynamicOpenCode) return dynamicOpenCode;
-  const openCodeDecoded = decodeOpenCodeRegistryId(id);
+  const openCodeDecoded = decodeOpenCodeRegistryId(normalized);
   if (openCodeDecoded) {
     return createDynamicOpenCodeModelDescriptor("", {
       openCodeProviderId: openCodeDecoded.openCodeProviderId,
       openCodeModelId: openCodeDecoded.openCodeModelId,
     });
   }
-  const local = parseDynamicLocalModelRef(id);
+  const local = parseDynamicLocalModelRef(normalized);
   if (local) return createDynamicLocalModelDescriptor(local.provider, local.modelId);
-  const openCode = parseDynamicOpenCodeModelRef(id);
+  const openCode = parseDynamicOpenCodeModelRef(normalized);
   if (openCode) return createDynamicOpenCodeModelDescriptor(openCode.modelId);
-  const cursor = parseDynamicCursorModelRef(id);
+  const cursor = parseDynamicCursorModelRef(normalized);
   return cursor ? createDynamicCursorCliModelDescriptor(cursor.providerModelId) : undefined;
 }
 
@@ -845,6 +894,24 @@ export function resolveModelDescriptor(modelRef: string): ModelDescriptor | unde
   return getModelById(normalized) ?? resolveModelAlias(normalized);
 }
 
+/**
+ * Normalize a free-form model reference to a canonical registry id when possible.
+ * Accepts aliases and mixed casing; returns undefined when unknown or blank.
+ * When `providerHint` is set, ambiguous refs (e.g. bare Codex runtime names) resolve like the chat runtime.
+ */
+export function resolveModelSlug(modelRef: string, providerHint?: ModelProviderGroup): string | undefined {
+  const normalized = modelRef.trim();
+  if (!normalized.length) return undefined;
+  if (providerHint) {
+    const direct = getModelById(normalized);
+    if (direct && !direct.deprecated && matchesProviderGroup(direct, providerHint)) {
+      return direct.id;
+    }
+    return resolveModelDescriptorForProvider(normalized, providerHint)?.id;
+  }
+  return resolveModelDescriptor(normalized)?.id;
+}
+
 function matchesProviderGroup(
   descriptor: ModelDescriptor,
   providerHint?: ModelProviderGroup,
@@ -857,9 +924,17 @@ export function resolveModelDescriptorForProvider(
   modelRef: string | null | undefined,
   providerHint?: ModelProviderGroup,
 ): ModelDescriptor | undefined {
-  const normalized = String(modelRef ?? "").trim().toLowerCase();
-  if (!normalized.length) return undefined;
+  const raw = String(modelRef ?? "").trim();
+  if (!raw.length) return undefined;
 
+  // Dynamic local / OpenCode ids can be case-sensitive; try the raw ref before
+  // lowercasing so paths like `lmstudio/Qwen/...` are not corrupted.
+  const caseSensitive = getModelById(raw);
+  if (caseSensitive && !caseSensitive.deprecated && matchesProviderGroup(caseSensitive, providerHint)) {
+    return caseSensitive;
+  }
+
+  const normalized = raw.toLowerCase();
   const exactId = getModelById(normalized);
   if (exactId && !exactId.deprecated && matchesProviderGroup(exactId, providerHint)) {
     return exactId;

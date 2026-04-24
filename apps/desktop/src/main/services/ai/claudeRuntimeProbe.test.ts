@@ -6,26 +6,6 @@ const mockState = vi.hoisted(() => ({
   reportProviderRuntimeAuthFailure: vi.fn(),
   reportProviderRuntimeFailure: vi.fn(),
   resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/usr/local/bin/claude", source: "path" })),
-  normalizeCliMcpServers: vi.fn(() => ({
-    ade: {
-      type: "stdio",
-      command: "node",
-      args: ["probe.js"],
-      env: { ADE_PROJECT_ROOT: "/tmp/project" },
-    },
-  })),
-  resolveDesktopAdeMcpLaunch: vi.fn(() => ({
-    mode: "headless_source",
-    command: "node",
-    cmdArgs: ["probe.js"],
-    env: { ADE_PROJECT_ROOT: "/tmp/project" },
-    entryPath: "probe.js",
-    runtimeRoot: "/tmp/runtime",
-    socketPath: "/tmp/project/.ade/mcp.sock",
-    packaged: false,
-    resourcesPath: null,
-  })),
-  resolveRepoRuntimeRoot: vi.fn(() => "/tmp/runtime"),
 }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
@@ -40,15 +20,6 @@ vi.mock("./providerRuntimeHealth", () => ({
 
 vi.mock("./claudeCodeExecutable", () => ({
   resolveClaudeCodeExecutable: mockState.resolveClaudeCodeExecutable,
-}));
-
-vi.mock("./cliMcpConfig", () => ({
-  normalizeCliMcpServers: mockState.normalizeCliMcpServers,
-}));
-
-vi.mock("../runtime/adeMcpLaunch", () => ({
-  resolveDesktopAdeMcpLaunch: mockState.resolveDesktopAdeMcpLaunch,
-  resolveRepoRuntimeRoot: mockState.resolveRepoRuntimeRoot,
 }));
 
 let probeClaudeRuntimeHealth: typeof import("./claudeRuntimeProbe").probeClaudeRuntimeHealth;
@@ -75,9 +46,6 @@ beforeEach(async () => {
   mockState.reportProviderRuntimeAuthFailure.mockReset();
   mockState.reportProviderRuntimeFailure.mockReset();
   mockState.resolveClaudeCodeExecutable.mockClear();
-  mockState.normalizeCliMcpServers.mockClear();
-  mockState.resolveDesktopAdeMcpLaunch.mockClear();
-  mockState.resolveRepoRuntimeRoot.mockClear();
   const mod = await import("./claudeRuntimeProbe");
   probeClaudeRuntimeHealth = mod.probeClaudeRuntimeHealth;
   resetClaudeRuntimeProbeCache = mod.resetClaudeRuntimeProbeCache;
@@ -105,9 +73,7 @@ describe("claudeRuntimeProbe", () => {
     expect(mockState.query).toHaveBeenCalledWith(expect.objectContaining({
       options: expect.objectContaining({
         pathToClaudeCodeExecutable: "/usr/local/bin/claude",
-        mcpServers: expect.objectContaining({
-          ade: expect.any(Object),
-        }),
+        tools: [],
       }),
     }));
     expect(mockState.reportProviderRuntimeAuthFailure).toHaveBeenCalledTimes(1);
@@ -116,9 +82,7 @@ describe("claudeRuntimeProbe", () => {
       options: expect.objectContaining({
         cwd: "/tmp/project",
         pathToClaudeCodeExecutable: "/usr/local/bin/claude",
-        mcpServers: expect.objectContaining({
-          ade: expect.any(Object),
-        }),
+        tools: [],
       }),
     }));
   });
@@ -163,7 +127,7 @@ describe("claudeRuntimeProbe", () => {
     expect(mockState.reportProviderRuntimeFailure).not.toHaveBeenCalled();
   });
 
-  it("calls resolveDesktopAdeMcpLaunch with defaultRole external and projectRoot", async () => {
+  it("probes Claude with an empty tool list", async () => {
     const query = makeStream([
       {
         type: "result",
@@ -189,14 +153,11 @@ describe("claudeRuntimeProbe", () => {
 
     await probeClaudeRuntimeHealth({ projectRoot: "/my/custom/project", force: true });
 
-    expect(mockState.resolveDesktopAdeMcpLaunch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectRoot: "/my/custom/project",
-        workspaceRoot: "/my/custom/project",
-        defaultRole: "external",
+    expect(mockState.query).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        tools: [],
       }),
-    );
-    expect(mockState.resolveRepoRuntimeRoot).toHaveBeenCalled();
+    }));
     expect(mockState.reportProviderRuntimeReady).toHaveBeenCalledTimes(1);
   });
 

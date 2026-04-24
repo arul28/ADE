@@ -166,6 +166,10 @@ describe("ProvidersSection", () => {
       expect(ade.ai.getStatus).toHaveBeenCalledTimes(1);
       expect(ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
     });
+    expect(ade.ai.getStatus).toHaveBeenNthCalledWith(1, {
+      force: false,
+      refreshOpenCodeInventory: false,
+    });
 
     expect((await screen.findAllByText("/Users/arul/.local/bin/claude")).length).toBeGreaterThan(0);
 

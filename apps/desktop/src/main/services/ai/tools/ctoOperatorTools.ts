@@ -81,7 +81,7 @@ export interface CtoOperatorToolDeps {
     getLogTail: (args: { runId: string; maxBytes?: number }) => string;
   } | null;
   ptyService?: {
-    create: (args: { laneId: string; title?: string; cols?: number; rows?: number; tracked?: boolean; startupCommand?: string }) => Promise<{ ptyId: string; sessionId: string }>;
+    create: (args: { laneId: string; title?: string; cols?: number; rows?: number; tracked?: boolean; toolType?: "shell"; startupCommand?: string }) => Promise<{ ptyId: string; sessionId: string }>;
   } | null;
   automationService?: {
     list: () => AutomationRuleSummary[];
@@ -182,6 +182,7 @@ const ACTIVE_LINEAR_RUN_STATUSES = new Set([
   "waiting_for_pr",
   "awaiting_human_review",
   "awaiting_delegation",
+  "awaiting_lane_choice",
   "retry_wait",
 ]);
 
@@ -765,14 +766,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     description:
       "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
       "IMPORTANT: Always pass modelId when the user specifies a model. Use the full model ID " +
-      "(e.g. 'anthropic/claude-opus-4-6' for Opus, 'anthropic/claude-sonnet-4-6' for Sonnet, " +
-      "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.4-codex' for GPT-5.4). " +
+      "(e.g. 'anthropic/claude-opus-4-7' for Opus, 'anthropic/claude-sonnet-4-6' for Sonnet, " +
+      "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.5-codex' for GPT-5.5). " +
       "If no modelId is passed, the CTO's default model preference is used. " +
       "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
       "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
       "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead.",
     inputSchema: z.object({
-      laneId: z.string().optional().describe("Lane to run in. Defaults to CTO's lane. A new lane is auto-created if needed."),
+      laneId: z.string().optional().describe("Lane to run in. Defaults to the primary lane. A new lane is auto-created if needed."),
       modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-4-6'). MUST be set when user specifies a model."),
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort: 'low', 'medium', 'high', 'max' (opus), 'xhigh' (openai)."),
       title: z.string().optional().describe("Display title for the chat session."),
@@ -2438,6 +2439,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           laneId,
           ...(title?.trim() ? { title: title.trim() } : {}),
           ...(startupCommand?.trim() ? { startupCommand: startupCommand.trim() } : {}),
+          toolType: "shell",
           tracked: true,
         });
         return { success: true, ...result };
@@ -3461,7 +3463,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ pattern, fileGlob, maxResults, contextLines }) => {
       try {
         const { execFileSync } = await import("node:child_process");
-        const adeRoot = path.resolve(__dirname, "../../../../..");
+        const adeRoot = typeof __dirname === "string"
+          ? path.resolve(__dirname, "../../../../..")
+          : path.resolve(process.cwd());
         const searchPattern = pattern.trim().slice(0, 500);
         const globArg = (fileGlob?.trim() || "*.ts").slice(0, 200);
         const args = [

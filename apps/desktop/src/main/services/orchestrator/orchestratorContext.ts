@@ -8,6 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { terminateProcessTree } from "../shared/processExecution";
 import { nowIso } from "../shared/utils";
 import type { GetModelCapabilitiesResult } from "../../../shared/types";
 import type {
@@ -1059,18 +1060,10 @@ export const runOrchestratorHookCommand: OrchestratorHookCommandRunner = async (
     if (args.timeoutMs > 0) {
       killTimer = setTimeout(() => {
         timedOut = true;
-        try {
-          child.kill("SIGTERM");
-        } catch {
-          // Best-effort only.
-        }
+        terminateProcessTree(child, "SIGTERM");
         setTimeout(() => {
           if (child.exitCode == null && !child.killed) {
-            try {
-              child.kill("SIGKILL");
-            } catch {
-              // Best-effort only.
-            }
+            terminateProcessTree(child, "SIGKILL");
           }
         }, 1_000).unref();
       }, args.timeoutMs);
@@ -1238,8 +1231,8 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
   const profiles: ModelCapabilityProfile[] = [
     {
       provider: "claude",
-      modelId: "claude-opus-4-6",
-      displayName: "Claude Opus 4.6",
+      modelId: "claude-opus-4-7",
+      displayName: "Claude Opus 4.7",
       strengths: ["complex reasoning", "architectural planning", "nuanced review", "deep analysis"],
       weaknesses: ["high cost tier", "not recommended for bulk implementation"],
       costTier: "very_high",

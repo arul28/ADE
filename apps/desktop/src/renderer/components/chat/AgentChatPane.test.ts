@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { getModelById } from "../../../shared/modelRegistry";
 import type { AgentChatSessionSummary } from "../../../shared/types";
-import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import {
+  buildParallelLaunchPrompt,
+  cleanupTransientParallelLaunchLanes,
+  formatParallelLaunchFailureMessage,
+  parallelLaneModelSuffix,
   resolveNextSelectedSessionId,
   shouldPromoteSessionForComputerUse,
 } from "./AgentChatPane";
@@ -22,7 +26,6 @@ function buildSession(sessionId: string): AgentChatSessionSummary {
     goal: null,
     completion: null,
     reasoningEffort: null,
-    computerUse: undefined,
     executionMode: "focused",
   };
 }
@@ -58,11 +61,87 @@ describe("resolveNextSelectedSessionId", () => {
 });
 
 describe("shouldPromoteSessionForComputerUse", () => {
-  it("promotes older light sessions when computer use is on", () => {
-    const policy = createDefaultComputerUsePolicy();
+  it("promotes older light sessions when the session profile isn't already workflow", () => {
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" })).toBe(true);
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: undefined })).toBe(true);
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "workflow" })).toBe(false);
+  });
+});
 
-    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" }, policy)).toBe(true);
-    expect(shouldPromoteSessionForComputerUse({ sessionProfile: undefined }, policy)).toBe(true);
-    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "workflow" }, policy)).toBe(false);
+describe("parallel launch helpers", () => {
+  it("keeps same-family model lane suffixes distinct", () => {
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4-codex"))).toBe("codex-gpt-5-4");
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4-mini-codex"))).toBe("codex-gpt-5-4-mini");
+  });
+
+  it("preserves the default attachment review request when project docs are prepended", () => {
+    const result = buildParallelLaunchPrompt({
+      text: "",
+      attachmentCount: 2,
+      includeProjectDocs: true,
+    });
+
+    expect(result.displayText).toBe("Please review the attached files.");
+    expect(result.sendText).toContain("[Project Context");
+    expect(result.sendText).toContain("Please review the attached files.");
+  });
+
+  it("force-cleans transient lanes and refreshes lane state after rollback", async () => {
+    const deleteLane = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Lane has uncommitted changes."));
+    const refreshLanes = vi.fn().mockResolvedValue(undefined);
+    const onCleanupError = vi.fn();
+
+    const issues = await cleanupTransientParallelLaunchLanes({
+      laneIds: ["lane-a", "lane-b"],
+      deleteLane,
+      refreshLanes,
+      onCleanupError,
+    });
+
+    expect(deleteLane).toHaveBeenNthCalledWith(1, { laneId: "lane-a", force: true });
+    expect(deleteLane).toHaveBeenNthCalledWith(2, { laneId: "lane-b", force: true });
+    expect(refreshLanes).toHaveBeenCalledTimes(1);
+    expect(onCleanupError).toHaveBeenCalledWith(expect.objectContaining({
+      phase: "delete",
+      laneId: "lane-b",
+    }));
+    expect(issues).toEqual([
+      expect.objectContaining({
+        phase: "delete",
+        laneId: "lane-b",
+      }),
+    ]);
+  });
+
+  it("treats already-deleted lanes as cleaned up during rollback retries", async () => {
+    const deleteLane = vi.fn().mockRejectedValue(new Error("Lane not found."));
+    const refreshLanes = vi.fn().mockResolvedValue(undefined);
+    const onCleanupError = vi.fn();
+
+    const issues = await cleanupTransientParallelLaunchLanes({
+      laneIds: ["lane-a"],
+      deleteLane,
+      refreshLanes,
+      onCleanupError,
+    });
+
+    expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-a", force: true });
+    expect(refreshLanes).toHaveBeenCalledTimes(1);
+    expect(onCleanupError).not.toHaveBeenCalled();
+    expect(issues).toEqual([]);
+  });
+
+  it("formats rollback failures so leaked child lanes are surfaced to the user", () => {
+    expect(formatParallelLaunchFailureMessage({
+      launchError: "Lane 2 failed to send.",
+      cleanupIssues: [
+        { phase: "delete", laneId: "lane-a", error: new Error("locked") },
+        { phase: "refresh", laneId: null, error: new Error("refresh failed") },
+      ],
+    })).toBe(
+      "Lane 2 failed to send. Cleanup could not delete lane lane-a; lane list refresh also failed. Check the lane list before retrying.",
+    );
   });
 });

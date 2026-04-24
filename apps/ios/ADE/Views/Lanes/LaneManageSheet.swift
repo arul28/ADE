@@ -66,10 +66,39 @@ struct LaneManageSheet: View {
     snapshot.lane.laneType != "primary"
   }
 
+  private var canRunLiveActions: Bool {
+    laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: syncService.status(for: .lanes))
+  }
+
+  private var liveActionNoticePresentation: LaneEmptyStatePresentation? {
+    laneLiveActionNotice(
+      connectionState: syncService.connectionState,
+      laneStatus: syncService.status(for: .lanes),
+      hasHostProfile: syncService.activeHostProfile != nil
+    )
+  }
+
   var body: some View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 14) {
+          // Connection-caused live-action notices are suppressed — the gear
+          // dot in the toolbar already communicates offline state.
+          if !syncService.connectionState.isHostUnreachable,
+            let liveActionNoticePresentation
+          {
+            ADENoticeCard(
+              title: liveActionNoticePresentation.title,
+              message: liveActionNoticePresentation.message,
+              icon: liveActionNoticePresentation.symbol,
+              tint: ADEColor.warning,
+              actionTitle: liveActionNoticePresentation.actionTitle,
+              action: liveActionNoticePresentation.action.map { action in
+                { handleNoticeAction(action) }
+              }
+            )
+          }
+
           if let errorMessage {
             HStack(spacing: 10) {
               Image(systemName: "exclamationmark.triangle.fill")
@@ -89,7 +118,7 @@ struct LaneManageSheet: View {
               LaneActionButton(title: "Save name", symbol: "checkmark.circle.fill", tint: ADEColor.accent) {
                 Task { await performAction("rename lane") { try await syncService.renameLane(snapshot.lane.id, name: renameText) } }
               }
-              .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || renameText == snapshot.lane.name)
+              .disabled(!canRunLiveActions || renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || renameText == snapshot.lane.name)
             }
           }
 
@@ -106,6 +135,7 @@ struct LaneManageSheet: View {
                   }
                 }
               }
+              .disabled(!canRunLiveActions)
             }
           }
 
@@ -127,7 +157,7 @@ struct LaneManageSheet: View {
                     }
                   }
                 }
-                .disabled(selectedParentLaneId == (snapshot.lane.parentLaneId ?? ""))
+                .disabled(!canRunLiveActions || selectedParentLaneId == (snapshot.lane.parentLaneId ?? ""))
               }
             }
           }
@@ -137,11 +167,12 @@ struct LaneManageSheet: View {
               LaneActionButton(title: "Archive lane", symbol: "archivebox", tint: ADEColor.warning) {
                 Task { await performAction("archive lane") { try await syncService.archiveLane(snapshot.lane.id) } }
               }
-              .disabled(!canArchive)
+              .disabled(!canRunLiveActions || !canArchive)
             } else {
               LaneActionButton(title: "Restore lane", symbol: "tray.and.arrow.up", tint: ADEColor.accent) {
                 Task { await performAction("restore lane") { try await syncService.unarchiveLane(snapshot.lane.id) } }
               }
+              .disabled(!canRunLiveActions)
             }
           }
 
@@ -180,6 +211,7 @@ struct LaneManageSheet: View {
                     }
                   }
                 }
+                .disabled(!canRunLiveActions)
               }
             }
           }
@@ -215,6 +247,11 @@ struct LaneManageSheet: View {
 
   @MainActor
   private func performAction(_ label: String, operation: () async throws -> Void) async {
+    guard canRunLiveActions else {
+      ADEHaptics.warning()
+      errorMessage = "Reconnect to desktop before you \(label)."
+      return
+    }
     do {
       busyAction = label
       errorMessage = nil
@@ -222,8 +259,19 @@ struct LaneManageSheet: View {
       dismiss()
       await onComplete()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busyAction = nil
+  }
+
+  @MainActor
+  private func handleNoticeAction(_ action: LaneConnectionNoticeAction) {
+    switch action {
+    case .openSettings:
+      syncService.settingsPresented = true
+    case .reconnect, .retry:
+      Task { await syncService.reconnectIfPossible(userInitiated: true) }
+    }
   }
 }

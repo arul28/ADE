@@ -119,7 +119,7 @@ Every field in `FIELD_LABELS` carries a `tier` (`essential`, `advanced`, `expert
 - **`visualManagedStepTypes` is the contract boundary.** Adding a new step type that should be rebuilt from the visual plan requires adding it to the set in `linearWorkflowPresets.ts` or it will be preserved-but-not-regenerated (often leading to stale steps after a plan change).
 - **Tests in `pipelineHelpers.test.ts` and `linearWorkflowPresets.test.ts`** cover the translation invariants. Keep them green — they are the regression net for this surface.
 - **PR strategy kind polymorphism.** `target.prStrategy` is a union (`{kind: "per-lane"}`, `{kind: "manual"}`, etc.). `StageCard.tsx` branches on `kind`; new kinds must update the card summary and the config panel.
-- **Headless parity.** `apps/mcp-server/src/headlessLinearServices.ts` instantiates the same flow policy and dispatcher — any YAML schema change must pass through the headless code path as well, otherwise `ade mcp` diverges.
+- **Headless parity.** `apps/ade-cli/src/headlessLinearServices.ts` instantiates the same flow policy and dispatcher — any YAML schema change must pass through the headless code path as well, otherwise `ADE CLI` diverges.
 
 ## Cross-links
 

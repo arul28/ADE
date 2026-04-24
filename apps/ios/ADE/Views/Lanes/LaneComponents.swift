@@ -1,36 +1,5 @@
 import SwiftUI
 
-// MARK: - Glass section
-
-struct GlassSection<Content: View>: View {
-  let title: String
-  let subtitle: String?
-  let content: Content
-
-  init(title: String, subtitle: String? = nil, @ViewBuilder content: () -> Content) {
-    self.title = title
-    self.subtitle = subtitle
-    self.content = content()
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      VStack(alignment: .leading, spacing: 3) {
-        Text(title)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        if let subtitle {
-          Text(subtitle)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-      }
-      content
-    }
-    .adeGlassCard(cornerRadius: 16, padding: 14)
-  }
-}
-
 // MARK: - Lane status indicator
 
 struct LaneStatusIndicator: View {
@@ -60,193 +29,6 @@ struct LaneStatusIndicator: View {
 
   private var isAnimating: Bool {
     (bucket == "running" || bucket == "awaiting-input") && !reduceMotion
-  }
-}
-
-// MARK: - Type badge
-
-struct LaneTypeBadge: View {
-  let text: String
-  let tint: Color
-
-  var body: some View {
-    Text(text)
-      .font(.caption2.weight(.semibold))
-      .foregroundStyle(tint)
-      .padding(.horizontal, 7)
-      .padding(.vertical, 3)
-      .background(tint.opacity(0.12), in: Capsule())
-      .glassEffect()
-  }
-}
-
-// MARK: - Micro chip
-
-struct LaneMicroChip: View {
-  let icon: String
-  let text: String?
-  let tint: Color
-
-  var body: some View {
-    HStack(spacing: 3) {
-      Image(systemName: icon)
-        .font(.system(size: 8, weight: .semibold))
-      if let text {
-        Text(text)
-          .font(.system(.caption2).weight(.medium))
-      }
-    }
-    .foregroundStyle(tint)
-    .padding(.horizontal, 6)
-    .padding(.vertical, 3)
-    .background(tint.opacity(0.1), in: Capsule())
-    .glassEffect()
-  }
-}
-
-// MARK: - Action button
-
-struct LaneActionButton: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-  let action: () -> Void
-
-  init(title: String, symbol: String, tint: Color = ADEColor.textSecondary, action: @escaping () -> Void) {
-    self.title = title
-    self.symbol = symbol
-    self.tint = tint
-    self.action = action
-  }
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 5) {
-        Image(systemName: symbol)
-          .font(.system(size: 11, weight: .semibold))
-        Text(title)
-          .font(.caption.weight(.medium))
-      }
-      .foregroundStyle(tint)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .background(tint.opacity(0.1), in: Capsule())
-      .glassEffect()
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-// MARK: - Hold-to-confirm action
-
-struct LaneHoldToConfirmButton: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-  let holdHint: String
-  let minimumDuration: Double
-  let action: () -> Void
-
-  @State private var isPressing = false
-
-  init(
-    title: String,
-    symbol: String,
-    tint: Color = ADEColor.danger,
-    holdHint: String = "Hold to confirm",
-    minimumDuration: Double = 0.5,
-    action: @escaping () -> Void
-  ) {
-    self.title = title
-    self.symbol = symbol
-    self.tint = tint
-    self.holdHint = holdHint
-    self.minimumDuration = minimumDuration
-    self.action = action
-  }
-
-  var body: some View {
-    HStack(spacing: 5) {
-      Image(systemName: symbol)
-        .font(.system(size: 11, weight: .semibold))
-      Text(isPressing ? holdHint : title)
-        .font(.caption.weight(.medium))
-    }
-    .foregroundStyle(tint)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background((isPressing ? tint.opacity(0.18) : tint.opacity(0.1)), in: Capsule())
-    .glassEffect()
-    .overlay(
-      Capsule()
-        .stroke(tint.opacity(isPressing ? 0.36 : 0.14), lineWidth: 0.5)
-    )
-    .contentShape(Capsule())
-    .onLongPressGesture(
-      minimumDuration: minimumDuration,
-      maximumDistance: 24,
-      pressing: { pressing in
-        withAnimation(.easeOut(duration: 0.15)) {
-          isPressing = pressing
-        }
-      },
-      perform: action
-    )
-    .accessibilityLabel("\(title). Hold to confirm.")
-  }
-}
-
-// MARK: - Quick action
-
-struct LaneQuickAction: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      VStack(spacing: 4) {
-        Image(systemName: symbol)
-          .font(.system(size: 16, weight: .medium))
-          .symbolRenderingMode(.hierarchical)
-        Text(title)
-          .font(.caption2.weight(.medium))
-      }
-      .foregroundStyle(tint)
-      .frame(width: 64, height: 54)
-      .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 12))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
-      )
-    }
-    .buttonStyle(ADEScaleButtonStyle())
-  }
-}
-
-// MARK: - Menu label
-
-struct LaneMenuLabel: View {
-  let title: String
-
-  var body: some View {
-    HStack(spacing: 4) {
-      Text(title)
-        .font(.caption.weight(.medium))
-      Image(systemName: "chevron.down")
-        .font(.system(size: 8, weight: .bold))
-    }
-    .foregroundStyle(ADEColor.textSecondary)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule())
-    .glassEffect()
-    .overlay(
-      Capsule()
-        .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
-    )
   }
 }
 
@@ -462,7 +244,7 @@ struct LaneListRow: View, Equatable {
           Spacer(minLength: 0)
         }
 
-        HStack(spacing: 6) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
           if snapshot.lane.status.dirty {
             LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
           }
@@ -486,6 +268,7 @@ struct LaneListRow: View, Equatable {
             LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
           }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
 
       Spacer(minLength: 8)
@@ -534,6 +317,140 @@ struct LaneListRow: View, Equatable {
     if isOpen { parts.append("open") }
     if snapshot.lane.status.ahead > 0 { parts.append("\(snapshot.lane.status.ahead) ahead") }
     if snapshot.lane.status.behind > 0 { parts.append("\(snapshot.lane.status.behind) behind") }
+    return parts.joined(separator: ", ")
+  }
+}
+
+// MARK: - Stack card
+
+struct LaneStackCard: View, Equatable {
+  let snapshot: LaneListSnapshot
+  let isPinned: Bool
+  let isOpen: Bool
+  let depth: Int
+  var transitionNamespace: Namespace.ID? = nil
+  var isSelectedTransitionSource = false
+
+  static func == (lhs: LaneStackCard, rhs: LaneStackCard) -> Bool {
+    lhs.snapshot == rhs.snapshot
+      && lhs.isPinned == rhs.isPinned
+      && lhs.isOpen == rhs.isOpen
+      && lhs.depth == rhs.depth
+      && lhs.isSelectedTransitionSource == rhs.isSelectedTransitionSource
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .top, spacing: 10) {
+        LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 10)
+          .padding(.top, 4)
+          .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-icon-\(snapshot.lane.id)" : nil, in: transitionNamespace)
+
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(snapshot.lane.name)
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
+            laneRoleBadge
+            Spacer(minLength: 0)
+            lanePriorityBadge(snapshot: snapshot)
+              .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-status-\(snapshot.lane.id)" : nil, in: transitionNamespace)
+          }
+
+          Text(snapshot.lane.branchRef)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+
+        if let devices = snapshot.lane.devicesOpen, !devices.isEmpty {
+          Image(systemName: devicePresenceSymbol(for: devices))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .padding(.top, 4)
+            .accessibilityLabel("Open on \(devices.count) other device\(devices.count == 1 ? "" : "s")")
+        }
+
+        Image(systemName: "chevron.right")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.top, 4)
+      }
+
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
+        if snapshot.lane.status.dirty {
+          LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
+        }
+        if snapshot.lane.status.ahead > 0 {
+          LaneMicroChip(icon: "arrow.up", text: "\(snapshot.lane.status.ahead)", tint: ADEColor.success)
+        }
+        if snapshot.lane.status.behind > 0 {
+          LaneMicroChip(icon: "arrow.down", text: "\(snapshot.lane.status.behind)", tint: ADEColor.warning)
+        }
+        if snapshot.runtime.sessionCount > 0 {
+          LaneMicroChip(
+            icon: runtimeSymbol(snapshot.runtime.bucket),
+            text: "\(snapshot.runtime.sessionCount) running",
+            tint: runtimeTint(bucket: snapshot.runtime.bucket)
+          )
+        }
+        if snapshot.lane.childCount > 0 {
+          LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEColor.textMuted)
+        }
+        if isPinned {
+          LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      if let activity = laneActivitySummary(snapshot) {
+        Text(activity)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 14))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(isOpen ? ADEColor.accent.opacity(0.4) : ADEColor.border.opacity(0.18), lineWidth: isOpen ? 1.5 : 0.75)
+    )
+    .shadow(color: isOpen ? ADEColor.accent.opacity(0.08) : .clear, radius: 8, y: 2)
+    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "lane-container-\(snapshot.lane.id)" : nil, in: transitionNamespace)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(stackCardAccessibilityLabel)
+  }
+
+  @ViewBuilder
+  private var laneRoleBadge: some View {
+    if snapshot.lane.laneType == "primary" {
+      LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
+    } else if snapshot.lane.laneType == "attached" {
+      LaneTypeBadge(text: "Attached", tint: ADEColor.textMuted)
+    } else if snapshot.lane.archivedAt != nil {
+      LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+    } else {
+      EmptyView()
+    }
+  }
+
+  private var stackCardAccessibilityLabel: String {
+    var parts = [snapshot.lane.name, snapshot.lane.branchRef]
+    if snapshot.lane.laneType == "primary" { parts.append("primary") }
+    if snapshot.lane.archivedAt != nil { parts.append("archived") }
+    if snapshot.runtime.bucket == "running" { parts.append("running") }
+    if snapshot.runtime.bucket == "awaiting-input" { parts.append("awaiting input") }
+    if snapshot.lane.status.dirty { parts.append("dirty") }
+    if isPinned { parts.append("pinned") }
+    if isOpen { parts.append("open") }
+    if snapshot.lane.status.ahead > 0 { parts.append("\(snapshot.lane.status.ahead) ahead") }
+    if snapshot.lane.status.behind > 0 { parts.append("\(snapshot.lane.status.behind) behind") }
+    if snapshot.runtime.sessionCount > 0 { parts.append("\(snapshot.runtime.sessionCount) sessions") }
     return parts.joined(separator: ", ")
   }
 }

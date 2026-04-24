@@ -1,6 +1,4 @@
 import type { ModelId } from "./core";
-
-import type { ExternalMcpAccessPolicy } from "./externalMcp";
 import type {
   OpenclawBridgeConfig,
   OpenclawBridgeState,
@@ -10,7 +8,7 @@ import type {
   OpenclawOutboundEnvelope,
 } from "./openclaw";
 
-export type CtoCapabilityMode = "full_mcp" | "fallback";
+export type CtoCapabilityMode = "full_tooling" | "fallback";
 
 export type CtoPersonalityPreset = "strategic" | "professional" | "hands_on" | "casual" | "minimal" | "custom";
 
@@ -29,7 +27,6 @@ export type CtoIdentity = {
   communicationStyle?: CtoCommunicationStyle;
   constraints?: string[];
   systemPromptExtension?: string;
-  externalMcpAccess?: ExternalMcpAccessPolicy;
   openclawContextPolicy?: OpenclawContextPolicy;
   onboardingState?: CtoOnboardingState;
   modelPreferences: {
@@ -94,7 +91,6 @@ export type CtoGetStateArgs = {
 };
 
 export type CtoEnsureSessionArgs = {
-  laneId?: string | null;
   modelId?: ModelId | null;
   reasoningEffort?: string | null;
 };

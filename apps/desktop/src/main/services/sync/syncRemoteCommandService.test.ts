@@ -1,6 +1,160 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
-import type { SyncCommandPayload } from "../../../shared/types";
+import type { SyncCommandPayload, SyncFileRequest, SyncRemoteCommandAction } from "../../../shared/types";
+
+const IOS_REMOTE_COMMAND_ACTIONS = [
+  "lanes.presence.announce",
+  "lanes.presence.release",
+  "lanes.refreshSnapshots",
+  "work.listSessions",
+  "prs.refresh",
+  "lanes.getDetail",
+  "work.updateSessionMeta",
+  "prs.getMobileSnapshot",
+  "work.runQuickCommand",
+  "work.closeSession",
+  "processes.listDefinitions",
+  "processes.listRuntime",
+  "processes.start",
+  "processes.stop",
+  "processes.kill",
+  "lanes.create",
+  "lanes.createFromUnstaged",
+  "lanes.importBranch",
+  "lanes.createChild",
+  "lanes.attach",
+  "lanes.adoptAttached",
+  "lanes.rename",
+  "lanes.reparent",
+  "lanes.updateAppearance",
+  "lanes.archive",
+  "lanes.unarchive",
+  "lanes.delete",
+  "lanes.listTemplates",
+  "lanes.getDefaultTemplate",
+  "lanes.getEnvStatus",
+  "lanes.initEnv",
+  "lanes.applyTemplate",
+  "lanes.rebaseStart",
+  "lanes.rebasePush",
+  "lanes.rebaseRollback",
+  "lanes.rebaseAbort",
+  "lanes.dismissRebaseSuggestion",
+  "lanes.deferRebaseSuggestion",
+  "lanes.dismissAutoRebaseStatus",
+  "git.listBranches",
+  "git.checkoutBranch",
+  "git.getChanges",
+  "git.getFile",
+  "git.getFileHistory",
+  "files.writeTextAtomic",
+  "git.stageFile",
+  "git.stageAll",
+  "git.unstageFile",
+  "git.unstageAll",
+  "git.discardFile",
+  "git.restoreStagedFile",
+  "git.commit",
+  "git.generateCommitMessage",
+  "git.listRecentCommits",
+  "git.listCommitFiles",
+  "git.getCommitMessage",
+  "git.revertCommit",
+  "git.cherryPickCommit",
+  "git.stashPush",
+  "git.stashList",
+  "git.stashApply",
+  "git.stashPop",
+  "git.stashDrop",
+  "git.fetch",
+  "git.pull",
+  "git.getSyncStatus",
+  "git.sync",
+  "git.push",
+  "git.getConflictState",
+  "git.rebaseContinue",
+  "git.rebaseAbort",
+  "chat.models",
+  "chat.listSessions",
+  "chat.create",
+  "chat.getSummary",
+  "chat.getTranscript",
+  "chat.send",
+  "chat.interrupt",
+  "chat.steer",
+  "chat.cancelSteer",
+  "chat.editSteer",
+  "chat.approve",
+  "chat.respondToInput",
+  "chat.resume",
+  "chat.updateSession",
+  "chat.dispose",
+  "cto.getRoster",
+  "cto.ensureSession",
+  "cto.ensureAgentSession",
+  "prs.createFromLane",
+  "prs.land",
+  "prs.close",
+  "prs.reopen",
+  "prs.requestReviewers",
+  "prs.draftDescription",
+  "prs.rerunChecks",
+  "prs.addComment",
+  "prs.updateTitle",
+  "prs.updateBody",
+  "prs.setLabels",
+  "prs.submitReview",
+  "prs.replyToReviewThread",
+  "prs.setReviewThreadResolved",
+  "prs.reactToComment",
+  "prs.aiReviewSummary",
+  "prs.listIntegrationWorkflows",
+  "prs.updateIntegrationProposal",
+  "prs.deleteIntegrationProposal",
+  "prs.dismissIntegrationCleanup",
+  "prs.cleanupIntegrationWorkflow",
+  "prs.createIntegrationLaneForProposal",
+  "prs.startIntegrationResolution",
+  "prs.recheckIntegrationStep",
+  "prs.landQueueNext",
+  "prs.pauseQueueAutomation",
+  "prs.resumeQueueAutomation",
+  "prs.cancelQueueAutomation",
+  "prs.reorderQueue",
+  "prs.getGitHubSnapshot",
+  "prs.getReviewThreads",
+  "prs.getActionRuns",
+  "prs.getActivity",
+  "prs.getDeployments",
+  "prs.issueInventory.sync",
+  "prs.issueInventory.get",
+  "prs.issueInventory.getNew",
+  "prs.issueInventory.markFixed",
+  "prs.issueInventory.markDismissed",
+  "prs.issueInventory.markEscalated",
+  "prs.issueInventory.getConvergence",
+  "prs.issueInventory.reset",
+  "prs.convergenceState.get",
+  "prs.convergenceState.save",
+  "prs.convergenceState.delete",
+  "prs.pipelineSettings.get",
+  "prs.pipelineSettings.save",
+  "prs.pipelineSettings.delete",
+] satisfies SyncRemoteCommandAction[];
+
+const IOS_FILE_REQUEST_ACTIONS = [
+  "listWorkspaces",
+  "readFile",
+  "writeText",
+  "createFile",
+  "createDirectory",
+  "rename",
+  "deletePath",
+  "quickOpen",
+  "searchText",
+  "listTree",
+  "readArtifact",
+] satisfies SyncFileRequest["action"][];
 
 function createLogger() {
   return {
@@ -18,6 +172,7 @@ function createMockLaneService() {
     create: vi.fn().mockResolvedValue({ id: "lane-1" }),
     createChild: vi.fn().mockResolvedValue({ id: "child-1" }),
     createFromUnstaged: vi.fn().mockResolvedValue({ id: "unstaged-1" }),
+    importBranch: vi.fn().mockResolvedValue({ id: "imported-1" }),
     attach: vi.fn().mockResolvedValue({ id: "attached-1" }),
     adoptAttached: vi.fn().mockResolvedValue({ ok: true }),
     rename: vi.fn(),
@@ -49,10 +204,106 @@ function createMockPrService() {
     getComments: vi.fn().mockResolvedValue([]),
     getFiles: vi.fn().mockResolvedValue([]),
     createFromLane: vi.fn().mockResolvedValue({ prId: "pr-1" }),
+    draftDescription: vi.fn().mockResolvedValue({ title: "Draft title", body: "Draft body" }),
     land: vi.fn().mockResolvedValue({ ok: true }),
     closePr: vi.fn().mockResolvedValue(undefined),
     reopenPr: vi.fn().mockResolvedValue(undefined),
     requestReviewers: vi.fn().mockResolvedValue(undefined),
+    rerunChecks: vi.fn().mockResolvedValue(undefined),
+    addComment: vi.fn().mockResolvedValue({ id: "comment-1", body: "Looks good" }),
+    updateTitle: vi.fn().mockResolvedValue(undefined),
+    updateBody: vi.fn().mockResolvedValue(undefined),
+    setLabels: vi.fn().mockResolvedValue(undefined),
+    submitReview: vi.fn().mockResolvedValue(undefined),
+    replyToReviewThread: vi.fn().mockResolvedValue({ id: "comment-2" }),
+    setReviewThreadResolved: vi.fn().mockResolvedValue({ threadId: "thread-1", isResolved: true }),
+    reactToComment: vi.fn().mockResolvedValue(undefined),
+    aiReviewSummary: vi.fn().mockResolvedValue({ summary: "ready" }),
+    listIntegrationWorkflows: vi.fn().mockResolvedValue([]),
+    updateIntegrationProposal: vi.fn().mockResolvedValue(undefined),
+    deleteIntegrationProposal: vi.fn().mockResolvedValue({ proposalId: "proposal-1", integrationLaneId: null, deletedIntegrationLane: false }),
+    dismissIntegrationCleanup: vi.fn().mockResolvedValue({ proposalId: "proposal-1", cleanupState: "declined" }),
+    cleanupIntegrationWorkflow: vi.fn().mockResolvedValue({ proposalId: "proposal-1", archivedLaneIds: [], skippedLaneIds: [], workflowDisplayState: "history", cleanupState: "completed" }),
+    createIntegrationLaneForProposal: vi.fn().mockResolvedValue({ integrationLaneId: "lane-int", mergedCleanLanes: [], conflictingLanes: [] }),
+    startIntegrationResolution: vi.fn().mockResolvedValue({ conflictFiles: [], mergedClean: true, integrationLaneId: "lane-int" }),
+    recheckIntegrationStep: vi.fn().mockResolvedValue({ resolution: "resolved", remainingConflictFiles: [], allResolved: true, message: null }),
+    landQueueNext: vi.fn().mockResolvedValue({ ok: true }),
+    reorderQueuePrs: vi.fn().mockResolvedValue(undefined),
+    getGithubSnapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-04-01T00:00:00Z", repoPullRequests: [], externalPullRequests: [], live: true }),
+    getReviewThreads: vi.fn().mockResolvedValue([]),
+    getActionRuns: vi.fn().mockResolvedValue([]),
+    getActivity: vi.fn().mockResolvedValue([]),
+    getDeployments: vi.fn().mockResolvedValue([]),
+    getMobileSnapshot: vi.fn().mockResolvedValue({
+      generatedAt: "2026-04-01T00:00:00Z",
+      prs: [],
+      stacks: [],
+      capabilities: {},
+      createCapabilities: { canCreateAny: false, defaultBaseBranch: null, lanes: [] },
+      workflowCards: [],
+      live: true,
+    }),
+  } as any;
+}
+
+function createMockIssueInventoryService() {
+  const snapshot = {
+    prId: "pr-1",
+    items: [],
+    convergence: {
+      currentRound: 0,
+      maxRounds: 5,
+      issuesPerRound: [],
+      totalNew: 0,
+      totalFixed: 0,
+      totalDismissed: 0,
+      totalEscalated: 0,
+      totalSentToAgent: 0,
+      isConverging: false,
+      canAutoAdvance: false,
+    },
+    runtime: {
+      prId: "pr-1",
+      autoConvergeEnabled: false,
+      status: "idle",
+      pollerStatus: "idle",
+      currentRound: 0,
+      activeSessionId: null,
+      activeLaneId: null,
+      activeHref: null,
+      pauseReason: null,
+      errorMessage: null,
+      lastStartedAt: null,
+      lastPolledAt: null,
+      lastPausedAt: null,
+      lastStoppedAt: null,
+      createdAt: "2026-04-01T00:00:00Z",
+      updatedAt: "2026-04-01T00:00:00Z",
+    },
+  };
+  return {
+    syncFromPrData: vi.fn().mockReturnValue(snapshot),
+    getInventory: vi.fn().mockReturnValue(snapshot),
+    getNewItems: vi.fn().mockReturnValue([]),
+    markFixed: vi.fn(),
+    markDismissed: vi.fn(),
+    markEscalated: vi.fn(),
+    getConvergenceStatus: vi.fn().mockReturnValue(snapshot.convergence),
+    resetInventory: vi.fn(),
+    getConvergenceRuntime: vi.fn().mockReturnValue(snapshot.runtime),
+    saveConvergenceRuntime: vi.fn().mockReturnValue(snapshot.runtime),
+    resetConvergenceRuntime: vi.fn(),
+    getPipelineSettings: vi.fn().mockReturnValue({ autoMerge: false, mergeMethod: "repo_default", maxRounds: 5, onRebaseNeeded: "pause" }),
+    savePipelineSettings: vi.fn(),
+    deletePipelineSettings: vi.fn(),
+  } as any;
+}
+
+function createMockQueueLandingService() {
+  return {
+    pauseQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "paused" }),
+    resumeQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "landing" }),
+    cancelQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "cancelled" }),
   } as any;
 }
 
@@ -60,6 +311,7 @@ function createMockPtyService() {
   return {
     create: vi.fn().mockResolvedValue({ sessionId: "pty-1" }),
     dispose: vi.fn().mockResolvedValue(undefined),
+    enrichSessions: vi.fn((sessions) => sessions),
   } as any;
 }
 
@@ -88,6 +340,7 @@ function createMockGitService() {
     generateCommitMessage: vi.fn().mockResolvedValue({ message: "feat: auto" }),
     listRecentCommits: vi.fn().mockResolvedValue([]),
     listCommitFiles: vi.fn().mockResolvedValue([]),
+    getFileHistory: vi.fn().mockResolvedValue([]),
     getCommitMessage: vi.fn().mockResolvedValue({ message: "msg" }),
     revertCommit: vi.fn().mockResolvedValue(undefined),
     cherryPickCommit: vi.fn().mockResolvedValue(undefined),
@@ -119,18 +372,48 @@ function createMockDiffService() {
 function createMockAgentChatService() {
   return {
     listSessions: vi.fn().mockResolvedValue([]),
-    getSessionSummary: vi.fn().mockResolvedValue({}),
+    getSessionSummary: vi.fn().mockResolvedValue({
+      sessionId: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-4",
+      status: "idle",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-01-01T00:00:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    }),
     getChatTranscript: vi.fn().mockResolvedValue([]),
-    createSession: vi.fn().mockResolvedValue({ sessionId: "chat-1" }),
+    createSession: vi.fn().mockResolvedValue({
+      id: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-4",
+      status: "idle",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastActivityAt: "2026-01-01T00:00:00.000Z",
+    }),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     interrupt: vi.fn().mockResolvedValue(undefined),
     steer: vi.fn().mockResolvedValue(undefined),
+    cancelSteer: vi.fn().mockResolvedValue(undefined),
+    editSteer: vi.fn().mockResolvedValue(undefined),
     approveToolUse: vi.fn().mockResolvedValue(undefined),
     respondToInput: vi.fn().mockResolvedValue(undefined),
     resumeSession: vi.fn().mockResolvedValue(undefined),
     updateSession: vi.fn().mockResolvedValue(undefined),
     dispose: vi.fn().mockResolvedValue(undefined),
     getAvailableModels: vi.fn().mockResolvedValue([{ id: "model-1", modelId: "m1" }]),
+    ensureIdentitySession: vi.fn().mockResolvedValue({
+      id: "chat-identity-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-4",
+      status: "idle",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastActivityAt: "2026-01-01T00:00:00.000Z",
+    }),
   } as any;
 }
 
@@ -139,6 +422,50 @@ function createMockConflictService() {
     getLaneStatus: vi.fn().mockResolvedValue(null),
     listOverlaps: vi.fn().mockResolvedValue([]),
     getBatchAssessment: vi.fn().mockResolvedValue({ lanes: [] }),
+  } as any;
+}
+
+function createMockWorkerAgentService() {
+  return {
+    listAgents: vi.fn().mockReturnValue([]),
+    getAgent: vi.fn().mockReturnValue(null),
+    saveAgent: vi.fn(),
+    replaceAgentSnapshot: vi.fn(),
+    removeAgent: vi.fn(),
+    listOrgTree: vi.fn().mockReturnValue([]),
+    getChainOfCommand: vi.fn().mockReturnValue([]),
+    getCoreMemory: vi.fn(),
+    updateCoreMemory: vi.fn(),
+    listSessionLogs: vi.fn().mockReturnValue([]),
+    appendSessionLog: vi.fn(),
+    buildReconstructionContext: vi.fn().mockReturnValue(""),
+    setAgentStatus: vi.fn(),
+    updateAgentSpentMonthlyCents: vi.fn(),
+    setAgentHeartbeatAt: vi.fn(),
+  } as any;
+}
+
+function createMockProcessService() {
+  return {
+    listDefinitions: vi.fn().mockReturnValue([
+      {
+        id: "dev",
+        name: "Dev server",
+        command: ["npm", "run", "dev"],
+        cwd: ".",
+        env: {},
+        groupIds: [],
+        autostart: false,
+        restart: "never",
+        gracefulShutdownMs: 7000,
+        dependsOn: [],
+        readiness: { type: "none" },
+      },
+    ]),
+    listRuntime: vi.fn().mockReturnValue([]),
+    start: vi.fn().mockResolvedValue({ runId: "run-1" }),
+    stop: vi.fn().mockResolvedValue(null),
+    kill: vi.fn().mockResolvedValue(null),
   } as any;
 }
 
@@ -155,7 +482,11 @@ describe("createSyncRemoteCommandService", () => {
   let gitService: ReturnType<typeof createMockGitService>;
   let diffService: ReturnType<typeof createMockDiffService>;
   let agentChatService: ReturnType<typeof createMockAgentChatService>;
+  let workerAgentService: ReturnType<typeof createMockWorkerAgentService>;
   let conflictService: ReturnType<typeof createMockConflictService>;
+  let processService: ReturnType<typeof createMockProcessService>;
+  let issueInventoryService: ReturnType<typeof createMockIssueInventoryService>;
+  let queueLandingService: ReturnType<typeof createMockQueueLandingService>;
   let service: ReturnType<typeof createSyncRemoteCommandService>;
 
   beforeEach(() => {
@@ -167,17 +498,25 @@ describe("createSyncRemoteCommandService", () => {
     gitService = createMockGitService();
     diffService = createMockDiffService();
     agentChatService = createMockAgentChatService();
+    workerAgentService = createMockWorkerAgentService();
     conflictService = createMockConflictService();
+    processService = createMockProcessService();
+    issueInventoryService = createMockIssueInventoryService();
+    queueLandingService = createMockQueueLandingService();
     service = createSyncRemoteCommandService({
       laneService,
       prService,
+      issueInventoryService,
+      queueLandingService,
       ptyService,
       sessionService,
       fileService,
       gitService,
       diffService,
       agentChatService,
+      workerAgentService,
       conflictService,
+      processService,
       logger: createLogger() as any,
     });
   });
@@ -200,15 +539,45 @@ describe("createSyncRemoteCommandService", () => {
       const actions = service.getSupportedActions();
       expect(actions).toContain("lanes.list");
       expect(actions).toContain("lanes.create");
+      expect(actions).toContain("lanes.importBranch");
       expect(actions).toContain("prs.list");
       expect(actions).toContain("prs.createFromLane");
+      expect(actions).toContain("prs.draftDescription");
+      expect(actions).toContain("prs.rerunChecks");
+      expect(actions).toContain("prs.addComment");
       expect(actions).toContain("git.commit");
       expect(actions).toContain("git.push");
+      expect(actions).toContain("git.getFileHistory");
       expect(actions).toContain("chat.create");
       expect(actions).toContain("chat.send");
       expect(actions).toContain("files.writeTextAtomic");
       expect(actions).toContain("work.listSessions");
+      expect(actions).toContain("processes.listDefinitions");
       expect(actions).toContain("conflicts.getLaneStatus");
+    });
+
+    it("keeps iOS remote command names shared and registered", () => {
+      const registeredActions = new Set<SyncRemoteCommandAction | string>([
+        ...service.getSupportedActions(),
+        "lanes.presence.announce",
+        "lanes.presence.release",
+      ]);
+      for (const action of IOS_REMOTE_COMMAND_ACTIONS) {
+        expect(registeredActions.has(action)).toBe(true);
+      }
+      expect(IOS_FILE_REQUEST_ACTIONS).toEqual([
+        "listWorkspaces",
+        "readFile",
+        "writeText",
+        "createFile",
+        "createDirectory",
+        "rename",
+        "deletePath",
+        "quickOpen",
+        "searchText",
+        "listTree",
+        "readArtifact",
+      ]);
     });
   });
 
@@ -309,6 +678,27 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("lanes.createChild requires parentLaneId.");
     });
 
+    it("lanes.importBranch parses branchRef and optional metadata", async () => {
+      const result = await service.execute(makePayload("lanes.importBranch", {
+        branchRef: "origin/feature/mobile",
+        name: "Mobile import",
+        description: "Imported from mobile",
+        baseBranch: "main",
+      }));
+      expect(laneService.importBranch).toHaveBeenCalledWith({
+        branchRef: "origin/feature/mobile",
+        name: "Mobile import",
+        description: "Imported from mobile",
+        baseBranch: "main",
+      });
+      expect(result).toEqual({ id: "imported-1" });
+    });
+
+    it("lanes.importBranch throws when branchRef is missing", async () => {
+      await expect(service.execute(makePayload("lanes.importBranch", {})))
+        .rejects.toThrow("lanes.importBranch requires branchRef.");
+    });
+
     it("lanes.rename parses laneId and name", async () => {
       await service.execute(makePayload("lanes.rename", {
         laneId: "lane-1",
@@ -389,6 +779,20 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("prs.createFromLane requires laneId and title.");
     });
 
+    it("prs.draftDescription parses laneId and optional model controls", async () => {
+      const result = await service.execute(makePayload("prs.draftDescription", {
+        laneId: "lane-1",
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+      }));
+      expect(prService.draftDescription).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+      });
+      expect(result).toEqual({ title: "Draft title", body: "Draft body" });
+    });
+
     it("prs.land validates method enum", async () => {
       await expect(service.execute(makePayload("prs.land", {
         prId: "pr-1",
@@ -436,6 +840,54 @@ describe("createSyncRemoteCommandService", () => {
         reviewers: ["alice", "bob"],
       });
       expect(result).toEqual({ ok: true });
+    });
+
+    it("prs.rerunChecks parses optional checkRunIds", async () => {
+      const result = await service.execute(makePayload("prs.rerunChecks", {
+        prId: "pr-1",
+        checkRunIds: [101, 202],
+      }));
+      expect(prService.rerunChecks).toHaveBeenCalledWith({
+        prId: "pr-1",
+        checkRunIds: [101, 202],
+      });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("prs.rerunChecks rejects invalid checkRunIds", async () => {
+      await expect(service.execute(makePayload("prs.rerunChecks", {
+        prId: "pr-1",
+        checkRunIds: [101, "bad"],
+      }))).rejects.toThrow("prs.rerunChecks requires checkRunIds to be an array of numbers when provided.");
+    });
+
+    it("prs.addComment parses body and optional reply target", async () => {
+      const result = await service.execute(makePayload("prs.addComment", {
+        prId: "pr-1",
+        body: "Looks good",
+        inReplyToCommentId: "comment-parent",
+      }));
+      expect(prService.addComment).toHaveBeenCalledWith({
+        prId: "pr-1",
+        body: "Looks good",
+        inReplyToCommentId: "comment-parent",
+      });
+      expect(result).toEqual({ id: "comment-1", body: "Looks good" });
+    });
+
+    it("prs.getMobileSnapshot is viewer-allowed and returns the aggregated payload", async () => {
+      const policy = service.getPolicy("prs.getMobileSnapshot");
+      expect(policy).not.toBeNull();
+      expect(policy!.viewerAllowed).toBe(true);
+
+      const result = await service.execute(makePayload("prs.getMobileSnapshot")) as Record<string, unknown>;
+      expect(prService.getMobileSnapshot).toHaveBeenCalledTimes(1);
+      expect(result).toHaveProperty("prs");
+      expect(result).toHaveProperty("stacks");
+      expect(result).toHaveProperty("capabilities");
+      expect(result).toHaveProperty("createCapabilities");
+      expect(result).toHaveProperty("workflowCards");
+      expect(result).toHaveProperty("live", true);
     });
   });
 
@@ -646,8 +1098,8 @@ describe("createSyncRemoteCommandService", () => {
   // ---------------------------------------------------------------
 
   describe("execute — chat commands", () => {
-    it("chat.create parses laneId + provider + model", async () => {
-      await service.execute(makePayload("chat.create", {
+    it("chat.create parses laneId + provider + model and returns a mobile summary", async () => {
+      const result = await service.execute(makePayload("chat.create", {
         laneId: "lane-1",
         provider: "codex",
         model: "gpt-4",
@@ -657,6 +1109,8 @@ describe("createSyncRemoteCommandService", () => {
         provider: "codex",
         model: "gpt-4",
       });
+      expect(agentChatService.getSessionSummary).toHaveBeenCalledWith("chat-1");
+      expect(result).toEqual(expect.objectContaining({ sessionId: "chat-1", startedAt: "2026-01-01T00:00:00.000Z" }));
     });
 
     it("chat.create resolves model from available models when model is empty", async () => {
@@ -669,6 +1123,52 @@ describe("createSyncRemoteCommandService", () => {
       expect(agentChatService.createSession).toHaveBeenCalledWith(
         expect.objectContaining({ model: "model-1", modelId: "m1" }),
       );
+    });
+
+    it("chat.create forwards runtime, profile, cursor config, and cwd fields", async () => {
+      await service.execute(makePayload("chat.create", {
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "cursor-agent",
+        sessionProfile: "workflow",
+        reasoningEffort: "medium",
+        permissionMode: "edit",
+        interactionMode: "default",
+        claudePermissionMode: "acceptEdits",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+          temperature: 0.5,
+        },
+        requestedCwd: "apps/ios",
+      }));
+
+      expect(agentChatService.createSession).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "cursor-agent",
+        sessionProfile: "workflow",
+        reasoningEffort: "medium",
+        permissionMode: "edit",
+        interactionMode: "default",
+        claudePermissionMode: "acceptEdits",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+          temperature: 0.5,
+        },
+        requestedCwd: "apps/ios",
+      });
     });
 
     it("chat.send requires sessionId and text", async () => {
@@ -686,6 +1186,28 @@ describe("createSyncRemoteCommandService", () => {
     it("chat.send throws when text is missing", async () => {
       await expect(service.execute(makePayload("chat.send", { sessionId: "sess-1" })))
         .rejects.toThrow("chat.send requires text.");
+    });
+
+    it("chat.updateSession forwards cursor mode and config values", async () => {
+      await service.execute(makePayload("chat.updateSession", {
+        sessionId: "sess-1",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+          temperature: 0.5,
+        },
+      }));
+
+      expect(agentChatService.updateSession).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+          temperature: 0.5,
+        },
+      });
     });
 
     it("chat.dispose routes to agentChatService.dispose", async () => {
@@ -724,6 +1246,45 @@ describe("createSyncRemoteCommandService", () => {
     it("chat.steer throws when text is missing", async () => {
       await expect(service.execute(makePayload("chat.steer", { sessionId: "sess-1" })))
         .rejects.toThrow("chat.steer requires text.");
+    });
+
+    it("chat.cancelSteer routes to agentChatService.cancelSteer", async () => {
+      const result = await service.execute(makePayload("chat.cancelSteer", {
+        sessionId: "sess-1",
+        steerId: "steer-9",
+      }));
+      expect(agentChatService.cancelSteer).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        steerId: "steer-9",
+      });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("chat.cancelSteer throws when steerId is missing", async () => {
+      await expect(service.execute(makePayload("chat.cancelSteer", { sessionId: "sess-1" })))
+        .rejects.toThrow("chat.cancelSteer requires steerId.");
+    });
+
+    it("chat.editSteer routes to agentChatService.editSteer", async () => {
+      const result = await service.execute(makePayload("chat.editSteer", {
+        sessionId: "sess-1",
+        steerId: "steer-9",
+        text: "updated instruction",
+      }));
+      expect(agentChatService.editSteer).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        steerId: "steer-9",
+        text: "updated instruction",
+      });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("chat.editSteer throws when text is missing", async () => {
+      await expect(service.execute(makePayload("chat.editSteer", {
+        sessionId: "sess-1",
+        steerId: "steer-9",
+      })))
+        .rejects.toThrow("chat.editSteer requires text.");
     });
 
     // ==========================================================
@@ -997,6 +1558,46 @@ describe("createSyncRemoteCommandService", () => {
   });
 
   // ---------------------------------------------------------------
+  // execute: process commands
+  // ---------------------------------------------------------------
+
+  describe("execute — process commands", () => {
+    it("processes.listDefinitions routes to processService.listDefinitions", async () => {
+      const result = await service.execute(makePayload("processes.listDefinitions"));
+      expect(processService.listDefinitions).toHaveBeenCalled();
+      expect(result).toEqual(expect.arrayContaining([expect.objectContaining({ id: "dev" })]));
+    });
+
+    it("processes.listRuntime requires laneId and routes to processService.listRuntime", async () => {
+      await service.execute(makePayload("processes.listRuntime", { laneId: "lane-1" }));
+      expect(processService.listRuntime).toHaveBeenCalledWith("lane-1");
+    });
+
+    it("processes.start parses laneId and processId", async () => {
+      await service.execute(makePayload("processes.start", { laneId: "lane-1", processId: "dev" }));
+      expect(processService.start).toHaveBeenCalledWith({ laneId: "lane-1", processId: "dev" });
+    });
+
+    it("processes.kill preserves the target runId", async () => {
+      await service.execute(makePayload("processes.kill", { laneId: "lane-1", processId: "dev", runId: "run-1" }));
+      expect(processService.kill).toHaveBeenCalledWith({ laneId: "lane-1", processId: "dev", runId: "run-1" });
+    });
+
+    it("process commands throw when processService is not available", async () => {
+      const svcNoProcess = createSyncRemoteCommandService({
+        laneService,
+        prService,
+        ptyService,
+        sessionService,
+        fileService,
+        logger: createLogger() as any,
+      });
+      await expect(svcNoProcess.execute(makePayload("processes.listDefinitions")))
+        .rejects.toThrow("Process service not available.");
+    });
+  });
+
+  // ---------------------------------------------------------------
   // execute: conflict commands
   // ---------------------------------------------------------------
 
@@ -1081,6 +1682,354 @@ describe("createSyncRemoteCommandService", () => {
   });
 
   // ---------------------------------------------------------------
+  // execute: cto commands
+  // ---------------------------------------------------------------
+
+  describe("execute — cto commands", () => {
+    it("cto.getRoster returns null cto and empty workers when nothing registered", async () => {
+      agentChatService.listSessions.mockResolvedValueOnce([]);
+      workerAgentService.listAgents.mockReturnValueOnce([]);
+      const result = await service.execute(makePayload("cto.getRoster", {}));
+      expect(result).toEqual({ cto: null, workers: [] });
+    });
+
+    it("cto.getRoster pairs CTO session + worker sessions by identityKey", async () => {
+      const ctoSummary = {
+        sessionId: "sess-cto",
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet",
+        status: "idle",
+        identityKey: "cto",
+        startedAt: "2026-04-01T00:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-04-01T00:10:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      const workerSummary = {
+        sessionId: "sess-agent-42",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        status: "running",
+        identityKey: "agent:worker-42",
+        startedAt: "2026-04-01T00:05:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-04-01T00:06:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      agentChatService.listSessions.mockResolvedValueOnce([ctoSummary, workerSummary]);
+      workerAgentService.listAgents.mockReturnValueOnce([
+        {
+          id: "worker-42",
+          name: "Mobile Droid",
+          slug: "mobile-droid",
+          role: "engineer",
+          status: "running",
+          reportsTo: null,
+          capabilities: [],
+          adapterType: "claude-local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          budgetMonthlyCents: 0,
+          spentMonthlyCents: 0,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+          deletedAt: null,
+        },
+      ]);
+      const result = await service.execute(makePayload("cto.getRoster", {})) as {
+        cto: unknown;
+        workers: Array<Record<string, unknown>>;
+      };
+      expect(agentChatService.listSessions).toHaveBeenCalledWith(undefined, { includeIdentity: true });
+      expect(result.cto).toEqual(ctoSummary);
+      expect(result.workers).toHaveLength(1);
+      expect(result.workers[0]).toEqual({
+        agentId: "worker-42",
+        name: "Mobile Droid",
+        avatarSeed: "mobile-droid",
+        status: "running",
+        sessionSummary: workerSummary,
+      });
+    });
+
+    it("cto.ensureSession delegates to agentChatService with identityKey=cto", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
+      const result = await service.execute(makePayload("cto.ensureSession", {
+        modelId: "claude-opus-4",
+        reasoningEffort: "high",
+      })) as Record<string, unknown>;
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledWith({
+        identityKey: "cto",
+        laneId: "lane-primary",
+        modelId: "claude-opus-4",
+        reasoningEffort: "high",
+        permissionMode: "full-auto",
+      });
+      expect(agentChatService.getSessionSummary).toHaveBeenCalledWith("chat-identity-1");
+      expect(result).toEqual(expect.objectContaining({ sessionId: "chat-1" }));
+    });
+
+    it("cto.ensureSession ignores requested lane overrides and still uses primary", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
+      await service.execute(makePayload("cto.ensureSession", { laneId: "lane-explicit" }));
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledWith({
+        identityKey: "cto",
+        laneId: "lane-primary",
+        modelId: null,
+        reasoningEffort: null,
+        permissionMode: "full-auto",
+      });
+    });
+
+    it("cto.ensureSession throws when no lane is available", async () => {
+      laneService.list.mockResolvedValueOnce([]);
+      await expect(service.execute(makePayload("cto.ensureSession", {})))
+        .rejects.toThrow("No primary lane is available to host the CTO chat session.");
+    });
+
+    it("cto.ensureSession refuses to fall back to lanes[0] when no primary exists", async () => {
+      // Only non-primary lanes are available; identity-pinned sessions must
+      // not silently land on a foreign lane via the lanes[0] fallback.
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-feature", laneType: "feature" },
+        { id: "lane-scratch", laneType: "feature" },
+      ]);
+      await expect(service.execute(makePayload("cto.ensureSession", {})))
+        .rejects.toThrow("No primary lane is available to host the CTO chat session.");
+      expect(agentChatService.ensureIdentitySession).not.toHaveBeenCalled();
+    });
+
+    it("cto.ensureAgentSession requires agentId", async () => {
+      await expect(service.execute(makePayload("cto.ensureAgentSession", {})))
+        .rejects.toThrow("cto.ensureAgentSession requires agentId.");
+    });
+
+    it("cto.ensureAgentSession delegates to agentChatService with agent:<id> identityKey on primary", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
+      workerAgentService.getAgent.mockReturnValueOnce({
+        id: "worker-42",
+        name: "Mobile Droid",
+        slug: "mobile-droid",
+        status: "running",
+      });
+      const result = await service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "worker-42",
+      })) as Record<string, unknown>;
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledWith({
+        identityKey: "agent:worker-42",
+        laneId: "lane-primary",
+        modelId: null,
+        reasoningEffort: null,
+        permissionMode: "full-auto",
+      });
+      expect(result).toEqual(expect.objectContaining({ sessionId: "chat-1" }));
+    });
+
+    it("cto.ensureAgentSession ignores requested lane overrides and still uses primary", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
+      workerAgentService.getAgent.mockReturnValueOnce({
+        id: "worker-42",
+        name: "Mobile Droid",
+        slug: "mobile-droid",
+        status: "running",
+      });
+      await service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "worker-42",
+        laneId: "lane-explicit",
+      }));
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledWith({
+        identityKey: "agent:worker-42",
+        laneId: "lane-primary",
+        modelId: null,
+        reasoningEffort: null,
+        permissionMode: "full-auto",
+      });
+    });
+
+    it("cto.ensureAgentSession rejects unknown agentIds without creating a session", async () => {
+      workerAgentService.getAgent.mockReturnValueOnce(null);
+      workerAgentService.listAgents.mockReturnValueOnce([]);
+      await expect(service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "ghost-agent",
+      }))).rejects.toThrow("cto.ensureAgentSession: unknown agentId 'ghost-agent'");
+      expect(agentChatService.ensureIdentitySession).not.toHaveBeenCalled();
+    });
+
+    it("cto.ensureAgentSession throws when no primary lane is available", async () => {
+      laneService.list.mockResolvedValueOnce([]);
+      workerAgentService.getAgent.mockReturnValueOnce({
+        id: "worker-42",
+        name: "Mobile Droid",
+        slug: "mobile-droid",
+        status: "running",
+      });
+      await expect(service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "worker-42",
+      }))).rejects.toThrow("No primary lane is available to host the agent chat session.");
+    });
+
+    it("cto.ensureAgentSession refuses to fall back to lanes[0] when no primary exists", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-feature", laneType: "feature" },
+      ]);
+      workerAgentService.getAgent.mockReturnValueOnce({
+        id: "worker-42",
+        name: "Mobile Droid",
+        slug: "mobile-droid",
+        status: "running",
+      });
+      await expect(service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "worker-42",
+      }))).rejects.toThrow("No primary lane is available to host the agent chat session.");
+      expect(agentChatService.ensureIdentitySession).not.toHaveBeenCalled();
+    });
+
+    it("cto.ensureSession returns the same session on repeat calls (canonical lane reuse)", async () => {
+      // Both calls resolve the same primary lane; ensureIdentitySession is a
+      // mock that always returns the same session id, so the handler must
+      // forward that id without duplicate creation.
+      laneService.list.mockResolvedValue([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
+      const first = await service.execute(makePayload("cto.ensureSession", {})) as Record<string, unknown>;
+      const second = await service.execute(makePayload("cto.ensureSession", {})) as Record<string, unknown>;
+      expect(first.sessionId).toBe(second.sessionId);
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledTimes(2);
+      // Every call passes the canonical (primary) lane so ensureIdentitySession
+      // matches the existing session instead of creating a new one.
+      for (const call of agentChatService.ensureIdentitySession.mock.calls) {
+        expect(call[0]).toMatchObject({ identityKey: "cto", laneId: "lane-primary" });
+      }
+    });
+
+    it("cto.getRoster surfaces orphan agent sessions at the bottom of the roster", async () => {
+      const livingAgentSession = {
+        sessionId: "sess-agent-live",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        status: "running",
+        identityKey: "agent:worker-live",
+        startedAt: "2026-04-01T00:05:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-04-01T00:06:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      const orphanSession = {
+        sessionId: "sess-agent-orphan",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        status: "idle",
+        identityKey: "agent:worker-gone",
+        startedAt: "2026-03-01T00:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-03-01T00:00:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      agentChatService.listSessions.mockResolvedValueOnce([livingAgentSession, orphanSession]);
+      workerAgentService.listAgents.mockReturnValueOnce([
+        {
+          id: "worker-live",
+          name: "Active Droid",
+          slug: "active-droid",
+          role: "engineer",
+          status: "running",
+          reportsTo: null,
+          capabilities: [],
+          adapterType: "claude-local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          budgetMonthlyCents: 0,
+          spentMonthlyCents: 0,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+          deletedAt: null,
+        },
+      ]);
+      const result = await service.execute(makePayload("cto.getRoster", {})) as {
+        cto: unknown;
+        workers: Array<Record<string, unknown>>;
+      };
+      // Live worker first (sorted alphabetically), orphan at the bottom.
+      expect(result.workers).toHaveLength(2);
+      expect(result.workers[0]).toEqual({
+        agentId: "worker-live",
+        name: "Active Droid",
+        avatarSeed: "active-droid",
+        status: "running",
+        sessionSummary: livingAgentSession,
+      });
+      expect(result.workers[1]).toEqual({
+        agentId: "worker-gone",
+        name: "worker-gone",
+        avatarSeed: null,
+        status: "orphaned",
+        sessionSummary: orphanSession,
+      });
+    });
+
+    it("cto.getRoster does NOT surface orphan entries for agents still in the roster", async () => {
+      const agentSession = {
+        sessionId: "sess-agent-live",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        status: "running",
+        identityKey: "agent:worker-live",
+        startedAt: "2026-04-01T00:05:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-04-01T00:06:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      agentChatService.listSessions.mockResolvedValueOnce([agentSession]);
+      workerAgentService.listAgents.mockReturnValueOnce([
+        {
+          id: "worker-live",
+          name: "Active Droid",
+          slug: "active-droid",
+          role: "engineer",
+          status: "running",
+          reportsTo: null,
+          capabilities: [],
+          adapterType: "claude-local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          budgetMonthlyCents: 0,
+          spentMonthlyCents: 0,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+          deletedAt: null,
+        },
+      ]);
+      const result = await service.execute(makePayload("cto.getRoster", {})) as {
+        cto: unknown;
+        workers: Array<Record<string, unknown>>;
+      };
+      expect(result.workers).toHaveLength(1);
+      expect(result.workers[0]).toMatchObject({
+        agentId: "worker-live",
+        status: "running",
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------
   // execute: git.getFile (compound parse)
   // ---------------------------------------------------------------
 
@@ -1107,6 +2056,27 @@ describe("createSyncRemoteCommandService", () => {
         laneId: "lane-1",
         path: "src/app.ts",
       }))).rejects.toThrow("git.getFile requires mode.");
+    });
+  });
+
+  describe("execute — git.getFileHistory", () => {
+    it("passes laneId, path, and optional limit", async () => {
+      await service.execute(makePayload("git.getFileHistory", {
+        laneId: "lane-1",
+        path: "src/app.ts",
+        limit: 15,
+      }));
+      expect(gitService.getFileHistory).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        path: "src/app.ts",
+        limit: 15,
+      });
+    });
+
+    it("throws when path is missing", async () => {
+      await expect(service.execute(makePayload("git.getFileHistory", {
+        laneId: "lane-1",
+      }))).rejects.toThrow("git.getFileHistory requires path.");
     });
   });
 
