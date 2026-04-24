@@ -98,7 +98,10 @@ struct PrDetailView: View {
       githubPrNumber: githubItem?.githubPrNumber ?? 0,
       githubUrl: githubItem?.githubUrl ?? "",
       title: githubItem?.title ?? "Pull request",
-      state: detail?.isDraft == true ? "draft" : (githubItem?.state ?? status?.state ?? "open"),
+      state:
+        detail?.isDraft == true || githubItem?.isDraft == true
+          ? "draft"
+          : (githubItem?.state ?? status?.state ?? "open"),
       baseBranch: githubItem?.baseBranch ?? "",
       headBranch: githubItem?.headBranch ?? "",
       checksStatus: status?.checksStatus ?? "none",

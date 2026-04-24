@@ -371,6 +371,11 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
   useEffect(() => {
     if (!step.id?.startsWith("createLane.")) return;
     if (step.id === "createLane.openMenu" || step.id === "createLane.chooseCreate") return;
+    // The dedicated `laneCountIncreased` effect above already drives the
+    // auto-advance for action-gated steps that require lane creation. Let it
+    // own that signal so we don't double-advance (and skip a step) off the
+    // same event.
+    if (step.awaitingActionLabel && step.requires?.includes("laneCountIncreased")) return;
     const createLaneFlowCompleted =
       laneCountIncreased || createLaneStepCompleted;
     if (!createLaneFlowCompleted) return;
@@ -379,7 +384,7 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
     autoAdvancedStepRef.current = autoAdvanceKey;
     (document.activeElement as HTMLElement | null)?.blur?.();
     advanceTour();
-  }, [advanceTour, createLaneStepCompleted, laneCountIncreased, step.id]);
+  }, [advanceTour, createLaneStepCompleted, laneCountIncreased, step.awaitingActionLabel, step.id, step.requires]);
 
   // Keyboard handling at the document level.
   useEffect(() => {

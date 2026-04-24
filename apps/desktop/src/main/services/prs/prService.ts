@@ -2697,7 +2697,11 @@ export function createPrService({
         timeoutMs: 8_000,
       });
       if (refCheck.exitCode === 0) {
-        const deleted = await runGit(["branch", "-D", branchName], { cwd: projectRoot, timeoutMs: 30_000 });
+        // Only force-delete when the PR is merged. For closed (non-merged) PRs
+        // the branch may still hold unintegrated work, so use the safe `-d`
+        // variant which refuses to drop unmerged commits.
+        const deleteFlag = row.state === "merged" ? "-D" : "-d";
+        const deleted = await runGit(["branch", deleteFlag, branchName], { cwd: projectRoot, timeoutMs: 30_000 });
         if (deleted.exitCode === 0) result.localDeleted = true;
         else result.localError = deleted.stderr || deleted.stdout || `Failed to delete local branch ${branchName}`;
       }

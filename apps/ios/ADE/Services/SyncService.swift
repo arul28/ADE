@@ -3233,7 +3233,13 @@ final class SyncService: ObservableObject {
   }
 
   func fetchPipelineSettings(prId: String) async throws -> PipelineSettings {
-    try await sendDecodableCommand(action: "prs.pipelineSettings.get", args: ["prId": prId], as: PipelineSettings.self)
+    // Delegate to `getPipelineSettings` so both paths handle the server's
+    // `NSNull` response uniformly instead of crashing with a decode error
+    // when the desktop returns "no settings" after a save.
+    if let settings = try await getPipelineSettings(prId: prId) {
+      return settings
+    }
+    return PipelineSettings(autoMerge: false, mergeMethod: "repo_default", maxRounds: 5, onRebaseNeeded: "pause")
   }
 
   func savePipelineSettings(prId: String, autoMerge: Bool? = nil, mergeMethod: String? = nil, maxRounds: Int? = nil, onRebaseNeeded: String? = nil) async throws {

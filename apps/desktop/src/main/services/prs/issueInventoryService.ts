@@ -740,9 +740,13 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
           threadLatestCommentSource: source,
         };
 
-        const latestReplyLooksResolved = source !== "coderabbit"
-          && source !== "copilot"
-          && source !== "codex"
+        // Only treat as a resolution ACK when the latest reply is from a real
+        // human (or an unclassified author). Review bots — CodeRabbit (normalized
+        // from `coderabbitai`), Copilot, Codex, Greptile, Seer, ADE, etc. — often
+        // mention "fixed/resolved/done" inside long markdown bodies without
+        // actually acknowledging a fix, so passing their comments through the
+        // heuristic silently flips real, open threads to `"fixed"`.
+        const latestReplyLooksResolved = (source === "human" || source === "unknown")
           && looksLikeResolutionAck(body);
 
         if (thread.isResolved || thread.isOutdated || latestReplyLooksResolved) {

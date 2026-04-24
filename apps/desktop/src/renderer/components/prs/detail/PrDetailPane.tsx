@@ -1089,7 +1089,13 @@ export function PrDetailPane({
 
   const handleOpenInventorySource = React.useCallback((item: PanelIssueItem) => {
     if (!item.url) return;
-    void window.ade.app.openExternal(item.url);
+    try {
+      const parsed = new URL(item.url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+      void window.ade.app.openExternal(parsed.toString());
+    } catch {
+      // ignore malformed URLs
+    }
   }, []);
 
   const mapConvergenceStatus = React.useCallback((snapshot: IssueInventorySnapshot | null): PanelConvergence => {
@@ -1482,15 +1488,16 @@ export function PrDetailPane({
               if (!hasCheckData) {
                 const reason = "Auto-merge paused because GitHub returned no check data for this PR.";
                 setActionError(reason);
-                setAutoConverge(false);
+                setConvergencePauseReason(reason);
+                setAutoConvergeWaitState({ phase: "paused", reason });
                 saveConvergenceRuntime({
                   status: "paused",
-                  pollerStatus: "idle",
+                  pollerStatus: "paused",
                   activeSessionId: null,
                   activeHref: convergenceSessionHref,
                   pauseReason: reason,
                   errorMessage: null,
-                  lastStoppedAt: new Date().toISOString(),
+                  lastPausedAt: new Date().toISOString(),
                 });
               } else if (allChecksPassed) {
                 try {

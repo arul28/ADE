@@ -445,6 +445,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     let refreshTimer: number | null = null;
 
+    // Prevent cross-project stale notice carryover while the first refresh is
+    // pending for the new project.
+    setStaleCliNotice(null);
+
     const refreshStaleCliNotice = async () => {
       if (document.visibilityState !== "visible") return;
       try {

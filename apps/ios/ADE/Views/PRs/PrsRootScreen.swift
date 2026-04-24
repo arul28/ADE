@@ -768,7 +768,9 @@ struct PRsTabView: View {
         }
       }
       if !externalItems.isEmpty {
-        let unmappedCount = externalItems.filter { $0.linkedPrId == nil && $0.scope != "external" }.count
+        let unmappedCount = externalItems.filter {
+          $0.adeKind == nil && $0.linkedPrId == nil && $0.linkedLaneId == nil
+        }.count
         Section {
           ForEach(externalItems) { item in
             githubRowNavigation(for: item)
@@ -1557,7 +1559,9 @@ private struct PrGitHubReadDetailSheet: View {
 
             PrTagChip(label: stateLabel, color: prStateTint(stateLabel))
 
-            PrExternalInfoChip()
+            if item.scope == "external" {
+              PrExternalInfoChip()
+            }
 
             Spacer(minLength: 0)
           }

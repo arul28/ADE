@@ -567,6 +567,42 @@ struct ADERootToolbarControls: View {
     syncService.connectionState == .connected
   }
 
+  private var connectionAccessibilityLabel: String {
+    let base: String
+    switch syncService.connectionState {
+    case .connected:
+      if let rawName = syncService.hostName {
+        let cleaned = rawName
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+          .trimmingCharacters(in: CharacterSet(charactersIn: ".…"))
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleaned.isEmpty {
+          let truncated = cleaned.count <= 10 ? cleaned : String(cleaned.prefix(9)) + "…"
+          base = "Connected to \(truncated)"
+        } else {
+          base = "Connected"
+        }
+      } else {
+        base = "Connected"
+      }
+    case .syncing:
+      base = "Syncing with host"
+    case .connecting:
+      base = "Connecting to host"
+    case .error:
+      var suffix = ""
+      if let raw = syncService.lastError?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+        let normalized = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let clipped = normalized.count > 120 ? String(normalized.prefix(117)) + "…" : normalized
+        suffix = ". \(clipped)"
+      }
+      base = "Connection error\(suffix)"
+    case .disconnected:
+      base = "Disconnected from host"
+    }
+    return "Computer connection · \(base)"
+  }
+
   private var hasUnread: Bool { drawer.unreadCount > 0 }
 
   var body: some View {
@@ -575,7 +611,7 @@ struct ADERootToolbarControls: View {
         icon: "laptopcomputer",
         tint: connectionTint,
         isAlive: connectionIsAlive,
-        accessibilityLabel: "Computer connection",
+        accessibilityLabel: connectionAccessibilityLabel,
         action: { syncService.settingsPresented = true }
       )
 

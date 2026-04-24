@@ -109,6 +109,20 @@ export function PrLaneCleanupBanner({
     }
   };
 
+  // Surface the shared success banner for every cleanup path — including the
+  // primary-branch mismatch case below, which would otherwise stay stuck on
+  // the confirmation form even after a successful delete.
+  if (done) {
+    return (
+      <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `${COLORS.success}30`, background: `${COLORS.success}08` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: shellPadding }}>
+          <CheckCircle size={14} weight="fill" style={{ color: COLORS.success }} />
+          <span style={{ fontFamily: SANS_FONT, fontSize: titleSize, color: COLORS.success }}>{done}</span>
+        </div>
+      </div>
+    );
+  }
+
   if (isPrimaryBranchMismatch) {
     return (
       <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `${COLORS.warning}30` }}>
@@ -180,17 +194,6 @@ export function PrLaneCleanupBanner({
   }
 
   if (lane.laneType === "primary") return null;
-
-  if (done) {
-    return (
-      <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `${COLORS.success}30`, background: `${COLORS.success}08` }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: shellPadding }}>
-          <CheckCircle size={14} weight="fill" style={{ color: COLORS.success }} />
-          <span style={{ fontFamily: SANS_FONT, fontSize: titleSize, color: COLORS.success }}>{done}</span>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: pr.state === "merged" ? `${COLORS.success}25` : COLORS.border }}>

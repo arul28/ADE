@@ -291,11 +291,12 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       activeStepHistory: [],
       activeTourCtx: null,
     });
-    dispatchTourEnded(activeTourId, "completed");
     const onboarding = api();
-    if (!onboarding) return;
-    const progress = await onboarding.markTourCompleted(activeTourId);
-    set({ progress });
+    if (onboarding) {
+      const progress = await onboarding.markTourCompleted(activeTourId);
+      set({ progress });
+    }
+    dispatchTourEnded(activeTourId, "completed");
   },
 
   dismissCurrentTour: async () => {
@@ -312,10 +313,11 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       activeStepHistory: [],
       activeTourCtx: null,
     });
-    dispatchTourEnded(activeTourId, "dismissed");
     const onboarding = api();
-    if (!onboarding) return;
-    const progress = await onboarding.markTourDismissed(activeTourId);
-    set({ progress });
+    if (onboarding) {
+      const progress = await onboarding.markTourDismissed(activeTourId);
+      set({ progress });
+    }
+    dispatchTourEnded(activeTourId, "dismissed");
   },
 }));

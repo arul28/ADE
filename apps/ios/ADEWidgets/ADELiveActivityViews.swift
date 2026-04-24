@@ -178,8 +178,9 @@ struct WorkspaceMinimalGlyph: View {
         }()
 
         ZStack {
-            // Outer soft color glow — subtly breathes outward, keeps the
-            // minimal region feeling alive even while tiny.
+            // Outer soft color glow — keeps the minimal region feeling alive
+            // at small sizes without spending the Live Activity animation
+            // budget on a continuous pulse.
             Circle()
                 .fill(color.opacity(0.45))
                 .frame(width: 34, height: 34)

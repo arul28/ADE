@@ -212,7 +212,7 @@ struct PrRebaseScreen: View {
     if conflictPredicted { return ADEColor.danger }
     if behindCount > 5 { return PrGlassPalette.warning }
     if behindCount == 0 { return PrGlassPalette.success }
-    return PrGlassPalette.success
+    return PrGlassPalette.info
   }
 
   private func driftStat(label: String, valueText: String, suffix: String?, tint: Color) -> some View {

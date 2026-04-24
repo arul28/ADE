@@ -211,7 +211,7 @@ export function LanesPage() {
   const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
-  const suppressTourDistractions = activeTourId === "firstJourney";
+  const suppressTourDistractions = activeTourId === "first-journey";
 
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
