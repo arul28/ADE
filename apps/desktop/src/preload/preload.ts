@@ -916,6 +916,20 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.reviewStartRun, args),
     rerun: async (runId: string): Promise<ReviewRun> =>
       ipcRenderer.invoke(IPC.reviewRerun, { runId }),
+    cancelRun: async (runId: string): Promise<ReviewRun | null> =>
+      ipcRenderer.invoke(IPC.reviewCancelRun, { runId }),
+    recordFeedback: async (
+      args: import("../shared/types").ReviewRecordFeedbackArgs,
+    ): Promise<import("../shared/types").ReviewFeedbackRecord> =>
+      ipcRenderer.invoke(IPC.reviewRecordFeedback, args),
+    listSuppressions: async (
+      args: import("../shared/types").ReviewListSuppressionsArgs = {},
+    ): Promise<import("../shared/types").ReviewSuppression[]> =>
+      ipcRenderer.invoke(IPC.reviewListSuppressions, args),
+    deleteSuppression: async (suppressionId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.reviewDeleteSuppression, { suppressionId }),
+    qualityReport: async (): Promise<import("../shared/types").ReviewQualityReport> =>
+      ipcRenderer.invoke(IPC.reviewQualityReport),
     onEvent: (cb: (ev: ReviewEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ReviewEventPayload) => cb(payload);
       ipcRenderer.on(IPC.reviewEvent, listener);

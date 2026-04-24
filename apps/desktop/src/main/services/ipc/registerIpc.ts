@@ -2817,6 +2817,31 @@ export function registerIpc({
     return ctx.reviewService.rerun(arg?.runId ?? "");
   });
 
+  ipcMain.handle(IPC.reviewCancelRun, async (_event, arg: { runId: string }) => {
+    const ctx = getCtx();
+    return ctx.reviewService.cancelRun({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.reviewRecordFeedback, async (_event, arg: import("../../../shared/types").ReviewRecordFeedbackArgs) => {
+    const ctx = getCtx();
+    return ctx.reviewService.recordFeedback(arg);
+  });
+
+  ipcMain.handle(IPC.reviewListSuppressions, async (_event, arg: import("../../../shared/types").ReviewListSuppressionsArgs | undefined) => {
+    const ctx = getCtx();
+    return ctx.reviewService.listSuppressions(arg ?? {});
+  });
+
+  ipcMain.handle(IPC.reviewDeleteSuppression, async (_event, arg: { suppressionId: string }) => {
+    const ctx = getCtx();
+    return ctx.reviewService.deleteSuppression({ suppressionId: arg?.suppressionId ?? "" });
+  });
+
+  ipcMain.handle(IPC.reviewQualityReport, async () => {
+    const ctx = getCtx();
+    return ctx.reviewService.qualityReport();
+  });
+
   ipcMain.handle(IPC.adeActionsListRegistry, async (): Promise<AdeActionRegistryEntry[]> => {
     const ctx = getCtx();
     const services = getAdeActionDomainServices(ctx as unknown as AdeRuntime);

@@ -3197,6 +3197,50 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table review_findings add column finding_class text"); } catch {}
   try { db.run("alter table review_findings add column originating_passes_json text"); } catch {}
   try { db.run("alter table review_findings add column adjudication_json text"); } catch {}
+  try { db.run("alter table review_findings add column diff_context_json text"); } catch {}
+  try { db.run("alter table review_findings add column suppression_match_json text"); } catch {}
+
+  // Per-finding feedback — powers the learning loop.
+  db.run(`
+    create table if not exists review_finding_feedback (
+      id text primary key,
+      finding_id text not null,
+      run_id text not null,
+      project_id text not null,
+      kind text not null,
+      reason text,
+      note text,
+      snooze_until text,
+      created_at text not null,
+      foreign key(finding_id) references review_findings(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_feedback_finding on review_finding_feedback(finding_id)");
+  db.run("create index if not exists idx_review_feedback_project_created on review_finding_feedback(project_id, created_at desc)");
+
+  // Durable suppressions — Greptile-style learned filter.
+  db.run(`
+    create table if not exists review_suppressions (
+      id text primary key,
+      project_id text not null,
+      scope text not null,
+      repo_key text,
+      path_pattern text,
+      title text not null,
+      title_norm text not null,
+      finding_class text,
+      severity text,
+      reason text,
+      note text,
+      embedding_json text,
+      source_finding_id text,
+      hit_count integer not null default 0,
+      created_at text not null,
+      last_matched_at text
+    )
+  `);
+  db.run("create index if not exists idx_review_suppressions_project on review_suppressions(project_id, created_at desc)");
+  db.run("create index if not exists idx_review_suppressions_repo on review_suppressions(project_id, repo_key)");
 
   // PR convergence loop: issue inventory tracking
   db.run(`

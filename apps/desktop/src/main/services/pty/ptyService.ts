@@ -1010,10 +1010,12 @@ export function createPtyService({
 
       const requestedSessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
       const allowNewSessionId = args.allowNewSessionId === true;
+      const isResumeAttempt =
+        typeof args.startupCommand === "string" && args.startupCommand.trim().length > 0;
       const existingSession = requestedSessionId.length
         ? sessionService.get(requestedSessionId)
         : null;
-      if (requestedSessionId.length && !existingSession && !allowNewSessionId) {
+      if (requestedSessionId.length && !existingSession && isResumeAttempt && !allowNewSessionId) {
         throw new Error(`Terminal session '${requestedSessionId}' was not found.`);
       }
       if (existingSession && existingSession.laneId !== laneId) {

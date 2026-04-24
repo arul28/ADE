@@ -1,10 +1,15 @@
 import type {
   ReviewEventPayload,
+  ReviewFeedbackRecord,
   ReviewLaunchContext,
   ReviewListRunsArgs,
+  ReviewListSuppressionsArgs,
+  ReviewQualityReport,
+  ReviewRecordFeedbackArgs,
   ReviewRun,
   ReviewRunDetail,
   ReviewStartRunArgs,
+  ReviewSuppression,
 } from "./reviewTypes";
 
 type ReviewBridge = {
@@ -12,6 +17,11 @@ type ReviewBridge = {
   getRunDetail: (runId: string) => Promise<ReviewRunDetail | null>;
   startRun: (args: ReviewStartRunArgs) => Promise<{ runId?: string; id?: string } | ReviewRunDetail | string | null>;
   rerun: (runId: string) => Promise<{ runId?: string; id?: string } | ReviewRunDetail | string | null>;
+  cancelRun?: (runId: string) => Promise<ReviewRun | null>;
+  recordFeedback?: (args: ReviewRecordFeedbackArgs) => Promise<ReviewFeedbackRecord>;
+  listSuppressions?: (args?: ReviewListSuppressionsArgs) => Promise<ReviewSuppression[]>;
+  deleteSuppression?: (suppressionId: string) => Promise<boolean>;
+  qualityReport?: () => Promise<ReviewQualityReport>;
   listLaunchContext: () => Promise<ReviewLaunchContext | null>;
   onEvent: (listener: (event: ReviewEventPayload) => void) => () => void;
 };
@@ -67,4 +77,38 @@ export function onReviewEvent(listener: (event: ReviewEventPayload) => void): ()
   const bridge = getReviewBridge();
   if (!bridge) return () => {};
   return bridge.onEvent(listener);
+}
+
+export async function cancelReviewRun(runId: string): Promise<ReviewRun | null> {
+  const bridge = getReviewBridge();
+  if (!bridge?.cancelRun) return null;
+  return bridge.cancelRun(runId);
+}
+
+export async function recordReviewFeedback(
+  args: ReviewRecordFeedbackArgs,
+): Promise<ReviewFeedbackRecord | null> {
+  const bridge = getReviewBridge();
+  if (!bridge?.recordFeedback) return null;
+  return bridge.recordFeedback(args);
+}
+
+export async function listReviewSuppressions(
+  args?: ReviewListSuppressionsArgs,
+): Promise<ReviewSuppression[]> {
+  const bridge = getReviewBridge();
+  if (!bridge?.listSuppressions) return [];
+  return bridge.listSuppressions(args);
+}
+
+export async function deleteReviewSuppression(suppressionId: string): Promise<boolean> {
+  const bridge = getReviewBridge();
+  if (!bridge?.deleteSuppression) return false;
+  return bridge.deleteSuppression(suppressionId);
+}
+
+export async function fetchReviewQualityReport(): Promise<ReviewQualityReport | null> {
+  const bridge = getReviewBridge();
+  if (!bridge?.qualityReport) return null;
+  return bridge.qualityReport();
 }

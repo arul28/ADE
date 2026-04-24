@@ -25,11 +25,64 @@ export type ReviewArtifactType =
   | "provenance_brief"
   | "rule_overlays"
   | "validation_signals"
+  | "tool_evidence"
   | "diff_bundle"
   | "review_output"
   | "untracked_snapshot"
   | "publication_request"
   | "publication_result";
+
+// ---------------------------------------------------------------------------
+// Feedback + Suppression (learning loop)
+// ---------------------------------------------------------------------------
+
+export type ReviewFeedbackKind = "acknowledge" | "dismiss" | "snooze" | "suppress";
+
+export type ReviewDismissReason =
+  | "not_a_bug"
+  | "out_of_scope"
+  | "style_only"
+  | "duplicate"
+  | "wont_fix"
+  | "low_value_noise"
+  | "other";
+
+export type ReviewSuppressionScope = "repo" | "path" | "global";
+
+export type ReviewFeedbackRecord = {
+  id: string;
+  findingId: string;
+  runId: string;
+  kind: ReviewFeedbackKind;
+  reason: ReviewDismissReason | null;
+  note: string | null;
+  snoozeUntil: string | null;
+  createdAt: string;
+};
+
+export type ReviewSuppression = {
+  id: string;
+  scope: ReviewSuppressionScope;
+  repoKey: string | null;
+  pathPattern: string | null;
+  title: string;
+  findingClass: ReviewFindingClass | null;
+  severity: ReviewSeverity | null;
+  reason: ReviewDismissReason | null;
+  note: string | null;
+  embedding: number[] | null;
+  sourceFindingId: string | null;
+  hitCount: number;
+  createdAt: string;
+  lastMatchedAt: string | null;
+};
+
+export type ReviewFindingSuppressionMatch = {
+  suppressionId: string;
+  similarity: number;
+  reason: ReviewDismissReason | null;
+  scope: ReviewSuppressionScope;
+};
 
 export type ReviewPublicationDestination =
   | {
@@ -123,13 +176,28 @@ export type ReviewTarget =
       prId: string;
     };
 
+export type ReviewEvidenceKind =
+  | "quote"
+  | "diff_hunk"
+  | "artifact"
+  | "file_snapshot"
+  | "tool_signal";
+
+export type ReviewToolSignalKind = "typecheck" | "test" | "lint" | "build" | "ci_check" | "validation";
+
 export type ReviewEvidence = {
-  kind: "quote" | "diff_hunk" | "artifact" | "file_snapshot";
+  kind: ReviewEvidenceKind;
   summary: string;
   filePath: string | null;
   line: number | null;
   quote: string | null;
   artifactId: string | null;
+  toolSignal?: {
+    kind: ReviewToolSignalKind;
+    source: string;
+    status: "pass" | "fail" | "warn" | "info";
+    detail: string | null;
+  } | null;
 };
 
 export type ReviewFindingAdjudication = {
@@ -156,6 +224,22 @@ export type ReviewFinding = {
   publicationState: ReviewPublicationState;
   originatingPasses?: ReviewPassKey[];
   adjudication?: ReviewFindingAdjudication | null;
+  feedback?: ReviewFeedbackRecord | null;
+  suppressionMatch?: ReviewFindingSuppressionMatch | null;
+  diffContext?: ReviewDiffContext | null;
+};
+
+export type ReviewDiffContext = {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  anchoredLine: number | null;
+  lines: Array<{
+    line: number | null;
+    kind: "context" | "add" | "del" | "meta";
+    text: string;
+    highlighted: boolean;
+  }>;
 };
 
 export type ReviewSeveritySummary = {
@@ -257,4 +341,52 @@ export type ReviewEventPayload =
       runId: string;
       laneId: string;
       status: ReviewRunStatus;
+    }
+  | {
+      type: "feedback-updated";
+      findingId: string;
+      runId: string;
+    }
+  | {
+      type: "suppressions-updated";
     };
+
+export type ReviewRecordFeedbackArgs = {
+  findingId: string;
+  kind: ReviewFeedbackKind;
+  reason?: ReviewDismissReason | null;
+  note?: string | null;
+  snoozeDurationMs?: number | null;
+  suppression?: {
+    scope: ReviewSuppressionScope;
+    pathPattern?: string | null;
+  } | null;
+};
+
+export type ReviewListSuppressionsArgs = {
+  limit?: number | null;
+  scope?: ReviewSuppressionScope | null;
+  projectId?: string | null;
+};
+
+export type ReviewDeleteSuppressionArgs = {
+  suppressionId: string;
+};
+
+export type ReviewCancelRunArgs = {
+  runId: string;
+};
+
+export type ReviewQualityReport = {
+  projectId: string;
+  totalRuns: number;
+  totalFindings: number;
+  addressedCount: number;
+  dismissedCount: number;
+  snoozedCount: number;
+  suppressedCount: number;
+  publishedCount: number;
+  noiseRate: number;
+  recentFeedback: ReviewFeedbackRecord[];
+  byClass: Array<{ findingClass: ReviewFindingClass | "uncategorized"; total: number; addressed: number }>;
+};

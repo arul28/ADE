@@ -96,7 +96,42 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
       source_pass text not null,
       publication_state text not null,
       originating_passes_json text,
-      adjudication_json text
+      adjudication_json text,
+      diff_context_json text,
+      suppression_match_json text
+    )
+  `);
+  raw.run(`
+    create table review_finding_feedback(
+      id text primary key,
+      finding_id text not null,
+      run_id text not null,
+      project_id text not null,
+      kind text not null,
+      reason text,
+      note text,
+      snooze_until text,
+      created_at text not null
+    )
+  `);
+  raw.run(`
+    create table review_suppressions(
+      id text primary key,
+      project_id text not null,
+      scope text not null,
+      repo_key text,
+      path_pattern text,
+      title text not null,
+      title_norm text not null,
+      finding_class text,
+      severity text,
+      reason text,
+      note text,
+      embedding_json text,
+      source_finding_id text,
+      hit_count integer not null default 0,
+      created_at text not null,
+      last_matched_at text
     )
   `);
   raw.run(`

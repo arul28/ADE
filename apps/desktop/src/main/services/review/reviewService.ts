@@ -1,15 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type {
   ReviewArtifactType,
+  ReviewDiffContext,
+  ReviewDismissReason,
   ReviewEventPayload,
   ReviewEvidence,
+  ReviewFeedbackKind,
+  ReviewFeedbackRecord,
   ReviewFinding,
   ReviewFindingAdjudication,
   ReviewFindingClass,
+  ReviewFindingSuppressionMatch,
+  ReviewListSuppressionsArgs,
   ReviewPublication,
   ReviewPublicationDestination,
   ReviewPublicationInlineComment,
   ReviewPublicationState,
+  ReviewQualityReport,
+  ReviewRecordFeedbackArgs,
   ReviewResolvedCompareTarget,
   ReviewRun,
   ReviewRunArtifact,
@@ -21,6 +29,8 @@ import type {
   ReviewSeveritySummary,
   ReviewSourcePass,
   ReviewStartRunArgs,
+  ReviewSuppression,
+  ReviewSuppressionScope,
   ReviewTarget,
   ReviewListRunsArgs,
   ReviewLaunchContext,
@@ -46,6 +56,10 @@ import {
   overlayMatchesPath,
   type MatchedReviewRuleOverlay,
 } from "./reviewRuleRegistry";
+import { createReviewSuppressionService, type ReviewSuppressionService } from "./reviewSuppressionService";
+import { buildDiffContextForFinding } from "./reviewDiffContext";
+import { buildToolBackedEvidence } from "./reviewToolEvidence";
+import type { EmbeddingService } from "../memory/embeddingService";
 
 type ReviewRunRow = {
   id: string;
@@ -83,6 +97,20 @@ type ReviewFindingRow = {
   publication_state: string;
   originating_passes_json: string | null;
   adjudication_json: string | null;
+  diff_context_json: string | null;
+  suppression_match_json: string | null;
+};
+
+type ReviewFindingFeedbackRow = {
+  id: string;
+  finding_id: string;
+  run_id: string;
+  project_id: string;
+  kind: string;
+  reason: string | null;
+  note: string | null;
+  snooze_until: string | null;
+  created_at: string;
 };
 
 type ReviewRunArtifactRow = {
@@ -1120,6 +1148,15 @@ function adjudicatePassFindings(args: {
   };
 }
 
+function deriveRepoKey(target: ReviewPublicationDestination | null, fallbackProjectId: string): string {
+  if (target && target.kind === "github_pr_review") {
+    if (target.repoOwner && target.repoName) {
+      return `${target.repoOwner}/${target.repoName}`.toLowerCase();
+    }
+  }
+  return `project:${fallbackProjectId}`;
+}
+
 function tallySeveritySummary(findings: ReviewFinding[]): ReviewSeveritySummary {
   const summary = defaultSeveritySummary();
   for (const finding of findings) {
@@ -1182,6 +1219,21 @@ function mapFindingRow(row: ReviewFindingRow): ReviewFinding {
     publicationState: (row.publication_state as ReviewPublicationState) ?? "local_only",
     originatingPasses: safeJsonParse<ReviewPassKey[]>(row.originating_passes_json, []),
     adjudication: safeJsonParse<ReviewFindingAdjudication | null>(row.adjudication_json, null),
+    diffContext: safeJsonParse<ReviewDiffContext | null>(row.diff_context_json, null),
+    suppressionMatch: safeJsonParse<ReviewFindingSuppressionMatch | null>(row.suppression_match_json, null),
+  };
+}
+
+function mapFeedbackRow(row: ReviewFindingFeedbackRow): ReviewFeedbackRecord {
+  return {
+    id: row.id,
+    findingId: row.finding_id,
+    runId: row.run_id,
+    kind: (row.kind as ReviewFeedbackKind) ?? "acknowledge",
+    reason: (row.reason as ReviewDismissReason | null) ?? null,
+    note: row.note,
+    snoozeUntil: row.snooze_until,
+    createdAt: row.created_at,
   };
 }
 
@@ -1238,6 +1290,7 @@ export function createReviewService({
   testService,
   issueInventoryService,
   prService,
+  embeddingService,
   onEvent,
 }: {
   db: AdeDb;
@@ -1253,6 +1306,7 @@ export function createReviewService({
   testService: Pick<ReturnType<typeof createTestService>, "listRuns" | "getLogTail" | "listSuites">;
   issueInventoryService: Pick<ReturnType<typeof createIssueInventoryService>, "getInventory">;
   prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "getChecks" | "publishReviewPublication">;
+  embeddingService?: Pick<EmbeddingService, "embed"> | null;
   onEvent?: (event: ReviewEventPayload) => void;
 }) {
   const materializer = createReviewTargetMaterializer({ laneService, prService });
@@ -1266,7 +1320,14 @@ export function createReviewService({
     issueInventoryService,
     prService,
   });
+  const suppressionService: ReviewSuppressionService = createReviewSuppressionService({
+    db,
+    logger,
+    projectId,
+    embeddingService: embeddingService ?? null,
+  });
   const activeRuns = new Set<string>();
+  const cancelledRuns = new Set<string>();
   let disposed = false;
   const configuredDefaultModelId =
     getDefaultModelDescriptor("codex")?.id
@@ -1455,8 +1516,10 @@ export function createReviewService({
         source_pass,
         publication_state,
         originating_passes_json,
-        adjudication_json
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        adjudication_json,
+        diff_context_json,
+        suppression_match_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         finding.id,
         finding.runId,
@@ -1473,6 +1536,8 @@ export function createReviewService({
         finding.publicationState,
         JSON.stringify(finding.originatingPasses ?? []),
         finding.adjudication ? JSON.stringify(finding.adjudication) : null,
+        finding.diffContext ? JSON.stringify(finding.diffContext) : null,
+        finding.suppressionMatch ? JSON.stringify(finding.suppressionMatch) : null,
       ],
     );
   }
@@ -1916,18 +1981,78 @@ export function createReviewService({
         },
       });
 
-      const findings = adjudication.findings;
+      const repoKey = deriveRepoKey(materialized.publicationTarget, projectId);
+      const enrichedFindings: ReviewFinding[] = [];
+      for (const finding of adjudication.findings) {
+        if (disposed) return;
+        const diffContext = buildDiffContextForFinding({
+          filePath: finding.filePath,
+          anchoredLine: finding.line,
+          patches: materialized.changedFiles.map((entry) => ({ filePath: entry.filePath, excerpt: entry.excerpt })),
+        });
+        const toolEvidence = buildToolBackedEvidence({
+          finding,
+          validation: reviewContext.validation.payload,
+          artifactIdByKey: { validation_signals: contextArtifactIds.validationArtifactId },
+        });
+        const suppressionMatch = await suppressionService.match({ finding, repoKey }).catch((error) => {
+          logger.warn("review.suppression.match_failed", {
+            findingId: finding.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        });
+        enrichedFindings.push({
+          ...finding,
+          evidence: toolEvidence.length > 0 ? [...finding.evidence, ...toolEvidence] : finding.evidence,
+          diffContext,
+          suppressionMatch,
+        });
+      }
+      const findings = enrichedFindings;
       for (const finding of findings) {
         if (disposed) return;
         insertFinding(finding);
       }
       if (disposed) return;
+      if (cancelledRuns.has(runId)) {
+        cancelledRuns.delete(runId);
+        const endedAt = nowIso();
+        updateRun(runId, {
+          status: "cancelled",
+          summary: "Run cancelled before publication.",
+          error_message: null,
+          finding_count: findings.length,
+          severity_summary_json: serializeSeveritySummary(tallySeveritySummary(findings)),
+          ended_at: endedAt,
+          updated_at: endedAt,
+        });
+        emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
+        emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
+        return;
+      }
+      const publishableFindings = findings.filter((finding) => finding.suppressionMatch == null);
+      const suppressedCount = findings.length - publishableFindings.length;
+      if (suppressedCount > 0) {
+        insertArtifact(runId, {
+          artifactType: "tool_evidence",
+          title: "Suppression filter summary",
+          mimeType: "application/json",
+          contentText: JSON.stringify({
+            suppressedCount,
+            suppressedFindingIds: findings
+              .filter((finding) => finding.suppressionMatch != null)
+              .map((finding) => finding.id),
+          }, null, 2),
+          metadata: { suppressedCount },
+        });
+      }
       await publishRun({
         runId,
         targetLabel: materialized.targetLabel,
         summary: adjudication.summary,
         config: effectiveRun.config,
-        findings,
+        findings: publishableFindings,
         publicationTarget: materialized.publicationTarget,
         changedFiles: materialized.changedFiles.map((entry) => ({
           filePath: entry.filePath,
@@ -2048,7 +2173,7 @@ export function createReviewService({
     const row = getRunRow(args.runId);
     if (!row) return null;
     const run = mapRunRow(row);
-    const findings = db.all<ReviewFindingRow>(
+    const rawFindings = db.all<ReviewFindingRow>(
       `select * from review_findings
        where run_id = ?
        order by
@@ -2064,6 +2189,19 @@ export function createReviewService({
          title asc`,
       [args.runId],
     ).map(mapFindingRow);
+    const feedbackByFinding = new Map<string, ReviewFeedbackRecord>();
+    const feedbackRows = db.all<ReviewFindingFeedbackRow>(
+      "select * from review_finding_feedback where run_id = ? order by created_at asc",
+      [args.runId],
+    );
+    for (const feedbackRow of feedbackRows) {
+      const record = mapFeedbackRow(feedbackRow);
+      feedbackByFinding.set(record.findingId, record);
+    }
+    const findings = rawFindings.map((finding) => ({
+      ...finding,
+      feedback: feedbackByFinding.get(finding.id) ?? null,
+    }));
     const artifacts = db.all<ReviewRunArtifactRow>(
       "select * from review_run_artifacts where run_id = ? order by created_at asc",
       [args.runId],
@@ -2084,15 +2222,202 @@ export function createReviewService({
     };
   }
 
+  async function cancelRun(args: { runId: string }): Promise<ReviewRun | null> {
+    assertNotDisposed();
+    const row = getRunRow(args.runId);
+    if (!row) return null;
+    if (row.status === "completed" || row.status === "failed" || row.status === "cancelled") {
+      return mapRunRow(row);
+    }
+    cancelledRuns.add(args.runId);
+    const endedAt = nowIso();
+    updateRun(args.runId, {
+      status: "cancelled",
+      summary: row.summary ?? "Cancellation requested; finishing current pass.",
+      ended_at: endedAt,
+      updated_at: endedAt,
+    });
+    const refreshed = getRunRow(args.runId);
+    if (refreshed) {
+      emit({ type: "runs-updated", runId: args.runId, laneId: refreshed.lane_id, status: "cancelled" });
+    }
+    return refreshed ? mapRunRow(refreshed) : null;
+  }
+
+  async function recordFeedback(args: ReviewRecordFeedbackArgs): Promise<ReviewFeedbackRecord> {
+    assertNotDisposed();
+    const findingRow = db.get<ReviewFindingRow & { project_id?: string }>(
+      `select rf.*, rr.project_id as project_id
+         from review_findings rf
+         join review_runs rr on rr.id = rf.run_id
+         where rf.id = ? limit 1`,
+      [args.findingId],
+    );
+    if (!findingRow) throw new Error(`Finding '${args.findingId}' was not found.`);
+    if (findingRow.project_id !== projectId) {
+      throw new Error("Cannot record feedback for a finding outside this project.");
+    }
+    const snoozeUntil = args.snoozeDurationMs && args.snoozeDurationMs > 0
+      ? new Date(Date.now() + Math.min(args.snoozeDurationMs, 1000 * 60 * 60 * 24 * 365)).toISOString()
+      : null;
+    const record: ReviewFeedbackRecord = {
+      id: `rfb_${randomUUID()}`,
+      findingId: args.findingId,
+      runId: findingRow.run_id,
+      kind: args.kind,
+      reason: args.reason ?? null,
+      note: args.note ?? null,
+      snoozeUntil,
+      createdAt: nowIso(),
+    };
+    db.run(
+      `insert into review_finding_feedback (
+        id, finding_id, run_id, project_id, kind, reason, note, snooze_until, created_at
+      ) values (?,?,?,?,?,?,?,?,?)`,
+      [
+        record.id,
+        record.findingId,
+        record.runId,
+        projectId,
+        record.kind,
+        record.reason,
+        record.note,
+        record.snoozeUntil,
+        record.createdAt,
+      ],
+    );
+
+    if (args.kind === "suppress") {
+      const scope: ReviewSuppressionScope = args.suppression?.scope ?? "repo";
+      const pathPattern = args.suppression?.pathPattern ?? (scope === "path" ? findingRow.file_path : null);
+      const finding = mapFindingRow(findingRow);
+      const publicationRow = db.get<ReviewRunPublicationRow>(
+        "select * from review_run_publications where run_id = ? order by created_at desc limit 1",
+        [findingRow.run_id],
+      );
+      const destination = publicationRow ? mapPublicationRow(publicationRow).destination : null;
+      const repoKey = deriveRepoKey(destination, projectId);
+      await suppressionService
+        .create({
+          scope,
+          title: finding.title,
+          repoKey: scope === "global" ? null : repoKey,
+          pathPattern,
+          findingClass: finding.findingClass ?? null,
+          severity: finding.severity,
+          reason: args.reason ?? null,
+          note: args.note ?? null,
+          sourceFindingId: finding.id,
+          seedText: `${finding.title}\n${finding.body}`,
+        })
+        .catch((error) => {
+          logger.warn("review.suppression.create_failed", {
+            findingId: finding.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      emit({ type: "suppressions-updated" });
+    }
+
+    emit({ type: "feedback-updated", findingId: args.findingId, runId: findingRow.run_id });
+    return record;
+  }
+
+  async function listSuppressions(args: ReviewListSuppressionsArgs = {}): Promise<ReviewSuppression[]> {
+    assertNotDisposed();
+    return suppressionService.list({ limit: args.limit ?? null, scope: args.scope ?? null });
+  }
+
+  async function deleteSuppression(args: { suppressionId: string }): Promise<boolean> {
+    assertNotDisposed();
+    const removed = suppressionService.remove(args.suppressionId);
+    if (removed) emit({ type: "suppressions-updated" });
+    return removed;
+  }
+
+  async function qualityReport(): Promise<ReviewQualityReport> {
+    assertNotDisposed();
+    const totalRunsRow = db.get<{ n: number }>(
+      "select count(*) as n from review_runs where project_id = ?",
+      [projectId],
+    );
+    const totalFindingsRow = db.get<{ n: number }>(
+      `select count(*) as n from review_findings rf
+         join review_runs rr on rr.id = rf.run_id
+         where rr.project_id = ?`,
+      [projectId],
+    );
+    const publishedRow = db.get<{ n: number }>(
+      `select count(*) as n from review_findings rf
+         join review_runs rr on rr.id = rf.run_id
+         where rr.project_id = ? and rf.publication_state = 'published'`,
+      [projectId],
+    );
+    const feedbackCounts = db.all<{ kind: string; n: number }>(
+      `select kind, count(*) as n from review_finding_feedback
+         where project_id = ? group by kind`,
+      [projectId],
+    );
+    const kindMap = new Map(feedbackCounts.map((row) => [row.kind, Number(row.n ?? 0)]));
+    const byClassRows = db.all<{ finding_class: string | null; total: number; addressed: number }>(
+      `select rf.finding_class as finding_class,
+              count(*) as total,
+              sum(case when fb.kind = 'acknowledge' then 1 else 0 end) as addressed
+         from review_findings rf
+         join review_runs rr on rr.id = rf.run_id
+         left join review_finding_feedback fb on fb.finding_id = rf.id
+         where rr.project_id = ?
+         group by rf.finding_class
+         order by total desc
+         limit 20`,
+      [projectId],
+    );
+    const recentFeedback = db.all<ReviewFindingFeedbackRow>(
+      "select * from review_finding_feedback where project_id = ? order by created_at desc limit 20",
+      [projectId],
+    ).map(mapFeedbackRow);
+
+    const totalFindings = Number(totalFindingsRow?.n ?? 0);
+    const dismissedCount = kindMap.get("dismiss") ?? 0;
+    const suppressedCount = kindMap.get("suppress") ?? 0;
+    const addressedCount = kindMap.get("acknowledge") ?? 0;
+    const snoozedCount = kindMap.get("snooze") ?? 0;
+    const noiseRate = totalFindings > 0 ? Number(((dismissedCount + suppressedCount) / totalFindings).toFixed(3)) : 0;
+
+    return {
+      projectId,
+      totalRuns: Number(totalRunsRow?.n ?? 0),
+      totalFindings,
+      addressedCount,
+      dismissedCount,
+      snoozedCount,
+      suppressedCount,
+      publishedCount: Number(publishedRow?.n ?? 0),
+      noiseRate,
+      recentFeedback,
+      byClass: byClassRows.map((row) => ({
+        findingClass: (row.finding_class as ReviewFindingClass | null) ?? "uncategorized",
+        total: Number(row.total ?? 0),
+        addressed: Number(row.addressed ?? 0),
+      })),
+    };
+  }
+
   return {
     listLaunchContext,
     startRun,
     rerun,
+    cancelRun,
     listRuns,
     getRunDetail,
+    recordFeedback,
+    listSuppressions,
+    deleteSuppression,
+    qualityReport,
     dispose() {
       disposed = true;
       activeRuns.clear();
+      cancelledRuns.clear();
     },
   };
 }

@@ -23,13 +23,17 @@ import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTil
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { ReviewLaunchModelControls } from "../shared/ReviewLaunchModelControls";
 import {
+  cancelReviewRun,
   listReviewLaunchContext,
   listReviewRuns,
   getReviewRunDetail,
   onReviewEvent,
+  recordReviewFeedback,
   rerunReview,
   startReviewRun,
 } from "./reviewApi";
+import { ReviewFindingCard, type FindingActionRequest } from "./ReviewFindingCard";
+import { ReviewLearningsPanel } from "./ReviewLearningsPanel";
 import type {
   ReviewArtifact,
   ReviewEvidenceEntry,
@@ -707,8 +711,10 @@ export function ReviewPage() {
 
   React.useEffect(() => {
     const unsub = onReviewEvent((event) => {
+      if (event.type === "suppressions-updated") return;
       void refreshRuns();
-      if (event.runId === selectedRunId) {
+      const eventRunId = "runId" in event ? event.runId : undefined;
+      if (eventRunId === selectedRunId) {
         void loadDetail(selectedRunId);
       }
     });
@@ -989,6 +995,43 @@ export function ReviewPage() {
     void (appBridge?.openPathInEditor?.({ rootPath: resolved.rootPath, target: resolved.target }) ?? Promise.resolve()).catch(() => {});
   }, [resolveFindingTarget]);
 
+  const [showLearnings, setShowLearnings] = React.useState(false);
+  const [severityFilter, setSeverityFilter] = React.useState<"all" | "critical" | "high" | "medium" | "low" | "info">("all");
+  const [showSuppressed, setShowSuppressed] = React.useState(false);
+  const [feedbackError, setFeedbackError] = React.useState<string | null>(null);
+  const [cancelInFlight, setCancelInFlight] = React.useState(false);
+
+  const handleFindingAction = React.useCallback(async (req: FindingActionRequest) => {
+    setFeedbackError(null);
+    try {
+      await recordReviewFeedback({
+        findingId: req.finding.id,
+        kind: req.kind,
+        reason: req.reason ?? null,
+        note: req.note ?? null,
+        snoozeDurationMs: req.snoozeDurationMs ?? null,
+        suppression: req.suppression ?? null,
+      });
+      if (selectedRunId) await loadDetail(selectedRunId);
+    } catch (err) {
+      setFeedbackError(err instanceof Error ? err.message : String(err));
+    }
+  }, [loadDetail, selectedRunId]);
+
+  const handleCancelRun = React.useCallback(async (run: NormalizedRun) => {
+    if (run.status !== "running" && run.status !== "queued") return;
+    setCancelInFlight(true);
+    try {
+      await cancelReviewRun(run.id);
+      await refreshRuns();
+      if (selectedRunId === run.id) await loadDetail(run.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCancelInFlight(false);
+    }
+  }, [loadDetail, refreshRuns, selectedRunId]);
+
   const launchPane = (
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
       <SectionCard
@@ -1247,10 +1290,16 @@ export function ReviewPage() {
         title="Review runs"
         icon={ClockCounterClockwise}
         action={(
-          <Button size="sm" variant="ghost" onClick={() => void refreshRuns()} disabled={loadingRuns}>
-            <ArrowsClockwise size={12} weight="regular" className={cn(loadingRuns && "animate-spin")} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button size="sm" variant="ghost" onClick={() => setShowLearnings((prev) => !prev)}>
+              <GitBranch size={12} />
+              {showLearnings ? "Hide learnings" : "Learnings"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => void refreshRuns()} disabled={loadingRuns}>
+              <ArrowsClockwise size={12} weight="regular" className={cn(loadingRuns && "animate-spin")} />
+              Refresh
+            </Button>
+          </div>
         )}
       >
         <div className="space-y-2">
@@ -1300,7 +1349,11 @@ export function ReviewPage() {
     </div>
   );
 
-  const detailPane = (
+  const detailPane = showLearnings ? (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden p-5">
+      <ReviewLearningsPanel onClose={() => setShowLearnings(false)} />
+    </div>
+  ) : (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {selectedRun ? (
         <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto px-5 py-5">
@@ -1526,82 +1579,112 @@ export function ReviewPage() {
           ) : null}
 
           <SectionCard title={`Findings (${selectedRun.findingCount})`} icon={MagnifyingGlass}>
-            <div className="space-y-2">
-              {selectedDetail?.findings?.length ? selectedDetail.findings.map((finding, index) => {
-                const evidence = normalizeEvidence(finding.evidence);
-                const findingClass = (finding as { findingClass?: string | null }).findingClass ?? null;
-                return (
-                  <article key={finding.id ?? `${finding.title}-${index}`} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Chip className={cn("text-[9px]", toSeverityTone(finding.severity))}>{finding.severity}</Chip>
-                          {findingClass ? (
-                            <Chip className={cn("text-[9px]", toFindingClassTone(findingClass))}>
-                              {toFindingClassLabel(findingClass)}
-                            </Chip>
-                          ) : null}
-                          <div className="truncate text-sm font-semibold text-[#F5FAFF]">{finding.title}</div>
-                        </div>
-                        <div className="mt-1 text-xs text-[#93A4B8]">{finding.body}</div>
-                      </div>
-                      <div className="flex flex-col items-end gap-1 text-[11px] text-[#94A3B8]">
-                        <span>confidence {formatConfidence(finding.confidence)}</span>
-                        <span>{finding.anchorState} · {finding.sourcePass}</span>
-                      </div>
+            {(() => {
+              const rawFindings = selectedDetail?.findings ?? [];
+              const suppressedCount = rawFindings.filter((f) => f.suppressionMatch != null).length;
+              const severityMatches = severityFilter === "all"
+                ? rawFindings
+                : rawFindings.filter((f) => f.severity === severityFilter);
+              const visible = severityMatches.filter((f) => showSuppressed || f.suppressionMatch == null);
+              return (
+                <>
+                  {feedbackError ? (
+                    <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/[0.08] px-3 py-2 text-xs text-red-200">
+                      {feedbackError}
                     </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                      <Chip className="text-[9px]">{finding.publicationState}</Chip>
-                      {finding.originatingPasses?.map((pass) => (
-                        <Chip key={`${finding.id}-${pass}`} className="text-[9px]">{toPassLabel(pass)}</Chip>
-                      ))}
-                      {finding.adjudication ? (
-                        <Chip className="text-[9px]">
-                          {finding.adjudication.publicationEligible ? "publication eligible" : "local only"}
-                        </Chip>
-                      ) : null}
-                      {finding.filePath ? <Chip className="text-[9px]">{finding.filePath}{finding.line ? `:${finding.line}` : ""}</Chip> : null}
-                      {finding.filePath ? (
-                        <Button size="sm" variant="ghost" onClick={() => handleOpenFindingInFiles(finding)}>
-                          <FileText size={12} />
-                          Open in files
-                        </Button>
-                      ) : null}
-                      {finding.filePath ? (
-                        <Button size="sm" variant="ghost" onClick={() => handleOpenFindingInEditor(finding)}>
-                          <ArrowSquareOut size={12} />
-                          Open editor
-                        </Button>
+                  ) : null}
+                  {selectedRun.status === "running" || selectedRun.status === "queued" ? (
+                    <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-amber-400/20 bg-amber-400/[0.06] px-3 py-2 text-[11px] text-amber-100">
+                      <span>Review {selectedRun.status === "queued" ? "queued" : "running"}. Findings appear as passes complete.</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void handleCancelRun(selectedRun)}
+                        disabled={cancelInFlight}
+                      >
+                        {cancelInFlight ? "Cancelling…" : "Cancel run"}
+                      </Button>
+                    </div>
+                  ) : null}
+                  {selectedRun.status === "failed" ? (
+                    <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-red-400/30 bg-red-400/[0.06] px-3 py-2 text-[11px] text-red-200">
+                      <span>{selectedRun.errorMessage ?? "Review run failed."}</span>
+                      <Button size="sm" variant="ghost" onClick={() => void handleRerun(selectedRun)}>
+                        Retry
+                      </Button>
+                    </div>
+                  ) : null}
+                  {rawFindings.length > 0 ? (
+                    <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10px]">
+                      <span className="text-[#6E7F92] uppercase tracking-[0.14em]">Severity:</span>
+                      {(["all", "critical", "high", "medium", "low", "info"] as const).map((sev) => {
+                        const count = sev === "all" ? rawFindings.length : rawFindings.filter((f) => f.severity === sev).length;
+                        if (sev !== "all" && count === 0) return null;
+                        return (
+                          <button
+                            key={sev}
+                            type="button"
+                            onClick={() => setSeverityFilter(sev)}
+                            className={cn(
+                              "rounded-full border px-2 py-0.5 font-medium transition",
+                              severityFilter === sev
+                                ? "border-sky-400/40 bg-sky-400/[0.10] text-sky-100"
+                                : "border-white/[0.08] bg-white/[0.02] text-[#93A4B8] hover:border-white/[0.16]",
+                            )}
+                          >
+                            {sev} <span className="text-[#6E7F92]">{count}</span>
+                          </button>
+                        );
+                      })}
+                      {suppressedCount > 0 ? (
+                        <label className="ml-auto inline-flex items-center gap-1.5 text-[10px] text-[#93A4B8]">
+                          <input
+                            type="checkbox"
+                            checked={showSuppressed}
+                            onChange={(e) => setShowSuppressed(e.target.checked)}
+                            className="h-3 w-3 accent-violet-400"
+                          />
+                          Show {suppressedCount} filtered
+                        </label>
                       ) : null}
                     </div>
-                    {finding.adjudication ? (
-                      <div className="mt-3 rounded-lg border border-white/[0.06] bg-black/20 p-2 text-[11px] text-[#B7C4D7]">
-                        {finding.adjudication.rationale}
+                  ) : null}
+                  <div className="space-y-2">
+                    {visible.length > 0 ? visible.map((finding, index) => (
+                      <ReviewFindingCard
+                        key={finding.id ?? `${finding.title}-${index}`}
+                        finding={finding}
+                        onRequestAction={handleFindingAction}
+                        onOpenInFiles={finding.filePath ? handleOpenFindingInFiles : undefined}
+                        onOpenInEditor={finding.filePath ? handleOpenFindingInEditor : undefined}
+                      />
+                    )) : rawFindings.length > 0 ? (
+                      <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">
+                        No findings match the current filters. {!showSuppressed && suppressedCount > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setShowSuppressed(true)}
+                            className="ml-1 text-sky-300 hover:text-sky-200 underline underline-offset-2"
+                          >
+                            Show {suppressedCount} filtered findings
+                          </button>
+                        ) : null}
                       </div>
-                    ) : null}
-                    {evidence.length > 0 ? (
-                      <div className="mt-3 space-y-2">
-                        {evidence.map((entry, evidenceIndex) => (
-                          <div key={`${finding.id ?? finding.title}-${evidenceIndex}`} className="rounded-lg border border-white/[0.06] bg-black/20 p-2">
-                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#8FA1B8]">
-                              <span className="font-mono uppercase tracking-[1px]">{entry.kind ?? "evidence"}</span>
-                              {entry.summary ? <span>{entry.summary}</span> : null}
-                              {entry.filePath ? <span>{entry.filePath}{entry.line ? `:${entry.line}` : ""}</span> : null}
-                              {entry.artifactId ? <span>{entry.artifactId}</span> : null}
-                            </div>
-                            {entry.quote ? <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[#D8E3F2]">{entry.quote}</pre> : null}
-                          </div>
-                        ))}
+                    ) : selectedRun.status === "completed" ? (
+                      <EmptyState
+                        icon={MagnifyingGlass}
+                        title="No findings"
+                        description="The review passes found nothing actionable in this diff. That could mean the diff was clean or the target was too small to review."
+                      />
+                    ) : (
+                      <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">
+                        Findings will appear here once the review completes.
                       </div>
-                    ) : null}
-                  </article>
-                );
-              }) : (
-                <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">
-                  No findings were saved for this run.
-                </div>
-              )}
-            </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
           </SectionCard>
 
           <SectionCard title="Artifacts" icon={FileText}>

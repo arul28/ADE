@@ -784,6 +784,15 @@ declare global {
         getRunDetail: (runId: string) => Promise<ReviewRunDetail | null>;
         startRun: (args: ReviewStartRunArgs) => Promise<ReviewRun>;
         rerun: (runId: string) => Promise<ReviewRun>;
+        cancelRun: (runId: string) => Promise<ReviewRun | null>;
+        recordFeedback: (
+          args: import("../shared/types").ReviewRecordFeedbackArgs,
+        ) => Promise<import("../shared/types").ReviewFeedbackRecord>;
+        listSuppressions: (
+          args?: import("../shared/types").ReviewListSuppressionsArgs,
+        ) => Promise<import("../shared/types").ReviewSuppression[]>;
+        deleteSuppression: (suppressionId: string) => Promise<boolean>;
+        qualityReport: () => Promise<import("../shared/types").ReviewQualityReport>;
         onEvent: (cb: (ev: ReviewEventPayload) => void) => () => void;
       };
       actions: {
