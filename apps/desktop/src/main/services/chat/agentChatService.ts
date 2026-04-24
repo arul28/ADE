@@ -301,6 +301,14 @@ type CodexRuntime = {
   commandOutputByItemId: Map<string, string>;
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
+  // Tracks itemIds whose output/diff was streamed incrementally via
+  // outputDelta handlers. When the snapshot (`item/.../completed`) later fires
+  // with the full aggregated content, we emit empty output/diff on those
+  // itemIds so the renderer's `mergeStreamingText` heuristic doesn't append
+  // the snapshot onto the already-accumulated delta chunks when the snapshot
+  // prefix doesn't exactly match (e.g. diff headers absent from deltas).
+  streamedCommandItemIds: Set<string>;
+  streamedFileChangeItemIds: Set<string>;
   activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
   interruptedTurnIds: Set<string>;
   ignoredTurnIds: Set<string>;
@@ -8645,11 +8653,16 @@ export function createAgentChatService(args: {
       const output = String(item.aggregatedOutput ?? runtime.commandOutputByItemId.get(itemId) ?? "");
       runtime.commandOutputByItemId.set(itemId, output);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      // If this item's output was already streamed via outputDelta, the
+      // renderer has the content accumulated; emit empty output on the
+      // snapshot so `mergeStreamingText` doesn't append the snapshot onto the
+      // deltas when the snapshot prefix doesn't match exactly.
+      const emittedOutput = runtime.streamedCommandItemIds.has(itemId) ? "" : output;
       emitChatEvent(managed, {
         type: "command",
         command: String(item.command ?? "command"),
         cwd: String(item.cwd ?? managed.laneWorktreePath),
-        output,
+        output: emittedOutput,
         itemId,
         turnId,
         exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
@@ -8688,11 +8701,16 @@ export function createAgentChatService(args: {
       const status = mapCommandStatus(
         String(item.status ?? (eventKind === "completed" ? "completed" : "inProgress"))
       );
+      // If this item's diff was already streamed via outputDelta, the
+      // renderer has accumulated the delta content; emit empty diff on the
+      // snapshot so `mergeStreamingText` doesn't append the full diff (with
+      // headers absent from deltas) onto the accumulated chunks.
+      const streamedAlready = runtime.streamedFileChangeItemIds.has(itemId);
       for (const change of changes) {
         emitChatEvent(managed, {
           type: "file_change",
           path: change.path,
-          diff: change.diff || runtime.fileDeltaByItemId.get(itemId) || "",
+          diff: streamedAlready ? "" : (change.diff || runtime.fileDeltaByItemId.get(itemId) || ""),
           kind: change.kind,
           itemId,
           turnId,
@@ -9163,6 +9181,7 @@ export function createAgentChatService(args: {
       const next = `${runtime.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
       runtime.commandOutputByItemId.set(itemId, next);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      runtime.streamedCommandItemIds.add(itemId);
       emitChatEvent(managed, {
         type: "activity",
         activity: "running_command",
@@ -9188,6 +9207,7 @@ export function createAgentChatService(args: {
       const next = `${runtime.fileDeltaByItemId.get(itemId) ?? ""}${delta}`;
       runtime.fileDeltaByItemId.set(itemId, next);
       evictOldestEntries(runtime.fileDeltaByItemId, MAX_SESSION_MAP_ENTRIES);
+      runtime.streamedFileChangeItemIds.add(itemId);
       emitChatEvent(managed, {
         type: "activity",
         activity: "editing_file",
@@ -9279,6 +9299,8 @@ export function createAgentChatService(args: {
       runtime.itemTurnIdByItemId.clear();
       runtime.commandOutputByItemId.clear();
       runtime.fileDeltaByItemId.clear();
+      runtime.streamedCommandItemIds.clear();
+      runtime.streamedFileChangeItemIds.clear();
       runtime.fileChangesByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
@@ -9486,6 +9508,8 @@ export function createAgentChatService(args: {
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
+      streamedCommandItemIds: new Set<string>(),
+      streamedFileChangeItemIds: new Set<string>(),
       activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
