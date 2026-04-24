@@ -1581,7 +1581,7 @@ describe("createAgentChatService", () => {
       expect(firstUserContent).toContain("Before saying an ADE task is blocked");
       expect(firstUserContent).toContain("ade actions list --text");
       expect(secondUserContent).not.toContain("[ADE launch directive]");
-      expect(secondUserContent).not.toContain("Before saying an ADE task is blocked");
+      expect(secondUserContent).toContain("Before saying an ADE task is blocked");
     });
 
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
