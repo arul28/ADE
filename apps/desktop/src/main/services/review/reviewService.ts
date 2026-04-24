@@ -1921,6 +1921,20 @@ export function createReviewService({
       const passResults: PassExecutionResult[] = [];
       for (const pass of REVIEW_PASSES) {
         if (disposed) return;
+        if (cancelledRuns.has(runId)) {
+          cancelledRuns.delete(runId);
+          const endedAt = nowIso();
+          updateRun(runId, {
+            status: "cancelled",
+            summary: "Run cancelled during review passes.",
+            error_message: null,
+            ended_at: endedAt,
+            updated_at: endedAt,
+          });
+          emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
+          emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
+          return;
+        }
         const passResult = await executePass({
           runId,
           run: effectiveRun,
@@ -2377,24 +2391,38 @@ export function createReviewService({
          where rr.project_id = ? and rf.publication_state = 'published'`,
       [projectId],
     );
+    // Count each finding once, using only its latest feedback entry. Without
+    // the row_number() filter, a user who toggled feedback (e.g. acknowledge
+    // then dismiss) would be counted twice and noiseRate could exceed 1.0.
     const feedbackCounts = db.all<{ kind: string; n: number }>(
-      `select kind, count(*) as n from review_finding_feedback
-         where project_id = ? group by kind`,
+      `with latest as (
+         select finding_id, kind,
+                row_number() over (partition by finding_id order by created_at desc) as rn
+           from review_finding_feedback
+          where project_id = ?
+       )
+       select kind, count(*) as n from latest where rn = 1 group by kind`,
       [projectId],
     );
     const kindMap = new Map(feedbackCounts.map((row) => [row.kind, Number(row.n ?? 0)]));
     const byClassRows = db.all<{ finding_class: string | null; total: number; addressed: number }>(
-      `select rf.finding_class as finding_class,
+      `with latest as (
+         select finding_id, kind,
+                row_number() over (partition by finding_id order by created_at desc) as rn
+           from review_finding_feedback
+          where project_id = ?
+       )
+       select rf.finding_class as finding_class,
               count(*) as total,
-              sum(case when fb.kind = 'acknowledge' then 1 else 0 end) as addressed
+              sum(case when fb.kind = 'acknowledge' and fb.rn = 1 then 1 else 0 end) as addressed
          from review_findings rf
          join review_runs rr on rr.id = rf.run_id
-         left join review_finding_feedback fb on fb.finding_id = rf.id
+         left join latest fb on fb.finding_id = rf.id
          where rr.project_id = ?
          group by rf.finding_class
          order by total desc
          limit 20`,
-      [projectId],
+      [projectId, projectId],
     );
     const recentFeedback = db.all<ReviewFindingFeedbackRow>(
       "select * from review_finding_feedback where project_id = ? order by created_at desc limit 20",
@@ -2406,7 +2434,9 @@ export function createReviewService({
     const suppressedCount = kindMap.get("suppress") ?? 0;
     const addressedCount = kindMap.get("acknowledge") ?? 0;
     const snoozedCount = kindMap.get("snooze") ?? 0;
-    const noiseRate = totalFindings > 0 ? Number(((dismissedCount + suppressedCount) / totalFindings).toFixed(3)) : 0;
+    const noiseRate = totalFindings > 0
+      ? Math.max(0, Math.min(1, Number(((dismissedCount + suppressedCount) / totalFindings).toFixed(3))))
+      : 0;
 
     return {
       projectId,

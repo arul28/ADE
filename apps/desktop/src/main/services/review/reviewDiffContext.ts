@@ -9,7 +9,8 @@ const CONTEXT_RADIUS = 8;
 
 function extractFileHunks(patchText: string): string[] {
   if (!patchText) return [];
-  const lines = patchText.split("\n");
+  // Normalize CRLF so render doesn't show a stray `\r` glyph on every line.
+  const lines = patchText.replace(/\r\n/g, "\n").split("\n");
   const hunks: string[][] = [];
   let current: string[] = [];
   for (const line of lines) {

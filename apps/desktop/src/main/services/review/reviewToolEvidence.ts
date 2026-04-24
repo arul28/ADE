@@ -60,8 +60,12 @@ function titleMatchesSignal(findingTitle: string, findingBody: string, summary: 
   if (tokens.length === 0) return false;
   const required = Math.min(2, tokens.length);
   let hits = 0;
+  const seen = new Set<string>();
   for (const token of tokens) {
-    if (haystack.includes(token)) hits += 1;
+    if (seen.has(token)) continue;
+    seen.add(token);
+    // Word-boundary match so "test" doesn't hit "latest" or "tested".
+    if (new RegExp(`\\b${token}\\b`).test(haystack)) hits += 1;
     if (hits >= required) return true;
   }
   return false;

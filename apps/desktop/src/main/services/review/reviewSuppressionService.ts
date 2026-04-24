@@ -24,8 +24,16 @@ function globToRegExp(pattern: string): RegExp {
     const ch = pattern[i];
     if (ch === "*") {
       if (pattern[i + 1] === "*") {
-        source += ".*";
-        i += 2;
+        // `**/` means "zero or more path segments" — needs to match both
+        // `src/foo.ts` and `src/a/b/foo.ts` against `src/**/*.ts`.
+        // Swallow the trailing slash and make the whole segment optional.
+        if (pattern[i + 2] === "/") {
+          source += "(?:.*/)?";
+          i += 3;
+        } else {
+          source += ".*";
+          i += 2;
+        }
       } else {
         source += "[^/]*";
         i += 1;
@@ -33,7 +41,7 @@ function globToRegExp(pattern: string): RegExp {
       continue;
     }
     if (ch === "?") {
-      source += ".";
+      source += "[^/]";
       i += 1;
       continue;
     }
@@ -280,17 +288,24 @@ export function createReviewSuppressionService({
         continue;
       }
 
-      let score = 0;
-      if (candidateEmbedding && suppression.embedding) {
-        score = cosine(candidateEmbedding, suppression.embedding);
+      // Score each candidate against its strongest signal:
+      // - if both sides have embeddings, trust cosine with the embedding bar
+      // - otherwise fall back to Jaccard-over-title-tokens with a lower bar
+      // Previously we mixed the two (jaccard could overwrite cosine but then
+      // get compared to the embedding threshold), which rejected real
+      // title-matches when embeddings happened to be weak.
+      const haveBothEmbeddings = Boolean(candidateEmbedding && suppression.embedding);
+      const cosineScore = haveBothEmbeddings
+        ? cosine(candidateEmbedding, suppression.embedding)
+        : 0;
+      if (haveBothEmbeddings && cosineScore >= EMBEDDING_SIM_THRESHOLD) {
+        const score = cosineScore;
+        if (!best || score > best.similarity) best = { row: suppression, similarity: score };
+        continue;
       }
-      if (score < EMBEDDING_SIM_THRESHOLD) {
-        const titleScore = jaccard(findingTokens, tokenize(suppression.title));
-        if (titleScore > score) score = titleScore;
-      }
-
-      const threshold = candidateEmbedding && suppression.embedding ? EMBEDDING_SIM_THRESHOLD : TITLE_SIM_THRESHOLD;
-      if (score < threshold) continue;
+      const titleScore = jaccard(findingTokens, tokenize(suppression.title));
+      if (titleScore < TITLE_SIM_THRESHOLD) continue;
+      const score = Math.max(cosineScore, titleScore);
 
       if (!best || score > best.similarity) {
         best = { row: suppression, similarity: score };

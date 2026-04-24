@@ -153,7 +153,7 @@ function DiffContextBlock({ context }: { context: ReviewDiffContext | null | und
             >
               <span className="w-10 shrink-0 text-right font-mono text-[#4B5B71]">{line.line ?? ""}</span>
               <span className="w-3 shrink-0 font-mono text-[#6E7F92]">{marker}</span>
-              <span className="whitespace-pre-wrap font-mono text-[11px]">{line.text || " "}</span>
+              <span className="whitespace-pre font-mono text-[11px]">{line.text || " "}</span>
             </span>
           );
         })}
@@ -229,6 +229,7 @@ function DismissModal({ open, initialKind, finding, onClose, onSubmit }: Dismiss
   const [snoozeDays, setSnoozeDays] = React.useState(7);
   const [suppressionScope, setSuppressionScope] = React.useState<ReviewSuppressionScope>("repo");
   const [submitting, setSubmitting] = React.useState(false);
+  const closeButtonRef = React.useRef<HTMLButtonElement | null>(null);
 
   React.useEffect(() => {
     if (open) {
@@ -240,6 +241,20 @@ function DismissModal({ open, initialKind, finding, onClose, onSubmit }: Dismiss
       setSubmitting(false);
     }
   }, [open, initialKind]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    // Move focus into the dialog so keyboard users are oriented.
+    queueMicrotask(() => closeButtonRef.current?.focus());
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -264,10 +279,25 @@ function DismissModal({ open, initialKind, finding, onClose, onSubmit }: Dismiss
     { value: "suppress", label: "Suppress similar findings", icon: <Shield size={14} /> },
   ];
 
+  const submitLabel = submitting
+    ? "Saving…"
+    : kind === "suppress"
+      ? suppressionScope === "path"
+        ? "Suppress for this path"
+        : suppressionScope === "global"
+          ? "Suppress everywhere"
+          : "Suppress in this repo"
+      : kind === "snooze"
+        ? `Snooze ${snoozeDays} day${snoozeDays === 1 ? "" : "s"}`
+        : "Dismiss";
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-8 backdrop-blur-sm"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Review finding feedback"
     >
       <div
         className="w-full max-w-lg overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0B141F] shadow-2xl"
@@ -278,12 +308,18 @@ function DismissModal({ open, initialKind, finding, onClose, onSubmit }: Dismiss
             <div className="text-[10px] uppercase tracking-[0.18em] text-[#6E7F92]">Feedback</div>
             <div className="truncate text-sm font-semibold text-[#F5FAFF]">{finding.title}</div>
           </div>
-          <button type="button" onClick={onClose} className="rounded-md p-1 text-[#93A4B8] hover:bg-white/[0.06]">
+          <button
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+            aria-label="Close feedback dialog"
+            className="rounded-md p-1 text-[#93A4B8] hover:bg-white/[0.06] focus:outline-none focus:ring-2 focus:ring-sky-400/50"
+          >
             <X size={16} />
           </button>
         </div>
         <div className="space-y-4 p-5">
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {kindOptions.map((opt) => (
               <button
                 key={opt.value}
@@ -386,7 +422,7 @@ function DismissModal({ open, initialKind, finding, onClose, onSubmit }: Dismiss
             onClick={handleSubmit}
             disabled={submitting || (reason === "other" && !note.trim())}
           >
-            {submitting ? "Saving…" : kind === "suppress" ? "Suppress" : kind === "snooze" ? "Snooze" : "Dismiss"}
+            {submitLabel}
           </Button>
         </div>
       </div>
