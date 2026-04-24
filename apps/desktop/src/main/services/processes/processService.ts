@@ -583,6 +583,9 @@ export function createProcessService({
 
     const laneRoot = laneService.getLaneWorktreePath(laneId);
     const configuredCwd = opts.overlay?.cwd?.trim() ? opts.overlay.cwd.trim() : definition.cwd.trim();
+    // Absolute cwd is intentionally allowed: ProcessDefinition.cwd and LaneOverlayOverrides.cwd
+    // originate from the trusted project config (same file that already declares the command
+    // to execute), not from UI/IPC input. Relative paths remain sandboxed to the lane worktree.
     const allowExternalCwd = path.isAbsolute(configuredCwd);
     let cwd: string;
     if (allowExternalCwd) {
