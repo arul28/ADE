@@ -1,0 +1,58 @@
+---
+title: "v1.1.5"
+description: "Release notes for ADE v1.1.5 — April 25, 2026"
+---
+
+v1.1.5 builds the two-way pty bridge so an iOS device can drive a desktop shell, ships bulk session management (select / archive / restore / export to markdown) on both desktop and iOS, lands an onboarding tour rewrite plus a one-shot `ade install` that wires up your shell PATH, and fixes a class of mobile-sync regressions where switching projects would mis-flag healthy reconnects as failures. iOS gets a full liquid-glass pass across Lanes, Work, Files, CTO, and AttentionDrawer, plus desktop feature parity for lane templates, multi-attach, branch picker, and a pan/pinch stack canvas. The release pipeline fix that was held back from v1.1.4's draft (publish-release needed `--repo` to gh) lands here. Ships in **TestFlight build 7** of 1.1.1.
+
+---
+
+## Desktop
+
+- **Two-way pty bridge.** `ptyService` exposes `writeBySessionId` / `resizeBySessionId` so callers don't need to know the internal `ptyId`. `syncHostService` handles new `terminal_input` and `terminal_resize` envelopes from iOS, gated behind a prior `terminal_subscribe` so only attached peers can drive a shell. The wire protocol now flows in both directions: desktop→iOS keeps `terminal_data` / `terminal_exit`, iOS→desktop adds `terminal_input` / `terminal_resize`.
+- **Bulk session select / archive / restore / export.** Long-press or the Select context menu in the Work view enters bulk-select mode; the action bar exposes Close, Archive, Restore, Delete, and Export. Export writes markdown transcripts via the new `transcriptExport` helper. Works across both chat and terminal sessions.
+- **Bulk discard for staged lane changes.** New action in `LaneGitActionsPane` lets you drop all staged changes on a lane in one shot.
+- **`ade install` shell-profile wiring.** `adeCliService` now installs the ADE CLI onto your `PATH` by editing the right shell profile: bash/zsh get an export line, fish gets explicit `fish_add_path` in `~/.config/fish/config.fish`. Returns `ShellPathResult { profilePath, modified }` so the caller can distinguish "added" vs "already present" instead of always claiming success.
+- **Onboarding tour revamp.** `firstJourneyTour` and the per-feature tours are rewritten end-to-end. Detail-drawer steps now carry fallback selectors and dispatch `ade:tour-pr-detail-tab` to switch tabs in-flight, so a user can never get stuck on a tutorial step. Pinned with `prsTour.test.ts` and `firstJourneyTour.test.ts`.
+- **Project-switch sync correctness.** `main.ts` gates sync-status broadcasts to the active project and nulls the `syncService` when there is no active project, so a switched-away project can't keep emitting status. `TopBar` now refetches `sync.getStatus` on project switch via a `project?.rootPath` dep. `SyncService.initialize()` coalesces concurrent calls (`initializingPromise` + `initialized` flag) so a fast project switch on mobile doesn't double-initialize.
+- **Plan-approval turn safety.** `agentChatService` defers the post-approval `sendMessage`, approval delete, and `emitPendingInputResolved` until the current turn is idle via a `pendingPlanFollowups` queue. Cancelled on teardown, abort, or process exit. A `try/finally` around the deferred `sendMessage` makes sure we never strand a half-approved plan.
+- **Reasoning-effort sequence guard.** `AgentChatPane` now sequences reasoning-effort changes with rollback on stale or failed `updateSession`, so a slow ASC round-trip can't clobber a newer choice.
+- **OpenCode listener-pid recovery.** `openCodeServerManager` recovers servers from orphaned ports by listener-pid; when `listenerPid === proc.pid`, the listener-PID kill is the sole signal — only fall through to `stopChildProcess` when they differ.
+- **PTY title fallback.** Hardened to a deterministic CLI placeholder so a brand-new shell never renders an empty title.
+- **`ExitPlanMode` behaviour.** Flipped to `behavior:"allow"` so the SDK's native handler runs, removing a layer of indirection that was eating the resume signal.
+- **`getOptionalSyncService` resolver.** `registerIpc` routes `lanesList` and `apnsSendTestPush` through a single resolver that respects an injected `getSyncService` null result instead of falling through to `ctx`. Keeps tests honest about which projects have sync wired.
+
+### /shipLane runbook fixes
+
+Four fixes learned from running `/shipLane` end-to-end on PR #197.
+
+- **Wait for both signals before fixing.** Review-comment edits routinely cause new CI failures, so applying them on a partial signal wastes the prior CI cycle. The "one push per iteration" guidance now spells out the *why* and the parallel-dispatch flow.
+- **UTC-normalize SINCE.** `git show --format=%cI` returns local-tz strings; GitHub returns `…Z`. `jq`'s string compare on `04:52:10-04:00` < `08:52:10Z` (lexicographic) silently flagged every old comment as new. Phase 1.2 now pipes through python's `astimezone(utc).strftime` so the filter is correct.
+- **Done-clean means merge, not stop.** New Phase 3c (auto-merge) with squash → `--admin` → `--auto` fallback chain. Phase 5.2 + Exit-states routes the iteration cap through 3c; only lands in `done-max` when all three merge paths are genuinely blocked.
+- **Don't pass `--delete-branch` to `gh pr merge`.** It triggers a local checkout that fails when `main` is in another worktree (always true for `/shipLane` runs from lane worktrees). Phase 3c.4 now documents server-side ref delete via `gh api -X DELETE`.
+
+---
+
+## Release pipeline
+
+- **`publish-release` job passes `--repo` to gh.** v1.1.4's `publish-release` had no `actions/checkout` step, so `gh release view` / `upload` / `create` all failed with `fatal: not a git repository`. Pass `--repo $GH_REPO` (= `github.repository`) to all three calls. No checkout step added — the publish job only needs the downloaded artifacts plus gh.
+
+---
+
+## iOS
+
+iOS picks up the desktop pty bridge, the bulk-session work, and a focused liquid-glass pass across every root tab. Ships in **TestFlight build 7** of 1.1.1.
+
+- **Terminal input from the phone.** `SyncService.sendTerminalInput` / `sendTerminalResize` mirror the new desktop wire surface. `WorkTerminalSessionView` gains a bottom input bar (`^C`, command field, paperplane send) and an ANSI/CSI strip helper so the plain `Text` renderer reads cleanly until SwiftTerm lands.
+- **Bulk session management.** `WorkRootScreen+Selection` adds the same long-press / Select bulk mode as desktop, with Close, Archive, Restore, Delete, and Export. Bulk restore/delete now track per-session success and only mutate `archivedSessionIdsStorage` for succeeded ids, so a partial failure never strands a session in the wrong bucket locally.
+- **Lane templates picker.** `LaneCreateSheet` gains a templates picker with an env-init progress view that polls `fetchLaneEnvStatus` while a template is applied — full parity with the desktop flow.
+- **Lane multi-attach.** `LaneMultiAttachSheet` discovers unregistered worktrees and bulk-attaches them, with an optional adopt-into-`.ade/worktrees` toggle. Backed by a new `lanes.listUnregisteredWorktrees` RPC and `UnregisteredLaneCandidate` model.
+- **Branch picker in lane actions.** `LaneBranchPickerSheet` is wired into `LaneActionsCard`'s Advanced git disclosure for `git.checkoutBranch`.
+- **Stack canvas.** `LaneStackCanvasScreen` is a full-page pan/pinch-zoom stack canvas, presented from a new top-bar pill button next to `+`.
+- **Switch-project null-connection is the success path.** Desktop returns `connection:null` as the normal response on a project switch (the phone keeps pairing creds and reconnects). The previous rollback-and-throw turned every healthy switch into `setDomainStatus(.failed)`. Now: `connection:null` keeps the new active project, tears down the stale socket if live, schedules `reconnectIfPossible` unconditionally, and returns `ok` — clearing `lastError` and setting all domains to `.disconnected` first so the UX shows "switching" instead of a stale "failed". Genuine error catches still roll back.
+- **Lane UI polish.** Error cards use glass cards (no more raw danger backgrounds). Text wraps with `minimumScaleFactor` and middle-truncation. Conflict resolution buttons fall back to a vertical stack on narrow widths via `ViewThatFits`. Sync tiles get the `tintLanes` accent and breathing room. Status banner is a single `adeGlassCard` instead of layered modifiers. Disabled live-action buttons fade to `0.55` opacity. Stale `.ultraThinMaterial` in the manage-sheet busy overlay is replaced with a glass scrim panel.
+- **Work liquid glass.** Fixes `listRowInsets` so cards stop hugging screen edges (16pt horizontal). Activity feed pulse only animates the first row. `withAnimation` + `scrollDismissesKeyboard.interactively`. Glass effect + glass border applied consistently across the filter section, chips, count pills, queued steer strip/row, composer surface, new-chat composer, lane picker, model/runtime menus, reasoning card, tool cards, and command card.
+- **CTO liquid glass + AttentionDrawer.** `CtoTabShell` segmented picker gets glass + soft top highlight. `WorkerRowCard`: glass background + top highlight + thicker border. `MiniActionButton` and the Hire-worker pill: glass + accent shadow. `CtoWorkflowsScreen`: 16pt horizontal `listRowInsets`, glass Sync-now, plus `adeNavigationGlass`. `AttentionDrawerSheet`: 24pt bottom safe-area + `scrollBounceBehavior`.
+- **Files polish.** Quick-open and text-search results capped at 40 with an overflow hint. Drops hardcoded `.padding(.bottom, 88)` for `.contentMargins(.bottom, 24)`. Tagline horizontal padding 18 → 16 for consistency. Glass effect on the proof artifact icon.
+- **Deep-link graceful degrade.** `DeepLinkRouter.resolvePrId` returns nil when the numeric lookup misses the workspace snapshot, so `PrsRootScreen` can degrade gracefully instead of silently dropping the deep-link nav.
+- **ADE error 26 on no-connection switch.** iOS `SyncService` rolls back the active project and throws ADE 26 when a `switch_project` call has no available connection (distinct from the `connection:null` success path above).
