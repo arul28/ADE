@@ -493,8 +493,13 @@ All lane, file, Work, and PR projections are scoped through
 `Database.currentProjectId()`. The iOS app stores the active project id
 in `UserDefaults`, mirrors it into `DatabaseService`, and falls back to
 the project home if no selected project row has arrived yet. Project
-switches reset the remote DB version and reconnect with a project-specific
-bootstrap token returned by the host.
+switches reset the remote DB version. The desktop runs at most one sync
+host at a time — pinned to the active project — so when the phone asks
+the desktop to switch projects, the desktop activates the requested
+project locally, returns `connection: null`, and the phone reuses its
+existing pairing credentials to reconnect against the now-active host.
+If the desktop is offline at switch time, it still records the requested
+project as active and the phone reconnects when the desktop returns.
 
 Rather than reconstructing lane detail surfaces client-side from
 primitive rows, the iOS app persists richer projections the host
