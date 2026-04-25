@@ -172,6 +172,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect((await serviceB.getStatus()).bootstrapToken).toBe("legacy-token");
     expect((await serviceB.getStatus()).pairingPinConfigured).toBe(true);
     expect(serviceA.getPin()).toBe("123456");
+    // serviceB sees the same on-disk pin file but only the host that performed
+    // the migration retains the plaintext PIN in memory; serviceB should not.
+    expect(serviceB.getPin()).toBeNull();
   });
 
   it("reports W3 transfer blockers while keeping paused and idle state survivable", async () => {

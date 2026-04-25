@@ -13152,30 +13152,33 @@ export function createAgentChatService(args: {
       if (pending.kind === "plan_approval") {
         const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
         const feedback = typeof responseText === "string" ? responseText.trim() : "";
-        if (approved) {
-          // Switch out of plan mode before sending the implementation turn.
-          managed.session.permissionMode = "edit";
-          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
-          runtime.threadResumed = false;
-          persistChatState(managed);
-          await sendMessage({
-            sessionId,
-            text: "The user approved the plan. Please proceed with implementation.",
-          });
-        } else {
-          await sendMessage({
-            sessionId,
-            text: feedback.length > 0
-              ? `The user rejected the plan with feedback: "${feedback}". Please revise.`
-              : "The user rejected the plan. Please revise your approach.",
+        try {
+          if (approved) {
+            // Switch out of plan mode before sending the implementation turn.
+            managed.session.permissionMode = "edit";
+            applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+            runtime.threadResumed = false;
+            persistChatState(managed);
+            await sendMessage({
+              sessionId,
+              text: "The user approved the plan. Please proceed with implementation.",
+            });
+          } else {
+            await sendMessage({
+              sessionId,
+              text: feedback.length > 0
+                ? `The user rejected the plan with feedback: "${feedback}". Please revise.`
+                : "The user rejected the plan. Please revise your approach.",
+            });
+          }
+        } finally {
+          runtime.approvals.delete(itemId);
+          emitPendingInputResolved(managed, {
+            itemId,
+            decision: resolvedDecision,
+            turnId: pending.request?.turnId ?? null,
           });
         }
-        runtime.approvals.delete(itemId);
-        emitPendingInputResolved(managed, {
-          itemId,
-          decision: resolvedDecision,
-          turnId: pending.request?.turnId ?? null,
-        });
         return;
       }
 

@@ -955,6 +955,13 @@ export function getTerminalRuntimeHealth(sessionId: string): TerminalHealthCount
   return getTerminalRuntimeSnapshot(sessionId)?.health ?? null;
 }
 
+export function __resetTerminalRuntimesForTests(): void {
+  for (const runtime of Array.from(runtimeCache.values())) {
+    teardownRuntime(runtime);
+  }
+  runtimeCache.clear();
+}
+
 export function TerminalView({
   ptyId,
   sessionId,

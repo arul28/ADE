@@ -143,6 +143,7 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 import {
   TerminalView,
+  __resetTerminalRuntimesForTests,
   disposeTerminalRuntimesForProjectChange,
   getTerminalRuntimeSnapshot,
 } from "./TerminalView";
@@ -320,6 +321,7 @@ describe("TerminalView", () => {
 
   afterEach(() => {
     cleanup();
+    __resetTerminalRuntimesForTests();
     delete (window as any).ade;
     vi.useRealTimers();
   });

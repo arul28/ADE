@@ -2652,6 +2652,14 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event),
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
+    // Only the project that matches the currently-active root should auto-start
+    // its sync host; background project contexts stay dormant until activated.
+    // ADE_DISABLE_SYNC_HOST=1 is a global kill switch for tests / CI.
+    const isActiveProjectContext =
+      activeProjectRoot != null
+      && normalizeProjectRoot(projectRoot) === activeProjectRoot;
+    const syncHostAutoStart =
+      process.env.ADE_DISABLE_SYNC_HOST !== "1" && isActiveProjectContext;
     const syncService = createSyncService({
       db,
       logger,
@@ -2687,22 +2695,26 @@ app.whenReady().then(async () => {
       getLinearIssueTracker: () => linearIssueTracker,
       getLinearSyncService: () => linearSyncServiceRef,
       processService,
-      hostStartupEnabled:
-        process.env.ADE_DISABLE_SYNC_HOST !== "1"
-        && activeProjectRoot != null
-        && normalizeProjectRoot(projectRoot) === activeProjectRoot,
+      hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: path.join(app.getPath("userData"), "phone-sync"),
-      hostDiscoveryEnabled: activeProjectRoot != null && normalizeProjectRoot(projectRoot) === activeProjectRoot,
+      hostDiscoveryEnabled: isActiveProjectContext,
       notificationEventBus,
       projectCatalogProvider: {
         listProjects: listMobileSyncProjects,
         prepareProjectConnection: prepareMobileSyncProjectConnection,
       },
-      onStatusChanged: (snapshot) =>
+      onStatusChanged: (snapshot) => {
+        if (
+          activeProjectRoot == null
+          || normalizeProjectRoot(projectRoot) !== activeProjectRoot
+        ) {
+          return;
+        }
         broadcast(IPC.syncEvent, {
           type: "sync-status",
           snapshot,
-        }),
+        });
+      },
     });
     syncServiceRef = syncService;
     // Late-bind the sync service into the notification bus dependencies so
@@ -4481,10 +4493,8 @@ app.whenReady().then(async () => {
       return ctx;
     },
     getSyncService: () => {
-      if (activeProjectRoot) {
-        return projectContexts.get(activeProjectRoot)?.syncService ?? null;
-      }
-      return [...projectContexts.values()].find((ctx) => ctx.syncService)?.syncService ?? null;
+      if (!activeProjectRoot) return null;
+      return projectContexts.get(activeProjectRoot)?.syncService ?? null;
     },
     switchProjectFromDialog,
     closeCurrentProject,

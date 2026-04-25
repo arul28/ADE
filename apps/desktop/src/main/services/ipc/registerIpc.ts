@@ -1555,8 +1555,12 @@ export function registerIpc({
   let linearOAuthService: LinearOAuthService | null = null;
   let linearOAuthServiceAdeDir: string | null = null;
 
+  const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
+    return getSyncService?.() ?? getCtx().syncService ?? null;
+  };
+
   const requireSyncService = (): ReturnType<typeof createSyncService> => {
-    const service = getSyncService?.() ?? getCtx().syncService;
+    const service = getOptionalSyncService();
     if (!service) {
       throw new Error("Sync service is not available.");
     }
@@ -3580,7 +3584,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
     const ctx = getCtx();
-    const devicesOpenByLaneId = buildLanePresenceByLaneId(ctx.syncService);
+    const devicesOpenByLaneId = buildLanePresenceByLaneId(getOptionalSyncService());
     return await withIpcTiming(
       ctx,
       "lanes.list",
@@ -7178,7 +7182,7 @@ export function registerIpc({
       if (!ctx.apnsService || !ctx.apnsService.isConfigured?.()) {
         return { ok: false, reason: "APNs not configured. Upload a .p8 and save the config." };
       }
-      const registry = ctx.syncService?.getDeviceRegistryService?.() ?? null;
+      const registry = getOptionalSyncService()?.getDeviceRegistryService?.() ?? null;
       if (!registry) return { ok: false, reason: "Device registry unavailable." };
       const effective = ctx.projectConfigService?.get?.()?.effective;
       const apnsConfig = effective?.notifications?.apns ?? null;
