@@ -970,7 +970,7 @@ final class SyncService: ObservableObject {
       ])
     }
     let result = try decode(raw, as: MobileProjectSwitchResultPayload.self)
-    guard result.ok, let connection = result.connection else {
+    guard result.ok else {
       throw NSError(domain: "ADE", code: 24, userInfo: [
         NSLocalizedDescriptionKey: result.message ?? "The desktop could not open that project for phone sync."
       ])
@@ -980,6 +980,36 @@ final class SyncService: ObservableObject {
     }
 
     let targetProject = result.project ?? project
+    let previousActiveProjectId = activeProjectId
+    let previousActiveProjectRootPath = activeProjectRootPath
+    let previousProfile = loadProfile()
+    let previousToken = keychain.loadToken()
+    let previousLatestRemoteDbVersion = latestRemoteDbVersion
+    let previousRemoteProjectCatalog = remoteProjectCatalog
+    remoteProjectCatalog.removeAll { existing in
+      existing.id == targetProject.id
+        || (normalizedProjectRoot(existing.rootPath) != nil
+          && normalizedProjectRoot(existing.rootPath) == normalizedProjectRoot(targetProject.rootPath))
+    }
+    remoteProjectCatalog.append(targetProject)
+    setActiveProjectId(targetProject.id, rootPath: targetProject.rootPath ?? project.rootPath)
+    refreshProjectCatalog()
+    latestRemoteDbVersion = 0
+
+    guard let connection = result.connection else {
+      projectHomePresented = false
+      localStateRevision += 1
+      refreshActiveSessionsAndSnapshot()
+      scheduleWorkspaceSnapshotWrite()
+      if connectionState == .connected || connectionState == .syncing {
+        teardownSocket(reason: "Switching desktop project.")
+        Task { @MainActor [weak self] in
+          await self?.reconnectIfPossible(userInitiated: true)
+        }
+      }
+      return
+    }
+
     let addressCandidates = deduplicatedAddresses(
       connection.addressCandidates.map(\.host)
         + (currentAddress.map { [$0] } ?? [])
@@ -1008,22 +1038,6 @@ final class SyncService: ObservableObject {
       },
       tailscaleAddress: addressCandidates.first(where: syncIsTailscaleRoute)
     )
-
-    let previousActiveProjectId = activeProjectId
-    let previousActiveProjectRootPath = activeProjectRootPath
-    let previousProfile = loadProfile()
-    let previousToken = keychain.loadToken()
-    let previousLatestRemoteDbVersion = latestRemoteDbVersion
-    let previousRemoteProjectCatalog = remoteProjectCatalog
-    remoteProjectCatalog.removeAll { existing in
-      existing.id == targetProject.id
-        || (normalizedProjectRoot(existing.rootPath) != nil
-          && normalizedProjectRoot(existing.rootPath) == normalizedProjectRoot(targetProject.rootPath))
-    }
-    remoteProjectCatalog.append(targetProject)
-    setActiveProjectId(targetProject.id, rootPath: targetProject.rootPath ?? project.rootPath)
-    refreshProjectCatalog()
-    latestRemoteDbVersion = 0
 
     let connectAttemptGeneration = beginConnectAttempt()
     do {

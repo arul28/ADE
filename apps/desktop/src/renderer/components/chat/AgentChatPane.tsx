@@ -3257,6 +3257,32 @@ export function AgentChatPane({
     });
   }, [updateNativeControls]);
 
+  const handleReasoningEffortChange = useCallback((nextReasoningEffort: string | null) => {
+    setReasoningEffort(nextReasoningEffort);
+    if (!selectedSessionId) return;
+    if (isPersistentIdentitySurface && sessionMutationKind) return;
+
+    patchSessionSummary(selectedSessionId, { reasoningEffort: nextReasoningEffort });
+    void window.ade.agentChat.updateSession({
+      sessionId: selectedSessionId,
+      reasoningEffort: nextReasoningEffort,
+    }).then((updatedSession) => {
+      patchSessionSummary(selectedSessionId, {
+        reasoningEffort: updatedSession.reasoningEffort ?? null,
+      });
+      void refreshSessions().catch(() => {});
+    }).catch((err) => {
+      void refreshSessions().catch(() => {});
+      setError(err instanceof Error ? err.message : String(err));
+    });
+  }, [
+    isPersistentIdentitySurface,
+    patchSessionSummary,
+    refreshSessions,
+    selectedSessionId,
+    sessionMutationKind,
+  ]);
+
   const handleComputerUsePolicyChange = useCallback(async (_nextPolicy: unknown) => {
     // Computer-use policy gating has been removed; this handler is a no-op retained for UI compat.
   }, []);
@@ -3659,7 +3685,7 @@ export function AgentChatPane({
                 setSessionMutationKind(null);
               });
             }}
-            onReasoningEffortChange={setReasoningEffort}
+            onReasoningEffortChange={handleReasoningEffortChange}
             onDraftChange={(value) => {
               setDraft(value);
               draftsPerSessionRef.current.set(selectedSessionId, value);

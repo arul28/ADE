@@ -1847,9 +1847,32 @@ import {
   mapPermissionToCodex
 } from "../orchestrator/permissionMapping";
 
-/** Spread-ready codex policy args (approvalPolicy + sandbox) or empty object if null. */
+function codexSandboxPolicyType(sandbox: AgentChatCodexSandbox): string {
+  switch (sandbox) {
+    case "read-only":
+      return "readOnly";
+    case "workspace-write":
+      return "workspaceWrite";
+    case "danger-full-access":
+      return "dangerFullAccess";
+    default:
+      return sandbox satisfies never;
+  }
+}
+
+/** Spread-ready codex thread lifecycle policy args or empty object if null. */
 function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Record<string, string> {
   return policy ? { approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox } : {};
+}
+
+/** Spread-ready codex per-turn policy args or empty object if null. */
+function codexTurnPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Record<string, unknown> {
+  return policy
+    ? {
+        approvalPolicy: policy.approvalPolicy,
+        sandboxPolicy: { type: codexSandboxPolicyType(policy.sandbox) },
+      }
+    : {};
 }
 
 type CodexThreadLifecycleResponse = {
@@ -6511,7 +6534,7 @@ export function createAgentChatService(args: {
       });
     }
 
-    resolveCodexThreadParams(managed);
+    const { codexPolicy } = resolveCodexThreadParams(managed);
     await runtime.collaborationModesReady?.catch(() => {});
     const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
     const collaborationMode = buildCodexCollaborationMode(
@@ -6539,7 +6562,9 @@ export function createAgentChatService(args: {
       result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
         threadId: managed.session.threadId,
         input,
+        model: managed.session.model,
         ...(managed.session.reasoningEffort ? { effort: managed.session.reasoningEffort } : {}),
+        ...codexTurnPolicyArgs(codexPolicy),
         ...(collaborationMode ? { collaborationMode } : {}),
       });
     } catch (error) {
@@ -13128,9 +13153,11 @@ export function createAgentChatService(args: {
         const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
         const feedback = typeof responseText === "string" ? responseText.trim() : "";
         if (approved) {
-          // Switch out of plan mode and send implementation steer
+          // Switch out of plan mode before sending the implementation turn.
           managed.session.permissionMode = "edit";
           applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+          runtime.threadResumed = false;
+          persistChatState(managed);
           await sendMessage({
             sessionId,
             text: "The user approved the plan. Please proceed with implementation.",

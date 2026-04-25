@@ -117,6 +117,63 @@ afterEach(async () => {
 });
 
 describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
+  it("uses app-level phone pairing state across project roots", async () => {
+    const projectRootA = makeProjectRoot("ade-sync-service-app-state-a-");
+    const projectRootB = makeProjectRoot("ade-sync-service-app-state-b-");
+    const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-app-state-"));
+    fs.mkdirSync(path.join(projectRootA, ".ade", "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-bootstrap-token"), "legacy-token\n", "utf8");
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-pin.json"), JSON.stringify({
+      pin: "123456",
+      updatedAt: "2026-04-24T00:00:00.000Z",
+    }), "utf8");
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-paired-devices.json"), "{}\n", "utf8");
+
+    const dbA = await openKvDb(path.join(projectRootA, ".ade", "ade.db"), createLogger() as any);
+    const dbB = await openKvDb(path.join(projectRootB, ".ade", "ade.db"), createLogger() as any);
+    const baseArgs = {
+      logger: createLogger() as any,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [] } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: true,
+    };
+
+    const serviceA = createSyncService({
+      ...baseArgs,
+      db: dbA,
+      projectRoot: projectRootA,
+      localDeviceIdPath: path.join(appPairingDir, "sync-device-id"),
+    });
+    const serviceB = createSyncService({
+      ...baseArgs,
+      db: dbB,
+      projectRoot: projectRootB,
+      localDeviceIdPath: path.join(appPairingDir, "sync-device-id"),
+    });
+    activeDisposers.push(async () => {
+      await serviceA.dispose();
+      await serviceB.dispose();
+      dbA.close();
+      dbB.close();
+    });
+
+    expect(fs.readFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "utf8").trim()).toBe("legacy-token");
+    expect(fs.existsSync(path.join(appPairingDir, "sync-paired-devices.json"))).toBe(true);
+    expect((await serviceA.getStatus()).bootstrapToken).toBe("legacy-token");
+    expect((await serviceA.getStatus()).pairingPinConfigured).toBe(true);
+    expect((await serviceB.getStatus()).bootstrapToken).toBe("legacy-token");
+    expect((await serviceB.getStatus()).pairingPinConfigured).toBe(true);
+    expect(serviceA.getPin()).toBe("123456");
+  });
+
   it("reports W3 transfer blockers while keeping paused and idle state survivable", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-blockers-");
     const db = await openKvDb(

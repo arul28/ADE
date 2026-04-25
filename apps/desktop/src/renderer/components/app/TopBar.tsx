@@ -137,11 +137,6 @@ export function TopBar() {
   }, [fetchRecent]);
 
   useEffect(() => {
-    if (!project?.rootPath) {
-      setSyncSnapshot(null);
-      setPhoneSyncOpen(false);
-      return;
-    }
     let cancelled = false;
     const refreshSyncStatus = () => {
       void window.ade.sync.getStatus().then((snapshot) => {
@@ -165,7 +160,7 @@ export function TopBar() {
       window.removeEventListener("focus", refreshSyncStatus);
       dispose();
     };
-  }, [project?.rootPath]);
+  }, []);
 
   const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {
     if (project?.rootPath !== projectRootPath) return true;

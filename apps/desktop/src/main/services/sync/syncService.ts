@@ -65,6 +65,7 @@ type SyncServiceArgs = {
   logger: Logger;
   projectRoot: string;
   localDeviceIdPath?: string;
+  phonePairingStateDir?: string;
   fileService: ReturnType<typeof createFileService>;
   laneService: ReturnType<typeof createLaneService>;
   gitService?: ReturnType<typeof createGitOperationsService>;
@@ -122,6 +123,34 @@ type SyncServiceArgs = {
 const DRAFT_FILE = "sync-peer-draft.json";
 const TOKEN_FILE = "sync-bootstrap-token";
 const PIN_FILE = "sync-pin.json";
+const PAIRED_DEVICES_FILE = "sync-paired-devices.json";
+
+function migrateLegacySyncSecretFile(args: {
+  legacyPath: string;
+  appPath: string;
+  logger: Logger;
+  label: string;
+}): void {
+  if (args.legacyPath === args.appPath) return;
+  if (fs.existsSync(args.appPath) || !fs.existsSync(args.legacyPath)) return;
+  try {
+    fs.mkdirSync(path.dirname(args.appPath), { recursive: true });
+    fs.copyFileSync(args.legacyPath, args.appPath, fs.constants.COPYFILE_EXCL);
+    args.logger.info("sync.app_pairing_state_migrated", {
+      label: args.label,
+      legacyPath: args.legacyPath,
+      appPath: args.appPath,
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null | undefined)?.code === "EEXIST") return;
+    args.logger.warn("sync.app_pairing_state_migration_failed", {
+      label: args.label,
+      legacyPath: args.legacyPath,
+      appPath: args.appPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
 const SYNC_HOST_PORT_RETRY_WINDOW = 12;
@@ -280,9 +309,35 @@ function buildHostPortCandidates(preferredPort: number | null | undefined): numb
 
 export function createSyncService(args: SyncServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
-  const draftPath = path.join(layout.secretsDir, DRAFT_FILE);
-  const tokenPath = path.join(layout.secretsDir, TOKEN_FILE);
-  const pinPath = path.join(layout.secretsDir, PIN_FILE);
+  const pairingStateDir = args.phonePairingStateDir ?? layout.secretsDir;
+  const draftPath = path.join(pairingStateDir, DRAFT_FILE);
+  const tokenPath = path.join(pairingStateDir, TOKEN_FILE);
+  const pinPath = path.join(pairingStateDir, PIN_FILE);
+  const pairingSecretsPath = path.join(pairingStateDir, PAIRED_DEVICES_FILE);
+  migrateLegacySyncSecretFile({
+    legacyPath: path.join(layout.secretsDir, DRAFT_FILE),
+    appPath: draftPath,
+    logger: args.logger,
+    label: DRAFT_FILE,
+  });
+  migrateLegacySyncSecretFile({
+    legacyPath: path.join(layout.secretsDir, TOKEN_FILE),
+    appPath: tokenPath,
+    logger: args.logger,
+    label: TOKEN_FILE,
+  });
+  migrateLegacySyncSecretFile({
+    legacyPath: path.join(layout.secretsDir, PIN_FILE),
+    appPath: pinPath,
+    logger: args.logger,
+    label: PIN_FILE,
+  });
+  migrateLegacySyncSecretFile({
+    legacyPath: path.join(layout.secretsDir, PAIRED_DEVICES_FILE),
+    appPath: pairingSecretsPath,
+    logger: args.logger,
+    label: PAIRED_DEVICES_FILE,
+  });
   fs.mkdirSync(path.dirname(draftPath), { recursive: true });
 
   const pinStore = createSyncPinStore({ filePath: pinPath });
@@ -298,7 +353,7 @@ export function createSyncService(args: SyncServiceArgs) {
   let refreshRunning = false;
   let refreshQueued = false;
   let disposed = false;
-  const hostStartupEnabled = args.hostStartupEnabled !== false;
+  let hostStartupEnabled = args.hostStartupEnabled !== false;
   let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
   const isCrdtSyncAvailable = (): boolean => args.db.sync.isAvailable?.() !== false;
   const assertPhonePairingAvailable = (): void => {
@@ -459,6 +514,7 @@ export function createSyncService(args: SyncServiceArgs) {
         computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
         pinStore,
         bootstrapTokenPath: tokenPath,
+        pairingSecretsPath,
         port: attemptedPort,
         discoveryEnabled: hostDiscoveryEnabled,
         deviceRegistryService,
@@ -762,6 +818,11 @@ export function createSyncService(args: SyncServiceArgs) {
       hostDiscoveryEnabled = enabled;
       hostService?.setDiscoveryEnabled(enabled);
       void emitStatus();
+    },
+
+    setHostStartupEnabled(enabled: boolean): void {
+      hostStartupEnabled = enabled;
+      void refreshRoleState();
     },
 
     async updateLocalDevice(argsIn: {

@@ -145,14 +145,13 @@ describe("TopBar", () => {
     }
   });
 
-  it("does not poll phone sync before a project is open", async () => {
+  it("polls phone sync before a project is open", async () => {
     useAppStore.setState({ project: null } as any);
 
     render(<TopBar />);
 
-    await waitFor(() => {
-      expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
-    });
+    expect(await screen.findByText("1 phone connected")).toBeTruthy();
+    expect(globalThis.window.ade.sync.getStatus).toHaveBeenCalled();
   });
 
   it("opens the phone sync drawer from the host status control", async () => {
@@ -173,32 +172,33 @@ describe("TopBar", () => {
     });
   });
 
-  it("refreshes the phone sync label after switching projects", async () => {
+  it("refreshes the phone sync label from global sync events", async () => {
+    let syncEventHandler: ((event: any) => void) | null = null;
     const getStatus = vi.fn()
-      .mockResolvedValueOnce(makeSyncSnapshot({ connectedPeers: [] }))
-      .mockResolvedValueOnce(makeSyncSnapshot({
-        connectedPeers: [
-          { deviceId: "phone-1", deviceName: "Arul iPhone", platform: "iOS", deviceType: "phone" },
-        ],
-      }));
+      .mockResolvedValueOnce(makeSyncSnapshot({ connectedPeers: [] }));
     globalThis.window.ade.sync.getStatus = getStatus as any;
+    globalThis.window.ade.sync.onEvent = vi.fn((handler) => {
+      syncEventHandler = handler;
+      return () => {
+        syncEventHandler = null;
+      };
+    }) as any;
 
     render(<TopBar />);
 
     expect(await screen.findByText("Phone sync ready")).toBeTruthy();
 
     await act(async () => {
-      useAppStore.setState({
-        project: {
-          rootPath: "/Users/arul/ADE/.ade/worktrees/mobile-lanes-tab-2d82c012",
-          name: "mobile-lanes-tab-2d82c012",
-        } as any,
+      syncEventHandler?.({
+        type: "sync-status",
+        snapshot: makeSyncSnapshot({
+          connectedPeers: [
+            { deviceId: "phone-1", deviceName: "Arul iPhone", platform: "iOS", deviceType: "phone" },
+          ],
+        }),
       });
     });
 
-    await waitFor(() => {
-      expect(getStatus).toHaveBeenCalledTimes(2);
-    });
     expect(await screen.findByText("1 phone connected")).toBeTruthy();
   });
 });

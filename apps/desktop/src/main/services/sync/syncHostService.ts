@@ -172,6 +172,7 @@ type SyncHostServiceArgs = {
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   pinStore: SyncPinStore;
   bootstrapTokenPath?: string;
+  pairingSecretsPath?: string;
   port?: number;
   discoveryEnabled?: boolean;
   heartbeatIntervalMs?: number;
@@ -346,7 +347,7 @@ function looksLikePendingTailnetApproval(text: string): boolean {
 export function createSyncHostService(args: SyncHostServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const bootstrapTokenPath = args.bootstrapTokenPath ?? path.join(layout.secretsDir, "sync-bootstrap-token");
-  const pairingSecretsPath = path.join(layout.secretsDir, "sync-paired-devices.json");
+  const pairingSecretsPath = args.pairingSecretsPath ?? path.join(layout.secretsDir, "sync-paired-devices.json");
   const bootstrapToken = ensureBootstrapToken(bootstrapTokenPath);
   const pairingStore = createSyncPairingStore({
     filePath: pairingSecretsPath,
