@@ -133,7 +133,8 @@ struct FilesProofArtifactRow: View {
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.accent)
         .frame(width: 32, height: 32)
-        .background(ADEColor.accent.opacity(0.1), in: Circle())
+        .background(ADEColor.accent.opacity(0.14), in: Circle())
+        .glassEffect()
 
       VStack(alignment: .leading, spacing: 4) {
         Text(artifact.title)

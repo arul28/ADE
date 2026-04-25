@@ -82,7 +82,7 @@ struct FilesDetailScreen: View {
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
     .adeScreenBackground()

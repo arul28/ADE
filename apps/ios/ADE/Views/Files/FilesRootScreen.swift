@@ -167,7 +167,7 @@ struct FilesRootScreen: View {
             )
 
             if canUseLiveFileActions {
-              ForEach(quickOpenResults) { item in
+              ForEach(quickOpenResults.prefix(40)) { item in
                 Button {
                   openFile(item.path, in: workspace, focusLine: nil)
                 } label: {
@@ -178,6 +178,13 @@ struct FilesRootScreen: View {
                   )
                 }
                 .buttonStyle(.plain)
+              }
+              if quickOpenResults.count > 40 {
+                Text("Showing first 40 of \(quickOpenResults.count) results — refine the search to narrow further.")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textMuted)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .padding(.horizontal, 4)
               }
             }
 
@@ -191,7 +198,7 @@ struct FilesRootScreen: View {
             )
 
             if canUseLiveFileActions {
-              ForEach(textSearchResults) { result in
+              ForEach(textSearchResults.prefix(40)) { result in
                 Button {
                   openFile(result.path, in: workspace, focusLine: result.line)
                 } label: {
@@ -202,6 +209,13 @@ struct FilesRootScreen: View {
                   )
                 }
                 .buttonStyle(.plain)
+              }
+              if textSearchResults.count > 40 {
+                Text("Showing first 40 of \(textSearchResults.count) matches — refine the query to narrow further.")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textMuted)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .padding(.horizontal, 4)
               }
             }
 
@@ -222,10 +236,10 @@ struct FilesRootScreen: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .padding(.bottom, 88)
       }
       .scrollDismissesKeyboard(.interactively)
       .scrollBounceBehavior(.basedOnSize)
+      .contentMargins(.bottom, 24, for: .scrollContent)
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("")
