@@ -10,6 +10,7 @@ import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/t
 import { isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { formatSessionBundleMarkdown, triggerBrowserDownload } from "../../lib/transcriptExport";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -289,6 +290,87 @@ export function TerminalsPage() {
       });
   }, [selectedSessions, work]);
 
+  const selectedArchivableChats = useMemo(
+    () => selectedSessions.filter((session) => isChatToolType(session.toolType) && !session.archivedAt),
+    [selectedSessions],
+  );
+  const selectedRestorableChats = useMemo(
+    () => selectedSessions.filter((session) => isChatToolType(session.toolType) && Boolean(session.archivedAt)),
+    [selectedSessions],
+  );
+
+  const handleBulkArchiveSelected = useCallback(() => {
+    const targets = selectedArchivableChats;
+    if (!targets.length) return;
+    const confirmed = window.confirm(
+      `Archive ${targets.length} chat${targets.length === 1 ? "" : "s"}?\n\nArchived chats are hidden from the default view but can be restored later. Terminal sessions in your selection are skipped.`,
+    );
+    if (!confirmed) return;
+    setSessionActionError(null);
+    void Promise.allSettled(
+      targets.map((session) => window.ade.agentChat.archive({ sessionId: session.id })),
+    )
+      .then(async (results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        setSelectedSessionIds(new Set());
+        setSelectionAnchorId(null);
+        invalidateSessionListCache();
+        await work.refresh({ showLoading: false, force: true }).catch((err: unknown) => {
+          console.error("[TerminalsPage] refresh after bulk archive failed", { err });
+        });
+        if (failed > 0) {
+          setSessionActionError(`Archive failed for ${failed} chat${failed === 1 ? "" : "s"}.`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        }
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Archive failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      });
+  }, [selectedArchivableChats, work]);
+
+  const handleBulkRestoreSelected = useCallback(() => {
+    const targets = selectedRestorableChats;
+    if (!targets.length) return;
+    setSessionActionError(null);
+    void Promise.allSettled(
+      targets.map((session) => window.ade.agentChat.unarchive({ sessionId: session.id })),
+    )
+      .then(async (results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        setSelectedSessionIds(new Set());
+        setSelectionAnchorId(null);
+        invalidateSessionListCache();
+        await work.refresh({ showLoading: false, force: true }).catch((err: unknown) => {
+          console.error("[TerminalsPage] refresh after bulk restore failed", { err });
+        });
+        if (failed > 0) {
+          setSessionActionError(`Restore failed for ${failed} chat${failed === 1 ? "" : "s"}.`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        }
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Restore failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      });
+  }, [selectedRestorableChats, work]);
+
+  const handleBulkExportSelected = useCallback(() => {
+    if (!selectedSessions.length) return;
+    setSessionActionError(null);
+    try {
+      const markdown = formatSessionBundleMarkdown(selectedSessions);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      triggerBrowserDownload(`ade-sessions-${stamp}.md`, markdown);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSessionActionError(`Export failed: ${message}`);
+      window.setTimeout(() => setSessionActionError(null), 6000);
+    }
+  }, [selectedSessions]);
+
   const handleResumeSession = useCallback(
     (session: TerminalSessionSummary) => {
       void work.resumeSession(session).catch(() => {});
@@ -406,6 +488,11 @@ export function TerminalsPage() {
             }}
             onBulkClose={handleBulkCloseSelected}
             onBulkDelete={handleBulkDeleteSelected}
+            onBulkArchive={handleBulkArchiveSelected}
+            onBulkRestore={handleBulkRestoreSelected}
+            onBulkExport={handleBulkExportSelected}
+            archivableCount={selectedArchivableChats.length}
+            restorableCount={selectedRestorableChats.length}
             onResume={(s) => work.resumeSession(s).catch(() => {})}
             resumingSessionId={work.resumingSessionId}
             onInfoClick={handleInfoClick}
@@ -440,6 +527,11 @@ export function TerminalsPage() {
       selectedSessionIds,
       handleBulkCloseSelected,
       handleBulkDeleteSelected,
+      handleBulkArchiveSelected,
+      handleBulkRestoreSelected,
+      handleBulkExportSelected,
+      selectedArchivableChats,
+      selectedRestorableChats,
       handleInfoClick,
       handleContextMenu,
       sessionsHeaderActions,

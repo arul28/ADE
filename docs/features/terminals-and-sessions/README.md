@@ -125,6 +125,11 @@ Renderer surfaces:
   been `running` for at least `STALE_RUNNING_CLI_SESSION_MS` (12 h).
   Used by both `SessionCard` (inline pip) and `AppShell` (stale-CLI
   toast).
+- `apps/desktop/src/renderer/lib/transcriptExport.ts` —
+  `formatSessionBundleMarkdown` builds a metadata-only markdown bundle
+  for a list of selected sessions; `triggerBrowserDownload` writes it
+  to disk via a transient anchor + Object URL. Used by the bulk-export
+  action in the session list.
 
 ## Detail docs
 

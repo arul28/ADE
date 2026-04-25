@@ -182,6 +182,8 @@
 		E10000000000000000000042 /* WorkPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000042 /* WorkPreviews.swift */; };
 		E10000000000000000000043 /* WorkMentionsPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000043 /* WorkMentionsPickerSheet.swift */; };
 		E10000000000000000000044 /* WorkSlashCommandsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000044 /* WorkSlashCommandsSheet.swift */; };
+		E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000045 /* WorkSelectionActionBar.swift */; };
+		E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000046 /* WorkRootScreen+Selection.swift */; };
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
 		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
@@ -280,6 +282,8 @@
 		D10000000000000000000042 /* WorkPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPreviews.swift; path = ADE/Views/Work/WorkPreviews.swift; sourceTree = "<group>"; };
 		D10000000000000000000043 /* WorkMentionsPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMentionsPickerSheet.swift; path = ADE/Views/Work/WorkMentionsPickerSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000044 /* WorkSlashCommandsSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSlashCommandsSheet.swift; path = ADE/Views/Work/WorkSlashCommandsSheet.swift; sourceTree = "<group>"; };
+		D10000000000000000000045 /* WorkSelectionActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSelectionActionBar.swift; path = ADE/Views/Work/WorkSelectionActionBar.swift; sourceTree = "<group>"; };
+		D10000000000000000000046 /* WorkRootScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Selection.swift"; path = "ADE/Views/Work/WorkRootScreen+Selection.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
 		H10000000000000000000010 /* CtoRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoRootScreen.swift; path = ADE/Views/Cto/CtoRootScreen.swift; sourceTree = "<group>"; };
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
@@ -585,6 +589,8 @@
 				D10000000000000000000042 /* WorkPreviews.swift */,
 				D10000000000000000000043 /* WorkMentionsPickerSheet.swift */,
 				D10000000000000000000044 /* WorkSlashCommandsSheet.swift */,
+				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
+				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
 				D1000000000000000000003C /* WorkSessionGrouping.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
@@ -1074,6 +1080,8 @@
 				E10000000000000000000042 /* WorkPreviews.swift in Sources */,
 				E10000000000000000000043 /* WorkMentionsPickerSheet.swift in Sources */,
 				E10000000000000000000044 /* WorkSlashCommandsSheet.swift in Sources */,
+				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
+				E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */,
 				C10000000000000000000003 /* ADEStreamingShimmer.swift in Sources */,
 				E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,

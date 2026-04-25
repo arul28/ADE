@@ -61,6 +61,7 @@ type OpenCodeProcessSnapshot = {
 
 type OpenCodeProcessController = {
   listProcesses(): OpenCodeProcessSnapshot[];
+  listListeningPids(port: number): number[];
   isProcessAlive(pid: number): boolean;
   killProcess(pid: number, signal: NodeJS.Signals): void;
   killProcessTree(pid: number): boolean;
@@ -132,6 +133,7 @@ const sharedEntries = new Map<string, OpenCodeServerEntry>();
 const dedicatedEntries = new Map<string, OpenCodeServerEntry>();
 const inFlightEntries = new Map<string, Promise<OpenCodeServerEntry>>();
 const acquireQueues = new Map<string, Array<() => void>>();
+const protectedLaunchPorts = new Set<number>();
 let openCodeServerLauncher: OpenCodeServerLauncher = defaultOpenCodeServerLauncher;
 
 function readLinuxProcessEnvironment(pid: number): string[] {
@@ -289,6 +291,21 @@ const defaultOpenCodeProcessController: OpenCodeProcessController = {
     }
     return rows;
   },
+  listListeningPids(port: number): number[] {
+    if (!Number.isInteger(port) || port <= 0) return [];
+    if (process.platform === "win32") return [];
+    const result = spawnSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+      return [];
+    }
+    return result.stdout
+      .split(/\r?\n/)
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+  },
   isProcessAlive(pid: number): boolean {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     try {
@@ -433,6 +450,83 @@ function stopChildProcess(proc: ChildProcess): void {
     return;
   }
   proc.kill();
+}
+
+function commandHasPort(command: string, port: number): boolean {
+  const escapedPort = String(port).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)--port(?:=|\\s+)${escapedPort}(?:\\s|$)`).test(command);
+}
+
+function parseManagedOpenCodePort(command: string): number | null {
+  const match = command.match(/(?:^|\s)--port(?:=|\s+)(\d+)(?:\s|$)/);
+  if (!match) return null;
+  const port = Number(match[1]);
+  return Number.isInteger(port) && port > 0 ? port : null;
+}
+
+function activeManagedOpenCodePorts(): Set<number> {
+  const ports = new Set<number>(protectedLaunchPorts);
+  for (const entry of [...sharedEntries.values(), ...dedicatedEntries.values()]) {
+    try {
+      const parsed = new URL(entry.server.url);
+      const port = Number(parsed.port);
+      if (Number.isInteger(port) && port > 0) {
+        ports.add(port);
+      }
+    } catch {
+      // Ignore malformed diagnostic URLs from test doubles or future remotes.
+    }
+  }
+  return ports;
+}
+
+function unprotectLaunchPortForUrl(url: string): void {
+  try {
+    const port = Number(new URL(url).port);
+    if (Number.isInteger(port) && port > 0) {
+      protectedLaunchPorts.delete(port);
+    }
+  } catch {
+    // Ignore malformed diagnostic URLs from test doubles or future remotes.
+  }
+}
+
+function resolveOpenCodeListenerPid(port: number): number | null {
+  const listeningPids = openCodeProcessController.listListeningPids(port);
+  if (listeningPids.length === 1) return listeningPids[0]!;
+  if (listeningPids.length > 1) {
+    const managed = openCodeProcessController.listProcesses()
+      .filter((proc) => listeningPids.includes(proc.pid))
+      .find((proc) => isManagedOpenCodeServeCommand(proc.command, buildManagedConfigMarkers()));
+    return managed?.pid ?? listeningPids[0]!;
+  }
+
+  const configMarkers = buildManagedConfigMarkers();
+  const matching = openCodeProcessController.listProcesses()
+    .filter((proc) =>
+      commandHasPort(proc.command, port)
+      && isManagedOpenCodeServeCommand(proc.command, configMarkers)
+    );
+  if (matching.length === 0) return null;
+  const nonNode = matching.find((proc) => !/\bnode(?:\.exe)?\b/i.test(proc.command));
+  return (nonNode ?? matching[0]!).pid;
+}
+
+function terminateOpenCodeServerProcesses(proc: ChildProcess, listenerPid: number | null): void {
+  if (listenerPid && openCodeProcessController.isProcessAlive(listenerPid)) {
+    if (process.platform === "win32") {
+      openCodeProcessController.killProcessTree(listenerPid);
+    } else {
+      openCodeProcessController.killProcess(listenerPid, "SIGTERM");
+    }
+  }
+
+  if (proc.pid && listenerPid !== proc.pid && openCodeProcessController.isProcessAlive(proc.pid)) {
+    stopChildProcess(proc);
+    return;
+  }
+
+  stopChildProcess(proc);
 }
 
 function resolveAdeManagedOpenCodeRoot(): string {
@@ -593,6 +687,7 @@ export async function recoverManagedOpenCodeOrphans(args: {
 
   const recoveryPromise = (async () => {
     const configMarkers = buildManagedConfigMarkers();
+    const activePorts = activeManagedOpenCodePorts();
     const recoveredPids: number[] = [];
     const skippedPids: number[] = [];
 
@@ -602,13 +697,16 @@ export async function recoverManagedOpenCodeOrphans(args: {
 
       const ownerPid = parseManagedOwnerPid(proc.command);
       if (ownerPid === process.pid) {
-        skippedPids.push(proc.pid);
-        continue;
+        const port = parseManagedOpenCodePort(proc.command);
+        if (port != null && activePorts.has(port)) {
+          skippedPids.push(proc.pid);
+          continue;
+        }
       }
       const ownerAlive = ownerPid != null
         && openCodeProcessController.isProcessAlive(ownerPid);
       const isOrphan = ownerPid != null
-        ? !ownerAlive
+        ? !ownerAlive || ownerPid === process.pid
         : proc.ppid === 1;
 
       if (!isOrphan) {
@@ -654,6 +752,7 @@ export async function recoverManagedOpenCodeOrphans(args: {
         pid: proc.pid,
         ownerPid,
         ppid: proc.ppid,
+        port: parseManagedOpenCodePort(proc.command),
       });
     }
 
@@ -756,11 +855,12 @@ async function defaultOpenCodeServerLauncher(
         }
         resolved = true;
         cleanup();
+        const listenerPid = resolveOpenCodeListenerPid(args.port) ?? proc.pid ?? null;
         resolve({
           url: match[1],
           close() {
             cleanup();
-            stopChildProcess(proc);
+            terminateOpenCodeServerProcesses(proc, listenerPid);
           },
         });
         return;
@@ -799,9 +899,11 @@ async function createOpencodeServerWithRetry(
   let lastError: unknown;
   for (let attempt = 0; attempt < PORT_RETRY_ATTEMPTS; attempt += 1) {
     const port = await findAvailablePort();
+    protectedLaunchPorts.add(port);
     try {
       return await openCodeServerLauncher({ port, config });
     } catch (error) {
+      protectedLaunchPorts.delete(port);
       lastError = error;
       if (!isPortConflict(error)) throw error;
     }
@@ -853,6 +955,7 @@ function shutdownEntry(
     // ignore shutdown failures
   }
   logRuntimeEvent(logger, "opencode.server_shutdown", entry, { reason });
+  void recoverManagedOpenCodeOrphans({ force: true, logger }).catch(() => {});
 }
 
 function scheduleSharedIdleTimer(
@@ -1032,11 +1135,13 @@ export async function acquireSharedOpenCodeServer(args: {
         logger: args.logger,
       });
       if (entry.configFingerprint !== configFingerprint) {
+        unprotectLaunchPortForUrl(entry.server.url);
         shutdownEntry(entry, "config_changed", args.logger);
         continue;
       }
       entry.refCount = 1;
       sharedEntries.set(key, entry);
+      unprotectLaunchPortForUrl(entry.server.url);
       pruneIdleSharedEntries(key, args.logger);
       return buildLease(entry, args.logger);
     }
@@ -1087,11 +1192,13 @@ export async function acquireDedicatedOpenCodeServer(args: {
         logger: args.logger,
       });
       if (entry.configFingerprint !== configFingerprint) {
+        unprotectLaunchPortForUrl(entry.server.url);
         shutdownEntry(entry, "config_changed", args.logger);
         continue;
       }
       entry.refCount = 1;
       dedicatedEntries.set(ownerKey, entry);
+      unprotectLaunchPortForUrl(entry.server.url);
       return buildLease(entry, args.logger);
     }
   });
@@ -1162,6 +1269,7 @@ export function __setOpenCodeProcessControllerForTests(
   openCodeProcessController = controller
     ? {
         listProcesses: controller.listProcesses ?? (() => []),
+        listListeningPids: controller.listListeningPids ?? (() => []),
         isProcessAlive: controller.isProcessAlive ?? (() => false),
         killProcess: controller.killProcess ?? (() => {}),
         killProcessTree: controller.killProcessTree ?? (() => false),
@@ -1181,6 +1289,10 @@ export function __buildOpenCodeServeLaunchSpecForTests(args: {
     port: args.port ?? 4096,
     config: args.config,
   });
+}
+
+export function __resolveOpenCodeListenerPidForTests(port: number): number | null {
+  return resolveOpenCodeListenerPid(port);
 }
 
 /** Test hook: whether a WMIC/CIM command line would be treated as an ADE-managed OpenCode serve. */

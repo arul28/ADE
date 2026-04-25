@@ -14,6 +14,7 @@ import {
   __buildOpenCodeServeLaunchSpecForTests,
   __isManagedOpenCodeServeCommandForTests,
   __resetOpenCodeServerManagerForTests,
+  __resolveOpenCodeListenerPidForTests,
   __setOpenCodeProcessControllerForTests,
   __setOpenCodeServerLauncherForTests,
   acquireDedicatedOpenCodeServer,
@@ -552,6 +553,129 @@ describe("openCodeServerManager", () => {
       "opencode.server_orphan_recovery_failed",
       expect.objectContaining({ pid: 6101 }),
     );
+  });
+
+  it("resolves the actual managed listener pid for a launched OpenCode port", () => {
+    __setOpenCodeProcessControllerForTests({
+      listListeningPids: (port) => (port === 62244 ? [7202] : []),
+      listProcesses: () => ([
+        {
+          pid: 7201,
+          ppid: 1,
+          command: [
+            "node /Users/admin/.npm-global/bin/opencode serve --hostname=127.0.0.1 --port=62244",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            "ADE_OPENCODE_MANAGED=1",
+          ].join(" "),
+        },
+        {
+          pid: 7202,
+          ppid: 7201,
+          command: [
+            "/Users/admin/.npm-global/lib/node_modules/opencode-ai/bin/.opencode serve --hostname=127.0.0.1 --port=62244",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            "ADE_OPENCODE_MANAGED=1",
+          ].join(" "),
+        },
+      ]),
+    });
+
+    expect(__resolveOpenCodeListenerPidForTests(62244)).toBe(7202);
+  });
+
+  it("falls back to the managed non-node serve process when lsof is unavailable", () => {
+    __setOpenCodeProcessControllerForTests({
+      listListeningPids: () => [],
+      listProcesses: () => ([
+        {
+          pid: 7301,
+          ppid: 1,
+          command: [
+            "node /Users/admin/.npm-global/bin/opencode serve --hostname=127.0.0.1 --port 62245",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            "ADE_OPENCODE_MANAGED=1",
+          ].join(" "),
+        },
+        {
+          pid: 7302,
+          ppid: 7301,
+          command: [
+            "/Users/admin/.npm-global/lib/node_modules/opencode-ai/bin/.opencode serve --hostname=127.0.0.1 --port 62245",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            "ADE_OPENCODE_MANAGED=1",
+          ].join(" "),
+        },
+      ]),
+    });
+
+    expect(__resolveOpenCodeListenerPidForTests(62245)).toBe(7302);
+  });
+
+  it("recovers current-owner listeners that no longer have an active manager entry", async () => {
+    let staleAlive = true;
+    const killProcess = vi.fn((_pid: number) => {
+      staleAlive = false;
+    });
+    __setOpenCodeProcessControllerForTests({
+      listProcesses: () => ([
+        {
+          pid: 7401,
+          ppid: 1,
+          command: [
+            "/Users/admin/.npm-global/lib/node_modules/opencode-ai/bin/.opencode serve --hostname=127.0.0.1 --port=62246",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            "ADE_OPENCODE_MANAGED=1",
+            `ADE_OPENCODE_OWNER_PID=${process.pid}`,
+          ].join(" "),
+        },
+      ]),
+      isProcessAlive: (pid) => pid === 7401 && staleAlive,
+      killProcess,
+    });
+
+    const result = await recoverManagedOpenCodeOrphans({ force: true });
+
+    expect(result.recoveredPids).toEqual([7401]);
+    expect(result.skippedPids).toEqual([]);
+    expect(killProcess).toHaveBeenCalledWith(7401, "SIGTERM");
+  });
+
+  it("keeps current-owner listeners that are still registered as active", async () => {
+    __setOpenCodeProcessControllerForTests({
+      listProcesses: () => [],
+      isProcessAlive: () => false,
+      killProcess: () => {},
+    });
+    const lease = await acquireSharedOpenCodeServer({
+      config: { share: "disabled", autoupdate: false, snapshot: false },
+      key: "shared:active-current-owner",
+      ownerKind: "chat",
+    });
+    const activePort = new URL(lease.url).port;
+    const killProcess = vi.fn();
+    __setOpenCodeProcessControllerForTests({
+      listProcesses: () => ([
+        {
+          pid: 7501,
+          ppid: 1,
+          command: [
+            `/Users/admin/.npm-global/lib/node_modules/opencode-ai/bin/.opencode serve --hostname=127.0.0.1 --port=${activePort}`,
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            "ADE_OPENCODE_MANAGED=1",
+            `ADE_OPENCODE_OWNER_PID=${process.pid}`,
+          ].join(" "),
+        },
+      ]),
+      isProcessAlive: (pid) => pid === 7501,
+      killProcess,
+    });
+
+    const result = await recoverManagedOpenCodeOrphans({ force: true });
+
+    expect(result.recoveredPids).toEqual([]);
+    expect(result.skippedPids).toEqual([7501]);
+    expect(killProcess).not.toHaveBeenCalled();
+    lease.release("handle_close");
   });
 
   it("waits for an in-flight forced recovery before starting another forced scan", async () => {

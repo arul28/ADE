@@ -42,6 +42,12 @@ struct WorkRootScreen: View {
   @State var optimisticSessions: [String: TerminalSessionSummary] = [:]
   @State var refreshFeedbackToken = 0
   @State var selectedSessionTransitionId: String?
+  @State var isSelecting: Bool = false
+  @State var selectedSessionIds: Set<String> = []
+  @State var bulkActionErrorMessage: String?
+  @State var bulkExportShare: WorkArtifactShareItem?
+  @State var bulkBusy: Bool = false
+  @State var bulkDeleteConfirmPresented: Bool = false
   @State var navigationMutationPending = false
   /// Coalesces expensive per-lane `listChatSessions` refreshes when `localStateRevision` bumps during CRDT sync.
   @State var lastCoalescedChatSummaryRefresh = Date.distantPast
@@ -377,6 +383,10 @@ struct WorkRootScreen: View {
                     isArchived: archivedSessionIds.contains(session.id),
                     transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
                     selectedSessionId: $selectedSessionTransitionId,
+                    isSelecting: isSelecting,
+                    isChecked: selectedSessionIds.contains(session.id),
+                    onLongPressSelect: startSelection,
+                    onToggleSelect: toggleSelection,
                     onOpen: openSession,
                     onArchive: toggleArchive,
                     onPin: togglePin,
@@ -406,41 +416,99 @@ struct WorkRootScreen: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(.hidden, for: .navigationBar)
       .safeAreaInset(edge: .top, spacing: 0) {
-        ADERootTopBar(title: "Work") {
-          if globalLiveSessionCount > 0 || globalNeedsInputCount > 0 {
-            WorkLiveCountPill(
-              liveCount: globalLiveSessionCount,
-              attentionCount: globalNeedsInputCount,
-              onTap: {
-                guard let target = firstGlobalAttentionSession ?? firstGlobalLiveSession else { return }
-                if displaySessions.contains(where: { $0.id == target.id }) {
-                  withAnimation(.snappy) {
-                    proxy.scrollTo(target.id, anchor: .top)
-                  }
-                } else {
-                  withAnimation(.snappy) {
-                    selectedStatus = .all
-                    selectedLaneId = "all"
-                    searchText = ""
-                  }
-                  Task { @MainActor in
-                    await Task.yield()
+        ADERootTopBar(title: isSelecting ? "\(selectedSessionIds.count) selected" : "Work") {
+          if isSelecting {
+            Button("Cancel") {
+              exitSelectionMode()
+            }
+            .accessibilityLabel("Cancel selection")
+          } else {
+            if globalLiveSessionCount > 0 || globalNeedsInputCount > 0 {
+              WorkLiveCountPill(
+                liveCount: globalLiveSessionCount,
+                attentionCount: globalNeedsInputCount,
+                onTap: {
+                  guard let target = firstGlobalAttentionSession ?? firstGlobalLiveSession else { return }
+                  if displaySessions.contains(where: { $0.id == target.id }) {
                     withAnimation(.snappy) {
                       proxy.scrollTo(target.id, anchor: .top)
                     }
+                  } else {
+                    withAnimation(.snappy) {
+                      selectedStatus = .all
+                      selectedLaneId = "all"
+                      searchText = ""
+                    }
+                    Task { @MainActor in
+                      await Task.yield()
+                      withAnimation(.snappy) {
+                        proxy.scrollTo(target.id, anchor: .top)
+                      }
+                    }
                   }
                 }
-              }
-            )
+              )
+            }
+            Button {
+              pushNewChatRoute()
+            } label: {
+              Image(systemName: "plus.bubble.fill")
+            }
+            .accessibilityLabel("Create new chat")
+            .disabled(!isLive)
           }
-          Button {
-            pushNewChatRoute()
-          } label: {
-            Image(systemName: "plus.bubble.fill")
-          }
-          .accessibilityLabel("Create new chat")
-          .disabled(!isLive)
         }
+      }
+      .safeAreaInset(edge: .bottom, spacing: 0) {
+        if isSelecting {
+          WorkSelectionActionBar(
+            selectedCount: selectedSessionIds.count,
+            runningCount: bulkSelectedRunningCount,
+            deletableCount: bulkSelectedDeletableCount,
+            archivableCount: bulkSelectedArchivableCount,
+            restorableCount: bulkSelectedRestorableCount,
+            busy: bulkBusy,
+            onClose: { Task { await performBulkClose() } },
+            onArchive: { Task { await performBulkArchive() } },
+            onRestore: { Task { await performBulkRestore() } },
+            onDelete: { bulkDeleteConfirmPresented = true },
+            onExport: performBulkExport
+          )
+          .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+      }
+      .animation(.snappy, value: isSelecting)
+      .onChange(of: mergedSessions.map(\.id)) { _, newIds in
+        let visible = Set(newIds)
+        let pruned = selectedSessionIds.intersection(visible)
+        if pruned.count != selectedSessionIds.count {
+          selectedSessionIds = pruned
+          if pruned.isEmpty && isSelecting {
+            withAnimation(.snappy) { isSelecting = false }
+          }
+        }
+      }
+      .sheet(item: $bulkExportShare) { share in
+        WorkActivityViewController(items: share.items)
+      }
+      .alert("Delete \(bulkSelectedDeletableCount) chat\(bulkSelectedDeletableCount == 1 ? "" : "s")?",
+             isPresented: $bulkDeleteConfirmPresented) {
+        Button("Cancel", role: .cancel) {}
+        Button("Delete", role: .destructive) {
+          Task { await performBulkDelete() }
+        }
+      } message: {
+        Text("This permanently removes the saved chat history from ADE.")
+      }
+      .alert("Selection action failed",
+             isPresented: Binding(
+               get: { bulkActionErrorMessage != nil },
+               set: { if !$0 { bulkActionErrorMessage = nil } }
+             ),
+             presenting: bulkActionErrorMessage) { _ in
+        Button("OK", role: .cancel) { bulkActionErrorMessage = nil }
+      } message: { message in
+        Text(message)
       }
       .refreshable {
         await refreshFromPullGesture()

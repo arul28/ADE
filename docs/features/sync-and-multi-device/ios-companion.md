@@ -51,7 +51,10 @@ apps/ios/
 │   │   │                            # FilesDetailScreen, *+Actions helpers
 │   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
 │   │   │                            # Work*Helpers, WorkNewChat*,
-│   │   │                            # WorkSessionDestination*, etc.
+│   │   │                            # WorkSessionDestination*,
+│   │   │                            # WorkRootScreen+Selection (multi-select state +
+│   │   │                            #   bulk close/archive/restore/delete/export),
+│   │   │                            # WorkSelectionActionBar, etc.
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen and
 │   │   │                            # per-tab views, PrWorkflowCards,
 │   │   │                            # PrStackSheet, CreatePrWizardView

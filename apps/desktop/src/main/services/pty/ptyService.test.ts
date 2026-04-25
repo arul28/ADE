@@ -169,7 +169,7 @@ vi.mock("../../utils/terminalSessionSignals", async () => {
   };
 });
 
-import { createPtyService, PTY_AI_TITLE_DEBOUNCE_MS } from "./ptyService";
+import { createPtyService, PTY_AI_TITLE_DEBOUNCE_MS, PTY_AI_TITLE_TIMEOUT_MS } from "./ptyService";
 
 const originalPlatform = process.platform;
 
@@ -1001,6 +1001,7 @@ describe("ptyService", () => {
           expect.objectContaining({
             cwd: "/tmp/test-worktree/subdir",
             prompt: expect.stringContaining("Fix the flaky login tests"),
+            timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
           }),
         );
       } finally {
@@ -1030,6 +1031,54 @@ describe("ptyService", () => {
         }),
       );
       expect(sessionService.get(createdSessionId)?.goal).toBe("Fix the flaky login tests");
+    });
+
+    it("sets a compact fallback title from the first CLI prompt while AI naming is pending", async () => {
+      const { service, sessionService } = createHarness();
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(createdSessionId).toBeTruthy();
+
+      service.write({
+        ptyId,
+        data: "vv take a look at this screenshot, it shows a session card for a codex cli started in ade\r",
+      });
+
+      expect(sessionService.get(createdSessionId)?.title).toBe("Take a look at this screenshot");
+      expect(sessionService.get(createdSessionId)?.goal).toBe(
+        "vv take a look at this screenshot, it shows a session card for a codex cli started in ade",
+      );
+    });
+
+    it("does not replace a manually renamed CLI session with the fallback title", async () => {
+      const aiIntegrationService = {
+        getMode: vi.fn(() => "subscription"),
+        summarizeTerminal: vi.fn(async () => ({ text: "AI title" })),
+      };
+      const { service, sessionService } = createHarness({ aiIntegrationService });
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(createdSessionId).toBeTruthy();
+      sessionService.updateMeta({ sessionId: createdSessionId, title: "Manual title", manuallyNamed: true });
+
+      service.write({ ptyId, data: "Fix the flaky login tests\r" });
+
+      expect(sessionService.get(createdSessionId)?.title).toBe("Manual title");
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
 
     it("backfills a missing tracked CLI resume target from the flushed transcript tail on exit", async () => {

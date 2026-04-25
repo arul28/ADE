@@ -35,6 +35,7 @@ import {
 
 /** Delay before auto-generating a title from CLI output; keep in sync with tests. */
 export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
+export const PTY_AI_TITLE_TIMEOUT_MS = 60_000;
 
 /** Claude/Codex TUIs often hide useful text in an alt-screen, so snippet-based titles fail; titles come from the first PTY write that ends with \\r (submitted prompt) instead. */
 const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex"]);
@@ -46,6 +47,7 @@ function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolea
 
 const CLI_USER_TITLE_SEED_MIN_LEN = 3;
 const CLI_USER_TITLE_SEED_MAX_LEN = 180;
+const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
 
 function sanitizeCliUserTitleSeed(raw: string): string {
   const stripped = stripAnsi(raw)
@@ -56,6 +58,46 @@ function sanitizeCliUserTitleSeed(raw: string): string {
     .trim();
   if (!stripped.length) return "";
   return stripped.slice(0, CLI_USER_TITLE_SEED_MAX_LEN);
+}
+
+function trimPromptLeadIn(raw: string): string {
+  let text = raw.trim();
+  for (let i = 0; i < 4; i += 1) {
+    const next = text
+      .replace(/^(?:ok(?:ay)?|so|hey|hi|hello|please|pls|vv)\b[\s,.:;-]*/iu, "")
+      .trim();
+    if (next === text) break;
+    text = next;
+  }
+  return text;
+}
+
+function sentenceCase(raw: string): string {
+  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
+}
+
+function deterministicCliTitleFromSeed(seed: string): string {
+  const cleaned = trimPromptLeadIn(seed)
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "";
+
+  const clauseMatch = cleaned.match(/^(.{18,}?[,.!?;:])\s/u);
+  const clause = clauseMatch?.[1]?.replace(/[,.!?;:]+$/u, "").trim();
+  const base = clause && clause.length >= 12 ? clause : cleaned;
+  const clipped = base.length > CLI_USER_TITLE_FALLBACK_MAX_LEN
+    ? base.slice(0, CLI_USER_TITLE_FALLBACK_MAX_LEN).replace(/\s+\S*$/u, "").trim()
+    : base;
+  return sentenceCase(clipped || base.slice(0, CLI_USER_TITLE_FALLBACK_MAX_LEN).trim()).replace(/[.?!,:;]+$/u, "");
+}
+
+function isCliPlaceholderTitle(title: string | null | undefined, toolType: TerminalToolType | null | undefined): boolean {
+  const normalized = String(title ?? "").trim().toLowerCase();
+  if (!normalized.length) return true;
+  if (toolType === "codex") return normalized === "codex" || normalized === "codex cli" || normalized === "codex session";
+  if (toolType === "claude") return normalized === "claude" || normalized === "claude cli" || normalized === "claude session" || normalized === "claude code";
+  return false;
 }
 
 function isSessionManuallyNamed(
@@ -298,12 +340,18 @@ export function createPtyService({
       if (!session.goal?.trim().length) {
         sessionService.updateMeta({ sessionId: entry.sessionId, goal: seed });
       }
-      if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
-      if (!isTitleGenerationEnabled()) return;
       if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
         logger.info("pty.cli_user_title_skipped_user_renamed", { sessionId: entry.sessionId });
         return;
       }
+      if (isCliPlaceholderTitle(session.title, session.toolType)) {
+        const fallbackTitle = deterministicCliTitleFromSeed(seed);
+        if (fallbackTitle) {
+          sessionService.updateMeta({ sessionId: entry.sessionId, title: fallbackTitle, manuallyNamed: false });
+        }
+      }
+      if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
+      if (!isTitleGenerationEnabled()) return;
 
       const laneName = session.laneName?.trim() || "Current lane";
       const titleModelId = resolveTitleModelId();
@@ -323,7 +371,7 @@ export function createPtyService({
           cwd: entry.boundCwd || entry.laneWorktreePath,
           prompt,
           taskType: "session_title",
-          timeoutMs: 8_000,
+          timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
           ...(titleModelId ? { model: titleModelId } : {}),
         })
         .then((result) => {
@@ -512,7 +560,7 @@ export function createPtyService({
                 cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
                 prompt: titlePrompt,
                 taskType: "session_title",
-                timeoutMs: 8_000,
+                timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
                 ...(titleModelId ? { model: titleModelId } : {}),
               });
               const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
@@ -1401,7 +1449,7 @@ export function createPtyService({
               cwd: entry.boundCwd || entry.laneWorktreePath,
               prompt,
               taskType: "session_title",
-              timeoutMs: 8_000,
+              timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
               ...(titleModelId ? { model: titleModelId } : {}),
             })
             .then((result) => {

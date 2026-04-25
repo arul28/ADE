@@ -3316,13 +3316,16 @@ export function createAgentChatService(args: {
           persistChatState(managed);
         }
 
-        // Sync the SDK session so it knows plan mode ended.
+        // Defensive sync: also push the mode to the SDK explicitly. The SDK's
+        // native ExitPlanMode handler restores prePlanMode itself, but an
+        // explicit setPermissionMode call ensures the SDK and ADE agree on
+        // the target mode even if the SDK's restore path no-ops.
         try {
           const sessionControl = getClaudeV2SessionControl(runtime.v2Session);
           if (typeof sessionControl.setPermissionMode === "function") {
             await sessionControl.setPermissionMode(resolveSessionClaudePermissionMode(managed.session, "default"));
           }
-        } catch { /* best-effort — the deny result below handles the transition semantically */ }
+        } catch { /* best-effort — the SDK's own restore path is the source of truth */ }
 
         // Emit permission mode change notice for UI sync.
         emitChatEvent(managed, {
@@ -3333,13 +3336,14 @@ export function createAgentChatService(args: {
           turnId: runtime.activeTurnId ?? undefined,
         });
 
-        // Return deny to bypass the SDK's built-in ExitPlanMode handler
-        // entirely (which can fail with ZodError due to schema mismatch).
-        // Claude sees the message text and knows the plan was approved.
-        return {
-          behavior: "deny",
-          message: "Plan approved by the user. The session has exited plan mode. Proceed with implementing the plan. Do not call ExitPlanMode again.",
-        };
+        // Allow the SDK's native ExitPlanMode handler to run. It restores the
+        // pre-plan permission mode (toolPermissionContext.prePlanMode) — same
+        // behavior as the claude-code CLI — and the model receives a proper
+        // tool_result so it proceeds with implementation directly instead of
+        // hesitating after a denied tool call. The ExitPlanModeInput schema
+        // (allowedPrompts? on a passthrough strictObject in the SDK) accepts
+        // the model's input as-is, so passing it through is safe.
+        return { behavior: "allow", updatedInput: input };
       }
 
       // Denied — tell Claude the user rejected the plan.
@@ -6717,6 +6721,7 @@ export function createAgentChatService(args: {
     const streamedClaudeTextContentKeys = new Set<string>();
     const streamedClaudeThinkingContentKeys = new Set<string>();
     let currentClaudeStreamMessageId: string | null = null;
+    let recentClaudeTextDeltaBuffer = "";
     // Track a running boundary for assistant messages whose snapshot has no id
     // (and whose stream preamble didn't carry a `message_start` id either — real
     // Claude streams always do, but mocks and older SDK paths don't). Each new
@@ -7166,6 +7171,7 @@ export function createAgentChatService(args: {
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               if (block.type === "text") {
+                const blockText = block.text ?? "";
                 // Check both the real-id key AND the id-less fallback key. When
                 // content_block_delta fires before message_start (or when the
                 // SDK omits message_start entirely), streamed deltas record
@@ -7178,15 +7184,26 @@ export function createAgentChatService(args: {
                 const alreadyStreamed =
                   (textKey ? streamedClaudeTextContentKeys.has(textKey) : false)
                   || (fallbackTextKey ? streamedClaudeTextContentKeys.has(fallbackTextKey) : false);
-                if (!textKey || !alreadyStreamed) {
-                  assistantText += block.text ?? "";
+                const replayedStreamPrefix = recentClaudeTextDeltaBuffer.length > 0 && blockText.startsWith(recentClaudeTextDeltaBuffer);
+                const replayedSnapshotPrefix = recentClaudeTextDeltaBuffer.length > 0 && recentClaudeTextDeltaBuffer.startsWith(blockText);
+                const textToEmit = alreadyStreamed || replayedSnapshotPrefix
+                  ? ""
+                  : replayedStreamPrefix
+                    ? blockText.slice(recentClaudeTextDeltaBuffer.length)
+                    : blockText;
+                if (textToEmit.length > 0) {
+                  assistantText += textToEmit;
                   emitChatEvent(managed, {
                     type: "text",
-                    text: block.text ?? "",
+                    text: textToEmit,
                     turnId,
                   });
-                  if (textKey) streamedClaudeTextContentKeys.add(textKey);
                 }
+                if (textKey) streamedClaudeTextContentKeys.add(textKey);
+                if (fallbackTextKey) streamedClaudeTextContentKeys.add(fallbackTextKey);
+                recentClaudeTextDeltaBuffer = replayedSnapshotPrefix
+                  ? recentClaudeTextDeltaBuffer.slice(blockText.length)
+                  : "";
               } else if (block.type === "thinking") {
                 const thinkingText = block.thinking ?? block.text ?? "";
                 const reasoningItemId = buildClaudeContentItemId("thinking", blockIndex);
@@ -7274,6 +7291,7 @@ export function createAgentChatService(args: {
               if (text.length) {
                 const textKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
                 if (textKey) streamedClaudeTextContentKeys.add(textKey);
+                recentClaudeTextDeltaBuffer += text;
                 assistantText += text;
                 emitChatEvent(managed, { type: "text", text, turnId });
               }
@@ -7405,6 +7423,7 @@ export function createAgentChatService(args: {
             }
           } else if (event.type === "message_start") {
             currentClaudeStreamMessageId = typeof event.message?.id === "string" ? event.message.id : null;
+            recentClaudeTextDeltaBuffer = "";
             const msgUsage = event.message?.usage;
             if (msgUsage) {
               usage = {
@@ -7464,14 +7483,24 @@ export function createAgentChatService(args: {
           }
           if (Array.isArray(resultMsg.permission_denials) && resultMsg.permission_denials.length > 0) {
             const denials = resultMsg.permission_denials as Array<{ tool_name: string; tool_use_id?: string }>;
-            const denialSummary = denials.map((d) => d.tool_name).join(", ");
-            emitChatEvent(managed, {
-              type: "system_notice",
-              noticeKind: "info",
-              message: `${denials.length} tool call${denials.length === 1 ? " was" : "s were"} denied this turn: ${denialSummary}`,
-              turnId,
-            });
-            for (const denial of denials) {
+            // Skip denials we already resolved inline via canUseTool (e.g. ExitPlanMode
+            // after the user approved the plan, AskUserQuestion after answers came back).
+            // Those tools have a synthetic tool_result emitted by the approval flow that
+            // already conveys the outcome — surfacing a "denied this turn" notice on top
+            // of that makes the chat look like the approval was rejected.
+            const surfacedDenials = denials.filter((d) =>
+              !d.tool_use_id || !runtime.resolvedToolUseIds.has(String(d.tool_use_id))
+            );
+            if (surfacedDenials.length > 0) {
+              const denialSummary = surfacedDenials.map((d) => d.tool_name).join(", ");
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "info",
+                message: `${surfacedDenials.length} tool call${surfacedDenials.length === 1 ? " was" : "s were"} denied this turn: ${denialSummary}`,
+                turnId,
+              });
+            }
+            for (const denial of surfacedDenials) {
               if (denial.tool_use_id && openClaudeToolUses.has(denial.tool_use_id)) {
                 emitClaudeToolCompletion(denial.tool_use_id, {
                   synthetic: true,
@@ -9872,6 +9901,26 @@ export function createAgentChatService(args: {
           previewFormat: "markdown",
         },
       };
+      const projectSlashCommands = (() => {
+        try {
+          return discoverClaudeSlashCommands(managed.laneWorktreePath);
+        } catch {
+          return [];
+        }
+      })();
+      const slashCommandsSection = projectSlashCommands.length
+        ? [
+          "",
+          "## Project slash commands",
+          "The user can invoke custom slash commands defined in `.claude/commands/*.md` (project scope) and `~/.claude/commands/*.md` (user scope). When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE auto-expands the command body into the message before it reaches you — so in that case you will already see the expanded instructions, not the literal `/<name>`.",
+          "When the user references a command mid-sentence (e.g. \"please run /audit\", \"can you do a /security-review\") the message is not auto-expanded. In that case, read the matching file at `.claude/commands/<name>.md` (prefer project scope; fall back to user scope) and follow its instructions as if the user had run it.",
+          "Available commands in this workspace:",
+          ...projectSlashCommands.map((cmd) => {
+            const desc = cmd.description.trim();
+            return desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
+          }),
+        ]
+        : [];
       opts.systemPrompt = {
         type: "preset",
         preset: "claude_code",
@@ -9886,6 +9935,7 @@ export function createAgentChatService(args: {
           "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
           "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
           "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
+          ...slashCommandsSection,
           "",
           ADE_CLI_AGENT_GUIDANCE,
         ].join("\n"),

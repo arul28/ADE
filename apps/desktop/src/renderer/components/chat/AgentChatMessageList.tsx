@@ -5,6 +5,7 @@ import { motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   CaretDown,
+  CaretLeft,
   CaretRight,
   Warning,
   Terminal,
@@ -1290,6 +1291,20 @@ function InlineQuestionRequestCard({
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [focusedOption, setFocusedOption] = useState<Record<string, string>>({});
+  const [page, setPage] = useState(0);
+
+  const isPaged = questions.length > 1;
+  const safePage = Math.min(Math.max(page, 0), Math.max(questions.length - 1, 0));
+  const activeQuestion = questions[safePage] ?? questions[0];
+
+  const isAnswered = useCallback((q: InlineQuestion) => {
+    const sel = selected[q.id]?.length ?? 0;
+    const draft = drafts[q.id]?.trim().length ?? 0;
+    return sel > 0 || draft > 0;
+  }, [drafts, selected]);
+
+  const allAnswered = questions.every(isAnswered);
+  const anyAnswered = questions.some(isAnswered);
 
   const submit = useCallback((extraAnswers?: Record<string, string | string[]>) => {
     const answers: Record<string, string | string[]> = {};
@@ -1324,115 +1339,254 @@ function InlineQuestionRequestCard({
     });
   }, [itemId, onApproval, questions.length]);
 
-  const hasAnswer = questions.some((question) => {
-    if ((selected[question.id]?.length ?? 0) > 0) return true;
-    return (drafts[question.id]?.trim().length ?? 0) > 0;
-  });
+  if (!activeQuestion) return null;
+
+  const canSend = isPaged ? allAnswered : anyAnswered;
+  const sendLabel = isResponding ? "Sending..." : isPaged ? "Send answers" : "Send answer";
+
+  const renderQuestion = (question: InlineQuestion) => {
+    const selectedForQuestion = selected[question.id];
+    const focusValue = focusedOption[question.id]
+      ?? selectedForQuestion?.[selectedForQuestion.length - 1]
+      ?? null;
+    const focused = focusValue
+      ? question.options.find((option) => option.value === focusValue)
+      : null;
+    const useGrid = question.options.length >= 3;
+
+    return (
+      <div className="rounded-[calc(var(--chat-radius-card)-4px)] border border-amber-400/14 bg-amber-400/[0.045] p-4">
+        {question.header ? (
+          <div className="mb-1.5 font-mono text-[9.5px] font-bold uppercase tracking-widest text-amber-200/80">
+            {question.header}
+          </div>
+        ) : null}
+        <div className="text-[14px] font-semibold leading-[1.45] text-fg/92">{question.questionText}</div>
+        {question.multiSelect ? (
+          <div className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/8 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/80">
+            <ListChecks size={10} weight="bold" /> Pick all that apply
+          </div>
+        ) : null}
+        {question.impact ? (
+          <div className="mt-2 text-[11.5px] leading-relaxed text-fg/55">{question.impact}</div>
+        ) : null}
+        {question.options.length ? (
+          <div
+            className={cn(
+              "mt-3.5 gap-2",
+              useGrid ? "grid grid-cols-1 sm:grid-cols-2" : "flex flex-col",
+            )}
+            data-testid={`inline-question-options-${question.id}`}
+          >
+            {question.options.map((option) => {
+              const active = selected[question.id]?.includes(option.value) ?? false;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  disabled={isResponding}
+                  data-testid={`inline-question-option-${question.id}-${option.value}`}
+                  className={cn(
+                    "group relative flex w-full flex-col items-start gap-1 rounded-[calc(var(--chat-radius-card)-6px)] border px-3.5 py-3 text-left transition-colors disabled:pointer-events-none disabled:opacity-45",
+                    active
+                      ? "border-amber-300/55 bg-amber-300/12 shadow-[inset_0_0_0_1px_rgba(252,211,77,0.18)]"
+                      : "border-amber-300/18 bg-amber-300/[0.03] hover:border-amber-300/35 hover:bg-amber-300/8",
+                  )}
+                  onClick={() => handleOption(question, option)}
+                  onFocus={() => setFocusedOption((prev) => ({ ...prev, [question.id]: option.value }))}
+                  onMouseEnter={() => setFocusedOption((prev) => prev[question.id] ? prev : { ...prev, [question.id]: option.value })}
+                >
+                  <div className="flex w-full items-start gap-2">
+                    <span
+                      className={cn(
+                        "mt-0.5 inline-flex h-4 w-4 flex-none items-center justify-center border transition-colors",
+                        question.multiSelect ? "rounded-[4px]" : "rounded-full",
+                        active
+                          ? "border-amber-300/80 bg-amber-300/85 text-black"
+                          : "border-amber-300/35 bg-transparent text-transparent",
+                      )}
+                    >
+                      {active ? (
+                        question.multiSelect
+                          ? <Check size={10} weight="bold" />
+                          : <span className="block h-1.5 w-1.5 rounded-full bg-black" />
+                      ) : null}
+                    </span>
+                    <span className="flex-1 text-[12.5px] font-semibold uppercase tracking-wider text-fg/90">
+                      {option.label}
+                      {option.recommended ? (
+                        <span className="ml-1.5 inline-block rounded-full bg-emerald-300/14 px-1.5 py-px font-mono text-[8.5px] font-bold uppercase tracking-widest text-emerald-200/90">
+                          (Recommended)
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
+                  {option.description ? (
+                    <span className="ml-6 text-[11.5px] font-medium leading-relaxed text-fg/55">
+                      {option.description}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        {focused && focused.preview ? (
+          <div
+            className="mt-3 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-300/14 bg-black/22 p-3 text-[11.5px] leading-relaxed text-fg/78"
+            data-testid={`inline-question-preview-${question.id}`}
+          >
+            <div className="mb-1 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/60">
+              Preview · {focused.label}
+            </div>
+            {focused.previewFormat === "html" ? (
+              <div className="whitespace-pre-wrap break-words font-mono text-[11px] text-fg/70">{focused.preview}</div>
+            ) : (
+              <div className="prose prose-invert max-w-none text-[11.5px] [&_p]:my-1">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{focused.preview}</ReactMarkdown>
+              </div>
+            )}
+          </div>
+        ) : null}
+        {question.allowsFreeform ? (
+          <input
+            type={question.isSecret ? "password" : "text"}
+            value={drafts[question.id] ?? ""}
+            disabled={isResponding}
+            placeholder={question.options.length ? "Optional response" : "Response"}
+            className="mt-3 w-full rounded-[var(--chat-radius-card)] border border-white/10 bg-black/22 px-3 py-2 text-[12.5px] text-fg/85 outline-none placeholder:text-fg/30 focus:border-amber-300/40 focus:bg-black/28"
+            onChange={(event) => setDrafts((prev) => ({ ...prev, [question.id]: event.target.value }))}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                if (isPaged && safePage < questions.length - 1 && isAnswered(question)) {
+                  setPage(safePage + 1);
+                } else if (canSend) {
+                  submit();
+                }
+              }
+            }}
+          />
+        ) : null}
+        {question.defaultAssumption ? (
+          <div className="mt-2 text-[10.5px] text-fg/40">Default: {question.defaultAssumption}</div>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div className={cn(GLASS_CARD_CLASS, "p-4")} style={MESSAGE_CARD_STYLE}>
-      <div className="mb-3 flex items-center gap-2">
-        <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
-          <ChatStatusGlyph status="waiting" size={11} />
-        </span>
-        <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-amber-200">
-          Input needed{source ? ` · ${source}` : ""}
-        </span>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
+            <ChatStatusGlyph status="waiting" size={11} />
+          </span>
+          <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-amber-200">
+            Input needed{source ? ` · ${source}` : ""}
+          </span>
+        </div>
+        {isPaged ? (
+          <span className="font-mono text-[9.5px] font-bold uppercase tracking-widest text-fg/50">
+            {questions.filter(isAnswered).length} of {questions.length} answered
+          </span>
+        ) : null}
       </div>
+
       <div className="mb-3">
-        <div className="text-[13px] font-semibold text-fg/90">{title || "Question"}</div>
+        <div className="text-[13.5px] font-semibold text-fg/92">{title || (isPaged ? "Questions from Claude" : "Question")}</div>
         {description ? <div className="mt-1 text-[12px] leading-relaxed text-fg/62">{description}</div> : null}
       </div>
-      <div className="space-y-3">
-        {questions.map((question) => (
-          <div key={question.id} className="rounded-[calc(var(--chat-radius-card)-6px)] border border-amber-400/14 bg-amber-400/[0.045] p-3">
-            <div className="mb-1 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/70">{question.header}</div>
-            <div className="text-[12.5px] leading-[1.6] text-fg/85">{question.questionText}</div>
-            {question.impact ? <div className="mt-1 text-[11px] leading-relaxed text-fg/45">{question.impact}</div> : null}
-            {question.options.length ? (
-              <div className="mt-3 flex flex-wrap items-stretch gap-2" data-testid={`inline-question-options-${question.id}`}>
-                {question.options.map((option) => {
-                  const active = selected[question.id]?.includes(option.value) ?? false;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      disabled={isResponding}
-                      data-testid={`inline-question-option-${question.id}-${option.value}`}
-                      className={cn(
-                        "max-w-[280px] rounded-[var(--chat-radius-pill)] border px-3 py-1.5 text-left font-mono text-[10px] font-bold uppercase tracking-wider transition-colors disabled:pointer-events-none disabled:opacity-45",
-                        active
-                          ? "border-amber-300/45 bg-amber-300/16 text-amber-100"
-                          : "border-amber-300/24 bg-transparent text-fg/70 hover:bg-amber-300/10",
-                      )}
-                      onClick={() => handleOption(question, option)}
-                      onFocus={() => setFocusedOption((prev) => ({ ...prev, [question.id]: option.value }))}
-                      onMouseEnter={() => setFocusedOption((prev) => prev[question.id] ? prev : { ...prev, [question.id]: option.value })}
-                    >
-                      <span>{option.label}{option.recommended ? " (Recommended)" : ""}</span>
-                      {option.description ? <span className="mt-0.5 block text-[9px] font-medium normal-case tracking-normal text-fg/45">{option.description}</span> : null}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-            {(() => {
-              const selectedForQuestion = selected[question.id];
-              const focusValue = focusedOption[question.id]
-                ?? selectedForQuestion?.[selectedForQuestion.length - 1]
-                ?? null;
-              const focused = focusValue
-                ? question.options.find((option) => option.value === focusValue)
-                : null;
-              if (!focused || !focused.preview) return null;
-              return (
-                <div
-                  className="mt-3 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-300/14 bg-black/20 p-3 text-[11.5px] leading-relaxed text-fg/75"
-                  data-testid={`inline-question-preview-${question.id}`}
-                >
-                  <div className="mb-1 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/60">
-                    Preview · {focused.label}
-                  </div>
-                  {focused.previewFormat === "html" ? (
-                    <div className="whitespace-pre-wrap break-words font-mono text-[11px] text-fg/70">{focused.preview}</div>
-                  ) : (
-                    <div className="prose prose-invert max-w-none text-[11.5px] [&_p]:my-1">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{focused.preview}</ReactMarkdown>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-            {question.allowsFreeform ? (
-              <input
-                type={question.isSecret ? "password" : "text"}
-                value={drafts[question.id] ?? ""}
+
+      {isPaged ? (
+        <div
+          role="tablist"
+          aria-label="Questions"
+          className="mb-3 flex flex-wrap gap-1.5"
+          data-testid="inline-question-tabs"
+        >
+          {questions.map((q, index) => {
+            const active = index === safePage;
+            const answered = isAnswered(q);
+            return (
+              <button
+                key={q.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                aria-label={`Question ${index + 1}: ${q.header}`}
                 disabled={isResponding}
-                placeholder={question.options.length ? "Optional response" : "Response"}
-                className="mt-3 w-full rounded-[var(--chat-radius-card)] border border-white/10 bg-black/20 px-3 py-2 text-[12px] text-fg/82 outline-none placeholder:text-fg/30 focus:border-amber-300/35"
-                onChange={(event) => setDrafts((prev) => ({ ...prev, [question.id]: event.target.value }))}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    if (hasAnswer) submit();
-                  }
-                }}
-              />
-            ) : null}
-            {question.defaultAssumption ? (
-              <div className="mt-2 text-[10px] text-fg/38">Default: {question.defaultAssumption}</div>
-            ) : null}
-          </div>
-        ))}
-      </div>
+                data-testid={`inline-question-tab-${q.id}`}
+                onClick={() => setPage(index)}
+                className={cn(
+                  "group inline-flex max-w-[180px] items-center gap-1.5 rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9.5px] font-bold uppercase tracking-widest transition-colors disabled:pointer-events-none disabled:opacity-45",
+                  active
+                    ? "border-amber-300/55 bg-amber-300/14 text-amber-100"
+                    : answered
+                      ? "border-emerald-300/30 bg-emerald-300/[0.06] text-emerald-200/80 hover:bg-emerald-300/12"
+                      : "border-amber-300/18 bg-transparent text-fg/55 hover:bg-amber-300/8",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-flex h-3.5 w-3.5 flex-none items-center justify-center rounded-full border text-[9px]",
+                    active
+                      ? "border-amber-200/70 bg-amber-200/25 text-amber-100"
+                      : answered
+                        ? "border-emerald-300/55 bg-emerald-300/30 text-emerald-50"
+                        : "border-fg/25 bg-transparent text-fg/55",
+                  )}
+                >
+                  {answered ? <Check size={8} weight="bold" /> : index + 1}
+                </span>
+                <span className="truncate">{q.header}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {renderQuestion(activeQuestion)}
+
       <div className="mt-3 flex items-center gap-2">
+        {isPaged ? (
+          <>
+            <button
+              type="button"
+              disabled={isResponding || safePage === 0}
+              onClick={() => setPage(Math.max(safePage - 1, 0))}
+              data-testid="inline-question-prev"
+              className="inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-border/20 px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/65 transition-colors hover:bg-border/10 disabled:pointer-events-none disabled:opacity-30"
+            >
+              <CaretLeft size={11} weight="bold" /> Back
+            </button>
+            <button
+              type="button"
+              disabled={isResponding || safePage >= questions.length - 1}
+              onClick={() => setPage(Math.min(safePage + 1, questions.length - 1))}
+              data-testid="inline-question-next"
+              className="inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-amber-300/24 bg-amber-300/[0.06] px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-100/90 transition-colors hover:bg-amber-300/12 disabled:pointer-events-none disabled:opacity-30"
+            >
+              Next <CaretRight size={11} weight="bold" />
+            </button>
+            <span className="ml-1 font-mono text-[10px] font-bold uppercase tracking-widest text-fg/40">
+              {safePage + 1} / {questions.length}
+            </span>
+            <span className="flex-1" />
+          </>
+        ) : null}
         <button
           type="button"
-          disabled={isResponding || !hasAnswer}
-          className="rounded-[var(--chat-radius-pill)] border border-amber-300/30 bg-amber-300/12 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-100 transition-colors hover:bg-amber-300/18 disabled:pointer-events-none disabled:opacity-40"
+          disabled={isResponding || !canSend}
+          className={cn(
+            "rounded-[var(--chat-radius-pill)] border px-3.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors disabled:pointer-events-none disabled:opacity-40",
+            canSend
+              ? "border-amber-300/45 bg-amber-300/16 text-amber-100 hover:bg-amber-300/24"
+              : "border-amber-300/24 bg-amber-300/8 text-amber-100/60",
+          )}
           onClick={() => submit()}
         >
-          {isResponding ? "Sending..." : "Send answer"}
+          {sendLabel}
         </button>
         <button
           type="button"
