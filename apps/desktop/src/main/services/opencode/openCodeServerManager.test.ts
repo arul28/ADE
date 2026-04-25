@@ -17,6 +17,7 @@ import {
   __resolveOpenCodeListenerPidForTests,
   __setOpenCodeProcessControllerForTests,
   __setOpenCodeServerLauncherForTests,
+  __terminateOpenCodeServerProcessesForTests,
   acquireDedicatedOpenCodeServer,
   acquireSharedOpenCodeServer,
   getOpenCodeRuntimeDiagnostics,
@@ -723,5 +724,57 @@ describe("openCodeServerManager", () => {
     expect(listProcesses).toHaveBeenCalledTimes(2);
     expect(killProcess).toHaveBeenCalledTimes(1);
     expect(killProcess).toHaveBeenCalledWith(5101, "SIGTERM");
+  });
+
+  it("does not double-kill when the listener PID equals the spawned child PID", () => {
+    setProcessPlatform("darwin");
+    const killProcess = vi.fn();
+    const killProcessTree = vi.fn(() => false);
+    __setOpenCodeProcessControllerForTests({
+      isProcessAlive: () => true,
+      killProcess,
+      killProcessTree,
+    });
+
+    const procKill = vi.fn();
+    const fakeProc = {
+      pid: 9001,
+      exitCode: null,
+      signalCode: null,
+      kill: procKill,
+    } as unknown as import("node:child_process").ChildProcess;
+
+    __terminateOpenCodeServerProcessesForTests(fakeProc, 9001);
+
+    // Listener PID kill happens exactly once via killProcess, and the child-side
+    // fallback (stopChildProcess) must NOT fire a second signal at the same PID.
+    expect(killProcess).toHaveBeenCalledTimes(1);
+    expect(killProcess).toHaveBeenCalledWith(9001, "SIGTERM");
+    expect(procKill).not.toHaveBeenCalled();
+    expect(killProcessTree).not.toHaveBeenCalled();
+  });
+
+  it("falls back to stopChildProcess when the listener PID differs from the child PID", () => {
+    setProcessPlatform("darwin");
+    const killProcess = vi.fn();
+    __setOpenCodeProcessControllerForTests({
+      isProcessAlive: () => true,
+      killProcess,
+      killProcessTree: () => false,
+    });
+
+    const procKill = vi.fn();
+    const fakeProc = {
+      pid: 8001,
+      exitCode: null,
+      signalCode: null,
+      kill: procKill,
+    } as unknown as import("node:child_process").ChildProcess;
+
+    __terminateOpenCodeServerProcessesForTests(fakeProc, 8002);
+
+    expect(killProcess).toHaveBeenCalledTimes(1);
+    expect(killProcess).toHaveBeenCalledWith(8002, "SIGTERM");
+    expect(procKill).toHaveBeenCalledTimes(1);
   });
 });

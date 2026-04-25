@@ -131,26 +131,33 @@ extension WorkRootScreen {
     bulkBusy = true
     defer { bulkBusy = false }
     var failed = 0
-    await withTaskGroup(of: Bool.self) { group in
+    var succeededIds = Set<String>()
+    await withTaskGroup(of: (String, Bool).self) { group in
       for session in targets {
         group.addTask {
           do {
             if isChatSession(session) {
               try await syncService.unarchiveChatSession(sessionId: session.id)
             }
-            return true
+            return (session.id, true)
           } catch {
-            return false
+            return (session.id, false)
           }
         }
       }
-      for await success in group where !success {
-        failed += 1
+      for await (sessionId, success) in group {
+        if success {
+          succeededIds.insert(sessionId)
+        } else {
+          failed += 1
+        }
       }
     }
-    var localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
-    for session in targets { localIds.remove(session.id) }
-    archivedSessionIdsStorage = localIds.sorted().joined(separator: "\n")
+    if !succeededIds.isEmpty {
+      var localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
+      for sessionId in succeededIds { localIds.remove(sessionId) }
+      archivedSessionIdsStorage = localIds.sorted().joined(separator: "\n")
+    }
     await reload(refreshRemote: true)
     if failed > 0 {
       bulkActionErrorMessage = "Restore failed for \(failed) chat\(failed == 1 ? "" : "s")."
@@ -167,24 +174,31 @@ extension WorkRootScreen {
     bulkBusy = true
     defer { bulkBusy = false }
     var failed = 0
-    await withTaskGroup(of: Bool.self) { group in
+    var succeededIds = Set<String>()
+    await withTaskGroup(of: (String, Bool).self) { group in
       for session in targets {
         group.addTask {
           do {
             try await syncService.deleteChatSession(sessionId: session.id)
-            return true
+            return (session.id, true)
           } catch {
-            return false
+            return (session.id, false)
           }
         }
       }
-      for await success in group where !success {
-        failed += 1
+      for await (sessionId, success) in group {
+        if success {
+          succeededIds.insert(sessionId)
+        } else {
+          failed += 1
+        }
       }
     }
-    var localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
-    for session in targets { localIds.remove(session.id) }
-    archivedSessionIdsStorage = localIds.sorted().joined(separator: "\n")
+    if !succeededIds.isEmpty {
+      var localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
+      for sessionId in succeededIds { localIds.remove(sessionId) }
+      archivedSessionIdsStorage = localIds.sorted().joined(separator: "\n")
+    }
     await reload(refreshRemote: true)
     if failed > 0 {
       bulkActionErrorMessage = "Delete failed for \(failed) chat\(failed == 1 ? "" : "s")."

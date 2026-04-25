@@ -513,7 +513,8 @@ function resolveOpenCodeListenerPid(port: number): number | null {
 }
 
 function terminateOpenCodeServerProcesses(proc: ChildProcess, listenerPid: number | null): void {
-  if (listenerPid && openCodeProcessController.isProcessAlive(listenerPid)) {
+  const listenerHandled = listenerPid !== null && openCodeProcessController.isProcessAlive(listenerPid);
+  if (listenerHandled) {
     if (process.platform === "win32") {
       openCodeProcessController.killProcessTree(listenerPid);
     } else {
@@ -521,8 +522,9 @@ function terminateOpenCodeServerProcesses(proc: ChildProcess, listenerPid: numbe
     }
   }
 
-  if (proc.pid && listenerPid !== proc.pid && openCodeProcessController.isProcessAlive(proc.pid)) {
-    stopChildProcess(proc);
+  // When the listener PID matches the spawned child PID, the kill above already
+  // signalled it -- do not double-kill the same process.
+  if (listenerHandled && listenerPid === proc.pid) {
     return;
   }
 
@@ -1298,4 +1300,11 @@ export function __resolveOpenCodeListenerPidForTests(port: number): number | nul
 /** Test hook: whether a WMIC/CIM command line would be treated as an ADE-managed OpenCode serve. */
 export function __isManagedOpenCodeServeCommandForTests(command: string): boolean {
   return isManagedOpenCodeServeCommand(command, buildManagedConfigMarkers());
+}
+
+export function __terminateOpenCodeServerProcessesForTests(
+  proc: ChildProcess,
+  listenerPid: number | null,
+): void {
+  terminateOpenCodeServerProcesses(proc, listenerPid);
 }
