@@ -11,6 +11,7 @@ import {
   LABEL_STYLE,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import { AdeCliSection } from "./AdeCliSection";
 
 const sectionLabelStyle: React.CSSProperties = {
   ...LABEL_STYLE,
@@ -101,6 +102,11 @@ export function GeneralSection() {
             </button>
           </div>
         </div>
+      </section>
+
+      <section>
+        <div style={sectionLabelStyle}>ADE CLI</div>
+        <AdeCliSection compact />
       </section>
 
       <section>

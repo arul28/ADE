@@ -51,6 +51,7 @@ import {
   listContextDocsByHealth,
 } from "../context/contextShared";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
+import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
 
 type PrToast = {
   id: string;
@@ -1234,9 +1235,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             type="button"
                             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-transparent px-3 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg"
                             onClick={() => {
-                              selectLane(toast.event.laneId);
-                              setLaneInspectorTab(toast.event.laneId, "merge");
-                              window.location.hash = `#/lanes?laneId=${encodeURIComponent(toast.event.laneId)}&focus=single&inspectorTab=merge`;
+                              let detailTab: PrDetailRouteTab | null = null;
+                              if (toast.event.kind === "checks_failing") {
+                                detailTab = "checks";
+                              } else if (
+                                toast.event.kind === "changes_requested" ||
+                                toast.event.kind === "review_requested"
+                              ) {
+                                detailTab = "activity";
+                              }
+                              const search = buildPrsRouteSearch({
+                                activeTab: "normal",
+                                selectedPrId: toast.event.prId,
+                                selectedQueueGroupId: null,
+                                selectedRebaseItemId: null,
+                                detailTab,
+                              });
+                              navigate(`/prs${search}`);
                               dismissPrToast(toast.id);
                             }}
                           >

@@ -41,8 +41,8 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
     {
       id: "createLane.openMenu",
       target: '[data-tour="lanes.newLane"]',
-      title: "Create a lane",
-      body: "Click **New Lane**. A lane is a safe copy of the project for one task, like `fix-login-copy` or `try-new-checkout-flow`. The tutorial makes one disposable lane so you can see the shape.",
+      title: "Make your first lane",
+      body: "Click **New Lane**. We'll make a throwaway sandbox just for this tutorial — call it whatever you like, then delete it at the end. Real lanes get useful names like `fix-login-bug` or `try-dark-mode`.",
       placement: "bottom",
       docUrl: docs.lanesOverview,
       waitForSelector: '[data-tour="lanes.newLane"]',
@@ -56,8 +56,8 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
     {
       id: "createLane.chooseCreate",
       target: '[data-tour="lanes.createNewLane"]',
-      title: "Create new lane",
-      body: "Choose **Create new lane**. ADE will make a fresh Git worktree: a real folder on disk with its own branch, separate from primary.",
+      title: "Choose \"Create new lane\"",
+      body: "Pick this option. Behind the scenes, ADE creates a new folder on your computer that's a separate copy of your project — that's what makes it a sandbox. (Git people: it's a worktree on a fresh branch.)",
       placement: "right",
       docUrl: docs.lanesCreating,
       waitForSelector: '[data-tour="lanes.createNewLane"]',
@@ -72,8 +72,8 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
     {
       id: "createLane.nameField",
       target: '[data-tour="lanes.createDialog.name"]',
-      title: "Name it",
-      body: "Use a short task name, not a sentence. Good examples: `fix-login-copy`, `test-new-sidebar`, `tour-sample`. ADE uses this name for the lane and its branch/worktree identity.",
+      title: "Give it a name",
+      body: "Short and task-shaped works best — like `fix-login-copy` or `try-dark-mode`, not full sentences. ADE uses this name for the folder and the Git branch.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
       beforeEnter: (ctx) => {
@@ -89,8 +89,8 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
     {
       id: "createLane.sourceChoices",
       target: '[data-tour="lanes.createDialog.tabs"]',
-      title: "Three ways to start",
-      body: "**Primary** starts from the clean main project. **Branch** is for work you already started on a Git branch. **Child** makes a stacked lane that depends on another lane. Leave **Primary** selected here.",
+      title: "Where to start from",
+      body: "Three options: **Primary** (start from your clean main project — the usual choice), **Branch** (use work you already started on a Git branch), or **Child** (build on top of another lane). Leave **Primary** selected for the tutorial.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
       preventTargetInteraction: true,
@@ -101,8 +101,8 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
     {
       id: "createLane.branchBase",
       target: '[data-tour="lanes.createDialog.branchBase"]',
-      title: "Pick a branch base",
-      body: "The base is the starting line. If the base is `main`, ADE compares your lane to `main`; if new commits land on `main`, ADE can tell you the lane may need a rebase.",
+      title: "What to copy from",
+      body: "Pick which branch this sandbox copies from — usually `main`. ADE compares your lane's changes against this so it can tell you what's different and warn you when the original has moved on.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
       focusTarget: true,
@@ -113,8 +113,8 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
     {
       id: "createLane.branchTab",
       target: '[data-tour="lanes.createDialog.branchTab"]',
-      title: "Branch is for existing work",
-      body: "Use **Branch** when work already exists, like `feature/search` on your machine or GitHub, and you want ADE to manage it as a lane. Do not choose it for this tutorial lane.",
+      title: "Already started somewhere else?",
+      body: "If you already have a Git branch with work on it (like `feature/search` from a teammate or your earlier work), use **Branch** to bring it in as a lane instead of starting fresh. Skip this for the tutorial.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
       ghostCursor: {
@@ -129,8 +129,8 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
     {
       id: "createLane.childTab",
       target: '[data-tour="lanes.createDialog.childTab"]',
-      title: "Child is for stacked lanes",
-      body: "Use **Child** when task B depends on task A. Example: parent lane `build-checkout-page`, child lane `polish-checkout-errors`. The child ships after the parent.",
+      title: "Building on another lane?",
+      body: "Use **Child** when one task depends on another — like *\"build the checkout page\"* (parent) and *\"polish the checkout error messages\"* (child). The child ships after the parent. Skip for the tutorial.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
       ghostCursor: {
@@ -145,8 +145,8 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
     {
       id: "createLane.create",
       target: '[data-tour="lanes.createDialog.create"]',
-      title: "Create the lane",
-      body: "Click **Create**. ADE makes the branch and worktree folder, selects the new lane, and keeps primary untouched.",
+      title: "Make it",
+      body: "Click **Create**. ADE makes the new sandbox folder, switches you to it, and your real project stays untouched.",
       placement: "left",
       requires: ["laneCountIncreased"],
       awaitingActionLabel: "Waiting for the new test lane",

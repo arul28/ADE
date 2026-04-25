@@ -23,6 +23,8 @@ registry / ADE CLI integration that all three share.
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools (Claude Code, Codex, Cursor, Aider, Continue) on PATH. |
 | `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC: registers actions, handles JSON-RPC, applies session-identity-based filtering. |
+| `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. Owns the install-target path resolution and the optional shell-rc PATH append. |
+| `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance for finding and using `ade` (env var fallback chain + "try `ade doctor` before declaring blocked"). |
 | `apps/desktop/src/shared/ctoPersonalityPresets.ts` | CTO personality overlays (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`). |
 | `apps/desktop/src/shared/types/agents.ts` | `AgentIdentity`, `AgentCoreMemory`, `AgentRole`, `AdapterType`, adapter configs. |
 | `apps/desktop/src/shared/types/cto.ts` | `CtoIdentity`, `CtoCoreMemory`, `CtoCapabilityMode`, `CtoPersonalityPreset`. |

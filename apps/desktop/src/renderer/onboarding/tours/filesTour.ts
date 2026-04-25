@@ -1,71 +1,39 @@
 import { registerTour, type Tour } from "../registry";
 import { docs } from "../docsLinks";
 
+// Curated to selectors that render before any file is opened. Mode toggle and
+// breadcrumb actions only mount once a file is active in the editor — they're
+// intentionally not in this tour to avoid a hang when a fresh user lands here.
 export const filesTour: Tour = {
   id: "files",
   title: "Files tab walkthrough",
   route: "/files",
   steps: [
     {
-      target: '[data-tour="files.header"]',
-      title: "Files header",
-      body: "The Files tab is your full-project editor. Switch between workspaces, manage git actions, and open files in external tools from this bar.",
+      target: '[data-tour="files.workspaceSelector"]',
+      title: "Pick which copy to look at",
+      body: "Each lane has its own copy of the files (we call that a **worktree** — basically *\"this lane's folder\"*). Use this dropdown to switch between your main project and any lane.",
       docUrl: docs.filesEditor,
       placement: "bottom",
     },
     {
-      target: '[data-tour="files.workspaceSelector"]',
-      title: "Workspace selector",
-      body: "Each entry is a workspace — either your primary folder or a lane worktree. Switch here to browse a different lane's files without leaving the tab.",
-      docUrl: docs.lanesOverview,
-      placement: "bottom",
-    },
-    {
-      target: '[data-tour="files.explorerPane"]',
-      title: "Explorer pane",
-      body: "The file tree lives here. Click a folder to expand it, click a file to open it in the editor. Right-click any item for create, rename, delete, and git actions.",
+      target: '[data-tour="files.fileTree"], [data-tour="files.explorerPane"]',
+      title: "Browse and spot changes",
+      body: "Click a folder to expand it, click a file to open it. Files with changes show a colored letter: **M** = edited, **A** = new, **D** = deleted — so you can see what this lane changed without opening anything.",
       docUrl: docs.filesEditor,
       placement: "right",
     },
     {
       target: '[data-tour="files.searchBar"]',
-      title: "Full-text search",
-      body: "Type to search across every file in the workspace. Results appear inline; click one to jump straight to that line.",
-      docUrl: docs.filesEditor,
-      placement: "bottom",
-    },
-    {
-      target: '[data-tour="files.fileTree"]',
-      title: "File tree",
-      body: "Files with uncommitted changes show a colored badge — M for modified, A for added, D for deleted. Colour-coded icons identify file types at a glance.",
-      docUrl: docs.filesEditor,
-      placement: "right",
-    },
-    {
-      target: '[data-tour="files.editorPane"]',
-      title: "Editor pane",
-      body: "Open files appear as tabs here. Edit directly in Code mode, review your uncommitted changes in Changes mode, or resolve merge markers in Merge mode.",
-      docUrl: docs.filesEditor,
-      placement: "left",
-    },
-    {
-      target: '[data-tour="files.modeToggle"]',
-      title: "Code / Changes / Merge",
-      body: "CODE edits the raw file. CHANGES shows a side-by-side diff against the last commit. MERGE lets you pick which side of a conflict to keep.",
-      docUrl: docs.filesEditor,
-      placement: "bottom",
-    },
-    {
-      target: '[data-tour="files.breadcrumb"]',
-      title: "Breadcrumb & git actions",
-      body: "The file path sits on the left. When a lane workspace is active, Stage, Unstage, and Discard buttons appear on the right to manage individual files.",
+      title: "Search every file",
+      body: "Type anything — a function name, a word you remember, anything — and ADE searches every file in this lane. Click a result to jump to that line.",
       docUrl: docs.filesEditor,
       placement: "bottom",
     },
     {
       target: '[data-tour="files.openIn"]',
-      title: "Open in external editor",
-      body: "Send the active file straight to VS Code, Cursor, Zed, or the system file browser without leaving ADE.",
+      title: "Open in your favorite editor",
+      body: "Already use VS Code, Cursor, or another code editor? This button hands the file (or the whole lane folder) over in one click. Keep ADE as your home base while editing wherever you like.",
       docUrl: docs.filesEditor,
       placement: "bottom",
     },

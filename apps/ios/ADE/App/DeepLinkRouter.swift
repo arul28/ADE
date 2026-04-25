@@ -42,6 +42,10 @@ final class DeepLinkRouter {
       post(kind: "session", identifier: sessionId)
       return
     }
+    if let prId = userInfo["prId"] as? String, !prId.isEmpty {
+      post(kind: "pr", identifier: prId)
+      return
+    }
     if let pr = userInfo["prNumber"] {
       let identifier = "\(pr)"
       guard !identifier.isEmpty else { return }
@@ -55,6 +59,32 @@ final class DeepLinkRouter {
       object: nil,
       userInfo: ["kind": kind, "identifier": identifier]
     )
+    if kind == "pr", let prId = resolvePrId(from: identifier) {
+      SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prId: prId)
+    }
+  }
+
+  /// PR deep links carry either a numeric PR number (from `ade://pr/<n>`
+  /// widget/live-activity URLs) or a stable `prId` (from notification payloads
+  /// that include both). Resolve the number to the matching `prId` via the
+  /// App Group workspace snapshot so navigation always uses the same
+  /// identifier as `PrsRootScreen`.
+  private func resolvePrId(from identifier: String) -> String? {
+    let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    if let number = Int(trimmed) {
+      // Pure-number deep links (e.g. `ade://pr/123`) must look up the canonical
+      // prId from the workspace snapshot. If we can't, returning the numeric
+      // string would be stored as a `prId` in `PrNavigationRequest` and silently
+      // fail to match any PR in `PrsRootScreen`. Fall back to nil so callers can
+      // degrade gracefully (e.g., the number-based notification path).
+      guard let snapshot = ADESharedContainer.readWorkspaceSnapshot(),
+            let match = snapshot.prs.first(where: { $0.number == number }) else {
+        return nil
+      }
+      return match.id
+    }
+    return trimmed
   }
 }
 

@@ -95,6 +95,17 @@ bridge.
   plus an `ade-cli-install-path.cmd` helper alongside the bundled Node
   runtime so that `ade` works from a normal Windows shell without a
   global Node install. See §14.4 for the packaging flow.
+- **Install + PATH wiring (`adeCliService`)** — on macOS / Linux the
+  desktop installer drops the launcher at `$HOME/.local/bin/ade`; on
+  Windows it lands at `%LOCALAPPDATA%\ADE\bin\ade.cmd`. After a
+  successful install on POSIX, `ensureUserBinOnShellPath` appends a
+  marked `export PATH="$HOME/.local/bin:$PATH"` block to the user's
+  shell rc (`.zshrc` for zsh, `.bashrc` for bash, `.profile` otherwise)
+  iff (a) the install dir isn't already on the inherited `PATH` and
+  (b) the file doesn't already contain the marker / line / target dir.
+  The install IPC reply tells the renderer which profile was edited
+  so the Settings/Onboarding UI can prompt the user to open a new
+  terminal or `source` it.
 - **Session identity** — the CLI resolves caller role from ADE context
   environment variables and command flags. Role vocabulary: `cto`,
   `orchestrator`, `agent`, `external`, `evaluator`.

@@ -21,8 +21,8 @@ export function buildGitActionsPaneWalkthrough(): TourStep[] {
     {
       id: "gitActions.stage",
       target: '[data-tour="lanes.gitActionsPane"]',
-      title: "Stage files",
-      body: "When unstaged files exist, they appear in the Unstaged section. Use per-file controls or Stage all to choose what goes into the next commit.",
+      title: "1. Pick what to keep",
+      body: "When you change files, they show up here as **unstaged**. \"Staging\" just means *\"include this in my next save.\"* You can stage one file at a time, or hit **Stage all** to include everything.",
       placement: "left",
       requires: ["laneExists"],
       waitForSelector: '[data-tour="lanes.gitActionsPane"]',
@@ -31,12 +31,12 @@ export function buildGitActionsPaneWalkthrough(): TourStep[] {
     {
       id: "gitActions.commit",
       target: '[data-tour="lanes.gitActionsPane"]',
-      title: "Commit controls",
+      title: "2. Save a snapshot",
       bodyTemplate: (ctx) => {
         const lane = ctx.get<string>("laneName") ?? "this lane";
-        return `Commits require staged changes in ${lane} unless Amend is enabled. ${modifierKey}+Enter runs the commit action when the button is enabled.`;
+        return `A **commit** is a saved snapshot of your work — a checkpoint you can come back to. Write a short message saying what changed in **${lane}**, then click commit (or hit ${modifierKey}+Enter). You can only commit if you've staged something first.`;
       },
-      body: `Commits require staged changes unless Amend is enabled. ${modifierKey}+Enter runs the commit action when the button is enabled.`,
+      body: `A **commit** is a saved snapshot of your work — a checkpoint you can come back to. Write a short message saying what changed, then click commit (or hit ${modifierKey}+Enter). You can only commit if you've staged something first.`,
       placement: "left",
       requires: ["laneExists"],
       waitForSelector: '[data-tour="lanes.gitActionsPane"]',
@@ -45,8 +45,8 @@ export function buildGitActionsPaneWalkthrough(): TourStep[] {
     {
       id: "gitActions.push",
       target: '[data-tour="lanes.gitActionsPane"]',
-      title: "Publish or push",
-      body: "The remote button changes with the lane state: Publish for a new remote branch, Push for local commits, or Force Push when history was rewritten.",
+      title: "3. Share it",
+      body: "**Pushing** uploads your saved snapshots somewhere shareable (like GitHub) so others can see them. The button label changes based on what you need: **Publish** the first time, **Push** for new snapshots, or **Force Push** for unusual cases.",
       placement: "left",
       requires: ["laneExists"],
       waitForSelector: '[data-tour="lanes.gitActionsPane"]',

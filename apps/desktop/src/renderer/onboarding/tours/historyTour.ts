@@ -8,22 +8,22 @@ export const historyTour: Tour = {
   steps: [
     {
       target: '[data-tour="history.entries"]',
-      title: "Timeline",
-      body: "Recent events sit at the top. Lane creation, commits, pushes, PR activity, and missions all land here.",
+      title: "What just happened",
+      body: "The newest events sit at the top: lanes you made, work you saved, things you shipped, AI tasks that finished. Scroll to see further back.",
       docUrl: docs.historyOverview,
       placement: "right",
     },
     {
       target: '[data-tour="history.filter"]',
-      title: "Filters",
-      body: "Filter by importance or kind when the project gets noisy.",
+      title: "Find specific moments",
+      body: "When the list gets long, filter to just the big stuff or just one type of event so you don't have to scroll forever.",
       docUrl: docs.historyOverview,
       placement: "bottom",
     },
     {
       target: '[data-tour="history.export"]',
-      title: "Column settings",
-      body: "Tune which timeline details matter for review, handoff, or debugging.",
+      title: "Show what matters to you",
+      body: "Choose which details show up next to each event — timestamps, who did it, which lane. Hide the noise, keep what's useful.",
       docUrl: docs.historyOverview,
       placement: "bottom",
     },

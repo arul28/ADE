@@ -19,12 +19,12 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
     {
       id: "manageLane.openMenu",
       target: '[data-tour="lanes.laneTab"]',
-      title: "Open lane actions",
+      title: "Open the lane menu",
       bodyTemplate: (ctx) => {
         const lane = ctx.get<string>("laneName") ?? "this lane";
-        return `Right-click ${lane}'s lane tab to open its actions menu.`;
+        return `Right-click **${lane}**'s tab to open its menu of actions (rename, archive, delete, etc.).`;
       },
-      body: "Right-click a lane tab to open its actions menu.",
+      body: "Right-click a lane's tab to open its menu of actions (rename, archive, delete, etc.).",
       placement: "bottom",
       docUrl: docs.lanesOverview,
       waitForSelector: '[data-tour="lanes.laneTab"]',
@@ -36,8 +36,8 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
     {
       id: "manageLane.openDialog",
       target: '[data-tour="lanes.manageLane"]',
-      title: "Manage lane",
-      body: "Choose Manage Lane. The dialog opens without touching the lane yet.",
+      title: "Manage Lane",
+      body: "Pick **Manage Lane**. This just opens a dialog where you can choose what to do — nothing happens to your lane yet.",
       placement: "right",
       docUrl: docs.lanesOverview,
       waitForSelector: '[data-tour="lanes.manageLane"]',
@@ -52,8 +52,8 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
     {
       id: "manageLane.laneInfo",
       target: '[data-tour="lanes.manageDialog.laneInfo"]',
-      title: "Lane at a glance",
-      body: "Name, branch, type, and worktree path live here. Management actions below affect this selected lane.",
+      title: "What lane this is",
+      body: "Quick check: this is the lane you're about to manage. Name, branch, where its folder lives. Everything below affects *this* lane only.",
       placement: "bottom",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.laneInfo"]',
@@ -64,8 +64,8 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
     {
       id: "manageLane.archive",
       target: '[data-tour="lanes.manageDialog.archive"]',
-      title: "Archive, don't delete",
-      body: "Archive hides a lane from ADE without touching the worktree or branch. Good for parking a lane you might come back to.",
+      title: "Park it instead of deleting",
+      body: "**Archive** hides the lane from your list without actually deleting anything. Good for *\"I might come back to this someday\"* situations — the files stay on your computer, ADE just stops showing it.",
       placement: "left",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.archive"]',
@@ -76,8 +76,8 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
     {
       id: "manageLane.deleteTabs",
       target: '[data-tour="lanes.manageDialog.tabs"]',
-      title: "Choose what to remove",
-      body: "Choose how far deletion goes: remove only the worktree, also delete the local branch, or also delete the remote branch.",
+      title: "How thorough to delete",
+      body: "Three levels: remove just the lane folder, also delete the branch on your computer, or also delete the branch on GitHub. Pick how far you want it gone.",
       placement: "bottom",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.tabs"]',
@@ -88,8 +88,8 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
     {
       id: "manageLane.deleteConfirm",
       target: '[data-tour="lanes.manageDialog.confirm"]',
-      title: "Confirm the lane",
-      body: "Type the exact phrase shown above the field. The delete button enables only after it matches.",
+      title: "Type to confirm",
+      body: "Deletion is permanent, so ADE asks you to type the lane's name to make sure you really mean it. The delete button stays disabled until what you type matches.",
       placement: "right",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.confirm"]',
@@ -100,8 +100,8 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
     {
       id: "manageLane.deleteButton",
       target: '[data-tour="lanes.manageDialog.delete"]',
-      title: "Delete only when you mean it",
-      body: "This is the destructive action. Primary lanes are protected and never reach this state.",
+      title: "The point of no return",
+      body: "Click this and the lane is gone for good. Your real project is always protected — you can never accidentally delete it from this dialog.",
       placement: "left",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.delete"]',

@@ -21,6 +21,9 @@ apps/ios/
 │   │   │                            # setup, response/action routing, deep-link dispatch
 │   │   ├── ContentView.swift        # slim 6-tab TabView
 │   │   ├── DeepLinkRouter.swift     # ade://session/<id> + ade://pr/<n> URL handler
+│   │   │                            # plus notification userInfo dispatch
+│   │   │                            # (sessionId / prId / prNumber → prId via
+│   │   │                            #  WorkspaceSnapshot lookup)
 │   │   └── NotificationCategories.swift # UNNotificationCategory / UNNotificationAction set
 │   ├── Models/
 │   │   ├── RemoteModels.swift       # Codable structs mirroring shared types
@@ -379,10 +382,19 @@ over Apple Push Notification service. The full stack is implemented:
   `sessionId` or `prNumber` so the OS groups banners per session/PR,
   and raises `interruptionLevel` / `relevanceScore` based on category.
 
-- `DeepLinkRouter.swift` — `ade://` URL handler. Parses
-  `ade://session/<id>` and `ade://pr/<n>` and posts
+- `DeepLinkRouter.swift` — `ade://` URL handler and notification-
+  payload dispatcher. Parses `ade://session/<id>` and
+  `ade://pr/<n>` URLs, plus notification `userInfo` bags carrying
+  `sessionId`, `prId`, or `prNumber`, and posts
   `.adeDeepLinkRequested` to `NotificationCenter` so individual tab
-  views can flip their selection.
+  views can flip their selection. PR deep links specifically resolve
+  to a stable `prId`: when the inbound identifier is the GitHub PR
+  number (from a widget / Live Activity URL or a legacy `prNumber`
+  payload), `resolvePrId` looks it up against the App Group
+  `WorkspaceSnapshot` and stashes the matching id on
+  `SyncService.requestedPrNavigation` (a `PrNavigationRequest`) so
+  `PrsRootScreen` opens the same row the desktop would. When the
+  payload already carries a `prId`, that is used verbatim.
 
 **Notification preferences** (`apps/ios/ADE/Models/NotificationPreferences.swift`):
 
