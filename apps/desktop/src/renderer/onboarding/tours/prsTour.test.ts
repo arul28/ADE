@@ -69,7 +69,7 @@ describe("prsTour", () => {
     }
   });
 
-  it("dispatches ade:tour-pr-detail-tab with `convergence` when entering Path to Merge", async () => {
+  it("dispatches ade:tour-pr-detail-tab with `convergence` when entering What's blocking me?", async () => {
     const step = findStep("What's blocking me?");
     expect(step.beforeEnter).toBeTruthy();
 

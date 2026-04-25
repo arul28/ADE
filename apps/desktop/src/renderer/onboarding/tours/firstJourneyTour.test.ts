@@ -53,13 +53,10 @@ describe("firstJourneyTour tutorialSection wrapping", () => {
   it("derives waitForSelector from target when the source step did not set one", () => {
     for (const step of sectionSteps) {
       if (step.target) {
-        expect(step.waitForSelector, `step ${step.id} should have waitForSelector`).toBe(
-          step.waitForSelector,
-        );
-        // When target is set and source didn't override, waitForSelector === target.
-        // (We can't tell here whether the source set it explicitly, but at minimum it
-        //  must be a non-empty string for any step with a target.)
-        expect(typeof step.waitForSelector === "string" && step.waitForSelector.length > 0).toBe(true);
+        // When target is set and the source didn't override, waitForSelector === target.
+        // At minimum it must be a non-empty string for any step with a target.
+        expect(typeof step.waitForSelector).toBe("string");
+        expect((step.waitForSelector ?? "").length).toBeGreaterThan(0);
       }
     }
   });

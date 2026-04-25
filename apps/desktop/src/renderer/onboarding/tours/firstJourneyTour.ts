@@ -943,7 +943,7 @@ const firstJourneyTour: Tour = {
     act5IntroWithBranch,
     ...buildGitActionsPaneWalkthrough(),
 
-    // Act 6 — PRs
+    // Act 7 — PRs
     // The interactive builder ships a real PR. After it lands, we walk the
     // user through the detail drawer's tabs by dispatching the
     // `ade:tour-pr-detail-tab` event before each step (handler in
@@ -957,7 +957,7 @@ const firstJourneyTour: Tour = {
     act7Stacking,
     act7CloseWithBranch,
 
-    // Act 7 — History
+    // Act 6 — History
     act6Intro,
     ...tutorialSection("act6.history", historyTour.steps),
 

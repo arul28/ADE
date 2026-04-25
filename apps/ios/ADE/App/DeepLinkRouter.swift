@@ -72,9 +72,16 @@ final class DeepLinkRouter {
   private func resolvePrId(from identifier: String) -> String? {
     let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
-    if let number = Int(trimmed),
-       let snapshot = ADESharedContainer.readWorkspaceSnapshot(),
-       let match = snapshot.prs.first(where: { $0.number == number }) {
+    if let number = Int(trimmed) {
+      // Pure-number deep links (e.g. `ade://pr/123`) must look up the canonical
+      // prId from the workspace snapshot. If we can't, returning the numeric
+      // string would be stored as a `prId` in `PrNavigationRequest` and silently
+      // fail to match any PR in `PrsRootScreen`. Fall back to nil so callers can
+      // degrade gracefully (e.g., the number-based notification path).
+      guard let snapshot = ADESharedContainer.readWorkspaceSnapshot(),
+            let match = snapshot.prs.first(where: { $0.number == number }) else {
+        return nil
+      }
       return match.id
     }
     return trimmed

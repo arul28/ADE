@@ -249,7 +249,7 @@ describe("createAdeCliService", () => {
       resourcesPath,
       userDataPath: path.join(root, "user-data"),
       appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
-      env: { HOME: home, SHELL: "/usr/bin/fish", PATH: "/usr/bin:/bin" },
+      env: { HOME: home, SHELL: "/usr/bin/nu", PATH: "/usr/bin:/bin" },
       logger: logger() as any,
     });
 
@@ -259,6 +259,35 @@ describe("createAdeCliService", () => {
     expect(result.ok).toBe(true);
     expect(result.message).toContain(profilePath);
     expect(fs.readFileSync(profilePath, "utf8")).toContain('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it("writes fish-syntax PATH update to ~/.config/fish/config.fish for fish shell", async () => {
+    const root = makeTempRoot();
+    const home = path.join(root, "home");
+    const resourcesPath = path.join(root, "Resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    writeExecutable(path.join(packagedBinDir, "ade"));
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.sh"));
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      env: { HOME: home, SHELL: "/usr/bin/fish", PATH: "/usr/bin:/bin" },
+      logger: logger() as any,
+    });
+
+    const result = await service.installForUser();
+    const profilePath = path.join(home, ".config", "fish", "config.fish");
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain(profilePath);
+    const profile = fs.readFileSync(profilePath, "utf8");
+    expect(profile).toContain("# ADE CLI");
+    expect(profile).toContain("fish_add_path -gP $HOME/.local/bin");
+    expect(profile).not.toContain("export PATH=");
   });
 
   it("skips the shell-profile write when the install dir is already on PATH", async () => {
@@ -318,6 +347,8 @@ describe("createAdeCliService", () => {
 
     expect(result.ok).toBe(true);
     expect(result.message).toContain(profilePath);
+    expect(result.message).toContain("PATH entry already present");
+    expect(result.message).not.toMatch(/and added .* to /);
     // Profile contents are unchanged — exactly one ADE CLI marker, exactly one PATH line.
     const profile = fs.readFileSync(profilePath, "utf8");
     expect(profile).toBe(seeded);

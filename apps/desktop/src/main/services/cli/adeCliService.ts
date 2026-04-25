@@ -409,12 +409,15 @@ function installTargetPath(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(homeDir(env), ".local", "bin", "ade");
 }
 
-function shellProfilePath(env: NodeJS.ProcessEnv = process.env): string {
+type ShellProfile = { path: string; flavor: "posix" | "fish" };
+
+function shellProfilePath(env: NodeJS.ProcessEnv = process.env): ShellProfile {
   const shell = env.SHELL?.trim() ?? "";
   const home = homeDir(env);
-  if (shell.endsWith("zsh")) return path.join(home, ".zshrc");
-  if (shell.endsWith("bash")) return path.join(home, ".bashrc");
-  return path.join(home, ".profile");
+  if (shell.endsWith("zsh")) return { path: path.join(home, ".zshrc"), flavor: "posix" };
+  if (shell.endsWith("bash")) return { path: path.join(home, ".bashrc"), flavor: "posix" };
+  if (shell.endsWith("fish")) return { path: path.join(home, ".config", "fish", "config.fish"), flavor: "fish" };
+  return { path: path.join(home, ".profile"), flavor: "posix" };
 }
 
 function shellPathEntry(targetDir: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -426,20 +429,26 @@ function shellPathEntry(targetDir: string, env: NodeJS.ProcessEnv = process.env)
   return targetDir;
 }
 
-function ensureUserBinOnShellPath(targetDir: string, env: NodeJS.ProcessEnv = process.env): string | null {
+type ShellPathResult = { profilePath: string; modified: boolean };
+
+function ensureUserBinOnShellPath(
+  targetDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ShellPathResult | null {
   if (process.platform === "win32" || pathContainsDir(getPathEnvValue(env), targetDir)) return null;
-  const profilePath = shellProfilePath(env);
+  const profile = shellProfilePath(env);
   const entry = shellPathEntry(targetDir, env);
   const marker = "# ADE CLI";
-  const line = `export PATH="${entry}:$PATH"`;
-  const existing = fs.existsSync(profilePath) ? fs.readFileSync(profilePath, "utf8") : "";
+  const line =
+    profile.flavor === "fish" ? `fish_add_path -gP ${entry}` : `export PATH="${entry}:$PATH"`;
+  const existing = fs.existsSync(profile.path) ? fs.readFileSync(profile.path, "utf8") : "";
   if (existing.includes(marker) || existing.includes(line) || existing.includes(targetDir)) {
-    return profilePath;
+    return { profilePath: profile.path, modified: false };
   }
   const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-  fs.mkdirSync(path.dirname(profilePath), { recursive: true });
-  fs.appendFileSync(profilePath, `${prefix}\n${marker}\n${line}\n`);
-  return profilePath;
+  fs.mkdirSync(path.dirname(profile.path), { recursive: true });
+  fs.appendFileSync(profile.path, `${prefix}\n${marker}\n${line}\n`);
+  return { profilePath: profile.path, modified: true };
 }
 
 function statusMessage(args: {
@@ -556,12 +565,14 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
         throw new Error(result.stderr.trim() || result.stdout.trim() || "ADE CLI installer failed.");
       }
       const targetDir = path.dirname(installTargetPath(envSnapshot));
-      const profilePath = ensureUserBinOnShellPath(targetDir, envSnapshot);
+      const profileResult = ensureUserBinOnShellPath(targetDir, envSnapshot);
       const status = await getStatus();
       return {
         ok: true,
-        message: profilePath
-          ? `Installed ade for Terminal access and added ${targetDir} to ${profilePath}. Open a new terminal or source that file.`
+        message: profileResult
+          ? profileResult.modified
+            ? `Installed ade for Terminal access and added ${targetDir} to ${profileResult.profilePath}. Open a new terminal or source that file.`
+            : `Installed ade for Terminal access. PATH entry already present in ${profileResult.profilePath}; open a new terminal or source that file.`
           : status.installTargetDirOnPath
           ? "Installed ade for Terminal access."
           : `Installed ade at ${status.installTargetPath}. Add ${path.dirname(status.installTargetPath)} to PATH if your shell cannot find it.`,

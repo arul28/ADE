@@ -32,7 +32,7 @@ export const lanesTour: Tour = {
       placement: "bottom",
     },
     {
-      target: '[data-tour="lanes.laneTab"], [data-tour="lanes.newLane"]',
+      target: '[data-tour="lanes.laneTab"], [data-tour="lanes.statusChips"]',
       title: "Switch between lanes",
       body: "Each tab is one open sandbox copy. Click to switch between tasks. Little badges call out things like \"has unsaved changes\" or \"pinned\", so you can see what each lane needs at a glance.",
       docUrl: docs.lanesOverview,
