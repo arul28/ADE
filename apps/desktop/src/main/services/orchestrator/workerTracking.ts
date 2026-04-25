@@ -1353,6 +1353,24 @@ export function updateWorkerStateFromEventCtx(
           step,
           planArtifactPersisted: artifactExtraction.planArtifactPersisted,
         });
+        // After auto-resolving interventions, transition mission back to
+        // in_progress if it was intervention_required and no open interventions
+        // remain. Mirrors the steering-directive resume path in aiOrchestratorService.
+        try {
+          const postResolveMission = ctx.missionService.get(graph.run.missionId);
+          if (postResolveMission?.status === "intervention_required") {
+            const stillOpen = postResolveMission.interventions.some((iv) => iv.status === "open");
+            if (!stillOpen) {
+              ctx.missionService.update({ missionId: graph.run.missionId, status: "in_progress" });
+            }
+          }
+        } catch (transitionError) {
+          ctx.logger.debug("ai_orchestrator.intervention_resolved_mission_transition_failed", {
+            missionId: graph.run.missionId,
+            runId: attempt.runId,
+            error: transitionError instanceof Error ? transitionError.message : String(transitionError),
+          });
+        }
       }
       if (step && ctx.aiIntegrationService) {
         const runtimeProfile = ctx.runRuntimeProfiles.get(attempt.runId) ?? resolveActiveRuntimeProfile(ctx, graph.run.missionId);
