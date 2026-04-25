@@ -21,6 +21,8 @@ v1.1.5 builds the two-way pty bridge so an iOS device can drive a desktop shell,
 - **PTY title fallback.** Hardened to a deterministic CLI placeholder so a brand-new shell never renders an empty title.
 - **`ExitPlanMode` behaviour.** Flipped to `behavior:"allow"` so the SDK's native handler runs, removing a layer of indirection that was eating the resume signal.
 - **`getOptionalSyncService` resolver.** `registerIpc` routes `lanesList` and `apnsSendTestPush` through a single resolver that respects an injected `getSyncService` null result instead of falling through to `ctx`. Keeps tests honest about which projects have sync wired.
+- **PTY resume target backfill on launch.** When relaunching a tracked CLI session whose `resumeMetadata` is missing `targetId`, `ptyService` now runs `tryBackfillResumeTarget("resume-launch")` before spawning so the new pty starts on the correct resume command instead of cold-starting. Replaces the prior warn-only branch.
+- **Per-project route memory.** `AppShell` persists each project's last-visited route to `localStorage` and restores it on project switch, instead of always slamming `/work`. Allowed roots only — falls back to `/work` for anything unrecognized.
 
 ### /shipLane runbook fixes
 
