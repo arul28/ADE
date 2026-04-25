@@ -100,8 +100,9 @@ Host-side service files
 
 - `syncHostService.ts` (~2,170 lines) — WebSocket server, connection
   acceptance, hello/pairing handling, per-peer state, changeset fan-out,
-  terminal/chat subscription bridging, lane presence decoration,
-  project catalog/switch envelopes, per-IP pairing rate limiter.
+  terminal/chat subscription bridging, mobile terminal input/resize
+  forwarding into subscribed PTYs, lane presence decoration, project
+  catalog/switch envelopes, per-IP pairing rate limiter.
 - `syncPeerService.ts` (~460 lines) — WebSocket **client**. The host
   can run this too when it is a peer of a different host during a
   handoff rehearsal or controller-to-host role swap. On iOS, an
@@ -109,6 +110,9 @@ Host-side service files
 - `syncProtocol.ts` (~120 lines) — envelope encode/decode with gzip
   threshold (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`).
   Protocol version is `1`. Default host port is `8787`.
+- `apps/desktop/src/shared/types/sync.ts` — typed protocol DTOs for
+  `SyncEnvelope`, including controller-originated `terminal_input` and
+  `terminal_resize` envelopes.
 - `syncService.ts` (~875 lines) — orchestrator that wires host,
   peer, device registry, draft persistence, pin store, and exposes
   the IPC entry points used by the renderer Settings > Sync surface
@@ -140,9 +144,10 @@ Client-side (iOS) service files (`apps/ios/ADE/Services/`):
   fields mirrored from desktop schema.
 - `SyncService.swift` — WebSocket client, envelope encoding (zlib),
   command routing, keychain integration, PIN-based pairing, lane
-  presence announcements, PR mobile snapshot fetch, live chat-event
-  push listener, project home/catalog state, active-project scoping,
-  and APNs push-token registration to the host.
+  presence announcements, terminal input/resize senders, PR mobile
+  snapshot fetch, live chat-event push listener, project home/catalog
+  state, active-project scoping, unregistered-worktree discovery, and
+  APNs push-token registration to the host.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets.
 - `LiveActivityCoordinator.swift` — owns the single workspace
@@ -292,6 +297,7 @@ Envelopes are JSON with fields:
         "file_request" | "file_response" |
         "terminal_subscribe" | "terminal_unsubscribe" |
         "terminal_snapshot" | "terminal_data" | "terminal_exit" |
+        "terminal_input" | "terminal_resize" |
         "chat_subscribe" | "chat_unsubscribe" | "chat_event" |
         "brain_status" | "command" | "command_ack" | "command_result",
   requestId: string | null,
@@ -323,7 +329,7 @@ so no changesets are lost.
 |---|---|---|
 | Changeset sync | Bidirectional cr-sqlite row exchange | All devices |
 | File access | On-demand file reads, listings, writes | iOS Files, desktop remote viewing |
-| Terminal stream | Subscribe to PTY output from host | iOS Work tab |
+| Terminal stream/control | Subscribe to PTY output from host; send input bytes and viewport resize events back to the subscribed PTY | iOS Work tab |
 | Chat stream | Agent chat transcript events (subscribe snapshot + live `chat_event` push from the host's `agentChatService.subscribeToEvents` fan-out; polling survives as the reconnect-catchup path) | iOS Work tab, controller chat |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | All non-host devices |
 | Brain status | Host broadcasts cluster/version status | All devices |

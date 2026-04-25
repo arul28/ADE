@@ -36,8 +36,9 @@ apps/ios/
 │   │   ├── LiveActivityCoordinator.swift # workspace Live Activity lifecycle +
 │   │   │                                  # push-token collection
 │   │   └── SyncService.swift        # WebSocket client, command routing,
-│   │                                # PIN pairing, lane presence, chat push,
-│   │                                # push-token registration
+│   │                                # PIN pairing, lane presence, terminal
+│   │                                # input/resize, chat push, push-token
+│   │                                # registration, worktree discovery
 │   ├── Shared/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
@@ -49,7 +50,9 @@ apps/ios/
 │   │   │                            # haptics, shimmer, mobile primitives
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Lanes/                   # LaneDetailScreen, LaneActionsCard,
-│   │   │                            # LaneBatchManageSheet, LaneManageSheet, etc.
+│   │   │                            # LaneBatchManageSheet, LaneManageSheet,
+│   │   │                            # LaneMultiAttachSheet, LaneStackCanvasScreen,
+│   │   │                            # LaneEnvInitProgressView, etc.
 │   │   ├── Files/                   # FilesRootScreen, FilesDirectoryScreen,
 │   │   │                            # FilesDetailScreen, *+Actions helpers
 │   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
@@ -226,6 +229,7 @@ Implemented envelope types on iOS:
 | `command_result` | Host → phone | Execution result or error |
 | `file_request` / `file_response` | Bidirectional | On-demand file access |
 | `terminal_subscribe` / `terminal_data` | Phone → host / host → phone | Terminal streaming |
+| `terminal_input` / `terminal_resize` | Phone → host | Raw input bytes and viewport size changes for a subscribed live PTY |
 | `chat_subscribe` / `chat_event` | Phone → host / host → phone | Agent chat transcript streaming |
 | `heartbeat` | Bidirectional | Connection health (30s) |
 | `brain_status` | Host → phone | Cluster authority broadcast |
@@ -486,11 +490,11 @@ fresh bootstrap connection for the selected desktop project through
 
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
-| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, stack, git/diff/rebase/conflicts, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. |
-| **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`. |
-| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, read-only output streaming, quick-launch actions, session pinning, live chat-event push from the host (no polling lag once subscribed). |
+| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. |
+| **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`; quick-open and text-search result lists cap visible rows at 40 and ask the user to refine when more matches exist. |
+| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, typed terminal input and Ctrl-C forwarding for subscribed live PTYs, quick-launch actions, session pinning, live chat-event push from the host (no polling lag once subscribed). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
-| **CTO** | `sparkles` | `/cto` | CTO snapshot: Chat / Team / Workflows segments. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
+| **CTO** | `sparkles` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
 | **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. |
 
 ### Planned
@@ -522,6 +526,13 @@ sends:
 - Cached lane-detail payloads (`LaneDetailPayload`) keyed by lane id
   so the Lanes tab can render the desktop stack / git / diff / manage
   / work surfaces without client-side reconstruction.
+- Unregistered-worktree candidates (`UnregisteredLaneCandidate`) returned
+  by `lanes.listUnregisteredWorktrees`; `LaneMultiAttachSheet` can attach
+  selected rows and optionally move them under ADE management.
+- Environment-init progress (`LaneEnvInitProgress`) returned by
+  `lanes.initEnv`, `lanes.templates.apply`, and `lanes.getEnvStatus`;
+  `LaneCreateSheet` switches from the form to a progress panel when a
+  template-backed create starts host-side setup.
 - `LaneSummary.devicesOpen` lists the devices currently on a lane,
   decorated by the host from `lanes.presence.announce` events.
 
@@ -602,9 +613,9 @@ reflected in the phone's UI on the next descriptor read.
 | PIN pairing flow | Implemented |
 | QR pairing payload (v2, address candidates + port) | Implemented |
 | Project home + desktop project switching | Implemented |
-| Lanes tab | Implemented to live desktop parity (with `devicesOpen`) |
-| Files tab | Implemented with `mobileReadOnly` workspace gate |
-| Work tab | Implemented; live chat-event push from host |
+| Lanes tab | Implemented to live desktop parity (with `devicesOpen`, multi-attach, stack canvas, and template environment progress) |
+| Files tab | Implemented with `mobileReadOnly` workspace gate and capped search/quick-open result rendering |
+| Work tab | Implemented; live chat-event push from host plus subscribed terminal input/resize control |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | Missions tab | Planned |

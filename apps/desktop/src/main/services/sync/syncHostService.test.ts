@@ -1173,6 +1173,8 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const workspaceRoot = path.join(projectRoot, "workspace");
     fs.mkdirSync(workspaceRoot, { recursive: true });
     const createSpy = vi.fn().mockResolvedValue({ ptyId: "pty-1", sessionId: "session-1" });
+    const writeBySessionId = vi.fn().mockReturnValue(true);
+    const resizeBySessionId = vi.fn().mockReturnValue(true);
 
     const host = createSyncHostService({
       db: brainDb,
@@ -1292,6 +1294,8 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       } as any,
       ptyService: {
         create: createSpy,
+        writeBySessionId,
+        resizeBySessionId,
         enrichSessions: (rows: any[]) => rows,
       } as any,
       computerUseArtifactBrokerService: {
@@ -1324,6 +1328,27 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const snapshot = await client.queue.next("terminal_snapshot");
     expect(snapshot.requestId).toBe("sub-1");
     expect((snapshot.payload as { transcript: string }).transcript).toContain("prior output");
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "terminal_input",
+      payload: {
+        sessionId: "session-1",
+        data: "npm test\r",
+      },
+    }));
+    await waitFor(() => writeBySessionId.mock.calls.length === 1);
+    expect(writeBySessionId).toHaveBeenCalledWith("session-1", "npm test\r");
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "terminal_resize",
+      payload: {
+        sessionId: "session-1",
+        cols: 120.8,
+        rows: 34.2,
+      },
+    }));
+    await waitFor(() => resizeBySessionId.mock.calls.length === 1);
+    expect(resizeBySessionId).toHaveBeenCalledWith("session-1", 120, 34);
 
     host.handlePtyData({
       ptyId: "pty-1",

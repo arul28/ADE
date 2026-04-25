@@ -57,6 +57,13 @@ Renderer:
 - `apps/desktop/src/renderer/components/app/FloatingFilesWorkspace.tsx`
   — an alternative lightweight floating view used from the Lanes tab
   and side panels.
+- `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
+  root with workspace picker, quick-open and text-search cards, capped
+  visible result lists (first 40) with refine-search copy when more
+  matches exist, and live file-action gating from sync policy.
+- `apps/ios/ADE/Views/Files/FilesDetailScreen.swift` and
+  `FilesRootComponents.swift` — mobile file preview/detail chrome and
+  proof-artifact/file-result rows.
 
 Lane integration:
 

@@ -35,6 +35,31 @@ Pick the richest available and **use it fully**:
 
 **Waiting rule:** agents never stay alive just to wait. A poll-agent performs one bounded poll and exits. Fix agents perform one bounded fix task and exit. The lead schedules a wake-up or records a blocked/done state, then exits the active turn.
 
+## Common failure modes
+
+These are operational mistakes this playbook explicitly guards against:
+
+1. **Do not fix on a partial signal.** If CI has landed but review bots
+   have not, or review bots have landed while CI is still running,
+   reschedule and wait. Apply CI fixes and review-comment fixes only
+   after both signals are terminal, then combine the edits into one
+   commit.
+2. **Normalize `SINCE` timestamps to UTC `Z`.** `git show
+   --format=%cI` can return local timezone offsets while GitHub returns
+   UTC timestamps. Normalize before comparing in `jq`, otherwise old
+   comments can look new and trigger duplicate review-fix work.
+3. **`done-clean` still merges.** A green PR with resolved review
+   comments should route through Phase 3c auto-merge. Only mark
+   `done-max` when normal merge, admin merge, and auto-merge are all
+   genuinely blocked.
+4. **Do not pass `--delete-branch` to `gh pr merge`.** It can try to
+   checkout the base branch locally and fail when `main` is already
+   checked out by another worktree. Delete the remote head ref after a
+   successful merge, or rely on GitHub's automatic head-branch deletion.
+5. **Do not commit scheduler lock drift.** If a stale
+   `.claude/scheduled_tasks.lock` blocks rebase or checkout, stash that
+   file instead of committing it into the lane.
+
 ## State file
 
 Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `__`).

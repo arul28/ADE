@@ -151,6 +151,6 @@ struct LaneEnvInitProgressPanel: View {
 
   private var disableDone: Bool {
     guard let progress else { return true }
-    return progress.overallStatus == "running"
+    return progress.overallStatus == "running" && isPolling
   }
 }

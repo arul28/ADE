@@ -139,6 +139,7 @@ struct WorkTerminalSessionView: View {
   @State private var pendingCommand = ""
   @FocusState private var inputFocused: Bool
   @State private var sendingFeedback = 0
+  @State private var lastSentTerminalSize: TerminalViewportSize?
 
   private var rawBuffer: String {
     syncService.terminalBuffers[session.id] ?? session.lastOutputPreview ?? ""
@@ -186,18 +187,29 @@ struct WorkTerminalSessionView: View {
       .padding(.bottom, 8)
       .background(.ultraThinMaterial)
 
-      ScrollView([.horizontal, .vertical]) {
-        Text(renderedText.isEmpty ? "  " : renderedText)
-          .font(.system(size: 12, weight: .regular, design: .monospaced))
-          .foregroundStyle(ADEColor.textPrimary)
-          .textSelection(.enabled)
-          .padding(.horizontal, 14)
-          .padding(.vertical, 12)
-          .fixedSize(horizontal: true, vertical: false)
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      GeometryReader { proxy in
+        ScrollView([.horizontal, .vertical]) {
+          Text(renderedText.isEmpty ? "  " : renderedText)
+            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .foregroundStyle(ADEColor.textPrimary)
+            .textSelection(.enabled)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .background(ADEColor.recessedBackground.opacity(0.96))
+        .scrollIndicators(.visible)
+        .onAppear {
+          sendTerminalResize(for: proxy.size)
+        }
+        .onChange(of: proxy.size) { _, newSize in
+          sendTerminalResize(for: newSize)
+        }
+        .onChange(of: syncService.connectionState) { _, _ in
+          sendTerminalResize(for: proxy.size)
+        }
       }
-      .background(ADEColor.recessedBackground.opacity(0.96))
-      .scrollIndicators(.visible)
 
       terminalInputBar
     }
@@ -290,6 +302,28 @@ struct WorkTerminalSessionView: View {
     syncService.sendTerminalInput(sessionId: session.id, data: trimmed + "\r")
     pendingCommand = ""
     sendingFeedback &+= 1
+  }
+
+  private func sendTerminalResize(for size: CGSize) {
+    guard canSendInput else { return }
+    let viewport = TerminalViewportSize(size: size)
+    guard viewport != lastSentTerminalSize else { return }
+    lastSentTerminalSize = viewport
+    syncService.sendTerminalResize(sessionId: session.id, cols: viewport.cols, rows: viewport.rows)
+  }
+}
+
+private struct TerminalViewportSize: Equatable {
+  let cols: Int
+  let rows: Int
+
+  init(size: CGSize) {
+    // Matches the 12pt monospaced transcript text closely enough for PTY
+    // reflow until this screen hosts a full terminal emulator.
+    let contentWidth = max(0, size.width - 28)
+    let contentHeight = max(0, size.height - 24)
+    cols = max(20, min(240, Int(floor(contentWidth / 7.2))))
+    rows = max(4, min(80, Int(floor(contentHeight / 15.0))))
   }
 }
 

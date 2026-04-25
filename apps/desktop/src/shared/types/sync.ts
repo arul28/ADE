@@ -399,17 +399,17 @@ export type SyncTerminalExitPayload = {
   at: string;
 };
 
-/// Sent by mobile clients to push raw bytes (typed text, control sequences,
-/// pasted content) into the active PTY for `sessionId`. The host expects the
-/// peer to have a live `terminal_subscribe` for the same session id.
+// Sent by mobile clients to push raw bytes (typed text, control sequences,
+// pasted content) into the active PTY for `sessionId`. The host expects the
+// peer to have a live `terminal_subscribe` for the same session id.
 export type SyncTerminalInputPayload = {
   sessionId: string;
   data: string;
 };
 
-/// Sent by mobile clients when the visible terminal viewport changes
-/// (rotation, split view, font-size). Cols/rows are characters; the host
-/// clamps to a sane range internally.
+// Sent by mobile clients when the visible terminal viewport changes
+// (rotation, split view, font-size). Cols/rows are characters; the host
+// clamps to a sane range internally.
 export type SyncTerminalResizePayload = {
   sessionId: string;
   cols: number;

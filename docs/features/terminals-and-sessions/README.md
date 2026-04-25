@@ -21,7 +21,8 @@ Main process:
 
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
   transcript capture, runtime state, AI auto-titles, tool-type routing,
-  resume backfill. ~1,500 lines. Branch rewrite.
+  resume backfill, and session-id based write/resize entry points used
+  by mobile sync terminal control. ~1,500 lines. Branch rewrite.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
@@ -46,6 +47,9 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/sessions.ts` — `TerminalSessionSummary`,
   `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
   `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`.
+- `apps/desktop/src/shared/types/sync.ts` — terminal stream/control
+  envelopes (`terminal_subscribe`, `terminal_data`, `terminal_exit`,
+  `terminal_input`, `terminal_resize`) for iOS Work surfaces.
 - `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`
   (now carries `groupIds: string[]`), `ProcessGroupDefinition`,
   `ProcessRuntime` (now carries `runId`), `ProcessRuntimeStatus`,
@@ -130,6 +134,19 @@ Renderer surfaces:
   for a list of selected sessions; `triggerBrowserDownload` writes it
   to disk via a transient anchor + Object URL. Used by the bulk-export
   action in the session list.
+
+iOS Work surfaces:
+
+- `apps/ios/ADE/Views/Work/WorkRootScreen.swift` and
+  `WorkRootComponents.swift` — mobile Work list, filters, activity feed,
+  grouped session rows, and live-count/status pills.
+- `apps/ios/ADE/Views/Work/WorkArtifactTerminalViews.swift` —
+  terminal artifact/output views and the compact input bar that sends
+  `terminal_input` bytes and Ctrl-C to the subscribed host PTY.
+- `apps/ios/ADE/Views/Work/WorkChatSessionView.swift`,
+  `WorkChatComposerAndInputViews.swift`, `WorkChatRichCardViews.swift`,
+  `WorkReasoningCard.swift`, `WorkNewChatScreen.swift` — mobile chat,
+  composer, command/tool/reasoning cards, and new-chat launch surface.
 
 ## Detail docs
 

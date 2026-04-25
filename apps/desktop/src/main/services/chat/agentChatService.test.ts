@@ -1053,6 +1053,7 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("internal ADE work");
       expect(opts?.systemPrompt?.append).toContain("Before saying an ADE task is blocked");
       expect(opts?.systemPrompt?.append).toContain("ade lanes list");
+      expect(opts?.systemPrompt?.append).toContain("clean up old, stale, or finished processes");
     });
 
     it("appends discovered project slash commands to the Claude system prompt", async () => {

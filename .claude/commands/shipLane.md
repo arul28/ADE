@@ -115,6 +115,22 @@ If any rail fails, exit `blocked` with a clear reason in the state file and stop
 
 ---
 
+## Common failure modes (learned the hard way)
+
+These are bugs from past runs. Don't reintroduce them.
+
+1. **Don't fix on a partial signal.** When you wake and CI has landed but Greptile/CodeRabbit/Copilot haven't (or vice-versa), do **not** push fixes for the half that's ready — review-comment edits routinely cause new CI failures, so applying them on top of a half-known state means the next push fails and you've thrown away the prior CI cycle. Reschedule for 720s and wait. Only fix when both signals are terminal, then dispatch ci-fix-agent and review-fix-agent in parallel and combine their edits into one commit.
+
+2. **Normalize `SINCE` to UTC `Z` form.** `git show --format=%cI` returns local-tz strings (e.g. `…-04:00`). GitHub returns UTC `…Z`. jq's `>` is a string compare, so a local-tz `SINCE` will return every old comment as "new" and trigger duplicate review-fix work on the next iteration. Pipe `SINCE` through `python3 … astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')` before passing to the gh queries. (See playbook §1.2.)
+
+3. **Done-clean means merge, not stop.** When CI is green and review comments are resolved, route through Phase 3c (auto-merge) — `gh pr merge --squash`, retry with `--admin` if base-branch policy blocks the user (and they have admin rights), fall back to `--auto`, and only then mark `done-max` if all three options fail. The point of /shipLane is "PR → merged on main", not "PR → green and parked".
+
+4. **Don't pass `--delete-branch` to `gh pr merge`.** That flag tries a local checkout of the base branch, which fails with `'main' is already used by worktree at …` whenever /shipLane runs from a per-lane worktree (i.e., always). Delete the head ref server-side instead: `gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"`. Or just rely on the repo's "Automatically delete head branches" setting.
+
+5. **Working-tree drift from agent worktrees.** If a stale `.claude/scheduled_tasks.lock` blocks a rebase, stash it (`git stash push -m "shipLane scheduler lock" .claude/scheduled_tasks.lock`) — don't commit it into the lane.
+
+---
+
 ## References
 
 - `docs/playbooks/ship-lane.md` — full phase logic (source of truth).

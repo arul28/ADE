@@ -1875,7 +1875,7 @@ describe("adeRpcServer", () => {
     const claudePath = createFakePathExecutable(binDir, "claude");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` }, async () => {
+    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
       await initialize(handler, { role: "orchestrator" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -1906,6 +1906,7 @@ describe("adeRpcServer", () => {
     const createCall = (fixture.runtime.ptyService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { args: string[] };
     const finalArg = createCall.args[createCall.args.length - 1];
     expect(finalArg).toContain("Before reporting an ADE lane");
+    expect(finalArg).toContain("clean up old, stale, or finished processes");
     expect(finalArg.endsWith("Implement API wiring")).toBe(true);
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
@@ -1922,7 +1923,7 @@ describe("adeRpcServer", () => {
     const claudePath = createFakePathExecutable(binDir, "claude");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` }, async () => {
+    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
       await initialize(handler, { role: "orchestrator", runId: "run-from-identity" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -1955,7 +1956,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-path-")) }, async () => {
+    const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-path-")), SHELL: "/bin/sh" }, async () => {
       await initialize(handler, { role: "orchestrator" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",

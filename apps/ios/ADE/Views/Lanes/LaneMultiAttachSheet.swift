@@ -1,4 +1,7 @@
 import SwiftUI
+import OSLog
+
+private let laneMultiAttachLog = Logger(subsystem: "com.ade.ios", category: "lanes")
 
 struct LaneMultiAttachSheet: View {
   @Environment(\.dismiss) private var dismiss
@@ -303,6 +306,7 @@ struct LaneMultiAttachSheet: View {
         worktrees = refreshed
         selected = Set(refreshed.filter { failedPaths.contains($0.path) }.map(\.path))
       } catch {
+        laneMultiAttachLog.warning("Failed to refresh unattached worktrees after attach errors: \(error.localizedDescription, privacy: .public)")
       }
     }
   }

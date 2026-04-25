@@ -173,6 +173,27 @@ the previous signal, or as a 10 s heartbeat. Runtime states:
 `running`, `waiting-input`, `idle`, `exited`, `killed`. `idle` is
 inferred from OSC 133 prompt markers.
 
+### Session-id writes and resizes
+
+`ptyService.writeBySessionId(sessionId, data)` and
+`ptyService.resizeBySessionId(sessionId, cols, rows)` are the host-side
+entry points for controller devices that know the ADE session id but not
+the current in-memory `ptyId`. Both scan the live PTY map for an
+undisposed entry matching the session id and return `false` when the
+session row exists but no PTY is currently attached.
+
+`writeBySessionId` forwards raw bytes into the PTY, runs the same
+CLI-user-title sniffing used by local terminal writes, marks runtime
+state `running`, and schedules the idle transition. `resizeBySessionId`
+clamps the requested dimensions with the normal PTY dimension guard
+before calling `pty.resize`.
+
+The sync host only calls these methods after the peer has subscribed to
+the same session with `terminal_subscribe`; unsubscribed
+`terminal_input` / `terminal_resize` envelopes are ignored. This keeps
+mobile terminal control tied to the visible Work surface instead of
+making a bare session id sufficient to drive a shell.
+
 ### AI-driven titles
 
 Two paths, both gated by `sessionIntelligence.titles.enabled` and the

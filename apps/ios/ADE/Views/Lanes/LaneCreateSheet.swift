@@ -454,7 +454,12 @@ struct LaneCreateSheet: View {
             envProgress = next
             if next.overallStatus != "running" { break }
           }
+        } catch is CancellationError {
+          break
         } catch {
+          if Task.isCancelled { break }
+          ADEHaptics.error()
+          errorMessage = error.localizedDescription
           break
         }
       }

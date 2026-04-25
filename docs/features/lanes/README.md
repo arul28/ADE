@@ -55,6 +55,29 @@ Shared code:
 - `src/shared/types.ts` — `LaneSummary`, `LaneStatus`, `StackChainItem`, `CreateLaneArgs`, rebase args/results, `RebaseTargetCommit`, overlay types, port/proxy/OAuth/diagnostics types.
 - `src/shared/laneOverlayMatcher.ts` — last-wins/deep-merge evaluator for per-lane overlay policies.
 
+iOS companion (`apps/ios/ADE/Views/Lanes/`):
+
+- `LanesTabView.swift` — mobile lane list shell, stack-canvas sheet
+  routing, search/filter state, selected-lane navigation.
+- `LaneCreateSheet.swift` and `LaneEnvInitProgressView.swift` —
+  create/import/rescue flows plus template-backed host environment
+  setup progress polling.
+- `AddLaneSheet.swift`, `LaneAttachSheet.swift`,
+  `LaneMultiAttachSheet.swift` — mobile add/attach entry points,
+  including discovery and batch attachment of unregistered worktrees
+  via `lanes.listUnregisteredWorktrees`.
+- `LaneStackCanvasScreen.swift` and `LaneStackGraphSheet.swift` —
+  mobile stack graph/canvas projection for parent-child lane chains.
+- `LaneDetailScreen.swift`, `LaneDetailGitSection.swift`,
+  `LaneDetailRebaseBanner.swift`, `LaneDiffScreen.swift`,
+  `LaneCommitSheet.swift`, `LaneCommitHistoryScreen.swift`,
+  `LaneStashesScreen.swift`, `LaneSyncDetailScreen.swift`,
+  `LaneActionsCard.swift`, `LaneManageSheet.swift`,
+  `LaneBatchManageSheet.swift`, `LaneChatLaunchSheet.swift`,
+  `LaneTreeView.swift`, `LaneFileTreeComponents.swift` — mobile
+  detail, git, rebase, diff, stash, sync, manage, chat-launch, and
+  file-tree parity surfaces.
+
 Detail docs in this folder:
 
 - [`worktree-isolation.md`](./worktree-isolation.md) — git worktree mechanics and per-lane state directories.

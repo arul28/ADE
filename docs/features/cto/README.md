@@ -61,6 +61,16 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `apps/desktop/src/shared/types/linearSync.ts` — `LinearWorkflowDefinition`, `LinearWorkflowTarget`, trigger groups, step types, closeout types.
 - `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — complete operator tool surface registered for CTO chat sessions.
 
+### iOS companion (apps/ios/ADE/Views/Cto/)
+
+- `CtoTabShell.swift` — segmented mobile shell for Chat / Team /
+  Workflows with shared glass navigation styling.
+- `CtoTeamScreen.swift` — worker roster, hire action, worker rows,
+  quick actions, and per-worker context menus.
+- `CtoWorkflowsScreen.swift` — mobile workflow dashboard, policy list,
+  recent sync events, and connection/not-connected states backed by the
+  same Linear workflow command surface as desktop.
+
 ## Domain model
 
 ### Identity layers (immutable to user-editable, in order)
