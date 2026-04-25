@@ -149,6 +149,11 @@ describe("LaneGitActionsPane rescue action", () => {
       },
       git: {
         commit: vi.fn(async () => ({ operationId: "git-commit", preHeadSha: "abc", postHeadSha: "def" })),
+        stageFile: vi.fn(async () => ({ operationId: "stage-file", preHeadSha: "abc", postHeadSha: "abc" })),
+        stageAll: vi.fn(async () => ({ operationId: "stage-all", preHeadSha: "abc", postHeadSha: "abc" })),
+        unstageFile: vi.fn(async () => ({ operationId: "unstage-file", preHeadSha: "abc", postHeadSha: "abc" })),
+        discardFile: vi.fn(async () => ({ operationId: "discard-file", preHeadSha: "abc", postHeadSha: "abc" })),
+        restoreStagedFile: vi.fn(async () => ({ operationId: "restore-staged-file", preHeadSha: "abc", postHeadSha: "abc" })),
         generateCommitMessage: vi.fn(async () => ({ message: "feat: auto", model: "openai/gpt-5.4-mini" })),
         stashList: vi.fn(async ({ laneId }: { laneId: string }) => mockStashesByLaneId[laneId] ?? []),
         stashPush: vi.fn(async () => ({ operationId: "stash-push", preHeadSha: "abc", postHeadSha: "abc" })),
@@ -286,6 +291,33 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(rescueButton.getAttribute("title")).toMatch(/unstage all changes/i);
   });
 
+  it("discards a staged partial file through the staged row action", async () => {
+    const user = userEvent.setup();
+    mockChangesByLaneId["lane-1"] = {
+      staged: [{ path: ".claude/worktrees/fix-session-auto-naming", kind: "modified" }],
+      unstaged: [{ path: ".claude/worktrees/fix-session-auto-naming", kind: "modified" }],
+    };
+    (window.ade.git.restoreStagedFile as any).mockImplementationOnce(async () => {
+      mockChangesByLaneId["lane-1"] = { staged: [], unstaged: [] };
+      return { operationId: "restore-staged-file", preHeadSha: "abc", postHeadSha: "abc" };
+    });
+
+    renderPane();
+
+    await screen.findAllByText(".claude/worktrees/fix-session-auto-naming");
+    await user.click(screen.getByRole("button", { name: /discard staged changes to \.claude\/worktrees\/fix-session-auto-naming/i }));
+
+    await waitFor(() => {
+      expect(window.ade.git.restoreStagedFile).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        path: ".claude/worktrees/fix-session-auto-naming",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText(".claude/worktrees/fix-session-auto-naming")).toBeNull();
+    });
+  });
+
   it("disables the rescue button during an in-progress merge or rebase", async () => {
     mockConflictState = {
       laneId: "lane-1",
@@ -372,6 +404,8 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(screen.getByText("drop me")).toBeTruthy();
 
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
+    await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
+    await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
 
     await waitFor(() => {
       expect(window.ade.git.stashDrop).toHaveBeenCalledWith({ laneId: "lane-1", stashRef: "stash@{0}" });
@@ -428,6 +462,8 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await screen.findByText("2 saved");
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
+    await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
+    await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
 
     await waitFor(() => {
       expect(screen.getByText("1 saved")).toBeTruthy();
@@ -452,7 +488,7 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     await screen.findByText("2 saved");
-    await user.click(screen.getByRole("button", { name: "CLEAR ALL" }));
+    await user.click(screen.getByRole("button", { name: "CLEAR STASHES" }));
     await user.type(await screen.findByPlaceholderText("Type 2 to confirm"), "2");
     await user.click(screen.getByRole("button", { name: "DELETE ALL" }));
 
@@ -476,6 +512,8 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await screen.findByText("2 saved");
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
+    await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
+    await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
 
     await waitFor(() => {
       expect(screen.getByText("ERROR: drop failed")).toBeTruthy();
