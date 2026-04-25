@@ -1431,4 +1431,84 @@ describe("AgentChatMessageList inline ask-user card", () => {
     expect(preview.textContent ?? "").toContain("Squash merge");
     expect(preview.textContent ?? "").toContain("Collapses to one commit.");
   });
+
+  it("pages through inline questions, keeps per-question answers, and submits all answers", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "priority",
+            header: "Priority",
+            question: "Which behavior should ship first?",
+            options: [
+              { label: "Mass delete", value: "mass_delete" },
+              { label: "Archive only", value: "archive_only" },
+            ],
+            allowsFreeform: false,
+          },
+          {
+            id: "surfaces",
+            header: "Surfaces",
+            question: "Which chat surfaces need coverage?",
+            multiSelect: true,
+            options: [
+              { label: "Main process", value: "main" },
+              { label: "Renderer", value: "renderer" },
+              { label: "Preload", value: "preload" },
+            ],
+            allowsFreeform: false,
+          },
+          {
+            id: "handoff",
+            header: "Handoff",
+            question: "What should the next agent know?",
+            options: [
+              { label: "Blocked", value: "blocked" },
+              { label: "Ready", value: "ready" },
+            ],
+            allowsFreeform: false,
+          },
+        ],
+      }),
+    ], { onApproval });
+
+    const sendButton = screen.getByRole("button", { name: /send answers/i });
+    expect(sendButton).toHaveProperty("disabled", true);
+    expect(screen.getByText("0 of 3 answered")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Question 1: Priority" }).getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.click(findButtonByTextContent(/^Mass delete/));
+    expect(screen.getByText("1 of 3 answered")).toBeTruthy();
+    expect(sendButton).toHaveProperty("disabled", true);
+
+    fireEvent.click(screen.getByTestId("inline-question-next"));
+    expect(screen.getByText("Which chat surfaces need coverage?")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Question 2: Surfaces" }).getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.click(findButtonByTextContent(/^Main process/));
+    fireEvent.click(findButtonByTextContent(/^Renderer/));
+    expect(screen.getByText("2 of 3 answered")).toBeTruthy();
+    expect(sendButton).toHaveProperty("disabled", true);
+
+    fireEvent.click(screen.getByTestId("inline-question-next"));
+    expect(screen.getByText("What should the next agent know?")).toBeTruthy();
+    fireEvent.click(findButtonByTextContent(/^Ready/));
+    expect(screen.getByText("3 of 3 answered")).toBeTruthy();
+    expect(sendButton).toHaveProperty("disabled", false);
+
+    fireEvent.click(screen.getByTestId("inline-question-prev"));
+    expect(screen.getByText("Which chat surfaces need coverage?")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Question 1: Priority" }));
+    expect(screen.getByText("Which behavior should ship first?")).toBeTruthy();
+
+    fireEvent.click(sendButton);
+
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, {
+      priority: "mass_delete",
+      surfaces: ["main", "renderer"],
+      handoff: "ready",
+    });
+  });
 });

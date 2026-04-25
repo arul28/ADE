@@ -302,9 +302,10 @@ export function WorkViewArea({
       onContextMenu(session, e);
     }
   }, [onContextMenu]);
+  const gridSessionIdsKey = JSON.stringify(visibleSessions.map((session) => session.id));
   const gridTree = useMemo(
-    () => buildWorkSessionTilingTree(visibleSessions.map((session) => session.id)),
-    [visibleSessions],
+    () => buildWorkSessionTilingTree(JSON.parse(gridSessionIdsKey) as string[]),
+    [gridSessionIdsKey],
   );
   const tilingPanes = useMemo<Record<string, PaneConfig>>(() => Object.fromEntries(
     visibleSessions.map((session) => {

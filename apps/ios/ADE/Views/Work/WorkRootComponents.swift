@@ -402,6 +402,10 @@ struct WorkSessionListRow: View {
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
   @Binding var selectedSessionId: String?
+  let isSelecting: Bool
+  let isChecked: Bool
+  let onLongPressSelect: (TerminalSessionSummary) -> Void
+  let onToggleSelect: (TerminalSessionSummary) -> Void
   let onOpen: (TerminalSessionSummary) -> Void
   let onArchive: (TerminalSessionSummary) -> Void
   let onPin: (TerminalSessionSummary) -> Void
@@ -414,18 +418,37 @@ struct WorkSessionListRow: View {
 
   var body: some View {
     Button {
-      onOpen(session)
+      if isSelecting {
+        onToggleSelect(session)
+      } else {
+        onOpen(session)
+      }
     } label: {
-      WorkSessionRow(
-        session: session,
-        lane: lane,
-        chatSummary: chatSummary,
-        isArchived: isArchived,
-        transitionNamespace: transitionNamespace,
-        isSelectedTransitionSource: selectedSessionId == session.id
-      )
+      HStack(spacing: 8) {
+        if isSelecting {
+          Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+            .font(.system(size: 20, weight: .regular))
+            .foregroundStyle(isChecked ? ADEColor.accent : ADEColor.textSecondary.opacity(0.6))
+            .accessibilityLabel(isChecked ? "Selected" : "Not selected")
+        }
+        WorkSessionRow(
+          session: session,
+          lane: lane,
+          chatSummary: chatSummary,
+          isArchived: isArchived,
+          transitionNamespace: transitionNamespace,
+          isSelectedTransitionSource: selectedSessionId == session.id
+        )
+      }
     }
     .buttonStyle(.plain)
+    .simultaneousGesture(
+      LongPressGesture(minimumDuration: 0.45)
+        .onEnded { _ in
+          guard !isSelecting else { return }
+          onLongPressSelect(session)
+        }
+    )
     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
       Button(isArchived ? "Restore" : "Archive") {
         onArchive(session)
@@ -438,6 +461,11 @@ struct WorkSessionListRow: View {
       .tint(ADEColor.accent)
     }
     .contextMenu {
+      Button {
+        onLongPressSelect(session)
+      } label: {
+        Label("Select", systemImage: "checkmark.circle")
+      }
       Button("Rename") {
         onRename(session)
       }

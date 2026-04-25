@@ -1055,6 +1055,79 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("ade lanes list");
     });
 
+    it("appends discovered project slash commands to the Claude system prompt", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, "audit.md"), [
+        "---",
+        "description: Audit recent work for bugs and gaps",
+        "---",
+        "",
+        "Audit the recent changes.",
+        "",
+      ].join("\n"));
+      fs.writeFileSync(path.join(commandsDir, "ship-lane.md"), [
+        "---",
+        "description: Drive a lane through CI + review",
+        "---",
+        "",
+        "Ship the active lane.",
+        "",
+      ].join("\n"));
+
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-slash-commands",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      expect(opts?.systemPrompt?.append).toContain("## Project slash commands");
+      expect(opts?.systemPrompt?.append).toContain("auto-expands the command body");
+      expect(opts?.systemPrompt?.append).toContain("/audit — Audit recent work for bugs and gaps");
+      expect(opts?.systemPrompt?.append).toContain("/ship-lane — Drive a lane through CI + review");
+    });
+
+    it("omits the project slash commands section when no commands exist in the lane", async () => {
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-no-slash-commands",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      expect(opts?.systemPrompt?.append).toBeTruthy();
+      expect(opts?.systemPrompt?.append).not.toContain("## Project slash commands");
+    });
+
     it("does not attach ADE-owned tool definitions to Claude SDK sessions", async () => {
       vi.mocked(unstable_v2_createSession).mockReturnValue({
         send: vi.fn(),
@@ -4457,8 +4530,7 @@ describe("createAgentChatService", () => {
 
         const exitResult = await exitPromise;
         expect(exitResult).toMatchObject({
-          behavior: "deny",
-          message: expect.stringContaining("exited plan mode"),
+          behavior: "allow",
         });
 
         yield {
@@ -7695,6 +7767,236 @@ describe("createAgentChatService", () => {
     }));
   });
 
+  it("does not duplicate Claude text when an assistant snapshot repeats id-less streamed deltas", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-text-dedupe",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: "Got it. Let me check" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: " the desktop app structure." },
+        },
+      };
+      yield {
+        type: "assistant",
+        message: {
+          id: "msg-text-dedupe",
+          content: [{ type: "text", text: "Got it. Let me check the desktop app structure." }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-text-dedupe",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const textEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> => event.type === "text");
+    expect(textEvents.map((event) => event.text)).toEqual(["Got it. Let me check the desktop app structure."]);
+  });
+
+  it("does not duplicate Claude text when the final assistant snapshot extends streamed deltas", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-text-suffix",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: "I checked the renderer" },
+        },
+      };
+      yield {
+        type: "assistant",
+        message: {
+          id: "msg-text-suffix",
+          content: [{ type: "text", text: "I checked the renderer and added focused tests." }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-text-suffix",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const textEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> => event.type === "text");
+    expect(textEvents.map((event) => event.text).join("")).toBe("I checked the renderer and added focused tests.");
+  });
+
+  it("keeps Claude streamed text dedupable when a tool-use start arrives before the assistant snapshot", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-text-tool-dedupe",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: "Let me check the desktop app." },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          content_block: {
+            type: "tool_use",
+            id: "tool-use-after-text",
+            name: "Bash",
+            input: { command: "ls" },
+          },
+        },
+      };
+      yield {
+        type: "assistant",
+        message: {
+          id: "msg-text-tool-dedupe",
+          content: [
+            { type: "text", text: "Let me check the desktop app." },
+            { type: "tool_use", id: "tool-use-after-text", name: "Bash", input: { command: "ls" } },
+          ],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-text-tool-dedupe",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const textEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> => event.type === "text");
+    expect(textEvents.map((event) => event.text)).toEqual(["Let me check the desktop app."]);
+    expect(events.some((event) => event.event.type === "tool_call" && event.event.tool === "Bash")).toBe(true);
+  });
+
   it("emits completed Claude tool_result rows when tool_use_summary arrives", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -7856,6 +8158,106 @@ describe("createAgentChatService", () => {
       source: "claude_turn_finalization",
       finalTurnStatus: "completed",
     });
+  });
+
+  it("suppresses the 'tool calls were denied' notice for tool_use_ids resolved inline via canUseTool", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    let service: ReturnType<typeof createService>["service"];
+    let sessionId = "";
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-denial-suppression",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      const sessionOpts = vi.mocked(unstable_v2_createSession).mock.calls.at(-1)?.[0] as any;
+
+      // Approve plan exit through canUseTool — this records the tool_use_id in
+      // runtime.resolvedToolUseIds so the SDK's later permission_denials echo
+      // for the same id should NOT surface a "denied this turn" notice.
+      await sessionOpts.canUseTool("EnterPlanMode", {}, {
+        signal: new AbortController().signal,
+        toolUseID: "tool-enter-plan-suppress",
+      });
+      const exitPromise = sessionOpts.canUseTool("ExitPlanMode", {
+        planDescription: "Ship the approved plan.",
+      }, {
+        signal: new AbortController().signal,
+        toolUseID: "tool-exit-plan-suppress",
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && typeof ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind) === "string"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+      await service.approveToolUse({
+        sessionId,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+      await exitPromise;
+
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        permission_denials: [
+          // Resolved inline — must not surface a notice.
+          { tool_name: "ExitPlanMode", tool_use_id: "tool-exit-plan-suppress" },
+          // Genuine denial — must still surface a notice.
+          { tool_name: "Bash", tool_use_id: "tool-bash-unresolved" },
+        ],
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-denial-suppression",
+      setPermissionMode,
+    } as any);
+
+    ({ service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    }));
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+    sessionId = session.id;
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Plan, approve, and report.",
+    });
+
+    const denialNotices = events
+      .map((envelope) => envelope.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }> =>
+        event.type === "system_notice" && typeof event.message === "string" && event.message.includes("denied this turn"),
+      );
+
+    expect(denialNotices).toHaveLength(1);
+    expect(denialNotices[0]!.message).toContain("Bash");
+    expect(denialNotices[0]!.message).not.toContain("ExitPlanMode");
+    expect(denialNotices[0]!.message).toMatch(/^1 tool call was denied this turn/);
   });
 
   it("bridges Claude AskUserQuestion through ADE's question UI", async () => {

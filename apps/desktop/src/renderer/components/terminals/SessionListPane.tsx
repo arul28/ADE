@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, Funnel, GitBranch, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { Archive, ArrowCounterClockwise, CaretDown, CaretRight, DownloadSimple, Funnel, GitBranch, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
@@ -95,6 +95,11 @@ export const SessionListPane = React.memo(function SessionListPane({
   onClearSelection,
   onBulkClose,
   onBulkDelete,
+  onBulkArchive,
+  onBulkRestore,
+  onBulkExport,
+  archivableCount = 0,
+  restorableCount = 0,
   onResume,
   resumingSessionId,
   onInfoClick,
@@ -127,6 +132,11 @@ export const SessionListPane = React.memo(function SessionListPane({
   onClearSelection?: () => void;
   onBulkClose?: () => void;
   onBulkDelete?: () => void;
+  onBulkArchive?: () => void;
+  onBulkRestore?: () => void;
+  onBulkExport?: () => void;
+  archivableCount?: number;
+  restorableCount?: number;
   onResume: (session: TerminalSessionSummary) => void;
   resumingSessionId: string | null;
   onInfoClick: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
@@ -506,6 +516,42 @@ export const SessionListPane = React.memo(function SessionListPane({
                 >
                   <Square size={10} />
                   Close {selectedRunningCount}
+                </button>
+              </SmartTooltip>
+            ) : null}
+            {archivableCount > 0 ? (
+              <SmartTooltip content={{ label: "Archive selected", description: "Hide selected chats from the default view. Terminal sessions are skipped." }}>
+                <button
+                  type="button"
+                  className="inline-flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.05] px-2 text-[10px] font-medium text-fg/80"
+                  onClick={onBulkArchive}
+                >
+                  <Archive size={10} />
+                  Archive {archivableCount}
+                </button>
+              </SmartTooltip>
+            ) : null}
+            {restorableCount > 0 ? (
+              <SmartTooltip content={{ label: "Restore selected", description: "Return selected archived chats to the active list." }}>
+                <button
+                  type="button"
+                  className="inline-flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.05] px-2 text-[10px] font-medium text-fg/80"
+                  onClick={onBulkRestore}
+                >
+                  <ArrowCounterClockwise size={10} />
+                  Restore {restorableCount}
+                </button>
+              </SmartTooltip>
+            ) : null}
+            {selectedCount > 0 ? (
+              <SmartTooltip content={{ label: "Export bundle", description: "Download a markdown file with metadata for the selected sessions." }}>
+                <button
+                  type="button"
+                  className="inline-flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.05] px-2 text-[10px] font-medium text-fg/80"
+                  onClick={onBulkExport}
+                >
+                  <DownloadSimple size={10} />
+                  Export
                 </button>
               </SmartTooltip>
             ) : null}

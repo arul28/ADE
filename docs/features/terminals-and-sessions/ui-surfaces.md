@@ -38,6 +38,16 @@ It also owns the sidebar's multi-select state:
   `ade.agentChat.delete` for chat rows and `ade.sessions.delete` for
   PTY rows. Succeeded ids are removed from the cache and the open-tabs
   list.
+- `handleBulkArchiveSelected` / `handleBulkRestoreSelected` operate on
+  the chat subset of the selection (`isChatToolType` + `archivedAt`
+  state), calling `ade.agentChat.archive` / `ade.agentChat.unarchive`.
+  Terminal sessions in the selection are skipped silently — only chats
+  have an archived flag.
+- `handleBulkExportSelected` builds a markdown bundle through
+  `formatSessionBundleMarkdown` (in `renderer/lib/transcriptExport.ts`)
+  and triggers a browser download via `triggerBrowserDownload`. The
+  bundle is metadata-only (title, lane, status, started/ended, goal);
+  full transcript bodies are not embedded.
 
 Any selection-entry that is no longer present in the rendered session
 list is pruned from `selectedSessionIds` automatically so stale ids
@@ -76,9 +86,11 @@ Also renders:
 - an "Open new" button that sets `draftKind` and routes to
   `WorkStartSurface`
 - a bulk-action footer that appears when `selectedSessionIds` is
-  non-empty: "Close N running", "Delete N ended", and a clear-selection
-  X. The footer totals only count sessions that are still visible in
-  the current filter; callers are `TerminalsPage`'s bulk handlers.
+  non-empty: "Close N running", "Archive N" (chats only), "Restore N"
+  (archived chats), "Export" (any selection, opens a markdown bundle
+  download), "Delete N ended", and a clear-selection X. The footer
+  totals only count sessions that are still visible in the current
+  filter; callers are `TerminalsPage`'s bulk handlers.
 
 `onSelectSession(id, event, visibleSessionIds)` is forwarded verbatim
 from `TerminalsPage`. The pane passes its own ordered id list (derived

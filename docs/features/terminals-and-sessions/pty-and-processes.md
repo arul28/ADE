@@ -186,7 +186,16 @@ presence of an AI integration service in non-guest mode:
   listens to PTY *writes* (keyboard input) and commits the first
   submitted prompt line (3 to 180 chars). This avoids the alt-screen
   noise of Claude/Codex TUIs. Skipped when the session is
-  `manuallyNamed`.
+  `manuallyNamed`. If the current session title is still a CLI
+  placeholder (`Claude`, `Codex`, `Claude Code`, etc. — see
+  `isCliPlaceholderTitle`), a deterministic fallback title is committed
+  immediately from the seed via `deterministicCliTitleFromSeed` (strips
+  filler lead-ins like "ok"/"please", clips to 72 chars on a clause or
+  word boundary, sentence-cases). The AI title call still runs after
+  and overwrites with the model's output if it succeeds, but the user
+  no longer stares at "Claude" while the model is thinking. AI title
+  calls use `PTY_AI_TITLE_TIMEOUT_MS` (60 s) since slower local models
+  were timing out at the prior 8 s budget.
 
 At session close, when `refreshOnComplete` is enabled, the transcript
 tail (last 2000 chars) is re-summarized into a final title through the

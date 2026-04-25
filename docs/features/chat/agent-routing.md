@@ -202,6 +202,17 @@ permission mode automatically. In `bypassPermissions` or `full-auto`
 permission modes, plan approval auto-grants (no UI), since the user has
 opted out of permission gates.
 
+When the user approves an `ExitPlanMode` call, the canUseTool handler
+returns `{ behavior: "allow", updatedInput: input }` so the SDK's native
+`ExitPlanMode` handler runs, restores the pre-plan permission mode from
+its `toolPermissionContext.prePlanMode`, and emits a normal
+`tool_result` back to the model. ADE additionally calls
+`setPermissionMode` defensively so the SDK and ADE agree on the target
+mode even if the SDK's restore path no-ops, but the SDK is still the
+source of truth. (Previously we returned `behavior: "deny"` to dodge a
+ZodError in the SDK's input schema; that is no longer necessary and the
+deny path made the model hesitate after a "denied" tool call.)
+
 ## Model selection flow
 
 1. User picks a model in `ProviderModelSelector` (under
