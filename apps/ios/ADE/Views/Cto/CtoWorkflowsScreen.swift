@@ -26,7 +26,7 @@ struct CtoWorkflowsScreen: View {
         )
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 6, trailing: 0))
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 6, trailing: 16))
       }
 
       if let syncNotice {
@@ -45,18 +45,18 @@ struct CtoWorkflowsScreen: View {
         loadingSkeleton
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
-          .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+          .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
       } else if let connection, !connection.connected {
         notConnectedCard
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
-          .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+          .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
       } else if connection == nil, !isLoading,
         errorMessage == nil || syncService.connectionState.isHostUnreachable {
         notConnectedCard
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
-          .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+          .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
       } else {
         connectedSections
       }
@@ -64,6 +64,7 @@ struct CtoWorkflowsScreen: View {
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
     .adeScreenBackground()
+    .adeNavigationGlass()
     .refreshable { await reload() }
     .task {
       guard connection == nil else { return }
@@ -97,10 +98,11 @@ struct CtoWorkflowsScreen: View {
             .foregroundStyle(ADEColor.purpleAccent)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 9)
-            .background(ADEColor.purpleAccent.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(ADEColor.purpleAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .glassEffect(in: .rect(cornerRadius: 10))
             .overlay(
               RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(ADEColor.purpleAccent.opacity(0.3), lineWidth: 0.5)
+                .stroke(ADEColor.purpleAccent.opacity(0.34), lineWidth: 0.6)
             )
           }
           .buttonStyle(.plain)
@@ -110,7 +112,7 @@ struct CtoWorkflowsScreen: View {
         }
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 10, trailing: 0))
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 10, trailing: 16))
       }
     }
 
@@ -119,7 +121,7 @@ struct CtoWorkflowsScreen: View {
         QueueCounterRow(dashboard: dashboard)
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
-          .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
+          .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16))
       }
     }
 
@@ -130,14 +132,14 @@ struct CtoWorkflowsScreen: View {
       )
       .listRowBackground(Color.clear)
       .listRowSeparator(.hidden)
-      .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 6, trailing: 0))
+      .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16))
 
       if let policy, !policy.workflows.isEmpty {
         ForEach(policy.workflows) { workflow in
           WorkflowCard(workflow: workflow) { showEditOnDesktop = true }
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         }
       } else {
         Text("No workflows defined yet.")
@@ -147,7 +149,7 @@ struct CtoWorkflowsScreen: View {
           .adeListCard()
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
-          .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+          .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
       }
     }
 
@@ -155,7 +157,7 @@ struct CtoWorkflowsScreen: View {
       SectionHeader(title: "Recent sync events", rightLabel: nil)
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 6, trailing: 0))
+        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 6, trailing: 16))
 
       if events.isEmpty {
         Text("No recent events.")
@@ -165,7 +167,7 @@ struct CtoWorkflowsScreen: View {
           .adeListCard()
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
-          .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+          .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
       } else {
         VStack(spacing: 0) {
           ForEach(Array(events.enumerated()), id: \.element.id) { idx, event in
@@ -180,7 +182,7 @@ struct CtoWorkflowsScreen: View {
         .adeListCard(padding: 0)
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
       }
     }
 

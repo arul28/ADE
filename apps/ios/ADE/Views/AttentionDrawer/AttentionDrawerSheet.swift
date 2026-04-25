@@ -119,7 +119,9 @@ struct AttentionDrawerSheet: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+            .padding(.bottom, 24)
         }
+        .scrollBounceBehavior(.basedOnSize)
     }
 
     private func section(kind: AttentionKind, items: [AttentionItem]) -> some View {

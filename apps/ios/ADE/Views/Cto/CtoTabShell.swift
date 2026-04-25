@@ -56,7 +56,19 @@ struct CtoTabShell: View {
       }
     }
     .padding(3)
-    .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 11))
+    .overlay(
+      RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .fill(
+          LinearGradient(
+            colors: [Color.white.opacity(0.06), .clear],
+            startPoint: .top,
+            endPoint: .bottom
+          )
+        )
+        .allowsHitTesting(false)
+    )
     .overlay(
       RoundedRectangle(cornerRadius: 11, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)

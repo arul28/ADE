@@ -126,6 +126,8 @@ struct CtoTeamScreen: View {
           .padding(.horizontal, 12)
           .padding(.vertical, 6)
           .background(ADEColor.ctoAccent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .glassEffect(in: .rect(cornerRadius: 8))
+          .shadow(color: ADEColor.ctoAccent.opacity(0.45), radius: 8, y: 2)
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Hire worker")
@@ -467,19 +469,22 @@ private struct WorkerRowCard: View {
     }
     .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
+    .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 14))
+    .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .fill(
           LinearGradient(
-            colors: [ADEColor.cardBackground.opacity(0.85), ADEColor.cardBackground.opacity(0.95)],
+            colors: [Color.white.opacity(0.06), .clear],
             startPoint: .top,
             endPoint: .bottom
           )
         )
+        .allowsHitTesting(false)
     )
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.75)
     )
     .contextMenu {
       Button {
@@ -539,7 +544,8 @@ private struct MiniActionButton: View {
         .frame(minWidth: 52)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .glassEffect(in: .rect(cornerRadius: 6))
         .overlay(
           RoundedRectangle(cornerRadius: 6, style: .continuous)
             .stroke(ADEColor.glassBorder, lineWidth: 0.5)
