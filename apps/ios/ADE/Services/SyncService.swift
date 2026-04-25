@@ -997,27 +997,22 @@ final class SyncService: ObservableObject {
     latestRemoteDbVersion = 0
 
     guard let connection = result.connection else {
-      // Desktop accepted the switch but returned no connection bundle, so we
-      // can't actually start streaming for the new project. Roll back the
-      // optimistic catalog/active-project mutations applied above so the UI
-      // doesn't appear to have switched while the socket is unusable.
-      setActiveProjectId(previousActiveProjectId, rootPath: previousActiveProjectRootPath)
-      latestRemoteDbVersion = previousLatestRemoteDbVersion
-      remoteProjectCatalog = previousRemoteProjectCatalog
-      refreshProjectCatalog()
+      // Desktop's success path for project_switch_request intentionally returns
+      // no connection bundle — the phone keeps its existing pairing creds and
+      // reconnects via the WebSocket. Treat this as a successful switch:
+      // preserve the new active project, tear down any live socket, and let
+      // reconnectIfPossible re-establish streaming for the new project.
       projectHomePresented = false
       localStateRevision += 1
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
       if connectionState == .connected || connectionState == .syncing {
         teardownSocket(reason: "Switching desktop project.")
-        Task { @MainActor [weak self] in
-          await self?.reconnectIfPossible(userInitiated: true)
-        }
       }
-      throw NSError(domain: "ADE", code: 26, userInfo: [
-        NSLocalizedDescriptionKey: "The desktop accepted the project switch but did not start a sync connection."
-      ])
+      Task { @MainActor [weak self] in
+        await self?.reconnectIfPossible(userInitiated: true)
+      }
+      return
     }
 
     let addressCandidates = deduplicatedAddresses(
