@@ -15,10 +15,10 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 ## Execution contract
 
 - **Autonomous.** Do not pause for user confirmation mid-loop.
-- **Bounded.** Hard cap: 5 iterations. Exit earlier if clean or blocked. At the cap, do not auto-merge; leave a handoff comment that explains why the loop stopped and what remains, if anything.
+- **Bounded.** Hard cap: 5 iterations. Exit earlier if clean or blocked. **At the cap, the loop must land the lane**: run the iteration's fix work as normal and then route through Phase 3c (auto-merge). Only if Phase 3c is genuinely blocked (base-branch policy + no admin rights + no auto-merge enabled) do you stop and leave a handoff comment for a human.
 - **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2.
 - **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
-- **One push per iteration.** Never push a CI-only fix while review bots are still running, and never push a review-only fix while CI is still running. Both signals must be **terminal** before the iteration commits — that is, every required check has a final conclusion AND every expected review bot has posted (or its status check has settled). Pushing on a partial signal wastes the next CI cycle and makes review threads drift from HEAD. If only one signal has landed, wait for the other; do not iterate early.
+- **One push per iteration. Wait for BOTH signals before fixing anything.** Never push a CI-only fix while review bots are still running, and never push a review-only fix while CI is still running. Both signals must be **terminal** before the iteration commits — that is, every required check has a final conclusion AND every expected review bot has posted (or its status check has settled). This is not just an efficiency rule: **review-comment fixes routinely introduce new CI failures**, so applying them on a partial signal means the next push fails and you've thrown away the prior CI cycle. Wait for both, then dispatch ci-fix-agent and review-fix-agent in parallel with full knowledge of both, and combine their edits into one commit. If only one signal has landed when you wake, do not iterate — reschedule and sleep.
 - **Default wait is 12 minutes.** After any push, schedule the next poll ~720s out (unless CI hasn't started at all — then 270s to stay in cache). 12 minutes is the **floor** that lets both CI shards and the slower review bots (Greptile, Copilot) finish. Re-entering before that almost always shows a partial state and produces the wrong decision. Only schedule shorter (270s) in Phase 0 immediately post-push to observe CI has kicked off.
 - **Token-idle waits.** Waiting is done by the agent's native scheduler/resume primitive, or by a shell `sleep` followed by one-shot checks. Between wake-ups, agents should be asleep, not consuming model context or tokens.
 - **Idempotent resume.** All state lives in `.ade/shipLane/<branch>.json`. A re-invocation reads that file and picks up where it left off.
@@ -180,8 +180,12 @@ If any check's `state` is `IN_PROGRESS` or `QUEUED`, note CI as still running.
 
 Use the commit timestamp of `lastPushSha` as the `since` filter (ISO 8601). Fall back to the state file's `lastPolledAt` if the commit isn't locally available.
 
+**Normalize to UTC `Z` form before passing to jq.** `git show --format=%cI` returns local-tz strings like `2026-04-25T04:52:10-04:00`, while GitHub's `created_at` is UTC `2026-04-25T08:52:10Z`. jq's `>` is a string compare, not a date compare — `04:52:10-04:00` < `08:52:10Z` lexicographically, so a local-tz `SINCE` returns every old comment as "new" and triggers duplicate review-fix work on the next iteration. Always convert first:
+
 ```bash
-SINCE=$(git show -s --format=%cI "$LAST_PUSH_SHA" 2>/dev/null)
+SINCE_RAW=$(git show -s --format=%cI "$LAST_PUSH_SHA" 2>/dev/null)
+SINCE=$(python3 -c "import sys,datetime; print(datetime.datetime.fromisoformat(sys.argv[1]).astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$SINCE_RAW")
+# SINCE now looks like 2026-04-25T08:52:10Z
 
 gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER/comments" \
   --paginate -q "[.[] | select(.created_at > \"$SINCE\")]"
@@ -190,7 +194,7 @@ gh api "repos/{owner}/{repo}/issues/$PR_NUMBER/comments" \
   --paginate -q "[.[] | select(.created_at > \"$SINCE\")]"
 
 gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER/reviews" \
-  --paginate -q "[.[] | select(.submitted_at > \"$SINCE\")]"
+  --paginate -q "[.[] | select(.submitted_at != null and .submitted_at > \"$SINCE\")]"
 ```
 
 Filter out any comment whose `id` is in `addressedCommentIds`.
@@ -237,7 +241,7 @@ Pure logic on the poll summary:
 | `merged == true` | Exit `done-clean`; clear state file. |
 | `behindMain == true` | Go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. |
 | `ciRunning == true` OR `reviewBotsRunning == true` | Do NOT iterate on a partial signal. Go to Phase 5 (schedule next wake). This applies even if the other signal already shows failures/comments — pushing a fix now means the next CI+review cycle races the fix and you likely re-push for the other half. |
-| `ciFailed` empty, `newComments` empty, `ciRunning == false`, `reviewBotsRunning == false` | Exit `done-clean`. |
+| `ciFailed` empty, `newComments` empty, `ciRunning == false`, `reviewBotsRunning == false` | Go to **Phase 3c (auto-merge)**. Done-clean does not mean "stop and leave for human" — it means everything is green, and the lane should land on `main`. |
 | Otherwise (both signals terminal, fix work exists) | Go to Phase 3b (fix). Fix CI failures and review comments **in the same iteration / same push**. |
 
 ---
@@ -381,6 +385,62 @@ Post bot pings (Phase 4), update state (Phase 5), and schedule the next wake. Do
 
 ---
 
+## Phase 3c — Auto-merge
+
+Runs when Phase 2 routes here (everything terminal, no fix work, not behind, not already merged). The point of this playbook is "PR-to-merge", not "PR-to-green" — once green, the lane lands.
+
+### 3c.1 Resolve repo merge style
+
+```bash
+gh api repos/{owner}/{repo} -q '{squash: .allow_squash_merge, merge: .allow_merge_commit, rebase: .allow_rebase_merge}'
+```
+
+Prefer the dominant style of the recent `main` history (look for `(#NNN)` suffixes → squash; merge-commit subjects → merge; otherwise rebase). Default to squash when ambiguous.
+
+### 3c.2 Attempt the merge
+
+```bash
+gh pr merge "$PR_NUMBER" --squash
+```
+
+(Substitute `--merge` or `--rebase` per 3c.1.)
+
+### 3c.3 Handle branch protection
+
+If `gh pr merge` fails with `the base branch policy prohibits the merge` (typical when the repo requires a CODEOWNER review that the loop can't produce on its own), retry with admin override **only if the running user has admin rights on the repo**:
+
+```bash
+gh pr merge "$PR_NUMBER" --squash --admin
+```
+
+If the user is not a repo admin, do NOT use `--admin`. Fall back to:
+
+```bash
+gh pr merge "$PR_NUMBER" --squash --auto
+```
+
+`--auto` queues GitHub's native auto-merge; the PR will land on its own once the missing requirement is satisfied. If `--auto` is also rejected (the repo doesn't have auto-merge enabled), exit `blocked` with `exitReason: "merge-policy-blocked-no-auto"` and post a PR comment explaining what reviewer is needed.
+
+### 3c.4 Branch deletion
+
+**Do NOT pass `--delete-branch` to `gh pr merge`.** That flag triggers a local `git checkout` of the base branch, which fails if `main` is checked out in another worktree (common when /shipLane runs from a per-lane worktree). Instead, delete server-side after the merge succeeds:
+
+```bash
+gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/$CURRENT_BRANCH"
+```
+
+Or simply skip deletion and rely on the repo's "Automatically delete head branches" setting if it's enabled.
+
+### 3c.5 Confirm + finalize
+
+```bash
+gh pr view "$PR_NUMBER" --json state,mergedAt,mergeCommit
+```
+
+If `state == MERGED`, exit `done-clean`, clear `.ade/shipLane/<branch>.json`, and print the summary. Do NOT schedule another wake-up.
+
+---
+
 ## Phase 4 — Post-push bot pings
 
 Runs after **any** push (initial or re-push). Always:
@@ -419,7 +479,7 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ### 5.2 Decide exit vs next wake
 
-- `iteration >= 5` → set `status: done-max`, `exitReason: "iteration-cap-reached"`, post a PR handoff comment explaining why the loop stopped and listing remaining unaddressed CI/review items, if any. Do not auto-merge at the cap; leave the PR open for a human to merge or rerun the lane.
+- `iteration >= 5` → this is the **final push**. The cap is not a stop sign; it's a "land it now" trigger. Run the iteration's fix work as normal, then immediately route through Phase 3c (auto-merge) on the resulting green state. Only if Phase 3c can't merge (policy blocked + no admin + auto-merge disabled) do you set `status: done-max` and leave a handoff comment.
 - `merged == true` (observed during this iteration) → set `status: done-clean`, exit.
 - Otherwise → schedule next wake.
 
@@ -442,8 +502,8 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 
 | status | meaning | next action |
 | --- | --- | --- |
-| `done-clean` | PR merged OR green + no unaddressed comments | clear state file; print summary |
-| `done-max` | 5 iterations exhausted | leave state file; post PR handoff comment to human; do not auto-merge |
+| `done-clean` | PR merged on `main` (Phase 3c succeeded) | clear state file; print summary |
+| `done-max` | 5 iterations exhausted AND Phase 3c could not merge (policy block + no admin + no auto-merge) | leave state file; post PR handoff comment to human |
 | `blocked` | Unrecoverable conflict, gate failure, or API error | leave state file; post PR comment with reason |
 
 ## Summary output (always print on exit)
