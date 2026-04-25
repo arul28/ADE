@@ -353,6 +353,12 @@ export function createSyncService(args: SyncServiceArgs) {
   let refreshRunning = false;
   let refreshQueued = false;
   let disposed = false;
+  // Mobile project switch can fire `sync.initialize` as a background task and
+  // then immediately await `service.initialize()` from the dialog handler.
+  // Coalesce concurrent calls so the second await rides the first promise
+  // rather than re-running ensureLocalDevice/refreshRoleState in parallel.
+  let initializingPromise: Promise<void> | null = null;
+  let initialized = false;
   let hostStartupEnabled = args.hostStartupEnabled !== false;
   let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
   const isCrdtSyncAvailable = (): boolean => args.db.sync.isAvailable?.() !== false;
@@ -742,8 +748,16 @@ export function createSyncService(args: SyncServiceArgs) {
 
   const service = {
     async initialize(): Promise<void> {
-      deviceRegistryService.ensureLocalDevice();
-      await refreshRoleState();
+      if (initialized) return;
+      if (initializingPromise) return initializingPromise;
+      initializingPromise = (async () => {
+        deviceRegistryService.ensureLocalDevice();
+        await refreshRoleState();
+        initialized = true;
+      })().finally(() => {
+        initializingPromise = null;
+      });
+      return initializingPromise;
     },
 
     async getStatus(): Promise<SyncRoleSnapshot> {

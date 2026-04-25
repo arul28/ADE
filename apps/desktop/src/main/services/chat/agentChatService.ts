@@ -309,6 +309,19 @@ type CodexRuntime = {
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   recentNotificationKeys: Set<string>;
+  /**
+   * Plan-approval follow-ups deferred until the planning turn idles. Calling
+   * sendMessage while a planning turn is still active would race the busy
+   * runtime, so respondToInput stages the follow-up here and turn/completed
+   * drains it (resolving the approval and dispatching the implementation
+   * turn) once activeTurnId clears.
+   */
+  pendingPlanFollowups: Array<{
+    itemId: string;
+    decision: AgentChatApprovalDecision;
+    turnId: string | null;
+    followupText: string;
+  }>;
   request: <T = unknown>(method: string, params?: unknown) => Promise<T>;
   notify: (method: string, params?: unknown) => void;
   sendResponse: (id: string | number, result: unknown) => void;
@@ -5974,6 +5987,13 @@ export function createAgentChatService(args: {
         managed.runtime.killTimer,
       );
       managed.runtime.pending.clear();
+      for (const followup of managed.runtime.pendingPlanFollowups.splice(0)) {
+        emitPendingInputResolved(managed, {
+          itemId: followup.itemId,
+          decision: "cancel",
+          turnId: followup.turnId,
+        });
+      }
       managed.runtime.approvals.clear();
       managed.runtime = null;
     }
@@ -8710,6 +8730,40 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  /**
+   * Resolve any plan-approval follow-ups that were staged during a planning
+   * turn. Runs once turn/completed has cleared activeTurnId so the
+   * implementation sendMessage no longer races the busy runtime. Approval
+   * entries and pending-input UI state are kept alive until this drain so
+   * the renderer reflects the planning turn finishing before the
+   * implementation turn begins.
+   */
+  const drainPendingPlanFollowups = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): void => {
+    if (runtime.pendingPlanFollowups.length === 0) return;
+    const followups = runtime.pendingPlanFollowups.splice(0);
+    for (const followup of followups) {
+      runtime.approvals.delete(followup.itemId);
+      emitPendingInputResolved(managed, {
+        itemId: followup.itemId,
+        decision: followup.decision,
+        turnId: followup.turnId,
+      });
+      void sendMessage({
+        sessionId: managed.session.id,
+        text: followup.followupText,
+      }).catch((error) => {
+        logger.warn("agent_chat.plan_followup_dispatch_failed", {
+          sessionId: managed.session.id,
+          itemId: followup.itemId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  };
+
   const stopActiveCodexSubagents = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -9187,6 +9241,7 @@ export function createAgentChatService(args: {
       const status = mapCodexTurnStatus(turn?.status);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       markSessionIdleWithFreshCache(managed);
+      drainPendingPlanFollowups(managed, runtime);
       runtime.approvals.clear();
 
       if (status === "failed" && turn?.error?.message) {
@@ -9422,6 +9477,13 @@ export function createAgentChatService(args: {
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
+      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
+        emitPendingInputResolved(managed, {
+          itemId: followup.itemId,
+          decision: "cancel",
+          turnId: followup.turnId,
+        });
+      }
       runtime.approvals.clear();
       markSessionIdleWithFreshCache(managed);
       stopActiveCodexSubagents(managed, runtime, turnId, "Interrupted by user");
@@ -9631,6 +9693,7 @@ export function createAgentChatService(args: {
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
       recentNotificationKeys: new Set<string>(),
+      pendingPlanFollowups: [],
       slashCommands: [],
       rateLimits: null,
       collaborationModes: null,
@@ -9736,6 +9799,13 @@ export function createAgentChatService(args: {
         request.reject(new Error(message));
       }
       pending.clear();
+      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
+        emitPendingInputResolved(managed, {
+          itemId: followup.itemId,
+          decision: "cancel",
+          turnId: followup.turnId,
+        });
+      }
       runtime.approvals.clear();
       runtime.suppressExitError = true;
 
@@ -9759,6 +9829,13 @@ export function createAgentChatService(args: {
       }
       pending.clear();
 
+      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
+        emitPendingInputResolved(managed, {
+          itemId: followup.itemId,
+          decision: "cancel",
+          turnId: followup.turnId,
+        });
+      }
       runtime.approvals.clear();
 
       if (runtime.suppressExitError) return;
@@ -13147,37 +13224,35 @@ export function createAgentChatService(args: {
       };
 
       // Plan approval is created locally (not a JSON-RPC server request).
-      // On approve, send a follow-up turn telling Codex to implement.
-      // On reject, send feedback for revision.
+      // The planning turn may still be running when the user decides, so we
+      // cannot dispatch the follow-up sendMessage immediately — it would
+      // race the busy runtime. Stage the follow-up and let turn/completed
+      // drain it once activeTurnId clears. The approval entry and the
+      // pending-input UI state are also retained until then so the user
+      // sees the planning turn finish before the implementation turn
+      // starts.
       if (pending.kind === "plan_approval") {
         const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
         const feedback = typeof responseText === "string" ? responseText.trim() : "";
-        try {
-          if (approved) {
-            // Switch out of plan mode before sending the implementation turn.
-            managed.session.permissionMode = "edit";
-            applyLegacyPermissionModeToNativeControls(managed.session, "edit");
-            runtime.threadResumed = false;
-            persistChatState(managed);
-            await sendMessage({
-              sessionId,
-              text: "The user approved the plan. Please proceed with implementation.",
-            });
-          } else {
-            await sendMessage({
-              sessionId,
-              text: feedback.length > 0
-                ? `The user rejected the plan with feedback: "${feedback}". Please revise.`
-                : "The user rejected the plan. Please revise your approach.",
-            });
-          }
-        } finally {
-          runtime.approvals.delete(itemId);
-          emitPendingInputResolved(managed, {
-            itemId,
-            decision: resolvedDecision,
-            turnId: pending.request?.turnId ?? null,
-          });
+        const followupText = approved
+          ? "The user approved the plan. Please proceed with implementation."
+          : feedback.length > 0
+            ? `The user rejected the plan with feedback: "${feedback}". Please revise.`
+            : "The user rejected the plan. Please revise your approach.";
+        if (approved) {
+          managed.session.permissionMode = "edit";
+          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+          runtime.threadResumed = false;
+          persistChatState(managed);
+        }
+        runtime.pendingPlanFollowups.push({
+          itemId,
+          decision: resolvedDecision,
+          turnId: pending.request?.turnId ?? null,
+          followupText,
+        });
+        if (!runtime.activeTurnId) {
+          drainPendingPlanFollowups(managed, runtime);
         }
         return;
       }

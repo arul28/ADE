@@ -1006,6 +1006,10 @@ final class SyncService: ObservableObject {
       localStateRevision += 1
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
+      // Clear stale failure state from the prior project so the reconnect
+      // gap shows .disconnected instead of a leftover .failed banner.
+      lastError = nil
+      setDomainStatus(SyncDomain.allCases, phase: .disconnected)
       if connectionState == .connected || connectionState == .syncing {
         teardownSocket(reason: "Switching desktop project.")
       }

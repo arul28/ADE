@@ -1556,7 +1556,8 @@ export function registerIpc({
   let linearOAuthServiceAdeDir: string | null = null;
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
-    return getSyncService?.() ?? getCtx().syncService ?? null;
+    if (getSyncService) return getSyncService() ?? null;
+    return getCtx().syncService ?? null;
   };
 
   const requireSyncService = (): ReturnType<typeof createSyncService> => {
