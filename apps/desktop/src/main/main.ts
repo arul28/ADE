@@ -901,7 +901,9 @@ app.whenReady().then(async () => {
   const setActiveProject = (projectRoot: string | null): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
     for (const [root, ctx] of projectContexts) {
-      ctx.syncService?.setHostDiscoveryEnabled?.(activeProjectRoot != null && root === activeProjectRoot);
+      const isActive = activeProjectRoot != null && root === activeProjectRoot;
+      ctx.syncService?.setHostStartupEnabled?.(isActive);
+      ctx.syncService?.setHostDiscoveryEnabled?.(isActive);
     }
     if (activeProjectRoot) {
       projectLastActivatedAt.set(activeProjectRoot, Date.now());
@@ -2650,6 +2652,14 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event),
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
+    // Only the project that matches the currently-active root should auto-start
+    // its sync host; background project contexts stay dormant until activated.
+    // ADE_DISABLE_SYNC_HOST=1 is a global kill switch for tests / CI.
+    const isActiveProjectContext =
+      activeProjectRoot != null
+      && normalizeProjectRoot(projectRoot) === activeProjectRoot;
+    const syncHostAutoStart =
+      process.env.ADE_DISABLE_SYNC_HOST !== "1" && isActiveProjectContext;
     const syncService = createSyncService({
       db,
       logger,
@@ -2685,18 +2695,26 @@ app.whenReady().then(async () => {
       getLinearIssueTracker: () => linearIssueTracker,
       getLinearSyncService: () => linearSyncServiceRef,
       processService,
-      hostStartupEnabled: process.env.ADE_DISABLE_SYNC_HOST !== "1",
-      hostDiscoveryEnabled: activeProjectRoot != null && normalizeProjectRoot(projectRoot) === activeProjectRoot,
+      hostStartupEnabled: syncHostAutoStart,
+      phonePairingStateDir: path.join(app.getPath("userData"), "phone-sync"),
+      hostDiscoveryEnabled: isActiveProjectContext,
       notificationEventBus,
       projectCatalogProvider: {
         listProjects: listMobileSyncProjects,
         prepareProjectConnection: prepareMobileSyncProjectConnection,
       },
-      onStatusChanged: (snapshot) =>
-        emitProjectEvent(projectRoot, IPC.syncEvent, {
+      onStatusChanged: (snapshot) => {
+        if (
+          activeProjectRoot == null
+          || normalizeProjectRoot(projectRoot) !== activeProjectRoot
+        ) {
+          return;
+        }
+        broadcast(IPC.syncEvent, {
           type: "sync-status",
           snapshot,
-        }),
+        });
+      },
     });
     syncServiceRef = syncService;
     // Late-bind the sync service into the notification bus dependencies so
@@ -4009,15 +4027,12 @@ app.whenReady().then(async () => {
       let createdLeaseExpiresAt: number | null = null;
       let createdLeaseTimer: ReturnType<typeof setTimeout> | null = null;
       try {
+        await switchProjectFromDialog(targetRoot);
         const ctx = await ensureProjectContextForMobileSync(targetRoot);
         if (!ctx.syncService) {
           throw new Error("Sync is not available for that project.");
         }
         await ctx.syncService.initialize();
-        const status = await ctx.syncService.getStatus();
-        if (!status.bootstrapToken || !status.pairingConnectInfo) {
-          throw new Error("That project is not ready for phone sync yet.");
-        }
         const recent = (readGlobalState(globalStatePath).recentProjects ?? [])
           .map(toRecentProjectSummary)
           .find((entry) => normalizeProjectRoot(entry.rootPath) === targetRoot) ?? null;
@@ -4042,13 +4057,7 @@ app.whenReady().then(async () => {
         return {
           ok: true,
           project,
-          connection: {
-            authKind: "bootstrap",
-            token: status.bootstrapToken,
-            hostIdentity: status.pairingConnectInfo.hostIdentity,
-            port: status.pairingConnectInfo.port,
-            addressCandidates: status.pairingConnectInfo.addressCandidates,
-          },
+          connection: null,
         };
       } catch (error) {
         const currentLeaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);
@@ -4482,6 +4491,10 @@ app.whenReady().then(async () => {
         ctx.autoUpdateService = autoUpdateService;
       }
       return ctx;
+    },
+    getSyncService: () => {
+      if (!activeProjectRoot) return null;
+      return projectContexts.get(activeProjectRoot)?.syncService ?? null;
     },
     switchProjectFromDialog,
     closeCurrentProject,

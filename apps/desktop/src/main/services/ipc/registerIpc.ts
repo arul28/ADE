@@ -1538,12 +1538,14 @@ function buildIssueResolutionInstructionsFromThread(arg: LaunchPrIssueResolution
 
 export function registerIpc({
   getCtx,
+  getSyncService,
   switchProjectFromDialog,
   closeCurrentProject,
   closeProjectByPath,
   globalStatePath
 }: {
   getCtx: () => AppContext;
+  getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
@@ -1552,6 +1554,19 @@ export function registerIpc({
   const watcherCleanupBoundSenders = new Set<number>();
   let linearOAuthService: LinearOAuthService | null = null;
   let linearOAuthServiceAdeDir: string | null = null;
+
+  const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
+    if (getSyncService) return getSyncService() ?? null;
+    return getCtx().syncService ?? null;
+  };
+
+  const requireSyncService = (): ReturnType<typeof createSyncService> => {
+    const service = getOptionalSyncService();
+    if (!service) {
+      throw new Error("Sync service is not available.");
+    }
+    return service;
+  };
 
   const getLinearOAuthBridge = (ctx: AppContext): LinearOAuthService => {
     if (!ctx.linearCredentialService) {
@@ -2338,27 +2353,15 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.syncGetStatus, async (): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.getStatus();
+    return await requireSyncService().getStatus();
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.refreshDiscovery();
+    return await requireSyncService().refreshDiscovery();
   });
 
   ipcMain.handle(IPC.syncListDevices, async (): Promise<SyncDeviceRuntimeState[]> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.listDevices();
+    return await requireSyncService().listDevices();
   });
 
   ipcMain.handle(
@@ -2367,11 +2370,7 @@ export function registerIpc({
       _event,
       arg: { name?: string; deviceType?: SyncPeerDeviceType },
     ): Promise<SyncDeviceRecord> => {
-      const ctx = getCtx();
-      if (!ctx.syncService) {
-        throw new Error("Sync service is not available.");
-      }
-      return await ctx.syncService.updateLocalDevice({
+      return await requireSyncService().updateLocalDevice({
         name: typeof arg?.name === "string" ? arg.name : undefined,
         deviceType: arg?.deviceType,
       });
@@ -2381,78 +2380,42 @@ export function registerIpc({
   ipcMain.handle(
     IPC.syncConnectToBrain,
     async (_event, arg: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> => {
-      const ctx = getCtx();
-      if (!ctx.syncService) {
-        throw new Error("Sync service is not available.");
-      }
-      return await ctx.syncService.connectToBrain(arg);
+      return await requireSyncService().connectToBrain(arg);
     },
   );
 
   ipcMain.handle(IPC.syncDisconnectFromBrain, async (): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.disconnectFromBrain();
+    return await requireSyncService().disconnectFromBrain();
   });
 
   ipcMain.handle(IPC.syncForgetDevice, async (_event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.forgetDevice(typeof arg?.deviceId === "string" ? arg.deviceId : "");
+    return await requireSyncService().forgetDevice(typeof arg?.deviceId === "string" ? arg.deviceId : "");
   });
 
   ipcMain.handle(IPC.syncGetTransferReadiness, async (): Promise<SyncTransferReadiness> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.getTransferReadiness();
+    return await requireSyncService().getTransferReadiness();
   });
 
   ipcMain.handle(IPC.syncTransferBrainToLocal, async (): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.transferBrainToLocal();
+    return await requireSyncService().transferBrainToLocal();
   });
 
   ipcMain.handle(IPC.syncGetPin, async (): Promise<{ pin: string | null }> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return { pin: ctx.syncService.getPin() };
+    return { pin: requireSyncService().getPin() };
   });
 
   ipcMain.handle(IPC.syncSetPin, async (_event, pin: string): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.setPin(typeof pin === "string" ? pin : "");
+    return await requireSyncService().setPin(typeof pin === "string" ? pin : "");
   });
 
   ipcMain.handle(IPC.syncClearPin, async (): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.clearPin();
+    return await requireSyncService().clearPin();
   });
 
   ipcMain.handle(
     IPC.syncSetActiveLanePresence,
     async (_event, arg: { laneIds?: string[] | null }): Promise<void> => {
-      const ctx = getCtx();
-      if (!ctx.syncService) {
-        throw new Error("Sync service is not available.");
-      }
-      await ctx.syncService.setActiveLanePresence(
+      await requireSyncService().setActiveLanePresence(
         Array.isArray(arg?.laneIds) ? arg.laneIds : [],
       );
     },
@@ -3622,7 +3585,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
     const ctx = getCtx();
-    const devicesOpenByLaneId = buildLanePresenceByLaneId(ctx.syncService);
+    const devicesOpenByLaneId = buildLanePresenceByLaneId(getOptionalSyncService());
     return await withIpcTiming(
       ctx,
       "lanes.list",
@@ -7220,7 +7183,7 @@ export function registerIpc({
       if (!ctx.apnsService || !ctx.apnsService.isConfigured?.()) {
         return { ok: false, reason: "APNs not configured. Upload a .p8 and save the config." };
       }
-      const registry = ctx.syncService?.getDeviceRegistryService?.() ?? null;
+      const registry = getOptionalSyncService()?.getDeviceRegistryService?.() ?? null;
       if (!registry) return { ok: false, reason: "Device registry unavailable." };
       const effective = ctx.projectConfigService?.get?.()?.effective;
       const apnsConfig = effective?.notifications?.apns ?? null;

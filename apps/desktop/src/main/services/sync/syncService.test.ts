@@ -117,6 +117,66 @@ afterEach(async () => {
 });
 
 describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
+  it("uses app-level phone pairing state across project roots", async () => {
+    const projectRootA = makeProjectRoot("ade-sync-service-app-state-a-");
+    const projectRootB = makeProjectRoot("ade-sync-service-app-state-b-");
+    const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-app-state-"));
+    fs.mkdirSync(path.join(projectRootA, ".ade", "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-bootstrap-token"), "legacy-token\n", "utf8");
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-pin.json"), JSON.stringify({
+      pin: "123456",
+      updatedAt: "2026-04-24T00:00:00.000Z",
+    }), "utf8");
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-paired-devices.json"), "{}\n", "utf8");
+
+    const dbA = await openKvDb(path.join(projectRootA, ".ade", "ade.db"), createLogger() as any);
+    const dbB = await openKvDb(path.join(projectRootB, ".ade", "ade.db"), createLogger() as any);
+    const baseArgs = {
+      logger: createLogger() as any,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [] } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: true,
+    };
+
+    const serviceA = createSyncService({
+      ...baseArgs,
+      db: dbA,
+      projectRoot: projectRootA,
+      localDeviceIdPath: path.join(appPairingDir, "sync-device-id"),
+    });
+    const serviceB = createSyncService({
+      ...baseArgs,
+      db: dbB,
+      projectRoot: projectRootB,
+      localDeviceIdPath: path.join(appPairingDir, "sync-device-id"),
+    });
+    activeDisposers.push(async () => {
+      await serviceA.dispose();
+      await serviceB.dispose();
+      dbA.close();
+      dbB.close();
+    });
+
+    expect(fs.readFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "utf8").trim()).toBe("legacy-token");
+    expect(fs.existsSync(path.join(appPairingDir, "sync-paired-devices.json"))).toBe(true);
+    expect((await serviceA.getStatus()).bootstrapToken).toBe("legacy-token");
+    expect((await serviceA.getStatus()).pairingPinConfigured).toBe(true);
+    expect((await serviceB.getStatus()).bootstrapToken).toBe("legacy-token");
+    expect((await serviceB.getStatus()).pairingPinConfigured).toBe(true);
+    expect(serviceA.getPin()).toBe("123456");
+    // serviceB sees the same on-disk pin file but only the host that performed
+    // the migration retains the plaintext PIN in memory; serviceB should not.
+    expect(serviceB.getPin()).toBeNull();
+  });
+
   it("reports W3 transfer blockers while keeping paused and idle state survivable", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-blockers-");
     const db = await openKvDb(
@@ -508,6 +568,112 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
     );
     expect(service.getPin()).toBeNull();
+  }, 30_000);
+
+  it("starts the sync host when setHostStartupEnabled flips on after init", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-host-toggle-");
+    const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-host-toggle-app-"));
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [] } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: false,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    expect(createSyncHostServiceMock).not.toHaveBeenCalled();
+    expect((await service.getStatus()).bootstrapToken).toBeNull();
+    await expect(service.setPin("123456")).rejects.toThrow(
+      "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+    );
+
+    // The real syncHostService writes a bootstrap token at startup; the mock doesn't,
+    // so simulate it here so we can assert the toggle re-exposes the token via getStatus.
+    fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "toggled-token\n", "utf8");
+
+    service.setHostStartupEnabled(true);
+
+    await vi.waitFor(() => {
+      expect(createSyncHostServiceMock).toHaveBeenCalled();
+    });
+    const enabledStatus = await service.getStatus();
+    expect(enabledStatus.bootstrapToken).toBe("toggled-token");
+    expect(enabledStatus.pairingConnectInfo).toBeTruthy();
+  }, 30_000);
+
+  it("does not overwrite an existing app-level pairing file when a legacy file is also present", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-no-overwrite-");
+    const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-no-overwrite-app-"));
+
+    fs.mkdirSync(path.join(projectRoot, ".ade", "secrets"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, ".ade", "secrets", "sync-bootstrap-token"),
+      "legacy-token\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(appPairingDir, "sync-bootstrap-token"),
+      "app-token\n",
+      "utf8",
+    );
+
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [] } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    expect(
+      fs.readFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "utf8").trim(),
+    ).toBe("app-token");
+    expect(
+      fs.readFileSync(
+        path.join(projectRoot, ".ade", "secrets", "sync-bootstrap-token"),
+        "utf8",
+      ).trim(),
+    ).toBe("legacy-token");
+    expect((await service.getStatus()).bootstrapToken).toBe("app-token");
   }, 30_000);
 
   it("rejects PIN changes when CRDT sync is unavailable", async () => {

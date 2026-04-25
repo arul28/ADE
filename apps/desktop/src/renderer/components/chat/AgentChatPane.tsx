@@ -1004,6 +1004,7 @@ export function AgentChatPane({
     promise: Promise<void>;
   } | null>(null);
   const nativeControlUpdateCounterRef = useRef(0);
+  const reasoningEffortUpdateCounterRef = useRef(0);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const eventFlushTimerRef = useRef<number | null>(null);
@@ -3257,6 +3258,44 @@ export function AgentChatPane({
     });
   }, [updateNativeControls]);
 
+  const handleReasoningEffortChange = useCallback((nextReasoningEffort: string | null) => {
+    const previousReasoningEffort = reasoningEffort;
+    setReasoningEffort(nextReasoningEffort);
+    if (!selectedSessionId) return;
+    if (isPersistentIdentitySurface && sessionMutationKind) return;
+
+    const seq = ++reasoningEffortUpdateCounterRef.current;
+    const targetSessionId = selectedSessionId;
+    patchSessionSummary(targetSessionId, { reasoningEffort: nextReasoningEffort });
+    void window.ade.agentChat.updateSession({
+      sessionId: targetSessionId,
+      reasoningEffort: nextReasoningEffort,
+    }).then((updatedSession) => {
+      if (seq !== reasoningEffortUpdateCounterRef.current) return;
+      const reconciled = updatedSession.reasoningEffort ?? null;
+      patchSessionSummary(targetSessionId, { reasoningEffort: reconciled });
+      if (selectedSessionIdRef.current === targetSessionId) {
+        setReasoningEffort(reconciled);
+      }
+      void refreshSessions().catch(() => {});
+    }).catch((err) => {
+      if (seq === reasoningEffortUpdateCounterRef.current
+        && selectedSessionIdRef.current === targetSessionId) {
+        setReasoningEffort(previousReasoningEffort);
+        patchSessionSummary(targetSessionId, { reasoningEffort: previousReasoningEffort });
+      }
+      void refreshSessions().catch(() => {});
+      setError(err instanceof Error ? err.message : String(err));
+    });
+  }, [
+    isPersistentIdentitySurface,
+    patchSessionSummary,
+    reasoningEffort,
+    refreshSessions,
+    selectedSessionId,
+    sessionMutationKind,
+  ]);
+
   const handleComputerUsePolicyChange = useCallback(async (_nextPolicy: unknown) => {
     // Computer-use policy gating has been removed; this handler is a no-op retained for UI compat.
   }, []);
@@ -3659,7 +3698,7 @@ export function AgentChatPane({
                 setSessionMutationKind(null);
               });
             }}
-            onReasoningEffortChange={setReasoningEffort}
+            onReasoningEffortChange={handleReasoningEffortChange}
             onDraftChange={(value) => {
               setDraft(value);
               draftsPerSessionRef.current.set(selectedSessionId, value);

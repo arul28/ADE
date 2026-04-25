@@ -618,6 +618,34 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("persists Codex reasoning effort changes on the selected session", async () => {
+    const session = buildSession("session-1", {
+      status: "idle",
+      reasoningEffort: "medium",
+    });
+    const updateSession = vi.fn().mockImplementation(async (args: any) => ({
+      ...session,
+      reasoningEffort: args.reasoningEffort,
+    }));
+    installAdeMocks({
+      sessions: [session],
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+
+    fireEvent.change(await screen.findByLabelText("Reasoning effort"), {
+      target: { value: "high" },
+    });
+
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        reasoningEffort: "high",
+      });
+    });
+  });
+
   it("resyncs Claude composer permissions from refreshed session state", async () => {
     const session = buildSession("session-1", {
       status: "idle",

@@ -137,11 +137,6 @@ export function TopBar() {
   }, [fetchRecent]);
 
   useEffect(() => {
-    if (!project?.rootPath) {
-      setSyncSnapshot(null);
-      setPhoneSyncOpen(false);
-      return;
-    }
     let cancelled = false;
     const refreshSyncStatus = () => {
       void window.ade.sync.getStatus().then((snapshot) => {
@@ -165,6 +160,10 @@ export function TopBar() {
       window.removeEventListener("focus", refreshSyncStatus);
       dispose();
     };
+    // Background projects don't broadcast sync-status events (main.ts filters
+    // them to the active project), so we re-run this effect on rootPath
+    // change to force an immediate refetch instead of waiting up to 5s for
+    // the next polling tick.
   }, [project?.rootPath]);
 
   const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {

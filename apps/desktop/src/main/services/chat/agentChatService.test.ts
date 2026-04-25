@@ -5192,8 +5192,8 @@ describe("createAgentChatService", () => {
         | { mode?: unknown; settings?: { model?: unknown; reasoning_effort?: unknown; developer_instructions?: unknown } }
         | undefined;
 
-      expect(params?.approvalPolicy).toBeUndefined();
-      expect(params?.sandboxPolicy).toBeUndefined();
+      expect(params?.approvalPolicy).toBe("untrusted");
+      expect(params?.sandboxPolicy?.type).toBe("readOnly");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("plan");
       expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
@@ -5245,8 +5245,8 @@ describe("createAgentChatService", () => {
       } | undefined;
       const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
 
-      expect(params?.approvalPolicy).toBeUndefined();
-      expect(params?.sandboxPolicy).toBeUndefined();
+      expect(params?.approvalPolicy).toBe("on-request");
+      expect(params?.sandboxPolicy?.type).toBe("workspaceWrite");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("default");
     });
@@ -5318,12 +5318,12 @@ describe("createAgentChatService", () => {
         sandboxPolicy?: { type?: unknown };
         effort?: unknown;
       } | undefined;
-      expect(turnStartParams?.approvalPolicy).toBeUndefined();
-      expect(turnStartParams?.sandboxPolicy).toBeUndefined();
+      expect(turnStartParams?.approvalPolicy).toBe("never");
+      expect(turnStartParams?.sandboxPolicy?.type).toBe("dangerFullAccess");
       expect(turnStartParams?.effort).toBe("medium");
     });
 
-    it("uses the app-server's effective Codex policy after thread/start without re-overriding it on turn/start", async () => {
+    it("uses the app-server's effective Codex policy for subsequent turn/start overrides", async () => {
       mockState.codexResponseOverrides.set("thread/start", () => ({
         thread: { id: "thread-effective-start" },
         approvalPolicy: "on-failure",
@@ -5360,8 +5360,8 @@ describe("createAgentChatService", () => {
         sandboxPolicy?: { type?: unknown };
         effort?: unknown;
       } | undefined;
-      expect(turnStartParams?.approvalPolicy).toBeUndefined();
-      expect(turnStartParams?.sandboxPolicy).toBeUndefined();
+      expect(turnStartParams?.approvalPolicy).toBe("on-failure");
+      expect(turnStartParams?.sandboxPolicy?.type).toBe("workspaceWrite");
       expect(turnStartParams?.effort).toBe("high");
 
       const summary = await service.getSessionSummary(session.id);
@@ -5452,8 +5452,8 @@ describe("createAgentChatService", () => {
         collaborationMode?: { mode?: unknown };
         effort?: unknown;
       } | undefined;
-      expect(turnStartParams?.approvalPolicy).toBeUndefined();
-      expect(turnStartParams?.sandboxPolicy).toBeUndefined();
+      expect(turnStartParams?.approvalPolicy).toBe("never");
+      expect(turnStartParams?.sandboxPolicy?.type).toBe("dangerFullAccess");
       expect(turnStartParams?.collaborationMode?.mode).toBe("default");
       expect(turnStartParams?.effort).toBe("medium");
     });

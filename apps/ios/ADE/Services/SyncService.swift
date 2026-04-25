@@ -970,7 +970,7 @@ final class SyncService: ObservableObject {
       ])
     }
     let result = try decode(raw, as: MobileProjectSwitchResultPayload.self)
-    guard result.ok, let connection = result.connection else {
+    guard result.ok else {
       throw NSError(domain: "ADE", code: 24, userInfo: [
         NSLocalizedDescriptionKey: result.message ?? "The desktop could not open that project for phone sync."
       ])
@@ -980,6 +980,45 @@ final class SyncService: ObservableObject {
     }
 
     let targetProject = result.project ?? project
+    let previousActiveProjectId = activeProjectId
+    let previousActiveProjectRootPath = activeProjectRootPath
+    let previousProfile = loadProfile()
+    let previousToken = keychain.loadToken()
+    let previousLatestRemoteDbVersion = latestRemoteDbVersion
+    let previousRemoteProjectCatalog = remoteProjectCatalog
+    remoteProjectCatalog.removeAll { existing in
+      existing.id == targetProject.id
+        || (normalizedProjectRoot(existing.rootPath) != nil
+          && normalizedProjectRoot(existing.rootPath) == normalizedProjectRoot(targetProject.rootPath))
+    }
+    remoteProjectCatalog.append(targetProject)
+    setActiveProjectId(targetProject.id, rootPath: targetProject.rootPath ?? project.rootPath)
+    refreshProjectCatalog()
+    latestRemoteDbVersion = 0
+
+    guard let connection = result.connection else {
+      // Desktop's success path for project_switch_request intentionally returns
+      // no connection bundle — the phone keeps its existing pairing creds and
+      // reconnects via the WebSocket. Treat this as a successful switch:
+      // preserve the new active project, tear down any live socket, and let
+      // reconnectIfPossible re-establish streaming for the new project.
+      projectHomePresented = false
+      localStateRevision += 1
+      refreshActiveSessionsAndSnapshot()
+      scheduleWorkspaceSnapshotWrite()
+      // Clear stale failure state from the prior project so the reconnect
+      // gap shows .disconnected instead of a leftover .failed banner.
+      lastError = nil
+      setDomainStatus(SyncDomain.allCases, phase: .disconnected)
+      if connectionState == .connected || connectionState == .syncing {
+        teardownSocket(reason: "Switching desktop project.")
+      }
+      Task { @MainActor [weak self] in
+        await self?.reconnectIfPossible(userInitiated: true)
+      }
+      return
+    }
+
     let addressCandidates = deduplicatedAddresses(
       connection.addressCandidates.map(\.host)
         + (currentAddress.map { [$0] } ?? [])
@@ -1008,22 +1047,6 @@ final class SyncService: ObservableObject {
       },
       tailscaleAddress: addressCandidates.first(where: syncIsTailscaleRoute)
     )
-
-    let previousActiveProjectId = activeProjectId
-    let previousActiveProjectRootPath = activeProjectRootPath
-    let previousProfile = loadProfile()
-    let previousToken = keychain.loadToken()
-    let previousLatestRemoteDbVersion = latestRemoteDbVersion
-    let previousRemoteProjectCatalog = remoteProjectCatalog
-    remoteProjectCatalog.removeAll { existing in
-      existing.id == targetProject.id
-        || (normalizedProjectRoot(existing.rootPath) != nil
-          && normalizedProjectRoot(existing.rootPath) == normalizedProjectRoot(targetProject.rootPath))
-    }
-    remoteProjectCatalog.append(targetProject)
-    setActiveProjectId(targetProject.id, rootPath: targetProject.rootPath ?? project.rootPath)
-    refreshProjectCatalog()
-    latestRemoteDbVersion = 0
 
     let connectAttemptGeneration = beginConnectAttempt()
     do {
