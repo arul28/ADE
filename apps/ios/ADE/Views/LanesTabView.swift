@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Lanes tab
-
 struct LanesTabView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
@@ -24,6 +22,7 @@ struct LanesTabView: View {
   @State var batchManagePresented = false
   @State var refreshFeedbackToken = 0
   @State var selectedLaneTransitionId: String?
+  @State private var showStackCanvas = false
   @State private var lastLanesLocalProjectionReload = Date.distantPast
   @State private var lastHandledLanesProjectionRevision: Int?
 
@@ -66,8 +65,6 @@ struct LanesTabView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 14) {
-          // Suppress connection-caused banners; the top-right gear dot is the
-          // single source of truth for host reachability.
           if !syncService.connectionState.isHostUnreachable,
             let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes)
           {
@@ -109,11 +106,6 @@ struct LanesTabView: View {
             )
             .transition(.opacity)
           }
-          // The live-action notice is entirely connection-oriented ("Pair to
-          // run lane actions" / "Reconnect before creating lanes"), which
-          // duplicates the gear-dot signal. Only surface it when something
-          // other than raw disconnection is the cause (e.g. still connecting
-          // but sync not ready yet) so the user still gets hinted.
           if !syncService.connectionState.isHostUnreachable,
             let liveActionNoticePresentation
           {
@@ -143,8 +135,7 @@ struct LanesTabView: View {
           }
           laneList
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
       }
       .scrollBounceBehavior(.basedOnSize)
       .searchable(text: $searchText, prompt: "Filter by lane, branch, is:dirty...")
@@ -223,6 +214,23 @@ struct LanesTabView: View {
           await reload(refreshRemote: true)
         }
       }
+      .sheet(isPresented: $showStackCanvas) {
+        LaneStackCanvasScreen(
+          snapshots: laneSnapshots,
+          selectedLaneId: primaryLane?.id,
+          onSelectLane: { lane in
+            showStackCanvas = false
+            guard let snapshot = laneSnapshots.first(where: { $0.lane.id == lane.id }) else {
+              return
+            }
+            detailSheetTarget = LaneDetailSheetTarget(
+              laneId: lane.id,
+              snapshot: snapshot,
+              initialSection: .git
+            )
+          }
+        )
+      }
     }
   }
 
@@ -254,18 +262,52 @@ struct LanesTabView: View {
       .accessibilityLabel("Primary branch")
     }
 
-    Button {
+    topBarPillButton(
+      symbol: "square.stack.3d.up.fill",
+      tint: ADEColor.tintLanes,
+      accessibilityLabel: "Stack canvas",
+      accessibilityHint: "Opens the lane stack canvas"
+    ) {
+      showStackCanvas = true
+    }
+
+    topBarPillButton(
+      symbol: "plus",
+      tint: canRunLiveActions ? ADEColor.accent : ADEColor.warning,
+      accessibilityLabel: "Add lane",
+      accessibilityHint: canRunLiveActions ? "Opens lane creation options" : "Reconnect to desktop before creating lanes"
+    ) {
       if canRunLiveActions {
         addLaneSheetPresented = true
       } else {
         handleBlockedLiveAction()
       }
-    } label: {
-      Image(systemName: "plus")
-        .font(.body.weight(.semibold))
-        .foregroundStyle(canRunLiveActions ? ADEColor.accent : ADEColor.warning)
     }
-    .accessibilityLabel("Add lane")
-    .accessibilityHint(canRunLiveActions ? "Opens lane creation options" : "Reconnect to desktop before creating lanes")
+  }
+
+  @ViewBuilder
+  private func topBarPillButton(
+    symbol: String,
+    tint: Color,
+    accessibilityLabel: String,
+    accessibilityHint: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(tint)
+        .frame(width: 32, height: 32)
+        .background(ADEColor.glassBackground, in: Circle())
+        .glassEffect(in: .circle)
+        .overlay(
+          Circle()
+            .stroke(ADEColor.glassBorder, lineWidth: 0.75)
+        )
+        .contentShape(Circle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(accessibilityLabel)
+    .accessibilityHint(accessibilityHint)
   }
 }

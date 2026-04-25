@@ -1,15 +1,14 @@
 import SwiftUI
 
 private enum LaneTreeMetrics {
-  static let indent: CGFloat = 12
+  static let indent: CGFloat = 18
   static let elbowWidth: CGFloat = 14
   static let elbowHeight: CGFloat = 22
   static let rowSpacing: CGFloat = 8
-  static let strokeColor = ADEColor.purpleAccent.opacity(0.35)
-  static let strokeWidth: CGFloat = 1.5
+  static let strokeColor = ADEColor.glassBorder
+  static let strokeWidth: CGFloat = 1
 }
 
-/// L-shaped connector ("elbow") from the parent column down to the child card row.
 private struct LaneTreeElbowShape: Shape {
   func path(in rect: CGRect) -> Path {
     var path = Path()
@@ -160,7 +159,6 @@ struct LaneTreeRow: View {
   }
 }
 
-/// Compact popover shown by contextMenu's preview when a row is long-pressed.
 struct LanePeekPreview: View {
   let snapshot: LaneListSnapshot
 

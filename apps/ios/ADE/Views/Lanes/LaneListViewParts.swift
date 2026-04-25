@@ -53,9 +53,10 @@ extension LanesTabView {
   var openLanesTray: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
-        Label("Open lanes", systemImage: "square.stack.3d.up.fill")
+        Label("OPEN LANES", systemImage: "square.stack.3d.up.fill")
           .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
+          .tracking(0.6)
+          .foregroundStyle(ADEColor.textMuted)
         Spacer()
         Button {
           withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
@@ -69,7 +70,7 @@ extension LanesTabView {
         .accessibilityLabel("Clear open lanes")
       }
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
           ForEach(openLaneSnapshots) { snapshot in
             NavigationLink {
               LaneDetailScreen(
@@ -84,21 +85,30 @@ extension LanesTabView {
             }
             .buttonStyle(.plain)
             .contextMenu {
-              Button("Manage lane") {
+              Button {
                 detailSheetTarget = LaneDetailSheetTarget(
                   laneId: snapshot.lane.id,
                   snapshot: snapshot,
                   initialSection: .git
                 )
+              } label: {
+                Label("Manage lane", systemImage: "slider.horizontal.3")
               }
-              Button(pinnedLaneIds.contains(snapshot.lane.id) ? "Unpin" : "Pin") {
+              Button {
                 togglePin(snapshot.lane.id)
+              } label: {
+                let pinned = pinnedLaneIds.contains(snapshot.lane.id)
+                Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
               }
-              Button("Remove from open lanes") {
+              Button {
                 closeLaneChip(snapshot.lane.id)
+              } label: {
+                Label("Remove from open lanes", systemImage: "xmark.rectangle")
               }
-              Button("Close others") {
+              Button {
                 openLaneIds = [snapshot.lane.id]
+              } label: {
+                Label("Close others", systemImage: "rectangle.on.rectangle.slash")
               }
             }
           }
@@ -111,9 +121,10 @@ extension LanesTabView {
   @ViewBuilder
   var attentionSection: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("Needs review")
+      Text("NEEDS REVIEW")
         .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textSecondary)
+        .tracking(0.6)
+        .foregroundStyle(ADEColor.textMuted)
         .padding(.horizontal, 2)
 
       ForEach(visibleSuggestions) { snapshot in
@@ -262,9 +273,10 @@ extension LanesTabView {
         EmptyView()
       } else {
         VStack(spacing: 10) {
-          Text("Lanes")
+          Text("LANES")
             .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
+            .tracking(0.6)
+            .foregroundStyle(ADEColor.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 2)
 
@@ -327,38 +339,55 @@ extension LanesTabView {
 
   @ViewBuilder
   func laneContextMenu(snapshot: LaneListSnapshot) -> some View {
-    Button("Manage lane") {
+    Button {
       detailSheetTarget = LaneDetailSheetTarget(
         laneId: snapshot.lane.id,
         snapshot: snapshot,
         initialSection: .git
       )
+    } label: {
+      Label("Manage lane", systemImage: "slider.horizontal.3")
     }
-    Button(openLaneIds.contains(snapshot.lane.id) ? "Remove from open lanes" : "Add to open lanes") {
+    Button {
       toggleOpenLane(snapshot.lane.id)
+    } label: {
+      let isOpen = openLaneIds.contains(snapshot.lane.id)
+      Label(
+        isOpen ? "Remove from open lanes" : "Add to open lanes",
+        systemImage: isOpen ? "xmark.rectangle" : "rectangle.badge.plus"
+      )
     }
-    Button(pinnedLaneIds.contains(snapshot.lane.id) ? "Unpin" : "Pin") {
+    Button {
       togglePin(snapshot.lane.id)
+    } label: {
+      let pinned = pinnedLaneIds.contains(snapshot.lane.id)
+      Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
     }
-    Button("Close others") {
+    Button {
       openLaneIds = [snapshot.lane.id]
+    } label: {
+      Label("Close others", systemImage: "rectangle.on.rectangle.slash")
     }
     if !manageableVisibleLaneIds.isEmpty {
-      Button("Select all active visible lanes") {
+      Button {
         batchManageLaneIds = manageableVisibleLaneIds
         batchManagePresented = true
+      } label: {
+        Label("Select all active visible lanes", systemImage: "checkmark.rectangle.stack")
       }
       .disabled(!canRunLiveActions)
     }
     if manageableVisibleLaneIds.count > 1 {
-      Button("Manage \(manageableVisibleLaneIds.count) visible lanes") {
+      Button {
         batchManageLaneIds = manageableVisibleLaneIds
         batchManagePresented = true
+      } label: {
+        Label("Manage \(manageableVisibleLaneIds.count) visible lanes", systemImage: "square.grid.2x2")
       }
       .disabled(!canRunLiveActions)
     }
     if snapshot.lane.archivedAt == nil && snapshot.lane.laneType != "primary" {
-      Button("Archive", role: .destructive) {
+      Button(role: .destructive) {
         Task {
           do {
             try await syncService.archiveLane(snapshot.lane.id)
@@ -368,10 +397,12 @@ extension LanesTabView {
             errorMessage = error.localizedDescription
           }
         }
+      } label: {
+        Label("Archive", systemImage: "archivebox")
       }
       .disabled(!canRunLiveActions)
     } else if snapshot.lane.archivedAt != nil {
-      Button("Restore") {
+      Button {
         Task {
           do {
             try await syncService.unarchiveLane(snapshot.lane.id)
@@ -381,14 +412,18 @@ extension LanesTabView {
             errorMessage = error.localizedDescription
           }
         }
+      } label: {
+        Label("Restore", systemImage: "tray.and.arrow.up")
       }
       .disabled(!canRunLiveActions)
     }
-    Button("Copy path") {
+    Button {
       UIPasteboard.general.string = snapshot.lane.worktreePath
+    } label: {
+      Label("Copy path", systemImage: "doc.on.doc")
     }
     if snapshot.adoptableAttached {
-      Button("Move to ADE-managed worktree") {
+      Button {
         Task {
           do {
             _ = try await syncService.adoptAttachedLane(snapshot.lane.id)
@@ -398,6 +433,8 @@ extension LanesTabView {
             errorMessage = error.localizedDescription
           }
         }
+      } label: {
+        Label("Move to ADE-managed worktree", systemImage: "folder.badge.gearshape")
       }
       .disabled(!canRunLiveActions)
     }

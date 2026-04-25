@@ -236,8 +236,7 @@ private struct LaneFileTreeNodeView: View {
             Text("\(child.totalFileCount)")
               .font(.caption2.weight(.semibold))
               .foregroundStyle(ADEColor.textMuted)
-              .padding(.horizontal, 6)
-              .padding(.vertical, 2)
+              .padding(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
               .background(ADEColor.surfaceBackground.opacity(0.45), in: Capsule())
             Spacer()
           }
@@ -301,6 +300,7 @@ private struct LaneFileRow: View {
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
+            .truncationMode(.middle)
           Text(file.kind.capitalized)
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)

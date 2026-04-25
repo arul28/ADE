@@ -137,6 +137,10 @@
 		B10000000000000000000104 /* LaneSyncDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000104 /* LaneSyncDetailScreen.swift */; };
 		B10000000000000000000105 /* LaneStashesScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000105 /* LaneStashesScreen.swift */; };
 		B10000000000000000000106 /* LaneCommitHistoryScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000106 /* LaneCommitHistoryScreen.swift */; };
+		B10000000000000000000107 /* LaneEnvInitProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000107 /* LaneEnvInitProgressView.swift */; };
+		B10000000000000000000108 /* LaneStackCanvasScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000108 /* LaneStackCanvasScreen.swift */; };
+		B10000000000000000000109 /* LaneBranchPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000109 /* LaneBranchPickerSheet.swift */; };
+		B10000000000000000000110 /* LaneMultiAttachSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000110 /* LaneMultiAttachSheet.swift */; };
 		F10000000000000000000001 /* SettingsSupportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* SettingsSupportTypes.swift */; };
 		F10000000000000000000002 /* SettingsConnectionHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* SettingsConnectionHeader.swift */; };
 		F10000000000000000000003 /* SettingsPairingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* SettingsPairingSection.swift */; };
@@ -346,6 +350,10 @@
 		A10000000000000000000104 /* LaneSyncDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneSyncDetailScreen.swift; path = ADE/Views/Lanes/LaneSyncDetailScreen.swift; sourceTree = "<group>"; };
 		A10000000000000000000105 /* LaneStashesScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneStashesScreen.swift; path = ADE/Views/Lanes/LaneStashesScreen.swift; sourceTree = "<group>"; };
 		A10000000000000000000106 /* LaneCommitHistoryScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneCommitHistoryScreen.swift; path = ADE/Views/Lanes/LaneCommitHistoryScreen.swift; sourceTree = "<group>"; };
+		A10000000000000000000107 /* LaneEnvInitProgressView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneEnvInitProgressView.swift; path = ADE/Views/Lanes/LaneEnvInitProgressView.swift; sourceTree = "<group>"; };
+		A10000000000000000000108 /* LaneStackCanvasScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneStackCanvasScreen.swift; path = ADE/Views/Lanes/LaneStackCanvasScreen.swift; sourceTree = "<group>"; };
+		A10000000000000000000109 /* LaneBranchPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneBranchPickerSheet.swift; path = ADE/Views/Lanes/LaneBranchPickerSheet.swift; sourceTree = "<group>"; };
+		A10000000000000000000110 /* LaneMultiAttachSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMultiAttachSheet.swift; path = ADE/Views/Lanes/LaneMultiAttachSheet.swift; sourceTree = "<group>"; };
 		F20000000000000000000001 /* SettingsSupportTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsSupportTypes.swift; path = ADE/Views/Settings/SettingsSupportTypes.swift; sourceTree = "<group>"; };
 		F20000000000000000000002 /* SettingsConnectionHeader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsConnectionHeader.swift; path = ADE/Views/Settings/SettingsConnectionHeader.swift; sourceTree = "<group>"; };
 		F20000000000000000000003 /* SettingsPairingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingSection.swift; path = ADE/Views/Settings/SettingsPairingSection.swift; sourceTree = "<group>"; };
@@ -469,6 +477,10 @@
 				A10000000000000000000104 /* LaneSyncDetailScreen.swift */,
 				A10000000000000000000105 /* LaneStashesScreen.swift */,
 				A10000000000000000000106 /* LaneCommitHistoryScreen.swift */,
+				A10000000000000000000107 /* LaneEnvInitProgressView.swift */,
+				A10000000000000000000108 /* LaneStackCanvasScreen.swift */,
+				A10000000000000000000109 /* LaneBranchPickerSheet.swift */,
+				A10000000000000000000110 /* LaneMultiAttachSheet.swift */,
 			);
 			name = Lanes;
 			sourceTree = "<group>";
@@ -1024,6 +1036,10 @@
 				B10000000000000000000104 /* LaneSyncDetailScreen.swift in Sources */,
 				B10000000000000000000105 /* LaneStashesScreen.swift in Sources */,
 				B10000000000000000000106 /* LaneCommitHistoryScreen.swift in Sources */,
+				B10000000000000000000107 /* LaneEnvInitProgressView.swift in Sources */,
+				B10000000000000000000108 /* LaneStackCanvasScreen.swift in Sources */,
+				B10000000000000000000109 /* LaneBranchPickerSheet.swift in Sources */,
+				B10000000000000000000110 /* LaneMultiAttachSheet.swift in Sources */,
 				F10000000000000000000001 /* SettingsSupportTypes.swift in Sources */,
 				F10000000000000000000002 /* SettingsConnectionHeader.swift in Sources */,
 				F10000000000000000000003 /* SettingsPairingSection.swift in Sources */,

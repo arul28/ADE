@@ -79,6 +79,15 @@ struct AddLaneSheet: View {
           ) {
             AddLaneAttachRoute(onComplete: handleCreate)
           }
+
+          LaneCreateOptionLink(
+            symbol: "square.stack.3d.down.right",
+            symbolTint: ADEColor.tintLanes,
+            title: "Attach multiple worktrees",
+            subtitle: "Discover existing worktrees and attach them in bulk"
+          ) {
+            AddLaneMultiAttachRoute(onComplete: handleCreate)
+          }
         }
         .padding(16)
       }
@@ -150,12 +159,18 @@ private struct LaneCreateOptionLink<Destination: View>: View {
   }
 }
 
-/// Wraps LaneAttachSheet so we can push it into the AddLaneSheet NavigationStack
-/// without the nested NavigationStack that LaneAttachSheet provides for modal use.
 private struct AddLaneAttachRoute: View {
   let onComplete: @MainActor (String) async -> Void
 
   var body: some View {
     LaneAttachSheet(onComplete: onComplete, wrapsInNavigationStack: false)
+  }
+}
+
+private struct AddLaneMultiAttachRoute: View {
+  let onComplete: @MainActor (String) async -> Void
+
+  var body: some View {
+    LaneMultiAttachSheet(onComplete: onComplete, wrapsInNavigationStack: false)
   }
 }

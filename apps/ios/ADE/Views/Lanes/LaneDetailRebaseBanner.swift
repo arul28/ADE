@@ -38,27 +38,25 @@ struct LaneDetailRebaseBanner: View {
               .font(.subheadline.weight(.semibold))
           }
           .foregroundStyle(ADEColor.textPrimary)
-          .padding(.horizontal, 14)
-          .padding(.vertical, 9)
+          .padding(EdgeInsets(top: 9, leading: 14, bottom: 9, trailing: 14))
           .background(ADEColor.warning.opacity(0.24), in: Capsule())
           .overlay(Capsule().stroke(ADEColor.warning.opacity(0.5), lineWidth: 0.6))
         }
         .buttonStyle(.plain)
         .disabled(!canRunLiveActions)
+        .opacity(canRunLiveActions ? 1.0 : 0.55)
 
         Button("Defer", action: onDefer)
           .buttonStyle(.plain)
           .font(.caption.weight(.medium))
           .foregroundStyle(ADEColor.textSecondary)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 8)
+          .padding(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
 
         Button("Dismiss", action: onDismiss)
           .buttonStyle(.plain)
           .font(.caption.weight(.medium))
           .foregroundStyle(ADEColor.textMuted)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 8)
+          .padding(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
 
         Spacer(minLength: 0)
       }

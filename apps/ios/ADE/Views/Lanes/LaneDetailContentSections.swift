@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Header card
-
 struct LaneDetailHeaderCard: View {
   let snapshot: LaneListSnapshot
   let detail: LaneDetailPayload?
@@ -47,6 +45,7 @@ struct LaneDetailHeaderCard: View {
             .font(.headline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
+            .minimumScaleFactor(0.85)
 
           laneTypeBadge
         }

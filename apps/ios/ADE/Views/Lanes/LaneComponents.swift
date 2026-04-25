@@ -53,12 +53,11 @@ struct LaneOpenChip: View {
           .foregroundStyle(ADEColor.accent)
       }
     }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule())
-    .glassEffect()
+    .padding(EdgeInsets(top: 7, leading: 10, bottom: 7, trailing: 10))
+    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 12))
     .overlay(
-      Capsule()
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
         .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
     )
     .accessibilityLabel("\(snapshot.lane.name)\(isPinned ? ", pinned" : "")")
@@ -83,8 +82,8 @@ struct LaneLaunchTile: View {
           .font(.caption.weight(.medium))
       }
       .foregroundStyle(tint)
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, 14)
+      .frame(maxWidth: .infinity, minHeight: 88)
+      .padding(14)
       .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       .glassEffect(in: .rect(cornerRadius: 12))
       .overlay(

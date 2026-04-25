@@ -71,8 +71,7 @@ struct LaneCommitSheet: View {
               .font(.caption.weight(.semibold))
           }
           .foregroundStyle(ADEColor.accent)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 5)
+          .padding(EdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10))
           .background(ADEColor.accent.opacity(0.12), in: Capsule())
         }
         .buttonStyle(.plain)
@@ -88,13 +87,8 @@ struct LaneCommitSheet: View {
       .font(.subheadline)
       .lineLimit(4...10)
       .focused($messageFieldFocused)
-      .padding(12)
       .frame(minHeight: 140, alignment: .topLeading)
-      .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.5)
-      )
+      .adeInsetField(cornerRadius: 12, padding: 12)
     }
   }
 
@@ -110,8 +104,7 @@ struct LaneCommitSheet: View {
       }
     }
     .tint(ADEColor.accent)
-    .padding(12)
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .adeGlassCard(cornerRadius: 12, padding: 12)
   }
 
   private var commitActionSection: some View {
@@ -126,15 +119,14 @@ struct LaneCommitSheet: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
       }
-      .buttonStyle(.borderedProminent)
+      .buttonStyle(.glassProminent)
       .tint(ADEColor.accent)
       .disabled(!canCommit)
       Text(commitActionHint)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
     }
-    .padding(12)
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .adeGlassCard(cornerRadius: 12, padding: 12)
   }
 
   private var trimmedMessage: String {

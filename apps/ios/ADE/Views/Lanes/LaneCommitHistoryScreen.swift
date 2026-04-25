@@ -30,8 +30,7 @@ struct LaneCommitHistoryScreen: View {
           }
         }
       }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 14)
+      .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
     }
     .background(ADEColor.surfaceBackground.ignoresSafeArea())
     .navigationTitle("\(laneName) commits")
@@ -49,19 +48,11 @@ struct LaneCommitHistoryScreen: View {
   }
 
   private var emptyState: some View {
-    VStack(spacing: 8) {
-      Image(systemName: "clock.arrow.circlepath")
-        .font(.system(size: 26))
-        .foregroundStyle(ADEColor.textMuted)
-      Text("No commits yet")
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-      Text("Commits on this lane will appear here.")
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-    }
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 32)
+    ADEEmptyStateView(
+      symbol: "clock.arrow.circlepath",
+      title: "No commits yet",
+      message: "Commits on this lane will appear here."
+    )
   }
 
   private func commitRow(commit: GitCommitSummary, isHead: Bool) -> some View {
@@ -71,11 +62,12 @@ struct LaneCommitHistoryScreen: View {
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)
+          .minimumScaleFactor(0.92)
         if isHead {
-          LaneTypeBadge(text: "HEAD", tint: ADEColor.accent)
+          LaneMicroChip(icon: "bookmark.fill", text: "HEAD", tint: ADEColor.accent)
         }
         if commit.parents.count > 1 {
-          LaneTypeBadge(text: "MERGE", tint: ADEColor.warning)
+          LaneMicroChip(icon: "arrow.triangle.merge", text: "MERGE", tint: ADEColor.warning)
         }
         Spacer()
         Text(commit.shortSha)

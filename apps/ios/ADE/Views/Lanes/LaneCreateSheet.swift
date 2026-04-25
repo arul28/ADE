@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Create lane sheet
-
 struct LaneCreateSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -19,12 +17,27 @@ struct LaneCreateSheet: View {
   @State private var selectedImportBranch = ""
   @State private var selectedRescueLaneId = ""
   @State private var templates: [LaneTemplate] = []
-  @State private var selectedTemplateId = ""
+  @State private var selectedTemplateId: String?
   @State private var branches: [GitBranchSummary] = []
   @State private var errorMessage: String?
   @State private var queuedNotice: String?
   @State private var busy = false
   @State private var envProgress: LaneEnvInitProgress?
+  @State private var envPhase: EnvSetupPhase = .form
+  @State private var envPolling = false
+  @State private var envPollTask: Task<Void, Never>?
+
+  private enum EnvSetupPhase {
+    case form
+    case progress
+  }
+
+  private var supportsTemplates: Bool {
+    switch createMode {
+    case .primary, .child, .importBranch: return true
+    case .rescueUnstaged: return false
+    }
+  }
 
   init(
     primaryLane: LaneSummary?,
@@ -54,6 +67,42 @@ struct LaneCreateSheet: View {
 
   @ViewBuilder
   private var content: some View {
+    if envPhase == .progress {
+      envProgressContent
+    } else {
+      formContent
+    }
+  }
+
+  @ViewBuilder
+  private var envProgressContent: some View {
+    ScrollView {
+      VStack(spacing: 14) {
+        LaneEnvInitProgressPanel(
+          progress: envProgress,
+          isPolling: envPolling,
+          onDone: {
+            envPollTask?.cancel()
+            envPollTask = nil
+            dismiss()
+          }
+        )
+      }
+      .padding(16)
+    }
+    .adeScreenBackground()
+    .adeNavigationGlass()
+    .navigationTitle("Setting up lane")
+    .navigationBarTitleDisplayMode(.inline)
+    .interactiveDismissDisabled(envProgress?.overallStatus == "running")
+    .onDisappear {
+      envPollTask?.cancel()
+      envPollTask = nil
+    }
+  }
+
+  @ViewBuilder
+  private var formContent: some View {
       ScrollView {
         VStack(spacing: 14) {
           GlassSection(title: "Create lane", subtitle: createSubtitle) {
@@ -149,29 +198,12 @@ struct LaneCreateSheet: View {
             }
           }
 
-          GlassSection(title: "Template") {
-            Picker("Template", selection: $selectedTemplateId) {
-              Text("No template").tag("")
-              ForEach(templates) { template in
-                Text(template.name).tag(template.id)
-              }
-            }
-            .pickerStyle(.menu)
-          }
-
-          if let envProgress {
-            GlassSection(title: "Environment setup") {
-              VStack(alignment: .leading, spacing: 10) {
-                ForEach(envProgress.steps) { step in
-                  HStack {
-                    Text(step.label)
-                      .font(.subheadline)
-                      .foregroundStyle(ADEColor.textPrimary)
-                    Spacer()
-                    Text(step.status)
-                      .font(.system(.caption, design: .monospaced))
-                      .foregroundStyle(ADEColor.textSecondary)
-                  }
+          if supportsTemplates {
+            GlassSection(title: "Template") {
+              VStack(spacing: 8) {
+                templateRow(id: nil, name: "None", description: "Skip environment setup.")
+                ForEach(templates) { template in
+                  templateRow(id: template.id, name: template.name, description: template.description)
                 }
               }
             }
@@ -227,8 +259,15 @@ struct LaneCreateSheet: View {
   @MainActor
   private func loadOptions() async {
     do {
-      templates = try await syncService.fetchLaneTemplates()
-      selectedTemplateId = try await syncService.fetchDefaultLaneTemplateId() ?? ""
+      async let templatesTask = syncService.fetchLaneTemplates()
+      async let defaultIdTask = syncService.fetchDefaultLaneTemplateId()
+      let (loadedTemplates, defaultId) = try await (templatesTask, defaultIdTask)
+      templates = loadedTemplates
+      if let defaultId, loadedTemplates.contains(where: { $0.id == defaultId }) {
+        selectedTemplateId = defaultId
+      } else {
+        selectedTemplateId = nil
+      }
       if let primaryLane {
         branches = try await syncService.listBranches(laneId: primaryLane.id)
         selectedBaseBranch = branches.first(where: { $0.isCurrent })?.name ?? branches.first?.name ?? primaryLane.branchRef
@@ -273,20 +312,16 @@ struct LaneCreateSheet: View {
         created = try await syncService.createFromUnstaged(sourceLaneId: selectedRescueLaneId, name: name, description: description)
       }
       await onComplete(created.id)
-      dismiss()
 
-      // Run post-create env setup after dismiss so errors don't block the sheet.
-      do {
-        let progress = selectedTemplateId.isEmpty
-          ? try await syncService.initializeLaneEnvironment(laneId: created.id)
-          : try await syncService.applyLaneTemplate(laneId: created.id, templateId: selectedTemplateId)
-        envProgress = progress
-      } catch let queuedError as QueuedRemoteCommandError {
-        queuedNotice = queuedError.errorDescription
-      } catch {
-        ADEHaptics.error()
-        errorMessage = error.localizedDescription
+      if supportsTemplates, let templateId = selectedTemplateId {
+        envProgress = nil
+        envPhase = .progress
+        busy = false
+        startEnvProgress(laneId: created.id, templateId: templateId)
+        return
       }
+
+      dismiss()
     } catch let queuedError as QueuedRemoteCommandError {
       queuedNotice = queuedError.errorDescription
     } catch {
@@ -352,5 +387,79 @@ struct LaneCreateSheet: View {
     case .importBranch: return "Import branch"
     case .rescueUnstaged: return "Rescue unstaged"
     }
+  }
+
+  @ViewBuilder
+  private func templateRow(id: String?, name: String, description: String?) -> some View {
+    let isSelected = (selectedTemplateId ?? "") == (id ?? "")
+    Button {
+      selectedTemplateId = id
+    } label: {
+      HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(name)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          if let description, !description.isEmpty {
+            Text(description)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(2)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        Spacer(minLength: 8)
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+          .font(.system(size: 18, weight: .semibold))
+          .foregroundStyle(isSelected ? ADEColor.accent : ADEColor.textMuted)
+          .padding(.top, 1)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .adeGlassCard(cornerRadius: 12, padding: 12)
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(isSelected ? ADEColor.accent.opacity(0.55) : Color.clear, lineWidth: 1)
+    )
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : [.isButton])
+  }
+
+  private func startEnvProgress(laneId: String, templateId: String) {
+    envPollTask?.cancel()
+    envPolling = true
+    let task = Task { @MainActor in
+      do {
+        envProgress = try await syncService.applyLaneTemplate(laneId: laneId, templateId: templateId)
+      } catch let queuedError as QueuedRemoteCommandError {
+        queuedNotice = queuedError.errorDescription
+        envPolling = false
+        return
+      } catch {
+        ADEHaptics.error()
+        errorMessage = error.localizedDescription
+        envPolling = false
+        return
+      }
+
+      while !Task.isCancelled {
+        if let progress = envProgress, progress.overallStatus != "running" {
+          break
+        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        if Task.isCancelled { break }
+        do {
+          if let next = try await syncService.fetchLaneEnvStatus(laneId: laneId) {
+            envProgress = next
+            if next.overallStatus != "running" { break }
+          }
+        } catch {
+          break
+        }
+      }
+      envPolling = false
+    }
+    envPollTask = task
   }
 }

@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Batch manage sheet
-
 struct LaneBatchManageSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -74,10 +72,10 @@ struct LaneBatchManageSheet: View {
                   }
                   Spacer()
                   if snapshot.lane.status.dirty {
-                    LaneTypeBadge(text: "Dirty", tint: ADEColor.warning)
+                    LaneMicroChip(icon: "circle.fill", text: "Dirty", tint: ADEColor.warning)
                   }
                   if snapshot.lane.archivedAt != nil {
-                    LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+                    LaneMicroChip(icon: "archivebox.fill", text: "Archived", tint: ADEColor.textMuted)
                   }
                 }
               }
@@ -97,6 +95,7 @@ struct LaneBatchManageSheet: View {
               .foregroundStyle(ADEColor.warning)
               .padding(12)
               .background(ADEColor.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+              .glassEffect(in: .rect(cornerRadius: 12))
             }
             .buttonStyle(.plain)
             .disabled(busy || archivableLaneIds.isEmpty)
@@ -136,23 +135,29 @@ struct LaneBatchManageSheet: View {
                 }
                 .padding(12)
                 .background(ADEColor.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .glassEffect(in: .rect(cornerRadius: 12))
               }
               .buttonStyle(.plain)
               .disabled(confirmText.lowercased() != "delete open lanes" || busy || laneIds.isEmpty)
             }
           }
+          .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+              .stroke(ADEColor.danger.opacity(0.4), lineWidth: 1)
+              .allowsHitTesting(false)
+          )
 
           if let errorMessage {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
               Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEColor.danger)
               Text(errorMessage)
                 .font(.caption)
                 .foregroundStyle(ADEColor.danger)
-              Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+              Spacer(minLength: 0)
             }
-            .padding(12)
-            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .adeGlassCard(cornerRadius: 12, padding: 12)
           }
         }
         .padding(16)

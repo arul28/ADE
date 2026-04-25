@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Manage lane sheet
-
 struct LaneManageSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -82,8 +80,6 @@ struct LaneManageSheet: View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 14) {
-          // Connection-caused live-action notices are suppressed — the gear
-          // dot in the toolbar already communicates offline state.
           if !syncService.connectionState.isHostUnreachable,
             let liveActionNoticePresentation
           {
@@ -100,16 +96,16 @@ struct LaneManageSheet: View {
           }
 
           if let errorMessage {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
               Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEColor.danger)
               Text(errorMessage)
                 .font(.caption)
                 .foregroundStyle(ADEColor.danger)
-              Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+              Spacer(minLength: 0)
             }
-            .padding(12)
-            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .adeGlassCard(cornerRadius: 12, padding: 12)
           }
 
           GlassSection(title: "Identity") {
@@ -214,6 +210,11 @@ struct LaneManageSheet: View {
                 .disabled(!canRunLiveActions)
               }
             }
+            .overlay(
+              RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(ADEColor.danger.opacity(0.4), lineWidth: 1)
+                .allowsHitTesting(false)
+            )
           }
         }
         .padding(16)
@@ -222,15 +223,20 @@ struct LaneManageSheet: View {
       .adeScreenBackground()
       .overlay {
         if busyAction != nil {
-          VStack(spacing: 10) {
-            ProgressView()
-              .tint(ADEColor.accent)
-            Text(busyAction?.capitalized ?? "Working...")
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.textSecondary)
+          ZStack {
+            ADEColor.pageBackground.opacity(0.55)
+              .ignoresSafeArea()
+            VStack(spacing: 10) {
+              ProgressView()
+                .tint(ADEColor.accent)
+              Text(busyAction?.capitalized ?? "Working...")
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            .adeGlassCard(cornerRadius: 14, padding: 18)
+            .fixedSize()
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .background(.ultraThinMaterial)
         }
       }
       .adeNavigationGlass()

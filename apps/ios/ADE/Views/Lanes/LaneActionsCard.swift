@@ -8,14 +8,31 @@ struct LaneActionsCard: View {
   let onRebaseAndPush: () -> Void
   let onForcePush: () -> Void
   let onStash: () -> Void
+  var laneId: String? = nil
+  var branchRef: String? = nil
+  var onRefresh: (@MainActor () async -> Void)? = nil
 
   @State private var moreExpanded = false
+  @State private var showBranchPicker = false
 
   var body: some View {
     ADEGlassSection(title: "Lane actions", subtitle: canRunLiveActions ? nil : disabledSubtitle) {
       VStack(alignment: .leading, spacing: 12) {
         stashButton
         moreSection
+      }
+    }
+    .sheet(isPresented: $showBranchPicker) {
+      if let laneId, let branchRef {
+        LaneBranchPickerSheet(
+          laneId: laneId,
+          branchRef: branchRef,
+          onComplete: {
+            if let onRefresh {
+              await onRefresh()
+            }
+          }
+        )
       }
     }
   }
@@ -40,8 +57,7 @@ struct LaneActionsCard: View {
           .font(.system(size: 10, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 11)
+      .padding(EdgeInsets(top: 11, leading: 12, bottom: 11, trailing: 12))
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(ADEColor.surfaceBackground.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       .overlay(
@@ -51,6 +67,7 @@ struct LaneActionsCard: View {
     }
     .buttonStyle(.plain)
     .disabled(!canRunLiveActions)
+    .opacity(canRunLiveActions ? 1.0 : 0.55)
   }
 
   @ViewBuilder
@@ -58,7 +75,7 @@ struct LaneActionsCard: View {
     Button {
       withAnimation(.smooth(duration: 0.22)) { moreExpanded.toggle() }
     } label: {
-      HStack(spacing: 10) {
+      HStack(spacing: 12) {
         Image(systemName: "exclamationmark.shield")
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(ADEColor.warning)
@@ -67,6 +84,8 @@ struct LaneActionsCard: View {
           Text("Advanced git")
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.9)
           Text("Review before rebasing or force pushing.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
@@ -77,8 +96,7 @@ struct LaneActionsCard: View {
           .foregroundStyle(ADEColor.textMuted)
           .rotationEffect(.degrees(moreExpanded ? 180 : 0))
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 11)
+      .padding(EdgeInsets(top: 11, leading: 12, bottom: 11, trailing: 12))
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(ADEColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       .overlay(
@@ -97,6 +115,12 @@ struct LaneActionsCard: View {
         moreRow(title: "Rebase and push", symbol: "arrow.up.and.down.text.horizontal", tint: ADEColor.textPrimary, action: onRebaseAndPush)
         Divider().opacity(0.35)
         moreRow(title: "Force push (lease)", symbol: "arrow.up.forward.circle.fill", tint: ADEColor.warning, action: onForcePush)
+        if laneId != nil, branchRef != nil {
+          Divider().opacity(0.35)
+          moreRow(title: "Checkout branch…", symbol: "arrow.triangle.branch", tint: ADEColor.accent) {
+            showBranchPicker = true
+          }
+        }
       }
       .background(ADEColor.surfaceBackground.opacity(0.25), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       .overlay(
@@ -123,11 +147,11 @@ struct LaneActionsCard: View {
           .font(.system(size: 10, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 11)
+      .padding(EdgeInsets(top: 11, leading: 12, bottom: 11, trailing: 12))
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .disabled(!canRunLiveActions)
+    .opacity(canRunLiveActions ? 1.0 : 0.55)
   }
 }

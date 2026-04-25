@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Attach lane sheet
-
 struct LaneAttachSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -28,11 +26,12 @@ struct LaneAttachSheet: View {
   @ViewBuilder
   private var content: some View {
       ScrollView {
-        VStack(spacing: 14) {
+        VStack(spacing: 18) {
           GlassSection(title: "Attach worktree", subtitle: "Register an existing worktree as a lane.") {
             VStack(alignment: .leading, spacing: 12) {
               LaneTextField("Lane name", text: $name)
               LaneTextField("Worktree path", text: $attachedPath)
+                .font(.system(.subheadline, design: .monospaced))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
               LaneTextField("Description", text: $description)
@@ -40,16 +39,16 @@ struct LaneAttachSheet: View {
           }
 
           if let errorMessage {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
               Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEColor.danger)
               Text(errorMessage)
                 .font(.caption)
                 .foregroundStyle(ADEColor.danger)
-              Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+              Spacer(minLength: 0)
             }
-            .padding(12)
-            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .adeGlassCard(cornerRadius: 12, padding: 12)
           }
         }
         .padding(16)

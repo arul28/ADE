@@ -38,8 +38,7 @@ struct LaneStashesScreen: View {
           }
         }
       }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 14)
+      .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
     }
     .background(ADEColor.surfaceBackground.ignoresSafeArea())
     .navigationTitle("\(laneName) stashes")
@@ -48,9 +47,10 @@ struct LaneStashesScreen: View {
 
   private var composerCard: some View {
     ADEGlassSection(title: "New stash", subtitle: "Move unsaved changes aside without losing them.") {
-      HStack(spacing: 8) {
+      VStack(spacing: 10) {
         TextField("Optional message", text: $stashMessage)
           .textFieldStyle(.plain)
+          .frame(maxWidth: .infinity, alignment: .leading)
           .adeInsetField(cornerRadius: 10, padding: 10)
           .disabled(!canRunLiveActions)
         Button {
@@ -61,37 +61,28 @@ struct LaneStashesScreen: View {
             }
           }
         } label: {
-          HStack(spacing: 5) {
+          HStack(spacing: 6) {
             Image(systemName: "tray.and.arrow.down")
-              .font(.system(size: 11, weight: .semibold))
+              .font(.system(size: 13, weight: .semibold))
             Text("Stash")
-              .font(.caption.weight(.semibold))
+              .font(.subheadline.weight(.semibold))
           }
-          .foregroundStyle(ADEColor.accent)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 9)
-          .background(ADEColor.accent.opacity(0.14), in: Capsule())
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 11)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.accent)
         .disabled(!canRunLiveActions)
       }
     }
   }
 
   private var emptyState: some View {
-    VStack(spacing: 8) {
-      Image(systemName: "tray")
-        .font(.system(size: 26))
-        .foregroundStyle(ADEColor.textMuted)
-      Text("No stashes")
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-      Text("Stashes you create will appear here.")
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-    }
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 32)
+    ADEEmptyStateView(
+      symbol: "tray",
+      title: "No stashes",
+      message: "Stashes you create will appear here."
+    )
   }
 
   private func stashRow(stash: GitStashSummary) -> some View {
@@ -107,7 +98,7 @@ struct LaneStashesScreen: View {
             .foregroundStyle(ADEColor.textMuted)
         }
       }
-      HStack(spacing: 8) {
+      HStack(spacing: 10) {
         LaneActionButton(title: "Apply", symbol: "tray.and.arrow.up") {
           Task { await onApply(stash.ref) }
         }

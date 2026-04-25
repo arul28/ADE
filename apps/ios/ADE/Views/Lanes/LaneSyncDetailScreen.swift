@@ -14,9 +14,15 @@ struct LaneSyncDetailScreen: View {
 
   var body: some View {
     ScrollView {
-      VStack(spacing: 14) {
-        ADEGlassSection(title: "Upstream", subtitle: summary) {
-          VStack(alignment: .leading, spacing: 10) {
+      VStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
+          Text("Upstream")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(summary)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+          VStack(alignment: .leading, spacing: 6) {
             LaneInfoRow(label: "Branch", value: branchRef, isMonospaced: true)
             if let status = syncStatus {
               LaneInfoRow(label: "Upstream", value: status.upstreamRef ?? "—", isMonospaced: status.upstreamRef != nil)
@@ -32,23 +38,24 @@ struct LaneSyncDetailScreen: View {
                 .foregroundStyle(ADEColor.textSecondary)
             }
           }
+          .padding(.top, 4)
         }
+        .adeGlassCard(cornerRadius: 14, padding: 14)
 
         ADEGlassSection(title: "Sync actions", subtitle: "Review the lane state before changing refs.") {
-          VStack(spacing: 10) {
-            HStack(spacing: 10) {
+          VStack(spacing: 12) {
+            HStack(spacing: 12) {
               syncTile(action: .fetch)
               syncTile(action: .pullMerge)
             }
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
               syncTile(action: .pullRebase)
               syncTile(action: .push)
             }
           }
         }
       }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 14)
+      .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
     }
     .background(ADEColor.surfaceBackground.ignoresSafeArea())
     .navigationTitle("\(laneName) sync")
@@ -74,22 +81,19 @@ struct LaneSyncDetailScreen: View {
     Button {
       pendingAction = action
     } label: {
-      VStack(spacing: 4) {
+      VStack(spacing: 8) {
         Image(systemName: action.symbol)
           .font(.system(size: 16, weight: .semibold))
+          .foregroundStyle(ADEColor.tintLanes)
         Text(action.buttonTitle)
           .font(.caption2.weight(.semibold))
+          .foregroundStyle(action.tint)
           .lineLimit(1)
-          .minimumScaleFactor(0.8)
+          .minimumScaleFactor(0.85)
       }
-      .foregroundStyle(action.tint)
       .frame(maxWidth: .infinity)
-      .frame(height: 58)
-      .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.5)
-      )
+      .frame(minHeight: 58)
+      .adeGlassCard(cornerRadius: 14, padding: 12)
     }
     .buttonStyle(.plain)
     .disabled(!canRunLiveActions)

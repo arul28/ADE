@@ -1870,6 +1870,12 @@ struct LaneTemplate: Codable, Equatable, Identifiable {
   var description: String?
 }
 
+struct UnregisteredLaneCandidate: Codable, Equatable, Identifiable {
+  let path: String
+  let branch: String
+  var id: String { path }
+}
+
 struct SyncRemoteCommandPolicy: Codable, Equatable {
   var viewerAllowed: Bool
   var requiresApproval: Bool?

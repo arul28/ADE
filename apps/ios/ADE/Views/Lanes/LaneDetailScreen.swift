@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Lane detail screen
-
 struct LaneDetailScreen: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @EnvironmentObject var syncService: SyncService
@@ -89,8 +87,7 @@ struct LaneDetailScreen: View {
               .foregroundStyle(ADEColor.danger)
             Spacer()
           }
-          .padding(12)
-          .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .adeGlassCard(cornerRadius: 12, padding: 12)
         }
 
         rebaseBannerSection
@@ -103,8 +100,7 @@ struct LaneDetailScreen: View {
           detailEmptyStateCard(detailEmptyStatePresentation)
         }
       }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 8)
+      .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
     }
     .adeScreenBackground()
     .adeNavigationGlass()
@@ -289,7 +285,7 @@ struct LaneDetailScreen: View {
   }
 
   @MainActor
-  private func loadDetail(refreshRemote: Bool) async {
+  func loadDetail(refreshRemote: Bool) async {
     do {
       async let cachedDetailTask = syncService.fetchLaneDetail(laneId: laneId)
       async let pullRequestsTask = syncService.fetchPullRequestListItems(laneId: laneId)

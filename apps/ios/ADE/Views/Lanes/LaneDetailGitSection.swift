@@ -1,8 +1,6 @@
 import SwiftUI
 import UIKit
 
-// MARK: - Git section
-
 extension LaneDetailScreen {
   @ViewBuilder
   var gitSections: some View {
@@ -167,8 +165,7 @@ extension LaneDetailScreen {
           .opacity(0.7)
       }
       .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, 16)
-      .padding(.vertical, 14)
+      .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
       .background(ADEColor.accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -215,7 +212,10 @@ extension LaneDetailScreen {
               try await syncService.stashPush(laneId: laneId, message: "", includeUntracked: true)
             }
           }
-        }
+        },
+        laneId: laneId,
+        branchRef: detail?.lane.branchRef,
+        onRefresh: { await loadDetail(refreshRemote: true) }
       )
     }
   }
@@ -236,14 +236,14 @@ extension LaneDetailScreen {
       Text(detail)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
+        .lineLimit(2)
+        .fixedSize(horizontal: false, vertical: true)
         .truncationMode(.tail)
       Image(systemName: "chevron.right")
         .font(.system(size: 11, weight: .bold))
         .foregroundStyle(ADEColor.textMuted)
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 14)
+    .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
     .adeGlassCard(cornerRadius: 14, padding: 0)
   }
@@ -260,7 +260,7 @@ extension LaneDetailScreen {
 
     if unstaged > 0 || staged > 0 || stashCount > 0 || ahead > 0 || behind > 0 {
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
           if unstaged > 0 {
             LaneMicroChip(icon: "doc.badge.plus", text: "\(unstaged) unstaged", tint: ADEColor.warning)
           }
@@ -277,13 +277,40 @@ extension LaneDetailScreen {
             LaneMicroChip(icon: "arrow.down", text: "\(behind) behind", tint: ADEColor.warning)
           }
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 4)
+        .padding(4)
       }
-      .padding(10)
-      .background(ADEColor.surfaceBackground.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 12))
+      .adeGlassCard(cornerRadius: 12, padding: 10)
     }
+  }
+
+  @ViewBuilder
+  private func conflictContinueButton(conflictState: GitConflictState) -> some View {
+    Button {
+      Task { await performAction("rebase continue") { try await syncService.rebaseContinueGit(laneId: laneId) } }
+    } label: {
+      Label("Continue", systemImage: "play.fill")
+        .font(.subheadline.weight(.semibold))
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+    }
+    .buttonStyle(.borderedProminent)
+    .tint(ADEColor.accent)
+    .disabled(!canRunLiveActions || !conflictState.canContinue)
+  }
+
+  @ViewBuilder
+  private func conflictAbortButton(conflictState: GitConflictState) -> some View {
+    Button {
+      Task { await performAction("rebase abort") { try await syncService.rebaseAbortGit(laneId: laneId) } }
+    } label: {
+      Label("Abort", systemImage: "xmark.circle")
+        .font(.subheadline.weight(.semibold))
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+    }
+    .buttonStyle(.bordered)
+    .tint(ADEColor.danger)
+    .disabled(!canRunLiveActions || !conflictState.canAbort)
   }
 
   // MARK: - Conflict section (always visible when active)
@@ -309,33 +336,21 @@ extension LaneDetailScreen {
           Text(path)
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
 
-      HStack(spacing: 12) {
-        Button {
-          Task { await performAction("rebase continue") { try await syncService.rebaseContinueGit(laneId: laneId) } }
-        } label: {
-          Label("Continue", systemImage: "play.fill")
-            .font(.subheadline.weight(.semibold))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 12) {
+          conflictContinueButton(conflictState: conflictState)
+          conflictAbortButton(conflictState: conflictState)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(ADEColor.accent)
-        .disabled(!canRunLiveActions || !conflictState.canContinue)
-
-        Button {
-          Task { await performAction("rebase abort") { try await syncService.rebaseAbortGit(laneId: laneId) } }
-        } label: {
-          Label("Abort", systemImage: "xmark.circle")
-            .font(.subheadline.weight(.semibold))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+        VStack(spacing: 10) {
+          conflictContinueButton(conflictState: conflictState)
+          conflictAbortButton(conflictState: conflictState)
         }
-        .buttonStyle(.bordered)
-        .tint(ADEColor.danger)
-        .disabled(!canRunLiveActions || !conflictState.canAbort)
       }
     }
     .padding(14)

@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Diff screen
-
 struct LaneDiffScreen: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -25,33 +23,35 @@ struct LaneDiffScreen: View {
       VStack(spacing: 0) {
         ScrollView {
           VStack(spacing: 14) {
-            GlassSection(title: request.title) {
-              VStack(alignment: .leading, spacing: 8) {
-                if let path = request.path {
-                  Text(path)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(ADEColor.textSecondary)
-                }
-                if let compareRef = request.compareRef, !compareRef.isEmpty {
-                  LaneInfoRow(label: "Base", value: compareRef, isMonospaced: true)
-                }
-                if let compareTo = request.compareTo, !compareTo.isEmpty {
-                  LaneInfoRow(label: "Against", value: compareTo, isMonospaced: true)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+              Text(request.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              if let path = request.path {
+                Text(path)
+                  .font(.system(.caption, design: .monospaced))
+                  .foregroundStyle(ADEColor.textSecondary)
+              }
+              if let compareRef = request.compareRef, !compareRef.isEmpty {
+                LaneInfoRow(label: "Base", value: compareRef, isMonospaced: true)
+              }
+              if let compareTo = request.compareTo, !compareTo.isEmpty {
+                LaneInfoRow(label: "Against", value: compareTo, isMonospaced: true)
               }
             }
+            .adeGlassCard(cornerRadius: 12, padding: 12)
 
             if let errorMessage {
               HStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill")
+                  .font(.system(size: 13, weight: .semibold))
                   .foregroundStyle(ADEColor.danger)
                 Text(errorMessage)
                   .font(.caption)
                   .foregroundStyle(ADEColor.danger)
-                Spacer()
+                Spacer(minLength: 0)
               }
-              .padding(12)
-              .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+              .adeGlassCard(cornerRadius: 12, padding: 12)
             }
 
             if diff != nil {
@@ -60,6 +60,7 @@ struct LaneDiffScreen: View {
                 Text("Modified").tag("modified")
               }
               .pickerStyle(.segmented)
+              .padding(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
             }
           }
           .padding(16)
@@ -67,11 +68,21 @@ struct LaneDiffScreen: View {
 
         if let diff {
           if diff.isBinary == true {
-            GlassSection(title: "Binary diff") {
-              Text("Binary content is view-only on iPhone.")
-                .font(.subheadline)
-                .foregroundStyle(ADEColor.textSecondary)
+            HStack(alignment: .top, spacing: 12) {
+              Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(ADEColor.warning)
+              VStack(alignment: .leading, spacing: 4) {
+                Text("Binary diff")
+                  .font(.subheadline.weight(.semibold))
+                  .foregroundStyle(ADEColor.textPrimary)
+                Text("Binary content is view-only on iPhone.")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+              }
+              Spacer(minLength: 0)
             }
+            .adeGlassCard(cornerRadius: 12, padding: 14)
             .padding(.horizontal, 16)
           } else {
             VStack(alignment: .leading, spacing: 6) {
