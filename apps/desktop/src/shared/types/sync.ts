@@ -399,6 +399,23 @@ export type SyncTerminalExitPayload = {
   at: string;
 };
 
+/// Sent by mobile clients to push raw bytes (typed text, control sequences,
+/// pasted content) into the active PTY for `sessionId`. The host expects the
+/// peer to have a live `terminal_subscribe` for the same session id.
+export type SyncTerminalInputPayload = {
+  sessionId: string;
+  data: string;
+};
+
+/// Sent by mobile clients when the visible terminal viewport changes
+/// (rotation, split view, font-size). Cols/rows are characters; the host
+/// clamps to a sane range internally.
+export type SyncTerminalResizePayload = {
+  sessionId: string;
+  cols: number;
+  rows: number;
+};
+
 export type SyncChatSubscribePayload = {
   sessionId: string;
   maxBytes?: number;
@@ -847,6 +864,8 @@ export type SyncTerminalUnsubscribeEnvelope = SyncEnvelopeWithPayload<"terminal_
 export type SyncTerminalSnapshotEnvelope = SyncEnvelopeWithPayload<"terminal_snapshot", SyncTerminalSnapshotPayload>;
 export type SyncTerminalDataEnvelope = SyncEnvelopeWithPayload<"terminal_data", SyncTerminalDataPayload>;
 export type SyncTerminalExitEnvelope = SyncEnvelopeWithPayload<"terminal_exit", SyncTerminalExitPayload>;
+export type SyncTerminalInputEnvelope = SyncEnvelopeWithPayload<"terminal_input", SyncTerminalInputPayload>;
+export type SyncTerminalResizeEnvelope = SyncEnvelopeWithPayload<"terminal_resize", SyncTerminalResizePayload>;
 export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload | SyncChatSubscribeSnapshotPayload>;
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
@@ -878,6 +897,8 @@ export type SyncEnvelope =
   | SyncTerminalSnapshotEnvelope
   | SyncTerminalDataEnvelope
   | SyncTerminalExitEnvelope
+  | SyncTerminalInputEnvelope
+  | SyncTerminalResizeEnvelope
   | SyncChatSubscribeEnvelope
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope

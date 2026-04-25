@@ -122,14 +122,42 @@ struct WorkArtifactView: View {
   }
 }
 
+/// Terminal session view. Subscribes to the host PTY for `session.id`,
+/// streams output into a monospaced buffer, and offers a one-shot input bar
+/// that forwards typed lines back to the host as `terminal_input`.
+///
+/// Future work (tracked in PTY foundation): swap the plain `Text` renderer
+/// for a real terminal emulator (SwiftTerm) so we can render ANSI colours,
+/// cursor movement, and alt-screen apps (vim, htop, fzf). Today we strip
+/// the most common SGR/CSI sequences so the buffer reads cleanly.
 struct WorkTerminalSessionView: View {
   @EnvironmentObject var syncService: SyncService
   let session: TerminalSessionSummary
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
 
+  @State private var pendingCommand = ""
+  @FocusState private var inputFocused: Bool
+  @State private var sendingFeedback = 0
+
+  private var rawBuffer: String {
+    syncService.terminalBuffers[session.id] ?? session.lastOutputPreview ?? ""
+  }
+
   var terminalDisplay: WorkTerminalDisplay {
-    workTerminalDisplay(raw: syncService.terminalBuffers[session.id], fallback: session.lastOutputPreview)
+    workTerminalDisplay(raw: rawBuffer, fallback: nil)
+  }
+
+  /// Best-effort ANSI/CSI strip so the plain `Text` renderer doesn't leak
+  /// raw escape sequences. Removes CSI (`ESC [ ...`), OSC (`ESC ] ... BEL`
+  /// or `ESC ] ... ESC \`), and bare cursor/reset escapes. Real emulators
+  /// will replace this once SwiftTerm lands.
+  private var renderedText: String {
+    workTerminalStripAnsi(terminalDisplay.text)
+  }
+
+  private var canSendInput: Bool {
+    syncService.connectionState == .connected || syncService.connectionState == .syncing
   }
 
   var body: some View {
@@ -159,7 +187,7 @@ struct WorkTerminalSessionView: View {
       .background(.ultraThinMaterial)
 
       ScrollView([.horizontal, .vertical]) {
-        Text(terminalDisplay.text)
+        Text(renderedText.isEmpty ? "  " : renderedText)
           .font(.system(size: 12, weight: .regular, design: .monospaced))
           .foregroundStyle(ADEColor.textPrimary)
           .textSelection(.enabled)
@@ -170,13 +198,126 @@ struct WorkTerminalSessionView: View {
       }
       .background(ADEColor.recessedBackground.opacity(0.96))
       .scrollIndicators(.visible)
+
+      terminalInputBar
     }
     .adeScreenBackground()
     .adeNavigationGlass()
+    .sensoryFeedback(.impact(weight: .light), trigger: sendingFeedback)
     .task {
       try? await syncService.subscribeTerminal(sessionId: session.id)
     }
   }
+
+  /// Bottom input bar. Sends the typed text plus a newline so shells run it
+  /// as a command. `^C` button sends raw 0x03 to interrupt the foreground
+  /// process. Not a full keyboard yet — the long-term plan is to host a
+  /// SwiftTerm view that captures every keystroke directly.
+  private var terminalInputBar: some View {
+    HStack(spacing: 8) {
+      Button {
+        // Send Ctrl-C (0x03) so users can interrupt a runaway process from
+        // the phone without having to switch back to the desktop.
+        syncService.sendTerminalInput(sessionId: session.id, data: "\u{03}")
+        sendingFeedback &+= 1
+      } label: {
+        Text("^C")
+          .font(.system(size: 11, weight: .bold, design: .monospaced))
+          .foregroundStyle(ADEColor.danger)
+          .frame(width: 36, height: 32)
+      }
+      .buttonStyle(.plain)
+      .background(ADEColor.danger.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .glassEffect(in: .rect(cornerRadius: 8))
+      .overlay(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .stroke(ADEColor.danger.opacity(0.32), lineWidth: 0.6)
+      )
+      .accessibilityLabel("Send Ctrl-C")
+      .disabled(!canSendInput)
+
+      TextField("Send command…", text: $pendingCommand)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .submitLabel(.send)
+        .focused($inputFocused)
+        .font(.system(size: 13, design: .monospaced))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(minHeight: 32)
+        .frame(maxWidth: .infinity)
+        .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .glassEffect(in: .rect(cornerRadius: 10))
+        .overlay(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+        )
+        .onSubmit { submitCommand() }
+        .disabled(!canSendInput)
+
+      Button(action: submitCommand) {
+        Image(systemName: "paperplane.fill")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(canSendInput && !pendingCommand.isEmpty ? ADEColor.accent : ADEColor.textMuted)
+          .frame(width: 32, height: 32)
+      }
+      .buttonStyle(.plain)
+      .background(
+        (canSendInput && !pendingCommand.isEmpty ? ADEColor.accent.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5)),
+        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+      )
+      .glassEffect(in: .rect(cornerRadius: 10))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+      )
+      .accessibilityLabel("Send command")
+      .disabled(!canSendInput || pendingCommand.isEmpty)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .background(.ultraThinMaterial)
+    .overlay(alignment: .top) {
+      Rectangle()
+        .fill(ADEColor.glassBorder)
+        .frame(height: 0.5)
+    }
+  }
+
+  private func submitCommand() {
+    let trimmed = pendingCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, canSendInput else { return }
+    syncService.sendTerminalInput(sessionId: session.id, data: trimmed + "\r")
+    pendingCommand = ""
+    sendingFeedback &+= 1
+  }
+}
+
+/// Strip the ANSI escape sequences most commonly emitted by interactive
+/// CLIs (colours, cursor moves, OSC titles, simple alt-screen toggles) so a
+/// plain `Text` renderer reads cleanly. This is intentionally narrow: a
+/// real terminal emulator (SwiftTerm) is the right home for full handling.
+func workTerminalStripAnsi(_ input: String) -> String {
+  guard !input.isEmpty else { return input }
+  // CSI: ESC [ ... letter
+  var output = input.replacingOccurrences(
+    of: "\u{1B}\\[[0-?]*[ -/]*[@-~]",
+    with: "",
+    options: .regularExpression
+  )
+  // OSC: ESC ] ... BEL  or  ESC ] ... ESC \
+  output = output.replacingOccurrences(
+    of: "\u{1B}\\][^\u{07}]*?(?:\u{07}|\u{1B}\\\\)",
+    with: "",
+    options: .regularExpression
+  )
+  // Bare single-char escapes (cursor save/restore etc.)
+  output = output.replacingOccurrences(
+    of: "\u{1B}[=>78cDEHMNOP\\\\]",
+    with: "",
+    options: .regularExpression
+  )
+  return output
 }
 
 struct WorkFullscreenImageView: View {

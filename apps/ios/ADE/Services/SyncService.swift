@@ -2385,6 +2385,37 @@ final class SyncService: ObservableObject {
     markTerminalBufferChanged(immediate: true)
   }
 
+  /// Forward keystrokes (or pasted text, or control sequences) from the
+  /// mobile UI into the live PTY for `sessionId`. Fire-and-forget — the
+  /// host echoes accepted bytes back as `terminal_data` so the user sees
+  /// confirmation by re-reading the buffer rather than waiting on an ack.
+  ///
+  /// Caller must have already issued `subscribeTerminal(sessionId:)` —
+  /// the host enforces the same gate to prevent unauthorized writes.
+  func sendTerminalInput(sessionId: String, data: String) {
+    guard !sessionId.isEmpty else { return }
+    guard canSendLiveRequests() else { return }
+    sendEnvelope(type: "terminal_input", requestId: nil, payload: [
+      "sessionId": sessionId,
+      "data": data,
+    ])
+  }
+
+  /// Tell the host to reshape the active PTY for `sessionId` to a new
+  /// `cols x rows`. Use this when the visible viewport changes (rotation,
+  /// split view, font-size). Cheap and idempotent; the host clamps to a
+  /// sane dimension range internally.
+  func sendTerminalResize(sessionId: String, cols: Int, rows: Int) {
+    guard !sessionId.isEmpty else { return }
+    guard cols > 0, rows > 0 else { return }
+    guard canSendLiveRequests() else { return }
+    sendEnvelope(type: "terminal_resize", requestId: nil, payload: [
+      "sessionId": sessionId,
+      "cols": cols,
+      "rows": rows,
+    ])
+  }
+
   func subscribeToChatEvents(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
@@ -2519,6 +2550,10 @@ final class SyncService: ObservableObject {
 
   func adoptAttachedLane(_ laneId: String) async throws -> LaneSummary {
     try await sendDecodableCommand(action: "lanes.adoptAttached", args: ["laneId": laneId], as: LaneSummary.self)
+  }
+
+  func listUnregisteredWorktrees() async throws -> [UnregisteredLaneCandidate] {
+    try await sendDecodableCommand(action: "lanes.listUnregisteredWorktrees", as: [UnregisteredLaneCandidate].self)
   }
 
   func renameLane(_ laneId: String, name: String) async throws {

@@ -1501,6 +1501,51 @@ export function createPtyService({
       }
     },
 
+    /**
+     * Write to the active PTY for a given session id. Returns true when the
+     * write was forwarded; false when no live PTY exists for the session
+     * (e.g. iOS attached after the host process exited — the caller should
+     * surface a "session inactive" hint and skip the write).
+     */
+    writeBySessionId(sessionId: string, data: string): boolean {
+      if (!sessionId || typeof data !== "string") return false;
+      const entry = Array.from(ptys.values()).find(
+        (candidate) => candidate.sessionId === sessionId && !candidate.disposed,
+      );
+      if (!entry) return false;
+      try {
+        entry.pty.write(data);
+        tryCliUserTitleFromWrite(entry, data);
+        setRuntimeState(entry.sessionId, "running");
+        scheduleIdleTransition(entry.sessionId);
+        return true;
+      } catch (err) {
+        logger.warn("pty.write_by_session_failed", { sessionId, err: String(err) });
+        return false;
+      }
+    },
+
+    /**
+     * Resize the active PTY for a given session id. Mobile clients call this
+     * when their visible terminal viewport changes (orientation flip, split
+     * view, font-size change). Returns true on success.
+     */
+    resizeBySessionId(sessionId: string, cols: number, rows: number): boolean {
+      if (!sessionId) return false;
+      const entry = Array.from(ptys.values()).find(
+        (candidate) => candidate.sessionId === sessionId && !candidate.disposed,
+      );
+      if (!entry) return false;
+      const safe = clampDims(cols, rows);
+      try {
+        entry.pty.resize(safe.cols, safe.rows);
+        return true;
+      } catch (err) {
+        logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });
+        return false;
+      }
+    },
+
     getRuntimeState(sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState {
       const runtime = runtimeStates.get(sessionId);
       if (runtime) return runtime.state;

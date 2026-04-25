@@ -1797,6 +1797,39 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         break;
       }
+      case "terminal_input": {
+        // Forward keystrokes / pasted text from a mobile client into the
+        // active PTY for the named session. We require a prior subscribe so
+        // only an attached peer can drive the shell — protects against an
+        // attacker who acquired a session id but is not actively viewing.
+        const payload = envelope.payload as { sessionId?: string; data?: string } | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        const data = typeof payload?.data === "string" ? payload.data : null;
+        if (!sessionId || data == null) break;
+        if (!peer.subscribedSessionIds.has(sessionId)) {
+          args.logger.warn("sync.terminal_input_unsubscribed_session", { sessionId });
+          break;
+        }
+        const accepted = args.ptyService.writeBySessionId(sessionId, data);
+        if (!accepted) {
+          args.logger.info("sync.terminal_input_no_active_pty", { sessionId });
+        }
+        break;
+      }
+      case "terminal_resize": {
+        // Mobile clients re-emit this whenever their visible viewport
+        // changes (rotation, split view, dynamic font). We forward to the
+        // active PTY so command-line apps re-flow correctly. Out-of-bound
+        // values are clamped inside ptyService.
+        const payload = envelope.payload as { sessionId?: string; cols?: number; rows?: number } | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        const cols = typeof payload?.cols === "number" ? Math.floor(payload.cols) : null;
+        const rows = typeof payload?.rows === "number" ? Math.floor(payload.rows) : null;
+        if (!sessionId || cols == null || rows == null) break;
+        if (!peer.subscribedSessionIds.has(sessionId)) break;
+        args.ptyService.resizeBySessionId(sessionId, cols, rows);
+        break;
+      }
       case "chat_subscribe": {
         const payload = envelope.payload as { sessionId?: string; maxBytes?: number } | null;
         const sessionId = toOptionalString(payload?.sessionId);
