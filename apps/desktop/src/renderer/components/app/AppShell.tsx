@@ -63,6 +63,52 @@ function primaryTabPath(pathname: string): string {
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
+const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
+
+function projectRouteStorageKey(projectRoot: string): string {
+  return `${PROJECT_ROUTE_STORAGE_PREFIX}${projectRoot}`;
+}
+
+function serializeLocationRoute(location: ReturnType<typeof useLocation>): string | null {
+  const pathname = location.pathname || "/work";
+  const route = `${pathname}${location.search ?? ""}${location.hash ?? ""}`;
+  const allowedRoots = [
+    "/project",
+    "/lanes",
+    "/files",
+    "/work",
+    "/graph",
+    "/prs",
+    "/review",
+    "/history",
+    "/automations",
+    "/missions",
+    "/cto",
+    "/settings",
+  ];
+  if (!allowedRoots.some((root) => pathname === root || pathname.startsWith(`${root}/`))) {
+    return null;
+  }
+  return route;
+}
+
+function readStoredProjectRoute(projectRoot: string): string | null {
+  try {
+    const value = window.localStorage.getItem(projectRouteStorageKey(projectRoot));
+    return value?.startsWith("/") ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredProjectRoute(projectRoot: string, route: string): void {
+  try {
+    window.localStorage.setItem(projectRouteStorageKey(projectRoot), route);
+  } catch {
+    // localStorage can be unavailable in private/test environments.
+  }
+}
+
 type AiBannerState = {
   laneId: string | null;
   jobId: string | null;
@@ -206,6 +252,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
+  const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const shouldTrackTerminalAttention =
@@ -582,10 +629,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     if (previousProjectRoot === undefined) return;
     if (!nextProjectRoot || showWelcome) return;
-    if (location.pathname !== "/project") return;
     if (previousProjectRoot === nextProjectRoot) return;
-    navigate("/work", { replace: true });
-  }, [location.pathname, navigate, project?.rootPath, showWelcome]);
+    if (previousProjectRoot) {
+      const previousRoute = serializeLocationRoute(location);
+      if (previousRoute) writeStoredProjectRoute(previousProjectRoot, previousRoute);
+    }
+    navigate(readStoredProjectRoute(nextProjectRoot) ?? "/work", { replace: true });
+  }, [location, navigate, project?.rootPath, showWelcome]);
+
+  useEffect(() => {
+    const projectRoot = project?.rootPath ?? null;
+    if (!projectRoot || showWelcome) return;
+
+    if (lastRouteSaveProjectRootRef.current !== projectRoot) {
+      lastRouteSaveProjectRootRef.current = projectRoot;
+      return;
+    }
+
+    const route = serializeLocationRoute(location);
+    if (route) writeStoredProjectRoute(projectRoot, route);
+  }, [location, project?.rootPath, showWelcome]);
 
   useEffect(() => {
     let cancelled = false;

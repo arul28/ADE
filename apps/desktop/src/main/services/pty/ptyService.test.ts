@@ -731,6 +731,50 @@ describe("ptyService", () => {
       expect(sessionService.create).toHaveBeenCalledTimes(createCallsBeforeResume);
     });
 
+    it("backfills a targetless Claude resume command before launching the resumed PTY", async () => {
+      (mocks.extractResumeCommandFromOutput as any).mockReturnValueOnce("claude --resume claude-session-123");
+      const { service, sessionService, mockPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-claude-picker",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Claude CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-claude-picker.log",
+        toolType: "claude",
+        resumeCommand: "claude --permission-mode default --resume",
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: null,
+          launch: { permissionMode: "default" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-claude-picker",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await service.create({
+        sessionId: "session-claude-picker",
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude --permission-mode default --resume",
+      });
+
+      expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+        "session-claude-picker",
+        "claude --resume claude-session-123",
+      );
+      expect(mockPty.write).toHaveBeenCalledWith("claude --resume claude-session-123\r");
+    });
+
     it("preserves the strict resume path when a requested session id does not exist", async () => {
       const { service } = createHarness();
 
