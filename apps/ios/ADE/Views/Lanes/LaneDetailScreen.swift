@@ -382,6 +382,12 @@ struct LaneDetailScreen: View {
       await performAction(confirmation.actionLabel, refreshRoot: true) {
         try await syncService.restoreStagedFile(laneId: laneId, path: file.path)
       }
+    case .restoreAllStaged(let files):
+      await performAction(confirmation.actionLabel, refreshRoot: true) {
+        for file in files {
+          try await syncService.restoreStagedFile(laneId: laneId, path: file.path)
+        }
+      }
     }
   }
 

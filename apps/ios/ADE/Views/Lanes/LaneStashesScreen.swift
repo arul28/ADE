@@ -107,7 +107,7 @@ struct LaneStashesScreen: View {
           Task { await onPop(stash.ref) }
         }
         .disabled(!canRunLiveActions)
-        LaneActionButton(title: "Drop", symbol: "trash", tint: ADEColor.danger) {
+        LaneHoldToConfirmButton(title: "Delete", symbol: "trash", tint: ADEColor.danger) {
           Task { await onDrop(stash.ref) }
         }
         .disabled(!canRunLiveActions)

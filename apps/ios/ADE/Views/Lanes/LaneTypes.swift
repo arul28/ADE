@@ -121,12 +121,14 @@ enum LaneFileConfirmation: Identifiable {
   case discardUnstaged(FileChange)
   case discardAllUnstaged([FileChange])
   case restoreStaged(FileChange)
+  case restoreAllStaged([FileChange])
 
   var id: String {
     switch self {
     case .discardUnstaged(let file): return "discard:\(file.id)"
     case .discardAllUnstaged(let files): return "discard-all:\(files.count):\(files.map(\.id).joined(separator: ","))"
     case .restoreStaged(let file): return "restore:\(file.id)"
+    case .restoreAllStaged(let files): return "restore-all:\(files.count):\(files.map(\.id).joined(separator: ","))"
     }
   }
 
@@ -134,7 +136,8 @@ enum LaneFileConfirmation: Identifiable {
     switch self {
     case .discardUnstaged: return "Discard changes?"
     case .discardAllUnstaged: return "Discard all unstaged changes?"
-    case .restoreStaged: return "Restore staged file?"
+    case .restoreStaged: return "Discard staged changes?"
+    case .restoreAllStaged: return "Discard all staged changes?"
     }
   }
 
@@ -145,7 +148,9 @@ enum LaneFileConfirmation: Identifiable {
     case .discardAllUnstaged(let files):
       return "Unstaged changes to \(files.count) file\(files.count == 1 ? "" : "s") will be permanently lost."
     case .restoreStaged:
-      return "The staged version of this file will be restored from HEAD."
+      return "Staged and unstaged changes to this file will be permanently lost."
+    case .restoreAllStaged(let files):
+      return "Staged changes to \(files.count) file\(files.count == 1 ? "" : "s") will be permanently lost. Unstaged edits on those files will be discarded too."
     }
   }
 
@@ -153,7 +158,8 @@ enum LaneFileConfirmation: Identifiable {
     switch self {
     case .discardUnstaged: return "Discard"
     case .discardAllUnstaged: return "Discard all"
-    case .restoreStaged: return "Restore"
+    case .restoreStaged: return "Discard"
+    case .restoreAllStaged: return "Discard all"
     }
   }
 
@@ -162,6 +168,7 @@ enum LaneFileConfirmation: Identifiable {
     case .discardUnstaged: return "discard file"
     case .discardAllUnstaged: return "discard all"
     case .restoreStaged: return "restore staged file"
+    case .restoreAllStaged: return "restore staged files"
     }
   }
 
@@ -169,7 +176,7 @@ enum LaneFileConfirmation: Identifiable {
     switch self {
     case .discardUnstaged(let file), .restoreStaged(let file):
       return file
-    case .discardAllUnstaged:
+    case .discardAllUnstaged, .restoreAllStaged:
       return nil
     }
   }

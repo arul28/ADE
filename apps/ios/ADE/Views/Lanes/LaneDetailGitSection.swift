@@ -382,7 +382,7 @@ extension LaneDetailScreen {
       secondaryActionSymbol: "trash",
       secondaryActionTint: ADEColor.danger,
       extraBulkActions: [
-        LaneFileTreeBulkAction(title: "Discard all", symbol: "trash", tint: ADEColor.danger, isDestructive: true) {
+        LaneFileTreeBulkAction(title: "Discard unstaged", symbol: "trash", tint: ADEColor.danger, isDestructive: true) {
           pendingFileConfirmation = .discardAllUnstaged(changes)
         }
       ],
@@ -431,10 +431,14 @@ extension LaneDetailScreen {
       primaryActionTitle: "Unstage",
       primaryActionSymbol: "minus.circle",
       primaryActionTint: ADEColor.warning,
-      secondaryActionTitle: "Restore",
+      secondaryActionTitle: "Discard",
       secondaryActionSymbol: "trash",
       secondaryActionTint: ADEColor.danger,
-      extraBulkActions: [],
+      extraBulkActions: [
+        LaneFileTreeBulkAction(title: "Discard staged", symbol: "trash", tint: ADEColor.danger, isDestructive: true) {
+          pendingFileConfirmation = .restoreAllStaged(changes)
+        }
+      ],
       onBulkAction: {
         Task {
           await performAction("unstage all") {
