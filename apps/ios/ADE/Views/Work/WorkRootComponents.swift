@@ -56,9 +56,10 @@ struct WorkFiltersSection: View {
         .frame(minHeight: 32)
         .frame(maxWidth: .infinity)
         .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .glassEffect(in: .rect(cornerRadius: 10))
         .overlay(
           RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
         )
 
         Button {
@@ -71,12 +72,13 @@ struct WorkFiltersSection: View {
             .foregroundStyle(filterOpen ? ADEColor.accent : ADEColor.textSecondary)
             .frame(width: 32, height: 32)
             .background(
-              (filterOpen ? ADEColor.accent.opacity(0.1) : ADEColor.surfaceBackground.opacity(0.55)),
+              (filterOpen ? ADEColor.accent.opacity(0.12) : ADEColor.surfaceBackground.opacity(0.55)),
               in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
+            .glassEffect(in: .rect(cornerRadius: 10))
             .overlay(
               RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+                .stroke(filterOpen ? ADEColor.accent.opacity(0.32) : ADEColor.glassBorder, lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)
@@ -180,12 +182,13 @@ struct WorkFilterChip: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(
-          selected ? tint.opacity(0.12) : ADEColor.surfaceBackground.opacity(0.48),
+          selected ? tint.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5),
           in: Capsule(style: .continuous)
         )
+        .glassEffect()
         .overlay(
           Capsule(style: .continuous)
-            .stroke(selected ? tint.opacity(0.28) : ADEColor.border.opacity(0.18), lineWidth: 0.6)
+            .stroke(selected ? tint.opacity(0.32) : ADEColor.glassBorder, lineWidth: 0.6)
         )
     }
     .buttonStyle(.plain)
@@ -221,9 +224,10 @@ struct WorkFilterMenuLabel: View {
     .padding(.vertical, 8)
     .frame(maxWidth: .infinity)
     .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 10))
     .overlay(
       RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
   }
 }
@@ -255,9 +259,10 @@ struct WorkSidebarSectionHeader: View {
         Text("\(group.sessions.count)")
           .font(.caption2.monospacedDigit().weight(.semibold))
           .foregroundStyle(ADEColor.textMuted)
-          .padding(.horizontal, 6)
+          .padding(.horizontal, 7)
           .padding(.vertical, 2)
-          .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule())
+          .background(ADEColor.surfaceBackground.opacity(0.65), in: Capsule())
+          .glassEffect()
       }
       .padding(.horizontal, 4)
       .padding(.vertical, 8)
@@ -323,19 +328,21 @@ struct WorkLiveCountPill: View {
 
   var body: some View {
     Button(action: onTap) {
-      HStack(spacing: 4) {
+      HStack(spacing: 5) {
         Circle()
           .fill(tint)
           .frame(width: 6, height: 6)
+          .shadow(color: tint.opacity(0.6), radius: 4, x: 0, y: 0)
         Text(label)
           .font(.caption2.monospacedDigit().weight(.semibold))
           .foregroundStyle(tint)
       }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 4)
-      .background(tint.opacity(0.12), in: Capsule())
+      .padding(.horizontal, 9)
+      .padding(.vertical, 5)
+      .background(tint.opacity(0.14), in: Capsule())
+      .glassEffect()
       .overlay(
-        Capsule().stroke(tint.opacity(0.25), lineWidth: 0.5)
+        Capsule().stroke(tint.opacity(0.28), lineWidth: 0.5)
       )
     }
     .buttonStyle(.plain)
@@ -700,6 +707,7 @@ struct WorkActivityRow: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
 
   let activity: WorkAgentActivity
+  var animatesPulse: Bool = true
   @State var pulse = false
 
   var body: some View {
@@ -707,10 +715,10 @@ struct WorkActivityRow: View {
       Circle()
         .fill(ADEColor.success)
         .frame(width: 10, height: 10)
-        .scaleEffect(pulse && !reduceMotion ? 1.25 : 1.0)
-        .animation(ADEMotion.pulse(reduceMotion: reduceMotion), value: pulse)
+        .scaleEffect(animatesPulse && pulse && !reduceMotion ? 1.25 : 1.0)
+        .animation(animatesPulse ? ADEMotion.pulse(reduceMotion: reduceMotion) : nil, value: pulse)
         .onAppear {
-          guard !reduceMotion else { return }
+          guard !reduceMotion, animatesPulse else { return }
           pulse = true
         }
       VStack(alignment: .leading, spacing: 4) {

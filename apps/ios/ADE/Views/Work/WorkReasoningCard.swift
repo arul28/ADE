@@ -43,10 +43,11 @@ struct WorkReasoningCard: View {
             .textSelection(.enabled)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(ADEColor.surfaceBackground.opacity(0.32), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .glassEffect(in: .rect(cornerRadius: 12))
             .overlay(
               RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
+                .stroke(ADEColor.glassBorder, lineWidth: 0.5)
             )
             .transition(.opacity.combined(with: .move(edge: .top)))
         }
@@ -84,10 +85,11 @@ struct WorkReasoningCard: View {
       }
       .padding(.horizontal, 9)
       .padding(.vertical, 5)
-      .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
+      .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule(style: .continuous))
+      .glassEffect()
       .overlay(
         Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.5)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
       )
       .contentShape(Capsule())
     }

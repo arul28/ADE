@@ -426,10 +426,11 @@ struct WorkQueuedSteerStrip: View {
       }
     }
     .padding(10)
-    .background(ADEColor.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 14))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.accent.opacity(0.18), lineWidth: 0.8)
+        .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
     )
     .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
     .animation(.smooth(duration: 0.22), value: isExpanded)
@@ -566,7 +567,12 @@ struct WorkQueuedSteerRow: View {
       }
     }
     .padding(10)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 12))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Queued message: \(steer.text)")
   }

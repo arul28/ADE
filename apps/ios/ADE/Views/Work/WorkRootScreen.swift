@@ -280,6 +280,7 @@ struct WorkRootScreen: View {
         if isLoadingSkeleton {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
+              .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
               .listRowBackground(Color.clear)
               .listRowSeparator(.hidden)
           }
@@ -299,6 +300,7 @@ struct WorkRootScreen: View {
               actionTitle: "Retry",
               action: { Task { await reload(refreshRemote: true) } }
             )
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }
@@ -313,17 +315,27 @@ struct WorkRootScreen: View {
             needsInputCount: globalNeedsInputCount,
             onClear: clearWorkFilters
           )
+          .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
 
           if !activityFeed.isEmpty {
-            Section("Activity") {
-              ForEach(activityFeed) { activity in
-                WorkActivityRow(activity: activity)
-                  .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            Section {
+              ForEach(Array(activityFeed.enumerated()), id: \.element.id) { index, activity in
+                WorkActivityRow(activity: activity, animatesPulse: index == 0)
+                  .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                   .listRowBackground(Color.clear)
                   .listRowSeparator(.hidden)
               }
+            } header: {
+              Text("Activity")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ADEColor.textMuted)
+                .textCase(.uppercase)
+                .tracking(0.6)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 4)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 0, trailing: 0))
             }
           }
 
@@ -339,6 +351,7 @@ struct WorkRootScreen: View {
               actionTitle: "Retry",
               action: { Task { await reload(refreshRemote: true) } }
             )
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }
@@ -361,6 +374,7 @@ struct WorkRootScreen: View {
               .tint(ADEColor.accent)
               .disabled(!isLive)
             }
+            .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 16, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           } else {
@@ -368,11 +382,15 @@ struct WorkRootScreen: View {
               WorkSidebarSectionHeader(
                 group: group,
                 collapsed: collapsedSectionIds.contains(group.id),
-                onToggle: { toggleCollapsed(group.id) }
+                onToggle: {
+                  withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+                    toggleCollapsed(group.id)
+                  }
+                }
               )
               .listRowBackground(Color.clear)
               .listRowSeparator(.hidden)
-              .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 2, trailing: 0))
+              .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
 
               if !collapsedSectionIds.contains(group.id) {
                 ForEach(group.sessions) { session in
@@ -398,7 +416,7 @@ struct WorkRootScreen: View {
                     onGoToLane: goToLane
                   )
                   .id(session.id)
-                  .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                  .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                   .listRowBackground(Color.clear)
                   .listRowSeparator(.hidden)
                 }
@@ -408,7 +426,9 @@ struct WorkRootScreen: View {
         }
       }
       .listStyle(.plain)
+      .listSectionSpacing(.compact)
       .scrollContentBackground(.hidden)
+      .scrollDismissesKeyboard(.interactively)
       .contentMargins(.bottom, 72, for: .scrollContent)
       .adeScreenBackground()
       .adeNavigationGlass()

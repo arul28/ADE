@@ -190,10 +190,11 @@ struct WorkNewChatScreen: View {
       }
       .padding(.horizontal, 14)
       .padding(.vertical, 9)
-      .background(ADEColor.surfaceBackground.opacity(0.65), in: Capsule(style: .continuous))
+      .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule(style: .continuous))
+      .glassEffect()
       .overlay(
         Capsule(style: .continuous)
-          .stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.6)
+          .stroke(ADEColor.accent.opacity(0.32), lineWidth: 0.6)
       )
     }
     .buttonStyle(.plain)
@@ -366,9 +367,10 @@ private struct WorkNewChatComposerBar: View {
           .padding(.horizontal, 9)
           .padding(.vertical, 6)
           .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule(style: .continuous))
+          .glassEffect()
           .overlay(
             Capsule(style: .continuous)
-              .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
+              .stroke(ADEColor.glassBorder, lineWidth: 0.6)
           )
         }
         .buttonStyle(.plain)
@@ -399,10 +401,11 @@ private struct WorkNewChatComposerBar: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
-            .background(runtimeTint.opacity(0.12), in: Capsule(style: .continuous))
+            .background(runtimeTint.opacity(0.14), in: Capsule(style: .continuous))
+            .glassEffect()
             .overlay(
               Capsule(style: .continuous)
-                .stroke(runtimeTint.opacity(0.35), lineWidth: 0.6)
+                .stroke(runtimeTint.opacity(0.38), lineWidth: 0.6)
             )
           }
           .menuStyle(.borderlessButton)
@@ -416,7 +419,8 @@ private struct WorkNewChatComposerBar: View {
             .foregroundStyle(ADEColor.textSecondary)
             .frame(width: 28, height: 28)
             .background(ADEColor.surfaceBackground.opacity(0.7), in: Circle())
-            .overlay(Circle().stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6))
+            .glassEffect()
+            .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.6))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Insert @ mention")
@@ -427,7 +431,8 @@ private struct WorkNewChatComposerBar: View {
             .foregroundStyle(ADEColor.textSecondary)
             .frame(width: 28, height: 28)
             .background(ADEColor.surfaceBackground.opacity(0.7), in: Circle())
-            .overlay(Circle().stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6))
+            .glassEffect()
+            .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.6))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Insert slash command")
@@ -479,13 +484,25 @@ private struct WorkNewChatComposerBar: View {
     .padding(.vertical, 14)
     .background(
       RoundedRectangle(cornerRadius: 24, style: .continuous)
-        .fill(ADEColor.surfaceBackground.opacity(0.94))
+        .fill(ADEColor.composerBackground)
+    )
+    .glassEffect(in: .rect(cornerRadius: 24))
+    .overlay(
+      RoundedRectangle(cornerRadius: 24, style: .continuous)
+        .fill(
+          LinearGradient(
+            colors: [Color.white.opacity(0.10), .clear],
+            startPoint: .top,
+            endPoint: .bottom
+          )
+        )
+        .allowsHitTesting(false)
     )
     .overlay(
       RoundedRectangle(cornerRadius: 24, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.45), lineWidth: 1)
+        .stroke(ADEColor.glassBorder, lineWidth: 1)
     )
-    .shadow(color: Color.black.opacity(0.18), radius: 8, y: 3)
+    .shadow(color: Color.black.opacity(0.32), radius: 14, y: 6)
     .padding(.horizontal, 16)
     .padding(.bottom, 0)
   }

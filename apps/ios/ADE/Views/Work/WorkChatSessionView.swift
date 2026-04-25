@@ -604,6 +604,18 @@ private struct WorkChatComposerCard: View {
   private var composerSurface: some View {
     RoundedRectangle(cornerRadius: 24, style: .continuous)
       .fill(ADEColor.composerBackground)
+      .glassEffect(in: .rect(cornerRadius: 24))
+      .overlay(
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+          .fill(
+            LinearGradient(
+              colors: [Color.white.opacity(0.10), .clear],
+              startPoint: .top,
+              endPoint: .bottom
+            )
+          )
+          .allowsHitTesting(false)
+      )
       .overlay(
         RoundedRectangle(cornerRadius: 24, style: .continuous)
           .stroke(ADEColor.glassBorder, lineWidth: 1)

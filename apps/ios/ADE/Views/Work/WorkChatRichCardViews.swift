@@ -90,10 +90,11 @@ struct WorkToolCardView: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, isExpanded ? 12 : 8)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 14))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(toolDisplayName(toolCard.toolName)), \(toolCard.status.rawValue)")
@@ -205,10 +206,11 @@ struct WorkToolGroupCardView: View {
         }
       }
       .padding(12)
-      .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .glassEffect(in: .rect(cornerRadius: 16))
       .overlay(
         RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.5)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
       )
     }
     // Backdrop rectangles use offset(y: 4/8) below the ZStack frame, so the
@@ -558,6 +560,11 @@ struct WorkCommandCardView: View {
     }
     .padding(14)
     .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 18))
+    .overlay(
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Command, \(card.status.rawValue). Tap to \(isExpanded ? "collapse" : "expand") output.")
   }
