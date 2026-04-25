@@ -8,22 +8,22 @@ export const graphTour: Tour = {
   steps: [
     {
       target: '[data-tour="graph.focusedLane"], [data-tour="graph.canvas"]',
-      title: "Lane nodes",
-      body: "The graph maps lanes as nodes and branches as edges. When a lane is focused, this summary gives you the lane state and the next actions.",
+      title: "How everything connects",
+      body: "Every lane is a circle, every connection between lanes is a line. When you click a lane, this side panel shows what state it's in and what to do next with it.",
       docUrl: docs.workspaceGraph,
       placement: "bottom",
     },
     {
       target: '[data-tour="graph.zoom"]',
-      title: "Zoom and pan",
-      body: "Scroll to zoom, drag to pan. The graph redraws as you create, rebase, or archive lanes.",
+      title: "Move around the map",
+      body: "Scroll to zoom in and out, drag to pan around. The map updates itself live — make a new lane, change one, and you'll see the change immediately.",
       docUrl: docs.workspaceGraph,
       placement: "left",
     },
     {
       target: '[data-tour="graph.legend"]',
-      title: "Legend",
-      body: "The legend explains node colors and edge types. Use it when a lane state looks unfamiliar.",
+      title: "What the colors mean",
+      body: "Lanes change color and shape based on their state — \"has unsaved changes\", \"ready to ship\", and so on. This little key explains them.",
       docUrl: docs.workspaceGraph,
       placement: "left",
     },

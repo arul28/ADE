@@ -338,9 +338,9 @@ describe("ADE CLI", () => {
     });
 
     expect(graph).toContain("ADE lanes");
-    expect(graph).toContain("\\- main [main]");
-    expect(graph).toContain("|- child [feature]");
-    expect(graph).toContain("\\- sibling [feature-2]");
+    expect(graph).toContain("\\- main (id: main) [main]");
+    expect(graph).toContain("|- child (id: child) [feature]");
+    expect(graph).toContain("\\- sibling (id: sibling) [feature-2]");
   });
 
   it("accepts --option=value syntax equivalently to --option value", () => {
@@ -782,7 +782,7 @@ describe("ADE CLI", () => {
     expect(summarized).toMatchObject({
       lanes: expect.any(Array),
     });
-    expect((summarized as any).visual).toContain("\\- main [main]");
-    expect((summarized as any).visual).toContain("\\- child [feature]");
+    expect((summarized as any).visual).toContain("\\- main (id: main) [main]");
+    expect((summarized as any).visual).toContain("\\- child (id: child) [feature]");
   });
 });

@@ -179,6 +179,182 @@ describe("createAdeCliService", () => {
     }
   });
 
+  it("adds the user install dir to the shell profile when installing Terminal access", async () => {
+    const root = makeTempRoot();
+    const home = path.join(root, "home");
+    const resourcesPath = path.join(root, "Resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    const packagedCommandPath = path.join(packagedBinDir, "ade");
+    const installerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
+    writeExecutable(packagedCommandPath);
+    writeExecutable(installerPath);
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      env: { HOME: home, SHELL: "/bin/zsh", PATH: "/usr/bin:/bin" },
+      logger: logger() as any,
+    });
+
+    const result = await service.installForUser();
+    const profilePath = path.join(home, ".zshrc");
+    const profile = fs.readFileSync(profilePath, "utf8");
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain(`added ${path.join(home, ".local", "bin")} to ${profilePath}`);
+    expect(profile).toContain("# ADE CLI");
+    expect(profile).toContain('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it("writes to ~/.bashrc when SHELL is bash", async () => {
+    const root = makeTempRoot();
+    const home = path.join(root, "home");
+    const resourcesPath = path.join(root, "Resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    writeExecutable(path.join(packagedBinDir, "ade"));
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.sh"));
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      env: { HOME: home, SHELL: "/usr/local/bin/bash", PATH: "/usr/bin:/bin" },
+      logger: logger() as any,
+    });
+
+    const result = await service.installForUser();
+    const profilePath = path.join(home, ".bashrc");
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain(profilePath);
+    expect(fs.readFileSync(profilePath, "utf8")).toContain('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it("falls back to ~/.profile when SHELL is unrecognized", async () => {
+    const root = makeTempRoot();
+    const home = path.join(root, "home");
+    const resourcesPath = path.join(root, "Resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    writeExecutable(path.join(packagedBinDir, "ade"));
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.sh"));
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      env: { HOME: home, SHELL: "/usr/bin/fish", PATH: "/usr/bin:/bin" },
+      logger: logger() as any,
+    });
+
+    const result = await service.installForUser();
+    const profilePath = path.join(home, ".profile");
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain(profilePath);
+    expect(fs.readFileSync(profilePath, "utf8")).toContain('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it("skips the shell-profile write when the install dir is already on PATH", async () => {
+    const root = makeTempRoot();
+    const home = path.join(root, "home");
+    const resourcesPath = path.join(root, "Resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    writeExecutable(path.join(packagedBinDir, "ade"));
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.sh"));
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+    const targetDir = path.join(home, ".local", "bin");
+    // Simulate an ade binary already at the install location so getStatus
+    // reports it as installed once PATH contains targetDir.
+    writeExecutable(path.join(targetDir, "ade"));
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      env: { HOME: home, SHELL: "/bin/zsh", PATH: `${targetDir}:/usr/bin:/bin` },
+      logger: logger() as any,
+    });
+
+    const result = await service.installForUser();
+    const profilePath = path.join(home, ".zshrc");
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("Installed ade for Terminal access.");
+    expect(fs.existsSync(profilePath)).toBe(false);
+  });
+
+  it("does not append the PATH line twice when the marker is already present", async () => {
+    const root = makeTempRoot();
+    const home = path.join(root, "home");
+    const resourcesPath = path.join(root, "Resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    writeExecutable(path.join(packagedBinDir, "ade"));
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.sh"));
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const profilePath = path.join(home, ".zshrc");
+    const seeded = "# previous user content\n\n# ADE CLI\nexport PATH=\"$HOME/.local/bin:$PATH\"\n";
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(profilePath, seeded);
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      env: { HOME: home, SHELL: "/bin/zsh", PATH: "/usr/bin:/bin" },
+      logger: logger() as any,
+    });
+
+    const result = await service.installForUser();
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain(profilePath);
+    // Profile contents are unchanged — exactly one ADE CLI marker, exactly one PATH line.
+    const profile = fs.readFileSync(profilePath, "utf8");
+    expect(profile).toBe(seeded);
+    expect(profile.match(/# ADE CLI/g)?.length).toBe(1);
+  });
+
+  it("inserts a leading newline when the existing profile has no trailing newline", async () => {
+    const root = makeTempRoot();
+    const home = path.join(root, "home");
+    const resourcesPath = path.join(root, "Resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    writeExecutable(path.join(packagedBinDir, "ade"));
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.sh"));
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const profilePath = path.join(home, ".zshrc");
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(profilePath, "alias foo=bar"); // no trailing newline
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      env: { HOME: home, SHELL: "/bin/zsh", PATH: "/usr/bin:/bin" },
+      logger: logger() as any,
+    });
+
+    const result = await service.installForUser();
+    expect(result.ok).toBe(true);
+
+    const profile = fs.readFileSync(profilePath, "utf8");
+    expect(profile.startsWith("alias foo=bar\n")).toBe(true);
+    expect(profile).toContain("\n# ADE CLI\n");
+    expect(profile).toContain('export PATH="$HOME/.local/bin:$PATH"\n');
+  });
+
   it("creates a dev shim under userData without changing global PATH", () => {
     const root = makeTempRoot();
     const repoRoot = path.join(root, "repo");

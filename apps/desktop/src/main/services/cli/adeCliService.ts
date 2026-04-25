@@ -397,12 +397,49 @@ function resolveCliPaths(args: CreateAdeCliServiceArgs): ResolvedCliPaths {
   };
 }
 
-function installTargetPath(): string {
+function homeDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.HOME?.trim() || os.homedir();
+}
+
+function installTargetPath(env: NodeJS.ProcessEnv = process.env): string {
   if (process.platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), "AppData", "Local");
+    const localAppData = env.LOCALAPPDATA?.trim() || path.join(homeDir(env), "AppData", "Local");
     return path.join(localAppData, "ADE", "bin", "ade.cmd");
   }
-  return path.join(os.homedir(), ".local", "bin", "ade");
+  return path.join(homeDir(env), ".local", "bin", "ade");
+}
+
+function shellProfilePath(env: NodeJS.ProcessEnv = process.env): string {
+  const shell = env.SHELL?.trim() ?? "";
+  const home = homeDir(env);
+  if (shell.endsWith("zsh")) return path.join(home, ".zshrc");
+  if (shell.endsWith("bash")) return path.join(home, ".bashrc");
+  return path.join(home, ".profile");
+}
+
+function shellPathEntry(targetDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  const home = homeDir(env);
+  const relativeToHome = path.relative(home, targetDir);
+  if (relativeToHome && !relativeToHome.startsWith("..") && !path.isAbsolute(relativeToHome)) {
+    return `$HOME/${relativeToHome.split(path.sep).join("/")}`;
+  }
+  return targetDir;
+}
+
+function ensureUserBinOnShellPath(targetDir: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (process.platform === "win32" || pathContainsDir(getPathEnvValue(env), targetDir)) return null;
+  const profilePath = shellProfilePath(env);
+  const entry = shellPathEntry(targetDir, env);
+  const marker = "# ADE CLI";
+  const line = `export PATH="${entry}:$PATH"`;
+  const existing = fs.existsSync(profilePath) ? fs.readFileSync(profilePath, "utf8") : "";
+  if (existing.includes(marker) || existing.includes(line) || existing.includes(targetDir)) {
+    return profilePath;
+  }
+  const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+  fs.mkdirSync(path.dirname(profilePath), { recursive: true });
+  fs.appendFileSync(profilePath, `${prefix}\n${marker}\n${line}\n`);
+  return profilePath;
 }
 
 function statusMessage(args: {
@@ -466,7 +503,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
 
   const getStatus = async (): Promise<AdeCliStatus> => {
     const terminalCommandPath = resolveCommandOnPath("ade", hostPathSnapshot, envSnapshot);
-    const targetPath = installTargetPath();
+    const targetPath = installTargetPath(envSnapshot);
     const targetDir = path.dirname(targetPath);
     const terminalInstalled = Boolean(terminalCommandPath);
     const bundledAvailable = Boolean(resolved.commandPath && isExecutable(resolved.commandPath));
@@ -518,10 +555,14 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
       if (result.status !== 0) {
         throw new Error(result.stderr.trim() || result.stdout.trim() || "ADE CLI installer failed.");
       }
+      const targetDir = path.dirname(installTargetPath(envSnapshot));
+      const profilePath = ensureUserBinOnShellPath(targetDir, envSnapshot);
       const status = await getStatus();
       return {
         ok: true,
-        message: status.installTargetDirOnPath
+        message: profilePath
+          ? `Installed ade for Terminal access and added ${targetDir} to ${profilePath}. Open a new terminal or source that file.`
+          : status.installTargetDirOnPath
           ? "Installed ade for Terminal access."
           : `Installed ade at ${status.installTargetPath}. Add ${path.dirname(status.installTargetPath)} to PATH if your shell cannot find it.`,
         status,

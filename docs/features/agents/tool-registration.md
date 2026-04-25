@@ -18,6 +18,8 @@ filtering before exposing the final list.
 | `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, Linear). |
 | `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` | Coordinator tool set for the mission orchestrator. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | External CLI detection (Claude Code, Codex, Cursor, Aider, Continue). |
+| `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side CLI install / status / uninstall. Resolves the launcher target (`$HOME/.local/bin/ade` on POSIX, `%LOCALAPPDATA%\ADE\bin\ade.cmd` on Windows) and, on POSIX install, appends a marked `export PATH=...` block to the user's shell rc when the install dir isn't already on `$PATH`. |
+| `apps/desktop/src/shared/adeCliGuidance.ts` | `ADE_CLI_AGENT_GUIDANCE` + `ADE_CLI_INLINE_GUIDANCE` strings injected into agent system prompts. Tells the agent how to find `ade` (PATH → `$ADE_CLI_PATH` → `$ADE_CLI_BIN_DIR/ade` → `node apps/ade-cli/dist/cli.cjs ...`) and to try `ade doctor` / typed commands / `ade actions list` before reporting an ADE task as blocked. |
 
 ## Two-path tool dispatch
 
@@ -223,6 +225,27 @@ The `ade` command has two runtime modes:
 Both modes expose the same action protocol and output formatters. Agent
 prompts should prefer documented commands such as `ade lanes list`,
 `ade prs path-to-merge`, or the generic `ade actions run <domain.action>`.
+
+### Agent-prompt fallbacks for missing `ade` on PATH
+
+`apps/desktop/src/shared/adeCliGuidance.ts` is the canonical text the
+chat / agent system prompt embeds whenever a session has CLI access.
+It tells the agent that `ade` *should* be available, and gives it an
+ordered fallback chain when `command -v ade` fails:
+
+1. try `${ADE_CLI_PATH:-}` (set by managed shells when the launcher
+   path is known up front),
+2. then `${ADE_CLI_BIN_DIR:-}/ade` (set when only the install dir is
+   known),
+3. and as a last resort, in an ADE source checkout, `node
+   apps/ade-cli/dist/cli.cjs ...` after confirming the file exists.
+
+The wording explicitly tells agents to try `ade doctor`, typed
+`ade ... --text` commands, and `ade actions list --text` /
+`ade actions run ...` *before* claiming an ADE task is blocked. The
+two exports (`ADE_CLI_AGENT_GUIDANCE` for full system-prompt builds,
+`ADE_CLI_INLINE_GUIDANCE` for inline mentions) keep this guidance
+consistent across surfaces.
 
 ## Fragile and tricky wiring
 

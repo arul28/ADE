@@ -8,22 +8,8 @@ export const automationsTour: Tour = {
   steps: [
     {
       target: '[data-tour="automations.createTrigger"]',
-      title: "Triggers",
-      body: "Triggers decide what starts an automation: schedule, webhook, git event, or file watch.",
-      docUrl: docs.automationsOverview,
-      placement: "right",
-    },
-    {
-      target: '[data-tour="automations.createTrigger"]',
-      title: "Actions",
-      body: "Actions run after a trigger fires: launch a command, dispatch a mission, or notify a worker.",
-      docUrl: docs.automationsOverview,
-      placement: "right",
-    },
-    {
-      target: '[data-tour="automations.createTrigger"]',
-      title: "Guardrails",
-      body: "Guardrails cover rate limits, concurrency caps, quiet hours, and approval boundaries.",
+      title: "If this happens, do that",
+      body: "An automation is a little \"if/then\" rule that runs in the background. Three parts: a **trigger** (what kicks it off — a schedule, a button push, a Git event, a file change), an **action** (what it does — run a command, ask AI to do something, send a ping), and **guardrails** (limits to keep it safe — like \"don't run more than 3 of these at once\"). Click here to set one up.",
       docUrl: docs.automationsOverview,
       placement: "right",
     },

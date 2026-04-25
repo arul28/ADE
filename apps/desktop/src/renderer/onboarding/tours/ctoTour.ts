@@ -8,22 +8,22 @@ export const ctoTour: Tour = {
   steps: [
     {
       target: '[data-tour="cto.sidebar"]',
-      title: "Agents",
-      body: "The sidebar lists the agents the CTO manages. Identities persist between sessions.",
+      title: "Your AI team",
+      body: "Everyone on this list is an AI helper the CTO manages — like team members. Each one has a name, a role, and remembers things between sessions, so you don't have to re-explain context every time.",
       docUrl: docs.ctoOverview,
       placement: "right",
     },
     {
       target: '[data-tour="cto.teamPanel"]',
-      title: "Team panel",
-      body: "Inspect, edit, or archive agents. Budget caps and heartbeat intervals live here too.",
+      title: "Manage them like a real team",
+      body: "Look at what each AI helper is doing, change their role, or set them aside. You can also cap how much they're allowed to spend per month here — useful while you're learning what they're good for.",
       docUrl: docs.ctoOverview,
       placement: "left",
     },
     {
       target: '[data-tour="cto.linearPanel"]',
-      title: "Linear sync",
-      body: "Connect Linear to let the CTO dispatch missions from tickets and report results back.",
+      title: "Hook up your task list",
+      body: "Use Linear (a popular project management tool) to track work? Connect it here and the CTO will turn tickets into AI tasks automatically, then post results back to the ticket. Skip if you don't use Linear.",
       docUrl: docs.ctoOverview,
       placement: "left",
     },

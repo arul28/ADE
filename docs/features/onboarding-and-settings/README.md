@@ -114,10 +114,23 @@ Renderer — onboarding:
   `prCreateModal`); kept separate from the per-surface tour files so
   dialog-scoped steps can be composed from multiple tours.
 - `apps/desktop/src/renderer/onboarding/tours/*.ts` — per-surface tours:
-  `lanesTour`, `laneWorkPaneTour` (new), `workTour`, `filesTour`,
+  `lanesTour`, `laneWorkPaneTour`, `workTour`, `filesTour`,
   `runTour`, `missionsTour`, `prsTour`, `graphTour`, `historyTour`,
   `automationsTour`, `ctoTour`, `settingsTour`, plus the first-session
-  `firstJourney` tour.
+  `firstJourneyTour`. The first-session tour reuses individual steps
+  from the per-surface tours via a small `tutorialSection(sectionId,
+  steps, requires)` wrapper that namespaces step ids
+  (`<sectionId>.<index>`), forces a `requires` gate, derives
+  `waitForSelector` from `target`, and — for any step that has a
+  `requires` gate without its own `fallbackAfterMs` — injects a
+  default 30 s `Skip` fallback so the tutorial can never get
+  permanently stuck waiting on state that doesn't appear. The acts
+  themselves are intentionally streamlined: act 1 only borrows the
+  base-branch / status-chip / lane-work-pane bits (since the user has
+  just created a lane interactively); acts 2 + 3 inline ctx-aware
+  graph/files steps directly rather than spreading the full sub-tour;
+  the per-act "tab handoff" reminder steps were collapsed into the
+  single act 12 finale.
 - `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
   separate lightweight wizard covering identity, project context, and
   optional Linear (see `apps/desktop/src/renderer/components/cto/`).
@@ -128,7 +141,16 @@ Renderer — settings:
   container with eight top-level sections.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
   — theme, AI mode, task routing, terminal preferences, keybindings
-  link.
+  link, and the embedded `AdeCliSection` (compact form) so the most
+  common terminal-CLI install/repair affordance lives next to the
+  other day-one settings without forcing a tab switch into
+  Integrations.
+- `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
+  — surfaces `ade.cli.getStatus` / `ade.cli.install` / `ade.cli.uninstall`.
+  In compact form (used by `GeneralSection` and the onboarding
+  `DevToolsSection`) it shows the current install path, an
+  Install / Repair button, and a "Add to PATH" hint when the install
+  target isn't on the user's `$PATH`.
 - `apps/desktop/src/renderer/components/settings/WorkspaceSettingsSection.tsx`
   + `ProjectSection.tsx` — project identity, base ref, paths.
 - `apps/desktop/src/renderer/components/settings/ContextSection.tsx`
@@ -213,7 +235,7 @@ is changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `GeneralSection.tsx` | Theme, AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link |
+| General | `GeneralSection.tsx` (embeds `AdeCliSection` in compact form) | Theme, AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link, and the `ade` CLI install / status surface |
 | Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx`, `ContextSection.tsx` | Project identity, context docs, skill files |
 | AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, AI feature flags |
 | Sync | `SyncDevicesSection.tsx` | Multi-device sync, host-role transfer, peer status, pairing PIN, Tailscale tailnet discovery |

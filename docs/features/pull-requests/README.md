@@ -183,6 +183,17 @@ well as system notifications. The event payload includes `prTitle`,
 `repoOwner`, `repoName`, `baseBranch`, `headBranch` so consumers can
 format context-aware messages themselves.
 
+In-app, the App Shell renders these events as PR toasts. Their
+"View PR" action now navigates straight into the PR detail drawer
+on `/prs` via `buildPrsRouteSearch`, with `selectedPrId` set to the
+event's PR id and `detailTab` chosen from the event kind:
+`checks_failing` → `checks`, `changes_requested` /
+`review_requested` → `activity`, everything else → drawer overview.
+This replaces the older "select lane + open lane inspector merge
+tab" route, which depended on the lane being currently focused and
+forced the user to leave the PRs surface to follow up on a PR
+event.
+
 ## PR context loading
 
 The PR page no longer assumes every tab loads every workflow query:

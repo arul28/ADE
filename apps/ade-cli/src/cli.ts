@@ -2646,8 +2646,9 @@ function renderLaneGraph(result: unknown): string {
     const branch = asString(lane.branchRef) ?? "";
     const status = asString(lane.status) ?? "";
     const archived = asString(lane.archivedAt) ? " archived" : "";
-    lines.push(`${prefix}${isLast ? "\\- " : "|- "}${name}${branch ? ` [${branch}]` : ""}${status ? ` ${status}` : ""}${archived}`);
     const id = asString(lane.id);
+    const idSuffix = id ? ` (id: ${id})` : "";
+    lines.push(`${prefix}${isLast ? "\\- " : "|- "}${name}${idSuffix}${branch ? ` [${branch}]` : ""}${status ? ` ${status}` : ""}${archived}`);
     const children = id ? byParent.get(id) ?? [] : [];
     children.forEach((child, index) => visit(child, `${prefix}${isLast ? "   " : "|  "}`, index === children.length - 1));
   };
