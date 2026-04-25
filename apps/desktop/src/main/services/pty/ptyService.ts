@@ -766,7 +766,7 @@ export function createPtyService({
   const tryBackfillResumeTarget = async (
     sessionId: string,
     preferredToolType: TerminalToolType | null,
-    reason: "close" | "dispose" | "orphan-dispose" | "session-list",
+    reason: "close" | "dispose" | "orphan-dispose" | "session-list" | "resume-launch",
     sessionCwd?: string | null,
   ): Promise<boolean> => {
     const session = sessionService.get(sessionId);
@@ -1104,15 +1104,15 @@ export function createPtyService({
       const tracked = existingSession?.tracked ?? (args.tracked !== false);
       const toolTypeHint = normalizeToolType(args.toolType ?? existingSession?.toolType ?? null);
       const requestedStartupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
-      const initialResumeCommand = existingSession?.resumeCommand ?? defaultResumeCommandForTool(toolTypeHint);
-      const initialResumeMetadata = existingSession?.resumeMetadata ?? buildInitialResumeMetadata({
+      let initialResumeCommand = existingSession?.resumeCommand ?? defaultResumeCommandForTool(toolTypeHint);
+      let initialResumeMetadata = existingSession?.resumeMetadata ?? buildInitialResumeMetadata({
         toolType: toolTypeHint,
         startupCommand: requestedStartupCommand,
       });
       const transcriptPath = tracked
         ? (existingSession?.transcriptPath?.trim() || safeTranscriptPathFor(sessionId))
         : "";
-      const startupCommand = requestedStartupCommand.trim();
+      let startupCommand = requestedStartupCommand.trim();
       const cleanupPaths: string[] = [];
 
       let transcriptStream: fs.WriteStream | null = null;
@@ -1157,6 +1157,20 @@ export function createPtyService({
         ...(args.env ?? {})
       };
       const launchEnv = getAdeCliAgentEnv?.(baseLaunchEnv) ?? baseLaunchEnv;
+      const shouldBackfillResumeTarget =
+        existingSession
+        && isTrackedCliToolType(toolTypeHint)
+        && !existingSession.resumeMetadata?.targetId?.trim();
+      if (shouldBackfillResumeTarget) {
+        const backfilled = await tryBackfillResumeTarget(sessionId, toolTypeHint, "resume-launch", cwd);
+        const updatedSession = backfilled ? sessionService.get(sessionId) : null;
+        if (updatedSession?.resumeCommand?.trim()) {
+          initialResumeCommand = updatedSession.resumeCommand.trim();
+          initialResumeMetadata = updatedSession.resumeMetadata ?? initialResumeMetadata;
+          startupCommand = initialResumeCommand;
+        }
+      }
+
       const shellCandidates = resolveShellCandidates();
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
@@ -1260,19 +1274,6 @@ export function createPtyService({
             if (sha) sessionService.setHeadShaStart(sessionId, sha);
           })
           .catch(() => {});
-      }
-
-      if (
-        existingSession
-        && isTrackedCliToolType(toolTypeHint)
-        && !existingSession.resumeMetadata?.targetId?.trim()
-      ) {
-        logger.warn("pty.resume_target_missing", {
-          sessionId,
-          ptyId,
-          toolType: toolTypeHint,
-          reason: "resume-launch",
-        });
       }
 
       const entry: PtyEntry = {
