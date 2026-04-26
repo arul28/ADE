@@ -204,7 +204,6 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
     <div
       className="h-full min-h-0 w-full"
       hidden={!active}
-      aria-hidden={!active}
     >
       <PageErrorBoundary>
         <React.Suspense fallback={LazyFallback}>

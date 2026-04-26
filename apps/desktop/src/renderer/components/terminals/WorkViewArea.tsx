@@ -412,7 +412,6 @@ export function WorkViewArea({
             key={session.id}
             className="absolute inset-0"
             hidden={!isActive}
-            aria-hidden={!isActive}
           >
             {runningTerminalSession ? (
               <TerminalView
