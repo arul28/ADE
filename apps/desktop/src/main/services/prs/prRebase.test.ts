@@ -1,9 +1,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, RebaseNeed } from "../../../shared/types";
-import { launchRebaseResolutionChat } from "./prRebaseResolver";
+
+// ---------------------------------------------------------------------------
+// Module mocks
+// ---------------------------------------------------------------------------
+// prRebaseResolver imports resolverUtils — we mock it with replica behavior so
+// rebase-resolver tests stay decoupled from git. The resolverUtils describe
+// block below uses `vi.importActual` to exercise the REAL implementation.
 
 vi.mock("./resolverUtils", () => ({
   mapPermissionMode: (mode: string | undefined) => {
@@ -33,6 +39,160 @@ vi.mock("./resolverUtils", () => ({
     ];
   }),
 }));
+
+vi.mock("../git/git", () => ({
+  runGit: vi.fn(),
+}));
+
+import { runGit } from "../git/git";
+import { launchRebaseResolutionChat } from "./prRebaseResolver";
+
+const mockRunGit = vi.mocked(runGit);
+
+// ---------------------------------------------------------------------------
+// resolverUtils — exercises the REAL module via vi.importActual
+// ---------------------------------------------------------------------------
+
+describe("resolverUtils (real module)", () => {
+  // Lazy-loaded handles to the real module so the prRebaseResolver mock above
+  // does not interfere.
+  let mapPermissionMode: (mode: string | undefined) => string;
+  let mapPermissionModeForModelFamily: (
+    mode: string | undefined,
+    family: string | undefined,
+  ) => string;
+  let readRecentCommits: (worktreePath: string, count?: number, ref?: string) => Promise<Array<{ sha: string; subject: string }>>;
+
+  beforeAll(async () => {
+    const real = await vi.importActual<typeof import("./resolverUtils")>("./resolverUtils");
+    mapPermissionMode = real.mapPermissionMode;
+    mapPermissionModeForModelFamily = real.mapPermissionModeForModelFamily;
+    readRecentCommits = real.readRecentCommits;
+  });
+
+  describe("mapPermissionMode", () => {
+    it("maps full_edit to full-auto", () => {
+      expect(mapPermissionMode("full_edit")).toBe("full-auto");
+    });
+
+    it("maps read_only to plan", () => {
+      expect(mapPermissionMode("read_only")).toBe("plan");
+    });
+
+    it("maps guarded_edit to edit", () => {
+      expect(mapPermissionMode("guarded_edit")).toBe("edit");
+    });
+
+    it("maps undefined to edit", () => {
+      expect(mapPermissionMode(undefined)).toBe("edit");
+    });
+
+    it("maps an unrecognized value to edit", () => {
+      expect(mapPermissionMode("some_other_value" as any)).toBe("edit");
+    });
+  });
+
+  describe("mapPermissionModeForModelFamily", () => {
+    it("maps guarded_edit to Codex default permissions for OpenAI CLI models", () => {
+      expect(mapPermissionModeForModelFamily("guarded_edit", "openai")).toBe("default");
+    });
+
+    it("keeps guarded_edit as edit for non-OpenAI models", () => {
+      expect(mapPermissionModeForModelFamily("guarded_edit", "anthropic")).toBe("edit");
+    });
+  });
+
+  describe("readRecentCommits", () => {
+    it("parses git log output into sha/subject pairs", async () => {
+      mockRunGit.mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: "abc123def456\tAdd feature X\nbbb222ccc333\tFix tests\n",
+        stderr: "",
+      } as any);
+
+      const commits = await readRecentCommits("/tmp/worktree", 8);
+
+      expect(mockRunGit).toHaveBeenCalledWith(
+        ["log", "--format=%H%x09%s", "-n", "8", "HEAD"],
+        { cwd: "/tmp/worktree", timeoutMs: 10_000 },
+      );
+      expect(commits).toEqual([
+        { sha: "abc123def456", subject: "Add feature X" },
+        { sha: "bbb222ccc333", subject: "Fix tests" },
+      ]);
+    });
+
+    it("defaults to 8 commits and HEAD ref", async () => {
+      mockRunGit.mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: "aaa111bbb222\tFirst commit\n",
+        stderr: "",
+      } as any);
+
+      await readRecentCommits("/tmp/worktree");
+
+      expect(mockRunGit).toHaveBeenCalledWith(
+        ["log", "--format=%H%x09%s", "-n", "8", "HEAD"],
+        expect.objectContaining({ cwd: "/tmp/worktree" }),
+      );
+    });
+
+    it("uses a custom ref when provided", async () => {
+      mockRunGit.mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: "aaa111bbb222\tRemote commit\n",
+        stderr: "",
+      } as any);
+
+      await readRecentCommits("/tmp/worktree", 5, "origin/main");
+
+      expect(mockRunGit).toHaveBeenCalledWith(
+        ["log", "--format=%H%x09%s", "-n", "5", "origin/main"],
+        expect.objectContaining({ cwd: "/tmp/worktree" }),
+      );
+    });
+
+    it("returns empty array when git exits with non-zero", async () => {
+      mockRunGit.mockResolvedValueOnce({
+        exitCode: 128,
+        stdout: "",
+        stderr: "fatal: bad default revision 'HEAD'",
+      } as any);
+
+      const commits = await readRecentCommits("/tmp/worktree");
+
+      expect(commits).toEqual([]);
+    });
+
+    it("filters out empty lines and entries with no sha or subject", async () => {
+      mockRunGit.mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: "abc123\tGood commit\n\n  \n\t\n",
+        stderr: "",
+      } as any);
+
+      const commits = await readRecentCommits("/tmp/worktree");
+
+      expect(commits).toEqual([{ sha: "abc123", subject: "Good commit" }]);
+    });
+
+    it("handles tab characters in the commit subject", async () => {
+      mockRunGit.mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: "abc123\tSubject\twith\ttabs\n",
+        stderr: "",
+      } as any);
+
+      const commits = await readRecentCommits("/tmp/worktree");
+
+      expect(commits).toEqual([{ sha: "abc123", subject: "Subject\twith\ttabs" }]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// launchRebaseResolutionChat — uses the mocked resolverUtils
+// ---------------------------------------------------------------------------
 
 const createdTempDirs: string[] = [];
 afterAll(() => {

@@ -3,8 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
+import type { LaneSummary } from "../../../shared/types";
 import { openKvDb } from "../state/kvDb";
+import { buildIntegrationPreflight, resolveIntegrationBaseLane } from "./integrationPlanning";
+import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { createQueueLandingService } from "./queueLandingService";
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
 
 function createLogger() {
   return {
@@ -62,6 +69,99 @@ async function seedProject(db: any, projectId: string, repoRoot: string, laneId 
     ["lane-main", projectId, "main", null, "primary", "main", "main", repoRoot, null, 0, null, null, null, null, "active", now, null],
   );
 }
+
+function makeLane(id: string, branch: string, overrides: Partial<LaneSummary> = {}): LaneSummary {
+  return {
+    id,
+    name: branch,
+    description: null,
+    laneType: "worktree",
+    baseRef: "refs/heads/main",
+    branchRef: `refs/heads/${branch}`,
+    worktreePath: `/tmp/${id}`,
+    attachedRootPath: null,
+    parentLaneId: null,
+    childCount: 0,
+    stackDepth: 0,
+    parentStatus: null,
+    isEditProtected: false,
+    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
+    color: null,
+    icon: null,
+    tags: [],
+    folder: null,
+    createdAt: "2026-03-11T00:00:00.000Z",
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// integrationPlanning — base-lane resolution + preflight dedup
+// ---------------------------------------------------------------------------
+
+describe("integrationPlanning", () => {
+  it("resolves the base lane from the actual branch lane", () => {
+    const primary = makeLane("lane-main", "main", { laneType: "primary", baseRef: "refs/heads/main" });
+    const child = makeLane("lane-feature", "feature/auth", { baseRef: "refs/heads/main" });
+
+    expect(resolveIntegrationBaseLane([child, primary], "main")?.id).toBe("lane-main");
+  });
+
+  it("does not treat descendant lanes with matching baseRef as the base lane", () => {
+    const child = makeLane("lane-feature", "feature/auth", { baseRef: "refs/heads/main" });
+
+    expect(resolveIntegrationBaseLane([child], "main")).toBeNull();
+  });
+
+  it("deduplicates source lanes and reports missing lanes", () => {
+    const lanes = [makeLane("lane-a", "feature/a"), makeLane("lane-main", "main", { laneType: "primary" })];
+
+    expect(buildIntegrationPreflight(lanes, ["lane-a", "lane-a", "lane-missing"], "main")).toEqual({
+      baseLane: lanes[1],
+      uniqueSourceLaneIds: ["lane-a", "lane-missing"],
+      duplicateSourceLaneIds: ["lane-a"],
+      missingSourceLaneIds: ["lane-missing"],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// integrationValidation — porcelain parsing + conflict marker detection
+// ---------------------------------------------------------------------------
+
+describe("integrationValidation", () => {
+  it("parses changed and unmerged files from porcelain output", () => {
+    expect(
+      parseGitStatusPorcelain([
+        "UU src/conflicted.ts",
+        "M  src/modified.ts",
+        "A  src/added.ts",
+      ].join("\n")),
+    ).toEqual({
+      unmergedPaths: ["src/conflicted.ts"],
+      changedPaths: ["src/conflicted.ts", "src/modified.ts", "src/added.ts"],
+    });
+  });
+
+  it("normalizes renamed paths to the new filename", () => {
+    expect(
+      parseGitStatusPorcelain("R  src/old-name.ts -> src/new-name.ts"),
+    ).toEqual({
+      unmergedPaths: [],
+      changedPaths: ["src/new-name.ts"],
+    });
+  });
+
+  it("detects merge conflict markers in file contents", () => {
+    expect(hasMergeConflictMarkers("<<<<<<< ours\nhello\n=======\nworld\n>>>>>>> theirs\n")).toBe(true);
+    expect(hasMergeConflictMarkers("function example() { return 'clean'; }\n")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queueLandingService — ordering, auto-resolve, guard transitions, cancel
+// ---------------------------------------------------------------------------
 
 describe("queueLandingService", () => {
   it("preserves queue member order instead of re-sorting by PR creation time", async () => {
@@ -269,8 +369,6 @@ describe("queueLandingService", () => {
       ["group-guard", projectId, "Queue Guard", "main", "2026-03-09T00:00:00.000Z"],
     );
 
-    // First land call fails with a non-merge-conflict error (entry goes to "failed").
-    // Second land call succeeds (for the second entry if it gets reached).
     const land = vi.fn()
       .mockResolvedValueOnce({
         prId: "pr-fail",
@@ -319,7 +417,6 @@ describe("queueLandingService", () => {
       emitEvent: () => {},
     });
 
-    // Start the queue; first entry will fail, queue pauses.
     await service.startQueue({ groupId: "group-guard", method: "squash" });
     const paused = await waitFor(
       () => service.getQueueStateByGroup("group-guard"),
@@ -329,11 +426,6 @@ describe("queueLandingService", () => {
     expect(paused.entries[0]!.state).toBe("failed");
     expect(paused.entries[1]!.state).toBe("pending");
 
-    // Set up entries so the loop will encounter a "failed" entry it cannot
-    // transition to "landing". entry[0] is "landed" (the loop skips it),
-    // entry[1] is "failed" (guardTransition rejects failed→landing).
-    // Put currentPosition at 0 so resumeQueue sees entry[0] = "landed" and
-    // does NOT reset it (resumeQueue only resets failed/paused/resolving/landing).
     const entriesForGuardTest = paused.entries.map((e, i) => ({
       ...e,
       state: i === 0 ? "landed" : "failed",
@@ -343,7 +435,6 @@ describe("queueLandingService", () => {
       [JSON.stringify(entriesForGuardTest), paused.queueId],
     );
 
-    // Create a second service instance pointing at the same DB, then resume.
     const service2 = createQueueLandingService({
       db,
       logger: createLogger(),
@@ -369,24 +460,15 @@ describe("queueLandingService", () => {
       emitEvent: () => {},
     });
 
-    // resumeQueue sets the queue to "landing" and launches the loop.
-    // The loop skips entry[0] (landed), hits entry[1] (failed), and
-    // guardTransition rejects failed→landing so the loop exits immediately.
     const resumed = service2.resumeQueue({ queueId: paused.queueId });
     expect(resumed).not.toBeNull();
     expect(resumed!.state).toBe("landing");
 
-    // The landing loop runs asynchronously. When guardTransition rejects the
-    // failed→landing transition, the loop returns silently without updating DB
-    // state — there is no observable state change to poll for. Yield to the
-    // event loop so the async loop body executes, then verify the invariants.
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const finalState = service2.getQueueState(paused.queueId);
     expect(finalState).not.toBeNull();
-    // entry[1] must still be "failed" — guardTransition prevented it from becoming "landing"
     expect(finalState!.entries[1]!.state).toBe("failed");
-    // land was called exactly once (the original failure) — no additional calls
     expect(land).toHaveBeenCalledTimes(1);
   });
 
@@ -401,7 +483,6 @@ describe("queueLandingService", () => {
       ["group-cancel", projectId, "Queue Cancel", "main", "2026-03-09T00:00:00.000Z"],
     );
 
-    // Controllable deferred promises so the test drives timing explicitly
     let resolveSlowLand!: () => void;
     const slowLandStarted = new Promise<void>((resolve) => { resolveSlowLand = resolve; });
     let releaseSlowLand!: () => void;
@@ -409,7 +490,6 @@ describe("queueLandingService", () => {
 
     const land = vi.fn().mockImplementation(async ({ prId }: { prId: string }) => {
       if (prId === "pr-slow") {
-        // Signal that the slow land has started, then wait for the test to release
         resolveSlowLand();
         await slowLandGate;
         return {
@@ -464,27 +544,20 @@ describe("queueLandingService", () => {
     const queueState = await service.startQueue({ groupId: "group-cancel", method: "squash" });
     const cancelQueueId = queueState.queueId;
 
-    // Wait for the land mock to actually be entered before cancelling
     await slowLandStarted;
     db.run(
       "update queue_landing_state set state = 'cancelled', completed_at = ? where id = ?",
       [new Date().toISOString(), cancelQueueId],
     );
 
-    // Release the slow land so the loop can proceed and notice the cancellation
     releaseSlowLand();
 
-    // Poll until the service reflects the cancelled state
     const finalState = await waitFor(
       () => service.getQueueStateByGroup("group-cancel"),
       (state) => state.state === "cancelled",
     );
     expect(finalState).not.toBeNull();
-    // The queue should be cancelled (as we set it externally).
     expect(finalState!.state).toBe("cancelled");
-    // The second entry (pr-fast) should never have been processed.
-    // land was called once for pr-slow, but the loop should have bailed
-    // after noticing the cancellation via isQueueCancelledOrDone().
     expect(land).toHaveBeenCalledTimes(1);
     expect(land.mock.calls[0]![0].prId).toBe("pr-slow");
   });
