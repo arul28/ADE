@@ -265,6 +265,15 @@ yet arrived in the catchup batch.
   version) so reconnects resume cleanly. The legacy
   `lastBrainDeviceId` draft field has been removed — connections now
   resolve an address candidate from the host's device registry.
+- Per-host token shelf: in addition to the legacy
+  single-token `connection-token` slot, tokens may be saved against a
+  derived `connection-token.<hostKey>` account where `hostKey` is
+  `device:<hostIdentity>`, `route:<host>:<port>`, or
+  `name:<hostName>:<port>`. `SyncService` keeps a parallel
+  `ade.sync.hostProfiles` `UserDefaults` blob so a phone that has
+  paired with multiple desktops can re-resolve the right token when
+  the desktop initiates a project switch without re-bundling
+  credentials.
 - Uses iOS Keychain Services API (`SecItemAdd` / `SecItemCopyMatching`
   / `SecItemUpdate` / `SecItemDelete`).
 

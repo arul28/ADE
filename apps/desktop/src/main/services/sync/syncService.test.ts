@@ -611,7 +611,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     // so simulate it here so we can assert the toggle re-exposes the token via getStatus.
     fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "toggled-token\n", "utf8");
 
-    service.setHostStartupEnabled(true);
+    await service.setHostStartupEnabled(true);
 
     await vi.waitFor(() => {
       expect(createSyncHostServiceMock).toHaveBeenCalled();
@@ -828,4 +828,206 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(disposeFirstAttempt).toHaveBeenCalledTimes(1);
     expect(service.getHostService()?.getPort()).toBe(8788);
   }, 30_000);
+
+  describe("forceHostRole", () => {
+    it("ignores a persisted viewer-style saved draft and reports role 'brain'", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-force-draft-");
+      const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-force-draft-app-"));
+      // Pre-seed a saved draft + bootstrap token on disk so readSavedDraft would
+      // return a non-null draft pointing at a remote brain in the absence of forceHostRole.
+      fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "force-draft-token\n", "utf8");
+      fs.writeFileSync(
+        path.join(appPairingDir, "sync-peer-draft.json"),
+        JSON.stringify({
+          host: "10.0.0.9",
+          port: 8787,
+          authKind: "paired",
+          pairedDeviceId: "remote-brain",
+          lastRemoteDbVersion: 0,
+        }),
+        "utf8",
+      );
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        phonePairingStateDir: appPairingDir,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        missionService: { list: () => [] } as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        processService: { listRuntime: () => [] } as any,
+        hostStartupEnabled: true,
+        forceHostRole: true,
+      } as any);
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      const status = await service.getStatus();
+      expect(status.role).toBe("brain");
+      expect(status.clusterState?.brainDeviceId).toBe(status.localDevice.deviceId);
+    }, 30_000);
+
+    it("reassigns the cluster brainDeviceId to the local device on init", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-force-cluster-");
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+      // Seed a remote-brain cluster row so refreshRoleState must override it.
+      const now = "2026-04-01T00:00:00.000Z";
+      db.run(
+        `insert into devices(
+          device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          "remote-brain",
+          "remote-site",
+          "Remote host",
+          "macOS",
+          "desktop",
+          now,
+          now,
+          now,
+          "10.0.0.9",
+          8787,
+          null,
+          JSON.stringify(["10.0.0.9"]),
+          JSON.stringify({}),
+        ],
+      );
+      db.run(
+        `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+         values (?, ?, ?, ?, ?)`,
+        ["default", "remote-brain", 5, now, "remote-brain"],
+      );
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        missionService: { list: () => [] } as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        processService: { listRuntime: () => [] } as any,
+        forceHostRole: true,
+      } as any);
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      const status = await service.getStatus();
+      expect(status.role).toBe("brain");
+      expect(status.clusterState?.brainDeviceId).toBe(status.localDevice.deviceId);
+      expect(status.clusterState?.brainDeviceId).not.toBe("remote-brain");
+      expect(status.clusterState?.brainEpoch).toBe(6);
+    }, 30_000);
+  });
+
+  describe("setHostDiscoveryEnabled / setHostStartupEnabled", () => {
+    it("setHostDiscoveryEnabled no-ops when called with the unchanged value", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-discovery-noop-");
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        missionService: { list: () => [] } as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        processService: { listRuntime: () => [] } as any,
+      });
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      const hostService = service.getHostService();
+      expect(hostService).not.toBeNull();
+      const setDiscoveryEnabledSpy = (hostService as any).setDiscoveryEnabled as ReturnType<typeof vi.fn>;
+      // Default is enabled; calling with the same value should not invoke the host again.
+      setDiscoveryEnabledSpy.mockClear();
+      service.setHostDiscoveryEnabled(true);
+      service.setHostDiscoveryEnabled(true);
+      expect(setDiscoveryEnabledSpy).not.toHaveBeenCalled();
+      // A change still propagates exactly once.
+      service.setHostDiscoveryEnabled(false);
+      expect(setDiscoveryEnabledSpy).toHaveBeenCalledTimes(1);
+      expect(setDiscoveryEnabledSpy).toHaveBeenCalledWith(false);
+    }, 30_000);
+
+    it("setHostStartupEnabled returns an awaitable promise that resolves after refreshRoleState", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-startup-await-");
+      const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-startup-await-app-"));
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        phonePairingStateDir: appPairingDir,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        missionService: { list: () => [] } as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        processService: { listRuntime: () => [] } as any,
+        hostStartupEnabled: false,
+      } as any);
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      expect(createSyncHostServiceMock).not.toHaveBeenCalled();
+
+      fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "await-token\n", "utf8");
+      const result = service.setHostStartupEnabled(true);
+      expect(typeof (result as any)?.then).toBe("function");
+      await result;
+      expect(createSyncHostServiceMock).toHaveBeenCalled();
+      const enabledStatus = await service.getStatus();
+      expect(enabledStatus.bootstrapToken).toBe("await-token");
+    }, 30_000);
+  });
 });

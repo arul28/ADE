@@ -675,12 +675,12 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testCompleteChatSubscribeSnapshotReplacesExistingHistory() async throws {
+  func testCompleteChatSubscribeSnapshotMergesWithExistingLiveHistory() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
-    let old = AgentChatEventEnvelope(
+    let live = AgentChatEventEnvelope(
       sessionId: "session-1",
       timestamp: "2026-03-17T00:00:00.000Z",
-      event: .userMessage(text: "Old event", attachments: [], turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil),
+      event: .userMessage(text: "Live event", attachments: [], turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil),
       sequence: 1,
       provenance: nil
     )
@@ -692,10 +692,10 @@ final class ADETests: XCTestCase {
       provenance: nil
     )
 
-    service.recordChatEventEnvelope(old)
-    service.replaceChatEventHistory(sessionId: "session-1", events: [fresh])
+    service.recordChatEventEnvelope(live)
+    service.mergeChatEventHistory(sessionId: "session-1", events: [fresh])
 
-    XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [fresh])
+    XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [live, fresh])
   }
 
   @MainActor
@@ -4678,6 +4678,79 @@ final class ADETests: XCTestCase {
     let opencodeGroup = groups.first(where: { $0.key == "opencode" })
     let anthropicProvider = opencodeGroup?.providers.first(where: { $0.key == "anthropic" })
     XCTAssertEqual(anthropicProvider?.models.first?.id, "opencode/anthropic/claude-sonnet-4-6")
+  }
+
+  func testWorkModelCatalogIncludesGPT55CodexMetadata() {
+    let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
+    let codexGroup = groups.first(where: { $0.key == "codex" })
+    let openAIProvider = codexGroup?.providers.first(where: { $0.key == "openai" })
+    let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5-codex" })
+
+    XCTAssertEqual(gpt55?.displayName, "GPT-5.5")
+    XCTAssertEqual(gpt55?.tier, .flagship)
+    XCTAssertNotNil(ADEColor.modelBrand(for: "gpt-5.5-codex"))
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.5-codex"), ["low", "medium", "high", "xhigh"])
+  }
+
+  func testDynamicWorkModelCatalogBuildsFromLiveHostModels() {
+    let groups = workModelCatalogGroups(
+      availableModelsByProvider: [
+        "codex": [
+          AgentChatModelInfo(
+            id: "gpt-5.5-codex",
+            displayName: "GPT-5.5",
+            description: "Latest Codex model",
+            isDefault: true,
+            reasoningEfforts: nil,
+            maxThinkingTokens: nil,
+            modelId: nil,
+            family: nil,
+            supportsReasoning: true,
+            supportsTools: true,
+            color: nil
+          ),
+        ],
+        "cursor": [
+          AgentChatModelInfo(
+            id: "claude-4.6-sonnet",
+            displayName: "Sonnet 4.6",
+            description: nil,
+            isDefault: false,
+            reasoningEfforts: nil,
+            maxThinkingTokens: nil,
+            modelId: nil,
+            family: "anthropic",
+            supportsReasoning: true,
+            supportsTools: true,
+            color: nil
+          ),
+          AgentChatModelInfo(
+            id: "auto",
+            displayName: "Auto",
+            description: nil,
+            isDefault: true,
+            reasoningEfforts: nil,
+            maxThinkingTokens: nil,
+            modelId: nil,
+            family: "cursor",
+            supportsReasoning: false,
+            supportsTools: true,
+            color: nil
+          ),
+        ],
+      ],
+      currentModelId: "",
+      currentProvider: "codex"
+    )
+
+    let codexGroup = groups.first(where: { $0.key == "codex" })
+    let codexOpenAI = codexGroup?.providers.first(where: { $0.key == "openai" })
+    XCTAssertEqual(codexOpenAI?.models.first?.id, "gpt-5.5-codex")
+    XCTAssertEqual(codexOpenAI?.models.first?.tagline, "Flagship · 400K context")
+
+    let cursorGroup = groups.first(where: { $0.key == "cursor" })
+    XCTAssertEqual(cursorGroup?.providers.map(\.key), ["anthropic", "cursor"])
+    XCTAssertEqual(cursorGroup?.providers.first?.models.first?.provider, "claude")
   }
 
   func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {

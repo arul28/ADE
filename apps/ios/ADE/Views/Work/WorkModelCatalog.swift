@@ -61,6 +61,8 @@ struct WorkModelCatalogGroupLegacyView: Identifiable, Hashable {
   let models: [WorkModelOption]
 }
 
+private let workModelGroupOrder = ["claude", "codex", "cursor", "opencode"]
+
 /// Flat view of the curated catalog: every model in a single provider tab so
 /// legacy call sites keep functioning. Prefer `workModelCatalogGroups` for
 /// the desktop-shaped hierarchical picker.
@@ -78,9 +80,9 @@ func workModelCatalog(currentModelId: String, currentProvider: String) -> [WorkM
 /// `apps/desktop/src/shared/modelRegistry.ts` + `ModelCatalogPanel` so mobile
 /// users see the same CLAUDE / CODEX / CURSOR / OPENCODE tab strip and, within
 /// OPENCODE, the same Anthropic / OpenAI / Google / local provider badges.
-/// The `currentModelId` + `currentProvider` hints ensure a freshly released
-/// host model that isn't in the curated list still surfaces in the list.
-func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> [WorkModelCatalogGroup] {
+/// This remains a curated fallback/metadata source; the live picker can also
+/// build the same hierarchy from host-returned `chat.models` payloads.
+private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
   var groups: [WorkModelCatalogGroup] = []
 
   groups.append(WorkModelCatalogGroup(
@@ -108,6 +110,7 @@ func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> 
         key: "openai",
         displayName: "OpenAI",
         models: [
+          WorkModelOption(id: "gpt-5.5-codex", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 400K context", provider: "codex"),
           WorkModelOption(id: "gpt-5.4-codex", displayName: "GPT-5.4", tier: .flagship, tagline: "Flagship · 400K context", provider: "codex"),
           WorkModelOption(id: "gpt-5.4-mini-codex", displayName: "GPT-5.4-Mini", tier: .fast, tagline: "Cheaper 1M-context variant", provider: "codex"),
           WorkModelOption(id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex", tier: .balanced, tagline: "Tuned for code edits", provider: "codex"),
@@ -212,9 +215,271 @@ func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> 
     ]
   ))
 
+  return groups
+}
+
+/// Curated catalog with the current live model injected when needed.
+func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> [WorkModelCatalogGroup] {
+  injectCurrentWorkModelIfNeeded(
+    into: workCuratedModelCatalogGroups(),
+    currentModelId: currentModelId,
+    currentProvider: currentProvider
+  )
+}
+
+/// Live host-driven catalog used by the mobile Work picker. This mirrors the
+/// desktop wiring more closely: the host decides which models are currently
+/// available per runtime, while the curated catalog only fills in friendly
+/// tiers/taglines and ordering.
+func workModelCatalogGroups(
+  availableModelsByProvider: [String: [AgentChatModelInfo]],
+  currentModelId: String,
+  currentProvider: String
+) -> [WorkModelCatalogGroup] {
+  let curatedGroups = workCuratedModelCatalogGroups()
+  let curatedModelLookup = workCuratedModelLookup(from: curatedGroups)
+
+  var groups: [WorkModelCatalogGroup] = []
+  for groupKey in workModelGroupOrder {
+    let availableModels = availableModelsByProvider[groupKey] ?? []
+    guard !availableModels.isEmpty else { continue }
+
+    var modelsByProvider: [String: [WorkModelOption]] = [:]
+    for model in availableModels {
+      let providerKey = workModelProviderKey(for: model, topLevelProvider: groupKey)
+      let option = workDynamicModelOption(
+        from: model,
+        topLevelProvider: groupKey,
+        providerKey: providerKey,
+        curated: curatedModelLookup[model.id]
+      )
+      modelsByProvider[providerKey, default: []].append(option)
+    }
+
+    let providers = modelsByProvider.keys.sorted { lhs, rhs in
+      let lhsOrder = workProviderSortOrder(groupKey: groupKey, providerKey: lhs, curatedGroups: curatedGroups)
+      let rhsOrder = workProviderSortOrder(groupKey: groupKey, providerKey: rhs, curatedGroups: curatedGroups)
+      if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+      return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+    }.compactMap { providerKey -> WorkModelProvider? in
+      let sortedModels = workDeduplicatedModelOptions(modelsByProvider[providerKey, default: []]).sorted { lhs, rhs in
+        let lhsOrder = workModelSortOrder(groupKey: groupKey, providerKey: providerKey, modelId: lhs.id, curatedGroups: curatedGroups)
+        let rhsOrder = workModelSortOrder(groupKey: groupKey, providerKey: providerKey, modelId: rhs.id, curatedGroups: curatedGroups)
+        if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+        return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+      }
+      guard !sortedModels.isEmpty else { return nil }
+      return WorkModelProvider(
+        key: providerKey,
+        displayName: workProviderDisplayName(groupKey: groupKey, providerKey: providerKey, curatedGroups: curatedGroups),
+        models: sortedModels
+      )
+    }
+
+    guard !providers.isEmpty else { continue }
+    let displayName = curatedGroups.first(where: { $0.key == groupKey })?.displayName ?? providerLabel(groupKey)
+    groups.append(WorkModelCatalogGroup(key: groupKey, displayName: displayName, providers: providers))
+  }
+
+  return injectCurrentWorkModelIfNeeded(
+    into: groups,
+    currentModelId: currentModelId,
+    currentProvider: currentProvider
+  )
+}
+
+private func workCuratedModelLookup(from groups: [WorkModelCatalogGroup]) -> [String: WorkModelOption] {
+  var lookup: [String: WorkModelOption] = [:]
+  for group in groups {
+    for provider in group.providers {
+      for model in provider.models {
+        lookup[model.id] = model
+      }
+    }
+  }
+  return lookup
+}
+
+private func workProviderDisplayName(
+  groupKey: String,
+  providerKey: String,
+  curatedGroups: [WorkModelCatalogGroup]
+) -> String {
+  if let curated = curatedGroups
+    .first(where: { $0.key == groupKey })?
+    .providers
+    .first(where: { $0.key == providerKey }) {
+    return curated.displayName
+  }
+
+  switch providerKey {
+  case "anthropic": return "Anthropic"
+  case "openai": return "OpenAI"
+  case "google": return "Google"
+  case "xai": return "xAI"
+  case "deepseek": return "DeepSeek"
+  case "lmstudio": return "LM Studio"
+  case "openrouter": return "OpenRouter"
+  case "groq": return "Groq"
+  case "ollama": return "Ollama"
+  case "together": return "Together"
+  case "cursor": return "Cursor"
+  default: return providerKey.capitalized
+  }
+}
+
+private func workProviderSortOrder(
+  groupKey: String,
+  providerKey: String,
+  curatedGroups: [WorkModelCatalogGroup]
+) -> Int {
+  guard let group = curatedGroups.first(where: { $0.key == groupKey }) else {
+    return Int.max
+  }
+  return group.providers.firstIndex(where: { $0.key == providerKey }) ?? Int.max - 1
+}
+
+private func workModelSortOrder(
+  groupKey: String,
+  providerKey: String,
+  modelId: String,
+  curatedGroups: [WorkModelCatalogGroup]
+) -> Int {
+  guard let group = curatedGroups.first(where: { $0.key == groupKey }),
+        let provider = group.providers.first(where: { $0.key == providerKey }) else {
+    return Int.max
+  }
+  return provider.models.firstIndex(where: { $0.id == modelId }) ?? Int.max - 1
+}
+
+private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvider: String) -> String {
+  let normalizedId = model.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedFamily = model.family?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+
+  switch topLevelProvider {
+  case "claude":
+    return "anthropic"
+  case "codex":
+    return "openai"
+  case "opencode":
+    if normalizedId.hasPrefix("opencode/") {
+      let parts = normalizedId.split(separator: "/", omittingEmptySubsequences: true)
+      if parts.count >= 3 {
+        return String(parts[1])
+      }
+    }
+    return normalizedFamily.isEmpty ? "opencode" : normalizedFamily
+  case "cursor":
+    if normalizedId == "auto" || normalizedId.hasPrefix("cursor/") || normalizedId.contains("composer") {
+      return "cursor"
+    }
+    if normalizedFamily == "cursor" {
+      return "cursor"
+    }
+    if normalizedFamily == "anthropic" || normalizedId.contains("claude") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
+      return "anthropic"
+    }
+    if normalizedFamily == "openai" || normalizedFamily == "codex" || normalizedId.contains("gpt") || normalizedId.contains("codex") {
+      return "openai"
+    }
+    if normalizedFamily == "google" || normalizedId.contains("gemini") {
+      return "google"
+    }
+    if normalizedFamily == "xai" || normalizedId.contains("grok") {
+      return "xai"
+    }
+    return normalizedFamily.isEmpty ? "cursor" : normalizedFamily
+  default:
+    return topLevelProvider
+  }
+}
+
+private func workModelBrandKey(topLevelProvider: String, providerKey: String) -> String {
+  if topLevelProvider == "claude" { return "claude" }
+  if topLevelProvider == "codex" { return "codex" }
+
+  switch providerKey {
+  case "anthropic": return "claude"
+  case "openai": return "codex"
+  default: return providerKey
+  }
+}
+
+private func workDynamicModelOption(
+  from model: AgentChatModelInfo,
+  topLevelProvider: String,
+  providerKey: String,
+  curated: WorkModelOption?
+) -> WorkModelOption {
+  let displayName = model.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    ? (curated?.displayName ?? model.id)
+    : model.displayName
+  let trimmedDescription = model.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let tagline: String
+  if let curated {
+    tagline = curated.tagline
+  } else if !trimmedDescription.isEmpty, trimmedDescription.localizedCaseInsensitiveCompare(displayName) != .orderedSame {
+    tagline = trimmedDescription
+  } else {
+    var parts: [String] = []
+    if model.isDefault {
+      parts.append("Default on the paired host")
+    }
+    if model.supportsReasoning == true {
+      parts.append("Reasoning")
+    }
+    if model.supportsTools == true {
+      parts.append("Tools")
+    }
+    tagline = parts.isEmpty ? "Available on the paired host" : parts.joined(separator: " · ")
+  }
+
+  let tier: WorkModelOption.Tier
+  if let curated {
+    tier = curated.tier
+  } else {
+    let normalized = model.id.lowercased()
+    if normalized.contains("thinking") {
+      tier = .reasoning
+    } else if normalized.contains("mini") || normalized.contains("flash") || normalized == "auto" || normalized.contains("haiku") {
+      tier = .fast
+    } else if normalized.contains("opus") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
+      tier = .flagship
+    } else {
+      tier = .balanced
+    }
+  }
+
+  return WorkModelOption(
+    id: model.id,
+    displayName: displayName,
+    tier: tier,
+    tagline: tagline,
+    provider: curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey)
+  )
+}
+
+private func workDeduplicatedModelOptions(_ models: [WorkModelOption]) -> [WorkModelOption] {
+  var seen = Set<String>()
+  var deduplicated: [WorkModelOption] = []
+  for model in models {
+    if seen.insert(model.id).inserted {
+      deduplicated.append(model)
+    }
+  }
+  return deduplicated
+}
+
+private func injectCurrentWorkModelIfNeeded(
+  into initialGroups: [WorkModelCatalogGroup],
+  currentModelId: String,
+  currentProvider: String
+) -> [WorkModelCatalogGroup] {
+  var groups = initialGroups
+
   // Ensure the live host model surfaces even when it isn't in the curated
-  // list — fold it into the first provider of the matching group, or
-  // append a lightweight "Other" group when no group matches.
+  // or currently available list — fold it into the first provider of the
+  // matching group, or append a lightweight "Other" group when no group matches.
   if !currentModelId.isEmpty {
     let alreadyPresent = groups.contains { g in
       g.providers.contains { p in p.models.contains { $0.id == currentModelId } }
@@ -228,7 +493,7 @@ func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> 
         displayName: currentModelId,
         tier: .balanced,
         tagline: "In use on the paired host",
-        provider: providerKey
+        provider: workModelBrandKey(topLevelProvider: targetGroupKey, providerKey: providerKey)
       )
       if let groupIndex = groups.firstIndex(where: { $0.key == targetGroupKey }) {
         let providers = groups[groupIndex].providers
@@ -254,7 +519,7 @@ func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> 
           providers: [
             WorkModelProvider(
               key: providerKey,
-              displayName: currentProvider.isEmpty ? "Other" : providerLabel(currentProvider),
+              displayName: currentProvider.isEmpty ? "Other" : workProviderDisplayName(groupKey: targetGroupKey, providerKey: providerKey, curatedGroups: workCuratedModelCatalogGroups()),
               models: [injected]
             )
           ]

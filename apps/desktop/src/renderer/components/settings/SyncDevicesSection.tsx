@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import type {
-  SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
   SyncRoleSnapshot,
@@ -231,7 +230,7 @@ export function SyncDevicesSection() {
     return <div style={{ ...helperTextStyle, color: COLORS.danger }}>Failed to load sync settings: {error}</div>;
   }
   if (!status) {
-    return <div style={helperTextStyle}>Sync is unavailable for this project.</div>;
+    return <div style={helperTextStyle}>Phone sync is unavailable until ADE has a project to serve.</div>;
   }
 
   const peerCount = status.connectedPeers.length;
@@ -240,7 +239,7 @@ export function SyncDevicesSection() {
   const phonesOffline = phones.length - phonesConnected;
   const isLocalHost = status.role === "brain";
   const hasTailscaleAddress = Boolean(status.localDevice.tailscaleIp);
-  const showTailnetDiscovery = shouldShowTailnetDiscoveryPanel(status.tailnetDiscovery, hasTailscaleAddress);
+  const showTailnetDiscovery = shouldShowTailnetDiscoveryPanel(status.tailnetDiscovery);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -303,16 +302,6 @@ export function SyncDevicesSection() {
           <PhonesList devices={phones} busy={busy} onForget={handleForgetDevice} />
         </div>
       </details>
-
-      <details style={detailBlockStyle}>
-        <summary style={detailSummaryStyle}>
-          <span>Advanced</span>
-          <span style={helperTextStyle}>Desktop linking &middot; host handoff</span>
-        </summary>
-        <div style={{ marginTop: 12 }}>
-          <AdvancedSection status={status} busy={busy} runAction={runAction} />
-        </div>
-      </details>
     </div>
   );
 }
@@ -360,7 +349,7 @@ function tailnetRequiresTaggedNode(status: SyncTailnetDiscoveryStatus): boolean 
   );
 }
 
-function shouldShowTailnetDiscoveryPanel(status: SyncTailnetDiscoveryStatus, hasTailscaleAddress: boolean): boolean {
+function shouldShowTailnetDiscoveryPanel(status: SyncTailnetDiscoveryStatus): boolean {
   if (status.state === "disabled" && !status.error && !status.stderr) return false;
   return true;
 }
@@ -1022,134 +1011,6 @@ function PhonesList({
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function AdvancedSection({
-  status,
-  busy,
-  runAction,
-}: {
-  status: SyncRoleSnapshot;
-  busy: boolean;
-  runAction: (work: () => Promise<void>) => Promise<void>;
-}) {
-  const isLocalHost = status.role === "brain";
-
-  const [connectHost, setConnectHost] = useState(status.client.savedDraft?.host ?? "");
-  const [connectPort, setConnectPort] = useState(String(status.client.savedDraft?.port ?? 8787));
-  const [connectToken, setConnectToken] = useState("");
-
-  const handleConnect = useCallback(() => runAction(async () => {
-    if (!connectHost.trim()) throw new Error("Enter the host address or IP.");
-    const port = Number(connectPort);
-    if (!Number.isFinite(port) || port <= 0) throw new Error("Enter a valid port.");
-    if (!connectToken.trim()) throw new Error("Enter the bootstrap token from the host.");
-    const draft: SyncDesktopConnectionDraft = {
-      host: connectHost.trim(),
-      port: Math.floor(port),
-      token: connectToken.trim(),
-    };
-    await window.ade.sync.connectToBrain(draft);
-  }), [connectHost, connectPort, connectToken, runAction]);
-
-  const handleDisconnect = useCallback(() => runAction(async () => {
-    await window.ade.sync.disconnectFromBrain();
-  }), [runAction]);
-
-  const handleTransfer = useCallback(() => runAction(async () => {
-    await window.ade.sync.transferBrainToLocal();
-  }), [runAction]);
-
-  return (
-    <div style={{ display: "grid", gap: 14 }}>
-      {isLocalHost && status.bootstrapToken ? (
-        <div style={panelStyle}>
-          <div style={LABEL_STYLE}>Host link details</div>
-          <div style={codeValueStyle}>
-            <div>Host: {status.localDevice.lastHost ?? "127.0.0.1"}</div>
-            <div>Port: {status.localDevice.lastPort ?? 8787}</div>
-            <div>Token: {status.bootstrapToken}</div>
-          </div>
-          <div style={helperTextStyle}>
-            Use these details to link another desktop as a controller.
-          </div>
-        </div>
-      ) : null}
-
-      {!isLocalHost ? (
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={LABEL_STYLE}>Link this desktop to a host</div>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) 120px minmax(220px, 1fr)", gap: 10 }}>
-            <label style={{ display: "grid", gap: 6 }}>
-              <span style={LABEL_STYLE}>Host or IP</span>
-              <input value={connectHost} onChange={(event) => setConnectHost(event.target.value)} style={inputStyle} placeholder="127.0.0.1" />
-            </label>
-            <label style={{ display: "grid", gap: 6 }}>
-              <span style={LABEL_STYLE}>Port</span>
-              <input value={connectPort} onChange={(event) => setConnectPort(event.target.value)} style={inputStyle} placeholder="8787" />
-            </label>
-            <label style={{ display: "grid", gap: 6 }}>
-              <span style={LABEL_STYLE}>Bootstrap token</span>
-              <input value={connectToken} onChange={(event) => setConnectToken(event.target.value)} style={inputStyle} placeholder="Paste host bootstrap token" />
-            </label>
-          </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button type="button" style={primaryButton()} disabled={busy} onClick={handleConnect}>
-              Connect
-            </button>
-            {status.client.state === "connected" ? (
-              <button type="button" style={outlineButton()} disabled={busy} onClick={handleDisconnect}>
-                Disconnect
-              </button>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
-      {!isLocalHost ? (
-        <div style={{ display: "grid", gap: 10, borderTop: `1px solid ${COLORS.border}`, paddingTop: 14 }}>
-          <div style={LABEL_STYLE}>Move hosting to this desktop</div>
-          <div style={helperTextStyle}>
-            Host handoff does not move live processes. Running missions, chat turns, terminals, or managed
-            processes must stop first.
-          </div>
-          <div>
-            <button
-              type="button"
-              style={outlineButton({
-                color: status.transferReadiness.ready ? COLORS.textPrimary : COLORS.textMuted,
-                borderColor: status.transferReadiness.ready ? COLORS.accentBorder : COLORS.border,
-              })}
-              disabled={busy || !status.transferReadiness.ready}
-              onClick={handleTransfer}
-            >
-              Make this desktop the host
-            </button>
-          </div>
-          <div style={{ ...helperTextStyle, color: status.transferReadiness.ready ? COLORS.success : COLORS.warning }}>
-            {status.transferReadiness.ready
-              ? "This desktop can take over hosting now."
-              : "Stop the blocking live work below before moving hosting."}
-          </div>
-          {status.transferReadiness.blockers.length > 0 ? (
-            <div style={panelStyle}>
-              <div style={LABEL_STYLE}>Blocking live work</div>
-              <div style={{ display: "grid", gap: 8 }}>
-                {status.transferReadiness.blockers.map((blocker) => (
-                  <div key={`${blocker.kind}:${blocker.id}`}>
-                    <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
-                      {blocker.label}
-                    </div>
-                    <div style={helperTextStyle}>{blocker.detail}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   );
 }

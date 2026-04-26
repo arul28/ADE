@@ -6,6 +6,10 @@ final class KeychainService {
   private let tokenAccount = "connection-token"
   private let deviceIdAccount = "device-id"
 
+  private func tokenAccount(forHostKey hostKey: String) -> String {
+    "connection-token.\(hostKey)"
+  }
+
   private func saveString(_ value: String, account: String) {
     let data = Data(value.utf8)
     let query: [String: Any] = [
@@ -50,12 +54,24 @@ final class KeychainService {
     saveString(token, account: tokenAccount)
   }
 
+  func saveToken(_ token: String, forHostKey hostKey: String) {
+    saveString(token, account: tokenAccount(forHostKey: hostKey))
+  }
+
   func loadToken() -> String? {
     loadString(account: tokenAccount)
   }
 
+  func loadToken(forHostKey hostKey: String) -> String? {
+    loadString(account: tokenAccount(forHostKey: hostKey))
+  }
+
   func clearToken() {
     clearString(account: tokenAccount)
+  }
+
+  func clearToken(forHostKey hostKey: String) {
+    clearString(account: tokenAccount(forHostKey: hostKey))
   }
 
   func saveDeviceId(_ deviceId: String) {

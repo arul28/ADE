@@ -105,6 +105,16 @@ struct WorkSessionDestinationView: View {
       .task(id: liveChatObservationKey) {
         syncTranscriptFromLiveEvents()
       }
+      .task(id: artifactObservationKey) {
+        // Proof rows arrive through CRDT-backed local DB updates, not chat
+        // event streams, so observe the synced DB revision directly.
+        try? await Task.sleep(nanoseconds: 320_000_000)
+        guard !Task.isCancelled else { return }
+        // Local sync can tick rapidly while a turn is streaming. Coalesce
+        // refreshes here so we do not refetch artifact lists for every
+        // unrelated revision burst while the user is reading the chat.
+        await refreshArtifacts(force: false)
+      }
       .task(id: session?.laneId ?? initialSession?.laneId ?? "") {
         await syncLanePresence()
       }
@@ -189,6 +199,10 @@ struct WorkSessionDestinationView: View {
 
   var liveChatObservationKey: String {
     "\(sessionId)-\(syncService.chatEventNotificationRevision)-\(syncService.chatEventRevision(for: sessionId))"
+  }
+
+  var artifactObservationKey: String {
+    "\(sessionId)-\(syncService.localStateRevision)"
   }
 
   var trimmedInitialOpeningPrompt: String {

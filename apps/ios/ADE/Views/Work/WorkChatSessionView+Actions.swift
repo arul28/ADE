@@ -70,6 +70,22 @@ extension WorkChatSessionView {
   }
 
   @MainActor
+  func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
+    if animated {
+      withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+        proxy.scrollTo("chat-end", anchor: .bottom)
+      }
+      return
+    }
+
+    var transaction = Transaction()
+    transaction.animation = nil
+    withTransaction(transaction) {
+      proxy.scrollTo("chat-end", anchor: .bottom)
+    }
+  }
+
+  @MainActor
   func runSessionAction(_ action: @escaping @MainActor () async -> Void) async {
     actionInFlight = true
     defer { actionInFlight = false }

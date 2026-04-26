@@ -129,6 +129,8 @@ enum ADEColor {
     "anthropic/claude-haiku-4-5": 0x06B6D4,
     "haiku": 0x06B6D4,
     // OpenAI / Codex
+    "openai/gpt-5.5-codex": 0x10A37F,
+    "gpt-5.5-codex": 0x10A37F,
     "openai/gpt-5.4-codex": 0x10A37F,
     "gpt-5.4-codex": 0x10A37F,
     "openai/gpt-5.4-mini-codex": 0x34D399,
@@ -195,6 +197,8 @@ enum ADEColor {
     "sonnet": ["low", "medium", "high"],
     // Claude Haiku intentionally absent — no reasoning tiers.
     // OpenAI / Codex
+    "openai/gpt-5.5-codex": ["low", "medium", "high", "xhigh"],
+    "gpt-5.5-codex": ["low", "medium", "high", "xhigh"],
     "openai/gpt-5.4-codex": ["low", "medium", "high", "xhigh"],
     "gpt-5.4-codex": ["low", "medium", "high", "xhigh"],
     "openai/gpt-5.4-mini-codex": ["low", "medium", "high", "xhigh"],

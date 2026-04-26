@@ -183,6 +183,10 @@ type SyncHostServiceArgs = {
   projectCatalogProvider?: {
     listProjects: () => Promise<SyncProjectCatalogPayload>;
     prepareProjectConnection: (args: SyncProjectSwitchRequestPayload) => Promise<SyncProjectSwitchResultPayload>;
+    completeProjectConnection?: (
+      args: SyncProjectSwitchRequestPayload,
+      result: SyncProjectSwitchResultPayload,
+    ) => Promise<void>;
   };
   onStateChanged?: () => void;
   notificationEventBus?: NotificationEventBus | null;
@@ -1089,6 +1093,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }));
   }
 
+  function sendAndWait<TPayload>(
+    ws: WebSocket,
+    type: SyncEnvelope["type"],
+    payload: TPayload,
+    requestId?: string | null,
+  ): Promise<void> {
+    if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
+      return Promise.reject(new Error("Cannot send on closed WebSocket."));
+    }
+    return new Promise<void>((resolve, reject) => {
+      ws.send(
+        encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }),
+        (error) => {
+          if (error) reject(error);
+          else resolve();
+        },
+      );
+    });
+  }
+
   async function buildProjectCatalogPayload(): Promise<SyncProjectCatalogPayload> {
     if (!args.projectCatalogProvider) {
       return { projects: [] };
@@ -1117,7 +1141,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     try {
       const result = await args.projectCatalogProvider.prepareProjectConnection(payload ?? {});
-      send(peer.ws, "project_switch_result", result, requestId);
+      await sendAndWait(peer.ws, "project_switch_result", result, requestId);
+      try {
+        await args.projectCatalogProvider.completeProjectConnection?.(payload ?? {}, result);
+      } catch (completionError) {
+        args.logger.warn("sync_host.project_switch_completion_failed", {
+          message: completionError instanceof Error ? completionError.message : String(completionError),
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       args.logger.warn("sync_host.project_switch_failed", { message });
@@ -2167,6 +2198,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     getBrainStatusSnapshot(): SyncBrainStatusPayload {
       return buildBrainStatus();
+    },
+
+    async broadcastProjectCatalog(): Promise<void> {
+      const payload = await buildProjectCatalogPayload();
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+        send(peer.ws, "project_catalog", payload);
+      }
     },
 
     /**

@@ -19,6 +19,7 @@ import { ModelSelector } from "../../missions/ModelSelector";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
+import { permissionControlsForModel, patchPermissionConfig } from "../permissionControls";
 import { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "../shared";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
@@ -162,7 +163,14 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
     });
   } else if (execution?.kind === "built-in") {
     for (const action of execution.builtIn?.actions ?? []) {
-      if (action.type === "run-tests") {
+      if (action.type === "create-lane") {
+        rows.push({
+          kind: "create-lane",
+          laneNameTemplate: action.laneNameTemplate ?? "",
+          laneDescriptionTemplate: action.laneDescriptionTemplate ?? "",
+          parentLaneId: action.parentLaneId ?? null,
+        });
+      } else if (action.type === "run-tests") {
         rows.push({ kind: "run-tests", suiteId: action.suiteId ?? "" });
       } else if (action.type === "run-command") {
         rows.push({ kind: "run-command", command: action.command ?? "", cwd: action.cwd ?? "" });
@@ -171,7 +179,14 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
       } else if (action.type === "ade-action") {
         rows.push({ kind: "ade-action", adeAction: action.adeAction ?? { domain: "", action: "" } });
       } else if (action.type === "agent-session") {
-        rows.push({ kind: "agent-session", prompt: action.prompt ?? "", sessionTitle: action.sessionTitle ?? "" });
+        rows.push({
+          kind: "agent-session",
+          prompt: action.prompt ?? "",
+          sessionTitle: action.sessionTitle ?? "",
+          targetLaneId: action.targetLaneId ?? null,
+          modelConfig: action.modelConfig,
+          permissionConfig: action.permissionConfig,
+        });
       } else if (action.type === "launch-mission") {
         rows.push({ kind: "launch-mission", missionTitle: action.sessionTitle ?? "" });
       }
@@ -187,13 +202,16 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
 
   if (soloAgent) {
     const first = rows[0]!;
+    const targetLaneId = first.targetLaneId ?? draft.execution?.targetLaneId ?? null;
     return {
       ...draft,
       execution: {
         kind: "agent-session",
-        ...(draft.execution?.targetLaneId ? { targetLaneId: draft.execution.targetLaneId } : {}),
+        ...(targetLaneId ? { targetLaneId } : {}),
         session: { title: first.sessionTitle || null },
       },
+      ...(first.modelConfig ? { modelConfig: { orchestratorModel: first.modelConfig } } : {}),
+      ...(first.permissionConfig ? { permissionConfig: first.permissionConfig } : {}),
       prompt: first.prompt ?? "",
       actions: [],
       legacyActions: [],
@@ -237,6 +255,13 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
 
 function rowToAutomationAction(row: ActionRowValue): AutomationAction {
   switch (row.kind) {
+    case "create-lane":
+      return {
+        type: "create-lane",
+        ...(row.laneNameTemplate ? { laneNameTemplate: row.laneNameTemplate } : {}),
+        ...(row.laneDescriptionTemplate ? { laneDescriptionTemplate: row.laneDescriptionTemplate } : {}),
+        ...(row.parentLaneId ? { parentLaneId: row.parentLaneId } : {}),
+      };
     case "run-tests":
       return { type: "run-tests", suiteId: row.suiteId ?? "" };
     case "run-command":
@@ -255,6 +280,9 @@ function rowToAutomationAction(row: ActionRowValue): AutomationAction {
     case "agent-session":
       return {
         type: "agent-session",
+        ...(row.targetLaneId ? { targetLaneId: row.targetLaneId } : {}),
+        ...(row.modelConfig ? { modelConfig: row.modelConfig } : {}),
+        ...(row.permissionConfig ? { permissionConfig: row.permissionConfig } : {}),
         ...(row.prompt ? { prompt: row.prompt } : {}),
         ...(row.sessionTitle ? { sessionTitle: row.sessionTitle } : {}),
       };
@@ -270,6 +298,13 @@ function automationActionToDraftAction(
   action: AutomationAction,
 ): AutomationRuleDraft["actions"][number] | null {
   switch (action.type) {
+    case "create-lane":
+      return {
+        type: "create-lane",
+        ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
+        ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
+        ...(action.parentLaneId ? { parentLaneId: action.parentLaneId } : {}),
+      };
     case "run-tests":
       return { type: "run-tests", suite: action.suiteId ?? "" };
     case "run-command":
@@ -288,6 +323,9 @@ function automationActionToDraftAction(
     case "agent-session":
       return {
         type: "agent-session",
+        ...(action.targetLaneId ? { targetLaneId: action.targetLaneId } : {}),
+        ...(action.modelConfig ? { modelConfig: action.modelConfig } : {}),
+        ...(action.permissionConfig ? { permissionConfig: action.permissionConfig } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
       };
@@ -304,6 +342,7 @@ function automationActionToDraftAction(
 export function RuleEditorPanel({
   draft,
   setDraft,
+  lanes,
   suites,
   missionsEnabled: _missionsEnabled,
   issues,
@@ -340,6 +379,10 @@ export function RuleEditorPanel({
   const actionRows = useMemo(() => draftToActionRows(draft), [draft]);
   const includeProjectContext = computeIncludeProjectContext(draft);
   const modelValue = draft.modelConfig?.orchestratorModel ?? { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" as const };
+  const permissionMeta = permissionControlsForModel(modelValue.modelId);
+  const currentPermission = permissionMeta
+    ? draft.permissionConfig?.providers?.[permissionMeta.key] ?? ""
+    : "";
 
   const setPrimaryTrigger = (next: AutomationTrigger) => {
     setDraft({ ...draft, triggers: [next], trigger: next });
@@ -355,6 +398,19 @@ export function RuleEditorPanel({
 
   const setActionRows = (rows: ActionRowValue[]) => {
     setDraft(applyActionRowsToDraft(draft, rows));
+  };
+
+  const patchExecutionLane = (targetLaneId: string | null) => {
+    setDraft({
+      ...draft,
+      execution: {
+        kind: draft.execution?.kind ?? "agent-session",
+        ...(targetLaneId ? { targetLaneId } : {}),
+        ...(draft.execution?.kind === "agent-session" && draft.execution.session ? { session: draft.execution.session } : {}),
+        ...(draft.execution?.kind === "mission" && draft.execution.mission ? { mission: draft.execution.mission } : {}),
+        ...(draft.execution?.kind === "built-in" && draft.execution.builtIn ? { builtIn: draft.execution.builtIn } : {}),
+      },
+    });
   };
 
   const errors = issues.filter((i) => i.level === "error");
@@ -489,14 +545,77 @@ export function RuleEditorPanel({
             </div>
           </section>
 
+          {/* Execution */}
+          <section className="rounded-2xl p-4" style={CARD_STYLE}>
+            <SectionHeader>Execution</SectionHeader>
+            <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1.25fr_1fr]">
+              <label className="space-y-1 block">
+                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Lane</span>
+                <select
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={draft.execution?.targetLaneId ?? ""}
+                  onChange={(event) => patchExecutionLane(event.target.value || null)}
+                >
+                  <option value="">Trigger or primary lane</option>
+                  {lanes.map((lane) => (
+                    <option key={lane.id} value={lane.id}>{lane.name}</option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="space-y-1 min-w-0">
+                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Model</span>
+                <ModelSelector
+                  value={modelValue}
+                  onChange={(next) =>
+                    setDraft({
+                      ...draft,
+                      modelConfig: { orchestratorModel: next },
+                    })
+                  }
+                  onOpenAiSettings={openAiSettings}
+                />
+              </div>
+
+              <label className="space-y-1 block">
+                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">
+                  Permissions
+                </span>
+                <select
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={currentPermission}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      permissionConfig: patchPermissionConfig(draft.permissionConfig, modelValue.modelId, event.target.value),
+                    })
+                  }
+                  disabled={!permissionMeta}
+                >
+                  <option value="">Default permissions</option>
+                  {permissionMeta?.options.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </section>
+
           {/* What to do */}
           <section className="rounded-2xl p-4" style={CARD_STYLE}>
             <SectionHeader>What to do</SectionHeader>
             <div className="mt-3">
               <ActionList
                 actions={actionRows}
+                lanes={lanes}
                 suites={suites}
+                fallbackModel={modelValue}
                 onChange={setActionRows}
+                onOpenAiSettings={openAiSettings}
               />
             </div>
           </section>
@@ -540,20 +659,6 @@ export function RuleEditorPanel({
                     className="accent-[#7DD3FC]"
                   />
                 </label>
-
-                <div className="space-y-2">
-                  <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Model</span>
-                  <ModelSelector
-                    value={modelValue}
-                    onChange={(next) =>
-                      setDraft({
-                        ...draft,
-                        modelConfig: { orchestratorModel: next },
-                      })
-                    }
-                    onOpenAiSettings={openAiSettings}
-                  />
-                </div>
 
                 <div className="grid gap-2 md:grid-cols-2">
                   <LabeledNumber

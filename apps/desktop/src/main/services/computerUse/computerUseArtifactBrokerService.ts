@@ -58,7 +58,7 @@ type StoredArtifactRow = {
   created_at: string;
 };
 
-const DEFAULT_REVIEW_STATE: ComputerUseArtifactReviewState = "pending";
+const DEFAULT_REVIEW_STATE: ComputerUseArtifactReviewState = "accepted";
 const DEFAULT_WORKFLOW_STATE: ComputerUseArtifactWorkflowState = "evidence_only";
 
 type StoredLinkRow = {

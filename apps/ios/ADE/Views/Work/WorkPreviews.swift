@@ -273,6 +273,7 @@ private enum WorkPreviewData {
     isBusy: false,
     onSelect: { _, _, _ in }
   )
+  .environmentObject(WorkPreviewData.syncService)
 }
 
 #Preview("Session settings") {

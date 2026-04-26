@@ -107,7 +107,8 @@ struct MobileProjectCatalogPayload: Codable, Equatable {
 
 struct MobileProjectConnectionPayload: Codable, Equatable {
   var authKind: String
-  var token: String
+  var token: String?
+  var pairedDeviceId: String?
   var hostIdentity: SyncPairingHostIdentity
   var port: Int
   var addressCandidates: [SyncAddressCandidate]

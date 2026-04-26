@@ -120,6 +120,12 @@ Host-side service files
   QR payload). Project-switch hosting receives a catalog provider from
   `main.ts` so a phone can request a warm connection for another recent
   desktop project without making that project the visible desktop tab.
+  Constructed with `forceHostRole: true` for the phone-sync surface:
+  in that mode the saved viewer draft is ignored, the cluster row is
+  rewritten so the local device is the brain on every refresh, and any
+  legacy desktop-to-desktop viewer state cannot demote phone hosting
+  back into viewer mode. `setHostStartupEnabled` is async so callers
+  can await the role-state refresh before broadcasting.
 - `deviceRegistryService.ts` (~430 lines) — reads/writes the synced
   `devices` table and `sync_cluster_state` singleton.
 - `syncPairingStore.ts` (~90 lines) — thin wrapper that validates
@@ -248,6 +254,15 @@ is not supported.
 - **Desktop-to-desktop**: manual host/port/bootstrap-token entry in
   Settings > Sync. The bootstrap token lives at
   `.ade/secrets/sync-bootstrap-token`.
+- **Project switch handoff carries auth.** `SyncProjectConnectionPayload`
+  now distinguishes `authKind: "bootstrap" | "paired"` and may carry a
+  `pairedDeviceId` instead of a raw `token`. When a phone follows a
+  desktop project switch, `prepareProjectConnection` returns the
+  payload, `completeProjectConnection` runs after the host has
+  acknowledged the switch, and the iOS client falls back to its
+  per-host saved token (keyed by host identity / route / name in
+  `KeychainService.tokenAccount`) when the desktop did not bundle a
+  fresh credential.
 - **Phone pairing**: user-set **6-digit PIN** stored on the host at
   `.ade/secrets/sync-pin.json`. The PIN is owned by the human
   operator — the host does not rotate it, does not time-expire it,

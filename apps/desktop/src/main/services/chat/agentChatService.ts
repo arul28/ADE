@@ -361,6 +361,8 @@ type ClaudeRuntime = {
   interruptEventsEmitted: boolean;
   /** Set when a reasoning effort change is requested mid-turn; flushed when idle. */
   pendingSessionReset?: boolean;
+  /** Clear Claude SDK continuity on the deferred reset; used after mode changes the old session cannot apply. */
+  pendingSessionResetClearSdkSessionId?: boolean;
   turnMemoryPolicyState: TurnMemoryPolicyState | null;
   /** Tool names the user has approved for the session via "Allow for Session". */
   approvalOverrides: Set<string>;
@@ -625,6 +627,10 @@ function isCurrentCodexLifecycleTurn(
   }
   if (!activeTurnId || !turnId) return true;
   return activeTurnId === turnId;
+}
+
+function isCodexInProgressTurnStatus(value: unknown): boolean {
+  return value === "inProgress" || value === "in_progress";
 }
 
 function rememberInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | null | undefined): void {
@@ -1763,7 +1769,9 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "## Computer Use",
-      "You have computer-use capabilities available. ADE will automatically capture screenshots and other artifacts from your tool calls into the proof drawer — you do not need to manually call ingest_computer_use_artifacts.",
+      "You have computer-use capabilities available. The proof drawer is for reviewer-visible evidence: screenshots/images, screen recordings, and browser captures or traces.",
+      "When the user asks for proof, capture visual proof first. Console logs and text files are supporting diagnostics only; do not use them as the only proof unless the user explicitly asks for logs or visual capture fails and you say so.",
+      "ADE will automatically capture screenshots and other visual artifacts from your computer-use tool calls into the proof drawer — you do not need to manually call ingest_computer_use_artifacts for normal captures.",
       "",
       "Call `get_computer_use_backend_status` to check available backends before attempting computer use.",
     ].join("\n"),
@@ -1819,7 +1827,7 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "### Proof Capture",
-      "ADE automatically captures artifacts from your computer-use tool calls. Screenshots, recordings, and traces are saved to the proof drawer automatically. You can also explicitly call `ingest_computer_use_artifacts` if you need to add additional context or artifacts from non-standard sources.",
+      "ADE automatically saves screenshots, recordings, and browser traces from computer-use tool calls to the proof drawer. Use `ingest_computer_use_artifacts` only to attach externally produced visual proof such as a screenshot/image/video/trace, or to add logs as secondary context alongside visual proof.",
     ].join("\n"),
   );
 
@@ -6944,36 +6952,43 @@ export function createAgentChatService(args: {
         }
       }
 
-      // Build the message — plain string for text-only, or SDKUserMessage with
-      // image content blocks (streaming input format per SDK docs).
-      const messageToSend = buildClaudeV2Message(basePromptText, resolvedAttachments, {
-        baseDir: managed.laneWorktreePath,
-        sessionId: runtime.sdkSessionId,
-        forceUserMessage: args.forceClaudeUserMessage,
-      });
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
-      const sessionControl = getClaudeV2SessionControl(runtime.v2Session);
+      let sessionControl = getClaudeV2SessionControl(runtime.v2Session);
       if (typeof sessionControl.setPermissionMode === "function") {
         try {
           await sessionControl.setPermissionMode(turnPermissionMode);
         } catch (permErr) {
-          // Invalidate the V2 session so it is recreated with the correct
-          // mode, then rethrow so the turn follows the normal failure path.
+          // Invalidate the resumed V2 session and immediately start a fresh
+          // one. Some Claude modes, notably bypassPermissions, must be enabled
+          // when the underlying CLI session starts; resuming the old SDK id and
+          // trying to flip it in place can be rejected forever.
           logger.warn("agent_chat.v2_set_permission_mode_failed", {
             sessionId: managed.session.id,
             turnPermissionMode,
             error: String(permErr),
           });
-          cancelClaudeWarmup(managed, runtime, "session_reset");
-          try { runtime.v2Session?.close(); } catch { /* ignore */ }
-          runtime.v2Session = null;
-          runtime.v2WarmupDone = null;
-          throw new Error(`Permission mode change to '${turnPermissionMode}' was rejected by the SDK. The session will be recreated on the next attempt.`);
+          resetClaudeV2Session(managed, runtime, "session_reset", { clearSdkSessionId: true });
+          const v2Opts = buildClaudeV2SessionOpts(managed, runtime);
+          runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
+          sessionControl = getClaudeV2SessionControl(runtime.v2Session);
+          if (typeof sessionControl.setPermissionMode === "function") {
+            await sessionControl.setPermissionMode(turnPermissionMode);
+          } else if (turnPermissionMode === "plan") {
+            throw new Error("Claude plan mode is not available in this Claude SDK build.");
+          }
         }
       } else if (turnPermissionMode === "plan") {
         throw new Error("Claude plan mode is not available in this Claude SDK build.");
       }
+
+      // Build the message after permission-mode recovery, because rebuilding a
+      // fresh Claude SDK session clears runtime.sdkSessionId.
+      const messageToSend = buildClaudeV2Message(basePromptText, resolvedAttachments, {
+        baseDir: managed.laneWorktreePath,
+        sessionId: runtime.sdkSessionId,
+        forceUserMessage: args.forceClaudeUserMessage,
+      });
 
       // V2 pattern: send() then stream() per turn. Session stays alive between turns.
       bumpClaudeIdleDeadline();
@@ -7618,11 +7633,10 @@ export function createAgentChatService(args: {
 
       // Flush deferred session reset from mid-turn reasoning effort change
       if (runtime.pendingSessionReset) {
+        const clearSdkSessionId = runtime.pendingSessionResetClearSdkSessionId === true;
         runtime.pendingSessionReset = false;
-        cancelClaudeWarmup(managed, runtime, "session_reset");
-        try { runtime.v2Session?.close(); } catch { /* ignore */ }
-        runtime.v2Session = null;
-        runtime.v2WarmupDone = null;
+        runtime.pendingSessionResetClearSdkSessionId = false;
+        resetClaudeV2Session(managed, runtime, "session_reset", { clearSdkSessionId });
       }
 
       const doneModel = buildDoneModelPayload();
@@ -9129,6 +9143,18 @@ export function createAgentChatService(args: {
     const params = (payload.params as Record<string, unknown> | null) ?? {};
     const turnIdFromParams = extractCodexTurnId(params);
     const threadIdFromParams = extractCodexThreadId(params);
+    const startedTurn = method === "turn/started"
+      ? ((params.turn as { id?: unknown; status?: unknown } | null) ?? null)
+      : null;
+    const isResumedInProgressTurnStart = Boolean(
+      startedTurn
+      && runtime.threadResumed
+      && managed.session.threadId
+      && !runtime.awaitingTurnStart
+      && !runtime.activeTurnId
+      && !runtime.startedTurnId
+      && isCodexInProgressTurnStatus(startedTurn.status),
+    );
 
     if (
       threadIdFromParams
@@ -9164,6 +9190,7 @@ export function createAgentChatService(args: {
     if (
       turnIdFromParams
       && !isExpectedTurnStart
+      && !isResumedInProgressTurnStart
       && !isCurrentCodexLifecycleTurn(runtime, turnIdFromParams)
     ) {
       logger.warn(`[codex] ignoring ${method} for inactive turn ${turnIdFromParams} in session ${managed.session.id}`);
@@ -9175,9 +9202,9 @@ export function createAgentChatService(args: {
     }
 
     if (method === "turn/started") {
-      const turn = (params.turn as { id?: unknown } | null) ?? null;
+      const turn = startedTurn;
       const turnId = typeof turn?.id === "string" ? turn.id : null;
-      if (!runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId) {
+      if (!runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId && !isResumedInProgressTurnStart) {
         logger.warn(`[codex] ignoring unsolicited turn/started for session ${managed.session.id}`);
         if (turnId) {
           runtime.ignoredTurnIds.add(turnId);
@@ -10126,6 +10153,30 @@ export function createAgentChatService(args: {
     });
   };
 
+  const resetClaudeV2Session = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    reason: "interrupt" | "teardown" | "session_reset" | "timeout",
+    options: { clearSdkSessionId?: boolean } = {},
+  ): void => {
+    cancelClaudeWarmup(managed, runtime, reason);
+    try { runtime.v2Session?.close(); } catch { /* ignore */ }
+    runtime.v2Session = null;
+    runtime.v2WarmupDone = null;
+    if (options.clearSdkSessionId && runtime.sdkSessionId) {
+      logger.info("agent_chat.claude_sdk_session_cleared", {
+        sessionId: managed.session.id,
+        sdkSessionId: runtime.sdkSessionId,
+        reason,
+      });
+      runtime.sdkSessionId = null;
+      managed.runtimeInvalidated = true;
+      refreshReconstructionContext(managed);
+      void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
+      clearLaneDirectiveKey(managed);
+    }
+  };
+
   const cancelQueuedSteers = (
     managed: ManagedChatSession,
     runtime: Pick<ClaudeRuntime | OpenCodeRuntime, "pendingSteers" | "activeTurnId">,
@@ -10398,7 +10449,17 @@ export function createAgentChatService(args: {
         const initialPermissionMode = resolveClaudeTurnPermissionMode(managed);
         const sessionControl = getClaudeV2SessionControl(runtime.v2Session);
         if (typeof sessionControl.setPermissionMode === "function") {
-          await sessionControl.setPermissionMode(initialPermissionMode);
+          try {
+            await sessionControl.setPermissionMode(initialPermissionMode);
+          } catch (permErr) {
+            logger.warn("agent_chat.v2_set_permission_mode_failed", {
+              sessionId: managed.session.id,
+              turnPermissionMode: initialPermissionMode,
+              error: String(permErr),
+            });
+            resetClaudeV2Session(managed, runtime, "session_reset", { clearSdkSessionId: true });
+            throw permErr;
+          }
         }
 
         await runtime.v2Session.send("System initialization check. Respond with only the word READY.");
@@ -12907,9 +12968,7 @@ export function createAgentChatService(args: {
             } catch {
               // Session was created without --dangerously-skip-permissions.
               // Invalidate so it is recreated with the correct mode.
-              try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
-              managed.runtime.v2Session = null;
-              managed.runtime.v2WarmupDone = null;
+              resetClaudeV2Session(managed, managed.runtime, "session_reset", { clearSdkSessionId: true });
             }
           }
         }
@@ -12926,9 +12985,7 @@ export function createAgentChatService(args: {
           try {
             await control.setPermissionMode(claudePermMode);
           } catch {
-            try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
-            managed.runtime.v2Session = null;
-            managed.runtime.v2WarmupDone = null;
+            resetClaudeV2Session(managed, managed.runtime, "session_reset", { clearSdkSessionId: true });
           }
         }
       }
@@ -13927,11 +13984,9 @@ export function createAgentChatService(args: {
           // Defer session reset until the current turn completes — tearing down
           // a live session mid-turn would force the stream down the failure path.
           managed.runtime.pendingSessionReset = true;
+          managed.runtime.pendingSessionResetClearSdkSessionId = false;
         } else {
-          cancelClaudeWarmup(managed, managed.runtime, "session_reset");
-          try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
-          managed.runtime.v2Session = null;
-          managed.runtime.v2WarmupDone = null;
+          resetClaudeV2Session(managed, managed.runtime, "session_reset");
         }
       }
     }
@@ -14028,17 +14083,17 @@ export function createAgentChatService(args: {
             // bypassPermissions on a session not started with
             // --dangerously-skip-permissions), invalidate the V2 session
             // so it is recreated with the correct mode on the next turn.
-            // When busy, only log the failure — don't tear down the active session.
+            // When busy, defer the reset so the active stream can finish.
             logger.warn("agent_chat.v2_set_permission_mode_failed", {
               sessionId: managed.session.id,
               turnPermissionMode,
               error: String(permErr),
             });
             if (!managed.runtime.busy) {
-              cancelClaudeWarmup(managed, managed.runtime, "session_reset");
-              try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
-              managed.runtime.v2Session = null;
-              managed.runtime.v2WarmupDone = null;
+              resetClaudeV2Session(managed, managed.runtime, "session_reset", { clearSdkSessionId: true });
+            } else {
+              managed.runtime.pendingSessionReset = true;
+              managed.runtime.pendingSessionResetClearSdkSessionId = true;
             }
           }
         }

@@ -95,7 +95,8 @@ Best for code-affecting or multi-step tasks.
 Best for deterministic ADE operations.
 
 - Runs a sequence of `AutomationAction` steps with typed input/output.
-- `AutomationActionType` values: `run-command` (shell), `run-tests`, `predict-conflicts`, `launch-mission`, `agent-session` (embedded agent step), `ade-action` (see below).
+- `AutomationActionType` values: `create-lane` (spawns a new lane and threads it into the rest of the chain), `run-command` (shell), `run-tests`, `predict-conflicts`, `launch-mission`, `agent-session` (embedded agent step), `ade-action` (see below).
+- Each action may override `targetLaneId` for that step alone; `agent-session` actions additionally accept `modelConfig` and `permissionConfig` overrides that layer on top of the rule's defaults (allowed-tool lists are merged, not replaced). See `triggers-and-actions.md` for the override resolution order.
 - No separate mission thread.
 - Low overhead; sandboxed to the target lane's worktree via `validateAutomationCwd` and `resolvePathWithinRoot`.
 

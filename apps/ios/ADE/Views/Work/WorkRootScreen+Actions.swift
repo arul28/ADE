@@ -70,6 +70,45 @@ func workActivityTranscriptCachesEqual(
 
 extension WorkRootScreen {
   @MainActor
+  func scheduleSessionPresentationRebuild() {
+    sessionPresentationRebuildTask?.cancel()
+    sessionPresentationRebuildGeneration += 1
+    let generation = sessionPresentationRebuildGeneration
+    let sessionsSnapshot = sessions
+    let chatSummariesSnapshot = chatSummaries
+    let lanesSnapshot = lanes
+    let optimisticSessionsSnapshot = optimisticSessions
+    let archivedSessionIdsSnapshot = archivedSessionIds
+    let selectedStatusSnapshot = selectedStatus
+    let selectedLaneIdSnapshot = selectedLaneId
+    let searchTextSnapshot = searchText
+    let organization = WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus
+
+    sessionPresentationRebuildTask = Task.detached(priority: .utility) {
+      try? await Task.sleep(for: .milliseconds(40))
+      guard !Task.isCancelled else { return }
+      let nextPresentation = buildWorkRootSessionPresentation(
+        sessions: sessionsSnapshot,
+        optimisticSessions: optimisticSessionsSnapshot,
+        chatSummaries: chatSummariesSnapshot,
+        archivedSessionIds: archivedSessionIdsSnapshot,
+        selectedStatus: selectedStatusSnapshot,
+        selectedLaneId: selectedLaneIdSnapshot,
+        searchText: searchTextSnapshot,
+        organization: organization,
+        orderedLanes: lanesSnapshot
+      )
+      await MainActor.run {
+        guard generation == sessionPresentationRebuildGeneration, !Task.isCancelled else { return }
+        if sessionPresentation != nextPresentation {
+          sessionPresentation = nextPresentation
+        }
+        sessionPresentationRebuildTask = nil
+      }
+    }
+  }
+
+  @MainActor
   func refreshFromPullGesture() async {
     await reload(refreshRemote: true)
     if errorMessage == nil {

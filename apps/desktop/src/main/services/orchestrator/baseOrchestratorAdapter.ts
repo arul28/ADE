@@ -328,6 +328,8 @@ export function buildFullPrompt(
         [
           "PROOF CAPTURE:",
           `- This step requires proof artifacts: ${hardProofRequirements.join(", ")}.`,
+          "- Treat generic proof as visual evidence first: screenshots/images, screen recordings, browser screenshots, or browser traces. Do not substitute console logs for visual proof when the user asks to see proof.",
+          "- Console logs are supporting diagnostics. Use `console_logs` alone only when that exact requirement is listed or the user explicitly asks for logs.",
           "- Prefer external computer-use backends first. Use `get_computer_use_backend_status` to see what ADE can ingest and prefer approved external tools such as `ext.*` backends or external CLIs like agent-browser when available.",
           "- After an external backend produces proof, call `ingest_computer_use_artifacts` so ADE can normalize, store, link, and publish the resulting evidence.",
           "- Use ADE-local tools (`get_environment_info`, `launch_app`, `interact_gui`, `screenshot_environment`, `record_environment`) only as fallback compatibility support when an external backend is not available for the step.",

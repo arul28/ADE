@@ -20,7 +20,7 @@ import type {
   RunAdeActionConfig,
 } from "./config";
 import type { MissionPermissionConfig } from "./missions";
-import type { MissionModelConfig } from "./models";
+import type { MissionModelConfig, ModelConfig } from "./models";
 import type { AgentChatSessionSummary } from "./chat";
 
 export type AutomationRunStatus =
@@ -222,10 +222,23 @@ export type AutomationDraftActionBase = {
 };
 
 export type AutomationDraftAction =
+  | (AutomationDraftActionBase & {
+      type: "create-lane";
+      laneNameTemplate?: string;
+      laneDescriptionTemplate?: string;
+      parentLaneId?: string | null;
+    })
   | (AutomationDraftActionBase & { type: "predict-conflicts" })
   | (AutomationDraftActionBase & { type: "run-tests"; suite: string })
   | (AutomationDraftActionBase & { type: "run-command"; command: string; cwd?: string })
-  | (AutomationDraftActionBase & { type: "agent-session"; prompt?: string; sessionTitle?: string; targetLaneId?: string | null })
+  | (AutomationDraftActionBase & {
+      type: "agent-session";
+      prompt?: string;
+      sessionTitle?: string;
+      targetLaneId?: string | null;
+      modelConfig?: ModelConfig;
+      permissionConfig?: MissionPermissionConfig;
+    })
   | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig })
   | (AutomationDraftActionBase & { type: "launch-mission"; missionTitle?: string; targetLaneId?: string | null });
 

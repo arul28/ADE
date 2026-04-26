@@ -74,6 +74,9 @@ describe("computerUseArtifactBrokerService", () => {
     });
 
     const artifactId = ingested.artifacts[0]!.id;
+    const initial = broker.listArtifacts({ artifactId });
+    expect(initial[0]?.reviewState).toBe("accepted");
+    expect(initial[0]?.workflowState).toBe("evidence_only");
 
     const routed = broker.routeArtifact({
       artifactId,

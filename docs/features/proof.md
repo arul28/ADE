@@ -36,11 +36,20 @@ Exit codes: `0` success, `2` capture failed (screencapture unavailable, unsuppor
 
 ### `ade proof attach`
 
-Promote an existing image file to proof. Useful for headless-browser screenshots, Playwright traces rendered as PNG, or anything the agent produced out-of-band.
+Promote an existing image, video, or browser trace file to proof. Useful for headless-browser screenshots, Playwright traces rendered as PNG, or anything the agent produced out-of-band.
 
 ```
-ade proof attach <path> [--caption "<text>"] [--owner-kind ...] [--owner-id ...]
+ade proof attach <path> [--caption "<text>"] [--title "<text>"] [--owner-kind ...] [--owner-id ...]
 ```
+
+The CLI infers the proof kind from the file extension:
+
+| Extension | Inferred kind |
+|---|---|
+| `.png`, `.jpg`/`.jpeg`, `.webp`, `.gif`, `.heic`/`.heif`, `.tif`/`.tiff` | `screenshot` |
+| `.mov`, `.mp4`, `.m4v`, `.webm` | `video_recording` |
+| `.zip`, `.har` | `browser_trace` |
+| anything else | `browser_verification` |
 
 Example:
 
@@ -48,7 +57,7 @@ Example:
 ade proof attach /tmp/playwright-run/checkout-success.png --caption "checkout flow completes on Firefox"
 ```
 
-The file is copied into `.ade/artifacts/computer-use/`; the original is left in place.
+The file is copied into `.ade/artifacts/computer-use/`; the original is left in place. Internally `attach` calls the same `ingest_computer_use_artifacts` RPC tool with `backendStyle: "manual"` and `backendName: "ade-cli"`.
 
 ### `ade proof list`
 
@@ -75,6 +84,15 @@ The CLI resolves the owner of a capture from environment variables set by the de
 Agents spawned inside ADE pick up the right owner automatically. If more than one var is set — e.g. a mission worker also has a lane — the highest-precedence kind wins.
 
 If no env var is set and no `--owner-kind`/`--owner-id` flags are passed, `ade proof capture` exits with code `3`. This is deliberate: an un-owned proof has no home in the UI.
+
+### Explicit owner on RPC tools
+
+The `screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `get_environment_info`, `interact_gui`, and `list_computer_use_artifacts` JSON-RPC tools accept explicit `ownerKind` + `ownerId` fields. `resolveComputerUseOwners` in `apps/ade-cli/src/adeRpcServer.ts` is the single normalizer:
+
+- Canonical kinds: `lane`, `mission`, `orchestrator_run`, `orchestrator_step`, `orchestrator_attempt`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
+- Friendly aliases: `chat` → `chat_session`, `pr` → `github_pr`. Any other value raises a `JsonRpcError(invalidParams)` with an "Unsupported proof ownerKind" message.
+
+Explicit owners are added in addition to the session identity inferred from `ADE_*` env vars, so an agent can attach the same artifact to its current chat plus a specific PR in one call.
 
 ---
 
@@ -123,6 +141,8 @@ A good proof set is three to eight captures with captions a reviewer can read in
 - **Auto-capture.** The old proof observer is gone. Nothing watches the agent and files screenshots for it.
 
 Headless-browser screenshots *are* supported — use `ade proof attach` with the output file path.
+
+`proof capture`, `proof record`, `proof environment`, `proof launch`, and `proof interact` set `preferHeadless: true` on the CLI plan: the connection layer drops to headless mode unless `--socket` is explicitly passed. This lets agent subprocesses capture proof without depending on the desktop socket being live; visual proof state still flows back to the broker on the next reconcile.
 
 ---
 
