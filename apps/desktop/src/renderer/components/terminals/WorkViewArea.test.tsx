@@ -566,6 +566,107 @@ describe("WorkViewArea", () => {
     expect(chatPaneLifecycle.unmounts.get("chat-1")).toBeUndefined();
   });
 
+  it("keeps every running terminal tile mounted in tabs mode while switching active tab", () => {
+    const first = makeRunningSession("session-1", "pty-1");
+    const second = makeRunningSession("session-2", "pty-2");
+
+    const view = render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[first, second]}
+        visibleSessions={[first, second]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[first.id, second.id]}
+        activeItemId={first.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+
+    const terminals = within(view.container).getAllByTestId("terminal-view");
+    expect(terminals).toHaveLength(2);
+    const firstTerminal = terminals.find((el) => el.getAttribute("data-session-id") === "session-1");
+    const secondTerminal = terminals.find((el) => el.getAttribute("data-session-id") === "session-2");
+    expect(firstTerminal?.getAttribute("data-active")).toBe("true");
+    expect(secondTerminal?.getAttribute("data-active")).toBe("false");
+    expect(firstTerminal?.closest("[hidden]")).toBeNull();
+    expect(secondTerminal?.closest("[hidden]")).not.toBeNull();
+
+    view.rerender(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[first, second]}
+        visibleSessions={[first, second]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[first.id, second.id]}
+        activeItemId={second.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+
+    const terminalsAfter = within(view.container).getAllByTestId("terminal-view");
+    expect(terminalsAfter).toHaveLength(2);
+    const firstAfter = terminalsAfter.find((el) => el.getAttribute("data-session-id") === "session-1");
+    const secondAfter = terminalsAfter.find((el) => el.getAttribute("data-session-id") === "session-2");
+    expect(firstAfter?.getAttribute("data-active")).toBe("false");
+    expect(secondAfter?.getAttribute("data-active")).toBe("true");
+    expect(firstAfter?.closest("[hidden]")).not.toBeNull();
+    expect(secondAfter?.closest("[hidden]")).toBeNull();
+  });
+
   it("preserves unusual session ids when building the grid tiling tree", () => {
     const session = makeRunningSession("session\u0000with-delimiter", "pty-1");
 

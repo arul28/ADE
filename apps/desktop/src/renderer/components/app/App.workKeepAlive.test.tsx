@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as ReactNamespace from "react";
 import type * as RouterNamespace from "react-router-dom";
 
@@ -107,6 +107,10 @@ describe("App Work route keep-alive", () => {
     window.history.replaceState({}, "", "/work");
   });
 
+  afterEach(() => {
+    cleanup();
+  });
+
   it("keeps the Work page mounted while other ADE tabs are active", async () => {
     const { App } = await import("./App");
 
@@ -132,5 +136,51 @@ describe("App Work route keep-alive", () => {
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
+  });
+
+  it("does not mount the Work page when the project is not yet hydrated", async () => {
+    appStoreState.projectHydrated = false;
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    expect(screen.queryByTestId("work-page")).toBeNull();
+    expect(workLifecycle.mounts).toBe(0);
+  });
+
+  it("redirects to /project when there is no active project on the Work route", async () => {
+    appStoreState.project = { rootPath: "" };
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("project-page");
+    expect(screen.queryByTestId("work-page")).toBeNull();
+    expect(workLifecycle.mounts).toBe(0);
+  });
+
+  it("redirects to /project when the welcome flow is active on the Work route", async () => {
+    appStoreState.showWelcome = true;
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("project-page");
+    expect(screen.queryByTestId("work-page")).toBeNull();
+    expect(workLifecycle.mounts).toBe(0);
+  });
+
+  it("does not render the Work surface on non-Work routes when the project is missing", async () => {
+    appStoreState.project = { rootPath: "" };
+    window.history.replaceState({}, "", "/files");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    // RequireProject on the /files route navigates to /project; the inactive
+    // PersistentWorkSurface must NOT also navigate (would race) or mount Work.
+    await screen.findByTestId("project-page");
+    expect(screen.queryByTestId("work-page")).toBeNull();
+    expect(workLifecycle.mounts).toBe(0);
   });
 });
