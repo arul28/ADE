@@ -743,8 +743,30 @@ export type AutomationAction = {
 
 export type AutomationExecutionKind = "agent-session" | "mission" | "built-in";
 
+export type AutomationLaneMode = "create" | "reuse";
+
+export type AutomationLaneNamePreset =
+  | "issue-title"
+  | "issue-num-title"
+  | "pr-title-author"
+  | "custom";
+
 export type AutomationExecution = {
   kind: AutomationExecutionKind;
+  /**
+   * Whether each run should spawn a fresh lane (`"create"`) or reuse the
+   * configured / trigger / primary lane (`"reuse"`). Defaults to `"reuse"`.
+   */
+  laneMode?: AutomationLaneMode;
+  /**
+   * Naming preset used when `laneMode === "create"`. Resolved against the
+   * trigger context at run time. `"custom"` consults `laneNameTemplate`.
+   */
+  laneNamePreset?: AutomationLaneNamePreset;
+  /**
+   * Free-form `{{trigger.*}}` template used when `laneNamePreset === "custom"`.
+   */
+  laneNameTemplate?: string;
   /**
    * Optional preferred lane. If omitted, the runtime falls back to the trigger
    * lane or the project's primary lane.
