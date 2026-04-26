@@ -777,6 +777,27 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_lanes_project_role on lanes(project_id, lane_role)");
 
   db.run(`
+    create table if not exists lane_branch_profiles (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      branch_ref text not null,
+      normalized_branch_ref text not null,
+      base_ref text not null,
+      parent_lane_id text,
+      source_branch_ref text,
+      created_at text not null,
+      updated_at text not null,
+      last_checked_out_at text,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id),
+      foreign key(parent_lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_lane_branch_profiles_lane on lane_branch_profiles(project_id, lane_id)");
+  db.run("create index if not exists idx_lane_branch_profiles_project_branch on lane_branch_profiles(project_id, normalized_branch_ref)");
+
+  db.run(`
     create table if not exists lane_state_snapshots (
       lane_id text primary key,
       dirty integer not null default 0,

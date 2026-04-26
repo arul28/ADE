@@ -143,6 +143,9 @@ import type {
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
+  LaneBranchSwitchArgs,
+  LaneBranchSwitchPreview,
+  LaneBranchSwitchResult,
   DeleteLaneArgs,
   DevToolsCheckResult,
   DiffChanges,
@@ -1366,6 +1369,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.lanesCreateFromUnstaged, args),
     importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> =>
       ipcRenderer.invoke(IPC.lanesImportBranch, args),
+    previewBranchSwitch: async (
+      args: LaneBranchSwitchArgs,
+    ): Promise<LaneBranchSwitchPreview> =>
+      ipcRenderer.invoke(IPC.lanesPreviewBranchSwitch, args),
+    switchBranch: async (
+      args: LaneBranchSwitchArgs,
+    ): Promise<LaneBranchSwitchResult> =>
+      ipcRenderer.invoke(IPC.lanesSwitchBranch, args),
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> =>
       ipcRenderer.invoke(IPC.lanesAttach, args),
     listUnregisteredWorktrees: async (): Promise<UnregisteredLaneCandidate[]> =>

@@ -184,6 +184,10 @@ export type GitBranchSummary = {
   isCurrent: boolean;
   isRemote: boolean;
   upstream: string | null;
+  ownedByLaneId?: string | null;
+  ownedByLaneName?: string | null;
+  profiledInCurrentLane?: boolean;
+  hasOpenPr?: boolean;
 };
 
 export type GitListBranchesArgs = {
@@ -193,6 +197,10 @@ export type GitListBranchesArgs = {
 export type GitCheckoutBranchArgs = {
   laneId: string;
   branchName: string;
+  mode?: "existing" | "create";
+  startPoint?: string;
+  baseRef?: string;
+  acknowledgeActiveWork?: boolean;
 };
 
 export type GitHubRepoRef = {

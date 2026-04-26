@@ -1041,7 +1041,21 @@ function buildGitPlan(args: string[]): CliPlan {
   if (sub === "branches" || sub === "branch") return { kind: "execute", label: "git branches", steps: [actionCallStep("result", "git_list_branches", withLane())] };
   if (sub === "checkout") {
     const branchName = requireValue(readValue(args, ["--branch", "--branch-name"]) ?? firstPositional(args), "branchName");
-    return { kind: "execute", label: "git checkout", steps: [actionCallStep("result", "git_checkout_branch", withLane({ branchName }))] };
+    const create = readFlag(args, ["--create", "-b"]);
+    const startPoint = readValue(args, ["--start-point", "--from"]);
+    const baseRef = readValue(args, ["--base", "--base-ref"]);
+    const acknowledgeActiveWork = readFlag(args, ["--ack-active-work"]);
+    return {
+      kind: "execute",
+      label: "git checkout",
+      steps: [actionCallStep("result", "git_checkout_branch", withLane({
+        branchName,
+        mode: create ? "create" : "existing",
+        ...(startPoint ? { startPoint } : {}),
+        ...(baseRef ? { baseRef } : {}),
+        acknowledgeActiveWork,
+      }))]
+    };
   }
   if (sub === "conflicts") return { kind: "execute", label: "git conflicts", steps: [actionCallStep("result", "get_lane_conflict_state", withLane())] };
   if (sub === "rebase") {

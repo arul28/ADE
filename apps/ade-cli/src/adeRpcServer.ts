@@ -700,14 +700,18 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "git_checkout_branch",
-    description: "Checkout an existing branch in a lane checkout.",
+    description: "Switch a lane checkout to an existing branch or create a new branch in that lane.",
     inputSchema: {
       type: "object",
       required: ["branchName"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        branchName: { type: "string", minLength: 1 }
+        branchName: { type: "string", minLength: 1 },
+        mode: { type: "string", enum: ["existing", "create"] },
+        startPoint: { type: "string", minLength: 1 },
+        baseRef: { type: "string", minLength: 1 },
+        acknowledgeActiveWork: { type: "boolean" }
       }
     }
   },
@@ -5258,7 +5262,18 @@ async function runTool(args: {
   if (name === "git_checkout_branch") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_checkout_branch");
     const branchName = assertNonEmptyString(toolArgs.branchName, "branchName");
-    const action = await runtime.gitService.checkoutBranch({ laneId, branchName });
+    const mode = typeof toolArgs.mode === "string" ? toolArgs.mode : undefined;
+    const startPoint = typeof toolArgs.startPoint === "string" ? toolArgs.startPoint : undefined;
+    const baseRef = typeof toolArgs.baseRef === "string" ? toolArgs.baseRef : undefined;
+    const acknowledgeActiveWork = typeof toolArgs.acknowledgeActiveWork === "boolean" ? toolArgs.acknowledgeActiveWork : undefined;
+    const action = await runtime.gitService.checkoutBranch({
+      laneId,
+      branchName,
+      mode: mode === "create" ? "create" : "existing",
+      startPoint,
+      baseRef,
+      acknowledgeActiveWork,
+    });
     return { laneId, branchName, action };
   }
 

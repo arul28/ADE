@@ -133,9 +133,17 @@ extension LanesTabView {
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(ADEColor.warning)
           VStack(alignment: .leading, spacing: 2) {
-            Text(snapshot.lane.name)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
+            HStack(spacing: 6) {
+              Text(snapshot.lane.name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+              Text(snapshot.lane.branchRef)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            }
             Text("Behind parent by \(snapshot.rebaseSuggestion?.behindCount ?? 0) commit(s)")
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
@@ -195,9 +203,17 @@ extension LanesTabView {
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(snapshot.autoRebaseStatus?.state == "rebaseConflict" ? ADEColor.danger : ADEColor.warning)
           VStack(alignment: .leading, spacing: 2) {
-            Text(snapshot.lane.name)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
+            HStack(spacing: 6) {
+              Text(snapshot.lane.name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+              Text(snapshot.lane.branchRef)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            }
             Text(snapshot.autoRebaseStatus?.message ?? "Manual follow-up required")
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)

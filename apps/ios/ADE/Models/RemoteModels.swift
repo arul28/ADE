@@ -245,6 +245,8 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var createdAt: String
   var archivedAt: String?
   var devicesOpen: [DeviceMarker]?
+  var missionId: String?
+  var laneRole: String?
 }
 
 struct DeviceMarker: Codable, Identifiable, Equatable, Hashable {
@@ -451,6 +453,41 @@ struct GitBranchSummary: Codable, Identifiable, Equatable {
   var isCurrent: Bool
   var isRemote: Bool
   var upstream: String?
+  var ownedByLaneId: String?
+  var ownedByLaneName: String?
+  var profiledInCurrentLane: Bool?
+  var hasOpenPr: Bool?
+}
+
+struct LaneBranchActiveWorkItem: Codable, Identifiable, Equatable {
+  var id: String
+  var kind: String
+  var title: String
+  var status: String
+}
+
+struct LaneBranchProfile: Codable, Identifiable, Equatable {
+  var id: String
+  var laneId: String
+  var branchRef: String
+  var baseRef: String
+  var parentLaneId: String?
+  var sourceBranchRef: String?
+  var createdAt: String
+  var updatedAt: String
+  var lastCheckedOutAt: String?
+}
+
+struct LaneBranchSwitchPreview: Codable, Equatable {
+  var laneId: String
+  var currentBranchRef: String
+  var targetBranchRef: String
+  var mode: String
+  var dirty: Bool
+  var duplicateLaneId: String?
+  var duplicateLaneName: String?
+  var activeWork: [LaneBranchActiveWorkItem]
+  var targetProfile: LaneBranchProfile?
 }
 
 struct GitGenerateCommitMessageResult: Codable, Equatable {

@@ -2819,8 +2819,40 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "git.listBranches", args: ["laneId": laneId], as: [GitBranchSummary].self)
   }
 
-  func checkoutPrimaryBranch(laneId: String, branchName: String) async throws {
-    _ = try await sendCommand(action: "git.checkoutBranch", args: ["laneId": laneId, "branchName": branchName])
+  func previewBranchSwitch(
+    laneId: String,
+    branchName: String,
+    mode: String = "existing",
+    startPoint: String? = nil,
+    baseRef: String? = nil
+  ) async throws -> LaneBranchSwitchPreview {
+    var args: [String: Any] = [
+      "laneId": laneId,
+      "branchName": branchName,
+      "mode": mode
+    ]
+    if let startPoint, !startPoint.isEmpty { args["startPoint"] = startPoint }
+    if let baseRef, !baseRef.isEmpty { args["baseRef"] = baseRef }
+    return try await sendDecodableCommand(action: "lanes.previewBranchSwitch", args: args, as: LaneBranchSwitchPreview.self)
+  }
+
+  func checkoutPrimaryBranch(
+    laneId: String,
+    branchName: String,
+    mode: String = "existing",
+    startPoint: String? = nil,
+    baseRef: String? = nil,
+    acknowledgeActiveWork: Bool = false
+  ) async throws {
+    var args: [String: Any] = [
+      "laneId": laneId,
+      "branchName": branchName,
+      "mode": mode,
+      "acknowledgeActiveWork": acknowledgeActiveWork
+    ]
+    if let startPoint, !startPoint.isEmpty { args["startPoint"] = startPoint }
+    if let baseRef, !baseRef.isEmpty { args["baseRef"] = baseRef }
+    _ = try await sendCommand(action: "git.checkoutBranch", args: args)
   }
 
   func fetchLaneChanges(laneId: String) async throws -> DiffChanges {
