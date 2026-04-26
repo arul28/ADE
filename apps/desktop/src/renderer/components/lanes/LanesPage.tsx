@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClickOutside } from "../../hooks/useClickOutside";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree } from "@phosphor-icons/react";
 import { useAppStore, type LaneInspectorTab } from "../../state/appStore";
@@ -199,12 +199,25 @@ function laneTilingLayoutIds(laneId: string): string[] {
 
 export function LanesPage() {
   const [params] = useSearchParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const selectLane = useAppStore((s) => s.selectLane);
   const selectRunLane = useAppStore((s) => s.selectRunLane);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
+
+  const urlLaneDeeplinks = useMemo(() => {
+    const p = new URLSearchParams(location.search);
+    return {
+      action: p.get("action"),
+      laneIdsRaw: p.get("laneIds"),
+      laneId: p.get("laneId"),
+      sessionId: p.get("sessionId"),
+      inspectorTab: p.get("inspectorTab"),
+      focus: p.get("focus"),
+    };
+  }, [location.search]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const clearLaneInspectorTab = useAppStore((s) => s.clearLaneInspectorTab);
@@ -305,6 +318,17 @@ export function LanesPage() {
   );
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
+  // `availableLaneIdsKey` is the content-stable dep trigger (string changes only
+  // when the id set changes). `availableLaneIds` recomputes from the key so its
+  // identity is also content-stable, letting effects depend on either safely.
+  const availableLaneIdsKey = useMemo(
+    () => sortedLanes.map((lane) => lane.id).sort().join("\0"),
+    [sortedLanes],
+  );
+  const availableLaneIds = useMemo(
+    () => (availableLaneIdsKey ? availableLaneIdsKey.split("\0") : []),
+    [availableLaneIdsKey],
+  );
   const integrationSourcesByLaneId = useMemo(
     () => buildIntegrationSourcesByLaneId(integrationProposals, lanesById),
     [integrationProposals, lanesById],
@@ -1366,21 +1390,25 @@ export function LanesPage() {
     setCreateOpen(true);
   }, [lanes]);
 
-  // Intentionally ignore prepareCreateDialog churn so an open ?action=create URL
-  // doesn't reopen and reset the dialog when lanes refresh.
+  // Deep link handling: must not re-run on lane list refreshes, or a stale
+  // ?laneId / focus=single from the URL overwrites the user's current tab/split
+  // selection. Multi-lane ?laneIds= re-tries as `availableLaneIds` changes.
+
+  // Intentionally depend only on `urlLaneDeeplinks.action` (not
+  // prepareCreateDialog) so the create dialog is not re-opened from hook churn.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const laneIdsRaw = params.get("laneIds");
-    const laneId = params.get("laneId");
-    const sessionId = params.get("sessionId");
-    const inspectorTabParam = params.get("inspectorTab");
-    if (params.get("action") === "create") {
+    if (urlLaneDeeplinks.action === "create") {
       prepareCreateDialog();
     }
+  }, [urlLaneDeeplinks.action]);
+
+  useEffect(() => {
+    if (!urlLaneDeeplinks.laneIdsRaw) return;
     const laneIdsSelection = resolveLaneIdsDeepLinkSelection({
-      laneIdsRaw,
-      inspectorTabParam,
-      availableLaneIds: lanesById.keys(),
+      laneIdsRaw: urlLaneDeeplinks.laneIdsRaw,
+      inspectorTabParam: urlLaneDeeplinks.inspectorTab,
+      availableLaneIds,
       consumedSignature: consumedLaneIdsDeepLinkSignatureRef.current,
     });
     if (laneIdsSelection) {
@@ -1389,26 +1417,37 @@ export function LanesPage() {
       selectLane(valid[0]!);
       setActiveLaneIds(valid);
       setPinnedLaneIds(new Set());
-      if (inspectorTabParam && valid[0]) {
-        setLaneInspectorTab(valid[0], inspectorTabParam as LaneInspectorTab);
-      }
-    } else if (laneIdsRaw) {
-      // Keep waiting for the referenced lanes to exist instead of consuming
-      // the deep link early. Once it succeeds, later refreshes will no-op.
-    } else {
-      consumedLaneIdsDeepLinkSignatureRef.current = null;
-      if (laneId) {
-        selectLane(laneId);
-        if (params.get("focus") === "single") {
-          setActiveLaneIds([laneId]);
-        }
-        if (inspectorTabParam) {
-          setLaneInspectorTab(laneId, inspectorTabParam as LaneInspectorTab);
-        }
+      if (urlLaneDeeplinks.inspectorTab && valid[0]) {
+        setLaneInspectorTab(valid[0], urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
       }
     }
-    if (sessionId) focusSession(sessionId);
-  }, [params, selectLane, focusSession, setLaneInspectorTab, lanesById]);
+  }, [availableLaneIds, selectLane, setLaneInspectorTab, urlLaneDeeplinks.laneIdsRaw, urlLaneDeeplinks.inspectorTab]);
+
+  useEffect(() => {
+    if (urlLaneDeeplinks.laneIdsRaw) return;
+    consumedLaneIdsDeepLinkSignatureRef.current = null;
+    const laneId = urlLaneDeeplinks.laneId;
+    if (!laneId) return;
+    selectLane(laneId);
+    if (urlLaneDeeplinks.focus === "single") {
+      setActiveLaneIds([laneId]);
+    }
+    if (urlLaneDeeplinks.inspectorTab) {
+      setLaneInspectorTab(laneId, urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
+    }
+  }, [
+    urlLaneDeeplinks.laneIdsRaw,
+    urlLaneDeeplinks.laneId,
+    urlLaneDeeplinks.focus,
+    urlLaneDeeplinks.inspectorTab,
+    selectLane,
+    setLaneInspectorTab,
+  ]);
+
+  useEffect(() => {
+    if (!urlLaneDeeplinks.sessionId) return;
+    focusSession(urlLaneDeeplinks.sessionId);
+  }, [urlLaneDeeplinks.sessionId, focusSession]);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     if (!open && createBusy) return;
