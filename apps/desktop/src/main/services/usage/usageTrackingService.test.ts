@@ -607,19 +607,15 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
-  it("clamps poll interval to min/max bounds", () => {
+  it("accepts out-of-range poll intervals without throwing (clamps internally)", () => {
     const logger = createLogger();
 
-    // Too low — should clamp to 1 min
-    const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100 });
-    service1.dispose();
-
-    // Too high — should clamp to 15 min
-    const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000 });
-    service2.dispose();
-
-    // No crash means the clamping worked
-    expect(true).toBe(true);
+    expect(() => {
+      const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100 });
+      service1.dispose();
+      const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000 });
+      service2.dispose();
+    }).not.toThrow();
   });
 
   it("calls onUpdate when poll completes", async () => {
