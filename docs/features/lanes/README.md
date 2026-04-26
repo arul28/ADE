@@ -192,6 +192,39 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
 8. **Delete** — `deleteLane` removes the worktree and the row. Can
    optionally delete the branch too.
 
+## Branch switching inside a lane
+
+A lane can swap its checked-out branch without being deleted/recreated.
+The `lane_branch_profiles` table remembers per-(lane, branch) state
+(`base_ref`, `parent_lane_id`, `source_branch_ref`, last checkout time)
+so that toggling between branches preserves stack relationships and
+fork points.
+
+| Method | Purpose |
+|--------|---------|
+| `laneService.listBranchProfiles(laneId)` | Returns every branch profile recorded for the lane plus the active branch (auto-upserts a profile for the lane's current `branch_ref` so the active branch is always present). |
+| `laneService.previewBranchSwitch(args)` | Pure read: dirty-tree probe, duplicate-owner detection (another lane already on that branch), active terminal/process inventory, base-ref/parent inference, remote-prefix stripping. Used to drive the iOS/desktop branch picker confirmation UI. |
+| `laneService.switchBranch(args)` | Performs the checkout: refuses dirty trees, refuses duplicate-owner branches, requires `acknowledgeActiveWork` if active sessions/processes exist, then `git checkout` (or `checkout -b` in `mode: "create"`), updates the lane row, upserts the branch profile, and prunes stale `pull_requests` rows whose `head_branch` no longer matches the new branch. (`pull_requests.lane_id` is `not null`, so stale rows are deleted along with their child rows in `pr_convergence_state`, `pr_pipeline_settings`, `pr_issue_inventory`, and `pr_group_members`.) |
+| `laneService.updateBranchRef(laneId, branchRef)` | Internal helper used after rename/import paths to keep the active profile and `lanes.branch_ref` in sync. |
+
+IPC channels (registered in `services/ipc/registerIpc.ts`, exposed via
+`preload.ts`):
+
+- `ade.lanes.listBranchProfiles`
+- `ade.lanes.previewBranchSwitch`
+- `ade.lanes.switchBranch`
+
+The desktop renderer surfaces this in `LaneStackPane.tsx` and
+`LanesPage.tsx` (branch dropdown + confirmation dialog wired to
+`previewBranchSwitch` / `switchBranch`). The iOS companion mirrors it in
+`apps/ios/ADE/Views/Lanes/LaneBranchPickerSheet.swift` and is exercised
+through `SyncRemoteCommandService` (`branchProfiles.list`,
+`branchSwitch.preview`, `branchSwitch.commit`).
+
+The ade-cli `git checkout <branch>` command also flows through the same
+service so headless workers see identical guards (uncommitted-changes
+refusal, duplicate-owner refusal, stale-PR cleanup).
+
 ## IPC surface
 
 Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts` and

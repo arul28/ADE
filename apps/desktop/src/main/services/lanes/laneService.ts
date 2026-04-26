@@ -2118,19 +2118,38 @@ export function createLaneService({
         `,
         [targetBranchRef, baseRef, parentLaneId, row.id, projectId],
       );
-      // Detach any PR rows still associated with this lane whose head_branch
+      // Drop any PR rows still associated with this lane whose head_branch
       // no longer matches the lane's current branch — those references are
       // stale after a branch switch and must not bleed into PR lookups.
-      db.run(
+      // pull_requests.lane_id is NOT NULL, so we DELETE (mirrors the explicit
+      // child-row cleanup used by the lane-delete path; CRR conversion can
+      // strip FK cascades).
+      const stalePrRows = db.all<{ id: string }>(
         `
-          update pull_requests
-          set lane_id = null
+          select id from pull_requests
           where lane_id = ?
             and project_id = ?
             and head_branch <> ?
         `,
         [row.id, projectId, targetBranchRef],
       );
+      if (stalePrRows.length > 0) {
+        const placeholders = stalePrRows.map(() => "?").join(", ");
+        const stalePrIds = stalePrRows.map((r) => r.id);
+        db.run(`delete from pr_convergence_state where pr_id in (${placeholders})`, stalePrIds);
+        db.run(`delete from pr_pipeline_settings where pr_id in (${placeholders})`, stalePrIds);
+        db.run(`delete from pr_issue_inventory where pr_id in (${placeholders})`, stalePrIds);
+        db.run(`delete from pr_group_members where pr_id in (${placeholders})`, stalePrIds);
+        db.run(
+          `
+            delete from pull_requests
+            where lane_id = ?
+              and project_id = ?
+              and head_branch <> ?
+          `,
+          [row.id, projectId, targetBranchRef],
+        );
+      }
       invalidateLaneListCache();
 
       const refreshed = (await listLanes({ includeArchived: false, includeStatus: true })).find((lane) => lane.id === row.id);
