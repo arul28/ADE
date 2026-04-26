@@ -875,7 +875,7 @@ export function AgentChatPane({
   presentation,
   embeddedWorkLayout = false,
   layoutVariant = "standard",
-  isTileActive = false,
+  isTileActive = true,
   shouldAutofocusComposer = false,
   onSessionCreated,
   availableLanes,
@@ -1755,12 +1755,17 @@ export function AgentChatPane({
   }, [refreshAvailableModels, selectedSession?.provider]);
 
   useEffect(() => {
+    // Suspend the 5s model-list poll when this pane is mounted but hidden
+    // (e.g. a background tab/tile). Streaming event subscriptions remain
+    // so background sessions stay in sync, but polling is paused to avoid
+    // wasted IPC for panes the user can't see.
     if (!turnActive || !selectedSession?.provider) return;
+    if (!isTileActive) return;
     const timer = window.setInterval(() => {
       void refreshAvailableModels();
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [refreshAvailableModels, selectedSession?.provider, turnActive]);
+  }, [refreshAvailableModels, selectedSession?.provider, turnActive, isTileActive]);
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,

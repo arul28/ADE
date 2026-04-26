@@ -6,7 +6,7 @@ import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { WorkStartSurface } from "./WorkStartSurface";
-import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
+import { isChatToolType, primarySessionLabel, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
 import { sessionStatusDot } from "../../lib/terminalAttention";
 import type { WorkTabGroup } from "./useWorkSessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -295,7 +295,6 @@ export function WorkViewArea({
   const activeSession = showingDraft
     ? null
     : sessionsById.get(activeItemId) ?? tabVisibleSessions[0] ?? visibleSessions[0] ?? null;
-  const activeRunningTerminalSession = isRunningPtySession(activeSession) ? activeSession : null;
   const handleContextMenu = useCallback((session: TerminalSessionSummary, e: React.MouseEvent): void => {
     if (onContextMenu) {
       e.preventDefault();
@@ -402,6 +401,58 @@ export function WorkViewArea({
   }
 
   /* ---- Tab view ---- */
+  const tabBody = (
+    <div className="relative min-h-0 flex-1" style={{ background: "var(--color-bg)" }}>
+      {visibleSessions.map((session) => {
+        const isActive = activeSession?.id === session.id;
+        const runningTerminalSession = isRunningPtySession(session) ? session : null;
+
+        return (
+          <div
+            key={session.id}
+            className="absolute inset-0"
+            hidden={!isActive}
+          >
+            {runningTerminalSession ? (
+              <TerminalView
+                key={runningTerminalSession.id}
+                ptyId={runningTerminalSession.ptyId}
+                sessionId={runningTerminalSession.id}
+                isActive={isActive}
+                isVisible={isActive}
+                className="h-full w-full"
+              />
+            ) : (
+              <SessionSurface
+                session={session}
+                isActive={isActive}
+                terminalVisible={isActive}
+                onOpenChatSession={onOpenChatSession}
+                onResume={onResumeSession}
+              />
+            )}
+          </div>
+        );
+      })}
+
+      {!activeSession ? (
+        <div className="absolute inset-0 flex flex-col">
+          <div className="flex shrink-0 items-center justify-center py-2">
+            <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
+          </div>
+          <div className="min-h-0 flex-1">
+            <WorkStartSurface
+              draftKind={draftKind}
+              lanes={lanes}
+              onOpenChatSession={onOpenChatSession}
+              onLaunchPtySession={onLaunchPtySession}
+            />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+
   if (!hasGroupedTabs) {
     return (
       <div className="flex h-full flex-col">
@@ -499,40 +550,7 @@ export function WorkViewArea({
           </div>
         </div>
 
-        <div className="relative min-h-0 flex-1" style={{ background: "var(--color-bg)" }}>
-          {activeRunningTerminalSession ? (
-            <TerminalView
-              key={activeRunningTerminalSession.id}
-              ptyId={activeRunningTerminalSession.ptyId}
-              sessionId={activeRunningTerminalSession.id}
-              isActive
-              isVisible
-              className="absolute inset-0 h-full w-full"
-            />
-          ) : null}
-
-          {activeSession ? (
-            activeRunningTerminalSession ? null : (
-              <div className="absolute inset-0">
-                <SessionSurface session={activeSession} isActive terminalVisible onOpenChatSession={onOpenChatSession} onResume={onResumeSession} />
-              </div>
-            )
-          ) : (
-            <div className="absolute inset-0 flex flex-col">
-              <div className="flex shrink-0 items-center justify-center py-2">
-                <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
-              </div>
-              <div className="min-h-0 flex-1">
-                <WorkStartSurface
-                  draftKind={draftKind}
-                  lanes={lanes}
-                  onOpenChatSession={onOpenChatSession}
-                  onLaunchPtySession={onLaunchPtySession}
-                />
-              </div>
-            </div>
-          )}
-        </div>
+        {tabBody}
       </div>
     );
   }
@@ -666,41 +684,7 @@ export function WorkViewArea({
         </div>
       </div>
 
-      <div className="relative min-h-0 flex-1" style={{ background: "var(--color-bg)" }}>
-        {activeRunningTerminalSession ? (
-          <TerminalView
-            key={activeRunningTerminalSession.id}
-            ptyId={activeRunningTerminalSession.ptyId}
-            sessionId={activeRunningTerminalSession.id}
-            isActive
-            isVisible
-            className="absolute inset-0 h-full w-full"
-          />
-        ) : null}
-
-        {activeSession ? (
-          activeRunningTerminalSession ? null : (
-            <div className="absolute inset-0">
-              <SessionSurface session={activeSession} isActive terminalVisible onOpenChatSession={onOpenChatSession} onResume={onResumeSession} />
-            </div>
-          )
-        ) : (
-          <div className="absolute inset-0 flex flex-col">
-            {/* Mode switcher pills */}
-            <div className="flex shrink-0 items-center justify-center py-2">
-              <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
-            </div>
-            <div className="min-h-0 flex-1">
-              <WorkStartSurface
-                draftKind={draftKind}
-                lanes={lanes}
-                onOpenChatSession={onOpenChatSession}
-                onLaunchPtySession={onLaunchPtySession}
-              />
-            </div>
-          </div>
-        )}
-      </div>
+      {tabBody}
     </div>
   );
 }
