@@ -3,9 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAdeGitignore } from "../../../shared/adeLayout";
+import type { LinearSyncConfig, LinearWorkflowConfig } from "../../../shared/types";
 import { createMemoryService } from "../memory/memoryService";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "./ctoStateService";
+import { createFlowPolicyService } from "./flowPolicyService";
+import { createLinearWorkflowFileService } from "./linearWorkflowFileService";
 
 function createLogger() {
   return {
@@ -16,7 +19,7 @@ function createLogger() {
   } as any;
 }
 
-async function createFixture() {
+async function createStateFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cto-state-"));
   const adeDir = path.join(root, ".ade");
   fs.mkdirSync(adeDir, { recursive: true });
@@ -26,8 +29,8 @@ async function createFixture() {
   return { root, adeDir, db, projectId };
 }
 
-async function createFixtureWithMemory() {
-  const fixture = await createFixture();
+async function createStateFixtureWithMemory() {
+  const fixture = await createStateFixture();
   fixture.db.run(
     `INSERT OR IGNORE INTO projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?)`,
     [fixture.projectId, fixture.root, "test-project", "main", new Date().toISOString(), new Date().toISOString()]
@@ -38,7 +41,7 @@ async function createFixtureWithMemory() {
 
 describe("ctoStateService", () => {
   it("creates default CTO identity/core memory when absent", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -64,7 +67,7 @@ describe("ctoStateService", () => {
   });
 
   it("recreates files from DB-only state", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const identityPayload = {
       name: "CTO",
       version: 7,
@@ -115,7 +118,7 @@ describe("ctoStateService", () => {
   });
 
   it("recreates DB rows from file-only state", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const ctoDir = path.join(fixture.adeDir, "cto");
     fs.mkdirSync(ctoDir, { recursive: true });
     fs.writeFileSync(
@@ -176,7 +179,7 @@ describe("ctoStateService", () => {
   });
 
   it("uses newer doc and prefers file when timestamps tie", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const ctoDir = path.join(fixture.adeDir, "cto");
     fs.mkdirSync(ctoDir, { recursive: true });
 
@@ -255,7 +258,7 @@ describe("ctoStateService", () => {
   });
 
   it("keeps session log integrity and backfills DB from jsonl", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -294,7 +297,7 @@ describe("ctoStateService", () => {
   });
 
   it("normalizes legacy full_mcp session logs as full tooling", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const ctoDir = path.join(fixture.adeDir, "cto");
     fs.mkdirSync(ctoDir, { recursive: true });
     fs.writeFileSync(
@@ -324,7 +327,7 @@ describe("ctoStateService", () => {
   });
 
   it("tracks subordinate activity and exposes it in CTO reconstruction context", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -356,7 +359,7 @@ describe("ctoStateService", () => {
   });
 
   it("generates long-term memory docs from core memory and promoted durable memories", async () => {
-    const fixture = await createFixtureWithMemory();
+    const fixture = await createStateFixtureWithMemory();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -390,7 +393,7 @@ describe("ctoStateService", () => {
   });
 
   it("appendDailyLog creates the directory and file with timestamped entry", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -412,7 +415,7 @@ describe("ctoStateService", () => {
   });
 
   it("appendDailyLog appends to existing log", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -433,7 +436,7 @@ describe("ctoStateService", () => {
   });
 
   it("readDailyLog returns null for non-existent date", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -446,7 +449,7 @@ describe("ctoStateService", () => {
   });
 
   it("readDailyLog reads back what was written", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -462,7 +465,7 @@ describe("ctoStateService", () => {
   });
 
   it("listDailyLogs returns dates in reverse chronological order", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -480,7 +483,7 @@ describe("ctoStateService", () => {
   });
 
   it("listDailyLogs respects the limit parameter", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -500,7 +503,7 @@ describe("ctoStateService", () => {
   });
 
   it("appendContinuityCheckpoint writes a compaction carry-forward into the daily log", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -526,7 +529,7 @@ describe("ctoStateService", () => {
   });
 
   it("preserves onboarding state and extended identity fields across reloads", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -566,7 +569,7 @@ describe("ctoStateService", () => {
   });
 
   it("builds a structured CTO prompt preview with immutable doctrine and preset overlay", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -599,7 +602,7 @@ describe("ctoStateService", () => {
   });
 
   it("uses the custom personality overlay without removing the immutable doctrine", async () => {
-    const fixture = await createFixture();
+    const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
       projectId: fixture.projectId,
@@ -617,6 +620,123 @@ describe("ctoStateService", () => {
     expect(preview.sections[1]?.content).toContain("Be sharp, skeptical, and deeply execution-focused.");
     expect(preview.prompt).toContain("Immutable ADE doctrine");
     expect(preview.prompt).toContain("Be sharp, skeptical, and deeply execution-focused.");
+
+    fixture.db.close();
+  });
+});
+
+async function createFlowPolicyFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-flow-policy-"));
+  const adeDir = path.join(root, ".ade");
+  fs.mkdirSync(adeDir, { recursive: true });
+  const dbPath = path.join(adeDir, "ade.db");
+  const db = await openKvDb(dbPath, createLogger());
+  const projectId = "project-flow-policy";
+  const legacyConfig: LinearSyncConfig = {
+    enabled: true,
+    projects: [{ slug: "acme-platform", defaultWorker: "backend-dev" }],
+    autoDispatch: { default: "auto", rules: [{ id: "rule-1", action: "auto", match: { labels: ["bug"] } }] },
+  };
+  const projectConfigService = {
+    getEffective: () => ({ linearSync: legacyConfig }),
+  };
+  const workflowFileService = createLinearWorkflowFileService({ projectRoot: root });
+  return { db, root, projectId, projectConfigService, workflowFileService };
+}
+
+describe("flowPolicyService", () => {
+  it("bootstraps from generated migration, saves repo workflows, and rolls back revisions", async () => {
+    const fixture = await createFlowPolicyFixture();
+    const service = createFlowPolicyService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      projectConfigService: fixture.projectConfigService,
+      workflowFileService: fixture.workflowFileService,
+    });
+
+    const bootstrapped = service.getPolicy();
+    expect(bootstrapped.workflows.length).toBeGreaterThan(0);
+    expect(bootstrapped.migration?.needsSave).toBe(true);
+    expect(bootstrapped.intake.activeStateTypes).toEqual(["backlog", "unstarted", "started"]);
+    expect(bootstrapped.intake.terminalStateTypes).toEqual(["completed", "canceled"]);
+
+    const toSave: LinearWorkflowConfig = {
+      ...bootstrapped,
+      workflows: bootstrapped.workflows.map((workflow, index) => ({
+        ...workflow,
+        priority: 200 - index,
+      })),
+      intake: {
+        projectSlugs: ["acme-platform"],
+        activeStateTypes: ["backlog", "unstarted"],
+        terminalStateTypes: ["completed", "canceled"],
+      },
+    };
+
+    const saved = service.savePolicy(toSave, "user-a");
+    expect(saved.source).toBe("repo");
+    expect(saved.intake.projectSlugs).toEqual(["acme-platform"]);
+    expect(saved.intake.activeStateTypes).toEqual(["backlog", "unstarted"]);
+    expect(fs.readdirSync(path.join(fixture.root, ".ade", "workflows", "linear")).some((entry) => entry.endsWith(".yaml"))).toBe(true);
+
+    const revisions = service.listRevisions(10);
+    expect(revisions.length).toBe(2);
+    expect(revisions[0]?.actor).toBe("user-a");
+
+    const bootstrapRevision = revisions.find((revision) => revision.actor === "bootstrap");
+    expect(bootstrapRevision).toBeTruthy();
+    const rolledBack = service.rollbackRevision(bootstrapRevision!.id, "user-b");
+    expect(rolledBack.workflows[0]?.name).toBeTruthy();
+    expect(service.listRevisions(10)[0]?.actor).toBe("user-b");
+
+    fixture.db.close();
+  });
+
+  it("validates duplicate workflow ids", async () => {
+    const fixture = await createFlowPolicyFixture();
+    const service = createFlowPolicyService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      projectConfigService: fixture.projectConfigService,
+      workflowFileService: fixture.workflowFileService,
+    });
+
+    const validation = service.validatePolicy({
+      version: 1,
+      source: "generated",
+      intake: {
+        projectSlugs: ["acme-platform"],
+        activeStateTypes: ["backlog", "unstarted", "started"],
+        terminalStateTypes: ["completed", "canceled"],
+      },
+      settings: { ctoLinearAssigneeName: "CTO", ctoLinearAssigneeAliases: ["cto"] },
+      workflows: [
+        {
+          id: "dup",
+          name: "One",
+          enabled: true,
+          priority: 100,
+          triggers: { assignees: ["CTO"] },
+          target: { type: "mission" },
+          steps: [{ id: "launch", type: "launch_target" }],
+        },
+        {
+          id: "DUP",
+          name: "Two",
+          enabled: true,
+          priority: 90,
+          triggers: { assignees: ["CTO"] },
+          target: { type: "review_gate" },
+          steps: [{ id: "launch", type: "launch_target" }],
+        },
+      ],
+      files: [],
+      migration: { hasLegacyConfig: false, needsSave: true },
+      legacyConfig: null,
+    });
+
+    expect(validation.ok).toBe(false);
+    expect(validation.issues.join(" ")).toContain("Duplicate workflow id");
 
     fixture.db.close();
   });
