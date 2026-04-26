@@ -1,16 +1,21 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   CaretDown,
   CaretRight,
   FloppyDisk,
   Flask,
+  GitBranch,
+  Sparkle,
+  Warning,
 } from "@phosphor-icons/react";
 import { getDefaultModelDescriptor } from "../../../../shared/modelRegistry";
 import type {
   AutomationAction,
   AutomationDraftConfirmationRequirement,
   AutomationDraftIssue,
+  AutomationLaneMode,
+  AutomationLaneNamePreset,
   AutomationRuleDraft,
   AutomationTrigger,
   TestSuiteDefinition,
@@ -20,7 +25,7 @@ import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { permissionControlsForModel, patchPermissionConfig } from "../permissionControls";
-import { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "../shared";
+import { cardCls, inputCls, labelCls, selectCls, textareaCls } from "../designTokens";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ActionList } from "../ActionList";
@@ -89,6 +94,93 @@ const SCHEDULE_PRESETS: Array<{ label: string; cron: string }> = [
   { label: "Every day at 2 AM", cron: "0 2 * * *" },
   { label: "Fridays at 4 PM", cron: "0 16 * * 5" },
 ];
+
+const LANE_NAME_PRESETS: Array<{
+  value: AutomationLaneNamePreset;
+  label: string;
+  template: string;
+  helpEvent: "issue" | "pr" | "any";
+}> = [
+  { value: "issue-title", label: "Use issue title", template: "{{trigger.issue.title}}", helpEvent: "issue" },
+  { value: "issue-num-title", label: "Issue #N – Title", template: "#{{trigger.issue.number}} – {{trigger.issue.title}}", helpEvent: "issue" },
+  { value: "pr-title-author", label: "PR title – Author", template: "{{trigger.pr.title}} – {{trigger.pr.author}}", helpEvent: "pr" },
+  { value: "custom", label: "Custom template…", template: "", helpEvent: "any" },
+];
+
+function presetTemplate(preset: AutomationLaneNamePreset, customTemplate: string | undefined): string {
+  if (preset === "custom") return customTemplate ?? "";
+  return LANE_NAME_PRESETS.find((p) => p.value === preset)?.template ?? "";
+}
+
+function triggerSampleContext(trigger: AutomationTrigger): {
+  issue?: { number: number; title: string; author: string; url: string; body: string };
+  pr?: { number: number; title: string; author: string; url: string };
+} {
+  const t = trigger.type;
+  if (t.startsWith("github.issue") || t.startsWith("linear.issue")) {
+    return {
+      issue: {
+        number: 427,
+        title: "Fix login bug on Safari",
+        author: "octocat",
+        url: "https://github.com/example/repo/issues/427",
+        body: "Repro: open site in Safari 17, sign in...",
+      },
+    };
+  }
+  if (t.startsWith("github.pr")) {
+    return {
+      pr: {
+        number: 314,
+        title: "Add caching to image pipeline",
+        author: "octocat",
+        url: "https://github.com/example/repo/pull/314",
+      },
+    };
+  }
+  return {};
+}
+
+// Editor-only resolver. Real `{{trigger.*}}` resolution happens server-side via
+// `resolvePlaceholders` — this is just a live preview so the user sees what
+// their template will look like.
+function previewResolve(
+  template: string,
+  sample: Record<string, unknown>,
+): { resolved: string; missing: string[] } {
+  const missing: string[] = [];
+  const resolved = template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, path: string) => {
+    const segments = path.split(".");
+    if (segments[0] !== "trigger") {
+      missing.push(path);
+      return `<missing ${path}>`;
+    }
+    let cursor: unknown = sample;
+    for (let i = 1; i < segments.length; i++) {
+      if (cursor && typeof cursor === "object" && segments[i]! in (cursor as Record<string, unknown>)) {
+        cursor = (cursor as Record<string, unknown>)[segments[i]!];
+      } else {
+        missing.push(path);
+        return `<missing ${path}>`;
+      }
+    }
+    return String(cursor ?? "");
+  });
+  return { resolved, missing };
+}
+
+function smartDefaultsForTrigger(type: AutomationTrigger["type"]): {
+  laneMode: AutomationLaneMode;
+  preset: AutomationLaneNamePreset | undefined;
+} {
+  if (type === "github.issue_opened" || type === "linear.issue_created") {
+    return { laneMode: "create", preset: "issue-title" };
+  }
+  if (type === "github.pr_opened") {
+    return { laneMode: "create", preset: "pr-title-author" };
+  }
+  return { laneMode: "reuse", preset: undefined };
+}
 
 function triggerFamilyForType(type: AutomationTrigger["type"]): TriggerFamily {
   if (type === "schedule") return "schedule";
@@ -183,7 +275,6 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
           kind: "agent-session",
           prompt: action.prompt ?? "",
           sessionTitle: action.sessionTitle ?? "",
-          targetLaneId: action.targetLaneId ?? null,
           modelConfig: action.modelConfig,
           permissionConfig: action.permissionConfig,
         });
@@ -196,18 +287,16 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
 }
 
 function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue[]): AutomationRuleDraft {
-  // If a single agent-session or launch-mission row is present alone, fold into execution.
   const soloAgent = rows.length === 1 && rows[0]!.kind === "agent-session";
   const soloMission = rows.length === 1 && rows[0]!.kind === "launch-mission";
 
   if (soloAgent) {
     const first = rows[0]!;
-    const targetLaneId = first.targetLaneId ?? draft.execution?.targetLaneId ?? null;
     return {
       ...draft,
       execution: {
+        ...(draft.execution ?? { kind: "agent-session" }),
         kind: "agent-session",
-        ...(targetLaneId ? { targetLaneId } : {}),
         session: { title: first.sessionTitle || null },
       },
       ...(first.modelConfig ? { modelConfig: { orchestratorModel: first.modelConfig } } : {}),
@@ -223,8 +312,8 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
     return {
       ...draft,
       execution: {
+        ...(draft.execution ?? { kind: "mission" }),
         kind: "mission",
-        ...(draft.execution?.targetLaneId ? { targetLaneId: draft.execution.targetLaneId } : {}),
         mission: { title: first.missionTitle || null },
       },
       actions: [],
@@ -232,9 +321,6 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
     };
   }
 
-  // Otherwise treat the whole list as a built-in action pipeline (the ordered
-  // list surface). Agent-session / mission rows collapse to the first non-built-in
-  // entry being promoted to `execution`; the remaining rows store under `built-in`.
   const builtInActions: AutomationAction[] = rows.map((row) => rowToAutomationAction(row));
   const legacyDraftActions: AutomationRuleDraft["actions"] = builtInActions
     .map((action) => automationActionToDraftAction(action))
@@ -243,8 +329,8 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
   return {
     ...draft,
     execution: {
+      ...(draft.execution ?? { kind: "built-in" }),
       kind: "built-in",
-      ...(draft.execution?.targetLaneId ? { targetLaneId: draft.execution.targetLaneId } : {}),
       builtIn: { actions: builtInActions },
     },
     prompt: "",
@@ -280,7 +366,6 @@ function rowToAutomationAction(row: ActionRowValue): AutomationAction {
     case "agent-session":
       return {
         type: "agent-session",
-        ...(row.targetLaneId ? { targetLaneId: row.targetLaneId } : {}),
         ...(row.modelConfig ? { modelConfig: row.modelConfig } : {}),
         ...(row.permissionConfig ? { permissionConfig: row.permissionConfig } : {}),
         ...(row.prompt ? { prompt: row.prompt } : {}),
@@ -323,7 +408,6 @@ function automationActionToDraftAction(
     case "agent-session":
       return {
         type: "agent-session",
-        ...(action.targetLaneId ? { targetLaneId: action.targetLaneId } : {}),
         ...(action.modelConfig ? { modelConfig: action.modelConfig } : {}),
         ...(action.permissionConfig ? { permissionConfig: action.permissionConfig } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
@@ -334,6 +418,10 @@ function automationActionToDraftAction(
         type: "launch-mission",
         ...(action.sessionTitle ? { missionTitle: action.sessionTitle } : {}),
       };
+    case "lane-setup":
+      // Synthetic action emitted by the runtime when execution.laneMode is
+      // "create"; never authored by the user, so it has no draft form.
+      return null;
   }
 }
 
@@ -384,6 +472,16 @@ export function RuleEditorPanel({
     ? draft.permissionConfig?.providers?.[permissionMeta.key] ?? ""
     : "";
 
+  // laneMode resolution: missing → "reuse" (server-side migration handles
+  // legacy create-lane-as-first-action collapse).
+  const laneMode: AutomationLaneMode = draft.execution?.laneMode ?? "reuse";
+  const lanePreset: AutomationLaneNamePreset = draft.execution?.laneNamePreset ?? "issue-title";
+  const laneCustomTemplate = draft.execution?.laneNameTemplate ?? "";
+
+  // Tracks whether the user has manually edited the lane mode/preset. Smart
+  // defaults only fire on trigger event change while this stays false.
+  const laneDirtyRef = useRef(false);
+
   const setPrimaryTrigger = (next: AutomationTrigger) => {
     setDraft({ ...draft, triggers: [next], trigger: next });
   };
@@ -400,18 +498,43 @@ export function RuleEditorPanel({
     setDraft(applyActionRowsToDraft(draft, rows));
   };
 
-  const patchExecutionLane = (targetLaneId: string | null) => {
-    setDraft({
-      ...draft,
-      execution: {
-        kind: draft.execution?.kind ?? "agent-session",
-        ...(targetLaneId ? { targetLaneId } : {}),
-        ...(draft.execution?.kind === "agent-session" && draft.execution.session ? { session: draft.execution.session } : {}),
-        ...(draft.execution?.kind === "mission" && draft.execution.mission ? { mission: draft.execution.mission } : {}),
-        ...(draft.execution?.kind === "built-in" && draft.execution.builtIn ? { builtIn: draft.execution.builtIn } : {}),
-      },
-    });
+  const patchExecution = (
+    patch: Partial<{
+      laneMode: AutomationLaneMode;
+      targetLaneId: string | null;
+      laneNamePreset: AutomationLaneNamePreset;
+      laneNameTemplate: string;
+    }>,
+  ) => {
+    const current = draft.execution ?? { kind: "agent-session" as const };
+    const next = { ...current };
+    if (patch.laneMode !== undefined) next.laneMode = patch.laneMode;
+    if (patch.laneNamePreset !== undefined) next.laneNamePreset = patch.laneNamePreset;
+    if (patch.laneNameTemplate !== undefined) next.laneNameTemplate = patch.laneNameTemplate;
+    if (patch.targetLaneId !== undefined) {
+      if (patch.targetLaneId == null) delete next.targetLaneId;
+      else next.targetLaneId = patch.targetLaneId;
+    }
+    setDraft({ ...draft, execution: next });
   };
+
+  // Smart defaults: when the trigger event changes and the user hasn't yet
+  // manually adjusted lane mode/preset, snap to a sensible default. We key on
+  // the trigger type so switching from "Issue opened" to "Issue closed"
+  // doesn't auto-reset a user choice they're happy with.
+  const lastTriggerTypeRef = useRef<AutomationTrigger["type"]>(primaryTrigger.type);
+  useEffect(() => {
+    if (lastTriggerTypeRef.current === primaryTrigger.type) return;
+    lastTriggerTypeRef.current = primaryTrigger.type;
+    if (laneDirtyRef.current) return;
+    const defaults = smartDefaultsForTrigger(primaryTrigger.type);
+    patchExecution({
+      laneMode: defaults.laneMode,
+      ...(defaults.preset !== undefined ? { laneNamePreset: defaults.preset } : {}),
+    });
+    // patchExecution closes over draft; intentionally narrowing deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primaryTrigger.type]);
 
   const errors = issues.filter((i) => i.level === "error");
   const warnings = issues.filter((i) => i.level === "warning");
@@ -421,7 +544,7 @@ export function RuleEditorPanel({
       <div className="shrink-0 border-b border-white/[0.06] px-5 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold text-[#F5FAFF]">
+            <div className="text-[15px] font-semibold text-fg">
               {draft.id ? "Edit automation" : "New automation"}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -456,44 +579,41 @@ export function RuleEditorPanel({
           />
 
           {/* Identity */}
-          <section className="rounded-2xl p-4" style={CARD_STYLE}>
+          <section className={cardCls}>
             <SectionHeader>Identity</SectionHeader>
             <div className="mt-3 space-y-3">
               <input
-                className={INPUT_CLS}
-                style={INPUT_STYLE}
+                className={inputCls}
                 value={draft.name}
                 onChange={(event) => setDraft({ ...draft, name: event.target.value })}
                 placeholder="Automation name"
               />
               <textarea
-                className="min-h-[72px] w-full rounded-md px-3 py-2 text-[12px] text-[#F5F7FA] placeholder:text-[#7E8A9A]"
-                style={INPUT_STYLE}
+                className={cn(textareaCls, "min-h-[72px]")}
                 value={draft.description ?? ""}
                 onChange={(event) => setDraft({ ...draft, description: event.target.value })}
                 placeholder="What this automation is for"
               />
-              <label className="flex items-center justify-between rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2 text-[12px] text-[#D8E3F2]">
+              <label className="flex items-center justify-between rounded-md border border-white/[0.06] bg-[rgba(12,10,22,0.6)] px-3 py-2 text-xs text-fg">
                 <span>Enabled</span>
                 <input
                   type="checkbox"
                   checked={draft.enabled}
                   onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
-                  className="accent-[#7DD3FC]"
+                  className="accent-accent"
                 />
               </label>
             </div>
           </section>
 
           {/* Trigger */}
-          <section className="rounded-2xl p-4" style={CARD_STYLE}>
+          <section className={cardCls}>
             <SectionHeader>Trigger</SectionHeader>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <label className="space-y-1 block">
-                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Source</span>
+              <label className="block space-y-1.5">
+                <div className={labelCls}>Source</div>
                 <select
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
+                  className={selectCls}
                   value={triggerFamily}
                   onChange={(event) => setTriggerFamily(event.target.value as TriggerFamily)}
                 >
@@ -502,11 +622,10 @@ export function RuleEditorPanel({
                   ))}
                 </select>
               </label>
-              <label className="space-y-1 block">
-                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Event</span>
+              <label className="block space-y-1.5">
+                <div className={labelCls}>Event</div>
                 <select
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
+                  className={selectCls}
                   value={primaryTrigger.type}
                   onChange={(event) =>
                     setPrimaryTrigger({
@@ -522,7 +641,7 @@ export function RuleEditorPanel({
               </label>
             </div>
 
-            <div className="mt-3 rounded-xl border border-white/[0.08] bg-black/10 p-3">
+            <div className="mt-3 rounded-lg border border-white/[0.06] bg-[rgba(12,10,22,0.4)] p-3">
               {primaryTrigger.type === "schedule" ? (
                 <ScheduleFields trigger={primaryTrigger} onPatch={patchTrigger} />
               ) : triggerFamily === "github" ? (
@@ -536,36 +655,31 @@ export function RuleEditorPanel({
               ) : triggerFamily === "lane" ? (
                 <LaneFields trigger={primaryTrigger} onPatch={patchTrigger} />
               ) : triggerFamily === "session" ? (
-                <div className="text-[11px] text-[#93A4B8]">Runs when an agent session ends.</div>
+                <div className="text-xs text-muted-fg/60">Runs when an agent session ends.</div>
               ) : triggerFamily === "webhook" ? (
                 <WebhookFields trigger={primaryTrigger} onPatch={patchTrigger} />
               ) : (
-                <div className="text-[11px] text-[#93A4B8]">Runs only when you click Run now.</div>
+                <div className="text-xs text-muted-fg/60">Runs only when you click Run now.</div>
               )}
             </div>
           </section>
 
           {/* Execution */}
-          <section className="rounded-2xl p-4" style={CARD_STYLE}>
+          <section className={cardCls}>
             <SectionHeader>Execution</SectionHeader>
-            <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1.25fr_1fr]">
-              <label className="space-y-1 block">
-                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Lane</span>
-                <select
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
-                  value={draft.execution?.targetLaneId ?? ""}
-                  onChange={(event) => patchExecutionLane(event.target.value || null)}
-                >
-                  <option value="">Trigger or primary lane</option>
-                  {lanes.map((lane) => (
-                    <option key={lane.id} value={lane.id}>{lane.name}</option>
-                  ))}
-                </select>
-              </label>
+            <div className="mt-3 grid gap-3 md:grid-cols-[1.2fr_1.25fr_1fr]">
+              <LaneModeControl
+                laneMode={laneMode}
+                targetLaneId={draft.execution?.targetLaneId ?? null}
+                lanes={lanes}
+                onChange={(next) => {
+                  laneDirtyRef.current = true;
+                  patchExecution(next);
+                }}
+              />
 
-              <div className="space-y-1 min-w-0">
-                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Model</span>
+              <div className="min-w-0 space-y-1.5">
+                <div className={labelCls}>Model</div>
                 <ModelSelector
                   value={modelValue}
                   onChange={(next) =>
@@ -578,13 +692,10 @@ export function RuleEditorPanel({
                 />
               </div>
 
-              <label className="space-y-1 block">
-                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">
-                  Permissions
-                </span>
+              <label className="block space-y-1.5">
+                <div className={labelCls}>Permissions</div>
                 <select
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
+                  className={selectCls}
                   value={currentPermission}
                   onChange={(event) =>
                     setDraft({
@@ -603,10 +714,26 @@ export function RuleEditorPanel({
                 </select>
               </label>
             </div>
+
+            {laneMode === "create" ? (
+              <LaneCreatePanel
+                preset={lanePreset}
+                customTemplate={laneCustomTemplate}
+                trigger={primaryTrigger}
+                onChange={(patch) => {
+                  laneDirtyRef.current = true;
+                  patchExecution(patch);
+                }}
+              />
+            ) : (
+              <p className="mt-3 text-[11px] leading-relaxed text-muted-fg/60">
+                Where this rule's actions run. <span className="text-muted-fg/80">Create new lane per run</span> makes a fresh worktree for every trigger.
+              </p>
+            )}
           </section>
 
           {/* What to do */}
-          <section className="rounded-2xl p-4" style={CARD_STYLE}>
+          <section className={cardCls}>
             <SectionHeader>What to do</SectionHeader>
             <div className="mt-3">
               <ActionList
@@ -621,7 +748,7 @@ export function RuleEditorPanel({
           </section>
 
           {/* Advanced */}
-          <section className="rounded-2xl p-4" style={CARD_STYLE}>
+          <section className={cardCls}>
             <button
               type="button"
               onClick={() => setAdvancedOpen((open) => !open)}
@@ -629,18 +756,18 @@ export function RuleEditorPanel({
             >
               <SectionHeader>Advanced</SectionHeader>
               {advancedOpen ? (
-                <CaretDown size={12} weight="bold" className="text-[#8FA1B8]" />
+                <CaretDown size={12} weight="bold" className="text-muted-fg/60" />
               ) : (
-                <CaretRight size={12} weight="bold" className="text-[#8FA1B8]" />
+                <CaretRight size={12} weight="bold" className="text-muted-fg/60" />
               )}
             </button>
 
             {advancedOpen ? (
               <div className="mt-3 space-y-3">
-                <label className="flex items-center justify-between rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2 text-[12px] text-[#D8E3F2]">
+                <label className="flex items-center justify-between rounded-md border border-white/[0.06] bg-[rgba(12,10,22,0.6)] px-3 py-2 text-xs text-fg">
                   <span>
                     Include project context
-                    <span className="ml-2 text-[10px] text-[#7E8A9A]">memory + procedures</span>
+                    <span className="ml-2 text-[10px] text-muted-fg/50">memory + procedures</span>
                   </span>
                   <input
                     type="checkbox"
@@ -656,7 +783,7 @@ export function RuleEditorPanel({
                           : [],
                       });
                     }}
-                    className="accent-[#7DD3FC]"
+                    className="accent-accent"
                   />
                 </label>
 
@@ -678,7 +805,7 @@ export function RuleEditorPanel({
                   />
                 </div>
 
-                <div className="rounded-lg border border-[#35506B] bg-[#122234] px-3 py-2 text-[11px] text-[#9FB2C7]">
+                <div className="rounded-md border border-white/[0.06] bg-[rgba(12,10,22,0.4)] px-3 py-2 text-[11px] text-muted-fg/70">
                   Budget and usage caps live in Settings &gt; Usage. Every rule reads the shared policy.
                 </div>
               </div>
@@ -693,9 +820,143 @@ export function RuleEditorPanel({
 // --- helpers ---
 
 function SectionHeader({ children }: { children: React.ReactNode }) {
+  return <div className={labelCls}>{children}</div>;
+}
+
+function LaneModeControl({
+  laneMode,
+  targetLaneId,
+  lanes,
+  onChange,
+}: {
+  laneMode: AutomationLaneMode;
+  targetLaneId: string | null;
+  lanes: Array<{ id: string; name: string }>;
+  onChange: (patch: { laneMode?: AutomationLaneMode; targetLaneId?: string | null }) => void;
+}) {
+  // Compose a single value: "create", "reuse:" (primary), or "reuse:<laneId>".
+  const selectValue = laneMode === "create" ? "create" : `reuse:${targetLaneId ?? ""}`;
+  const sortedLanes = useMemo(() => [...lanes].sort((a, b) => a.name.localeCompare(b.name)), [lanes]);
+
   return (
-    <div className="text-[11px] font-semibold uppercase tracking-[1px] text-[#8FA1B8]">
-      {children}
+    <label className="block space-y-1.5">
+      <div className={labelCls}>Lane</div>
+      <select
+        className={selectCls}
+        value={selectValue}
+        onChange={(event) => {
+          const v = event.target.value;
+          if (v === "create") {
+            onChange({ laneMode: "create", targetLaneId: null });
+            return;
+          }
+          if (v === "reuse:") {
+            onChange({ laneMode: "reuse", targetLaneId: null });
+            return;
+          }
+          if (v.startsWith("reuse:")) {
+            onChange({ laneMode: "reuse", targetLaneId: v.slice("reuse:".length) });
+          }
+        }}
+      >
+        <option value="create">Create new lane per run</option>
+        <option value="__sep__" disabled>──────</option>
+        <option value="reuse:">Reuse primary lane</option>
+        {sortedLanes.map((lane) => (
+          <option key={lane.id} value={`reuse:${lane.id}`}>{lane.name}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function LaneCreatePanel({
+  preset,
+  customTemplate,
+  trigger,
+  onChange,
+}: {
+  preset: AutomationLaneNamePreset;
+  customTemplate: string;
+  trigger: AutomationTrigger;
+  onChange: (patch: { laneNamePreset?: AutomationLaneNamePreset; laneNameTemplate?: string }) => void;
+}) {
+  const sample = useMemo(() => triggerSampleContext(trigger), [trigger]);
+  const triggerKind: "issue" | "pr" | "any" = sample.issue ? "issue" : sample.pr ? "pr" : "any";
+  const template = presetTemplate(preset, customTemplate);
+  const preview = useMemo(
+    () => previewResolve(template, sample as Record<string, unknown>),
+    [template, sample],
+  );
+
+  // Surface a warning when the active preset references a field the trigger
+  // cannot supply (e.g. issue-title with a PR trigger). Editor-side only —
+  // server-side resolution will throw at runtime if the user saves anyway.
+  const presetMeta = LANE_NAME_PRESETS.find((p) => p.value === preset);
+  const presetMismatch =
+    preset !== "custom"
+    && presetMeta?.helpEvent !== "any"
+    && presetMeta?.helpEvent !== triggerKind
+    && triggerKind !== "any";
+
+  return (
+    <div className="mt-3 space-y-3 rounded-lg border border-accent/15 bg-accent/[0.03] p-3">
+      <div className="flex items-center gap-2 text-[11px] text-accent">
+        <Sparkle size={12} weight="fill" />
+        <span className="font-medium">A fresh lane is created for every run.</span>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <label className="block space-y-1.5">
+          <div className={labelCls}>Naming</div>
+          <select
+            className={selectCls}
+            value={preset}
+            onChange={(event) => onChange({ laneNamePreset: event.target.value as AutomationLaneNamePreset })}
+          >
+            {LANE_NAME_PRESETS.map((p) => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
+        </label>
+
+        {preset === "custom" ? (
+          <label className="block space-y-1.5">
+            <div className={labelCls}>Template</div>
+            <input
+              className={inputCls}
+              value={customTemplate}
+              onChange={(event) => onChange({ laneNameTemplate: event.target.value })}
+              placeholder="{{trigger.issue.author}}/{{trigger.issue.title}}"
+            />
+          </label>
+        ) : null}
+      </div>
+
+      <div className="rounded-md border border-white/[0.05] bg-[rgba(12,10,22,0.6)] px-3 py-2">
+        <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.08em] text-muted-fg/50">
+          <GitBranch size={10} weight="regular" />
+          <span>Preview</span>
+        </div>
+        <div className="mt-1 break-all font-mono text-[11px] text-fg/80">
+          {preview.resolved.trim() || (
+            <span className="text-muted-fg/40">(empty — pick a preset or enter a template)</span>
+          )}
+        </div>
+      </div>
+
+      {presetMismatch ? (
+        <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
+          <Warning size={12} weight="regular" className="mt-0.5 shrink-0" />
+          <span>
+            This preset reads a {presetMeta?.helpEvent === "issue" ? "GitHub / Linear issue" : "GitHub PR"} field, but the selected trigger doesn't supply one. The run will fail unless you switch presets.
+          </span>
+        </div>
+      ) : null}
+
+      <p className="text-[11px] leading-relaxed text-muted-fg/60">
+        Lane names auto-disambiguate by appending the issue / PR number if a duplicate exists.
+      </p>
     </div>
   );
 }
@@ -713,14 +974,14 @@ function IssueList({
     <div
       className={cn(
         "rounded-lg px-3 py-2 text-[11px]",
-        tone === "error" ? "border border-red-500/30 bg-red-500/10 text-red-200" : "border border-amber-500/25 bg-amber-500/10 text-amber-200",
+        tone === "error" ? "border border-error/30 bg-error/10 text-error" : "border border-warning/25 bg-warning/10 text-warning",
       )}
     >
       <div className="font-semibold">{title}</div>
       <ul className="mt-1 space-y-0.5">
         {issues.map((issue, index) => (
           <li key={`${issue.path}-${index}`}>
-            <span className="font-mono text-[10px] text-[#D8E3F2]">{issue.path}</span>: {issue.message}
+            <span className="font-mono text-[10px] text-fg/80">{issue.path}</span>: {issue.message}
           </li>
         ))}
       </ul>
@@ -739,19 +1000,19 @@ function ConfirmationsChecklist({
 }) {
   if (!required.length) return null;
   return (
-    <div className="rounded-2xl p-3" style={CARD_STYLE}>
-      <div className="text-[12px] font-semibold text-[#F5FAFF]">Confirm before saving</div>
+    <div className={cardCls}>
+      <div className="text-xs font-semibold text-fg">Confirm before saving</div>
       <div className="mt-2 space-y-2">
         {required.map((requirement) => (
-          <label key={requirement.key} className="flex items-start gap-2 text-[11px] text-[#D8E3F2]">
+          <label key={requirement.key} className="flex items-start gap-2 text-[11px] text-fg/80">
             <input
               type="checkbox"
               checked={accepted.has(requirement.key)}
               onChange={(event) => onToggle(requirement.key, event.target.checked)}
-              className="mt-0.5 accent-[#7DD3FC]"
+              className="mt-0.5 accent-accent"
             />
             <span>
-              <span className={cn("font-semibold", requirement.severity === "danger" ? "text-red-200" : "text-amber-200")}>
+              <span className={cn("font-semibold", requirement.severity === "danger" ? "text-error" : "text-warning")}>
                 {requirement.title}
               </span>
               {" · "}
@@ -774,11 +1035,10 @@ function ScheduleFields({
   const selectedPreset = SCHEDULE_PRESETS.find((preset) => preset.cron === trigger.cron)?.cron ?? "";
   return (
     <div className="grid gap-2 md:grid-cols-2">
-      <label className="space-y-1 block">
-        <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Preset</span>
+      <label className="block space-y-1.5">
+        <div className={labelCls}>Preset</div>
         <select
-          className={INPUT_CLS}
-          style={INPUT_STYLE}
+          className={selectCls}
           value={selectedPreset}
           onChange={(event) => onPatch({ cron: event.target.value || trigger.cron || "" })}
         >
@@ -788,11 +1048,10 @@ function ScheduleFields({
           ))}
         </select>
       </label>
-      <label className="space-y-1 block">
-        <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Cron</span>
+      <label className="block space-y-1.5">
+        <div className={labelCls}>Cron</div>
         <input
-          className={INPUT_CLS}
-          style={INPUT_STYLE}
+          className={inputCls}
           value={trigger.cron ?? ""}
           onChange={(event) => onPatch({ cron: event.target.value })}
           placeholder="0 9 * * 1-5"
@@ -810,11 +1069,10 @@ function LocalGitFields({
   onPatch: (patch: Partial<AutomationTrigger>) => void;
 }) {
   return (
-    <label className="space-y-1 block">
-      <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Branch</span>
+    <label className="block space-y-1.5">
+      <div className={labelCls}>Branch</div>
       <input
-        className={INPUT_CLS}
-        style={INPUT_STYLE}
+        className={inputCls}
         value={trigger.branch ?? ""}
         onChange={(event) => onPatch({ branch: event.target.value })}
         placeholder="main"
@@ -831,11 +1089,10 @@ function FileChangeFields({
   onPatch: (patch: Partial<AutomationTrigger>) => void;
 }) {
   return (
-    <label className="space-y-1 block">
-      <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Paths (comma separated globs)</span>
+    <label className="block space-y-1.5">
+      <div className={labelCls}>Paths (comma separated globs)</div>
       <input
-        className={INPUT_CLS}
-        style={INPUT_STYLE}
+        className={inputCls}
         value={(trigger.paths ?? []).join(", ")}
         onChange={(event) =>
           onPatch({
@@ -859,11 +1116,10 @@ function LaneFields({
   onPatch: (patch: Partial<AutomationTrigger>) => void;
 }) {
   return (
-    <label className="space-y-1 block">
-      <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Name pattern</span>
+    <label className="block space-y-1.5">
+      <div className={labelCls}>Name pattern</div>
       <input
-        className={INPUT_CLS}
-        style={INPUT_STYLE}
+        className={inputCls}
         value={trigger.namePattern ?? ""}
         onChange={(event) => onPatch({ namePattern: event.target.value })}
         placeholder="feature/*"
@@ -881,21 +1137,19 @@ function WebhookFields({
 }) {
   return (
     <div className="grid gap-2 md:grid-cols-2">
-      <label className="space-y-1 block">
-        <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Event name</span>
+      <label className="block space-y-1.5">
+        <div className={labelCls}>Event name</div>
         <input
-          className={INPUT_CLS}
-          style={INPUT_STYLE}
+          className={inputCls}
           value={trigger.event ?? ""}
           onChange={(event) => onPatch({ event: event.target.value })}
           placeholder="pull_request"
         />
       </label>
-      <label className="space-y-1 block">
-        <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Secret ref</span>
+      <label className="block space-y-1.5">
+        <div className={labelCls}>Secret ref</div>
         <input
-          className={INPUT_CLS}
-          style={INPUT_STYLE}
+          className={inputCls}
           value={trigger.secretRef ?? ""}
           onChange={(event) => onPatch({ secretRef: event.target.value })}
           placeholder="github-webhook"
@@ -917,11 +1171,10 @@ function LabeledNumber({
   onChange: (next: number | null) => void;
 }) {
   return (
-    <label className="space-y-1 block">
-      <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">{label}</span>
+    <label className="block space-y-1.5">
+      <div className={labelCls}>{label}</div>
       <input
-        className={INPUT_CLS}
-        style={INPUT_STYLE}
+        className={inputCls}
         type="number"
         min={0}
         value={value ?? ""}
@@ -949,9 +1202,9 @@ function ActiveHoursFields({
 }) {
   const enabled = !!hours;
   return (
-    <div className="space-y-1">
-      <label className="flex items-center justify-between text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">
-        <span>Active hours</span>
+    <div className="space-y-1.5">
+      <label className="flex items-center justify-between">
+        <div className={labelCls}>Active hours</div>
         <input
           type="checkbox"
           checked={enabled}
@@ -962,21 +1215,19 @@ function ActiveHoursFields({
                 : null,
             )
           }
-          className="accent-[#7DD3FC]"
+          className="accent-accent"
         />
       </label>
       {enabled && hours ? (
         <div className="grid grid-cols-2 gap-2">
           <input
-            className={INPUT_CLS}
-            style={INPUT_STYLE}
+            className={inputCls}
             value={hours.start}
             onChange={(event) => onChange({ ...hours, start: event.target.value })}
             placeholder="09:00"
           />
           <input
-            className={INPUT_CLS}
-            style={INPUT_STYLE}
+            className={inputCls}
             value={hours.end}
             onChange={(event) => onChange({ ...hours, end: event.target.value })}
             placeholder="18:00"
