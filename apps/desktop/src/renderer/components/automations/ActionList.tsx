@@ -1,7 +1,6 @@
 import { useRef, useState } from "react";
 import {
   Code,
-  GitBranch,
   Lightning,
   Plus,
   Rocket,
@@ -11,11 +10,15 @@ import {
 } from "@phosphor-icons/react";
 import type { ElementType } from "react";
 import type { ModelConfig, TestSuiteDefinition } from "../../../shared/types";
+import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { ActionRow, type ActionRowKind, type ActionRowValue } from "./ActionRow";
 
+// `create-lane` is intentionally absent here: lane creation is now a
+// first-class EXECUTION setting (`laneMode: "create"`) rather than an action a
+// user has to chain manually. Legacy rules carrying a leading `create-lane`
+// action are migrated server-side on read.
 const ADD_OPTIONS: Array<{ kind: ActionRowKind; label: string; icon: ElementType; disabled?: boolean; hint?: string }> = [
-  { kind: "create-lane", label: "Create lane", icon: GitBranch },
   { kind: "agent-session", label: "Agent session", icon: Lightning },
   { kind: "ade-action", label: "Run ADE action", icon: Code },
   { kind: "run-tests", label: "Run tests", icon: TestTube },
@@ -111,7 +114,7 @@ export function ActionList({
   return (
     <div className="space-y-3">
       {actions.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-white/[0.08] bg-black/10 p-4 text-center text-[12px] text-[#93A4B8]">
+        <div className="rounded-xl border border-dashed border-white/[0.08] bg-[rgba(12,10,22,0.4)] p-4 text-center text-xs text-muted-fg/60">
           No actions yet. Add at least one step below.
         </div>
       ) : (
@@ -135,17 +138,13 @@ export function ActionList({
       )}
 
       <div className="relative">
-        <button
-          type="button"
-          onClick={() => setMenuOpen((open) => !open)}
-          className="inline-flex items-center gap-1.5 rounded-md border border-[#35506B] bg-[#0F1B2A] px-3 py-1.5 text-[11px] font-semibold text-[#D8E3F2] hover:border-[#5FA0E0]"
-        >
+        <Button size="sm" variant="outline" onClick={() => setMenuOpen((open) => !open)}>
           <Plus size={12} weight="regular" />
           Add action
-        </button>
+        </Button>
         {menuOpen ? (
           <div
-            className="absolute z-20 mt-1 w-[240px] rounded-lg border border-white/[0.08] bg-[#0B121A] p-1 shadow-lg"
+            className="absolute z-20 mt-1 w-[240px] rounded-lg border border-white/[0.08] bg-[rgba(12,10,22,0.95)] p-1 shadow-card backdrop-blur-[20px]"
             onMouseLeave={() => setMenuOpen(false)}
           >
             {ADD_OPTIONS.map((option) => {
@@ -157,17 +156,17 @@ export function ActionList({
                   disabled={option.disabled}
                   onClick={() => !option.disabled && addAction(option.kind)}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px]",
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors",
                     option.disabled
-                      ? "text-[#7E8A9A] cursor-not-allowed opacity-60"
-                      : "text-[#D8E3F2] hover:bg-white/[0.04]",
+                      ? "cursor-not-allowed text-muted-fg/40 opacity-60"
+                      : "text-fg/80 hover:bg-white/[0.04] hover:text-fg",
                   )}
                   title={option.hint}
                 >
                   <Icon size={12} weight="regular" />
                   <span>{option.label}</span>
                   {option.hint ? (
-                    <span className="ml-auto text-[9px] uppercase tracking-[1px] text-[#7E8A9A]">
+                    <span className="ml-auto text-[9px] uppercase tracking-[0.08em] text-muted-fg/50">
                       {option.hint}
                     </span>
                   ) : null}

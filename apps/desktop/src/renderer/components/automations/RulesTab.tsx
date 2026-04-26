@@ -22,7 +22,8 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { formatDate, statusToneAutomation as statusTone } from "../../lib/format";
-import { CARD_STYLE, extractError, INPUT_CLS, INPUT_STYLE } from "./shared";
+import { extractError } from "./shared";
+import { cardCls, inputCls } from "./designTokens";
 import { RuleEditorPanel } from "./components/RuleEditorPanel";
 import { RuleHistoryPanel } from "./RuleHistoryPanel";
 import { CtoInfoChip, EmptyStateHint } from "./EmptyStateHint";
@@ -211,9 +212,22 @@ function RuleListRow({
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Chip className="text-[9px]">{primaryTriggerLabel(rule)}</Chip>
             <Chip className="text-[9px]">{executionLabel(rule)}</Chip>
+            {rule.lastRunStatus === "failed" ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenHistory();
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-error/30 bg-error/10 px-2 py-0.5 text-[9px] font-medium text-error transition-colors hover:bg-error/20"
+                title="Open history"
+              >
+                Last run: failed {formatDate(rule.lastRunAt, "")}
+              </button>
+            ) : null}
           </div>
-          <div className="mt-2 text-[11px] text-[#94A7BD]">{modeSummary(rule)}</div>
-          <div className="mt-1 text-[11px] text-[#7E8A9A]">
+          <div className="mt-2 text-[11px] text-muted-fg/70">{modeSummary(rule)}</div>
+          <div className="mt-1 text-[11px] text-muted-fg/50">
             Next {formatDate(rule.nextRunAt, "on demand")} · Last {formatDate(rule.lastRunAt, "never")}
           </div>
         </div>
@@ -545,8 +559,7 @@ export function RulesTab({
           </div>
 
           <input
-            className={cn(INPUT_CLS, "mt-4")}
-            style={INPUT_STYLE}
+            className={cn(inputCls, "mt-4")}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search rules"
@@ -648,9 +661,9 @@ export function RulesTab({
             />
           ) : (
             <div className="flex h-full items-center justify-center px-6">
-              <div className="max-w-md rounded-2xl p-6 text-center" style={CARD_STYLE}>
-                <div className="text-[17px] font-semibold text-[#F5FAFF]">Create an automation</div>
-                <div className="mt-2 text-sm leading-relaxed text-[#93A4B8]">
+              <div className={cn(cardCls, "max-w-md text-center")}>
+                <div className="text-[17px] font-semibold text-fg">Create an automation</div>
+                <div className="mt-2 text-sm leading-relaxed text-muted-fg/70">
                   Start with a schedule or a product event, then tell ADE whether it should run a built-in task, send a prompt to an automation chat thread, or launch a mission.
                 </div>
                 <div className="mt-4 flex justify-center gap-2">
