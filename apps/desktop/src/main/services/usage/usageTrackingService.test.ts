@@ -24,6 +24,8 @@ import { createUsageTrackingService, _testing } from "./usageTrackingService";
 const {
   aggregateCosts,
   calculatePacing,
+  MIN_POLL_INTERVAL_MS,
+  MAX_POLL_INTERVAL_MS,
   isCodexTokenStale,
   isTokenExpiredOrExpiring,
   parseClaudeWindows,
@@ -607,15 +609,22 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
-  it("accepts out-of-range poll intervals without throwing (clamps internally)", () => {
+  it("clamps out-of-range poll intervals internally", () => {
     const logger = createLogger();
+    const dependencies = createFastDependencies();
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 
-    expect(() => {
-      const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100 });
-      service1.dispose();
-      const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000 });
-      service2.dispose();
-    }).not.toThrow();
+    const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100, dependencies });
+    service1.start();
+    expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MIN_POLL_INTERVAL_MS);
+    service1.dispose();
+
+    const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000, dependencies });
+    service2.start();
+    expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_POLL_INTERVAL_MS);
+    service2.dispose();
+
+    setIntervalSpy.mockRestore();
   });
 
   it("calls onUpdate when poll completes", async () => {

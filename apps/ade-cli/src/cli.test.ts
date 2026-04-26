@@ -702,6 +702,228 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("automations create merges --lane-mode and preset flags into draft.execution", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      "id: r1\nname: R\n",
+      "--lane-mode",
+      "create",
+      "--lane-name-preset",
+      "issue-title",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            id: "r1",
+            execution: { laneMode: "create", laneNamePreset: "issue-title" },
+          },
+        },
+      },
+    });
+  });
+
+  it("automations create with --lane-mode reuse and --lane sets targetLaneId", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      "id: r1\n",
+      "--lane-mode",
+      "reuse",
+      "--lane",
+      "lane-99",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            execution: { laneMode: "reuse", targetLaneId: "lane-99" },
+          },
+        },
+      },
+    });
+  });
+
+  it("automations create with --lane-name-preset custom accepts --lane-name-template", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      "id: r1\n",
+      "--lane-mode",
+      "create",
+      "--lane-name-preset",
+      "custom",
+      "--lane-name-template",
+      "{{trigger.issue.author}}/{{trigger.issue.title}}",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            execution: {
+              laneMode: "create",
+              laneNamePreset: "custom",
+              laneNameTemplate: "{{trigger.issue.author}}/{{trigger.issue.title}}",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("automations create rejects --lane with --lane-mode create", () => {
+    expect(() =>
+      buildCliPlan([
+        "automations",
+        "create",
+        "--text",
+        "id: r1\n",
+        "--lane-mode",
+        "create",
+        "--lane",
+        "lane-1",
+      ]),
+    ).toThrow(/--lane is only valid with --lane-mode reuse/);
+  });
+
+  it("automations create rejects --lane-name-preset with --lane-mode reuse", () => {
+    expect(() =>
+      buildCliPlan([
+        "automations",
+        "create",
+        "--text",
+        "id: r1\n",
+        "--lane-mode",
+        "reuse",
+        "--lane-name-preset",
+        "issue-title",
+      ]),
+    ).toThrow(/--lane-name-preset is only valid with --lane-mode create/);
+  });
+
+  it("automations create rejects --lane-name-template with non-custom preset", () => {
+    expect(() =>
+      buildCliPlan([
+        "automations",
+        "create",
+        "--text",
+        "id: r1\n",
+        "--lane-mode",
+        "create",
+        "--lane-name-preset",
+        "issue-title",
+        "--lane-name-template",
+        "{{trigger.issue.title}}",
+      ]),
+    ).toThrow(/--lane-name-template is only valid with --lane-name-preset custom/);
+  });
+
+  it("automations create rejects unknown --lane-mode value", () => {
+    expect(() =>
+      buildCliPlan([
+        "automations",
+        "create",
+        "--text",
+        "id: r1\n",
+        "--lane-mode",
+        "bogus",
+      ]),
+    ).toThrow(/--lane-mode must be one of create, reuse/);
+  });
+
+  it("automations runs accepts a --status filter", () => {
+    const plan = buildCliPlan(["automations", "runs", "--rule", "r1", "--status", "failed"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "automations",
+        action: "listRuns",
+        args: { automationId: "r1", status: "failed" },
+      },
+    });
+  });
+
+  it("automations runs rejects an unknown --status value", () => {
+    expect(() =>
+      buildCliPlan(["automations", "runs", "--status", "wat"]),
+    ).toThrow(/--status must be one of/);
+  });
+
+  it("automations example prints a parseable example rule via help kind", () => {
+    const plan = buildCliPlan(["automations", "example"]);
+    expect(plan.kind).toBe("help");
+    if (plan.kind !== "help") return;
+    const parsed = JSON.parse(plan.text);
+    expect(parsed).toMatchObject({
+      execution: { laneMode: "create", laneNamePreset: "issue-num-title" },
+    });
+  });
+
+  it("automations create auto-migrates a legacy create-lane first action into laneMode", () => {
+    const draft = JSON.stringify({
+      id: "legacy-rule",
+      actions: [
+        { type: "create-lane", laneNameTemplate: "{{trigger.issue.title}}" },
+        { type: "agent-session", modelId: "claude-opus-4-7" },
+      ],
+    });
+    const plan = buildCliPlan(["automations", "create", "--text", draft]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            execution: {
+              laneMode: "create",
+              laneNamePreset: "custom",
+              laneNameTemplate: "{{trigger.issue.title}}",
+            },
+            actions: [{ type: "agent-session" }],
+          },
+        },
+      },
+    });
+  });
+
+  it("automations create --allow-legacy preserves the legacy create-lane action", () => {
+    const draft = JSON.stringify({
+      id: "legacy-rule",
+      actions: [{ type: "create-lane", laneNameTemplate: "x" }],
+    });
+    const plan = buildCliPlan(["automations", "create", "--text", draft, "--allow-legacy"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            actions: [{ type: "create-lane", laneNameTemplate: "x" }],
+          },
+        },
+      },
+    });
+  });
+
+  it("automations run-show wires the automation-run-detail formatter", () => {
+    const plan = buildCliPlan(["automations", "run-show", "run-1"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.formatter).toBe("automation-run-detail");
+  });
+
   it("automations toggle errors when --enabled is omitted", () => {
     expect(() => buildCliPlan(["automations", "toggle", "rule-42"])).toThrow(
       /--enabled <true\|false>/,

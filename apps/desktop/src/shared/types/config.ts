@@ -767,7 +767,10 @@ export type AutomationExecution = {
    */
   laneNamePreset?: AutomationLaneNamePreset;
   /**
-   * Free-form `{{trigger.*}}` template used when `laneNamePreset === "custom"`.
+   * Execution-level `{{trigger.*}}` template used when
+   * `laneNamePreset === "custom"`. Distinct from
+   * `AutomationAction.laneNameTemplate`, which belongs to the legacy
+   * `create-lane` built-in action.
    */
   laneNameTemplate?: string;
   /**

@@ -31,13 +31,22 @@ This command runs end-to-end without user interaction. Do NOT:
 - Request clarification on ambiguous simplifications — skip the risky ones and note in the final report.
 - Ask before reverting your own work (e.g., Phase 3i drift check reverts simplifier edits silently).
 
-The only outputs are the Phase 4 summary and any error messages for genuinely fatal failures (typecheck/lint errors, build crashes, test failures the agent itself caused). Every decision is made by the agent based on the rules in this file.
+Outputs are exactly two things: the Phase 4 summary, and fatal-error messages (typecheck, lint, build, or self-caused test failures). Every other decision is made by the agent based on the rules in this file.
+
+## Guardrails (read once, apply everywhere)
+
+- Do NOT touch the public Mintlify site: `docs.json` and any root-level `*.mdx`, plus the root-level dirs `chat/`, `tools/`, `missions/`, `changelog/`, `configuration/`, `computer-use/`, `context-packs/`, `getting-started/`, `guides/`, `automations/`, `lanes/`, `cto/`. Internal docs under `docs/` are in scope.
+- Do NOT modify `docs/OPTIMIZATION_OPPORTUNITIES.md` — append-only, human-curated.
+- Do NOT run `apps/mcp-server` checks; the MCP server was removed. The agent surface is `apps/ade-cli`.
+- Do NOT skip the sharded test run or substitute project-subset runs for it. `/finalize` is the gate that runs the full suite.
+- Do NOT use bare `pkill -f vitest` / `pkill -f node`. Always scope to `apps/desktop`, `apps/ade-cli`, or `apps/web`.
+- Do NOT declare remote PR review clean from `/finalize` alone — see Phase 3j handoff.
 
 ## Pipeline Overview
 
 ```
 Phase 1: Analyze code changes and batch simplification work  (lead)
-Phase 2: Parallel execution (simplify + docs + mobile parity)(agents)
+Phase 2: Parallel execution (simplify + docs + mobile + cli)  (agents)
 Phase 3: CI sync + local verification                        (lead)
 Phase 4: Summary                                             (lead)
 ```
@@ -79,11 +88,19 @@ git diff main --stat | tail -20
 git log main..HEAD --oneline
 ```
 
+### 1e. Snapshot pre-Phase-2 file list (used by 3i drift check)
+
+```bash
+git diff main --name-only | sort > /tmp/finalize-branch-files.txt
+```
+
 ---
 
 ## Phase 2: Parallel Execution
 
-Spawn agents in parallel using the **Agent** tool:
+**Preferred orchestration: `TeamCreate`.** Spawn the four agents below as one team so progress is tracked, inboxes catch cross-agent messages, and a single completion event surfaces the whole batch. Per the global git-worktrees policy, do **not** pass worktree isolation — all agents work in the main directory.
+
+Fallback: if `TeamCreate` is unavailable in the current harness (or if running outside Claude entirely), spawn them as parallel `Agent` calls in a single tool-call round and aggregate their reports manually before Phase 3.
 
 ### Simplifier agents (1-3 based on batch size)
 
@@ -141,6 +158,9 @@ Step 2: Map changed source to internal docs
 | Source Directory                                   | Doc Location                                       |
 |----------------------------------------------------|----------------------------------------------------|
 | apps/desktop/src/main/services/orchestrator/       | docs/features/missions/                            |
+| apps/desktop/src/main/services/projects/           | docs/features/project-home/                        |
+| apps/desktop/src/main/services/proof/              | docs/features/proof.md                             |
+| apps/desktop/src/main/services/review/             | docs/features/pull-requests/                       |
 | apps/desktop/src/main/services/prs/                | docs/features/pull-requests/                       |
 | apps/desktop/src/main/services/lanes/              | docs/features/lanes/                               |
 | apps/desktop/src/main/services/memory/             | docs/features/memory/                              |
@@ -179,11 +199,7 @@ Step 3: Update docs in place
 - Do NOT add changelog sections, "Updated on X" notes, or dated markers.
 - Do NOT modify docs/OPTIMIZATION_OPPORTUNITIES.md via this agent — it is append-only and human-curated.
 
-Step 4: Append-only — NEVER touch the public Mintlify site
-- Do NOT modify docs.json or any *.mdx file at repo root.
-- Do NOT modify ./chat/, ./tools/, ./missions/, ./changelog/, ./configuration/, ./computer-use/, ./context-packs/, ./getting-started/, ./guides/, ./automations/, ./lanes/, ./cto/ (these are Mintlify pages).
-
-Step 5: Run doc validation
+Step 4: Run doc validation
   node scripts/validate-docs.mjs
 
 This validator only covers the Mintlify site. For internal docs, self-check:
@@ -243,6 +259,92 @@ Report:
 - Validation run and any environment limitations
 ```
 
+### CLI parity agent
+
+The `apps/ade-cli/` package is the agent-facing surface for ADE. Every desktop
+action should be reachable either through a typed subcommand (`ade lanes …`,
+`ade prs …`, `ade chat …`, `ade tests …`, `ade run …`, `ade proof …`) or
+through the generic `ade actions run <domain.action>` registry exposed by
+`adeRpcServer.ts`. When a feature branch adds, renames, or removes a desktop
+feature, the CLI silently drifts unless someone updates it in the same PR.
+This agent closes that gap.
+
+Spawn a general-purpose agent with this prompt:
+
+```
+You are the ADE CLI parity reviewer.
+
+The ADE CLI (apps/ade-cli) is the primary agent-facing interface to the ADE
+desktop app. Its goal is to surface every meaningful action inside ADE
+desktop — either as a typed subcommand or via the generic
+`ade actions run <domain.action>` registry. When desktop changes, the CLI
+must change with it. Your job is to detect drift on this branch and patch
+apps/ade-cli/ so the CLI stays in lockstep with desktop.
+
+Step 1: Get branch context
+  git diff main --name-only
+  git diff main --stat | tail -30
+  git log main..HEAD --oneline
+
+Step 2: Identify CLI-relevant desktop changes
+Treat anything under these paths as a candidate for new / changed / removed
+CLI surface:
+- apps/desktop/src/main/services/**  (each service is a candidate action
+  domain — lanes, prs, chat, tests, proof, run, git, files, missions,
+  automations, computerUse, context, conflicts, history, memory, onboarding,
+  pty, sessions, processes, sync, config, cto, ai)
+- apps/desktop/src/preload/**  and  apps/desktop/src/shared/**  (IPC and
+  shared contracts the CLI ultimately calls through)
+- New domains/actions registered with the action registry on either side
+
+Step 3: Map each candidate to the CLI
+- Typed subcommands live in apps/ade-cli/src/cli.ts (~3300 lines), a
+  case-based dispatcher. Existing cases include lanes, git-status, prs-list,
+  chat-list, tests-runs, proof-list, actions-list, action-result, etc.
+  Locate the closest existing case block and either extend it or add a
+  sibling case alongside it.
+- The RPC + actions-registry surface lives in
+  apps/ade-cli/src/adeRpcServer.ts (~6500 lines), with a no-desktop fallback
+  in apps/ade-cli/src/headlessLinearServices.ts. New service actions usually
+  need wiring in one or both so `ade actions run <domain.action>` resolves
+  them whether or not the desktop socket is up.
+- The user-facing inventory lives in apps/ade-cli/README.md under
+  "CLI surface". Keep it accurate whenever a typed command is added,
+  renamed, or removed.
+
+Step 4: Apply auto-fix edits — scoped to apps/ade-cli/ only
+- New feature: add a typed subcommand if the desktop feature is a distinct
+  user-facing workflow (lane / PR / chat / test / run / proof / mission /
+  automation / etc.). If it is just a new low-level service action, ensure
+  it is reachable via the actions registry and skip a typed wrapper.
+- Renamed or behavior-changed feature: update the existing case to match
+  new parameters, IPC names, or output shape. Keep flag names stable when
+  possible — flag any breaking renames in the report.
+- Removed feature: delete the dead case and any registry wiring. Do NOT
+  leave a stub. Drop the corresponding README line.
+- Reuse existing patterns: match surrounding cases for argv parsing,
+  --text / --json output mode, error formatting, and --lane / --project-root
+  argument handling. Do not invent new dispatch styles.
+
+Step 5: Validate locally before reporting
+  cd apps/ade-cli && npm run typecheck
+  cd apps/ade-cli && npm test
+
+If tests fail in files you did not touch, leave them — Phase 3 handles
+test-suite drift. Do not rewrite unrelated tests.
+
+Out of scope:
+- Do NOT edit anything under apps/desktop/.
+- Do NOT touch docs/ — the docs agent owns that.
+- Do NOT refactor unrelated CLI code.
+
+Report:
+- apps/ade-cli/ files changed (or "no CLI changes required")
+- For each branch change: desktop change → CLI change, or why not applicable
+- Any breaking flag / command renames
+- typecheck and test results
+```
+
 Wait for all agents to complete.
 
 ---
@@ -266,16 +368,13 @@ cd apps/ade-cli && npm install
 cd apps/web && npm install
 ```
 
-Do not run `apps/mcp-server` checks. The MCP server was removed; ADE's
-agent-facing command surface now lives in `apps/ade-cli`.
-
-After install, check for uncommitted lock file changes — if any lock file is dirty, it means package.json was modified without regenerating the lock file, which will break CI's `npm ci`:
+After install, check for uncommitted lock file changes — a dirty lock file means `package.json` was modified without regenerating the lock, which will break CI's `npm ci`:
 
 ```bash
 git diff --name-only -- '*/package-lock.json'
 ```
 
-If lock files changed, warn and include them in the commit.
+This is a **hard gate**: if any lock file is dirty, stage it (`git add <path>`) and report it in the Phase 4 summary so the user commits it before pushing. Do not proceed past 3b with dirty lock files.
 
 ### 3c. Typecheck all apps
 
@@ -293,52 +392,35 @@ cd apps/web && npm run typecheck
 cd apps/desktop && npm run lint
 ```
 
-### 3e. Desktop tests — full suite, sharded 8-way, run in PARALLEL
+### 3e. Tests — desktop sharded 8-way + ade-cli, ALL 9 commands in one parallel round
 
-`/finalize` is the gate that runs the whole test suite. Run **all 8 shards concurrently** — not sequentially. Running them serially takes 8× longer and masks real CI wall-clock behavior.
-
-The command must be identical to `.github/workflows/ci.yml` (job `test-desktop`, matrix shard 1–8, step at line 139):
-
-```
-- run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
-```
-
-Locally that maps to 8 parallel Bash invocations in a single tool-call round:
+`/finalize` is the gate that runs the whole test suite. Issue these **9 commands as concurrent Bash tool calls in a single message**. Do not chain with `&&`/`;`, do not run them sequentially — that takes 9× longer and masks real CI wall-clock behavior. Mirrors `.github/workflows/ci.yml` jobs `test-desktop` (matrix 1–8) and `test-ade-cli`:
 
 ```bash
-cd apps/desktop && npx vitest run --shard=1/8   # shard 1 of 8
-cd apps/desktop && npx vitest run --shard=2/8   # shard 2 of 8
-cd apps/desktop && npx vitest run --shard=3/8   # shard 3 of 8
-cd apps/desktop && npx vitest run --shard=4/8   # shard 4 of 8
-cd apps/desktop && npx vitest run --shard=5/8   # shard 5 of 8
-cd apps/desktop && npx vitest run --shard=6/8   # shard 6 of 8
-cd apps/desktop && npx vitest run --shard=7/8   # shard 7 of 8
-cd apps/desktop && npx vitest run --shard=8/8   # shard 8 of 8
+cd apps/desktop && npx vitest run --shard=1/8
+cd apps/desktop && npx vitest run --shard=2/8
+cd apps/desktop && npx vitest run --shard=3/8
+cd apps/desktop && npx vitest run --shard=4/8
+cd apps/desktop && npx vitest run --shard=5/8
+cd apps/desktop && npx vitest run --shard=6/8
+cd apps/desktop && npx vitest run --shard=7/8
+cd apps/desktop && npx vitest run --shard=8/8
+cd apps/ade-cli  && npm test
 ```
 
-Issue these as 8 concurrent Bash tool calls in a single message (one call per shard). Do not chain them with `&&` or `;` or run them one at a time. The workspace has 3 projects (`unit-main`, `unit-renderer`, `unit-shared`) — sharding distributes across all three automatically.
+The desktop workspace has 3 projects (`unit-main`, `unit-renderer`, `unit-shared`); sharding distributes across all three automatically.
 
-If a shard fails, re-run **only that shard** (or, better, only the specific failing test file inside it). Never re-run all 8 shards to verify a one-file fix.
+If a shard fails, re-run **only that shard** (or only the failing test file). Never re-run all 9 to verify a one-file fix.
 
-Workspace-project subsets exist for debugging only; they are NOT a substitute for the sharded run in `/finalize`:
+Workspace-project subsets exist for debugging only; they are NOT a substitute for the sharded run:
 
 ```bash
 cd apps/desktop && npx vitest run --project unit-main       # ~150+ main-process tests
-cd apps/desktop && npx vitest run --project unit-renderer    # ~85+ renderer tests
-cd apps/desktop && npx vitest run --project unit-shared      # ~7 shared/preload tests
+cd apps/desktop && npx vitest run --project unit-renderer   # ~85+ renderer tests
+cd apps/desktop && npx vitest run --project unit-shared     # ~7 shared/preload tests
 ```
 
-### 3f. ADE CLI tests — separate CI job, run alongside the 8 shards
-
-CI runs `test-ade-cli` as its own parallel job (`.github/workflows/ci.yml:156`). Locally, include it in the same parallel tool-call round as the 8 desktop shards — it's effectively a 9th concurrent invocation, not something to run after:
-
-```bash
-cd apps/ade-cli && npm test
-```
-
-Do NOT run apps/mcp-server tests — the MCP server was removed; the agent-facing surface lives in `apps/ade-cli`.
-
-### 3g. Build all apps
+### 3f. Build all apps
 
 ```bash
 cd apps/desktop && npm run build
@@ -346,7 +428,7 @@ cd apps/ade-cli && npm run build
 cd apps/web && npm run build
 ```
 
-### 3h. Validate docs
+### 3g. Validate docs
 
 ```bash
 node scripts/validate-docs.mjs
@@ -372,43 +454,34 @@ Both commands should produce empty output. Any `MISSING map:` or `BROKEN LINK:` 
 
 All checks must pass. If any fail, fix and re-run only the failed step.
 
-### 3i. Test-simplifier drift check (catch Phase 2 over-reach)
+### 3h. Test-simplifier drift check (catch Phase 2 over-reach)
 
-When a simplifier agent removed "unused" code, the colocated test may still reference it — the test will only light up in Phase 3e. If a test failure appears **only in a file the simplifier touched (or its test sibling)**, treat it as suspect:
+If Phase 3e fails only in files the simplifier touched (or their `*.test.ts(x)` siblings), treat it as drift, not a real failure. The pre-Phase-2 snapshot lives at `/tmp/finalize-branch-files.txt` (written in 1e); compare against current diff to see what the simplifier added on top:
 
 ```bash
-# Files the simplifier touched this run:
-# (Run once before Phase 2; diff after to see what changed.)
-git diff main --name-only | sort > /tmp/finalize-branch-files.txt
-
-# After Phase 2, list what changed in this session on top of the prior branch state:
 git diff --name-only | sort > /tmp/finalize-session-files.txt
+comm -13 /tmp/finalize-branch-files.txt /tmp/finalize-session-files.txt
 ```
 
-If Phase 3e fails only inside files the simplifier touched, revert the simplifier's edits to those files and re-run. Do NOT rewrite the test suite in Phase 3 — tests that drift because the feature branch refactored UI are a separate follow-up.
+Revert the simplifier's edits to the offending files and re-run only the failed shard. Do NOT rewrite the test suite in Phase 3 — tests that drift because the feature branch refactored UI are a separate follow-up.
 
-### 3j. Cleanup lingering processes
+### 3i. Cleanup lingering processes
 
 The parallel shards, typecheck, lint, and build commands in Phase 3 sometimes leave worker processes hanging after the phase exits — most commonly vitest worker pools from the 8-shard run, and tsup/esbuild workers from `npm run build`. They don't fail the CI check, but they sit in memory, can hold file locks, and pile up across repeated `/finalize` runs.
 
-After the rest of Phase 3 passes, kill orphaned workers. Match on the project path so you only catch processes from **this** finalize run — don't nuke vitest instances the user may have running in another terminal or editor:
+After Phase 3 passes, kill orphaned workers. Always scope to ADE app paths (see Guardrails):
 
 ```bash
-# List what's lingering (agent: read this before killing anything)
-pgrep -fa "vitest|tsup|tsc --noEmit|eslint" | grep -E "apps/(desktop|ade-cli|web)" || echo "  (no orphans)"
+PATTERN='(vitest|tsup|tsc --noEmit|eslint).*apps/(desktop|ade-cli|web)'
 
-# Kill vitest workers scoped to this project
-pgrep -f "vitest.*apps/(desktop|ade-cli)" | xargs -r kill 2>/dev/null
+# 1. List what's lingering before killing anything
+pgrep -fa "$PATTERN" || echo "  (no orphans)"
 
-# Kill hung build / typecheck processes scoped to this project
-pgrep -f "tsup.*apps/(desktop|ade-cli|web)|tsc --noEmit.*apps/(desktop|ade-cli|web)" | xargs -r kill 2>/dev/null
-
-# Give them 2s to exit cleanly, then SIGKILL anything stubborn in the project path
+# 2. SIGTERM, wait 2s, then SIGKILL stragglers
+pgrep -f  "$PATTERN" | xargs -r kill    2>/dev/null
 sleep 2
-pgrep -f "vitest.*apps/(desktop|ade-cli)|tsup.*apps/(desktop|ade-cli|web)" | xargs -r kill -9 2>/dev/null || true
+pgrep -f  "$PATTERN" | xargs -r kill -9 2>/dev/null || true
 ```
-
-Never use a bare `pkill -f vitest` or `pkill -f node` — that would kill processes outside this finalize run. Always scope the pattern to `apps/desktop`, `apps/ade-cli`, or `apps/web` so only ADE-spawned workers are targeted.
 
 Also watch for orphaned node-pty or Electron helper processes if the tests spawned subprocesses (rare, but happens):
 
@@ -420,7 +493,7 @@ Kill selectively only if the parent is clearly gone (PPID == 1 on macOS/Linux).
 
 Report killed PIDs in the Phase 4 summary under "Cleanup" so the user can see what happened.
 
-### 3k. Remote PR poll handoff
+### 3j. Remote PR poll handoff
 
 If this finalize run is followed by a push or PR update, do not treat the first
 `gh pr checks` result as authoritative proof that remote review is done. Some
@@ -469,6 +542,12 @@ Do not report "PR clean" from `/finalize` alone.
 - Applicability notes: [brief list]
 - Validation: PASS / blocked with reason
 
+### CLI Parity:
+- apps/ade-cli files changed: [list or "none required"]
+- Desktop change → CLI change mapping: [brief list]
+- Breaking flag/command renames: [list or "none"]
+- Validation (typecheck + tests): PASS / blocked with reason
+
 ### CI Verification:
 - Lock files in sync: PASS
 - Typecheck (desktop): PASS
@@ -495,16 +574,4 @@ Do not report "PR clean" from `/finalize` alone.
 
 ## Completion Checklist
 
-Before marking complete:
-- [ ] Code simplification completed on all batches
-- [ ] Documentation updated for all affected areas
-- [ ] Mobile parity reviewed; applicable iOS updates made and validated
-- [ ] CI workflow sync verified (no orphaned test files)
-- [ ] Lock files in sync (no dirty lock files after install)
-- [ ] Typecheck passed (desktop + ade-cli + web)
-- [ ] Lint passed (desktop)
-- [ ] All tests passed (desktop sharded 8-way + ade-cli)
-- [ ] All apps build successfully
-- [ ] Doc validation passed
-- [ ] Orphan worker processes cleaned up (vitest/tsup/tsc) — scoped to apps/ paths only
-- [ ] Remote PR review is not declared clean by finalize alone; after push, `/shipLane` or an equivalent poll loop must use the branch-specific cadence and re-check comments/reviews
+Before marking complete: every Phase 3 step (3a–3j) must report PASS in the Phase 4 summary, and all four Phase 2 agents (simplify, docs, mobile, cli) must have reported back. Remote PR review is **not** declared clean by `/finalize` — handoff to `/shipLane` (Phase 3j) is mandatory after push.

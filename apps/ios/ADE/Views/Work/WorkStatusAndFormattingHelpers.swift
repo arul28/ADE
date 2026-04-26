@@ -109,6 +109,8 @@ func providerAssetName(_ provider: String?) -> String? {
 func providerTint(_ provider: String?) -> Color {
   guard let provider else { return ADEColor.accent }
   switch providerFamilyKey(provider) {
+  case "claude":
+    return .orange
   case "codex":
     return .blue
   case "opencode":

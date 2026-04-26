@@ -264,7 +264,9 @@ struct WorkRootScreen: View {
             lanes: lanes,
             liveCount: globalLiveSessionCount,
             needsInputCount: globalNeedsInputCount,
-            onClear: clearWorkFilters
+            isLive: isLive,
+            onClear: clearWorkFilters,
+            onNewChat: pushNewChatRoute
           )
           .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
           .listRowBackground(Color.clear)
@@ -420,13 +422,6 @@ struct WorkRootScreen: View {
                 }
               )
             }
-            Button {
-              pushNewChatRoute()
-            } label: {
-              Image(systemName: "plus.bubble.fill")
-            }
-            .accessibilityLabel("Create new chat")
-            .disabled(!isLive)
           }
         }
       }

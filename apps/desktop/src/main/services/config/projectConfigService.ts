@@ -524,6 +524,26 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
   if (!kind) return undefined;
 
   const targetLaneId = asString(value.targetLaneId)?.trim() || undefined;
+  const laneModeRaw = asString(value.laneMode)?.trim();
+  const laneMode: AutomationExecution["laneMode"] = laneModeRaw === "create" || laneModeRaw === "reuse"
+    ? laneModeRaw
+    : undefined;
+  const laneNamePresetRaw = asString(value.laneNamePreset)?.trim();
+  const laneNamePreset: AutomationExecution["laneNamePreset"] = laneNamePresetRaw === "issue-title" ||
+    laneNamePresetRaw === "issue-num-title" ||
+    laneNamePresetRaw === "pr-title-author" ||
+    laneNamePresetRaw === "custom"
+      ? laneNamePresetRaw
+      : undefined;
+  const laneNameTemplate = laneNamePreset === "custom"
+    ? asString(value.laneNameTemplate)?.trim() || undefined
+    : undefined;
+  const sharedLaneFields = {
+    ...(laneMode ? { laneMode } : {}),
+    ...(laneNamePreset ? { laneNamePreset } : {}),
+    ...(laneNameTemplate ? { laneNameTemplate } : {}),
+  };
+
   if (kind === "agent-session") {
     const session = isRecord(value.session)
       ? {
@@ -535,6 +555,7 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
       : undefined;
     return {
       kind,
+      ...sharedLaneFields,
       ...(targetLaneId ? { targetLaneId } : {}),
       ...(session && Object.keys(session).length ? { session } : {}),
     };
@@ -546,6 +567,7 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
       : undefined;
     return {
       kind,
+      ...sharedLaneFields,
       ...(targetLaneId ? { targetLaneId } : {}),
       ...(mission ? { mission } : {}),
     };
@@ -556,6 +578,7 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
     : [];
   return {
     kind,
+    ...sharedLaneFields,
     ...(targetLaneId ? { targetLaneId } : {}),
     builtIn: { actions },
   };

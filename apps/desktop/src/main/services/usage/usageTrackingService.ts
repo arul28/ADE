@@ -990,6 +990,8 @@ export function createUsageTrackingService({
 
 // ── Exported for testing ─────────────────────────────────────────
 export const _testing = {
+  MIN_POLL_INTERVAL_MS,
+  MAX_POLL_INTERVAL_MS,
   readClaudeCredentials,
   readCodexCredentials,
   isCodexTokenStale,

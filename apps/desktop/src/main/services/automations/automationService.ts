@@ -632,7 +632,9 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
   const sharedLaneFields = {
     ...(rawExecution.laneMode ? { laneMode: rawExecution.laneMode } : {}),
     ...(rawExecution.laneNamePreset ? { laneNamePreset: rawExecution.laneNamePreset } : {}),
-    ...(rawExecution.laneNameTemplate ? { laneNameTemplate: rawExecution.laneNameTemplate } : {}),
+    ...(rawExecution.laneNamePreset === "custom" && rawExecution.laneNameTemplate
+      ? { laneNameTemplate: rawExecution.laneNameTemplate }
+      : {}),
   };
   const normalizedExecution: AutomationExecution = rawExecution.kind === "built-in"
     ? {
