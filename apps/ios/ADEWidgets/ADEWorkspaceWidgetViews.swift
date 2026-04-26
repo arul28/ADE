@@ -114,7 +114,7 @@ struct WorkspaceSmallView: View {
         return Link(destination: destination) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center, spacing: 0) {
-                    SmallStatusDot(failed: focus?.status == "failed", running: focus != nil)
+                    SmallStatusDot(running: focus != nil)
                     Spacer()
                     Text(smallStatusLabel(for: focus, snapshot: snapshot).lowercased())
                         .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
@@ -172,9 +172,7 @@ struct WorkspaceSmallView: View {
     }
 
     private func smallStatusLabel(for agent: AgentSnapshot?, snapshot: WorkspaceSnapshot) -> String {
-        if let agent {
-            return agent.status == "failed" ? "failed" : "running"
-        }
+        if agent != nil { return "running" }
         if snapshot.awaitingInputCount > 0 { return "waiting" }
         if snapshot.idleCount > 0 { return "idle" }
         return "quiet"
@@ -227,16 +225,15 @@ struct WorkspaceSmallView: View {
     }
 }
 
-/// 10pt status dot for the small home widget. Solid green for running, red for
-/// failed, dim grey when nothing is active.
+/// 10pt status dot for the small home widget. Solid green when something is
+/// running, dim grey when nothing is active.
 private struct SmallStatusDot: View {
-    let failed: Bool
     let running: Bool
 
     var body: some View {
-        let color: Color = failed
-            ? WorkspaceWidgetPalette.statusFailed
-            : (running ? WorkspaceWidgetPalette.statusReady : WorkspaceWidgetPalette.textQuaternary)
+        let color: Color = running
+            ? WorkspaceWidgetPalette.statusReady
+            : WorkspaceWidgetPalette.textQuaternary
         Circle()
             .fill(color)
             .frame(width: 10, height: 10)
@@ -624,7 +621,7 @@ private struct WidgetRosterRow: View {
             Circle()
                 .fill(rowDotColor)
                 .frame(width: 8, height: 8)
-                .shadow(color: rowDotColor.opacity(agent.status == "failed" ? 0 : 0.55), radius: 3)
+                .shadow(color: rowDotColor.opacity(0.55), radius: 3)
             VStack(alignment: .leading, spacing: 1) {
                 Text(agent.title ?? "Chat")
                     .font(.system(size: 13.5, weight: .semibold))
@@ -637,18 +634,11 @@ private struct WidgetRosterRow: View {
                     .foregroundStyle(accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if agent.status == "failed" {
-                Text("failed")
-                    .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.statusFailed)
-            }
         }
     }
 
     private var rowDotColor: Color {
-        if accented { return Color.primary }
-        if agent.status == "failed" { return WorkspaceWidgetPalette.statusFailed }
-        return WorkspaceWidgetPalette.statusReady
+        accented ? Color.primary : WorkspaceWidgetPalette.statusReady
     }
 
     private var subline: String {

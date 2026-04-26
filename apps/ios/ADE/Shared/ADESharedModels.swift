@@ -130,12 +130,30 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.generatedAt = try c.decode(Date.self, forKey: .generatedAt)
-        self.agents = try c.decode([AgentSnapshot].self, forKey: .agents)
+        let decodedAgents = try c.decode([AgentSnapshot].self, forKey: .agents)
+        self.agents = decodedAgents
         self.prs = try c.decode([PrSnapshot].self, forKey: .prs)
         self.connection = try c.decode(String.self, forKey: .connection)
         // Fields added later — older snapshots written without them decode cleanly.
-        self.awaitingInputCount = try c.decodeIfPresent(Int.self, forKey: .awaitingInputCount) ?? 0
-        self.idleCount = try c.decodeIfPresent(Int.self, forKey: .idleCount) ?? 0
+        // When absent, derive from `agents` so legacy snapshots don't render
+        // as fully idle (runningAgents filters waiting/idle sessions out, so a
+        // 0 default would silently drop them from every count chip).
+        if let value = try c.decodeIfPresent(Int.self, forKey: .awaitingInputCount) {
+            self.awaitingInputCount = value
+        } else {
+            self.awaitingInputCount = decodedAgents.reduce(into: 0) { count, agent in
+                if agent.awaitingInput || agent.status.lowercased() == "awaiting_input" {
+                    count += 1
+                }
+            }
+        }
+        if let value = try c.decodeIfPresent(Int.self, forKey: .idleCount) {
+            self.idleCount = value
+        } else {
+            self.idleCount = decodedAgents.reduce(into: 0) { count, agent in
+                if agent.status.lowercased() == "idle" { count += 1 }
+            }
+        }
     }
 
     /// Subset of `agents` that are *actively producing output* right now.

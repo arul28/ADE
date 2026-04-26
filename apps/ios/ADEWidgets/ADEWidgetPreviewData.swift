@@ -69,20 +69,19 @@ enum ADEWidgetPreviewData {
 
     static let emptySnapshot = WorkspaceSnapshot.empty
 
-    // MARK: - Real ADE data (sampled from local DB at `/Users/arul/ADE/.ade/ade.db`)
+    // MARK: - Realistic-shape ADE data (sanitized fixture, no real workspace data)
     //
-    // Captured for previews so the canvas reflects an actual workspace state
-    // rather than a hypothetical mockup. Re-run the sqlite query in the
-    // accompanying script to refresh.
+    // Mirrors the shape of a real workspace snapshot — one running chat, a
+    // couple of open PRs with failing CI — but every identifier, title, and
+    // branch name here is synthetic so it's safe to ship in previews.
 
     static let realCurrentAgents: [AgentSnapshot] = [
         AgentSnapshot(
-            sessionId: "64cda258-d3ff-47a2-8c98-7419b200a41e",
+            sessionId: "00000000-0000-0000-0000-00000000A001",
             provider: "codex-chat",
-            title: "Work Tab Chat Tabs",
+            title: "Refactor lane sidebar",
             status: "running",
             awaitingInput: false,
-            // 2026-04-26 20:03:06 UTC — preview anchors to ~22 min ago.
             lastActivityAt: Date().addingTimeInterval(-22 * 60),
             elapsedSeconds: 22 * 60,
             preview: "All passed.",
@@ -94,29 +93,28 @@ enum ADEWidgetPreviewData {
 
     static let realCurrentPrs: [PrSnapshot] = [
         PrSnapshot(
-            id: "d417dde7-ff67-4c1d-86dd-eb877fac55b6",
+            id: "00000000-0000-0000-0000-0000000000B1",
             number: 206,
-            title: "fix(tabs): keep work surface alive across tab reroutes",
+            title: "Add notification banner",
             checks: "failing",
             review: "none",
             state: "open",
             mergeReady: false,
-            branch: "ade/tab-reroute-tabs-fix-95042dc5"
+            branch: "feature/notifications"
         ),
         PrSnapshot(
-            id: "1601c4c3-3290-4b16-9cbb-4ef466ec20ef",
+            id: "00000000-0000-0000-0000-0000000000B2",
             number: 205,
-            title: "lanes: stabilize URL deep-link useEffect deps",
+            title: "Stabilize lane deep-link routing",
             checks: "failing",
             review: "none",
             state: "open",
             mergeReady: false,
-            branch: "ade/chnaging-lanes-tabs-bugs-1954cea4"
+            branch: "feature/lane-deep-links"
         ),
     ]
 
-    /// Snapshot reflecting the user's *actual* workspace at capture time:
-    /// 1 running codex-chat session, 2 open PRs both with failing CI.
+    /// Realistic-shape snapshot: 1 running chat + 2 open PRs with failing CI.
     static let realCurrentSnapshot = WorkspaceSnapshot(
         generatedAt: Date(),
         agents: realCurrentAgents,
@@ -197,14 +195,14 @@ enum ADEWidgetPreviewData {
     )
 
     /// LA ContentState: only PR signals, no roster — what the LA looks like
-    /// when CI is failing on your open PRs and nothing else is going on.
+    /// when CI is failing on the open PRs and nothing else is going on.
     static let REAL_PRS_ONLY = ADESessionAttributes.ContentState(
         sessions: [],
         attention: ADESessionAttributes.ContentState.Attention(
             kind: .ciFailing,
             title: "PR #206 · CI failing",
-            subtitle: "fix(tabs): keep work surface alive across tab reroutes",
-            prId: "d417dde7-ff67-4c1d-86dd-eb877fac55b6",
+            subtitle: "Add notification banner",
+            prId: "00000000-0000-0000-0000-0000000000B1",
             prNumber: 206
         ),
         failingCheckCount: 2,
@@ -419,14 +417,13 @@ enum ADEWidgetPreviewData {
     ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.populatedSnapshot)
 }
 
-// MARK: - Real-data previews
+// MARK: - Realistic-shape previews
 //
-// Snapshots sourced from your actual workspace DB (`/Users/arul/ADE/.ade/ade.db`)
-// at capture time:
-//   • 1 running codex-chat ("Work Tab Chat Tabs")
-//   • 2 open PRs both with failing CI (#205, #206)
-// These previews pair the real data with three view conditions: real-as-is,
-// real + synthetic counts (rich), and PRs-only (no chat).
+// Synthetic snapshots whose shape mirrors a real workspace:
+//   • 1 running codex-chat
+//   • 2 open PRs both with failing CI
+// Three view conditions: as-is, with synthetic awaiting/idle counts (rich),
+// and PRs-only (no chat).
 
 @available(iOS 17.0, *)
 #Preview("REAL · Small · current", as: .systemSmall) {

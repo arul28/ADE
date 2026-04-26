@@ -200,15 +200,23 @@ public final class LiveActivityCoordinator: ObservableObject {
         // Home widget still reflects state; the LA stays out of the way.
     }
 
-    /// Guard against re-summoning a freshly-dismissed Live Activity. The
-    /// user-dismiss gesture is treated uniformly — within the cooldown window,
-    /// no flavor of LA (ambient running roster, attention banner, count
-    /// summary) is allowed to come back. Silence is silence.
+    /// Guard against re-summoning a freshly-dismissed Live Activity. Within
+    /// the cooldown window, ambient flavors (running roster, count summary)
+    /// stay suppressed — but attention signals (awaiting-input / failed /
+    /// CI failing / review-requested / merge-ready) override it because the
+    /// user actually needs to see those.
     private func shouldStartFreshActivity(
         for state: ADESessionAttributes.ContentState
     ) -> Bool {
         guard let dismissedAt = lastUserDismissalAt else { return true }
         if Date().timeIntervalSince(dismissedAt) >= configuration.dismissedCooldown {
+            lastUserDismissalAt = nil
+            return true
+        }
+        // Attention signals (awaiting-input / failed / CI failing / review-requested
+        // / merge-ready) override the cooldown — the user needs to see these even
+        // if they dismissed an ambient activity recently.
+        if state.attention != nil {
             lastUserDismissalAt = nil
             return true
         }
