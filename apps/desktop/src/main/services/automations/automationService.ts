@@ -629,9 +629,15 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
   const rawExecution = rule.execution ?? (legacyActions.length > 0
     ? { kind: "built-in" as const, builtIn: { actions: legacyActions } }
     : { kind: "mission" as const });
+  const sharedLaneFields = {
+    ...(rawExecution.laneMode ? { laneMode: rawExecution.laneMode } : {}),
+    ...(rawExecution.laneNamePreset ? { laneNamePreset: rawExecution.laneNamePreset } : {}),
+    ...(rawExecution.laneNameTemplate ? { laneNameTemplate: rawExecution.laneNameTemplate } : {}),
+  };
   const normalizedExecution: AutomationExecution = rawExecution.kind === "built-in"
     ? {
         kind: "built-in",
+        ...sharedLaneFields,
         ...(rawExecution.targetLaneId ? { targetLaneId: rawExecution.targetLaneId } : {}),
         builtIn: {
           actions: rawExecution.builtIn?.actions?.length ? rawExecution.builtIn.actions : legacyActions,
@@ -640,11 +646,13 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
     : rawExecution.kind === "agent-session"
       ? {
           kind: "agent-session",
+          ...sharedLaneFields,
           ...(rawExecution.targetLaneId ? { targetLaneId: rawExecution.targetLaneId } : {}),
           ...(rawExecution.session ? { session: rawExecution.session } : {}),
         }
       : {
           kind: "mission",
+          ...sharedLaneFields,
           ...(rawExecution.targetLaneId ? { targetLaneId: rawExecution.targetLaneId } : {}),
           ...(rawExecution.mission ? { mission: rawExecution.mission } : {}),
         };
@@ -701,6 +709,23 @@ function resolveExecutionKind(rule: AutomationRule): AutomationExecution["kind"]
 function summarizeLegacyActions(actions: AutomationAction[]): string {
   if (!actions.length) return "mission dispatch";
   return actions.map((action) => action.type).join(", ");
+}
+
+/**
+ * Map a lane-name preset to a `{{trigger.*}}` template string. `"custom"`
+ * is a sentinel — callers should pass the user's `laneNameTemplate` instead.
+ */
+export function presetToTemplate(preset: string | undefined | null): string {
+  switch (preset) {
+    case "issue-title":
+      return "{{trigger.issue.title}}";
+    case "issue-num-title":
+      return "Issue #{{trigger.issue.number}} – {{trigger.issue.title}}";
+    case "pr-title-author":
+      return "{{trigger.pr.title}} – {{trigger.pr.author}}";
+    default:
+      return "";
+  }
 }
 
 function resolveTemplateString(template: string | undefined | null, trigger: TriggerContext): string {
@@ -1794,7 +1819,7 @@ export function createAutomationService({
       if (!agentChatServiceRef) {
         return { status: "failed", output: "Agent chat service is unavailable." };
       }
-      const laneId = await resolveExecutionLaneId(rule, trigger, action);
+      const laneId = await resolveExecutionLaneId(rule, trigger, action, runId);
       if (!laneId) {
         return { status: "failed", output: "No lane is available for this automation run." };
       }
@@ -2023,8 +2048,98 @@ export function createAutomationService({
     }
   };
 
-  const resolveExecutionLaneId = async (rule: AutomationRule, trigger: TriggerContext, action?: AutomationAction | null): Promise<string | null> => {
-    const configuredLaneId = trimToNull(action?.targetLaneId) ?? trimToNull(rule.execution?.targetLaneId);
+  /**
+   * Spawn a fresh lane for a single automation run. Resolves the user's
+   * preset/template via {@link resolvePlaceholders}; if a sibling lane already
+   * carries the same name, appends `#NN` (or short timestamp for non-issue
+   * triggers); if that *still* collides, appends a 4-char random suffix.
+   * Returns the new lane id. Throws on lane-service failure (caller marks
+   * the run failed; no fallback to primary).
+   */
+  const createLaneForRun = async (rule: AutomationRule, trigger: TriggerContext): Promise<{ laneId: string; laneName: string }> => {
+    const preset = rule.execution?.laneNamePreset;
+    const template = preset && preset !== "custom"
+      ? presetToTemplate(preset)
+      : (rule.execution?.laneNameTemplate ?? "");
+    const rendered = resolveTemplateString(template, trigger);
+    const fallbackName = trigger.issue?.title ?? trigger.pr?.title ?? trigger.summary ?? rule.name;
+    const baseName = (rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered : "").trim() || fallbackName.trim();
+    if (!baseName) {
+      throw new Error("Lane name template resolved to an empty string.");
+    }
+
+    const existingLanes = await laneService.list({ includeArchived: false });
+    const existingNames = new Set(existingLanes.map((lane: { name?: string | null }) => (lane.name ?? "").trim().toLowerCase()));
+
+    let candidate = baseName;
+    if (existingNames.has(candidate.toLowerCase())) {
+      const issueOrPrNumber = trigger.issue?.number ?? trigger.pr?.number;
+      const suffix = typeof issueOrPrNumber === "number"
+        ? `#${issueOrPrNumber}`
+        : new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 12);
+      candidate = `${baseName} (${suffix})`;
+    }
+    if (existingNames.has(candidate.toLowerCase())) {
+      const random = randomUUID().replace(/-/g, "").slice(0, 4);
+      candidate = `${baseName} (${random})`;
+    }
+
+    const description = [
+      trigger.issue ? `GitHub issue #${trigger.issue.number}` : null,
+      trigger.issue?.url ?? trigger.pr?.url ?? null,
+      trigger.summary ?? null,
+    ].filter(Boolean).join("\n");
+
+    const lane = await laneService.create({
+      name: candidate,
+      description,
+    });
+    trigger.laneId = lane.id;
+    trigger.laneName = lane.name;
+    trigger.branch = lane.branchRef;
+    return { laneId: lane.id, laneName: lane.name };
+  };
+
+  /**
+   * Resolve which lane an automation should run in. When the rule opts into
+   * `execution.laneMode === "create"`, allocate a fresh lane via
+   * {@link createLaneForRun} and (if a runId is provided) record a synthetic
+   * `lane-setup` row in `automation_action_results` so success / failure has
+   * a visible line in the run-detail UI. On failure of the create path the
+   * caller MUST mark the run failed — we deliberately do not fall back to
+   * the primary lane (work would silently land in the wrong place).
+   */
+  const resolveExecutionLaneId = async (
+    rule: AutomationRule,
+    trigger: TriggerContext,
+    action?: AutomationAction | null,
+    runId?: string | null,
+  ): Promise<string | null> => {
+    const actionLaneId = trimToNull(action?.targetLaneId);
+    if (actionLaneId) return actionLaneId;
+
+    if (rule.execution?.laneMode === "create") {
+      const setupActionId = runId ? insertAction(runId, -1, "lane-setup") : null;
+      try {
+        const { laneId, laneName } = await createLaneForRun(rule, trigger);
+        if (setupActionId) {
+          finishAction({
+            id: setupActionId,
+            status: "succeeded",
+            output: JSON.stringify({ laneId, laneName }),
+          });
+        }
+        return laneId;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (setupActionId) {
+          finishAction({ id: setupActionId, status: "failed", errorMessage: message });
+        }
+        throw error;
+      }
+    }
+
+    const configuredLaneId = trimToNull(rule.execution?.targetLaneId);
     if (configuredLaneId) return configuredLaneId;
 
     const triggerLaneId = trimToNull(trigger.laneId);
@@ -2067,11 +2182,6 @@ export function createAutomationService({
       throw new Error("Agent chat service is unavailable");
     }
 
-    const laneId = await resolveExecutionLaneId(args.rule, args.trigger);
-    if (!laneId) {
-      throw new Error("No lane is available for this automation run.");
-    }
-
     const { modelId, modelDescriptor, providerGroup, budgetProvider } = resolveAutomationModelDescriptor(args.rule);
     const resolvedChat = resolveChatProviderForDescriptor(modelDescriptor);
     const budgetCheck = budgetCapServiceRef?.checkBudget(
@@ -2086,7 +2196,6 @@ export function createAutomationService({
     const briefing = await buildBriefing(args.rule, args.trigger);
     const linkedProcedureIds = briefing?.usedProcedureIds ?? [];
     const confidence = computeConfidence(args.rule, linkedProcedureIds.length);
-    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId, briefing });
     const existingRunRow = args.existingRunId ? loadRunRow(args.existingRunId) : null;
     const run = existingRunRow
       ? toRun(existingRunRow)
@@ -2099,6 +2208,23 @@ export function createAutomationService({
           summary: args.rule.prompt?.trim() || `${args.rule.name} agent session dispatched`,
           ingressEventId: args.trigger.ingressEventId ?? null,
         });
+
+    let laneId: string | null;
+    try {
+      laneId = await resolveExecutionLaneId(args.rule, args.trigger, null, run.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateRun(run.id, { ended_at: nowIso(), status: "failed", error_message: message });
+      emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
+      throw error;
+    }
+    if (!laneId) {
+      const message = "No lane is available for this automation run.";
+      updateRun(run.id, { ended_at: nowIso(), status: "failed", error_message: message });
+      emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
+      throw new Error(message);
+    }
+    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId, briefing });
 
     const actionId = insertAction(run.id, 0, "agent-session");
     const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: false });
@@ -2252,7 +2378,30 @@ export function createAutomationService({
       throw new Error(budgetCheck.reason ?? "Budget cap blocked automation run.");
     }
 
-    const laneId = await resolveExecutionLaneId(args.rule, args.trigger);
+    const existingRunRowEarly = args.existingRunId ? loadRunRow(args.existingRunId) : null;
+    const earlyRun = existingRunRowEarly
+      ? toRun(existingRunRowEarly)
+      : insertRun({
+          rule: args.rule,
+          trigger: args.trigger,
+          actionsTotal: 1,
+          queueStatus: "pending-review",
+          confidence,
+          linkedProcedureIds,
+          summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
+          queueItemId: args.existingQueueItemId ?? null,
+          ingressEventId: args.trigger.ingressEventId ?? null,
+        });
+
+    let laneId: string | null;
+    try {
+      laneId = await resolveExecutionLaneId(args.rule, args.trigger, null, earlyRun.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateRun(earlyRun.id, { ended_at: nowIso(), status: "failed", error_message: message });
+      emit({ type: "runs-updated", automationId: args.rule.id, runId: earlyRun.id });
+      throw error;
+    }
     const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId, briefing });
     const mission = missionServiceRef.create({
       title: `${args.rule.name} · ${args.rule.mode}`,
@@ -2296,21 +2445,8 @@ export function createAutomationService({
       }
     });
 
-    const existingRunRow = args.existingRunId ? loadRunRow(args.existingRunId) : null;
-    const run = existingRunRow
-      ? toRun(existingRunRow)
-      : insertRun({
-          rule: args.rule,
-          trigger: args.trigger,
-          actionsTotal: 1,
-          queueStatus: "pending-review",
-          confidence,
-          linkedProcedureIds,
-          summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
-          missionId: mission.id,
-          queueItemId: args.existingQueueItemId ?? null,
-          ingressEventId: args.trigger.ingressEventId ?? null,
-        });
+    const run = earlyRun;
+    updateRun(run.id, { mission_id: mission.id });
 
     if (args.existingRunId) {
       updateRun(args.existingRunId, {

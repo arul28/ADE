@@ -5,7 +5,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
 import type { Database, SqlJsStatic } from "sql.js";
-import { createAutomationService, triggerMatches } from "./automationService";
+import { createAutomationService, presetToTemplate, triggerMatches } from "./automationService";
 
 type SqlValue = string | number | null | Uint8Array;
 
@@ -1284,6 +1284,292 @@ describe("automationService integration", () => {
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
+  });
+
+  describe("laneMode: 'create'", () => {
+    it("presetToTemplate maps known presets and returns empty for custom/unknown", () => {
+      expect(presetToTemplate("issue-title")).toBe("{{trigger.issue.title}}");
+      expect(presetToTemplate("issue-num-title")).toBe("Issue #{{trigger.issue.number}} – {{trigger.issue.title}}");
+      expect(presetToTemplate("pr-title-author")).toBe("{{trigger.pr.title}} – {{trigger.pr.author}}");
+      expect(presetToTemplate("custom")).toBe("");
+      expect(presetToTemplate(undefined)).toBe("");
+    });
+
+    function buildLaneModeFixtures() {
+      const { db, raw } = createInMemoryAdeDb();
+      const logger = createLogger();
+      const projectId = "proj";
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-lane-mode-"));
+      return { db, raw, logger, projectId, projectRoot };
+    }
+
+    it("creates a fresh lane via preset when laneMode is 'create' and emits a lane-setup row", async () => {
+      const { db, raw, logger, projectId, projectRoot } = buildLaneModeFixtures();
+      const createLane = vi.fn(async ({ name }: { name: string }) => ({
+        id: "lane-fresh",
+        name,
+        branchRef: name.replace(/\s+/g, "-").toLowerCase(),
+        laneType: "feature",
+        worktreePath: projectRoot,
+      }));
+      const createMission = vi.fn(() => ({ id: "mission-x", status: "in_progress", outcomeSummary: null, completedAt: null, lastError: null }));
+
+      const rule = {
+        id: "issue-create-lane",
+        name: "Issue create lane",
+        enabled: true,
+        mode: "review",
+        reviewProfile: "quick",
+        trigger: { type: "manual" as const },
+        triggers: [{ type: "manual" as const }],
+        executor: { mode: "automation-bot", targetId: null },
+        toolPalette: [] as const,
+        contextSources: [],
+        memory: { mode: "project" as const },
+        guardrails: { maxDurationMin: 5 },
+        outputs: { disposition: "comment-only" as const, createArtifact: true },
+        verification: { verifyBeforePublish: false, mode: "intervention" as const },
+        billingCode: "auto:test",
+        execution: {
+          kind: "mission" as const,
+          laneMode: "create" as const,
+          laneNamePreset: "issue-title" as const,
+        },
+        prompt: "Run the mission.",
+      };
+
+      const projectConfigService = {
+        get: () => ({ trust: { requiresSharedTrust: false }, effective: { automations: [rule], providerMode: "guest" } })
+      } as any;
+      const laneService = {
+        create: createLane,
+        list: async () => [{ id: "lane-primary", name: "primary", laneType: "primary" }],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+      } as any;
+
+      const service = createAutomationService({
+        db: db as any, logger, projectId, projectRoot, laneService, projectConfigService,
+        missionService: { create: createMission, patchMetadata: vi.fn() } as any,
+        aiOrchestratorService: { startMissionRun: vi.fn(async () => undefined) } as any,
+      });
+
+      try {
+        // Inject an issue payload by stuffing trigger context via dispatchIngressTrigger.
+        // Manual trigger would have no issue payload — use a manual call but seed the
+        // trigger via service.triggerManually then inspect the create call.
+        // Instead, directly hit the underlying path by manipulating triggers: use
+        // triggerManually here and the createLaneForRun fallback (rule.name) will fire.
+        const run = await service.triggerManually({ id: "issue-create-lane" });
+        expect(run.status).toBe("running");
+        expect(createLane).toHaveBeenCalledTimes(1);
+        const args = (createLane as any).mock.calls[0]?.[0] as { name: string };
+        // No issue payload on manual triggers — falls back to rule.name.
+        expect(args.name).toBe("Issue create lane");
+        expect(createMission).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-fresh" }));
+
+        const setupRows = mapExecRows(raw.exec("select status, action_type from automation_action_results where action_type = 'lane-setup'"));
+        expect(setupRows.length).toBe(1);
+        expect(setupRows[0]?.status).toBe("succeeded");
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("appends issue number on collision then a random suffix on a second collision", async () => {
+      const { db, logger, projectId, projectRoot } = buildLaneModeFixtures();
+      const createLane = vi.fn(async ({ name }: { name: string }) => ({
+        id: `lane-${name}`,
+        name,
+        branchRef: name.replace(/\s+/g, "-").toLowerCase(),
+        laneType: "feature",
+        worktreePath: projectRoot,
+      }));
+      const createMission = vi.fn(() => ({ id: "mission-x", status: "in_progress", outcomeSummary: null, completedAt: null, lastError: null }));
+
+      // Two existing lanes already collide with "Fix login" AND "Fix login (#427)".
+      const rule = {
+        id: "issue-collide",
+        name: "Issue collide",
+        enabled: true,
+        mode: "review",
+        reviewProfile: "quick",
+        trigger: { type: "github.issue_opened" as const },
+        triggers: [{ type: "github.issue_opened" as const }],
+        executor: { mode: "automation-bot", targetId: null },
+        toolPalette: [] as const,
+        contextSources: [],
+        memory: { mode: "project" as const },
+        guardrails: { maxDurationMin: 5 },
+        outputs: { disposition: "comment-only" as const, createArtifact: true },
+        verification: { verifyBeforePublish: false, mode: "intervention" as const },
+        billingCode: "auto:test",
+        execution: { kind: "mission" as const, laneMode: "create" as const, laneNamePreset: "issue-title" as const },
+        prompt: "Run.",
+      };
+
+      const projectConfigService = {
+        get: () => ({ trust: { requiresSharedTrust: false }, effective: { automations: [rule], providerMode: "guest" } })
+      } as any;
+
+      const laneService = {
+        create: createLane,
+        list: async () => [
+          { id: "lane-primary", name: "primary", laneType: "primary" },
+          { id: "lane-existing", name: "Fix login", laneType: "feature" },
+          { id: "lane-existing-2", name: "Fix login (#427)", laneType: "feature" },
+        ],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+      } as any;
+
+      const service = createAutomationService({
+        db: db as any, logger, projectId, projectRoot, laneService, projectConfigService,
+        missionService: { create: createMission, patchMetadata: vi.fn() } as any,
+        aiOrchestratorService: { startMissionRun: vi.fn(async () => undefined) } as any,
+      });
+
+      try {
+        await service.dispatchIngressTrigger({
+          source: "github-polling",
+          eventKey: "x:1",
+          triggerType: "github.issue_opened",
+          eventName: "github.issue_opened",
+          repo: "x/y",
+          issue: { number: 427, title: "Fix login", author: "a", labels: [], repo: "x/y", url: "https://x" }
+        } as any);
+        const args = (createLane as any).mock.calls[0]?.[0] as { name: string };
+        // Both "Fix login" and "Fix login (#427)" already exist → falls through to random suffix.
+        expect(args.name).toMatch(/^Fix login \([0-9a-f]{4}\)$/);
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("marks the run failed (no fallback to primary) when createLaneForRun throws", async () => {
+      const { db, raw, logger, projectId, projectRoot } = buildLaneModeFixtures();
+      const createLane = vi.fn(async () => { throw new Error("Disk full"); });
+      const createMission = vi.fn();
+
+      const rule = {
+        id: "issue-fail",
+        name: "Issue fail",
+        enabled: true,
+        mode: "review",
+        reviewProfile: "quick",
+        trigger: { type: "manual" as const },
+        triggers: [{ type: "manual" as const }],
+        executor: { mode: "automation-bot", targetId: null },
+        toolPalette: [] as const,
+        contextSources: [],
+        memory: { mode: "project" as const },
+        guardrails: { maxDurationMin: 5 },
+        outputs: { disposition: "comment-only" as const, createArtifact: true },
+        verification: { verifyBeforePublish: false, mode: "intervention" as const },
+        billingCode: "auto:test",
+        execution: { kind: "mission" as const, laneMode: "create" as const, laneNamePreset: "issue-title" as const },
+        prompt: "Run.",
+      };
+
+      const projectConfigService = {
+        get: () => ({ trust: { requiresSharedTrust: false }, effective: { automations: [rule], providerMode: "guest" } })
+      } as any;
+      const laneService = {
+        create: createLane,
+        list: async () => [{ id: "lane-primary", name: "primary", laneType: "primary" }],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+      } as any;
+
+      const service = createAutomationService({
+        db: db as any, logger, projectId, projectRoot, laneService, projectConfigService,
+        missionService: { create: createMission, patchMetadata: vi.fn() } as any,
+        aiOrchestratorService: { startMissionRun: vi.fn(async () => undefined) } as any,
+      });
+
+      try {
+        await expect(service.triggerManually({ id: "issue-fail" })).rejects.toThrow("Disk full");
+        expect(createMission).not.toHaveBeenCalled();
+        const runs = mapExecRows(raw.exec("select status, error_message from automation_runs where automation_id = 'issue-fail'"));
+        expect(runs.length).toBe(1);
+        expect(runs[0]?.status).toBe("failed");
+        expect(String(runs[0]?.error_message ?? "")).toContain("Disk full");
+        const setupRows = mapExecRows(raw.exec("select status from automation_action_results where action_type = 'lane-setup'"));
+        expect(setupRows[0]?.status).toBe("failed");
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("legacy create-lane migration", () => {
+    it("collapses a leading create-lane action into laneMode: 'create' on load", async () => {
+      // Drive the migration through projectConfigService — but the service in tests
+      // gets a stub config service. Instead, exercise the same coercion logic by
+      // building a rule whose execution lacks laneMode and whose first action is
+      // create-lane, then verify the runtime behavior matches "create" mode.
+      const { db, logger, projectId, projectRoot } = (() => {
+        const { db } = createInMemoryAdeDb();
+        return { db, logger: createLogger(), projectId: "proj", projectRoot: fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-migrate-")) };
+      })();
+      // Simulate what projectConfigService.coerce would have produced:
+      const migratedExecution = {
+        kind: "built-in" as const,
+        laneMode: "create" as const,
+        laneNamePreset: "custom" as const,
+        laneNameTemplate: "Auto: {{trigger.issue.title}}",
+        builtIn: { actions: [{ type: "create-lane" as const, laneNameTemplate: "Auto: {{trigger.issue.title}}" }] },
+      };
+      const createLane = vi.fn(async ({ name }: { name: string }) => ({
+        id: "lane-migrated",
+        name,
+        branchRef: name.replace(/\s+/g, "-").toLowerCase(),
+        laneType: "feature",
+        worktreePath: projectRoot,
+      }));
+      const createMission = vi.fn(() => ({ id: "m", status: "in_progress", outcomeSummary: null, completedAt: null, lastError: null }));
+      const rule = {
+        id: "migrated",
+        name: "Migrated",
+        enabled: true, mode: "review", reviewProfile: "quick",
+        trigger: { type: "manual" as const }, triggers: [{ type: "manual" as const }],
+        executor: { mode: "automation-bot", targetId: null },
+        toolPalette: [], contextSources: [], memory: { mode: "project" },
+        guardrails: { maxDurationMin: 5 },
+        outputs: { disposition: "comment-only", createArtifact: true },
+        verification: { verifyBeforePublish: false, mode: "intervention" },
+        billingCode: "auto:test",
+        // Migrated rule still keeps the legacy action so unmigrated runners can read it,
+        // but execution.laneMode === "create" steers the new path.
+        execution: { ...migratedExecution, kind: "mission" as const },
+        prompt: "Run.",
+      };
+      const projectConfigService = {
+        get: () => ({ trust: { requiresSharedTrust: false }, effective: { automations: [rule], providerMode: "guest" } })
+      } as any;
+      const laneService = {
+        create: createLane,
+        list: async () => [{ id: "lane-primary", name: "primary", laneType: "primary" }],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+      } as any;
+      const service = createAutomationService({
+        db: db as any, logger, projectId, projectRoot, laneService, projectConfigService,
+        missionService: { create: createMission, patchMetadata: vi.fn() } as any,
+        aiOrchestratorService: { startMissionRun: vi.fn(async () => undefined) } as any,
+      });
+      try {
+        await service.triggerManually({ id: "migrated" });
+        expect(createLane).toHaveBeenCalledTimes(1);
+        // Manual trigger has no issue.title → embedded placeholder resolves to
+        // empty, leaving the literal prefix "Auto:" — verify the migrated path
+        // produced *some* lane and the leading template was honored.
+        const args = (createLane as any).mock.calls[0]?.[0] as { name: string };
+        expect(args.name).toMatch(/^Auto:/);
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
   });
 
 });

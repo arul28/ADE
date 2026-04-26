@@ -2216,9 +2216,25 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
   const automations: AutomationRule[] = mergedAutomations.map((entry) => {
     const triggers = coerceAutomationTriggers(entry.triggers, entry.trigger);
     const legacyTrigger = coerceAutomationTrigger(entry.trigger);
-    const execution = entry.execution ?? ((entry.actions?.length ?? 0) > 0
+    const baseExecution = entry.execution ?? ((entry.actions?.length ?? 0) > 0
       ? { kind: "built-in" as const, builtIn: { actions: entry.actions ?? [] } }
       : { kind: "mission" as const });
+    // Lane-mode migration: legacy rules with a leading `create-lane` action collapse
+    // into `execution.laneMode: "create"`, carrying the action's name template forward
+    // as a "custom" preset. Rules without that action default to "reuse".
+    const firstAction = baseExecution.kind === "built-in"
+      ? (baseExecution.builtIn?.actions?.[0] ?? null)
+      : (entry.actions?.[0] ?? null);
+    const execution = baseExecution.laneMode
+      ? baseExecution
+      : firstAction?.type === "create-lane"
+        ? {
+            ...baseExecution,
+            laneMode: "create" as const,
+            laneNamePreset: "custom" as const,
+            ...(firstAction.laneNameTemplate ? { laneNameTemplate: firstAction.laneNameTemplate } : {}),
+          }
+        : { ...baseExecution, laneMode: "reuse" as const };
 
     return {
       id: entry.id.trim(),
