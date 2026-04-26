@@ -17,7 +17,7 @@ struct ADEControlWidget: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {
             ControlWidgetButton(action: OpenADEIntent()) {
-                Label("Open ADE", systemImage: "sparkles")
+                Label("Open", systemImage: "sparkles")
             }
         }
         .displayName("Open ADE")
@@ -37,8 +37,8 @@ struct ADEMuteControlWidget: ControlWidget {
                 action: ToggleMutePushIntent()
             ) { isOn in
                 Label(
-                    isOn ? mutedUntilLabel() : "Mute pushes",
-                    systemImage: isOn ? "moon.fill" : "bell.fill"
+                    isOn ? mutedUntilLabel() : "Mute",
+                    systemImage: isOn ? "bell.slash.fill" : "bell.fill"
                 )
             }
         }
@@ -49,7 +49,7 @@ struct ADEMuteControlWidget: ControlWidget {
     private func mutedUntilLabel() -> String {
         if let until = ADEMutePreferences.muteUntil, until.timeIntervalSinceNow > 0 {
             let formatted = until.formatted(date: .omitted, time: .shortened)
-            return "Muted · until \(formatted)"
+            return "Muted until \(formatted)"
         }
         return "Muted"
     }
@@ -72,21 +72,21 @@ enum ADEMuteControlState {
 /// the canvas show the OFF / ON label content in isolation.
 @available(iOS 18.0, *)
 #Preview("Mute label · OFF") {
-    Label("Mute pushes", systemImage: "bell.fill")
+    Label("Mute", systemImage: "bell.fill")
         .labelStyle(.titleAndIcon)
         .padding()
 }
 
 @available(iOS 18.0, *)
 #Preview("Mute label · ON") {
-    Label("Muted · until 9:00 AM", systemImage: "moon.fill")
+    Label("Muted until 9:00 AM", systemImage: "bell.slash.fill")
         .labelStyle(.titleAndIcon)
         .padding()
 }
 
 @available(iOS 18.0, *)
 #Preview("Open ADE label") {
-    Label("Open ADE", systemImage: "sparkles")
+    Label("Open", systemImage: "sparkles")
         .labelStyle(.titleAndIcon)
         .padding()
 }

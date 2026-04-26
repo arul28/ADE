@@ -75,19 +75,24 @@ public enum ADESharedContainer {
     /// Format: `"ADE · N agents · #NNN ✗"` / `"ADE · N agents"` / `"ADE · idle"`.
     public static func inlineSummary(for snapshot: WorkspaceSnapshot? = nil) -> String {
         let s = snapshot ?? readWorkspaceSnapshot() ?? .empty
-        let activeAgents = s.agents.filter { $0.status == "running" || $0.awaitingInput }.count
+        let runningAgents = s.runningAgents.count
         let openPrs = s.prs.filter { $0.state == "open" }
         let focusedPr: PrSnapshot? = openPrs.first(where: { $0.checks == "failing" })
             ?? openPrs.first(where: { $0.review == "changes_requested" || $0.review == "pending" })
             ?? openPrs.first(where: { $0.mergeReady })
             ?? openPrs.first
 
-        if activeAgents == 0 && focusedPr == nil {
+        if runningAgents == 0 && focusedPr == nil
+            && s.awaitingInputCount == 0 && s.idleCount == 0 {
             return "ADE · idle"
         }
         var pieces: [String] = ["ADE"]
-        if activeAgents > 0 {
-            pieces.append("\(activeAgents) \(activeAgents == 1 ? "agent" : "agents")")
+        if runningAgents > 0 {
+            pieces.append("\(runningAgents) running")
+        } else if s.awaitingInputCount > 0 {
+            pieces.append("\(s.awaitingInputCount) waiting")
+        } else if s.idleCount > 0 {
+            pieces.append("\(s.idleCount) idle")
         }
         if let pr = focusedPr {
             let mark: String

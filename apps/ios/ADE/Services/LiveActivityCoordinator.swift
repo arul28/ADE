@@ -56,13 +56,20 @@ public final class LiveActivityCoordinator: ObservableObject {
         /// How long to keep a terminal activity around before the OS
         /// dismisses it automatically.
         public var terminalDismissalDelay: TimeInterval
+        /// After the user dismisses an activity (swipe-off / long-press),
+        /// suppress recreating an ambient one for this long. Attention signals
+        /// (awaiting-input / failed / CI failing / etc.) override the cooldown
+        /// because the user actually needs to see those.
+        public var dismissedCooldown: TimeInterval
 
         public init(
             staleInterval: TimeInterval = 300,
-            terminalDismissalDelay: TimeInterval = 120
+            terminalDismissalDelay: TimeInterval = 120,
+            dismissedCooldown: TimeInterval = 600
         ) {
             self.staleInterval = staleInterval
             self.terminalDismissalDelay = terminalDismissalDelay
+            self.dismissedCooldown = dismissedCooldown
         }
     }
 
@@ -76,8 +83,20 @@ public final class LiveActivityCoordinator: ObservableObject {
     private var pushTokenTask: Task<Void, Never>?
     /// Push-to-start listener (iOS 17.2+).
     private var pushToStartTask: Task<Void, Never>?
+    /// Per-activity state listener that flips `lastUserDismissalAt` when iOS
+    /// reports the user dismissed the LA from the Lock Screen / Dynamic Island.
+    private var activityStateTask: Task<Void, Never>?
+    /// ID of the activity the listener above is attached to. Lets reconcile
+    /// skip re-attaching when we update the same activity repeatedly — the
+    /// cancel/restart gap was a window where a `.dismissed` event could be lost.
+    private var observedActivityId: String?
     /// Serializes ActivityKit mutations so updates/end/start calls do not race.
     private var reconcileTask: Task<Void, Never>?
+
+    /// Last time the user dismissed our Live Activity. Within
+    /// `Configuration.dismissedCooldown`, we suppress ambient recreation;
+    /// attention signals always override.
+    private var lastUserDismissalAt: Date?
 
     // MARK: - Init
 
@@ -104,6 +123,7 @@ public final class LiveActivityCoordinator: ObservableObject {
         MainActor.assumeIsolated {
             pushTokenTask?.cancel()
             pushToStartTask?.cancel()
+            activityStateTask?.cancel()
             reconcileTask?.cancel()
         }
     }
@@ -112,35 +132,54 @@ public final class LiveActivityCoordinator: ObservableObject {
 
     /// Called by the host whenever the set of active sessions changes.
     /// - Parameters:
-    ///   - sessions: live sessions (already pre-filtered for staleness by
-    ///     `SyncService.refreshActiveSessionsAndSnapshot`).
+    ///   - sessions: live sessions actively producing output (filtered to
+    ///     `runtimeState == "running"` by `SyncService`).
     ///   - prs: optional PR snapshot for the pending-PR counts. Pass nil
     ///     to leave the PR counts unchanged from the previous tick.
+    ///   - awaitingInputCount: chats waiting on user input — rendered as a
+    ///     count chip rather than a roster row.
+    ///   - idleCount: chats connected but not currently producing output.
     public func reconcile(
         with sessions: [AgentSnapshot],
-        prs: [PrSnapshot] = []
+        prs: [PrSnapshot] = [],
+        awaitingInputCount: Int = 0,
+        idleCount: Int = 0
     ) {
         let previousTask = reconcileTask
         reconcileTask = Task { @MainActor [weak self] in
             await previousTask?.value
             guard let self else { return }
-            await self.reconcileNow(with: sessions, prs: prs)
+            await self.reconcileNow(
+                with: sessions,
+                prs: prs,
+                awaitingInputCount: awaitingInputCount,
+                idleCount: idleCount
+            )
         }
     }
 
     private func reconcileNow(
         with sessions: [AgentSnapshot],
-        prs: [PrSnapshot]
+        prs: [PrSnapshot],
+        awaitingInputCount: Int,
+        idleCount: Int
     ) async {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             await endAllActivities(dismissalPolicy: .immediate)
             return
         }
 
-        let desiredState = makeContentState(sessions: sessions, prs: prs)
+        let desiredState = makeContentState(
+            sessions: sessions,
+            prs: prs,
+            awaitingInputCount: awaitingInputCount,
+            idleCount: idleCount
+        )
 
         // If there's literally nothing to show, make sure no activity is
-        // visible and return.
+        // visible and return. Counts alone (awaiting / idle) don't justify
+        // surfacing a Live Activity — only an actively-running roster, an
+        // attention signal, or pending PRs do.
         if sessions.isEmpty && desiredState.attention == nil && desiredState.pendingPrCount == 0 {
             await endAllActivities(dismissalPolicy: .after(Date().addingTimeInterval(configuration.terminalDismissalDelay)))
             return
@@ -153,20 +192,48 @@ public final class LiveActivityCoordinator: ObservableObject {
                 await stray.end(nil, dismissalPolicy: .immediate)
             }
             await update(canonical, to: desiredState)
-        } else {
+            observeActivityStateUpdates(for: canonical)
+        } else if shouldStartFreshActivity(for: desiredState) {
             await startActivity(with: desiredState)
         }
+        // else: user dismissed recently and there's no urgent reason to re-summon.
+        // Home widget still reflects state; the LA stays out of the way.
+    }
+
+    /// Guard against re-summoning a freshly-dismissed Live Activity. Within
+    /// the cooldown window, ambient flavors (running roster, count summary)
+    /// stay suppressed — but attention signals (awaiting-input / failed /
+    /// CI failing / review-requested / merge-ready) override it because the
+    /// user actually needs to see those.
+    private func shouldStartFreshActivity(
+        for state: ADESessionAttributes.ContentState
+    ) -> Bool {
+        guard let dismissedAt = lastUserDismissalAt else { return true }
+        if Date().timeIntervalSince(dismissedAt) >= configuration.dismissedCooldown {
+            lastUserDismissalAt = nil
+            return true
+        }
+        // Attention signals (awaiting-input / failed / CI failing / review-requested
+        // / merge-ready) override the cooldown — the user needs to see these even
+        // if they dismissed an ambient activity recently.
+        if state.attention != nil {
+            lastUserDismissalAt = nil
+            return true
+        }
+        return false
     }
 
     // MARK: - State construction
 
     private func makeContentState(
         sessions: [AgentSnapshot],
-        prs: [PrSnapshot]
+        prs: [PrSnapshot],
+        awaitingInputCount: Int = 0,
+        idleCount: Int = 0
     ) -> ADESessionAttributes.ContentState {
-        // Prioritise: awaiting-input first, then failed, then recently-started.
+        // Prioritise: failed first (rare, urgent), then most-recently-active.
+        // Awaiting-input is no longer in this list (rolled into the count chip).
         let sorted = sessions.sorted { a, b in
-            if a.awaitingInput != b.awaitingInput { return a.awaitingInput }
             if isFailed(a) != isFailed(b) { return isFailed(a) }
             return a.lastActivityAt > b.lastActivityAt
         }
@@ -199,6 +266,7 @@ public final class LiveActivityCoordinator: ObservableObject {
         let attention: ADESessionAttributes.ContentState.Attention? = selectAttention(
             sessions: sorted,
             prs: prs,
+            awaitingInputCount: awaitingInputCount,
             failingChecks: failingChecks,
             awaitingReviews: awaitingReviews,
             mergeReady: mergeReady
@@ -210,6 +278,8 @@ public final class LiveActivityCoordinator: ObservableObject {
             failingCheckCount: failingChecks,
             awaitingReviewCount: awaitingReviews,
             mergeReadyCount: mergeReady,
+            awaitingInputCount: awaitingInputCount,
+            idleCount: idleCount,
             generatedAt: Date()
         )
     }
@@ -217,23 +287,19 @@ public final class LiveActivityCoordinator: ObservableObject {
     private func selectAttention(
         sessions: [AgentSnapshot],
         prs: [PrSnapshot],
+        awaitingInputCount: Int,
         failingChecks: Int,
         awaitingReviews: Int,
         mergeReady: Int
     ) -> ADESessionAttributes.ContentState.Attention? {
-        if let awaiting = sessions.first(where: { $0.awaitingInput }) {
-            // Note: itemId isn't on AgentSnapshot today. Push-notification
-            // Approve actions carry itemId through APNs; Live Activity
-            // buttons currently dispatch without it and rely on the server
-            // to fall back to the most-recent pending input per session.
-            // TODO: plumb itemId through the snapshot so LA buttons work
-            // directly without the server-side fallback.
+        if awaitingInputCount > 0 {
+            let title = awaitingInputCount == 1
+                ? "1 chat waiting for input"
+                : "\(awaitingInputCount) chats waiting for input"
             return .init(
                 kind: .awaitingInput,
-                title: humanTitle(for: awaiting),
-                subtitle: "Approval needed",
-                providerSlug: awaiting.provider,
-                sessionId: awaiting.sessionId
+                title: title,
+                subtitle: "Tap to respond"
             )
         }
         if let failed = sessions.first(where: { isFailed($0) }) {
@@ -312,6 +378,7 @@ public final class LiveActivityCoordinator: ObservableObject {
                 pushType: .token
             )
             observePushTokenUpdates(for: activity)
+            observeActivityStateUpdates(for: activity)
         } catch {
             // Common failure modes: user disabled Live Activities in
             // Settings, the app was background-launched without a valid
@@ -339,9 +406,42 @@ public final class LiveActivityCoordinator: ObservableObject {
         }
         pushTokenTask?.cancel()
         pushTokenTask = nil
+        activityStateTask?.cancel()
+        activityStateTask = nil
+        observedActivityId = nil
     }
 
     // MARK: - Push tokens
+
+    /// Observe the user-dismissal signal on a live activity. ActivityKit flips
+    /// state to `.dismissed` when the user swipes the LA away on the Lock
+    /// Screen or long-press → Hide on Dynamic Island. We record the timestamp
+    /// so `shouldStartFreshActivity(for:)` can suppress recreation.
+    ///
+    /// Idempotent — if we're already attached to this activity, skip. Prevents
+    /// the cancel/restart race where a `.dismissed` event could fire during
+    /// the gap and be lost.
+    private func observeActivityStateUpdates(for activity: Activity<ADESessionAttributes>) {
+        if observedActivityId == activity.id, activityStateTask != nil { return }
+        activityStateTask?.cancel()
+        observedActivityId = activity.id
+        activityStateTask = Task { @MainActor [weak self] in
+            for await newState in activity.activityStateUpdates {
+                switch newState {
+                case .dismissed:
+                    self?.lastUserDismissalAt = Date()
+                case .ended, .stale:
+                    // Ended-by-us or system-staled — leave dismissal flag alone.
+                    break
+                case .active:
+                    // Re-activated (e.g. via a new request after cooldown).
+                    self?.lastUserDismissalAt = nil
+                @unknown default:
+                    break
+                }
+            }
+        }
+    }
 
     private func observePushTokenUpdates(for activity: Activity<ADESessionAttributes>) {
         pushTokenTask?.cancel()

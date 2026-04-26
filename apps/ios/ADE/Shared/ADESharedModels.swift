@@ -94,21 +94,80 @@ public struct PrSnapshot: Codable, Hashable, Identifiable, Sendable {
 
 public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
     public let generatedAt: Date
+    /// All live chat sessions — running, awaiting-input, and idle. Widgets and
+    /// the Live Activity render `runningAgents` (only currently-producing
+    /// sessions) so old / pending sessions don't pollute the roster; the
+    /// in-app Attention Drawer reads the full set.
     public let agents: [AgentSnapshot]
     public let prs: [PrSnapshot]
     /// "connected" | "syncing" | "disconnected".
     public let connection: String
+    /// Chats waiting on user input. Surfaced as a count chip, not a row.
+    public let awaitingInputCount: Int
+    /// Chats connected but not currently producing output.
+    public let idleCount: Int
 
     public init(
         generatedAt: Date,
         agents: [AgentSnapshot],
         prs: [PrSnapshot],
-        connection: String
+        connection: String,
+        awaitingInputCount: Int = 0,
+        idleCount: Int = 0
     ) {
         self.generatedAt = generatedAt
         self.agents = agents
         self.prs = prs
         self.connection = connection
+        self.awaitingInputCount = awaitingInputCount
+        self.idleCount = idleCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case generatedAt, agents, prs, connection, awaitingInputCount, idleCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.generatedAt = try c.decode(Date.self, forKey: .generatedAt)
+        let decodedAgents = try c.decode([AgentSnapshot].self, forKey: .agents)
+        self.agents = decodedAgents
+        self.prs = try c.decode([PrSnapshot].self, forKey: .prs)
+        self.connection = try c.decode(String.self, forKey: .connection)
+        // Fields added later — older snapshots written without them decode cleanly.
+        // When absent, derive from `agents` so legacy snapshots don't render
+        // as fully idle (runningAgents filters waiting/idle sessions out, so a
+        // 0 default would silently drop them from every count chip).
+        if let value = try c.decodeIfPresent(Int.self, forKey: .awaitingInputCount) {
+            self.awaitingInputCount = value
+        } else {
+            self.awaitingInputCount = decodedAgents.reduce(into: 0) { count, agent in
+                if agent.awaitingInput || agent.status.lowercased() == "awaiting_input" {
+                    count += 1
+                }
+            }
+        }
+        if let value = try c.decodeIfPresent(Int.self, forKey: .idleCount) {
+            self.idleCount = value
+        } else {
+            self.idleCount = decodedAgents.reduce(into: 0) { count, agent in
+                if agent.status.lowercased() == "idle" { count += 1 }
+            }
+        }
+    }
+
+    /// Subset of `agents` that are *actively producing output* right now.
+    /// This is what the LA roster, home widget roster, and lock-screen
+    /// accessory should render — not the full set, which includes idle and
+    /// awaiting-input sessions surfaced via `awaitingInputCount` / `idleCount`.
+    public var runningAgents: [AgentSnapshot] {
+        agents.filter { agent in
+            !agent.awaitingInput
+                && agent.status.lowercased() != "idle"
+                && agent.status.lowercased() != "ended"
+                && agent.status.lowercased() != "completed"
+                && agent.status.lowercased() != "failed"
+        }
     }
 
     /// Empty snapshot used by widget previews and first-launch placeholders.
