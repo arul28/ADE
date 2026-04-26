@@ -182,10 +182,47 @@ function guardedLazy(element: React.ReactElement): React.ReactElement {
   );
 }
 
+function isWorkRoutePath(pathname: string): boolean {
+  return pathname === "/work" || pathname.startsWith("/work/");
+}
+
+function PersistentWorkSurface({ active }: { active: boolean }) {
+  const projectHydrated = useAppStore((s) => s.projectHydrated);
+  const showWelcome = useAppStore((s) => s.showWelcome);
+  const project = useAppStore((s) => s.project);
+
+  if (!projectHydrated) {
+    return active ? GuardLoadingFallback : null;
+  }
+
+  const hasActiveProject = Boolean(project?.rootPath);
+  if (!hasActiveProject || showWelcome) {
+    return active ? <Navigate to="/project" replace /> : null;
+  }
+
+  return (
+    <div
+      className="h-full min-h-0 w-full"
+      hidden={!active}
+      aria-hidden={!active}
+    >
+      <PageErrorBoundary>
+        <React.Suspense fallback={LazyFallback}>
+          <TerminalsPage />
+        </React.Suspense>
+      </PageErrorBoundary>
+    </div>
+  );
+}
+
 function ShellLayout() {
+  const location = useLocation();
+  const isWorkRoute = isWorkRoutePath(location.pathname);
+
   return (
     <AppShell>
-      <Outlet />
+      <PersistentWorkSurface active={isWorkRoute} />
+      {isWorkRoute ? null : <Outlet />}
     </AppShell>
   );
 }
@@ -220,7 +257,7 @@ export function App() {
             <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
             <Route path="/lanes" element={guardedLazy(<LanesPage />)} />
             <Route path="/files" element={guardedLazy(<FilesPage />)} />
-            <Route path="/work" element={guardedLazy(<TerminalsPage />)} />
+            <Route path="/work" element={null} />
             <Route path="/graph" element={guardedLazy(<WorkspaceGraphPage />)} />
             <Route path="/prs" element={guardedLazy(<PRsPage />)} />
             <Route path="/review" element={guardedLazy(<ReviewPage />)} />
