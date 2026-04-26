@@ -683,7 +683,16 @@ final class SyncService: ObservableObject {
 
   /// Sessions currently eligible for a Live Activity. Rebuilt from
   /// `localStateRevision` changes and consumed by `LiveActivityCoordinator`.
+  /// Roster only — sessions whose runtime is *actively* producing output.
   @Published private(set) var activeSessions: [AgentSnapshot] = []
+
+  /// Chat sessions currently waiting on user input. Surfaced as a count chip
+  /// instead of a roster row so old "awaiting" zombies don't pile up visually.
+  @Published private(set) var awaitingInputSessionsCount: Int = 0
+
+  /// Chat sessions paused / idle (connected but not producing output). Counted
+  /// for context but never listed.
+  @Published private(set) var idleSessionsCount: Int = 0
 
   /// Owns the iOS 16.2+ Live Activity lifecycle; wired with `self` as host.
   private var liveActivityCoordinator: Any?
@@ -5476,34 +5485,48 @@ extension SyncService {
   func refreshActiveSessionsAndSnapshot() {
     let sessions = database.fetchSessions()
     let now = Date()
-    // Staleness guard: dev iteration leaves many zombie sessions in the DB
-    // with status="running" that were never cleanly terminated. Without a
-    // recency filter the Live Activity / widget fills up with multi-hour-old
-    // garbage. 2 hours covers long-running legitimate missions while
-    // excluding overnight zombies. Awaiting-input always passes because the
-    // user explicitly needs to see it even if it's old.
-    let staleCutoffSeconds: TimeInterval = 2 * 60 * 60
-    let agents: [AgentSnapshot] = sessions.compactMap { session in
-      let isChat = (session.toolType?.contains("chat") == true)
-      guard isChat else { return nil }
-      let status = session.status.lowercased()
-      guard status != "completed" && status != "failed" else { return nil }
 
-      let awaiting = status == "awaiting_input"
+    // `activeSessions` holds every live chat session — running, awaiting-input,
+    // and idle. The Live Activity / widget filter to running-only at render
+    // time so the user-facing roster never lists multi-hour-old zombies, while
+    // the in-app Attention Drawer still gets its full set. Non-chat (shell /
+    // CLI) sessions are excluded entirely. Completed / failed / ended sessions
+    // are dropped since they're terminal.
+    var allAgents: [AgentSnapshot] = []
+    var runningAgents: [AgentSnapshot] = []
+    var awaitingInputCount = 0
+    var idleCount = 0
+
+    for session in sessions {
+      let isChat = (session.toolType?.contains("chat") == true)
+      guard isChat else { continue }
+
+      let status = session.status.lowercased()
+      guard status != "completed" && status != "failed" && status != "ended" else {
+        continue
+      }
+
+      let runtime = session.runtimeState.lowercased()
+      // Trust runtimeState (per-tick) over status (high-level) for the
+      // running-vs-idle distinction the user cares about.
+      let isAwaiting = runtime == "waiting-input" || status == "awaiting_input"
+      let isRunningRuntime = runtime == "running"
+      let isIdleRuntime = runtime == "idle"
+      let isEndedRuntime = runtime == "exited"
+
+      // Anything that's terminated mid-stream goes in the bin too.
+      if isEndedRuntime { continue }
+
       let started = Self.parseIso8601(session.startedAt) ?? now
       let lastActivity = Self.parseIso8601(session.endedAt ?? "") ?? now
       let elapsed = Int(max(0, lastActivity.timeIntervalSince(started)))
 
-      if !awaiting && now.timeIntervalSince(started) > staleCutoffSeconds {
-        return nil
-      }
-
-      return AgentSnapshot(
+      let snap = AgentSnapshot(
         sessionId: session.id,
         provider: session.toolType ?? "claude",
         title: session.title.isEmpty ? session.goal : session.title,
-        status: status,
-        awaitingInput: awaiting,
+        status: isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status),
+        awaitingInput: isAwaiting,
         lastActivityAt: lastActivity,
         elapsedSeconds: elapsed,
         preview: session.lastOutputPreview,
@@ -5511,9 +5534,27 @@ extension SyncService {
         phase: nil,
         toolCalls: 0
       )
+
+      allAgents.append(snap)
+
+      if isAwaiting {
+        awaitingInputCount += 1
+      } else if isRunningRuntime {
+        runningAgents.append(snap)
+      } else if isIdleRuntime {
+        idleCount += 1
+      } else if status == "running" {
+        // Transient runtimeState we don't enumerate ("starting", "spawning",
+        // anything new from the desktop). Mirror `normalizedWorkChatSessionStatus`'s
+        // default branch — if the lane still says it's running, treat it as
+        // actively running so the LA + widgets agree.
+        runningAgents.append(snap)
+      }
     }
 
-    activeSessions = agents
+    activeSessions = allAgents
+    awaitingInputSessionsCount = awaitingInputCount
+    idleSessionsCount = idleCount
 
     if #available(iOS 16.2, *),
        let coord = liveActivityCoordinator as? LiveActivityCoordinator {
@@ -5534,7 +5575,15 @@ extension SyncService {
             branch: item.headBranch.isEmpty ? nil : item.headBranch
           )
         }
-      coord.reconcile(with: agents, prs: currentPrs)
+      // Coordinator only sees running sessions in the roster — counts roll
+      // up into a chip / minimal glyph so the LA never carries old, idle, or
+      // pending sessions through into the user-visible roster.
+      coord.reconcile(
+        with: runningAgents,
+        prs: currentPrs,
+        awaitingInputCount: awaitingInputCount,
+        idleCount: idleCount
+      )
     }
 
     scheduleWorkspaceSnapshotWrite()
@@ -5576,7 +5625,9 @@ extension SyncService {
       generatedAt: Date(),
       agents: activeSessions,
       prs: prs,
-      connection: connection
+      connection: connection,
+      awaitingInputCount: awaitingInputSessionsCount,
+      idleCount: idleSessionsCount
     )
 
     if ADESharedContainer.writeWorkspaceSnapshot(snapshot) {

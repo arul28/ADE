@@ -114,56 +114,40 @@ struct WorkspaceSmallView: View {
         return Link(destination: destination) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center, spacing: 0) {
-                    if let agent = focus {
-                        BrandDotOrDim(slug: agent.provider, size: 14, pulse: agent.awaitingInput, accented: accented)
-                    } else {
-                        BrandDotOrDim(slug: "cto", size: 14, pulse: false, accented: accented)
-                    }
+                    SmallStatusDot(failed: focus?.status == "failed", running: focus != nil)
                     Spacer()
-                    Text(smallStatusLabel(for: focus))
-                        .font(.system(size: 10, weight: .semibold).monospaced())
-                        .tracking(0.4)
+                    Text(smallStatusLabel(for: focus, snapshot: snapshot).lowercased())
+                        .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                        .tracking(0.2)
                         .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.textSecondary)
                 }
 
-                Spacer(minLength: 16)
+                Spacer(minLength: 12)
 
-                Text(focus?.title ?? "No active agents")
-                    .font(.system(size: 16, weight: .bold))
-                    .kerning(-0.3)
-                    .lineSpacing(2)
+                Text(smallTitle(focus: focus, snapshot: snapshot))
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .kerning(-0.1)
                     .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.textPrimary)
-                    .lineLimit(3)
-                    .minimumScaleFactor(0.8)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.9)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 Spacer(minLength: 0)
 
                 if let agent = focus {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ProgressBar(
-                            progress: agent.progress ?? 0,
-                            color: accented ? Color.primary : ADESharedTheme.brandColor(for: agent.provider),
-                            shimmer: false,
-                            height: 3
-                        )
-                        HStack {
-                            Text(agent.provider.lowercased())
-                                .font(.system(size: 10).monospaced())
-                                .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.textTertiary)
-                            Spacer()
-                            TimerLabel(
-                                startedAt: agent.lastActivityAt.addingTimeInterval(-Double(agent.elapsedSeconds)),
-                                color: accented ? Color.primary : WorkspaceWidgetPalette.textTertiary,
-                                fontSize: 10
-                            )
-                        }
-                    }
-                } else {
-                    Text("Tap to open ADE")
-                        .font(.system(size: 10).monospaced())
-                        .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.textTertiary)
+                    Text(smallSubline(for: agent))
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if let summary = smallSummaryLine(snapshot: snapshot) {
+                    Text(summary)
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -175,13 +159,8 @@ struct WorkspaceSmallView: View {
     }
 
     private func focusAgent() -> AgentSnapshot? {
-        snapshot.agents
-            .sorted { lhs, rhs in
-                if lhs.awaitingInput != rhs.awaitingInput { return lhs.awaitingInput }
-                if lhs.status == "running" && rhs.status != "running" { return true }
-                if rhs.status == "running" && lhs.status != "running" { return false }
-                return lhs.lastActivityAt > rhs.lastActivityAt
-            }
+        snapshot.runningAgents
+            .sorted { lhs, rhs in lhs.lastActivityAt > rhs.lastActivityAt }
             .first
     }
 
@@ -192,19 +171,55 @@ struct WorkspaceSmallView: View {
         return URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
     }
 
-    private func smallStatusLabel(for agent: AgentSnapshot?) -> String {
-        guard let agent else { return "IDLE" }
-        if agent.awaitingInput { return "WAITING" }
-        switch agent.status {
-        case "failed":    return "FAILED"
-        case "completed": return "DONE"
-        case "running":   return "RUNNING"
-        default:          return agent.status.uppercased()
+    private func smallStatusLabel(for agent: AgentSnapshot?, snapshot: WorkspaceSnapshot) -> String {
+        if let agent {
+            return agent.status == "failed" ? "failed" : "running"
         }
+        if snapshot.awaitingInputCount > 0 { return "waiting" }
+        if snapshot.idleCount > 0 { return "idle" }
+        return "quiet"
+    }
+
+    private func smallSubline(for agent: AgentSnapshot) -> String {
+        let preview = agent.preview?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let preview, !preview.isEmpty {
+            return "\(agent.provider.lowercased()) · \(preview)"
+        }
+        return agent.provider.lowercased()
+    }
+
+    private func smallTitle(focus: AgentSnapshot?, snapshot: WorkspaceSnapshot) -> String {
+        if let focus { return focus.title ?? "Working" }
+        if snapshot.awaitingInputCount > 0 {
+            return snapshot.awaitingInputCount == 1
+                ? "1 chat waiting"
+                : "\(snapshot.awaitingInputCount) chats waiting"
+        }
+        if snapshot.idleCount > 0 {
+            return snapshot.idleCount == 1
+                ? "1 chat idle"
+                : "\(snapshot.idleCount) chats idle"
+        }
+        return "ADE"
+    }
+
+    private func smallSummaryLine(snapshot: WorkspaceSnapshot) -> String? {
+        var parts: [String] = []
+        if snapshot.awaitingInputCount > 0 {
+            parts.append("\(snapshot.awaitingInputCount) waiting")
+        }
+        if snapshot.idleCount > 0 {
+            parts.append("\(snapshot.idleCount) idle")
+        }
+        let openPrs = snapshot.prs.filter { $0.state == "open" }.count
+        if openPrs > 0 {
+            parts.append("\(openPrs) prs")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func accessibilityLabel(for agent: AgentSnapshot?) -> String {
-        agent.map { "Agent \($0.title ?? "untitled")" } ?? "No active agents"
+        agent.map { "Agent \($0.title ?? "untitled")" } ?? "No agents running"
     }
 
     private func accessibilityValue(for agent: AgentSnapshot?) -> String {
@@ -212,22 +227,21 @@ struct WorkspaceSmallView: View {
     }
 }
 
-/// BrandDot, but falls back to a neutral dimmed dot in accented rendering mode
-/// (where the system tint controls color and saturated brand colors clash).
-private struct BrandDotOrDim: View {
-    let slug: String
-    let size: CGFloat
-    let pulse: Bool
-    let accented: Bool
+/// 10pt status dot for the small home widget. Solid green for running, red for
+/// failed, dim grey when nothing is active.
+private struct SmallStatusDot: View {
+    let failed: Bool
+    let running: Bool
 
     var body: some View {
-        if accented {
-            Circle()
-                .fill(Color.primary.opacity(0.9))
-                .frame(width: size, height: size)
-        } else {
-            BrandDot(slug: slug, size: size, pulse: pulse)
-        }
+        let color: Color = failed
+            ? WorkspaceWidgetPalette.statusFailed
+            : (running ? WorkspaceWidgetPalette.statusReady : WorkspaceWidgetPalette.textQuaternary)
+        Circle()
+            .fill(color)
+            .frame(width: 10, height: 10)
+            .shadow(color: color.opacity(running ? 0.55 : 0), radius: 3)
+            .accessibilityHidden(true)
     }
 }
 
@@ -242,23 +256,23 @@ struct WorkspaceMediumView: View {
         let accented = renderingMode == .accented
         VStack(alignment: .leading, spacing: 10) {
             WorkspaceSectionHeader(
-                title: variant == .agents ? "Agents" : "Pull requests",
+                title: variant == .agents ? "Running" : "Pull requests",
                 trailing: variant == .agents
-                    ? "\(runningCount) running"
+                    ? agentsTrailing
                     : "\(openPrsCount) open",
                 accented: accented
             )
 
             if variant == .agents {
                 WorkspaceAgentsList(
-                    agents: Array(snapshot.agents.prefix(3)),
-                    emptyMessage: "No agents running",
+                    agents: Array(snapshot.runningAgents.prefix(3)),
+                    emptyMessage: emptyAgentsMessage,
                     accented: accented
                 )
             } else {
                 WorkspacePrsList(
                     prs: Array(openPrs.prefix(3)),
-                    emptyMessage: "No open PRs",
+                    emptyMessage: "no open prs",
                     accented: accented
                 )
             }
@@ -267,11 +281,31 @@ struct WorkspaceMediumView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("ADE workspace")
-        .accessibilityValue("\(snapshot.agents.count) agents, \(openPrsCount) open pull requests")
+        .accessibilityValue("\(snapshot.runningAgents.count) running, \(openPrsCount) open pull requests")
+    }
+
+    private var agentsTrailing: String {
+        let running = snapshot.runningAgents.count
+        if running == 0 {
+            if snapshot.awaitingInputCount > 0 { return "\(snapshot.awaitingInputCount) waiting" }
+            if snapshot.idleCount > 0 { return "\(snapshot.idleCount) idle" }
+            return "0 running"
+        }
+        return "\(running) running"
+    }
+
+    private var emptyAgentsMessage: String {
+        if snapshot.awaitingInputCount > 0 {
+            return "\(snapshot.awaitingInputCount) waiting for input"
+        }
+        if snapshot.idleCount > 0 {
+            return "\(snapshot.idleCount) idle"
+        }
+        return "no chats running"
     }
 
     private var runningCount: Int {
-        snapshot.agents.filter { $0.status == "running" || $0.awaitingInput }.count
+        snapshot.runningAgents.count
     }
 
     private var openPrsCount: Int {
@@ -295,18 +329,19 @@ struct WorkspaceLargeView: View {
             LargeHeader(connection: snapshot.connection, accented: accented)
                 .padding(.bottom, 14)
 
-            if snapshot.agents.isEmpty && openPrs.isEmpty {
-                WorkspaceIdleState(accented: accented)
+            if snapshot.runningAgents.isEmpty && openPrs.isEmpty
+                && snapshot.awaitingInputCount == 0 && snapshot.idleCount == 0 {
+                WorkspaceIdleState(accented: accented, snapshot: snapshot)
             } else {
                 SectionDivider(
-                    title: "Agents · \(snapshot.agents.count)",
-                    trailing: "\(runningCount) running",
+                    title: "Agents · \(snapshot.runningAgents.count)",
+                    trailing: largeChatsTrailing,
                     accented: accented
                 )
                 .padding(.bottom, 8)
                 WorkspaceAgentsList(
-                    agents: Array(snapshot.agents.prefix(3)),
-                    emptyMessage: "No agents running",
+                    agents: Array(snapshot.runningAgents.prefix(3)),
+                    emptyMessage: emptyAgentsMessage,
                     accented: accented
                 )
                 .padding(.bottom, 14)
@@ -317,14 +352,14 @@ struct WorkspaceLargeView: View {
                     .padding(.bottom, 12)
 
                 SectionDivider(
-                    title: "Pull requests",
-                    trailing: "\(openPrsCount) open",
+                    title: "Pull requests · \(openPrsCount)",
+                    trailing: prsTrailing,
                     accented: accented
                 )
                 .padding(.bottom, 8)
                 WorkspacePrsList(
                     prs: Array(openPrs.prefix(3)),
-                    emptyMessage: "No open PRs",
+                    emptyMessage: "no open prs",
                     accented: accented
                 )
             }
@@ -333,11 +368,38 @@ struct WorkspaceLargeView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("ADE workspace dashboard")
-        .accessibilityValue("\(snapshot.agents.count) agents, \(openPrsCount) open pull requests")
+        .accessibilityValue("\(snapshot.runningAgents.count) running, \(openPrsCount) open pull requests")
+    }
+
+    private var largeChatsTrailing: String {
+        var bits: [String] = []
+        if snapshot.awaitingInputCount > 0 { bits.append("\(snapshot.awaitingInputCount) waiting") }
+        if snapshot.idleCount > 0 { bits.append("\(snapshot.idleCount) idle") }
+        if snapshot.connection.lowercased() == "disconnected" { bits.append("offline") }
+        return bits.isEmpty ? "" : bits.joined(separator: " · ")
+    }
+
+    private var prsTrailing: String {
+        if snapshot.connection.lowercased() == "disconnected" { return "offline" }
+        let failing = snapshot.prs.filter { $0.checks == "failing" }.count
+        if failing > 0 { return "\(failing) failing" }
+        let ready = snapshot.prs.filter { $0.mergeReady && $0.checks == "passing" && $0.review == "approved" }.count
+        if ready > 0 { return "\(ready) ready" }
+        return ""
+    }
+
+    private var emptyAgentsMessage: String {
+        if snapshot.awaitingInputCount > 0 {
+            return "\(snapshot.awaitingInputCount) waiting for input"
+        }
+        if snapshot.idleCount > 0 {
+            return "\(snapshot.idleCount) idle"
+        }
+        return "no chats running"
     }
 
     private var runningCount: Int {
-        snapshot.agents.filter { $0.status == "running" || $0.awaitingInput }.count
+        snapshot.runningAgents.count
     }
 
     private var openPrsCount: Int {
@@ -353,31 +415,56 @@ struct WorkspaceLargeView: View {
 
 private struct WorkspaceIdleState: View {
     let accented: Bool
+    var snapshot: WorkspaceSnapshot? = nil
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             Spacer(minLength: 0)
-            Image(systemName: "sparkles")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(
-                    accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary
-                )
-            Text("No agents running")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(
-                    accented ? Color.primary : WorkspaceWidgetPalette.textPrimary
-                )
-            Text("Start a session to see live activity here.")
-                .font(.system(size: 11).monospaced())
-                .foregroundStyle(
-                    accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary
-                )
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(accented ? Color.primary.opacity(0.5) : WorkspaceWidgetPalette.textQuaternary)
+                    .frame(width: 8, height: 8)
+                Text(idleTitle)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .kerning(-0.1)
+                    .lineLimit(1)
+                    .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.textPrimary)
+            }
+            if let summary = idleSummary {
+                Text(summary)
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundStyle(
+                        accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary
+                    )
+                    .lineLimit(1)
+            }
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var idleTitle: String {
+        guard let snapshot else { return "ADE · idle" }
+        if snapshot.awaitingInputCount > 0 || snapshot.idleCount > 0 {
+            return "ADE · standby"
+        }
+        return "ADE · idle"
+    }
+
+    private var idleSummary: String? {
+        guard let snapshot else { return nil }
+        var parts: [String] = []
+        if snapshot.awaitingInputCount > 0 {
+            parts.append("\(snapshot.awaitingInputCount) waiting")
+        }
+        if snapshot.idleCount > 0 {
+            parts.append("\(snapshot.idleCount) idle")
+        }
+        let openPrs = snapshot.prs.filter { $0.state == "open" }.count
+        if openPrs > 0 {
+            parts.append("\(openPrs) prs")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 
@@ -389,14 +476,16 @@ private struct LargeHeader: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            AdeMark(size: 18)
+            AdeMark(size: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Workspace")
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 13.5, weight: .semibold))
                     .kerning(-0.1)
+                    .lineLimit(1)
                     .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.textPrimary)
                 Text(connectionSubtitle)
-                    .font(.system(size: 11).monospaced())
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .lineLimit(1)
                     .foregroundStyle(accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary)
             }
             Spacer()
@@ -415,10 +504,10 @@ private struct LargeHeader: View {
 
     private var connectionSubtitle: String {
         switch connection.lowercased() {
-        case "connected":    return "default · linked"
-        case "syncing":      return "default · syncing"
-        case "disconnected": return "default · offline"
-        default:             return "default · \(connection.lowercased())"
+        case "connected":    return "linked"
+        case "syncing":      return "syncing"
+        case "disconnected": return "offline"
+        default:             return connection.lowercased()
         }
     }
 }
@@ -431,16 +520,18 @@ private struct WorkspaceSectionHeader: View {
     let accented: Bool
 
     var body: some View {
-        HStack(alignment: .center, spacing: 7) {
+        HStack(alignment: .center, spacing: 8) {
             AdeMark(size: 14)
             Text(title)
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 13.5, weight: .semibold))
                 .kerning(-0.1)
+                .lineLimit(1)
                 .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.textPrimary)
-            Spacer()
-            Text(trailing)
-                .font(.system(size: 10).monospaced())
-                .tracking(0.3)
+            Spacer(minLength: 6)
+            Text(trailing.lowercased())
+                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                .tracking(0.2)
+                .lineLimit(1)
                 .foregroundStyle(accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary)
         }
     }
@@ -479,7 +570,8 @@ private struct WorkspaceAgentsList: View {
         VStack(alignment: .leading, spacing: 9) {
             if agents.isEmpty {
                 Text(emptyMessage)
-                    .font(.system(size: 11).monospaced())
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .lineLimit(1)
                     .foregroundStyle(accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary)
             } else {
                 ForEach(agents) { agent in
@@ -505,7 +597,8 @@ private struct WorkspacePrsList: View {
         VStack(alignment: .leading, spacing: 9) {
             if prs.isEmpty {
                 Text(emptyMessage)
-                    .font(.system(size: 11).monospaced())
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .lineLimit(1)
                     .foregroundStyle(accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary)
             } else {
                 ForEach(prs) { pr in
@@ -528,21 +621,34 @@ private struct WidgetRosterRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            BrandDotOrDim(slug: agent.provider, size: 10, pulse: agent.awaitingInput, accented: accented)
+            Circle()
+                .fill(rowDotColor)
+                .frame(width: 8, height: 8)
+                .shadow(color: rowDotColor.opacity(agent.status == "failed" ? 0 : 0.55), radius: 3)
             VStack(alignment: .leading, spacing: 1) {
-                Text(agent.title ?? "Agent")
-                    .font(.system(size: 13, weight: .semibold))
+                Text(agent.title ?? "Chat")
+                    .font(.system(size: 13.5, weight: .semibold))
                     .kerning(-0.1)
                     .lineLimit(1)
                     .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.textPrimary)
                 Text(subline)
-                    .font(.system(size: 10.5).monospaced())
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .lineLimit(1)
                     .foregroundStyle(accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            trailingStatus
+            if agent.status == "failed" {
+                Text("failed")
+                    .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.statusFailed)
+            }
         }
+    }
+
+    private var rowDotColor: Color {
+        if accented { return Color.primary }
+        if agent.status == "failed" { return WorkspaceWidgetPalette.statusFailed }
+        return WorkspaceWidgetPalette.statusReady
     }
 
     private var subline: String {
@@ -551,25 +657,6 @@ private struct WidgetRosterRow: View {
             return "\(agent.provider.lowercased()) · \(preview)"
         }
         return agent.provider.lowercased()
-    }
-
-    @ViewBuilder
-    private var trailingStatus: some View {
-        if agent.status == "failed" {
-            Text("failed")
-                .font(.system(size: 10, weight: .semibold).monospaced())
-                .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.statusFailed)
-        } else if agent.awaitingInput {
-            Text("waiting")
-                .font(.system(size: 10, weight: .semibold).monospaced())
-                .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.statusWaiting)
-        } else {
-            TimerLabel(
-                startedAt: agent.lastActivityAt.addingTimeInterval(-Double(agent.elapsedSeconds)),
-                color: accented ? Color.primary : WorkspaceWidgetPalette.textSecondary,
-                fontSize: 10
-            )
-        }
     }
 }
 
@@ -585,18 +672,19 @@ private struct WidgetPrRow: View {
                 .foregroundStyle(accented ? Color.primary : tint)
             VStack(alignment: .leading, spacing: 1) {
                 Text(pr.title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 13.5, weight: .semibold))
                     .kerning(-0.1)
                     .lineLimit(1)
                     .foregroundStyle(accented ? Color.primary : WorkspaceWidgetPalette.textPrimary)
                 Text("#\(pr.number) · \(branchLabel)")
-                    .font(.system(size: 10.5).monospaced())
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .lineLimit(1)
                     .foregroundStyle(accented ? Color.primary.opacity(0.7) : WorkspaceWidgetPalette.textSecondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text(shortLabel)
-                .font(.system(size: 10, weight: .semibold).monospaced())
+            Text(shortLabel.lowercased())
+                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                .tracking(0.2)
                 .foregroundStyle(accented ? Color.primary : tint)
         }
     }

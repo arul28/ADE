@@ -89,6 +89,8 @@ public struct ADESessionAttributes: ActivityAttributes {
         }
 
         /// Sorted by relevance (awaiting-input first, then running, then stale).
+        /// Sessions *actively* producing output. Awaiting-input / idle /
+        /// ended chats live in the counts below, never in this array.
         public var sessions: [ActiveSession]
         /// Nil when nothing urgent; presence flips compact/expanded layouts
         /// into the attention-first mode.
@@ -96,6 +98,10 @@ public struct ADESessionAttributes: ActivityAttributes {
         public var failingCheckCount: Int
         public var awaitingReviewCount: Int
         public var mergeReadyCount: Int
+        /// Chats waiting on user input. Rendered as a count chip.
+        public var awaitingInputCount: Int
+        /// Chats connected but not currently producing output.
+        public var idleCount: Int
         public var generatedAt: Date
 
         public init(
@@ -104,6 +110,8 @@ public struct ADESessionAttributes: ActivityAttributes {
             failingCheckCount: Int,
             awaitingReviewCount: Int,
             mergeReadyCount: Int,
+            awaitingInputCount: Int = 0,
+            idleCount: Int = 0,
             generatedAt: Date
         ) {
             self.sessions = sessions
@@ -111,7 +119,26 @@ public struct ADESessionAttributes: ActivityAttributes {
             self.failingCheckCount = failingCheckCount
             self.awaitingReviewCount = awaitingReviewCount
             self.mergeReadyCount = mergeReadyCount
+            self.awaitingInputCount = awaitingInputCount
+            self.idleCount = idleCount
             self.generatedAt = generatedAt
+        }
+
+        // Custom Decodable so older payloads (pre-counts) still decode.
+        private enum CodingKeys: String, CodingKey {
+            case sessions, attention, failingCheckCount, awaitingReviewCount,
+                 mergeReadyCount, awaitingInputCount, idleCount, generatedAt
+        }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.sessions = try c.decode([ActiveSession].self, forKey: .sessions)
+            self.attention = try c.decodeIfPresent(Attention.self, forKey: .attention)
+            self.failingCheckCount = try c.decode(Int.self, forKey: .failingCheckCount)
+            self.awaitingReviewCount = try c.decode(Int.self, forKey: .awaitingReviewCount)
+            self.mergeReadyCount = try c.decode(Int.self, forKey: .mergeReadyCount)
+            self.awaitingInputCount = try c.decodeIfPresent(Int.self, forKey: .awaitingInputCount) ?? 0
+            self.idleCount = try c.decodeIfPresent(Int.self, forKey: .idleCount) ?? 0
+            self.generatedAt = try c.decode(Date.self, forKey: .generatedAt)
         }
 
         // Derived helpers used by views.
@@ -179,3 +206,6 @@ public struct ADELiveActivity: Widget {
         }
     }
 }
+
+// Activity-level Xcode canvas previews live in ADELiveActivityPreviews.swift
+// (widgets-only target) so they can reach ADEWidgetPreviewData fixtures.

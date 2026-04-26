@@ -80,28 +80,31 @@ struct WorkspaceCompactLeading: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if let attention = state.attention {
-            let tint = WorkspaceStyle.attentionTint(for: attention)
-            Image(systemName: AttentionIcon.symbol(for: attention.kind))
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(tint)
-                .modifier(BellWiggleCompat(active: !reduceMotion && attention.kind == .awaitingInput))
-                .accessibilityLabel(Text(accessibilityLabel(for: attention)))
-        } else if state.sessions.count >= 2 {
-            StackedBrandDots(
-                slugs: state.sessions.prefix(3).map(\.providerSlug),
-                size: 11
-            )
-            .accessibilityLabel(Text("\(state.sessions.count) agents running"))
-        } else if state.sessions.count == 1, let s = state.sessions.first {
-            BrandDot(slug: s.providerSlug, size: 12, pulse: !reduceMotion && !s.isFailed)
-                .accessibilityLabel(Text("\(s.providerSlug) is working on \(s.title)"))
-        } else {
-            Image(systemName: "sparkles")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ADESharedTheme.statusIdle)
-                .accessibilityLabel(Text("ADE"))
+        Group {
+            if let attention = state.attention {
+                let tint = WorkspaceStyle.attentionTint(for: attention)
+                Image(systemName: AttentionIcon.symbol(for: attention.kind))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .modifier(BellWiggleCompat(active: !reduceMotion && attention.kind == .awaitingInput))
+                    .accessibilityLabel(Text(accessibilityLabel(for: attention)))
+            } else if !state.sessions.isEmpty {
+                // One or many active sessions — single pulsing green dot, like the
+                // desktop session-status indicator.
+                ActiveDotMini(
+                    color: ADESharedTheme.statusSuccess,
+                    pulse: !reduceMotion
+                )
+                .accessibilityLabel(Text("\(state.sessions.count) running"))
+            } else {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ADESharedTheme.statusIdle)
+                    .accessibilityLabel(Text("ADE"))
+            }
         }
+        .frame(maxWidth: 50, maxHeight: 38)
+        .dynamicTypeSize(.small ... .large)
     }
 
     private func accessibilityLabel(for a: ADESessionAttributes.ContentState.Attention) -> String {
@@ -123,37 +126,76 @@ struct WorkspaceCompactTrailing: View {
     let state: ADESessionAttributes.ContentState
 
     var body: some View {
-        if let attention = state.attention {
-            let tint = WorkspaceStyle.attentionTint(for: attention)
-            Text(WorkspaceStyle.shortLabel(for: attention))
-                .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                .kerning(-0.2)
-                .foregroundStyle(tint)
-                .shadow(color: tint.opacity(0.5), radius: 4, x: 0, y: 0)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: 96, alignment: .trailing)
-                .accessibilityLabel(Text(WorkspaceStyle.shortLabel(for: attention)))
-        } else if state.sessions.count >= 2 {
-            Text("\(state.sessions.count) agents")
-                .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                .kerning(-0.2)
-                .foregroundStyle(Color(red: 0xF0/255, green: 0xF0/255, blue: 0xF2/255))
-                .lineLimit(1)
-                .frame(maxWidth: 96, alignment: .trailing)
-        } else if state.sessions.count == 1, let s = state.sessions.first {
-            TimerLabel(
-                startedAt: s.startedAt,
-                color: ADESharedTheme.brandColor(for: s.providerSlug)
-            )
-            .lineLimit(1)
-            .frame(maxWidth: 78, alignment: .trailing)
-        } else {
-            Image(systemName: "moon.zzz.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ADESharedTheme.statusIdle)
-                .accessibilityLabel(Text("Idle"))
+        Group {
+            if let attention = state.attention {
+                let tint = WorkspaceStyle.attentionTint(for: attention)
+                Text(WorkspaceStyle.shortLabel(for: attention))
+                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                    .kerning(-0.2)
+                    .foregroundStyle(tint)
+                    .shadow(color: tint.opacity(0.5), radius: 4, x: 0, y: 0)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.85)
+                    .frame(maxWidth: 96, alignment: .trailing)
+                    .accessibilityLabel(Text(WorkspaceStyle.shortLabel(for: attention)))
+            } else if state.sessions.count >= 2 {
+                Text("\(state.sessions.count) running")
+                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                    .kerning(-0.2)
+                    .foregroundStyle(ADESharedTheme.statusSuccess)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.85)
+                    .frame(maxWidth: 96, alignment: .trailing)
+            } else if state.sessions.count == 1, let s = state.sessions.first {
+                // Single active session — show the chat title compactly.
+                Text(s.title.isEmpty ? s.providerSlug : s.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .kerning(-0.2)
+                    .foregroundStyle(Color(red: 0xF0/255, green: 0xF0/255, blue: 0xF2/255))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.85)
+                    .frame(maxWidth: 96, alignment: .trailing)
+            } else {
+                Image(systemName: "moon.zzz.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ADESharedTheme.statusIdle)
+                    .accessibilityLabel(Text("Idle"))
+            }
         }
+        .frame(maxWidth: 96, maxHeight: 38, alignment: .trailing)
+        .dynamicTypeSize(.small ... .large)
+    }
+}
+
+/// Single small pulsing dot for the Dynamic Island compact leading region.
+@available(iOS 16.2, *)
+private struct ActiveDotMini: View {
+    let color: Color
+    let pulse: Bool
+
+    var body: some View {
+        ZStack {
+            if pulse, #available(iOS 17.0, *) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 10, height: 10)
+                    .phaseAnimator([0, 1]) { circle, phase in
+                        circle
+                            .scaleEffect(phase == 0 ? 1.0 : 1.6)
+                            .opacity(phase == 0 ? 0.45 : 0)
+                    } animation: { _ in
+                        .easeOut(duration: 1.4)
+                    }
+            }
+            Circle()
+                .fill(color)
+                .frame(width: 10, height: 10)
+                .shadow(color: color.opacity(0.55), radius: 3)
+        }
+        .frame(width: 12, height: 12)
     }
 }
 
@@ -217,6 +259,7 @@ struct WorkspaceMinimalGlyph: View {
             inner(color: color)
         }
         .frame(width: 28, height: 28)
+        .dynamicTypeSize(.small ... .large)
         .accessibilityLabel(accessibilityLabel)
     }
 
@@ -229,9 +272,14 @@ struct WorkspaceMinimalGlyph: View {
         } else if state.sessions.count >= 2 {
             Text("\(state.sessions.count)")
                 .font(.system(size: 11, weight: .bold).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .foregroundStyle(color)
-        } else if let only = state.sessions.first {
-            BrandDot(slug: only.providerSlug, size: 10, pulse: false)
+                .frame(maxWidth: 22)
+        } else if !state.sessions.isEmpty {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
         } else {
             Image(systemName: "sparkles")
                 .font(.system(size: 11, weight: .semibold))
@@ -262,17 +310,28 @@ struct WorkspaceExpandedLeading: View {
     var body: some View {
         Group {
             if let attention = state.attention {
-                AttentionBadge(kind: attention.kind, size: 36)
-            } else if let focused = state.focusedSession {
-                BrandDot(slug: focused.providerSlug, size: 24, pulse: !focused.isFailed)
+                let tint = WorkspaceStyle.attentionTint(for: attention)
+                Image(systemName: AttentionIcon.symbol(for: attention.kind))
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        Circle().fill(tint.opacity(0.13))
+                    )
+            } else if !state.sessions.isEmpty {
+                ActiveDotMini(color: ADESharedTheme.statusSuccess, pulse: true)
+                    .scaleEffect(1.4)
+                    .frame(width: 28, height: 28)
             } else {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(ADESharedTheme.brandCursor)
+                    .frame(width: 28, height: 28)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: 100, alignment: .leading)
         .padding(.leading, 4)
+        .dynamicTypeSize(.small ... .large)
     }
 }
 
@@ -283,30 +342,28 @@ struct WorkspaceExpandedTrailing: View {
     var body: some View {
         Group {
             if state.attention != nil {
-                // Attention occupies the bottom action row; trailing stays
-                // empty so the header doesn't feel doubled up.
                 EmptyView()
             } else if state.sessions.count >= 2 {
-                VStack(alignment: .trailing, spacing: 2) {
+                VStack(alignment: .trailing, spacing: 1) {
                     Text("\(state.sessions.count)")
-                        .font(.system(size: 20, weight: .bold).monospacedDigit())
-                        .foregroundStyle(ADESharedTheme.statusAttention)
-                    Text("AGENTS")
+                        .font(.system(size: 16, weight: .bold).monospacedDigit())
+                        .foregroundStyle(ADESharedTheme.statusSuccess)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Text("running")
                         .font(.system(size: 9, weight: .semibold))
+                        .textCase(.lowercase)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                 }
-            } else if let focused = state.focusedSession, state.sessions.count == 1 {
-                TimerLabel(
-                    startedAt: focused.startedAt,
-                    color: ADESharedTheme.brandColor(for: focused.providerSlug),
-                    fontSize: 14
-                )
             } else {
                 EmptyView()
             }
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .frame(maxWidth: 90, alignment: .trailing)
         .padding(.trailing, 4)
+        .dynamicTypeSize(.small ... .large)
     }
 }
 
@@ -316,48 +373,52 @@ struct WorkspaceExpandedCenter: View {
     let attrs: ADESessionAttributes
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
             if let attention = state.attention {
                 Text(attention.title)
-                    .font(.system(size: 15, weight: .bold))
-                    .kerning(-0.2)
+                    .font(.system(size: 14, weight: .semibold))
+                    .kerning(-0.1)
                     .lineLimit(1)
+                    .truncationMode(.tail)
                     .minimumScaleFactor(0.85)
                 if let subtitle = attention.subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .minimumScaleFactor(0.85)
                 }
             } else if let focused = state.focusedSession {
                 Text(focused.title.isEmpty ? focused.id : focused.title)
-                    .font(.system(size: 15, weight: .bold))
-                    .kerning(-0.2)
+                    .font(.system(size: 14, weight: .semibold))
+                    .kerning(-0.1)
                     .lineLimit(1)
+                    .truncationMode(.tail)
                     .minimumScaleFactor(0.85)
-                if let preview = focused.preview, !preview.isEmpty {
-                    Text("\(focused.providerSlug.capitalized) · \(preview)")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Text(focused.providerSlug.capitalized)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            } else {
-                Text("ADE · No active agents")
-                    .font(.system(size: 15, weight: .bold))
-                    .kerning(-0.2)
-                Text(attrs.workspaceName)
-                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                Text(focusedSubtitle(focused))
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.85)
+            } else {
+                // Coordinator tears the activity down when nothing is
+                // active, so this branch is theoretically unreachable.
+                EmptyView()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 4)
+        .dynamicTypeSize(.small ... .large)
+    }
+
+    private func focusedSubtitle(_ focused: ADESessionAttributes.ContentState.ActiveSession) -> String {
+        let provider = focused.providerSlug.lowercased()
+        if let preview = focused.preview, !preview.isEmpty {
+            return "\(provider) · \(preview)"
+        }
+        return "\(provider) · working…"
     }
 }
 
@@ -379,14 +440,16 @@ struct WorkspaceExpandedBottom: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 4)
+        .dynamicTypeSize(.small ... .large)
     }
 }
 
 // MARK: - Lock Screen
 
-/// 358pt glass card via `.ultraThinMaterial`; MiniGlance trio header;
-/// attention card (conditional) + roster rows (≤3 with attention, ≤4 without).
-/// Mockup ref: `lock-activity.jsx` 5-85.
+/// Edge-to-edge glass card. The system frames the whole thing with the app
+/// name + icon already, so we don't repeat them here. Layout: optional
+/// attention card → active-sessions roster → counts strip (waiting / idle /
+/// PR glance).
 @available(iOS 16.2, *)
 struct WorkspaceLockScreenPresentation: View {
     let state: ADESessionAttributes.ContentState
@@ -404,143 +467,65 @@ struct WorkspaceLockScreenPresentation: View {
 
     var body: some View {
         ZStack {
-            // Ambient tint wash (135° gradient from tint@14% → transparent).
             LinearGradient(
-                colors: [tint.opacity(0.14), .clear],
+                colors: [tint.opacity(0.12), .clear],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
             .allowsHitTesting(false)
 
-            // Soft radial bloom in the top-left corner in the tint color.
             RadialGradient(
-                colors: [tint.opacity(0.22), .clear],
+                colors: [tint.opacity(0.18), .clear],
                 center: UnitPoint(x: 0.08, y: 0.08),
                 startRadius: 0,
                 endRadius: 220
             )
             .allowsHitTesting(false)
 
-            VStack(alignment: .leading, spacing: 10) {
-                header
-                content
-            }
-            .padding(14)
+            content
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(.ultraThinMaterial)
         .overlay(
-            // Soft top-to-bottom white highlight — gives the glass its "wet" feel.
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.08), .clear],
-                        startPoint: .top,
-                        endPoint: .center
-                    )
-                )
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
                 .allowsHitTesting(false)
-        )
-        .overlay(
-            // 1pt inner highlight (white top → fade).
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.18), Color.white.opacity(0.02)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
-                .allowsHitTesting(false)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .shadow(color: Color.black.opacity(0.40), radius: 18, x: 0, y: 6)
-        .frame(maxWidth: 358)
-        // Lock Screen Live Activities live in a fixed-height card — clamp
-        // Dynamic Type so accessibility sizes don't overflow the chrome.
-        // iOS still renders legibly; users at larger sizes can tap through
-        // to the in-app Attention Drawer for the full-size presentation.
         .dynamicTypeSize(.small ... .accessibility1)
-    }
-
-    private var header: some View {
-        HStack(spacing: 7) {
-            AdeMark(size: 16)
-            Text("ADE")
-                .font(.system(size: 13, weight: .bold))
-                .kerning(-0.1)
-            Text("· \(attrs.workspaceName)")
-                .font(.system(size: 12, weight: .medium).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            MiniGlanceStrip(state: state)
-        }
     }
 
     @ViewBuilder
     private var content: some View {
-        if let attention = state.attention {
-            AttentionLockCard(attention: attention)
+        VStack(alignment: .leading, spacing: 10) {
+            if let attention = state.attention {
+                AttentionLockCard(attention: attention)
+            }
             if !state.sessions.isEmpty {
-                Divider().opacity(0.25)
-                VStack(spacing: 9) {
-                    ForEach(state.sessions.prefix(2)) { session in
+                VStack(spacing: 8) {
+                    ForEach(state.sessions.prefix(state.attention == nil ? 4 : 2)) { session in
                         LockRosterRow(session: session)
                     }
                 }
-                .padding(.top, 1)
             }
-        } else if !state.sessions.isEmpty {
-            VStack(spacing: 9) {
-                ForEach(state.sessions.prefix(3)) { session in
-                    LockRosterRow(session: session)
-                }
+            if hasCounts {
+                CountsStrip(state: state)
             }
-        } else {
-            Text("Nothing active right now.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
         }
+    }
+
+    private var hasCounts: Bool {
+        state.awaitingInputCount > 0
+            || state.idleCount > 0
+            || state.failingCheckCount > 0
+            || state.awaitingReviewCount > 0
+            || state.mergeReadyCount > 0
     }
 }
 
 // MARK: - Lock-screen building blocks
-
-@available(iOS 16.2, *)
-private struct MiniGlanceStrip: View {
-    let state: ADESessionAttributes.ContentState
-
-    var body: some View {
-        HStack(spacing: 5) {
-            if state.failingCheckCount > 0 {
-                MiniGlance(
-                    icon: "exclamationmark.triangle.fill",
-                    count: state.failingCheckCount,
-                    color: ADESharedTheme.statusFailed
-                )
-            }
-            if state.awaitingReviewCount > 0 {
-                MiniGlance(
-                    icon: "eye.fill",
-                    count: state.awaitingReviewCount,
-                    color: ADESharedTheme.warningAmber
-                )
-            }
-            if state.mergeReadyCount > 0 {
-                MiniGlance(
-                    icon: "checkmark.seal.fill",
-                    count: state.mergeReadyCount,
-                    color: ADESharedTheme.statusSuccess
-                )
-            }
-        }
-    }
-}
 
 @available(iOS 16.2, *)
 private struct AttentionLockCard: View {
@@ -549,18 +534,21 @@ private struct AttentionLockCard: View {
     var body: some View {
         let tint = WorkspaceStyle.attentionTint(for: attention)
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                AttentionBadge(kind: attention.kind, size: 30)
-                VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: AttentionIcon.symbol(for: attention.kind))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 1) {
                     Text(attention.title)
-                        .font(.system(size: 14, weight: .bold))
-                        .kerning(-0.2)
-                        .lineLimit(2)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .kerning(-0.1)
+                        .lineLimit(1)
                     if let subtitle = attention.subtitle, !subtitle.isEmpty {
                         Text(subtitle)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 11, weight: .medium).monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                            .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 0)
@@ -570,54 +558,27 @@ private struct AttentionLockCard: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(tint.opacity(0.16))
-        )
-        .background(
-            // Soft tint bloom in the top-left of the attention card.
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    RadialGradient(
-                        colors: [tint.opacity(0.28), .clear],
-                        center: UnitPoint(x: 0.05, y: 0.1),
-                        startRadius: 0,
-                        endRadius: 160
-                    )
-                )
-        )
-        .overlay(
-            // Top white highlight to lift the tint-tile off the glass behind.
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.10), .clear],
-                        startPoint: .top,
-                        endPoint: .center
-                    )
-                )
-                .allowsHitTesting(false)
+                .fill(tint.opacity(0.12))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [tint.opacity(0.55), tint.opacity(0.15)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.75
-                )
+                .strokeBorder(tint.opacity(0.25), lineWidth: 0.5)
         )
-        .shadow(color: tint.opacity(0.40), radius: 10, x: 0, y: 4)
     }
 }
 
+/// Single-line roster entry, modelled after the desktop `SessionCard`. Each
+/// row in this list is *actively running* — the SyncService filter guarantees
+/// it — so the only state to render is "running" (pulsing green dot) or the
+/// rare "failed" terminal state.
 @available(iOS 16.2, *)
 private struct LockRosterRow: View {
     let session: ADESessionAttributes.ContentState.ActiveSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 12) {
-            BrandDot(slug: session.providerSlug, size: 12, pulse: session.isAwaitingInput)
+        HStack(alignment: .center, spacing: 10) {
+            ActiveDot(failed: session.isFailed, pulse: !reduceMotion && !session.isFailed)
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.title.isEmpty ? session.id : session.title)
                     .font(.system(size: 13.5, weight: .semibold))
@@ -628,8 +589,12 @@ private struct LockRosterRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            Spacer(minLength: 4)
-            trailingStatus
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if session.isFailed {
+                Text("failed")
+                    .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(ADESharedTheme.statusFailed)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text(accessibilityLabel))
@@ -643,33 +608,119 @@ private struct LockRosterRow: View {
         return "\(providerName) · working…"
     }
 
-    @ViewBuilder
-    private var trailingStatus: some View {
-        if session.isFailed {
-            Text("failed")
-                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                .foregroundStyle(ADESharedTheme.statusFailed)
-        } else if session.isAwaitingInput {
-            Text("waiting")
-                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                .foregroundStyle(ADESharedTheme.warningAmber)
-        } else {
-            TimerLabel(
-                startedAt: session.startedAt,
-                color: ADESharedTheme.statusIdle,
-                fontSize: 10.5
-            )
-        }
-    }
-
     private var accessibilityLabel: String {
-        if session.isAwaitingInput {
-            return "\(session.providerSlug) on \(session.title), awaiting input"
-        }
         if session.isFailed {
             return "\(session.providerSlug) on \(session.title), failed"
         }
         return "\(session.providerSlug) on \(session.title), running"
+    }
+}
+
+/// 8pt status dot. Solid green with a soft phased halo when running, solid red
+/// when failed. Mirrors the desktop session-status dot.
+@available(iOS 16.2, *)
+private struct ActiveDot: View {
+    let failed: Bool
+    let pulse: Bool
+
+    var body: some View {
+        let color: Color = failed ? ADESharedTheme.statusFailed : ADESharedTheme.statusSuccess
+        ZStack {
+            if pulse, #available(iOS 17.0, *) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+                    .phaseAnimator([0, 1]) { circle, phase in
+                        circle
+                            .scaleEffect(phase == 0 ? 1.0 : 1.7)
+                            .opacity(phase == 0 ? 0.45 : 0)
+                    } animation: { _ in
+                        .easeOut(duration: 1.5)
+                    }
+            }
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+                .shadow(color: color.opacity(0.55), radius: 3)
+        }
+        .frame(width: 8, height: 8)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Counts row shown beneath the roster: waiting-for-input + idle chats + the
+/// existing PR glance. Kept terse — small all-caps labels with monospaced
+/// digits, like the desktop status pills.
+@available(iOS 16.2, *)
+private struct CountsStrip: View {
+    let state: ADESessionAttributes.ContentState
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if state.awaitingInputCount > 0 {
+                CountChip(
+                    icon: "bell.fill",
+                    label: chatLabel(state.awaitingInputCount, "waiting"),
+                    color: ADESharedTheme.warningAmber
+                )
+            }
+            if state.idleCount > 0 {
+                CountChip(
+                    icon: "moon.zzz.fill",
+                    label: chatLabel(state.idleCount, "idle"),
+                    color: ADESharedTheme.statusIdle
+                )
+            }
+            if state.failingCheckCount > 0 {
+                CountChip(
+                    icon: "exclamationmark.triangle.fill",
+                    label: "\(state.failingCheckCount) ci",
+                    color: ADESharedTheme.statusFailed
+                )
+            }
+            if state.awaitingReviewCount > 0 {
+                CountChip(
+                    icon: "eye.fill",
+                    label: "\(state.awaitingReviewCount) review",
+                    color: ADESharedTheme.warningAmber
+                )
+            }
+            if state.mergeReadyCount > 0 {
+                CountChip(
+                    icon: "checkmark.seal.fill",
+                    label: "\(state.mergeReadyCount) ready",
+                    color: ADESharedTheme.statusSuccess
+                )
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func chatLabel(_ count: Int, _ verb: String) -> String {
+        "\(count) \(verb)"
+    }
+}
+
+@available(iOS 16.2, *)
+private struct CountChip: View {
+    let icon: String
+    let label: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9, weight: .bold))
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                .textCase(.lowercase)
+        }
+        .foregroundStyle(color)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 7)
+        .background(
+            Capsule(style: .continuous).fill(color.opacity(0.13))
+        )
     }
 }
 
@@ -678,40 +729,25 @@ private struct LockRosterRow: View {
 @available(iOS 16.2, *)
 private struct ExpandedRosterStrip: View {
     let sessions: [ADESessionAttributes.ContentState.ActiveSession]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 7) {
             ForEach(sessions) { session in
                 HStack(spacing: 10) {
-                    BrandDot(slug: session.providerSlug, size: 10, pulse: session.isAwaitingInput)
+                    ActiveDot(failed: session.isFailed, pulse: !reduceMotion && !session.isFailed)
                     Text(session.title.isEmpty ? session.id : session.title)
                         .font(.system(size: 12, weight: .semibold))
                         .kerning(-0.1)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    trailing(for: session)
+                    Text(session.providerSlug.lowercased())
+                        .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private func trailing(for session: ADESessionAttributes.ContentState.ActiveSession) -> some View {
-        if session.isFailed {
-            Text("failed")
-                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                .foregroundStyle(ADESharedTheme.statusFailed)
-        } else if session.isAwaitingInput {
-            Text("waiting")
-                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                .foregroundStyle(ADESharedTheme.warningAmber)
-        } else {
-            TimerLabel(
-                startedAt: session.startedAt,
-                color: ADESharedTheme.statusIdle,
-                fontSize: 10.5
-            )
         }
     }
 }
@@ -719,29 +755,25 @@ private struct ExpandedRosterStrip: View {
 @available(iOS 16.2, *)
 private struct FocusedCardBottom: View {
     let session: ADESessionAttributes.ContentState.ActiveSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ProgressBar(
-                progress: session.progress ?? 0.62,
-                color: ADESharedTheme.brandColor(for: session.providerSlug),
-                shimmer: !session.isFailed,
-                height: 4
-            )
-
-            HStack {
-                Text(session.preview ?? "running")
-                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                TimerLabel(
-                    startedAt: session.startedAt,
-                    color: ADESharedTheme.statusIdle,
-                    fontSize: 10.5
-                )
-            }
+        HStack(spacing: 8) {
+            ActiveDot(failed: session.isFailed, pulse: !reduceMotion && !session.isFailed)
+            Text(subtitle)
+                .font(.system(size: 11, weight: .medium).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var subtitle: String {
+        let provider = session.providerSlug.lowercased()
+        if let preview = session.preview, !preview.isEmpty {
+            return "\(provider) · \(preview)"
+        }
+        return "\(provider) · working…"
     }
 }
 
@@ -750,35 +782,9 @@ private struct ExpandedGlanceStrip: View {
     let state: ADESessionAttributes.ContentState
 
     var body: some View {
-        HStack(spacing: 8) {
-            if state.failingCheckCount > 0 {
-                GlanceChip(
-                    icon: "exclamationmark.triangle.fill",
-                    label: "CI \(state.failingCheckCount)",
-                    color: ADESharedTheme.statusFailed
-                )
-            }
-            if state.awaitingReviewCount > 0 {
-                GlanceChip(
-                    icon: "eye.fill",
-                    label: "Review \(state.awaitingReviewCount)",
-                    color: ADESharedTheme.warningAmber
-                )
-            }
-            if state.mergeReadyCount > 0 {
-                GlanceChip(
-                    icon: "checkmark.seal.fill",
-                    label: "Ready \(state.mergeReadyCount)",
-                    color: ADESharedTheme.statusSuccess
-                )
-            }
-            if state.pendingPrCount == 0 {
-                Text("Nothing pending")
-                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
+        // Re-uses the same chips rendered on the Lock Screen so the visual
+        // language is identical across surfaces.
+        CountsStrip(state: state)
     }
 }
 

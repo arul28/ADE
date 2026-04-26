@@ -4,6 +4,7 @@
 #if DEBUG
 import SwiftUI
 import ActivityKit
+import WidgetKit
 
 @available(iOS 17.0, *)
 private struct CompactRow: View {
@@ -128,6 +129,119 @@ private struct ExpandedCard: View {
             endPoint: .bottomTrailing
         )
     )
+}
+
+// MARK: - Activity-level previews
+//
+// These render the *whole* Live Activity through Apple's `as: .content` and
+// `as: .dynamicIsland(...)` preview macros so the canvas mimics what iOS
+// actually shows on Lock Screen + Dynamic Island. Open this file in Xcode,
+// `⌥⌘↩` to show the canvas, and use the chip row at the bottom of each
+// preview to flip between presentations.
+
+@available(iOS 17.0, *)
+private let _activityPreviewAttrs = ADESessionAttributes(workspaceName: "ADE")
+
+@available(iOS 17.0, *)
+#Preview("LA · Lock Screen · Multi/Single/Idle", as: .content, using: _activityPreviewAttrs) {
+    ADELiveActivity()
+} contentStates: {
+    ADEWidgetPreviewData.STATE_MULTI
+    ADEWidgetPreviewData.STATE_SINGLE
+    ADEWidgetPreviewData.STATE_IDLE
+}
+
+@available(iOS 17.0, *)
+#Preview("LA · Lock Screen · Attention", as: .content, using: _activityPreviewAttrs) {
+    ADELiveActivity()
+} contentStates: {
+    ADEWidgetPreviewData.ATTN_STATES[.awaitingInput]!
+    ADEWidgetPreviewData.ATTN_STATES[.failed]!
+    ADEWidgetPreviewData.ATTN_STATES[.ciFailing]!
+    ADEWidgetPreviewData.ATTN_STATES[.reviewRequested]!
+    ADEWidgetPreviewData.ATTN_STATES[.mergeReady]!
+}
+
+@available(iOS 17.0, *)
+#Preview("LA · Dynamic Island · Compact", as: .dynamicIsland(.compact), using: _activityPreviewAttrs) {
+    ADELiveActivity()
+} contentStates: {
+    ADEWidgetPreviewData.STATE_MULTI
+    ADEWidgetPreviewData.STATE_SINGLE
+    ADEWidgetPreviewData.STATE_IDLE
+    ADEWidgetPreviewData.ATTN_STATES[.awaitingInput]!
+    ADEWidgetPreviewData.ATTN_STATES[.failed]!
+    ADEWidgetPreviewData.ATTN_STATES[.ciFailing]!
+    ADEWidgetPreviewData.ATTN_STATES[.reviewRequested]!
+    ADEWidgetPreviewData.ATTN_STATES[.mergeReady]!
+}
+
+@available(iOS 17.0, *)
+#Preview("LA · Dynamic Island · Expanded", as: .dynamicIsland(.expanded), using: _activityPreviewAttrs) {
+    ADELiveActivity()
+} contentStates: {
+    ADEWidgetPreviewData.STATE_MULTI
+    ADEWidgetPreviewData.STATE_SINGLE
+    ADEWidgetPreviewData.STATE_IDLE
+    ADEWidgetPreviewData.ATTN_STATES[.awaitingInput]!
+    ADEWidgetPreviewData.ATTN_STATES[.failed]!
+    ADEWidgetPreviewData.ATTN_STATES[.ciFailing]!
+    ADEWidgetPreviewData.ATTN_STATES[.reviewRequested]!
+    ADEWidgetPreviewData.ATTN_STATES[.mergeReady]!
+}
+
+@available(iOS 17.0, *)
+#Preview("LA · Dynamic Island · Minimal", as: .dynamicIsland(.minimal), using: _activityPreviewAttrs) {
+    ADELiveActivity()
+} contentStates: {
+    ADEWidgetPreviewData.STATE_MULTI
+    ADEWidgetPreviewData.STATE_SINGLE
+    ADEWidgetPreviewData.ATTN_STATES[.awaitingInput]!
+    ADEWidgetPreviewData.ATTN_STATES[.failed]!
+}
+
+// MARK: - Real-data Live Activity previews
+//
+// Sourced from your real workspace DB: 1 running codex-chat, 2 failing-CI PRs.
+// Three flavors per region:
+//   • CURRENT — exactly what the LA looks like right now
+//   • RICH — same chat + synthetic awaiting/idle counts overlay so you can see
+//            the AttentionLockCard + CountsStrip with realistic content
+//   • PRs ONLY — no chat running, just CI-failing PRs
+
+@available(iOS 17.0, *)
+#Preview("REAL · LA Lock Screen", as: .content, using: _activityPreviewAttrs) {
+    ADELiveActivity()
+} contentStates: {
+    ADEWidgetPreviewData.REAL_CURRENT
+    ADEWidgetPreviewData.REAL_RICH
+    ADEWidgetPreviewData.REAL_PRS_ONLY
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · DI Compact", as: .dynamicIsland(.compact), using: _activityPreviewAttrs) {
+    ADELiveActivity()
+} contentStates: {
+    ADEWidgetPreviewData.REAL_CURRENT
+    ADEWidgetPreviewData.REAL_RICH
+    ADEWidgetPreviewData.REAL_PRS_ONLY
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · DI Expanded", as: .dynamicIsland(.expanded), using: _activityPreviewAttrs) {
+    ADELiveActivity()
+} contentStates: {
+    ADEWidgetPreviewData.REAL_CURRENT
+    ADEWidgetPreviewData.REAL_RICH
+    ADEWidgetPreviewData.REAL_PRS_ONLY
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · DI Minimal", as: .dynamicIsland(.minimal), using: _activityPreviewAttrs) {
+    ADELiveActivity()
+} contentStates: {
+    ADEWidgetPreviewData.REAL_CURRENT
+    ADEWidgetPreviewData.REAL_RICH
 }
 
 #endif

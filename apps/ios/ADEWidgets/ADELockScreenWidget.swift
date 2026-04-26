@@ -42,11 +42,8 @@ struct LockScreenWidgetEntryView: View {
     }
 
     private var destinationURL: URL {
-        if let awaiting = entry.snapshot.agents.first(where: \.awaitingInput),
-           let url = URL(string: "ade://session/\(awaiting.sessionId)") {
-            return url
-        }
-
+        // Awaiting-input is now a count, not a per-agent flag — surface as a
+        // generic deep link to the workspace approvals view via PR fallback.
         let openPrs = entry.snapshot.prs.filter { $0.state == "open" }
         if let focusPr = openPrs.first(where: { $0.checks == "failing" })
             ?? openPrs.first(where: { $0.review == "changes_requested" || $0.review == "pending" })
@@ -67,27 +64,38 @@ struct LockScreenRectangularView: View {
 
     var body: some View {
         let summary = ADESharedContainer.inlineSummary(for: snapshot)
-        let progress = averageProgress()
+        let running = snapshot.runningAgents
+        let isRunning = !running.isEmpty
+        let secondary = secondaryLine()
+        let progress = averageProgress(running: running)
 
         return ZStack {
             AccessoryWidgetBackground()
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    AdeMark(size: 13)
-                    Text("Workspace")
-                        .font(.system(size: 12, weight: .bold))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Image(systemName: isRunning ? "circle.dotted" : "moon.zzz")
+                        .font(.system(size: 11, weight: .semibold))
+                        .widgetAccentable()
+                    Text(summary)
+                        .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Text(summary)
-                    .font(.system(size: 12, weight: .semibold).monospaced())
-                    .kerning(-0.2)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
-                    .tint(.primary)
-                    .frame(height: 4)
-                    .widgetAccentable()
+                if let secondary {
+                    Text(secondary)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if isRunning {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .tint(.primary)
+                        .frame(height: 3)
+                        .widgetAccentable()
+                }
             }
             .padding(.horizontal, 2)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -98,11 +106,22 @@ struct LockScreenRectangularView: View {
         .accessibilityValue(summary)
     }
 
-    private func averageProgress() -> Double {
-        let active = snapshot.agents.filter { $0.status == "running" || $0.awaitingInput }
-        guard !active.isEmpty else { return 0 }
-        let sum = active.reduce(0.0) { $0 + ($1.progress ?? 0) }
-        return min(1, max(0, sum / Double(active.count)))
+    private func secondaryLine() -> String? {
+        let openPrs = snapshot.prs.filter { $0.state == "open" }.count
+        var parts: [String] = []
+        if snapshot.awaitingInputCount > 0 {
+            parts.append("\(snapshot.awaitingInputCount) waiting")
+        }
+        if openPrs > 0 {
+            parts.append("\(openPrs) PR\(openPrs == 1 ? "" : "s")")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func averageProgress(running: [AgentSnapshot]) -> Double {
+        guard !running.isEmpty else { return 0 }
+        let sum = running.reduce(0.0) { $0 + ($1.progress ?? 0) }
+        return min(1, max(0, sum / Double(running.count)))
     }
 }
 
@@ -113,28 +132,55 @@ struct LockScreenCircularView: View {
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     var body: some View {
-        let active = snapshot.agents.filter { $0.status == "running" || $0.awaitingInput }.count
-        let total = max(active, max(1, snapshot.agents.count))
+        let active = snapshot.runningAgents.count
+        let waiting = snapshot.awaitingInputCount
 
-        return Gauge(value: Double(active), in: 0...Double(total)) {
-            EmptyView()
-        } currentValueLabel: {
-            VStack(spacing: 0) {
-                Text("\(active)")
-                    .font(.system(size: 20, weight: .black))
-                    .kerning(-0.5)
-                Text("AGENTS")
-                    .font(.system(size: 8.5).monospaced())
-                    .tracking(0.2)
-                    .textCase(.uppercase)
+        return Group {
+            if active > 0 {
+                Gauge(value: Double(active), in: 0...Double(max(active, 1))) {
+                    EmptyView()
+                } currentValueLabel: {
+                    VStack(spacing: -1) {
+                        Text("\(active)")
+                            .font(.system(size: active >= 10 ? 16 : 20, weight: .black))
+                            .kerning(-0.5)
+                            .minimumScaleFactor(0.7)
+                            .lineLimit(1)
+                        Text("RUN")
+                            .font(.system(size: 8).monospaced())
+                            .tracking(0.3)
+                    }
+                }
+                .gaugeStyle(.accessoryCircular)
+            } else if waiting > 0 {
+                Gauge(value: 1, in: 0...1) {
+                    EmptyView()
+                } currentValueLabel: {
+                    VStack(spacing: -1) {
+                        Text("\(waiting)")
+                            .font(.system(size: waiting >= 10 ? 16 : 20, weight: .black))
+                            .kerning(-0.5)
+                            .minimumScaleFactor(0.7)
+                            .lineLimit(1)
+                        Text("WAIT")
+                            .font(.system(size: 8).monospaced())
+                            .tracking(0.3)
+                    }
+                }
+                .gaugeStyle(.accessoryCircular)
+            } else {
+                ZStack {
+                    AccessoryWidgetBackground()
+                    Image(systemName: "moon.zzz")
+                        .font(.system(size: 18, weight: .semibold))
+                }
             }
         }
-        .gaugeStyle(.accessoryCircular)
         .widgetAccentable()
         .opacity(isLuminanceReduced ? 0.85 : 1)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("ADE active agents")
-        .accessibilityValue("\(active) of \(total)")
+        .accessibilityLabel("ADE workspace")
+        .accessibilityValue(active > 0 ? "\(active) running" : (waiting > 0 ? "\(waiting) waiting" : "idle"))
     }
 }
 
@@ -145,15 +191,9 @@ struct LockScreenInlineView: View {
 
     var body: some View {
         let summary = ADESharedContainer.inlineSummary(for: snapshot)
-        Label {
-            Text(summary)
-                .dynamicTypeSize(.small ... .large)
-        } icon: {
-            Image(systemName: "sparkles")
-                .accessibilityHidden(true)
-        }
-        .accessibilityLabel("ADE")
-        .accessibilityValue(summary)
+        Text(summary)
+            .accessibilityLabel("ADE")
+            .accessibilityValue(summary)
     }
 }
 

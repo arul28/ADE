@@ -69,6 +69,152 @@ enum ADEWidgetPreviewData {
 
     static let emptySnapshot = WorkspaceSnapshot.empty
 
+    // MARK: - Real ADE data (sampled from local DB at `/Users/arul/ADE/.ade/ade.db`)
+    //
+    // Captured for previews so the canvas reflects an actual workspace state
+    // rather than a hypothetical mockup. Re-run the sqlite query in the
+    // accompanying script to refresh.
+
+    static let realCurrentAgents: [AgentSnapshot] = [
+        AgentSnapshot(
+            sessionId: "64cda258-d3ff-47a2-8c98-7419b200a41e",
+            provider: "codex-chat",
+            title: "Work Tab Chat Tabs",
+            status: "running",
+            awaitingInput: false,
+            // 2026-04-26 20:03:06 UTC — preview anchors to ~22 min ago.
+            lastActivityAt: Date().addingTimeInterval(-22 * 60),
+            elapsedSeconds: 22 * 60,
+            preview: "All passed.",
+            progress: nil,
+            phase: nil,
+            toolCalls: 0
+        ),
+    ]
+
+    static let realCurrentPrs: [PrSnapshot] = [
+        PrSnapshot(
+            id: "d417dde7-ff67-4c1d-86dd-eb877fac55b6",
+            number: 206,
+            title: "fix(tabs): keep work surface alive across tab reroutes",
+            checks: "failing",
+            review: "none",
+            state: "open",
+            mergeReady: false,
+            branch: "ade/tab-reroute-tabs-fix-95042dc5"
+        ),
+        PrSnapshot(
+            id: "1601c4c3-3290-4b16-9cbb-4ef466ec20ef",
+            number: 205,
+            title: "lanes: stabilize URL deep-link useEffect deps",
+            checks: "failing",
+            review: "none",
+            state: "open",
+            mergeReady: false,
+            branch: "ade/chnaging-lanes-tabs-bugs-1954cea4"
+        ),
+    ]
+
+    /// Snapshot reflecting the user's *actual* workspace at capture time:
+    /// 1 running codex-chat session, 2 open PRs both with failing CI.
+    static let realCurrentSnapshot = WorkspaceSnapshot(
+        generatedAt: Date(),
+        agents: realCurrentAgents,
+        prs: realCurrentPrs,
+        connection: "connected",
+        awaitingInputCount: 0,
+        idleCount: 0
+    )
+
+    /// Same real workspace, but overlaid with a couple of synthetic counts so
+    /// you can preview "what does it look like when something's actually
+    /// happening" — 2 chats waiting on you, 1 idle, plus the real failing-CI
+    /// PRs from your branch.
+    static let realRichSnapshot = WorkspaceSnapshot(
+        generatedAt: Date(),
+        agents: realCurrentAgents,
+        prs: realCurrentPrs,
+        connection: "connected",
+        awaitingInputCount: 2,
+        idleCount: 1
+    )
+
+    /// Same real PRs, no running chats — what the surfaces look like when only
+    /// PR-side signals are active. Useful for "do the count strips read
+    /// correctly when the roster is empty."
+    static let realPrsOnlySnapshot = WorkspaceSnapshot(
+        generatedAt: Date(),
+        agents: [],
+        prs: realCurrentPrs,
+        connection: "connected",
+        awaitingInputCount: 0,
+        idleCount: 0
+    )
+
+    // MARK: - Real-data Live Activity ContentStates
+
+    static let realCurrentActiveSessions: [ADESessionAttributes.ContentState.ActiveSession] = realCurrentAgents.map { snap in
+        .init(
+            id: snap.sessionId,
+            providerSlug: snap.provider,
+            title: snap.title ?? snap.sessionId,
+            isAwaitingInput: snap.awaitingInput,
+            isFailed: snap.status.lowercased() == "failed",
+            startedAt: snap.lastActivityAt.addingTimeInterval(-Double(snap.elapsedSeconds)),
+            progress: snap.progress,
+            preview: snap.preview
+        )
+    }
+
+    /// LA ContentState: 1 running codex-chat, no attention, 2 failing PRs.
+    static let REAL_CURRENT = ADESessionAttributes.ContentState(
+        sessions: realCurrentActiveSessions,
+        attention: nil,
+        failingCheckCount: 2,
+        awaitingReviewCount: 0,
+        mergeReadyCount: 0,
+        awaitingInputCount: 0,
+        idleCount: 0,
+        generatedAt: previewNow
+    )
+
+    /// LA ContentState: real chat + the imagined "X waiting for input"
+    /// attention banner derived from the synthetic count. Lets you see the
+    /// CountsStrip + AttentionLockCard with realistic content.
+    static let REAL_RICH = ADESessionAttributes.ContentState(
+        sessions: realCurrentActiveSessions,
+        attention: ADESessionAttributes.ContentState.Attention(
+            kind: .awaitingInput,
+            title: "2 chats waiting for input",
+            subtitle: "Tap to respond"
+        ),
+        failingCheckCount: 2,
+        awaitingReviewCount: 0,
+        mergeReadyCount: 0,
+        awaitingInputCount: 2,
+        idleCount: 1,
+        generatedAt: previewNow
+    )
+
+    /// LA ContentState: only PR signals, no roster — what the LA looks like
+    /// when CI is failing on your open PRs and nothing else is going on.
+    static let REAL_PRS_ONLY = ADESessionAttributes.ContentState(
+        sessions: [],
+        attention: ADESessionAttributes.ContentState.Attention(
+            kind: .ciFailing,
+            title: "PR #206 · CI failing",
+            subtitle: "fix(tabs): keep work surface alive across tab reroutes",
+            prId: "d417dde7-ff67-4c1d-86dd-eb877fac55b6",
+            prNumber: 206
+        ),
+        failingCheckCount: 2,
+        awaitingReviewCount: 0,
+        mergeReadyCount: 0,
+        awaitingInputCount: 0,
+        idleCount: 0,
+        generatedAt: previewNow
+    )
+
     // MARK: - Live Activity ContentState fixtures (mirrors app.jsx)
 
     /// Anchor used so all "startedAt" offsets stay stable within a preview
@@ -76,8 +222,8 @@ enum ADEWidgetPreviewData {
     /// relative timestamps across widgets + islands in the same canvas.
     static let previewNow = Date()
 
-    /// 4-session roster from `app.jsx` `SESSIONS` — claude / codex /
-    /// cursor / opencode. Awaiting-input lives on s2.
+    /// Active-only roster (sessions that are *currently producing output*).
+    /// Awaiting-input + idle chats live in the counts on ContentState now.
     static let previewSessions: [ADESessionAttributes.ContentState.ActiveSession] = [
         ADESessionAttributes.ContentState.ActiveSession(
             id: "s1",
@@ -88,16 +234,6 @@ enum ADEWidgetPreviewData {
             startedAt: previewNow.addingTimeInterval(-22 * 60),
             progress: 0.68,
             preview: "Running unit tests · src/billing/*"
-        ),
-        ADESessionAttributes.ContentState.ActiveSession(
-            id: "s2",
-            providerSlug: "codex",
-            title: "auth-refactor",
-            isAwaitingInput: true,
-            isFailed: false,
-            startedAt: previewNow.addingTimeInterval(-8 * 60),
-            progress: 0.34,
-            preview: "Needs approval · DETACH PARTITION sessions_2025_q3"
         ),
         ADESessionAttributes.ContentState.ActiveSession(
             id: "s3",
@@ -138,6 +274,8 @@ enum ADEWidgetPreviewData {
         failingCheckCount: 2,
         awaitingReviewCount: 1,
         mergeReadyCount: 1,
+        awaitingInputCount: 1,
+        idleCount: 2,
         generatedAt: previewNow
     )
 
@@ -147,6 +285,8 @@ enum ADEWidgetPreviewData {
         failingCheckCount: 0,
         awaitingReviewCount: 0,
         mergeReadyCount: 1,
+        awaitingInputCount: 0,
+        idleCount: 0,
         generatedAt: previewNow
     )
 
@@ -156,6 +296,8 @@ enum ADEWidgetPreviewData {
         failingCheckCount: 0,
         awaitingReviewCount: 0,
         mergeReadyCount: 0,
+        awaitingInputCount: 0,
+        idleCount: 0,
         generatedAt: previewNow
     )
 
@@ -166,14 +308,14 @@ enum ADEWidgetPreviewData {
             sessions: previewSessions,
             attention: ADESessionAttributes.ContentState.Attention(
                 kind: .awaitingInput,
-                title: "Codex · auth-refactor",
-                subtitle: "3 file writes + 1 destructive SQL need approval",
-                providerSlug: "codex",
-                sessionId: "s2"
+                title: "1 chat waiting for input",
+                subtitle: "Tap to respond"
             ),
             failingCheckCount: 2,
             awaitingReviewCount: 1,
             mergeReadyCount: 1,
+            awaitingInputCount: 1,
+            idleCount: 2,
             generatedAt: previewNow
         ),
         .failed: ADESessionAttributes.ContentState(
@@ -275,6 +417,106 @@ enum ADEWidgetPreviewData {
     ADELockScreenWidget()
 } timeline: {
     ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.populatedSnapshot)
+}
+
+// MARK: - Real-data previews
+//
+// Snapshots sourced from your actual workspace DB (`/Users/arul/ADE/.ade/ade.db`)
+// at capture time:
+//   • 1 running codex-chat ("Work Tab Chat Tabs")
+//   • 2 open PRs both with failing CI (#205, #206)
+// These previews pair the real data with three view conditions: real-as-is,
+// real + synthetic counts (rich), and PRs-only (no chat).
+
+@available(iOS 17.0, *)
+#Preview("REAL · Small · current", as: .systemSmall) {
+    ADEWorkspaceWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realCurrentSnapshot)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Small · rich", as: .systemSmall) {
+    ADEWorkspaceWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realRichSnapshot)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Small · PRs only", as: .systemSmall) {
+    ADEWorkspaceWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realPrsOnlySnapshot)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Medium · agents", as: .systemMedium) {
+    ADEWorkspaceWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realCurrentSnapshot, variant: .agents)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Medium · prs", as: .systemMedium) {
+    ADEWorkspaceWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realCurrentSnapshot, variant: .prs)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Medium · rich", as: .systemMedium) {
+    ADEWorkspaceWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realRichSnapshot, variant: .agents)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Large · current", as: .systemLarge) {
+    ADEWorkspaceWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realCurrentSnapshot)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Large · rich", as: .systemLarge) {
+    ADEWorkspaceWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realRichSnapshot)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Lock Rect · current", as: .accessoryRectangular) {
+    ADELockScreenWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realCurrentSnapshot)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Lock Rect · rich", as: .accessoryRectangular) {
+    ADELockScreenWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realRichSnapshot)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Lock Circular · current", as: .accessoryCircular) {
+    ADELockScreenWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realCurrentSnapshot)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Lock Inline · current", as: .accessoryInline) {
+    ADELockScreenWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realCurrentSnapshot)
+}
+
+@available(iOS 17.0, *)
+#Preview("REAL · Lock Inline · rich", as: .accessoryInline) {
+    ADELockScreenWidget()
+} timeline: {
+    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.realRichSnapshot)
 }
 
 #endif
