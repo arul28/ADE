@@ -865,6 +865,27 @@ export function createPrService({
       [laneId, projectId]
     );
 
+  const getRowForLaneBranch = (laneId: string, headBranch: string): PullRequestRow | null => {
+    const normalizedHead = normalizeBranchName(headBranch).trim();
+    // When the caller has no usable head branch (e.g. mid-checkout, lane row
+    // not yet hydrated, or a freshly created lane without a synced ref) fall
+    // back to the lane-level lookup. Otherwise the PR row will look "missing"
+    // and downstream callers will redundantly create or refetch state.
+    if (!normalizedHead) return getRowForLane(laneId);
+    return db.get<PullRequestRow>(
+      `
+        select ${PR_COLUMNS}
+          from pull_requests
+         where lane_id = ?
+           and project_id = ?
+           and head_branch = ?
+         order by updated_at desc
+         limit 1
+      `,
+      [laneId, projectId, normalizedHead],
+    );
+  };
+
   const listRows = (): PullRequestRow[] =>
     db.all<PullRequestRow>(
       `select ${PR_COLUMNS} from pull_requests where project_id = ? order by updated_at desc`,
@@ -1260,9 +1281,9 @@ export function createPrService({
     // legitimate use of the repo/PR-number fallback; it opts in via
     // `allowRepoPrAdoption: true`.
     const existing = options?.allowRepoPrAdoption
-      ? getRowForLane(summary.laneId)
+      ? getRowForLaneBranch(summary.laneId, summary.headBranch)
           ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
-      : getRowForLane(summary.laneId);
+      : getRowForLaneBranch(summary.laneId, summary.headBranch);
     if (existing) {
       if (existing.lane_id !== summary.laneId) {
         db.run(`delete from pr_group_members where pr_id = ?`, [existing.id]);

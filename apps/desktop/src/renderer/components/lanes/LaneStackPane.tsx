@@ -7,7 +7,7 @@ import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "./lane
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
-const TREE_ROW_H = 28;
+const TREE_ROW_H = 34;
 const TREE_INDENT = 22;
 const TREE_LEFT_PAD = 16;
 const TREE_DOT_R = 5;
@@ -256,12 +256,25 @@ function StackGraph({
               }}
             >
               <LaneRuntimeDot bucket={runtimeByLaneId.get(lane.id)?.bucket ?? "none"} />
-              <span className="truncate" style={{
+              <span className="flex flex-col items-start min-w-0" style={{
                 maxWidth: integrationSources.length > 0 ? 120 : 160,
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                fontWeight: isSelected ? 600 : 500,
-              }}>{lane.name}</span>
+                lineHeight: 1.05,
+                overflow: "hidden",
+              }}>
+                <span className="truncate" style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  fontWeight: isSelected ? 600 : 500,
+                  maxWidth: "100%",
+                }}>{lane.name}</span>
+                <span className="truncate" style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 8.5,
+                  color: COLORS.textDim,
+                  maxWidth: "100%",
+                  marginTop: 1,
+                }} title={`Branch: ${lane.branchRef}`}>{lane.branchRef}</span>
+              </span>
               {integrationSources.length > 0 ? (
                 <span
                   className="inline-flex items-center gap-1 rounded-md border px-1 py-0 text-[9px] uppercase tracking-[0.08em]"

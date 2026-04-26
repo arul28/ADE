@@ -57,6 +57,19 @@ export type LaneSummary = {
   createdAt: string;
   archivedAt?: string | null;
   devicesOpen?: DeviceMarker[];
+  activeBranchProfile?: LaneBranchProfile | null;
+};
+
+export type LaneBranchProfile = {
+  id: string;
+  laneId: string;
+  branchRef: string;
+  baseRef: string;
+  parentLaneId: string | null;
+  sourceBranchRef: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastCheckedOutAt: string | null;
 };
 
 export type LaneRuntimeBucket = "running" | "awaiting-input" | "ended" | "none";
@@ -140,6 +153,42 @@ export type ImportBranchLaneArgs = {
   name?: string;
   description?: string;
   baseBranch?: string;
+};
+
+export type LaneBranchSwitchMode = "existing" | "create";
+
+export type LaneBranchActiveWorkItem = {
+  id: string;
+  kind: "terminal" | "process";
+  title: string;
+  status: string;
+};
+
+export type LaneBranchSwitchArgs = {
+  laneId: string;
+  branchName: string;
+  mode?: LaneBranchSwitchMode;
+  startPoint?: string;
+  baseRef?: string;
+  acknowledgeActiveWork?: boolean;
+};
+
+export type LaneBranchSwitchPreview = {
+  laneId: string;
+  currentBranchRef: string;
+  targetBranchRef: string;
+  mode: LaneBranchSwitchMode;
+  dirty: boolean;
+  duplicateLaneId: string | null;
+  duplicateLaneName: string | null;
+  activeWork: LaneBranchActiveWorkItem[];
+  targetProfile: LaneBranchProfile | null;
+};
+
+export type LaneBranchSwitchResult = {
+  lane: LaneSummary;
+  previousBranchRef: string;
+  activeWork: LaneBranchActiveWorkItem[];
 };
 
 export type AttachLaneArgs = {

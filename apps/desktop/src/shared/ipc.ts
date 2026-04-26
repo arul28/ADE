@@ -54,6 +54,8 @@ export const IPC = {
   lanesCreateChild: "ade.lanes.createChild",
   lanesCreateFromUnstaged: "ade.lanes.createFromUnstaged",
   lanesImportBranch: "ade.lanes.importBranch",
+  lanesPreviewBranchSwitch: "ade.lanes.previewBranchSwitch",
+  lanesSwitchBranch: "ade.lanes.switchBranch",
   lanesAttach: "ade.lanes.attach",
   lanesListUnregisteredWorktrees: "ade.lanes.listUnregisteredWorktrees",
   lanesAdoptAttached: "ade.lanes.adoptAttached",

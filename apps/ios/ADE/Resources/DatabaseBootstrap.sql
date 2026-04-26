@@ -54,6 +54,42 @@ create index if not exists idx_lanes_project_mission on lanes(project_id, missio
 
 create index if not exists idx_lanes_project_role on lanes(project_id, lane_role);
 
+create table if not exists lane_branch_profiles (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      branch_ref text not null,
+      normalized_branch_ref text not null,
+      base_ref text not null,
+      parent_lane_id text,
+      source_branch_ref text,
+      created_at text not null,
+      updated_at text not null,
+      last_checked_out_at text,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id),
+      foreign key(parent_lane_id) references lanes(id)
+    );
+
+create index if not exists idx_lane_branch_profiles_lane on lane_branch_profiles(project_id, lane_id);
+
+create index if not exists idx_lane_branch_profiles_project_branch on lane_branch_profiles(project_id, normalized_branch_ref);
+
+delete from lane_branch_profiles
+      where rowid not in (
+        select rowid from lane_branch_profiles as keep
+        where keep.id = (
+          select id from lane_branch_profiles inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.lane_id = keep.lane_id
+            and inner_p.normalized_branch_ref = keep.normalized_branch_ref
+          order by coalesce(inner_p.last_checked_out_at, inner_p.updated_at) desc,
+                   inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      );
+
 create table if not exists lane_state_snapshots (
       lane_id text primary key,
       dirty integer not null default 0,

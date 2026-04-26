@@ -1041,7 +1041,21 @@ function buildGitPlan(args: string[]): CliPlan {
   if (sub === "branches" || sub === "branch") return { kind: "execute", label: "git branches", steps: [actionCallStep("result", "git_list_branches", withLane())] };
   if (sub === "checkout") {
     const branchName = requireValue(readValue(args, ["--branch", "--branch-name"]) ?? firstPositional(args), "branchName");
-    return { kind: "execute", label: "git checkout", steps: [actionCallStep("result", "git_checkout_branch", withLane({ branchName }))] };
+    const create = readFlag(args, ["--create", "-b"]);
+    const startPoint = readValue(args, ["--start-point", "--from"]);
+    const baseRef = readValue(args, ["--base", "--base-ref"]);
+    const acknowledgeActiveWork = readFlag(args, ["--ack-active-work"]);
+    return {
+      kind: "execute",
+      label: "git checkout",
+      steps: [actionCallStep("result", "git_checkout_branch", withLane({
+        branchName,
+        mode: create ? "create" : "existing",
+        ...(startPoint ? { startPoint } : {}),
+        ...(baseRef ? { baseRef } : {}),
+        acknowledgeActiveWork,
+      }))]
+    };
   }
   if (sub === "conflicts") return { kind: "execute", label: "git conflicts", steps: [actionCallStep("result", "get_lane_conflict_state", withLane())] };
   if (sub === "rebase") {
@@ -2031,13 +2045,13 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "-b", "-m", "-q", "-t",
   "--additional-instructions", "--app", "--arg", "--arg-json", "--arg-value",
   "--arg-value-json", "--args-list-json", "--attempt", "--attempt-id",
-  "--automation", "--base", "--base-branch", "--body", "--branch",
+  "--automation", "--base", "--base-branch", "--base-ref", "--body", "--branch",
   "--branch-name", "--branch-ref", "--category", "--color", "--cols",
   "--command", "--comment", "--comment-id", "--commit", "--compare-ref",
   "--caption", "--compare-to", "--content", "--context-file", "--cwd", "--data",
   "--depth", "--desc",
   "--description", "--domain", "--duration-sec", "--enabled", "--event",
-  "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
+  "--from", "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
   "--input", "--input-json", "--instructions",
   "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",
   "--max-log-bytes", "--max-prompt-chars", "--max-rounds", "--memory",
@@ -2052,7 +2066,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--root-lane", "--round", "--rounds", "--rows", "--rule", "--run", "--run-id", "--scalar",
   "--scalar-json", "--scope", "--seconds", "--session", "--session-id", "--set",
   "--set-json", "--sha", "--source", "--source-lane", "--stack", "--stack-id",
-  "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
+  "--start-point", "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
   "--thread", "--thread-id", "--timeout-ms", "--title", "--tool-type",
   "--url", "--workspace", "--workspace-id", "--workspace-root",
 ]);

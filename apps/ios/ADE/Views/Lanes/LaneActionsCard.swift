@@ -10,6 +10,9 @@ struct LaneActionsCard: View {
   let onStash: () -> Void
   var laneId: String? = nil
   var branchRef: String? = nil
+  var laneType: String? = nil
+  var missionId: String? = nil
+  var laneRole: String? = nil
   var onRefresh: (@MainActor () async -> Void)? = nil
 
   @State private var moreExpanded = false
@@ -18,12 +21,15 @@ struct LaneActionsCard: View {
   var body: some View {
     ADEGlassSection(title: "Lane actions", subtitle: canRunLiveActions ? nil : disabledSubtitle) {
       VStack(alignment: .leading, spacing: 12) {
+        if showsSwitchBranch {
+          switchBranchButton
+        }
         stashButton
         moreSection
       }
     }
     .sheet(isPresented: $showBranchPicker) {
-      if let laneId, let branchRef {
+      if let laneId, let branchRef, branchSwitchDisabledReason == nil {
         LaneBranchPickerSheet(
           laneId: laneId,
           branchRef: branchRef,
@@ -35,6 +41,89 @@ struct LaneActionsCard: View {
         )
       }
     }
+  }
+
+  private var showsSwitchBranch: Bool {
+    laneId != nil && branchRef != nil
+  }
+
+  private var branchSwitchDisabledReason: String? {
+    if laneType == "attached" {
+      return "Branch switching is disabled for attached lanes — manage this worktree with your own tools."
+    }
+    if missionId != nil, laneRole == "result" {
+      return "Branch switching is disabled for mission result lanes to keep their output stable."
+    }
+    // Only block when we *know* the lane is a mission worker (laneRole is set
+    // to a non-"result" value). Treat a missing/unknown role as "allowed" —
+    // older callers without a role shouldn't be silently locked out.
+    if missionId != nil, let role = laneRole, role != "result" {
+      return "Branch switching isn't available on mission worker lanes."
+    }
+    return nil
+  }
+
+  private var switchBranchButton: some View {
+    let disabledReason = branchSwitchDisabledReason
+    let isDisabled = !canRunLiveActions || disabledReason != nil
+    return Button {
+      guard disabledReason == nil else { return }
+      showBranchPicker = true
+    } label: {
+      HStack(spacing: 10) {
+        Image(systemName: disabledReason == nil ? "arrow.triangle.branch" : "lock")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(disabledReason == nil ? ADEColor.tintLanes : ADEColor.textMuted)
+          .frame(width: 24)
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Switch branch")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          if let disabledReason {
+            Text(disabledReason)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(2)
+          } else if let branchRef {
+            Text(branchRef)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          } else {
+            Text("Move this lane to another branch.")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+        }
+        Spacer(minLength: 8)
+        if disabledReason == nil {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      .padding(EdgeInsets(top: 11, leading: 12, bottom: 11, trailing: 12))
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        (disabledReason == nil ? ADEColor.tintLanes.opacity(0.10) : ADEColor.surfaceBackground.opacity(0.22)),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(
+            disabledReason == nil ? ADEColor.tintLanes.opacity(0.22) : ADEColor.border.opacity(0.14),
+            lineWidth: 0.5
+          )
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(isDisabled)
+    .opacity(isDisabled ? 0.6 : 1.0)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(branchRef.map { "Switch branch, currently \($0)" } ?? "Switch branch")
+    .accessibilityHint(disabledReason ?? "Opens the branch picker for this lane.")
   }
 
   private var stashButton: some View {
@@ -115,12 +204,6 @@ struct LaneActionsCard: View {
         moreRow(title: "Rebase and push", symbol: "arrow.up.and.down.text.horizontal", tint: ADEColor.textPrimary, action: onRebaseAndPush)
         Divider().opacity(0.35)
         moreRow(title: "Force push (lease)", symbol: "arrow.up.forward.circle.fill", tint: ADEColor.warning, action: onForcePush)
-        if laneId != nil, branchRef != nil {
-          Divider().opacity(0.35)
-          moreRow(title: "Checkout branch…", symbol: "arrow.triangle.branch", tint: ADEColor.accent) {
-            showBranchPicker = true
-          }
-        }
       }
       .background(ADEColor.surfaceBackground.opacity(0.25), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       .overlay(

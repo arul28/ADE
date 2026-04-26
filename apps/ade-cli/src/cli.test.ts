@@ -519,6 +519,71 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps `git checkout <branch>` to git_checkout_branch with mode=existing by default", () => {
+    const plan = buildCliPlan(["git", "checkout", "feature/foo", "--lane", "lane-1"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    expect(plan.steps[0]?.params).toEqual({
+      name: "git_checkout_branch",
+      arguments: {
+        laneId: "lane-1",
+        branchName: "feature/foo",
+        mode: "existing",
+        acknowledgeActiveWork: false,
+      },
+    });
+  });
+
+  it("maps `git checkout --create` to mode=create with optional --from/--base", () => {
+    const plan = buildCliPlan([
+      "git", "checkout",
+      "feature/new",
+      "--lane", "lane-1",
+      "--create",
+      "--from", "main",
+      "--base", "main",
+      "--ack-active-work",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    expect(plan.steps[0]?.params).toEqual({
+      name: "git_checkout_branch",
+      arguments: {
+        laneId: "lane-1",
+        branchName: "feature/new",
+        mode: "create",
+        startPoint: "main",
+        baseRef: "main",
+        acknowledgeActiveWork: true,
+      },
+    });
+  });
+
+  it("accepts the `-b` short flag as an alias for --create", () => {
+    const plan = buildCliPlan(["git", "checkout", "topic-1", "--lane", "lane-1", "-b"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    const args = (plan.steps[0]?.params as { arguments: Record<string, unknown> }).arguments;
+    expect(args.mode).toBe("create");
+    expect(args.branchName).toBe("topic-1");
+  });
+
+  it("omits startPoint and baseRef from the call when not supplied", () => {
+    const plan = buildCliPlan(["git", "checkout", "feature/x", "--lane", "lane-1"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    const args = (plan.steps[0]?.params as { arguments: Record<string, unknown> }).arguments;
+    expect(args).not.toHaveProperty("startPoint");
+    expect(args).not.toHaveProperty("baseRef");
+  });
+
+  it("rejects `git checkout` without a branch name", () => {
+    expect(() => buildCliPlan(["git", "checkout", "--lane", "lane-1"]))
+      .toThrow(/branchName/);
+  });
+
   it("shows command help from subcommand help flags", () => {
     const prsHelp = buildCliPlan(["prs", "create", "--help"]);
     expect(prsHelp.kind).toBe("help");

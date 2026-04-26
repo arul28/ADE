@@ -173,6 +173,17 @@ function createMockLaneService() {
     createChild: vi.fn().mockResolvedValue({ id: "child-1" }),
     createFromUnstaged: vi.fn().mockResolvedValue({ id: "unstaged-1" }),
     importBranch: vi.fn().mockResolvedValue({ id: "imported-1" }),
+    previewBranchSwitch: vi.fn().mockResolvedValue({
+      laneId: "lane-1",
+      currentBranchRef: "main",
+      targetBranchRef: "feature/foo",
+      mode: "existing",
+      dirty: false,
+      duplicateLaneId: null,
+      duplicateLaneName: null,
+      activeWork: [],
+      targetProfile: null,
+    }),
     attach: vi.fn().mockResolvedValue({ id: "attached-1" }),
     adoptAttached: vi.fn().mockResolvedValue({ ok: true }),
     rename: vi.fn(),
@@ -699,6 +710,32 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("lanes.importBranch requires branchRef.");
     });
 
+    it("lanes.previewBranchSwitch routes to laneService.previewBranchSwitch with optional fields", async () => {
+      const result = await service.execute(makePayload("lanes.previewBranchSwitch", {
+        laneId: "lane-1",
+        branchName: "feature/foo",
+        mode: "create",
+        startPoint: "main",
+        baseRef: "main",
+        acknowledgeActiveWork: true,
+      }));
+      expect(laneService.previewBranchSwitch).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        branchName: "feature/foo",
+        mode: "create",
+        startPoint: "main",
+        baseRef: "main",
+        acknowledgeActiveWork: true,
+      });
+      // The mock returns a preview shape; the result should be the same object.
+      expect(result).toMatchObject({ laneId: "lane-1", mode: "existing" });
+    });
+
+    it("lanes.previewBranchSwitch requires branchName", async () => {
+      await expect(service.execute(makePayload("lanes.previewBranchSwitch", { laneId: "lane-1" })))
+        .rejects.toThrow(/branchName/);
+    });
+
     it("lanes.rename parses laneId and name", async () => {
       await service.execute(makePayload("lanes.rename", {
         laneId: "lane-1",
@@ -1010,6 +1047,38 @@ describe("createSyncRemoteCommandService", () => {
     it("git.checkoutBranch throws when branchName is missing", async () => {
       await expect(service.execute(makePayload("git.checkoutBranch", { laneId: "lane-1" })))
         .rejects.toThrow("git.checkoutBranch requires branchName.");
+    });
+
+    it("git.checkoutBranch forwards optional mode/startPoint/baseRef/acknowledgeActiveWork", async () => {
+      await service.execute(makePayload("git.checkoutBranch", {
+        laneId: "lane-1",
+        branchName: "feature/new",
+        mode: "create",
+        startPoint: "main",
+        baseRef: "main",
+        acknowledgeActiveWork: true,
+      }));
+      expect(gitService.checkoutBranch).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        branchName: "feature/new",
+        mode: "create",
+        startPoint: "main",
+        baseRef: "main",
+        acknowledgeActiveWork: true,
+      });
+    });
+
+    it("git.checkoutBranch omits optional fields when payload provides only required ones", async () => {
+      await service.execute(makePayload("git.checkoutBranch", {
+        laneId: "lane-1",
+        branchName: "feature/clean",
+      }));
+      const lastCall = gitService.checkoutBranch.mock.calls.at(-1)?.[0];
+      expect(lastCall).toEqual({ laneId: "lane-1", branchName: "feature/clean" });
+      expect(lastCall).not.toHaveProperty("mode");
+      expect(lastCall).not.toHaveProperty("startPoint");
+      expect(lastCall).not.toHaveProperty("baseRef");
+      expect(lastCall).not.toHaveProperty("acknowledgeActiveWork");
     });
   });
 

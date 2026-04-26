@@ -264,7 +264,14 @@ struct LanesTabView: View {
           Button(branch.name) {
             Task {
               do {
-                try await syncService.checkoutPrimaryBranch(laneId: primaryLane.id, branchName: branch.name)
+                try await syncService.checkoutPrimaryBranch(
+                  laneId: primaryLane.id,
+                  branchName: branch.name,
+                  mode: "existing",
+                  startPoint: nil,
+                  baseRef: nil,
+                  acknowledgeActiveWork: false
+                )
                 await reload(refreshRemote: true)
                 await refreshPrimaryBranches(force: true)
               } catch {

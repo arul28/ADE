@@ -32,6 +32,9 @@ import type {
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
+  LaneBranchSwitchArgs,
+  LaneBranchSwitchPreview,
+  LaneBranchSwitchResult,
   DeleteLaneArgs,
   DeleteMissionArgs,
   DevToolsCheckResult,
@@ -1027,6 +1030,12 @@ declare global {
           args: CreateLaneFromUnstagedArgs,
         ) => Promise<LaneSummary>;
         importBranch: (args: ImportBranchLaneArgs) => Promise<LaneSummary>;
+        previewBranchSwitch: (
+          args: LaneBranchSwitchArgs,
+        ) => Promise<LaneBranchSwitchPreview>;
+        switchBranch: (
+          args: LaneBranchSwitchArgs,
+        ) => Promise<LaneBranchSwitchResult>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         listUnregisteredWorktrees: () => Promise<UnregisteredLaneCandidate[]>;
         adoptAttached: (args: AdoptAttachedLaneArgs) => Promise<LaneSummary>;

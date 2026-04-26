@@ -700,14 +700,18 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "git_checkout_branch",
-    description: "Checkout an existing branch in a lane checkout.",
+    description: "Switch a lane checkout to an existing branch or create a new branch in that lane.",
     inputSchema: {
       type: "object",
       required: ["branchName"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        branchName: { type: "string", minLength: 1 }
+        branchName: { type: "string", minLength: 1 },
+        mode: { type: "string", enum: ["existing", "create"] },
+        startPoint: { type: "string", minLength: 1 },
+        baseRef: { type: "string", minLength: 1 },
+        acknowledgeActiveWork: { type: "boolean" }
       }
     }
   },
@@ -2006,8 +2010,11 @@ function sanitizeToolSchema(schema: unknown): unknown {
   }
   if (out.type === "object" && isRecord(out.properties)) {
     const propKeys = Object.keys(out.properties);
-    if (propKeys.length && (!Array.isArray(out.required) || !propKeys.every((k) => (out.required as string[]).includes(k)))) {
-      out.required = propKeys;
+    if (propKeys.length && !Array.isArray(out.required)) {
+      // Default to no required fields when none declared; preserve any
+      // explicit `required` array exactly as written so optional properties
+      // stay optional.
+      out.required = [];
     }
     const sanitizedProps: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(out.properties)) {
@@ -5258,7 +5265,29 @@ async function runTool(args: {
   if (name === "git_checkout_branch") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_checkout_branch");
     const branchName = assertNonEmptyString(toolArgs.branchName, "branchName");
-    const action = await runtime.gitService.checkoutBranch({ laneId, branchName });
+    const rawMode = toolArgs.mode;
+    let mode: "existing" | "create" | undefined;
+    if (rawMode === undefined || rawMode === null) {
+      mode = undefined;
+    } else if (rawMode === "existing" || rawMode === "create") {
+      mode = rawMode;
+    } else {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `mode must be either "existing" or "create"`
+      );
+    }
+    const startPoint = typeof toolArgs.startPoint === "string" ? toolArgs.startPoint : undefined;
+    const baseRef = typeof toolArgs.baseRef === "string" ? toolArgs.baseRef : undefined;
+    const acknowledgeActiveWork = typeof toolArgs.acknowledgeActiveWork === "boolean" ? toolArgs.acknowledgeActiveWork : undefined;
+    const action = await runtime.gitService.checkoutBranch({
+      laneId,
+      branchName,
+      mode: mode ?? "existing",
+      startPoint,
+      baseRef,
+      acknowledgeActiveWork,
+    });
     return { laneId, branchName, action };
   }
 

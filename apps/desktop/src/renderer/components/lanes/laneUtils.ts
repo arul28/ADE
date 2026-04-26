@@ -202,6 +202,10 @@ export type LaneBranchOption = {
   isCurrent: boolean;
   isRemote: boolean;
   upstream: string | null;
+  ownedByLaneId?: string | null;
+  ownedByLaneName?: string | null;
+  profiledInCurrentLane?: boolean;
+  hasOpenPr?: boolean;
 };
 
 export const EMPTY_LANE_PANE_DETAIL: LanePaneDetailSelection = {
@@ -210,7 +214,7 @@ export const EMPTY_LANE_PANE_DETAIL: LanePaneDetailSelection = {
   selectedCommit: null
 };
 
-export function formatBranchCheckoutError(input: string): string {
+export function formatBranchCheckoutError(input: string, laneName?: string): string {
   const message = input.trim();
   const lowered = message.toLowerCase();
   const dirtyCheckout =
@@ -218,15 +222,50 @@ export function formatBranchCheckoutError(input: string): string {
     lowered.includes("please commit your changes or stash them before you switch branches");
   if (!dirtyCheckout) return message;
 
+  const where = laneName ? `${laneName} has` : "this lane has";
   const touchedFiles = message
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.includes("/") && !line.toLowerCase().startsWith("error:"));
   const fileCount = touchedFiles.length;
   if (fileCount > 0) {
-    return `Cannot switch branches: you have uncommitted primary-lane changes in ${fileCount} file${fileCount === 1 ? "" : "s"}. Commit, stash, or discard changes first.`;
+    return `Cannot switch branches: ${where} uncommitted changes in ${fileCount} file${fileCount === 1 ? "" : "s"}. Commit, stash, or discard them first.`;
   }
-  return "Cannot switch branches while primary lane has uncommitted changes. Commit, stash, or discard changes first.";
+  return `Cannot switch branches while ${where} uncommitted changes. Commit, stash, or discard them first.`;
 }
 
 export const RESIZE_TARGET_MINIMUM_SIZE = { coarse: 37, fine: 27 } as const;
+
+export function validateBranchName(input: string): { ok: boolean; reason?: string } {
+  const name = input.trim();
+  if (!name) return { ok: false, reason: "Branch name is required." };
+  if (name.length > 200) return { ok: false, reason: "Branch name is too long." };
+  if (name.startsWith("-")) return { ok: false, reason: "Cannot start with '-'." };
+  if (name.startsWith("/") || name.endsWith("/")) return { ok: false, reason: "Cannot start or end with '/'." };
+  if (name.endsWith(".")) return { ok: false, reason: "Cannot end with '.'." };
+  if (name.endsWith(".lock")) return { ok: false, reason: "Cannot end with '.lock'." };
+  if (name.includes("..")) return { ok: false, reason: "Cannot contain '..'." };
+  if (name.includes("//")) return { ok: false, reason: "Cannot contain '//'." };
+  if (name.includes("@{")) return { ok: false, reason: "Cannot contain '@{'." };
+  if (/[\s~^:?*[\\]/.test(name)) return { ok: false, reason: "Cannot contain spaces or any of: ~ ^ : ? * [ \\." };
+  if (/[\x00-\x1f\x7f]/.test(name)) return { ok: false, reason: "Cannot contain control characters." };
+  for (const segment of name.split("/")) {
+    if (!segment) return { ok: false, reason: "Cannot contain empty path segments." };
+    if (segment.startsWith(".")) return { ok: false, reason: "Path segments cannot start with '.'." };
+    if (segment.endsWith(".lock")) return { ok: false, reason: "Path segments cannot end with '.lock'." };
+  }
+  return { ok: true };
+}
+
+export function stripRemotePrefix(name: string): string {
+  if (name.startsWith("refs/remotes/")) {
+    const rest = name.slice("refs/remotes/".length);
+    const slash = rest.indexOf("/");
+    return slash >= 0 ? rest.slice(slash + 1) : rest;
+  }
+  const firstSlash = name.indexOf("/");
+  if (firstSlash > 0 && firstSlash < name.length - 1) {
+    return name.slice(firstSlash + 1);
+  }
+  return name;
+}

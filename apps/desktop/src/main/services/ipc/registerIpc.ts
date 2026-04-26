@@ -58,6 +58,9 @@ import type {
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
+  LaneBranchSwitchArgs,
+  LaneBranchSwitchPreview,
+  LaneBranchSwitchResult,
   DeleteLaneArgs,
   DockLayout,
   GraphPersistedState,
@@ -3625,7 +3628,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesCreate, async (_event, arg: CreateLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
-    const lane = await ctx.laneService.create({ name: arg.name, description: arg.description, parentLaneId: arg.parentLaneId });
+    const lane = await ctx.laneService.create({
+      name: arg.name,
+      description: arg.description,
+      parentLaneId: arg.parentLaneId,
+      baseBranch: arg.baseBranch,
+    });
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     triggerAutoContextDocs(ctx, {
@@ -3669,6 +3677,16 @@ export function registerIpc({
       reason: `lanes_import_branch:${lane.id}`,
     });
     return lane;
+  });
+
+  ipcMain.handle(IPC.lanesPreviewBranchSwitch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchPreview> => {
+    const ctx = getCtx();
+    return await ctx.laneService.previewBranchSwitch(arg);
+  });
+
+  ipcMain.handle(IPC.lanesSwitchBranch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchResult> => {
+    const ctx = getCtx();
+    return await ctx.laneService.switchBranch(arg);
   });
 
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {

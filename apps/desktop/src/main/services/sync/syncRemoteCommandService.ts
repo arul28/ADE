@@ -48,6 +48,7 @@ import type {
   GitGenerateCommitMessageArgs,
   GitGetCommitMessageArgs,
   GitGetFileHistoryArgs,
+  GitCheckoutBranchArgs,
   GitListBranchesArgs,
   GitListCommitFilesArgs,
   GitPushArgs,
@@ -817,10 +818,16 @@ function parseGitListBranchesArgs(value: Record<string, unknown>): GitListBranch
   };
 }
 
-function parseGitCheckoutBranchArgs(value: Record<string, unknown>): { laneId: string; branchName: string } {
+function parseGitCheckoutBranchArgs(value: Record<string, unknown>): GitCheckoutBranchArgs {
   return {
     laneId: requireString(value.laneId, "git.checkoutBranch requires laneId."),
     branchName: requireString(value.branchName, "git.checkoutBranch requires branchName."),
+    ...(asTrimmedString(value.mode) ? { mode: value.mode as GitCheckoutBranchArgs["mode"] } : {}),
+    ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
+    ...(asTrimmedString(value.baseRef) ? { baseRef: asTrimmedString(value.baseRef)! } : {}),
+    ...(asOptionalBoolean(value.acknowledgeActiveWork) !== undefined
+      ? { acknowledgeActiveWork: asOptionalBoolean(value.acknowledgeActiveWork) }
+      : {}),
   };
 }
 
@@ -1480,6 +1487,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     args.laneService.createFromUnstaged(parseCreateLaneFromUnstagedArgs(payload)));
   register("lanes.importBranch", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.importBranch(parseImportBranchArgs(payload)));
+  register("lanes.previewBranchSwitch", { viewerAllowed: true }, async (payload) =>
+    args.laneService.previewBranchSwitch(parseGitCheckoutBranchArgs(payload)));
   register("lanes.attach", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.attach(parseAttachLaneArgs(payload)));
   register("lanes.adoptAttached", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.adoptAttached({ laneId: requireString(payload.laneId, "lanes.adoptAttached requires laneId.") }));

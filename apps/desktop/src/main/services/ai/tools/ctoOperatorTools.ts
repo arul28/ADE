@@ -2649,8 +2649,22 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
 
   tools.gitCheckoutBranch = tool({
     description: "Switch to or create a git branch in a lane.",
-    inputSchema: z.object({ laneId: z.string().optional(), branch: z.string().min(1), create: z.boolean().optional().default(false) }),
-    execute: ({ laneId, branch, create }) => gitGuard(() => deps.gitService!.checkoutBranch({ laneId: resolveLaneId(laneId), branch, create })),
+    inputSchema: z.object({
+      laneId: z.string().optional(),
+      branch: z.string().min(1),
+      create: z.boolean().optional().default(false),
+      startPoint: z.string().optional(),
+      baseRef: z.string().optional(),
+      acknowledgeActiveWork: z.boolean().optional().default(false),
+    }),
+    execute: ({ laneId, branch, create, startPoint, baseRef, acknowledgeActiveWork }) => gitGuard(() => deps.gitService!.checkoutBranch({
+      laneId: resolveLaneId(laneId),
+      branchName: branch,
+      mode: create ? "create" : "existing",
+      startPoint,
+      baseRef,
+      acknowledgeActiveWork,
+    })),
   });
 
   tools.gitStashPush = tool({

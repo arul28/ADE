@@ -30,6 +30,8 @@ import {
   sortLanesForStackGraph,
   mergeUnique,
   laneMatchesFilter,
+  isMissionLaneHiddenByDefault,
+  isMissionResultLane,
   chipLabel,
   LANES_TILING_TREE,
   LANES_TILING_WORK_FOCUS_TREE,
@@ -38,6 +40,8 @@ import {
   RESIZE_TARGET_MINIMUM_SIZE,
   EMPTY_LANE_PANE_DETAIL,
   formatBranchCheckoutError,
+  validateBranchName,
+  stripRemotePrefix,
   type LanePaneDetailSelection,
   type LaneBranchOption
 } from "./laneUtils";
@@ -50,6 +54,7 @@ import type {
   GitCommitSummary,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
+  LaneBranchActiveWorkItem,
   LaneListSnapshot,
   LaneSummary,
   RebaseRun,
@@ -284,11 +289,22 @@ export function LanesPage() {
   const [rebaseScopePrompt, setRebaseScopePrompt] = useState<RebaseScopePromptState | null>(null);
   const [rebasePushReview, setRebasePushReview] = useState<RebasePushReviewState | null>(null);
 
-  const [primaryBranches, setPrimaryBranches] = useState<LaneBranchOption[]>([]);
+  const [laneBranches, setLaneBranches] = useState<LaneBranchOption[]>([]);
+  const [laneBranchesLoading, setLaneBranchesLoading] = useState(false);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [branchCheckoutBusy, setBranchCheckoutBusy] = useState(false);
   const [branchCheckoutError, setBranchCheckoutError] = useState<string | null>(null);
   const [branchSearchQuery, setBranchSearchQuery] = useState("");
+  const [newBranchName, setNewBranchName] = useState("");
+  const [newBranchStartPoint, setNewBranchStartPoint] = useState("");
+  const [newBranchBaseRef, setNewBranchBaseRef] = useState("");
+  const [pendingBranchSwitch, setPendingBranchSwitch] = useState<{
+    branchName: string;
+    mode: "existing" | "create";
+    startPoint?: string;
+    baseRef?: string;
+    activeWork: LaneBranchActiveWorkItem[];
+  } | null>(null);
   const branchSearchInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -495,29 +511,55 @@ export function LanesPage() {
   const adoptTargetLane = adoptTargetLaneId ? lanesById.get(adoptTargetLaneId) ?? null : null;
 
   const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
+  const branchLane = useMemo(() => {
+    const candidate = selectedLaneId ? lanesById.get(selectedLaneId) ?? primaryLane : primaryLane;
+    return candidate ?? null;
+  }, [selectedLaneId, lanesById, primaryLane]);
+  const branchLaneSwitchDisabledReason = useMemo<string | null>(() => {
+    if (!branchLane) return null;
+    if (branchLane.laneType === "attached") return "Branch switching is disabled for attached lanes — manage this worktree with your own tools.";
+    if (isMissionResultLane(branchLane)) return "Branch switching is disabled for mission result lanes to keep their output stable.";
+    if (isMissionLaneHiddenByDefault(branchLane)) return "Branch switching isn't available on mission worker lanes.";
+    return null;
+  }, [branchLane]);
+  const canSwitchBranchLane = branchLane !== null && branchLaneSwitchDisabledReason === null;
 
-  /* ---- Primary branch management ---- */
+  /* ---- Lane branch management ---- */
 
   useEffect(() => {
-    if (!primaryLane || !branchDropdownOpen) return;
-    window.ade.git.listBranches({ laneId: primaryLane.id })
-      .then(setPrimaryBranches)
-      .catch(() => {});
-  }, [branchDropdownOpen, primaryLane?.id]);
+    // Always clear stale results when the target lane (or open state) changes
+    // — otherwise lane A's branches linger when the user switches to lane B
+    // before the new fetch resolves.
+    setLaneBranches([]);
+    if (!branchLane || !branchDropdownOpen) return;
+    let cancelled = false;
+    setLaneBranchesLoading(true);
+    window.ade.git.listBranches({ laneId: branchLane.id })
+      .then((result) => { if (!cancelled) setLaneBranches(result); })
+      .catch(() => { if (!cancelled) setLaneBranches([]); })
+      .finally(() => { if (!cancelled) setLaneBranchesLoading(false); });
+    return () => { cancelled = true; };
+  }, [branchDropdownOpen, branchLane?.id]);
 
   useEffect(() => {
-    if (!primaryLane) return;
-    const current = primaryBranches.find((branch) => branch.isCurrent && !branch.isRemote)?.name ?? null;
-    if (!current || current === primaryLane.branchRef) return;
+    if (!branchLane) return;
+    const current = laneBranches.find((branch) => branch.isCurrent && !branch.isRemote)?.name ?? null;
+    if (!current || current === branchLane.branchRef) return;
     refreshLanes().catch(() => {});
-  }, [primaryBranches, primaryLane?.id, primaryLane?.branchRef, refreshLanes]);
+  }, [laneBranches, branchLane?.id, branchLane?.branchRef, refreshLanes]);
 
   useEffect(() => {
     if (branchDropdownOpen) {
       setBranchSearchQuery("");
+      setPendingBranchSwitch(null);
+      // Reset the new-branch-creation form whenever the picker (re)opens or
+      // the target lane changes so stale start-point/base-ref values from a
+      // previous lane don't carry over.
+      setNewBranchStartPoint("");
+      setNewBranchBaseRef("");
       setTimeout(() => branchSearchInputRef.current?.focus(), 0);
     }
-  }, [branchDropdownOpen]);
+  }, [branchDropdownOpen, branchLane?.id]);
   useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
   useClickOutside(addLaneDropdownRef, () => setAddLaneDropdownOpen(false), addLaneDropdownOpen);
 
@@ -844,18 +886,48 @@ export function LanesPage() {
 
   /* ---- Lane management actions ---- */
 
-  const currentPrimaryBranch = useMemo(
-    () => primaryBranches.find((branch) => branch.isCurrent)?.name ?? primaryLane?.branchRef ?? "",
-    [primaryBranches, primaryLane?.branchRef]
+  const currentLaneBranch = useMemo(
+    () => laneBranches.find((branch) => branch.isCurrent)?.name ?? branchLane?.branchRef ?? "",
+    [laneBranches, branchLane?.branchRef]
   );
-  const localPrimaryBranches = useMemo(() => {
+  const localLaneBranches = useMemo(() => {
     const q = branchSearchQuery.toLowerCase();
-    return primaryBranches.filter((branch) => !branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
-  }, [primaryBranches, branchSearchQuery]);
-  const remotePrimaryBranches = useMemo(() => {
+    return laneBranches.filter((branch) => !branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
+  }, [laneBranches, branchSearchQuery]);
+  const remoteLaneBranches = useMemo(() => {
     const q = branchSearchQuery.toLowerCase();
-    return primaryBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
-  }, [primaryBranches, branchSearchQuery]);
+    return laneBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
+  }, [laneBranches, branchSearchQuery]);
+  const startPointOptions = useMemo(() => {
+    type StartOption = { value: string; label: string; group: "lane" | "local" | "remote" };
+    const map = new Map<string, StartOption>();
+    if (branchLane?.branchRef) {
+      map.set(branchLane.branchRef, { value: branchLane.branchRef, label: branchLane.branchRef, group: "lane" });
+    }
+    for (const branch of laneBranches) {
+      if (branch.isRemote) continue;
+      if (!map.has(branch.name)) map.set(branch.name, { value: branch.name, label: branch.name, group: "local" });
+    }
+    for (const branch of laneBranches) {
+      if (!branch.isRemote) continue;
+      const local = stripRemotePrefix(branch.name);
+      if (map.has(local)) continue;
+      if (!map.has(branch.name)) {
+        map.set(branch.name, { value: branch.name, label: `${branch.name} (remote)`, group: "remote" });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [branchLane?.branchRef, laneBranches]);
+  const baseRefOptions = useMemo(() => {
+    const names = new Set<string>();
+    if (primaryLane?.branchRef) names.add(primaryLane.branchRef);
+    for (const opt of startPointOptions) names.add(opt.value);
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [startPointOptions, primaryLane?.branchRef]);
+  const branchNameValidation = useMemo(
+    () => (newBranchName.trim() ? validateBranchName(newBranchName) : { ok: false }),
+    [newBranchName],
+  );
 
   const runLaneAction = async (
     fn: () => Promise<void>,
@@ -921,29 +993,72 @@ export function LanesPage() {
     }
   }, [adoptTargetLaneId, refreshLanes, selectLane]);
 
-  const checkoutPrimaryBranch = useCallback(async (branchName: string) => {
-    if (!primaryLane) return;
-    if (primaryLane.status.dirty) {
-      setBranchCheckoutError("Cannot switch branches while primary lane has uncommitted changes. Commit, stash, or discard changes first.");
+  const checkoutLaneBranch = useCallback(async (request: {
+    branchName: string;
+    mode?: "existing" | "create";
+    startPoint?: string;
+    baseRef?: string;
+    acknowledgeActiveWork?: boolean;
+  }) => {
+    if (!branchLane) return;
+    if (branchLane.status.dirty) {
+      setBranchCheckoutError(`Cannot switch branches while ${branchLane.name} has uncommitted changes. Commit, stash, or discard changes first.`);
       return;
     }
+    const mode = request.mode ?? "existing";
+    const branchName = request.branchName.trim();
+    if (!branchName) return;
     setBranchCheckoutBusy(true);
     setBranchCheckoutError(null);
     let succeeded = false;
     try {
-      await window.ade.git.checkoutBranch({ laneId: primaryLane.id, branchName });
+      if (!request.acknowledgeActiveWork) {
+        const preview = await window.ade.lanes.previewBranchSwitch({
+          laneId: branchLane.id,
+          branchName,
+          mode,
+          startPoint: request.startPoint,
+          baseRef: request.baseRef,
+        });
+        if (preview.duplicateLaneId) {
+          throw new Error(`Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`);
+        }
+        if (preview.dirty) {
+          throw new Error(`Cannot switch branches while ${branchLane.name} has uncommitted changes.`);
+        }
+        if (preview.activeWork.length > 0) {
+          setPendingBranchSwitch({
+            branchName,
+            mode,
+            startPoint: request.startPoint,
+            baseRef: request.baseRef,
+            activeWork: preview.activeWork,
+          });
+          return;
+        }
+      }
+      await window.ade.git.checkoutBranch({
+        laneId: branchLane.id,
+        branchName,
+        mode,
+        startPoint: request.startPoint,
+        baseRef: request.baseRef,
+        acknowledgeActiveWork: request.acknowledgeActiveWork,
+      });
       await refreshLanes();
-      const updated = await window.ade.git.listBranches({ laneId: primaryLane.id });
-      setPrimaryBranches(updated);
+      const updated = await window.ade.git.listBranches({ laneId: branchLane.id });
+      setLaneBranches(updated);
+      setPendingBranchSwitch(null);
+      setNewBranchName("");
       succeeded = true;
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
-      setBranchCheckoutError(formatBranchCheckoutError(raw));
+      setBranchCheckoutError(formatBranchCheckoutError(raw, branchLane.name));
     } finally {
       setBranchCheckoutBusy(false);
       if (succeeded) setBranchDropdownOpen(false);
     }
-  }, [primaryLane, refreshLanes]);
+  }, [branchLane, refreshLanes]);
 
   const archiveManagedLanes = async () => {
     const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
@@ -1735,29 +1850,43 @@ export function LanesPage() {
         </div>
 
         {/* Branch selector */}
-        {primaryLane && selectedLaneId === primaryLane.id ? (
+        {branchLane ? (
           <div className="relative shrink-0 flex items-center" ref={branchDropdownRef}>
-            <SmartTooltip content={{ label: "Branch Selector", description: "Switch the primary lane to a different local or remote branch.", docUrl: docs.lanesOverview }} side="bottom">
+            <SmartTooltip
+              content={{
+                label: canSwitchBranchLane ? `Branch — ${branchLane.name}` : `Branch — ${branchLane.name} (read-only)`,
+                description: branchLaneSwitchDisabledReason ?? `Switch ${branchLane.name} to a local or remote branch.`,
+                docUrl: docs.lanesOverview,
+              }}
+              side="bottom"
+            >
               <button
                 type="button"
                 data-tour="lanes.branchSelector"
                 style={{
                   display: "inline-flex", alignItems: "center", gap: 8,
                   padding: "0 12px", height: 32, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-                  color: COLORS.success, background: "rgba(255,255,255,0.03)",
-                  border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, cursor: "pointer",
+                  color: canSwitchBranchLane ? COLORS.success : COLORS.textMuted,
+                  background: "rgba(255,255,255,0.03)",
+                  border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8,
+                  cursor: canSwitchBranchLane ? "pointer" : "not-allowed",
+                  opacity: canSwitchBranchLane ? 1 : 0.65,
                 }}
-                onClick={() => setBranchDropdownOpen((prev) => !prev)}
-                disabled={branchCheckoutBusy}
+                onClick={() => {
+                  if (!canSwitchBranchLane) return;
+                  setBranchDropdownOpen((prev) => !prev);
+                }}
+                disabled={branchCheckoutBusy || !canSwitchBranchLane}
+                aria-disabled={!canSwitchBranchLane}
+                title={branchLaneSwitchDisabledReason ?? undefined}
               >
                 <GitBranch size={14} />
-                <span>{currentPrimaryBranch || primaryLane.branchRef}</span>
-                <CaretDown size={12} style={{ opacity: 0.6 }} />
+                <span>{branchLane.branchRef}</span>
+                <CaretDown size={12} style={{ opacity: canSwitchBranchLane ? 0.6 : 0.3 }} />
               </button>
             </SmartTooltip>
-            <HelpChip termId="primary-lane" />
-            {branchDropdownOpen ? (
-              <div className="ade-liquid-glass-menu absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-hidden flex flex-col" style={{ width: 288, padding: "4px 0" }}>
+            {branchDropdownOpen && canSwitchBranchLane ? (
+              <div className="ade-liquid-glass-menu absolute left-0 top-full z-[200] mt-1 max-h-96 overflow-hidden flex flex-col" style={{ width: 340, padding: "4px 0" }}>
                 <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
                   <MagnifyingGlass size={13} className="pointer-events-none absolute" style={{ left: 16, top: "50%", transform: "translateY(-50%)", color: COLORS.textDim }} />
                   <input
@@ -1775,9 +1904,129 @@ export function LanesPage() {
                     onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
                   />
                 </div>
+                <div style={{ padding: "8px 10px", borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}` }}>
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>NEW BRANCH</div>
+                    <input
+                      type="text"
+                      placeholder="feature/short-name"
+                      value={newBranchName}
+                      onChange={(e) => setNewBranchName(e.target.value)}
+                      aria-invalid={Boolean(newBranchName.trim()) && !branchNameValidation.ok}
+                      style={{
+                        width: "100%", padding: "6px 8px", fontSize: 12, fontFamily: MONO_FONT,
+                        color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                        border: `1px solid ${
+                          newBranchName.trim() && !branchNameValidation.ok ? COLORS.danger : COLORS.outlineBorder
+                        }`,
+                        borderRadius: 6, outline: "none",
+                      }}
+                    />
+                    {newBranchName.trim() && branchNameValidation.reason ? (
+                      <div style={{ fontSize: 11, color: COLORS.danger }}>{branchNameValidation.reason}</div>
+                    ) : null}
+                    <label className="flex flex-col gap-1" title="Git branch the new branch is forked from.">
+                      <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>START FROM</span>
+                      <select
+                        value={newBranchStartPoint || branchLane.branchRef}
+                        onChange={(e) => setNewBranchStartPoint(e.target.value)}
+                        style={{
+                          minWidth: 0, height: 30, fontSize: 12, fontFamily: MONO_FONT,
+                          color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                          border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
+                        }}
+                      >
+                        {startPointOptions.map((opt) => <option key={`start:${opt.value}`} value={opt.value}>{opt.label}</option>)}
+                      </select>
+                      <span style={{ fontSize: 10, color: COLORS.textDim }}>The commit your new branch is forked from.</span>
+                    </label>
+                    <label className="flex flex-col gap-1" title="ADE compares this lane's commits against this base for rebase / merge readiness.">
+                      <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>REBASE BASE</span>
+                      <select
+                        value={newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef}
+                        onChange={(e) => setNewBranchBaseRef(e.target.value)}
+                        style={{
+                          minWidth: 0, height: 30, fontSize: 12, fontFamily: MONO_FONT,
+                          color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                          border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
+                        }}
+                      >
+                        {baseRefOptions.map((name) => <option key={`base:${name}`} value={name}>{name}</option>)}
+                      </select>
+                      <span style={{ fontSize: 10, color: COLORS.textDim }}>What ADE compares this lane against for rebase / merge readiness.</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-center gap-2"
+                      style={{
+                        height: 30, border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6,
+                        background: "rgba(255,255,255,0.05)", color: COLORS.textPrimary,
+                        fontSize: 12, fontFamily: SANS_FONT,
+                        cursor: branchNameValidation.ok && !branchCheckoutBusy ? "pointer" : "not-allowed",
+                        opacity: branchNameValidation.ok && !branchCheckoutBusy ? 1 : 0.5,
+                      }}
+                      disabled={branchCheckoutBusy || !branchNameValidation.ok}
+                      onClick={async () => {
+                        await checkoutLaneBranch({
+                          branchName: newBranchName,
+                          mode: "create",
+                          startPoint: newBranchStartPoint || branchLane.branchRef,
+                          baseRef: newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef,
+                        });
+                      }}
+                    >
+                      <Plus size={13} />
+                      <span>Create in this lane</span>
+                    </button>
+                  </div>
+                </div>
+                {pendingBranchSwitch ? (
+                  <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.warning}12` }}>
+                    <div style={{ fontSize: 12, color: COLORS.textPrimary, fontWeight: 600 }}>This lane has active work.</div>
+                    <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>Terminals and processes stay attached to this lane and will keep running on the new branch's worktree.</div>
+                    <div style={{ marginTop: 6, display: "grid", gap: 2 }}>
+                      {pendingBranchSwitch.activeWork.slice(0, 3).map((item) => (
+                        <div key={`${item.kind}:${item.id}`} className="truncate" style={{ fontSize: 11, color: COLORS.textSecondary }}>
+                          {item.kind === "terminal" ? "Terminal" : "Process"}: {item.title}
+                        </div>
+                      ))}
+                      {pendingBranchSwitch.activeWork.length > 3 ? (
+                        <div style={{ fontSize: 11, color: COLORS.textDim }}>+ {pendingBranchSwitch.activeWork.length - 3} more</div>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        style={{
+                          fontSize: 11, padding: "4px 8px", height: 26,
+                          border: `1px solid ${COLORS.warning}`, borderRadius: 6,
+                          background: `${COLORS.warning}25`, color: COLORS.warning,
+                          fontFamily: SANS_FONT, fontWeight: 600, cursor: "pointer",
+                        }}
+                        onClick={async () => {
+                          await checkoutLaneBranch({ ...pendingBranchSwitch, acknowledgeActiveWork: true });
+                        }}
+                      >
+                        Switch anyway
+                      </button>
+                      <button
+                        type="button"
+                        style={{ ...outlineButton({ fontSize: 11, padding: "4px 8px", height: 26 }) }}
+                        onClick={() => setPendingBranchSwitch(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="overflow-auto flex-1" style={{ padding: "2px 0" }}>
+                {laneBranchesLoading && laneBranches.length === 0 ? (
+                  <div style={{ padding: "10px 12px", fontSize: 12, color: COLORS.textMuted }}>Loading branches…</div>
+                ) : null}
                 <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>LOCAL BRANCHES</div>
-                {localPrimaryBranches.map((branch) => (
+                {localLaneBranches.map((branch) => {
+                  const owned = Boolean(branch.ownedByLaneId);
+                  return (
                   <button
                     key={`local:${branch.name}`}
                     type="button"
@@ -1786,47 +2035,62 @@ export function LanesPage() {
                       padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
                       color: branch.isCurrent ? COLORS.success : COLORS.textMuted,
                       fontWeight: branch.isCurrent ? 600 : 400,
-                      background: "transparent", border: "none", cursor: "pointer",
+                      background: "transparent", border: "none",
+                      cursor: branch.isCurrent || owned ? "not-allowed" : "pointer",
+                      opacity: owned ? 0.6 : 1,
                     }}
-                    disabled={branchCheckoutBusy || branch.isCurrent}
+                    disabled={branchCheckoutBusy || branch.isCurrent || owned}
+                    title={owned ? `Already active in ${branch.ownedByLaneName ?? "another lane"}` : undefined}
                     onClick={async () => {
                       if (branch.isCurrent) return;
-                      await checkoutPrimaryBranch(branch.name);
+                      await checkoutLaneBranch({ branchName: branch.name });
                     }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                   >
                     {branch.isCurrent ? <Check size={12} className="shrink-0" /> : <span className="shrink-0" style={{ width: 12 }} />}
                     <span className="truncate">{branch.name}</span>
-                    {branch.upstream ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.textDim }}>tracked</span> : null}
+                    {branch.ownedByLaneName ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.warning }}>in {branch.ownedByLaneName}</span> : null}
+                    {!branch.ownedByLaneName && branch.upstream ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.textDim }}>tracked</span> : null}
                   </button>
-                ))}
-                {remotePrimaryBranches.length > 0 ? (
+                  );
+                })}
+                {remoteLaneBranches.length > 0 ? (
                   <>
                     <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
                     <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>REMOTE BRANCHES</div>
-                    {remotePrimaryBranches.map((branch) => (
+                    {remoteLaneBranches.map((branch) => {
+                      const owned = Boolean(branch.ownedByLaneId);
+                      return (
                       <button
                         key={`remote:${branch.name}`}
                         type="button"
                         className="flex w-full items-center gap-2 text-left"
                         style={{
                           padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
-                          color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer",
+                          color: COLORS.textMuted, background: "transparent", border: "none",
+                          cursor: owned ? "not-allowed" : "pointer",
+                          opacity: owned ? 0.6 : 1,
                         }}
-                        disabled={branchCheckoutBusy}
-                        onClick={async () => { await checkoutPrimaryBranch(branch.name); }}
+                        disabled={branchCheckoutBusy || owned}
+                        title={owned ? `Already active in ${branch.ownedByLaneName ?? "another lane"}` : undefined}
+                        onClick={async () => { await checkoutLaneBranch({ branchName: branch.name }); }}
                         onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
                         onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                       >
                         <span className="shrink-0" style={{ width: 12 }} />
                         <span className="truncate">{branch.name}</span>
-                        <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.info }}>remote</span>
+                        {branch.ownedByLaneName ? (
+                          <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.warning }}>in {branch.ownedByLaneName}</span>
+                        ) : (
+                          <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.info }}>remote</span>
+                        )}
                       </button>
-                    ))}
+                      );
+                    })}
                   </>
                 ) : null}
-                {localPrimaryBranches.length === 0 && remotePrimaryBranches.length === 0 ? (
+                {!laneBranchesLoading && localLaneBranches.length === 0 && remoteLaneBranches.length === 0 ? (
                   <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>{branchSearchQuery ? "No matching branches." : "No branches found."}</div>
                 ) : null}
                 {branchCheckoutError ? (
@@ -1837,7 +2101,7 @@ export function LanesPage() {
             ) : null}
           </div>
         ) : null}
-        {branchCheckoutError && primaryLane && selectedLaneId === primaryLane.id ? (
+        {branchCheckoutError && branchLane && !branchDropdownOpen ? (
           <div className="inline-flex items-center gap-2 shrink-0" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, borderRadius: 8, padding: "4px 8px", fontSize: 12, color: COLORS.danger }}>
             <span>{branchCheckoutError}</span>
             <button
@@ -2194,14 +2458,19 @@ export function LanesPage() {
 	                  {devicesOpen.length}
 	                </span>
 	              ) : null}
-	              {/* Branch ref pill for primary */}
-              {isPrimary ? (
-                <span style={{
+	              {/* Branch ref pill — shown for every lane so identity is (name, branch) */}
+              <span
+                className="truncate"
+                style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px",
-                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px",
-                  borderRadius: 6, color: COLORS.accent, background: COLORS.accentSubtle, border: `1px solid ${COLORS.accentBorder}`,
-                }}>{lane.branchRef}</span>
-              ) : null}
+                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "0.5px",
+                  borderRadius: 6, maxWidth: 160,
+                  color: isPrimary ? COLORS.accent : COLORS.textSecondary,
+                  background: isPrimary ? COLORS.accentSubtle : "rgba(255,255,255,0.04)",
+                  border: `1px solid ${isPrimary ? COLORS.accentBorder : COLORS.border}`,
+                }}
+                title={`Branch: ${lane.branchRef}`}
+              >{lane.branchRef}</span>
               {/* Behind badge (rebase suggestion) */}
               {rebaseSuggestion ? (
                 <span style={{

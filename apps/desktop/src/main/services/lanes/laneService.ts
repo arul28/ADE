@@ -17,6 +17,11 @@ import type {
   CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
   LaneIcon,
+  LaneBranchActiveWorkItem,
+  LaneBranchProfile,
+  LaneBranchSwitchArgs,
+  LaneBranchSwitchPreview,
+  LaneBranchSwitchResult,
   MissionLaneRole,
   LaneStateSnapshotSummary,
   LaneStatus,
@@ -71,6 +76,20 @@ type LaneStateSnapshotRow = {
   updated_at: string | null;
 };
 
+type LaneBranchProfileRow = {
+  id: string;
+  project_id: string;
+  lane_id: string;
+  branch_ref: string;
+  normalized_branch_ref: string;
+  base_ref: string;
+  parent_lane_id: string | null;
+  source_branch_ref: string | null;
+  created_at: string;
+  updated_at: string;
+  last_checked_out_at: string | null;
+};
+
 const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
 
@@ -89,7 +108,8 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
     ...summary,
     status: cloneLaneStatus(summary.status),
     parentStatus: summary.parentStatus ? cloneLaneStatus(summary.parentStatus) : null,
-    tags: [...summary.tags]
+    tags: [...summary.tags],
+    activeBranchProfile: summary.activeBranchProfile ? { ...summary.activeBranchProfile } : null
   };
 }
 
@@ -147,8 +167,9 @@ function toLaneSummary(args: {
   parentStatus: LaneStatus | null;
   childCount: number;
   stackDepth: number;
+  activeBranchProfile?: LaneBranchProfile | null;
 }): LaneSummary {
-  const { row, status, parentStatus, childCount, stackDepth } = args;
+  const { row, status, parentStatus, childCount, stackDepth, activeBranchProfile } = args;
   return {
     id: row.id,
     name: row.name,
@@ -171,7 +192,8 @@ function toLaneSummary(args: {
     missionId: row.mission_id,
     laneRole: row.lane_role,
     createdAt: row.created_at,
-    archivedAt: row.archived_at
+    archivedAt: row.archived_at,
+    activeBranchProfile: activeBranchProfile ?? null
   };
 }
 
@@ -593,6 +615,185 @@ export function createLaneService({
     laneListCache.clear();
   };
 
+  const normalizeBranchKey = (ref: string): string =>
+    normalizeBranchName(ref).trim();
+
+  const toLaneBranchProfile = (row: LaneBranchProfileRow): LaneBranchProfile => ({
+    id: row.id,
+    laneId: row.lane_id,
+    branchRef: row.branch_ref,
+    baseRef: row.base_ref,
+    parentLaneId: row.parent_lane_id,
+    sourceBranchRef: row.source_branch_ref,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastCheckedOutAt: row.last_checked_out_at,
+  });
+
+  const getBranchProfileRow = (laneId: string, branchRef: string): LaneBranchProfileRow | null => {
+    const normalized = normalizeBranchKey(branchRef);
+    if (!normalized) return null;
+    return db.get<LaneBranchProfileRow>(
+      `
+        select *
+        from lane_branch_profiles
+        where project_id = ?
+          and lane_id = ?
+          and normalized_branch_ref = ?
+        limit 1
+      `,
+      [projectId, laneId, normalized],
+    ) ?? null;
+  };
+
+  const upsertBranchProfileForRow = (
+    row: LaneRow,
+    options: {
+      branchRef?: string;
+      baseRef?: string;
+      parentLaneId?: string | null;
+      sourceBranchRef?: string | null;
+      lastCheckedOutAt?: string | null;
+    } = {},
+  ): LaneBranchProfile => {
+    const branchRef = normalizeBranchKey(options.branchRef ?? row.branch_ref);
+    if (!branchRef) throw new Error("Branch ref is required.");
+    const existing = getBranchProfileRow(row.id, branchRef);
+    const now = new Date().toISOString();
+    const profile: LaneBranchProfileRow = {
+      id: existing?.id ?? randomUUID(),
+      project_id: projectId,
+      lane_id: row.id,
+      branch_ref: branchRef,
+      normalized_branch_ref: branchRef,
+      base_ref: options.baseRef?.trim() || existing?.base_ref || row.base_ref || defaultBaseRef,
+      parent_lane_id: options.parentLaneId !== undefined ? options.parentLaneId : (existing?.parent_lane_id ?? row.parent_lane_id),
+      source_branch_ref: options.sourceBranchRef !== undefined ? options.sourceBranchRef : (existing?.source_branch_ref ?? null),
+      created_at: existing?.created_at ?? now,
+      updated_at: now,
+      last_checked_out_at: options.lastCheckedOutAt !== undefined ? options.lastCheckedOutAt : existing?.last_checked_out_at ?? null,
+    };
+    if (existing) {
+      db.run(
+        `
+          update lane_branch_profiles
+          set branch_ref = ?,
+              base_ref = ?,
+              parent_lane_id = ?,
+              source_branch_ref = ?,
+              updated_at = ?,
+              last_checked_out_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [
+          profile.branch_ref,
+          profile.base_ref,
+          profile.parent_lane_id,
+          profile.source_branch_ref,
+          profile.updated_at,
+          profile.last_checked_out_at,
+          profile.id,
+          projectId,
+        ],
+      );
+    } else {
+      db.run(
+        `
+          insert into lane_branch_profiles(
+            id, project_id, lane_id, branch_ref, normalized_branch_ref, base_ref,
+            parent_lane_id, source_branch_ref, created_at, updated_at, last_checked_out_at
+          )
+          values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          profile.id,
+          profile.project_id,
+          profile.lane_id,
+          profile.branch_ref,
+          profile.normalized_branch_ref,
+          profile.base_ref,
+          profile.parent_lane_id,
+          profile.source_branch_ref,
+          profile.created_at,
+          profile.updated_at,
+          profile.last_checked_out_at,
+        ],
+      );
+    }
+    return toLaneBranchProfile(profile);
+  };
+
+  const ensureBranchProfileForRow = (row: LaneRow): LaneBranchProfile =>
+    upsertBranchProfileForRow(row);
+
+  const backfillLaneBranchProfiles = (): void => {
+    for (const row of getAllLaneRows(true)) {
+      if (!row.branch_ref.trim()) continue;
+      upsertBranchProfileForRow(row);
+    }
+  };
+
+  const getActiveWorkForLane = (laneId: string): LaneBranchActiveWorkItem[] => {
+    const terminalRows = db.all<{ id: string; title: string; status: string }>(
+      `
+        select id, title, status
+        from terminal_sessions
+        where lane_id = ?
+          and archived_at is null
+          and ended_at is null
+        order by started_at desc
+        limit 10
+      `,
+      [laneId],
+    );
+    const processRows = db.all<{ process_key: string; status: string }>(
+      `
+        select process_key, status
+        from process_runtime
+        where project_id = ?
+          and lane_id = ?
+          and status in ('starting', 'running', 'ready', 'unhealthy')
+        order by updated_at desc
+        limit 10
+      `,
+      [projectId, laneId],
+    );
+    return [
+      ...terminalRows.map((row) => ({
+        id: row.id,
+        kind: "terminal" as const,
+        title: row.title || row.id,
+        status: row.status,
+      })),
+      ...processRows.map((row) => ({
+        id: row.process_key,
+        kind: "process" as const,
+        title: row.process_key,
+        status: row.status,
+      })),
+    ];
+  };
+
+  const findActiveBranchOwner = (branchRef: string, laneId: string): { id: string; name: string } | null => {
+    const normalized = normalizeBranchKey(branchRef);
+    if (!normalized) return null;
+    const row = db.get<{ id: string; name: string }>(
+      `
+        select id, name
+        from lanes
+        where project_id = ?
+          and id != ?
+          and lane_type != 'primary'
+          and status != 'archived'
+          and branch_ref = ?
+        limit 1
+      `,
+      [projectId, laneId, normalized],
+    );
+    return row ? { id: row.id, name: row.name } : null;
+  };
+
   const cloneRebaseRunLane = (lane: RebaseRunLane): RebaseRunLane => ({
     ...lane,
     conflictingFiles: [...lane.conflictingFiles]
@@ -767,6 +968,15 @@ export function createLaneService({
       "update lanes set branch_ref = ? where id = ? and project_id = ?",
       [detectedBranchRef, primary.id, projectId]
     );
+    const row = getLaneRow(primary.id);
+    if (row) {
+      upsertBranchProfileForRow(row, {
+        branchRef: detectedBranchRef,
+        baseRef: primary.base_ref,
+        parentLaneId: null,
+        lastCheckedOutAt: new Date().toISOString(),
+      });
+    }
     invalidateLaneListCache();
   };
 
@@ -875,6 +1085,11 @@ export function createLaneService({
       repairLegacyPrimaryBaseRootLanes();
     } catch (err) {
       logger.warn("laneService.repairLegacyPrimaryBaseRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      backfillLaneBranchProfiles();
+    } catch (err) {
+      logger.warn("laneService.backfillLaneBranchProfiles_failed", { error: err instanceof Error ? err.message : String(err) });
     }
 
     const cacheKey = `arch:${includeArchived ? 1 : 0}|status:${includeStatus ? 1 : 0}`;
@@ -995,7 +1210,8 @@ export function createLaneService({
             status,
             parentStatus,
             childCount: childCountMap.get(row.id) ?? 0,
-            stackDepth
+            stackDepth,
+            activeBranchProfile: ensureBranchProfileForRow(row)
           })
         );
         if (includeStatus) {
@@ -1092,7 +1308,8 @@ export function createLaneService({
       status,
       parentStatus,
       childCount: 0,
-      stackDepth: computeStackDepth({ laneId: laneId, rowsById, memo: new Map() })
+      stackDepth: computeStackDepth({ laneId: laneId, rowsById, memo: new Map() }),
+      activeBranchProfile: ensureBranchProfileForRow(row)
     });
   };
 
@@ -1104,6 +1321,56 @@ export function createLaneService({
   } catch (err) {
     logger.warn("laneService.initial_repairLegacyPrimaryBaseRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
   }
+  try {
+    backfillLaneBranchProfiles();
+  } catch (err) {
+    logger.warn("laneService.initial_backfillLaneBranchProfiles_failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  const previewBranchSwitch = async (args: LaneBranchSwitchArgs): Promise<LaneBranchSwitchPreview> => {
+    const laneId = args.laneId.trim();
+    if (!laneId) throw new Error("laneId is required.");
+    const row = getLaneRow(laneId);
+    if (!row) throw new Error(`Lane not found: ${laneId}`);
+    if (row.status === "archived") throw new Error("Lane is archived.");
+
+    const mode = args.mode ?? "existing";
+    const rawBranchName = args.branchName.trim();
+    if (!rawBranchName) throw new Error("Branch name is required.");
+    let targetBranchRef = normalizeBranchKey(rawBranchName);
+    if (mode === "existing") {
+      const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${rawBranchName}`], {
+        cwd: row.worktree_path,
+        timeoutMs: 8_000,
+      }).then((res) => res.exitCode === 0);
+      const remoteExists = !localExists && await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/${rawBranchName}`], {
+        cwd: row.worktree_path,
+        timeoutMs: 8_000,
+      }).then((res) => res.exitCode === 0);
+      if (remoteExists) {
+        targetBranchRef = localBranchNameFromRemoteRef(rawBranchName);
+      }
+    }
+    if (!targetBranchRef) throw new Error("Branch name is required.");
+
+    const status = await runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path, timeoutMs: 8_000 });
+    const dirty = status.exitCode === 0 && status.stdout.trim().length > 0;
+    const duplicate = findActiveBranchOwner(targetBranchRef, row.id);
+    const activeWork = getActiveWorkForLane(row.id);
+    const targetProfile = getBranchProfileRow(row.id, targetBranchRef);
+
+    return {
+      laneId: row.id,
+      currentBranchRef: row.branch_ref,
+      targetBranchRef,
+      mode,
+      dirty,
+      duplicateLaneId: duplicate?.id ?? null,
+      duplicateLaneName: duplicate?.name ?? null,
+      activeWork,
+      targetProfile: targetProfile ? toLaneBranchProfile(targetProfile) : null,
+    };
+  };
 
   const isDescendant = (rowsById: Map<string, LaneRow>, laneId: string, possibleDescendantId: string): boolean => {
     const queue = [laneId];
@@ -1633,7 +1900,8 @@ export function createLaneService({
           status,
           parentStatus,
           childCount: 0,
-          stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() })
+          stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() }),
+          activeBranchProfile: ensureBranchProfileForRow(row)
         });
       } catch (error) {
         if (laneInserted) {
@@ -1712,6 +1980,235 @@ export function createLaneService({
       }
     },
 
+    listBranchProfiles(laneId: string): LaneBranchProfile[] {
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+      ensureBranchProfileForRow(row);
+      return db.all<LaneBranchProfileRow>(
+        `
+          select *
+          from lane_branch_profiles
+          where project_id = ?
+            and lane_id = ?
+          order by coalesce(last_checked_out_at, updated_at) desc, branch_ref asc
+        `,
+        [projectId, laneId],
+      ).map(toLaneBranchProfile);
+    },
+
+    /**
+     * Lightweight branch ownership lookup that avoids the full `list()` work
+     * (status resolution, queue rebase overrides, primary-lane bootstrap).
+     * Returns a map of branch ref → owning lane info for active, non-primary
+     * lanes other than `excludeLaneId`. Used by the branch picker to flag
+     * branches that another lane already owns.
+     */
+    listBranchOwners(args: { excludeLaneId?: string } = {}): Array<{ id: string; name: string; branchRef: string }> {
+      const exclude = args.excludeLaneId?.trim() ?? "";
+      const rows = db.all<{ id: string; name: string; branch_ref: string }>(
+        `
+          select id, name, branch_ref
+          from lanes
+          where project_id = ?
+            and status != 'archived'
+            and lane_type != 'primary'
+            and branch_ref is not null
+            and branch_ref != ''
+        `,
+        [projectId],
+      );
+      return rows
+        .filter((row) => row.id !== exclude)
+        .map((row) => ({ id: row.id, name: row.name, branchRef: row.branch_ref }));
+    },
+
+    async previewBranchSwitch(args: LaneBranchSwitchArgs): Promise<LaneBranchSwitchPreview> {
+      return await previewBranchSwitch(args);
+    },
+
+    async switchBranch(args: LaneBranchSwitchArgs): Promise<LaneBranchSwitchResult> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required.");
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+      if (row.status === "archived") throw new Error("Lane is archived.");
+
+      const mode = args.mode ?? "existing";
+      const rawBranchName = args.branchName.trim();
+      if (!rawBranchName) throw new Error("Branch name is required.");
+
+      const preview = await previewBranchSwitch(args);
+      if (preview.dirty) {
+        throw new Error("This lane has uncommitted changes. Commit or stash them before switching branches.");
+      }
+      if (preview.duplicateLaneId) {
+        throw new Error(`Branch '${preview.targetBranchRef}' is already active in lane '${preview.duplicateLaneName ?? preview.duplicateLaneId}'.`);
+      }
+      if (preview.activeWork.length > 0 && !args.acknowledgeActiveWork) {
+        throw new Error("This lane has active sessions or processes. Confirm the branch switch to continue.");
+      }
+
+      const previousBranchRef = row.branch_ref;
+      upsertBranchProfileForRow(row);
+
+      let targetBranchRef = preview.targetBranchRef;
+      let targetProfileRow = getBranchProfileRow(row.id, targetBranchRef);
+      const now = new Date().toISOString();
+      let pendingProfileUpsert: {
+        branchRef: string;
+        baseRef: string;
+        parentLaneId: string | null;
+        sourceBranchRef: string | null;
+        lastCheckedOutAt: string;
+      } | null = null;
+
+      if (mode === "create") {
+        const baseRef = args.baseRef?.trim();
+        if (!baseRef) {
+          throw new Error("Base branch is required when creating a branch inside a lane.");
+        }
+        const baseRefRes = await runGit(["rev-parse", "--verify", baseRef], {
+          cwd: row.worktree_path,
+          timeoutMs: 10_000,
+        });
+        if (baseRefRes.exitCode !== 0 || !baseRefRes.stdout.trim()) {
+          throw new Error(`Base branch '${baseRef}' was not found.`);
+        }
+        const branchExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${targetBranchRef}`], {
+          cwd: row.worktree_path,
+          timeoutMs: 8_000,
+        }).then((res) => res.exitCode === 0);
+        if (branchExists) {
+          throw new Error(`Branch '${targetBranchRef}' already exists. Switch to it instead of creating it.`);
+        }
+        const startPoint = args.startPoint?.trim() || row.branch_ref;
+        const startPointRes = await runGit(["rev-parse", "--verify", startPoint], {
+          cwd: row.worktree_path,
+          timeoutMs: 10_000,
+        });
+        if (startPointRes.exitCode !== 0 || !startPointRes.stdout.trim()) {
+          throw new Error(`Start point '${startPoint}' was not found.`);
+        }
+        await runGitOrThrow(["checkout", "-b", targetBranchRef, startPoint], {
+          cwd: row.worktree_path,
+          timeoutMs: 60_000,
+        });
+        targetProfileRow = null;
+        pendingProfileUpsert = {
+          branchRef: targetBranchRef,
+          baseRef,
+          parentLaneId: null,
+          sourceBranchRef: startPoint,
+          lastCheckedOutAt: now,
+        };
+      } else {
+        const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${rawBranchName}`], {
+          cwd: row.worktree_path,
+          timeoutMs: 8_000,
+        }).then((res) => res.exitCode === 0);
+        let remoteRef: string | null = null;
+        if (!localExists) {
+          const remoteExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/${rawBranchName}`], {
+            cwd: row.worktree_path,
+            timeoutMs: 8_000,
+          }).then((res) => res.exitCode === 0);
+          if (remoteExists) {
+            remoteRef = rawBranchName;
+            targetBranchRef = localBranchNameFromRemoteRef(rawBranchName);
+          } else {
+            const resolved = await resolveImportBranchTarget({ projectRoot, rawRef: rawBranchName });
+            remoteRef = resolved.remoteRef;
+            targetBranchRef = resolved.localBranchName;
+          }
+        }
+
+        const checkoutCmd = remoteRef
+          ? ["checkout", "--track", "--ignore-other-worktrees", remoteRef]
+          : ["checkout", "--ignore-other-worktrees", targetBranchRef];
+        await runGitOrThrow(checkoutCmd, { cwd: row.worktree_path, timeoutMs: 60_000 });
+
+        const existingProfile = targetProfileRow ? toLaneBranchProfile(targetProfileRow) : null;
+        pendingProfileUpsert = {
+          branchRef: targetBranchRef,
+          baseRef: args.baseRef?.trim() || existingProfile?.baseRef || defaultBaseRef,
+          parentLaneId: existingProfile?.parentLaneId ?? null,
+          sourceBranchRef: existingProfile?.sourceBranchRef ?? null,
+          lastCheckedOutAt: now,
+        };
+      }
+
+      // Wrap the profile upsert + lanes update + stale-PR cleanup in a single
+      // transaction so a partial failure can't leave the lane row referencing
+      // the new branch while the orphaned PR rows linger (or vice versa), or
+      // leave the post-checkout profile written without the matching lanes
+      // row update.
+      db.run("begin");
+      try {
+        if (pendingProfileUpsert) {
+          upsertBranchProfileForRow(row, pendingProfileUpsert);
+        }
+        const targetProfile = getBranchProfileRow(row.id, targetBranchRef);
+        const baseRef = targetProfile?.base_ref ?? args.baseRef?.trim() ?? defaultBaseRef;
+        const parentLaneId = targetProfile?.parent_lane_id ?? null;
+        db.run(
+          `
+            update lanes
+            set branch_ref = ?,
+                base_ref = ?,
+                parent_lane_id = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [targetBranchRef, baseRef, parentLaneId, row.id, projectId],
+        );
+        // Drop any PR rows still associated with this lane whose head_branch
+        // no longer matches the lane's current branch — those references are
+        // stale after a branch switch and must not bleed into PR lookups.
+        // pull_requests.lane_id is NOT NULL, so we DELETE (mirrors the explicit
+        // child-row cleanup used by the lane-delete path; CRR conversion can
+        // strip FK cascades).
+        const stalePrRows = db.all<{ id: string }>(
+          `
+            select id from pull_requests
+            where lane_id = ?
+              and project_id = ?
+              and head_branch <> ?
+          `,
+          [row.id, projectId, targetBranchRef],
+        );
+        if (stalePrRows.length > 0) {
+          const placeholders = stalePrRows.map(() => "?").join(", ");
+          const stalePrIds = stalePrRows.map((r) => r.id);
+          db.run(`delete from pr_convergence_state where pr_id in (${placeholders})`, stalePrIds);
+          db.run(`delete from pr_pipeline_settings where pr_id in (${placeholders})`, stalePrIds);
+          db.run(`delete from pr_issue_inventory where pr_id in (${placeholders})`, stalePrIds);
+          db.run(`delete from pr_group_members where pr_id in (${placeholders})`, stalePrIds);
+          db.run(
+            `
+              delete from pull_requests
+              where lane_id = ?
+                and project_id = ?
+                and head_branch <> ?
+            `,
+            [row.id, projectId, targetBranchRef],
+          );
+        }
+        db.run("commit");
+      } catch (err) {
+        try { db.run("rollback"); } catch { /* swallow rollback failures */ }
+        throw err;
+      }
+      invalidateLaneListCache();
+
+      const refreshed = (await listLanes({ includeArchived: false, includeStatus: true })).find((lane) => lane.id === row.id);
+      if (!refreshed) throw new Error(`Lane not found after branch switch: ${row.id}`);
+      return {
+        lane: refreshed,
+        previousBranchRef,
+        activeWork: preview.activeWork,
+      };
+    },
+
     async getChildren(laneId: string): Promise<LaneSummary[]> {
       // Query only children rows directly instead of fetching and filtering all lanes.
       const childRows = getChildrenRows(laneId, false);
@@ -1766,6 +2263,7 @@ export function createLaneService({
             parentStatus,
             childCount: childCountMap.get(row.id) ?? 0,
             stackDepth: computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo }),
+            activeBranchProfile: ensureBranchProfileForRow(row),
           })
         );
       }
@@ -2573,7 +3071,16 @@ export function createLaneService({
     },
 
     updateBranchRef(laneId: string, branchRef: string): void {
+      const row = getLaneRow(laneId);
       db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [branchRef, laneId, projectId]);
+      if (row) {
+        upsertBranchProfileForRow(row, {
+          branchRef,
+          baseRef: row.base_ref,
+          parentLaneId: row.parent_lane_id,
+          lastCheckedOutAt: new Date().toISOString(),
+        });
+      }
       invalidateLaneListCache();
     },
 
