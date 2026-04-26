@@ -2,18 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type {
+  LinearWorkflowConfig,
   LinearWorkflowDefinition,
   LinearWorkflowRun,
   NormalizedLinearIssue,
 } from "../../../shared/types";
-import type { LinearWorkflowConfig, NormalizedLinearIssue } from "../../../shared/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLinearCloseoutService } from "./linearCloseoutService";
 import { createLinearIngressService } from "./linearIngressService";
 import { createLinearIntakeService } from "./linearIntakeService";
 import { createLinearRoutingService } from "./linearRoutingService";
-import { describe, expect, it } from "vitest";
-import { describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 
 describe("linearIntakeService (file group)", () => {

@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { LaneSummary, RebaseNeed } from "../../../shared/types";
+import type {
+  AgentChatPermissionMode,
+  AiPermissionMode,
+  LaneSummary,
+  RebaseNeed,
+} from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -56,11 +61,11 @@ const mockRunGit = vi.mocked(runGit);
 describe("resolverUtils (real module)", () => {
   // Lazy-loaded handles to the real module so the prRebaseResolver mock above
   // does not interfere.
-  let mapPermissionMode: (mode: string | undefined) => string;
+  let mapPermissionMode: (mode: AiPermissionMode | undefined) => AgentChatPermissionMode;
   let mapPermissionModeForModelFamily: (
-    mode: string | undefined,
+    mode: AiPermissionMode | undefined,
     family: string | undefined,
-  ) => string;
+  ) => AgentChatPermissionMode;
   let readRecentCommits: (worktreePath: string, count?: number, ref?: string) => Promise<Array<{ sha: string; subject: string }>>;
 
   beforeAll(async () => {

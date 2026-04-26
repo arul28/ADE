@@ -2,7 +2,6 @@ import YAML from "yaml";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentIdentity } from "../../../shared/types";
 import type { AgentIdentity, WorkerAgentRunStatus, WorkerAgentWakeupReason } from "../../../shared/types";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,10 +12,6 @@ import { createWorkerBudgetService } from "./workerBudgetService";
 import { createWorkerHeartbeatService } from "./workerHeartbeatService";
 import { createWorkerRevisionService } from "./workerRevisionService";
 import { createWorkerTaskSessionService } from "./workerTaskSessionService";
-import { describe, expect, it } from "vitest";
-import { describe, expect, it, vi } from "vitest";
-import { describe, expect, it, vi, afterEach } from "vitest";
-import { openKvDb } from "../state/kvDb";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 
 describe("workerHeartbeatService (file group)", () => {

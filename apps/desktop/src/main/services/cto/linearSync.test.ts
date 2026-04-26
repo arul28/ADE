@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { LinearSyncConfig } from "../../../shared/types";
-import type { LinearWorkflowConfig, LinearWorkflowMatchResult, NormalizedLinearIssue } from "../../../shared/types";
-import type { LinearWorkflowConfig, NormalizedLinearIssue } from "../../../shared/types";
-import type { NormalizedLinearIssue } from "../../../shared/types";
+import type {
+  LinearSyncConfig,
+  LinearWorkflowConfig,
+  LinearWorkflowMatchResult,
+  NormalizedLinearIssue,
+} from "../../../shared/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLinearCloseoutService } from "./linearCloseoutService";
 import { createLinearDispatcherService } from "./linearDispatcherService";
@@ -12,8 +14,6 @@ import { createLinearOutboundService } from "./linearOutboundService";
 import { createLinearSyncService } from "./linearSyncService";
 import { createLinearTemplateService } from "./linearTemplateService";
 import { createLinearWorkflowFileService } from "./linearWorkflowFileService";
-import { describe, expect, it } from "vitest";
-import { describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { pathToFileURL } from "node:url";
 
