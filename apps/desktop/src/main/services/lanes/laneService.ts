@@ -1996,6 +1996,32 @@ export function createLaneService({
       ).map(toLaneBranchProfile);
     },
 
+    /**
+     * Lightweight branch ownership lookup that avoids the full `list()` work
+     * (status resolution, queue rebase overrides, primary-lane bootstrap).
+     * Returns a map of branch ref → owning lane info for active, non-primary
+     * lanes other than `excludeLaneId`. Used by the branch picker to flag
+     * branches that another lane already owns.
+     */
+    listBranchOwners(args: { excludeLaneId?: string } = {}): Array<{ id: string; name: string; branchRef: string }> {
+      const exclude = args.excludeLaneId?.trim() ?? "";
+      const rows = db.all<{ id: string; name: string; branch_ref: string }>(
+        `
+          select id, name, branch_ref
+          from lanes
+          where project_id = ?
+            and status != 'archived'
+            and lane_type != 'primary'
+            and branch_ref is not null
+            and branch_ref != ''
+        `,
+        [projectId],
+      );
+      return rows
+        .filter((row) => row.id !== exclude)
+        .map((row) => ({ id: row.id, name: row.name, branchRef: row.branch_ref }));
+    },
+
     async previewBranchSwitch(args: LaneBranchSwitchArgs): Promise<LaneBranchSwitchPreview> {
       return await previewBranchSwitch(args);
     },
@@ -2028,6 +2054,13 @@ export function createLaneService({
       let targetBranchRef = preview.targetBranchRef;
       let targetProfileRow = getBranchProfileRow(row.id, targetBranchRef);
       const now = new Date().toISOString();
+      let pendingProfileUpsert: {
+        branchRef: string;
+        baseRef: string;
+        parentLaneId: string | null;
+        sourceBranchRef: string | null;
+        lastCheckedOutAt: string;
+      } | null = null;
 
       if (mode === "create") {
         const baseRef = args.baseRef?.trim();
@@ -2061,13 +2094,13 @@ export function createLaneService({
           timeoutMs: 60_000,
         });
         targetProfileRow = null;
-        upsertBranchProfileForRow(row, {
+        pendingProfileUpsert = {
           branchRef: targetBranchRef,
           baseRef,
           parentLaneId: null,
           sourceBranchRef: startPoint,
           lastCheckedOutAt: now,
-        });
+        };
       } else {
         const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${rawBranchName}`], {
           cwd: row.worktree_path,
@@ -2095,60 +2128,75 @@ export function createLaneService({
         await runGitOrThrow(checkoutCmd, { cwd: row.worktree_path, timeoutMs: 60_000 });
 
         const existingProfile = targetProfileRow ? toLaneBranchProfile(targetProfileRow) : null;
-        upsertBranchProfileForRow(row, {
+        pendingProfileUpsert = {
           branchRef: targetBranchRef,
           baseRef: args.baseRef?.trim() || existingProfile?.baseRef || defaultBaseRef,
           parentLaneId: existingProfile?.parentLaneId ?? null,
           sourceBranchRef: existingProfile?.sourceBranchRef ?? null,
           lastCheckedOutAt: now,
-        });
+        };
       }
 
-      const targetProfile = getBranchProfileRow(row.id, targetBranchRef);
-      const baseRef = targetProfile?.base_ref ?? args.baseRef?.trim() ?? defaultBaseRef;
-      const parentLaneId = targetProfile?.parent_lane_id ?? null;
-      db.run(
-        `
-          update lanes
-          set branch_ref = ?,
-              base_ref = ?,
-              parent_lane_id = ?
-          where id = ?
-            and project_id = ?
-        `,
-        [targetBranchRef, baseRef, parentLaneId, row.id, projectId],
-      );
-      // Drop any PR rows still associated with this lane whose head_branch
-      // no longer matches the lane's current branch — those references are
-      // stale after a branch switch and must not bleed into PR lookups.
-      // pull_requests.lane_id is NOT NULL, so we DELETE (mirrors the explicit
-      // child-row cleanup used by the lane-delete path; CRR conversion can
-      // strip FK cascades).
-      const stalePrRows = db.all<{ id: string }>(
-        `
-          select id from pull_requests
-          where lane_id = ?
-            and project_id = ?
-            and head_branch <> ?
-        `,
-        [row.id, projectId, targetBranchRef],
-      );
-      if (stalePrRows.length > 0) {
-        const placeholders = stalePrRows.map(() => "?").join(", ");
-        const stalePrIds = stalePrRows.map((r) => r.id);
-        db.run(`delete from pr_convergence_state where pr_id in (${placeholders})`, stalePrIds);
-        db.run(`delete from pr_pipeline_settings where pr_id in (${placeholders})`, stalePrIds);
-        db.run(`delete from pr_issue_inventory where pr_id in (${placeholders})`, stalePrIds);
-        db.run(`delete from pr_group_members where pr_id in (${placeholders})`, stalePrIds);
+      // Wrap the profile upsert + lanes update + stale-PR cleanup in a single
+      // transaction so a partial failure can't leave the lane row referencing
+      // the new branch while the orphaned PR rows linger (or vice versa), or
+      // leave the post-checkout profile written without the matching lanes
+      // row update.
+      db.run("begin");
+      try {
+        if (pendingProfileUpsert) {
+          upsertBranchProfileForRow(row, pendingProfileUpsert);
+        }
+        const targetProfile = getBranchProfileRow(row.id, targetBranchRef);
+        const baseRef = targetProfile?.base_ref ?? args.baseRef?.trim() ?? defaultBaseRef;
+        const parentLaneId = targetProfile?.parent_lane_id ?? null;
         db.run(
           `
-            delete from pull_requests
+            update lanes
+            set branch_ref = ?,
+                base_ref = ?,
+                parent_lane_id = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [targetBranchRef, baseRef, parentLaneId, row.id, projectId],
+        );
+        // Drop any PR rows still associated with this lane whose head_branch
+        // no longer matches the lane's current branch — those references are
+        // stale after a branch switch and must not bleed into PR lookups.
+        // pull_requests.lane_id is NOT NULL, so we DELETE (mirrors the explicit
+        // child-row cleanup used by the lane-delete path; CRR conversion can
+        // strip FK cascades).
+        const stalePrRows = db.all<{ id: string }>(
+          `
+            select id from pull_requests
             where lane_id = ?
               and project_id = ?
               and head_branch <> ?
           `,
           [row.id, projectId, targetBranchRef],
         );
+        if (stalePrRows.length > 0) {
+          const placeholders = stalePrRows.map(() => "?").join(", ");
+          const stalePrIds = stalePrRows.map((r) => r.id);
+          db.run(`delete from pr_convergence_state where pr_id in (${placeholders})`, stalePrIds);
+          db.run(`delete from pr_pipeline_settings where pr_id in (${placeholders})`, stalePrIds);
+          db.run(`delete from pr_issue_inventory where pr_id in (${placeholders})`, stalePrIds);
+          db.run(`delete from pr_group_members where pr_id in (${placeholders})`, stalePrIds);
+          db.run(
+            `
+              delete from pull_requests
+              where lane_id = ?
+                and project_id = ?
+                and head_branch <> ?
+            `,
+            [row.id, projectId, targetBranchRef],
+          );
+        }
+        db.run("commit");
+      } catch (err) {
+        try { db.run("rollback"); } catch { /* swallow rollback failures */ }
+        throw err;
       }
       invalidateLaneListCache();
 

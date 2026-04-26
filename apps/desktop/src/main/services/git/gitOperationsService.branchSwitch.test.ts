@@ -36,9 +36,14 @@ function makeServiceWithLanes(opts: {
     ? vi.fn(() => { throw new Error("profile lookup failed"); })
     : vi.fn().mockReturnValue(opts.branchProfiles ?? []);
 
-  const list = opts.listThrows
-    ? vi.fn().mockRejectedValue(new Error("list failed"))
-    : vi.fn().mockResolvedValue(opts.lanes ?? []);
+  const lanes = opts.lanes ?? [];
+  const listBranchOwners = opts.listThrows
+    ? vi.fn(() => { throw new Error("owner lookup failed"); })
+    : vi.fn(({ excludeLaneId }: { excludeLaneId?: string } = {}) =>
+        lanes
+          .filter((l) => l.laneType !== "primary" && l.id !== excludeLaneId)
+          .map((l) => ({ id: l.id, name: l.name, branchRef: l.branchRef })),
+      );
 
   const service = createGitOperationsService({
     laneService: {
@@ -49,7 +54,7 @@ function makeServiceWithLanes(opts: {
         laneType: "worktree",
       }),
       listBranchProfiles,
-      list,
+      listBranchOwners,
       switchBranch: switchBranchMock,
     } as any,
     operationService: {
@@ -67,7 +72,7 @@ function makeServiceWithLanes(opts: {
     logger: makeStubLogger(),
   });
 
-  return { service, switchBranchMock, listBranchProfiles, list };
+  return { service, switchBranchMock, listBranchProfiles, listBranchOwners };
 }
 
 describe("gitOperationsService.listBranches annotations", () => {
@@ -86,7 +91,7 @@ describe("gitOperationsService.listBranches annotations", () => {
       ].join("\n"),
     );
 
-    const { service, listBranchProfiles, list } = makeServiceWithLanes({
+    const { service, listBranchProfiles, listBranchOwners } = makeServiceWithLanes({
       branchProfiles: [
         { branchRef: "feature/source" },
         { branchRef: "feature/profiled-but-no-local" },
@@ -100,7 +105,7 @@ describe("gitOperationsService.listBranches annotations", () => {
 
     const branches = await service.listBranches({ laneId: "lane-1" });
     expect(listBranchProfiles).toHaveBeenCalledWith("lane-1");
-    expect(list).toHaveBeenCalledWith({ includeArchived: false, includeStatus: false });
+    expect(listBranchOwners).toHaveBeenCalledWith({ excludeLaneId: "lane-1" });
 
     const byName = new Map(branches.map((b) => [b.name, b]));
 
@@ -202,7 +207,7 @@ describe("gitOperationsService.checkoutBranch", () => {
           laneType: "worktree",
         }),
         listBranchProfiles: vi.fn().mockReturnValue([]),
-        list: vi.fn().mockResolvedValue([]),
+        listBranchOwners: vi.fn().mockReturnValue([]),
         switchBranch,
       } as any,
       operationService: { start: operationStart, finish: operationFinish } as any,
@@ -262,7 +267,7 @@ describe("gitOperationsService.checkoutBranch", () => {
           baseRef: "main", branchRef: "main", worktreePath: "/tmp/ade-lane", laneType: "worktree",
         }),
         listBranchProfiles: vi.fn().mockReturnValue([]),
-        list: vi.fn().mockResolvedValue([]),
+        listBranchOwners: vi.fn().mockReturnValue([]),
         switchBranch,
       } as any,
       operationService: { start: operationStart, finish: vi.fn() } as any,

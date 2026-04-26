@@ -54,7 +54,10 @@ struct LaneActionsCard: View {
     if missionId != nil, laneRole == "result" {
       return "Branch switching is disabled for mission result lanes to keep their output stable."
     }
-    if missionId != nil, laneRole != "result" {
+    // Only block when we *know* the lane is a mission worker (laneRole is set
+    // to a non-"result" value). Treat a missing/unknown role as "allowed" —
+    // older callers without a role shouldn't be silently locked out.
+    if missionId != nil, let role = laneRole, role != "result" {
       return "Branch switching isn't available on mission worker lanes."
     }
     return nil

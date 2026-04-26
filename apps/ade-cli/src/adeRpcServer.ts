@@ -2010,8 +2010,11 @@ function sanitizeToolSchema(schema: unknown): unknown {
   }
   if (out.type === "object" && isRecord(out.properties)) {
     const propKeys = Object.keys(out.properties);
-    if (propKeys.length && (!Array.isArray(out.required) || !propKeys.every((k) => (out.required as string[]).includes(k)))) {
-      out.required = propKeys;
+    if (propKeys.length && !Array.isArray(out.required)) {
+      // Default to no required fields when none declared; preserve any
+      // explicit `required` array exactly as written so optional properties
+      // stay optional.
+      out.required = [];
     }
     const sanitizedProps: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(out.properties)) {
@@ -5262,14 +5265,25 @@ async function runTool(args: {
   if (name === "git_checkout_branch") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_checkout_branch");
     const branchName = assertNonEmptyString(toolArgs.branchName, "branchName");
-    const mode = typeof toolArgs.mode === "string" ? toolArgs.mode : undefined;
+    const rawMode = toolArgs.mode;
+    let mode: "existing" | "create" | undefined;
+    if (rawMode === undefined || rawMode === null) {
+      mode = undefined;
+    } else if (rawMode === "existing" || rawMode === "create") {
+      mode = rawMode;
+    } else {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `mode must be either "existing" or "create"`
+      );
+    }
     const startPoint = typeof toolArgs.startPoint === "string" ? toolArgs.startPoint : undefined;
     const baseRef = typeof toolArgs.baseRef === "string" ? toolArgs.baseRef : undefined;
     const acknowledgeActiveWork = typeof toolArgs.acknowledgeActiveWork === "boolean" ? toolArgs.acknowledgeActiveWork : undefined;
     const action = await runtime.gitService.checkoutBranch({
       laneId,
       branchName,
-      mode: mode === "create" ? "create" : "existing",
+      mode: mode ?? "existing",
       startPoint,
       baseRef,
       acknowledgeActiveWork,

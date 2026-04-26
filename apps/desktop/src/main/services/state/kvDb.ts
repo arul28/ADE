@@ -796,6 +796,37 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_lane_branch_profiles_lane on lane_branch_profiles(project_id, lane_id)");
   db.run("create index if not exists idx_lane_branch_profiles_project_branch on lane_branch_profiles(project_id, normalized_branch_ref)");
+  // NOTE: CRR-converted tables cannot carry UNIQUE indices besides the
+  // primary key (`crsql_as_crr` rejects them with "Table … has unique
+  // indices besides the primary key. This is not allowed for CRRs"), so
+  // uniqueness on (project_id, lane_id, normalized_branch_ref) is enforced
+  // at the application layer inside `upsertBranchProfileForRow` (check-then-
+  // insert) and via the duplicate sweep below. Coalesce duplicates from
+  // older dev builds — keep the most recently updated row per (project,
+  // lane, normalized branch) and delete the rest. This runs on every
+  // bootstrap so the app-layer check has a clean slate even after a
+  // multi-writer race produced extras.
+  try {
+    db.run(`
+      delete from lane_branch_profiles
+      where rowid not in (
+        select rowid from lane_branch_profiles as keep
+        where keep.id = (
+          select id from lane_branch_profiles inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.lane_id = keep.lane_id
+            and inner_p.normalized_branch_ref = keep.normalized_branch_ref
+          order by coalesce(inner_p.last_checked_out_at, inner_p.updated_at) desc,
+                   inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      )
+    `);
+  } catch {
+    // best-effort migration; duplicates will be coalesced on the next
+    // upsert via the existing check-then-insert path.
+  }
 
   db.run(`
     create table if not exists lane_state_snapshots (

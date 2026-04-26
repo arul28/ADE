@@ -2836,13 +2836,17 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(action: "lanes.previewBranchSwitch", args: args, as: LaneBranchSwitchPreview.self)
   }
 
+  /// Switch a lane to a different branch (or create one). Callers must
+  /// explicitly choose `mode` and `acknowledgeActiveWork` so dirty/active-work
+  /// safeguards aren't silently bypassed when this wrapper is reused beyond
+  /// the primary-branch picker.
   func checkoutPrimaryBranch(
     laneId: String,
     branchName: String,
-    mode: String = "existing",
-    startPoint: String? = nil,
-    baseRef: String? = nil,
-    acknowledgeActiveWork: Bool = false
+    mode: String,
+    startPoint: String?,
+    baseRef: String?,
+    acknowledgeActiveWork: Bool
   ) async throws {
     var args: [String: Any] = [
       "laneId": laneId,

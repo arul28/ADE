@@ -867,7 +867,11 @@ export function createPrService({
 
   const getRowForLaneBranch = (laneId: string, headBranch: string): PullRequestRow | null => {
     const normalizedHead = normalizeBranchName(headBranch).trim();
-    if (!normalizedHead) return null;
+    // When the caller has no usable head branch (e.g. mid-checkout, lane row
+    // not yet hydrated, or a freshly created lane without a synced ref) fall
+    // back to the lane-level lookup. Otherwise the PR row will look "missing"
+    // and downstream callers will redundantly create or refetch state.
+    if (!normalizedHead) return getRowForLane(laneId);
     return db.get<PullRequestRow>(
       `
         select ${PR_COLUMNS}

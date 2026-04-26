@@ -1095,15 +1095,19 @@ export function createGitOperationsService({
         ["for-each-ref", "--sort=refname", "--format=%(refname)\t%(refname:short)\t%(HEAD)\t%(upstream:short)", "refs/heads", "refs/remotes"],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
-      const branchProfiles = new Set(
-        laneService.listBranchProfiles(args.laneId).map((profile) => profile.branchRef)
-      );
+      const branchProfiles = new Set<string>();
+      try {
+        for (const profile of laneService.listBranchProfiles(args.laneId)) {
+          branchProfiles.add(profile.branchRef);
+        }
+      } catch {
+        // Branch listing should still work even if profile bookkeeping fails.
+      }
       const activeLaneOwners = new Map<string, { id: string; name: string }>();
       try {
-        const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
-        for (const entry of lanes) {
-          if (entry.id === args.laneId || entry.laneType === "primary") continue;
-          activeLaneOwners.set(entry.branchRef, { id: entry.id, name: entry.name });
+        const owners = laneService.listBranchOwners({ excludeLaneId: args.laneId });
+        for (const owner of owners) {
+          activeLaneOwners.set(owner.branchRef, { id: owner.id, name: owner.name });
         }
       } catch {
         // Branch listing should still work if lane summaries are temporarily unavailable.

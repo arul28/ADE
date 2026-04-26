@@ -527,12 +527,16 @@ export function LanesPage() {
   /* ---- Lane branch management ---- */
 
   useEffect(() => {
+    // Always clear stale results when the target lane (or open state) changes
+    // — otherwise lane A's branches linger when the user switches to lane B
+    // before the new fetch resolves.
+    setLaneBranches([]);
     if (!branchLane || !branchDropdownOpen) return;
     let cancelled = false;
     setLaneBranchesLoading(true);
     window.ade.git.listBranches({ laneId: branchLane.id })
       .then((result) => { if (!cancelled) setLaneBranches(result); })
-      .catch(() => {})
+      .catch(() => { if (!cancelled) setLaneBranches([]); })
       .finally(() => { if (!cancelled) setLaneBranchesLoading(false); });
     return () => { cancelled = true; };
   }, [branchDropdownOpen, branchLane?.id]);
@@ -548,9 +552,14 @@ export function LanesPage() {
     if (branchDropdownOpen) {
       setBranchSearchQuery("");
       setPendingBranchSwitch(null);
+      // Reset the new-branch-creation form whenever the picker (re)opens or
+      // the target lane changes so stale start-point/base-ref values from a
+      // previous lane don't carry over.
+      setNewBranchStartPoint("");
+      setNewBranchBaseRef("");
       setTimeout(() => branchSearchInputRef.current?.focus(), 0);
     }
-  }, [branchDropdownOpen]);
+  }, [branchDropdownOpen, branchLane?.id]);
   useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
   useClickOutside(addLaneDropdownRef, () => setAddLaneDropdownOpen(false), addLaneDropdownOpen);
 

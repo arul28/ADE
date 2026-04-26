@@ -557,8 +557,18 @@ struct LaneBranchPickerSheet: View {
     if name.contains("..") { return "Cannot contain '..'." }
     if name.contains("//") { return "Cannot contain '//'." }
     if name.contains("@{") { return "Cannot contain '@{'." }
-    let illegal: Set<Character> = ["~", "^", ":", "?", "*", "[", "\\", " ", "\t", "\n"]
-    if name.contains(where: { illegal.contains($0) }) {
+    let illegalPunct: Set<Character> = ["~", "^", ":", "?", "*", "[", "\\"]
+    if name.contains(where: { illegalPunct.contains($0) }) {
+      return "Cannot contain spaces or any of: ~ ^ : ? * [ \\."
+    }
+    // Match the JS `\s` regex set used by the desktop `normalizeBranchKey`
+    // helper (which calls `String.trim()`) — that covers tab/newline plus the
+    // broader Unicode whitespace category, not just ASCII space. Using
+    // `Character.isWhitespace` alone would let through e.g. NBSP / line
+    // separator chars that JS normalization would have stripped, leading to
+    // cross-platform key collisions for branches that look identical on
+    // screen but normalize differently between Swift and JS.
+    if name.contains(where: { $0.isWhitespace || $0.isNewline }) {
       return "Cannot contain spaces or any of: ~ ^ : ? * [ \\."
     }
     if name.contains(where: { $0.asciiValue.map { $0 < 0x20 || $0 == 0x7f } ?? false }) {

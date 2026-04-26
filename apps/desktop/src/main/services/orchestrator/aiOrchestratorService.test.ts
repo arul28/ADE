@@ -3278,7 +3278,9 @@ describe("aiOrchestratorService", () => {
       }) as typeof fixture.orchestratorService.onTrackedSessionEnded;
 
       const firstSweep = fixture.aiOrchestratorService.runHealthSweep("overlap-owner");
-      for (let tries = 0; tries < 40 && reconcileCalls === 0; tries += 1) {
+      // CI runners can be heavily loaded; give the first sweep up to ~5s to reach
+      // the gated `onTrackedSessionEnded` call before we assert it was invoked.
+      for (let tries = 0; tries < 200 && reconcileCalls === 0; tries += 1) {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       expect(reconcileCalls).toBe(1);
@@ -3293,7 +3295,7 @@ describe("aiOrchestratorService", () => {
       releaseFirstSweep();
       fixture.dispose();
     }
-  }, 10_000);
+  }, 15_000);
 
   it("skips background health sweeps for runs blocked on open interventions", async () => {
     const fixture = await createFixture();

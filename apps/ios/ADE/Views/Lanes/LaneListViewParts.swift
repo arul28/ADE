@@ -138,11 +138,14 @@ extension LanesTabView {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(ADEColor.textPrimary)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(0)
               Text(snapshot.lane.branchRef)
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(ADEColor.textMuted)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .layoutPriority(1)
             }
             Text("Behind parent by \(snapshot.rebaseSuggestion?.behindCount ?? 0) commit(s)")
               .font(.caption)
@@ -208,11 +211,14 @@ extension LanesTabView {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(ADEColor.textPrimary)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(0)
               Text(snapshot.lane.branchRef)
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(ADEColor.textMuted)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .layoutPriority(1)
             }
             Text(snapshot.autoRebaseStatus?.message ?? "Manual follow-up required")
               .font(.caption)
@@ -367,7 +373,14 @@ extension LanesTabView {
           Button(branch.name) {
             Task {
               do {
-                try await syncService.checkoutPrimaryBranch(laneId: snapshot.lane.id, branchName: branch.name)
+                try await syncService.checkoutPrimaryBranch(
+                  laneId: snapshot.lane.id,
+                  branchName: branch.name,
+                  mode: "existing",
+                  startPoint: nil,
+                  baseRef: nil,
+                  acknowledgeActiveWork: false
+                )
                 await reload(refreshRemote: true)
                 await refreshPrimaryBranches(force: true)
               } catch {
