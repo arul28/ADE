@@ -240,8 +240,9 @@ export type SyncProjectSwitchRequestPayload = {
 };
 
 export type SyncProjectConnectionPayload = {
-  authKind: "bootstrap";
-  token: string;
+  authKind: "bootstrap" | "paired";
+  token?: string | null;
+  pairedDeviceId?: string | null;
   hostIdentity: SyncPairingQrPayload["hostIdentity"];
   port: number;
   addressCandidates: SyncAddressCandidate[];

@@ -72,6 +72,14 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
     ? rule.execution.builtIn?.actions ?? []
     : [];
   const draftActions = builtInActions.map((action) => {
+    if (action.type === "create-lane") {
+      return {
+        type: action.type,
+        ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
+        ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
+        ...(action.parentLaneId ? { parentLaneId: action.parentLaneId } : {}),
+      } as any;
+    }
     if (action.type === "run-tests") {
       return { type: action.type, suite: action.suiteId ?? "" } as any;
     }
@@ -94,6 +102,9 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
     if (action.type === "agent-session") {
       return {
         type: action.type,
+        ...(action.targetLaneId ? { targetLaneId: action.targetLaneId } : {}),
+        ...(action.modelConfig ? { modelConfig: structuredClone(action.modelConfig) } : {}),
+        ...(action.permissionConfig ? { permissionConfig: structuredClone(action.permissionConfig) } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
       } as any;

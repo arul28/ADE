@@ -602,6 +602,7 @@ export const LEGACY_GITHUB_PR_TRIGGER_ALIASES: Readonly<Record<string, Automatio
 };
 
 export type AutomationActionType =
+  | "create-lane"
   | "agent-session"
   | "launch-mission"
   | "predict-conflicts"
@@ -711,13 +712,24 @@ export type AutomationTrigger = {
 
 export type AutomationAction = {
   type: AutomationActionType;
+  /** Template for create-lane action names. Supports {{trigger.*}} placeholders. */
+  laneNameTemplate?: string;
+  /** Template for create-lane action descriptions. Supports {{trigger.*}} placeholders. */
+  laneDescriptionTemplate?: string;
+  parentLaneId?: string | null;
   suiteId?: string;
   command?: string;
   cwd?: string;
+  /** Optional lane override for this action. Falls back to execution.targetLaneId, trigger lane, then primary lane. */
+  targetLaneId?: string | null;
   condition?: string;
   continueOnFailure?: boolean;
   timeoutMs?: number;
   retry?: number;
+  /** Optional model override for agent-session actions inside a built-in chain. */
+  modelConfig?: ModelConfig;
+  /** Optional permission override for agent-session actions inside a built-in chain. */
+  permissionConfig?: MissionPermissionConfig;
   /** Configuration payload for actions of kind `ade-action`. */
   adeAction?: RunAdeActionConfig;
   /**

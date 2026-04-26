@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAdeRpcRequestHandler, _resetGlobalAskUserRateLimit } from "./adeRpcServer";
+import { createAdeRpcRequestHandler, _resetGlobalAskUserRateLimit, resolveComputerUseOwners } from "./adeRpcServer";
+import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -4480,5 +4481,69 @@ describe("adeRpcServer", () => {
 
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.eventBuffer.drain).toHaveBeenCalledWith(0, 100);
+  });
+
+  describe("resolveComputerUseOwners explicit ownerKind/ownerId", () => {
+    function makeSession(): any {
+      return {
+        initialized: true,
+        protocolVersion: "2025-06-18",
+        identity: {
+          callerId: "caller-1",
+          role: "external",
+          chatSessionId: null,
+          standaloneChatSession: false,
+          missionId: null,
+          runId: null,
+          stepId: null,
+          attemptId: null,
+          ownerId: null,
+        },
+        askUserEvents: [],
+        askUserRateLimit: { maxCalls: 1, windowMs: 1000 },
+        memoryAddEvents: [],
+        memoryAddRateLimit: { maxCalls: 1, windowMs: 1000 },
+        memorySearchEvents: [],
+        memorySearchRateLimit: { maxCalls: 1, windowMs: 1000 },
+      };
+    }
+
+    it("includes an explicit lane owner", () => {
+      const owners = resolveComputerUseOwners(makeSession(), { ownerKind: "lane", ownerId: "lane-1" });
+      expect(owners).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "lane", id: "lane-1", relation: "attached_to" }),
+        ]),
+      );
+      // Explicit owner is prepended.
+      expect(owners[0]).toEqual(expect.objectContaining({ kind: "lane", id: "lane-1" }));
+    });
+
+    it("normalizes alias 'chat' to 'chat_session'", () => {
+      const owners = resolveComputerUseOwners(makeSession(), { ownerKind: "chat", ownerId: "c1" });
+      expect(owners[0]).toEqual(expect.objectContaining({ kind: "chat_session", id: "c1" }));
+      expect(owners.some((o) => (o as any).kind === "chat")).toBe(false);
+    });
+
+    it("normalizes alias 'pr' to 'github_pr'", () => {
+      const owners = resolveComputerUseOwners(makeSession(), { ownerKind: "pr", ownerId: "p1" });
+      expect(owners[0]).toEqual(expect.objectContaining({ kind: "github_pr", id: "p1" }));
+    });
+
+    it("throws JsonRpcError with invalidParams for an unsupported ownerKind", () => {
+      let caught: unknown = null;
+      try {
+        resolveComputerUseOwners(makeSession(), { ownerKind: "bogus", ownerId: "x" });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(JsonRpcError);
+      expect((caught as JsonRpcError).code).toBe(JsonRpcErrorCode.invalidParams);
+    });
+
+    it("silently skips when ownerId is missing for a valid ownerKind", () => {
+      const owners = resolveComputerUseOwners(makeSession(), { ownerKind: "lane" });
+      expect(owners.some((o) => o.kind === "lane")).toBe(false);
+    });
   });
 });

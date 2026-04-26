@@ -672,6 +672,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         project: { ...project, id: "project-row-1", isCached: true },
         connection,
       })),
+      completeProjectConnection: vi.fn(async () => {}),
     };
 
     const host = createSyncHostService({
@@ -764,6 +765,21 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(projectCatalogProvider.prepareProjectConnection).toHaveBeenCalledWith({
       projectId: project.id,
       rootPath: project.rootPath,
+    });
+    await vi.waitFor(() => {
+      expect(projectCatalogProvider.completeProjectConnection).toHaveBeenCalledWith({
+        projectId: project.id,
+        rootPath: project.rootPath,
+      }, switchResult.payload);
+    });
+
+    projectCatalogProvider.listProjects.mockResolvedValueOnce({
+      projects: [{ ...project, id: "project-row-2", isOpen: true }],
+    });
+    await host.broadcastProjectCatalog();
+    const broadcastCatalog = await client.queue.next("project_catalog");
+    expect(broadcastCatalog.payload).toEqual({
+      projects: [{ ...project, id: "project-row-2", isOpen: true }],
     });
 
     await client.close();

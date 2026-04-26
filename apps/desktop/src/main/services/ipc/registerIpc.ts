@@ -1539,6 +1539,7 @@ function buildIssueResolutionInstructionsFromThread(arg: LaunchPrIssueResolution
 export function registerIpc({
   getCtx,
   getSyncService,
+  resolveSyncService,
   switchProjectFromDialog,
   closeCurrentProject,
   closeProjectByPath,
@@ -1546,6 +1547,7 @@ export function registerIpc({
 }: {
   getCtx: () => AppContext;
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
+  resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
@@ -1560,8 +1562,10 @@ export function registerIpc({
     return getCtx().syncService ?? null;
   };
 
-  const requireSyncService = (): ReturnType<typeof createSyncService> => {
-    const service = getOptionalSyncService();
+  const requireSyncService = async (): Promise<ReturnType<typeof createSyncService>> => {
+    const service = resolveSyncService
+      ? await resolveSyncService()
+      : getOptionalSyncService();
     if (!service) {
       throw new Error("Sync service is not available.");
     }
@@ -2353,15 +2357,15 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.syncGetStatus, async (): Promise<SyncRoleSnapshot> => {
-    return await requireSyncService().getStatus();
+    return await (await requireSyncService()).getStatus();
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (): Promise<SyncRoleSnapshot> => {
-    return await requireSyncService().refreshDiscovery();
+    return await (await requireSyncService()).refreshDiscovery();
   });
 
   ipcMain.handle(IPC.syncListDevices, async (): Promise<SyncDeviceRuntimeState[]> => {
-    return await requireSyncService().listDevices();
+    return await (await requireSyncService()).listDevices();
   });
 
   ipcMain.handle(
@@ -2370,7 +2374,7 @@ export function registerIpc({
       _event,
       arg: { name?: string; deviceType?: SyncPeerDeviceType },
     ): Promise<SyncDeviceRecord> => {
-      return await requireSyncService().updateLocalDevice({
+      return await (await requireSyncService()).updateLocalDevice({
         name: typeof arg?.name === "string" ? arg.name : undefined,
         deviceType: arg?.deviceType,
       });
@@ -2380,42 +2384,42 @@ export function registerIpc({
   ipcMain.handle(
     IPC.syncConnectToBrain,
     async (_event, arg: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> => {
-      return await requireSyncService().connectToBrain(arg);
+      return await (await requireSyncService()).connectToBrain(arg);
     },
   );
 
   ipcMain.handle(IPC.syncDisconnectFromBrain, async (): Promise<SyncRoleSnapshot> => {
-    return await requireSyncService().disconnectFromBrain();
+    return await (await requireSyncService()).disconnectFromBrain();
   });
 
   ipcMain.handle(IPC.syncForgetDevice, async (_event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
-    return await requireSyncService().forgetDevice(typeof arg?.deviceId === "string" ? arg.deviceId : "");
+    return await (await requireSyncService()).forgetDevice(typeof arg?.deviceId === "string" ? arg.deviceId : "");
   });
 
   ipcMain.handle(IPC.syncGetTransferReadiness, async (): Promise<SyncTransferReadiness> => {
-    return await requireSyncService().getTransferReadiness();
+    return await (await requireSyncService()).getTransferReadiness();
   });
 
   ipcMain.handle(IPC.syncTransferBrainToLocal, async (): Promise<SyncRoleSnapshot> => {
-    return await requireSyncService().transferBrainToLocal();
+    return await (await requireSyncService()).transferBrainToLocal();
   });
 
   ipcMain.handle(IPC.syncGetPin, async (): Promise<{ pin: string | null }> => {
-    return { pin: requireSyncService().getPin() };
+    return { pin: (await requireSyncService()).getPin() };
   });
 
   ipcMain.handle(IPC.syncSetPin, async (_event, pin: string): Promise<SyncRoleSnapshot> => {
-    return await requireSyncService().setPin(typeof pin === "string" ? pin : "");
+    return await (await requireSyncService()).setPin(typeof pin === "string" ? pin : "");
   });
 
   ipcMain.handle(IPC.syncClearPin, async (): Promise<SyncRoleSnapshot> => {
-    return await requireSyncService().clearPin();
+    return await (await requireSyncService()).clearPin();
   });
 
   ipcMain.handle(
     IPC.syncSetActiveLanePresence,
     async (_event, arg: { laneIds?: string[] | null }): Promise<void> => {
-      await requireSyncService().setActiveLanePresence(
+      await (await requireSyncService()).setActiveLanePresence(
         Array.isArray(arg?.laneIds) ? arg.laneIds : [],
       );
     },

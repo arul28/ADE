@@ -44,6 +44,116 @@ struct WorkSessionGroup: Identifiable, Equatable {
   }
 }
 
+struct WorkRootSessionPresentation: Equatable {
+  let mergedSessions: [TerminalSessionSummary]
+  let displaySessions: [TerminalSessionSummary]
+  let displaySessionIds: Set<String>
+  let liveChatSessions: [TerminalSessionSummary]
+  let activitySessions: [TerminalSessionSummary]
+  let sessionGroups: [WorkSessionGroup]
+  let globalNeedsInputCount: Int
+  let globalLiveSessionCount: Int
+  let firstGlobalAttentionSessionId: String?
+  let firstGlobalLiveSessionId: String?
+
+  static let empty = WorkRootSessionPresentation(
+    mergedSessions: [],
+    displaySessions: [],
+    displaySessionIds: [],
+    liveChatSessions: [],
+    activitySessions: [],
+    sessionGroups: [],
+    globalNeedsInputCount: 0,
+    globalLiveSessionCount: 0,
+    firstGlobalAttentionSessionId: nil,
+    firstGlobalLiveSessionId: nil
+  )
+}
+
+func buildWorkRootSessionPresentation(
+  sessions: [TerminalSessionSummary],
+  optimisticSessions: [String: TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary],
+  archivedSessionIds: Set<String>,
+  selectedStatus: WorkSessionStatusFilter,
+  selectedLaneId: String,
+  searchText: String,
+  organization: WorkSessionOrganization,
+  orderedLanes: [LaneSummary]
+) -> WorkRootSessionPresentation {
+  let committedIds = Set(sessions.map(\.id))
+  let draftValues = optimisticSessions.values.filter { !committedIds.contains($0.id) }
+  let mergedSessions = (sessions + draftValues)
+    .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
+
+  let displaySessions = workFilteredSessions(
+    mergedSessions,
+    chatSummaries: chatSummaries,
+    archivedSessionIds: archivedSessionIds,
+    selectedStatus: selectedStatus,
+    selectedLaneId: selectedLaneId,
+    searchText: searchText
+  )
+
+  var liveChatSessions: [TerminalSessionSummary] = []
+  liveChatSessions.reserveCapacity(mergedSessions.count)
+  var globalNeedsInputCount = 0
+  var globalLiveSessionCount = 0
+  var firstGlobalAttentionSessionId: String?
+  var firstGlobalLiveSessionId: String?
+
+  for session in mergedSessions {
+    let isArchived = archivedSessionIds.contains(session.id)
+    let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+
+    if isChatSession(session), status != "ended", !isArchived {
+      liveChatSessions.append(session)
+    }
+
+    guard !isRunOwnedSession(session), !isArchived else { continue }
+    if status == "awaiting-input" {
+      globalNeedsInputCount += 1
+      if firstGlobalAttentionSessionId == nil {
+        firstGlobalAttentionSessionId = session.id
+      }
+      if firstGlobalLiveSessionId == nil {
+        firstGlobalLiveSessionId = session.id
+      }
+    } else if status == "active" || status == "idle" {
+      globalLiveSessionCount += 1
+      if firstGlobalLiveSessionId == nil {
+        firstGlobalLiveSessionId = session.id
+      }
+    }
+  }
+
+  let activitySessions = workActivitySourceSessions(
+    displaySessions,
+    chatSummaries: chatSummaries,
+    archivedSessionIds: archivedSessionIds
+  )
+  let sessionGroups = workSessionGroups(
+    organization: organization,
+    sessions: displaySessions,
+    chatSummaries: chatSummaries,
+    archivedSessionIds: archivedSessionIds,
+    orderedLanes: orderedLanes
+  )
+
+  return WorkRootSessionPresentation(
+    mergedSessions: mergedSessions,
+    displaySessions: displaySessions,
+    displaySessionIds: Set(displaySessions.map(\.id)),
+    liveChatSessions: liveChatSessions,
+    activitySessions: activitySessions,
+    sessionGroups: sessionGroups,
+    globalNeedsInputCount: globalNeedsInputCount,
+    globalLiveSessionCount: globalLiveSessionCount,
+    firstGlobalAttentionSessionId: firstGlobalAttentionSessionId,
+    firstGlobalLiveSessionId: firstGlobalLiveSessionId
+  )
+}
+
 /// Group session list by the user's chosen organization. Empty groups are filtered out.
 func workSessionGroups(
   organization: WorkSessionOrganization,

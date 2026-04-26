@@ -114,6 +114,16 @@ bridge.
   Linear, tests, proof, memory, settings, and a generic
   `ade actions run <domain.action>` escape hatch for every registered
   ADE service action.
+- **Proof subcommands** — `ade proof capture` (alias of `screenshot`),
+  `ade proof attach <path>`, `ade proof record`, `ade proof launch`,
+  `ade proof interact`, `ade proof list/status/environment/ingest`.
+  `attach` infers the artifact kind from the file extension and routes
+  through `ingest_computer_use_artifacts` with `backendStyle: "manual"`.
+  Capture-style commands set `preferHeadless: true` on the plan so the
+  connection layer drops to headless mode unless `--socket` is
+  explicitly requested. All proof subcommands accept `--owner-kind` /
+  `--owner-id` (with `chat` and `pr` aliases) to layer an explicit
+  owner on top of the inferred session identity.
 
 ### 2.3 Web app (`apps/web/`)
 

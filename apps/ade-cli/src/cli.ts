@@ -59,7 +59,7 @@ type FormatterId =
 
 type CliPlan =
   | { kind: "help"; text: string }
-  | { kind: "execute"; label: string; steps: InvocationStep[]; visualizer?: "lanes"; summary?: "status" | "doctor" | "auth"; formatter?: FormatterId };
+  | { kind: "execute"; label: string; steps: InvocationStep[]; visualizer?: "lanes"; summary?: "status" | "doctor" | "auth"; formatter?: FormatterId; preferHeadless?: boolean };
 
 type CliConnection = {
   mode: "desktop-socket" | "headless";
@@ -429,16 +429,20 @@ const HELP_BY_COMMAND: Record<string, string> = {
   proof: `${ADE_BANNER}
   Proof and computer use
 
-  Proof commands capture or ingest artifacts that ADE can attach to work.
-  Local screenshot/video fallback is macOS-only; desktop socket mode has the
-  best parity with the app.
+  Proof commands capture or ingest reviewer-visible evidence for ADE work.
+  Prefer screenshots/images, screen recordings, and browser captures/traces.
+  Console logs are supporting diagnostics, not a replacement for visual proof.
+  Local screenshot/video fallback is macOS-only and runs headless by default
+  unless --socket is explicitly requested. Desktop socket mode has the best
+  parity for UI-owned proof state.
 
     $ ade proof status --text                       Show proof backend capabilities
     $ ade proof list --text                         List captured artifacts
-    $ ade proof screenshot                          Capture a screenshot artifact
+    $ ade proof capture --caption "Done"            Capture a screenshot artifact
+    $ ade proof attach /tmp/proof.png --caption "Done" Attach an existing image/video
     $ ade proof record --seconds 20                 Capture a short video proof
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
-    $ ade proof ingest --input-json '{"artifacts":[]}' Ingest external proof artifacts
+    $ ade proof ingest --input-json '{"artifacts":[]}' Ingest external visual proof artifacts
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -1569,15 +1573,54 @@ function buildFilesPlan(args: string[]): CliPlan {
 
 function buildProofPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
+  const proofOwnerBase = () => {
+    const ownerKind = readValue(args, ["--owner-kind", "--owner"]);
+    const ownerId = readValue(args, ["--owner-id"]);
+    return {
+      ...(ownerKind ? { ownerKind } : {}),
+      ...(ownerId ? { ownerId } : {}),
+    };
+  };
+  const inferAttachedProofKind = (filePath: string): string => {
+    const ext = path.extname(filePath).replace(/^\./, "").toLowerCase();
+    if (["png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "tif", "tiff"].includes(ext)) return "screenshot";
+    if (["mov", "mp4", "m4v", "webm"].includes(ext)) return "video_recording";
+    if (["zip", "har"].includes(ext)) return "browser_trace";
+    return "browser_verification";
+  };
   if (sub === "actions") return { kind: "execute", label: "proof actions", steps: [listActionsStep("actions", "computer_use_artifacts")] };
   if (sub === "status" || sub === "backends") return { kind: "execute", label: "proof backend status", steps: [actionCallStep("result", "get_computer_use_backend_status", collectGenericObjectArgs(args))] };
-  if (sub === "environment") return { kind: "execute", label: "computer-use environment", steps: [actionCallStep("result", "get_environment_info", collectGenericObjectArgs(args))] };
+  if (sub === "environment") return { kind: "execute", label: "computer-use environment", steps: [actionCallStep("result", "get_environment_info", collectGenericObjectArgs(args, proofOwnerBase()))], preferHeadless: true };
   if (sub === "list" || sub === "ls") return { kind: "execute", label: "proof list", steps: [actionCallStep("result", "list_computer_use_artifacts", collectGenericObjectArgs(args))] };
   if (sub === "ingest") return { kind: "execute", label: "proof ingest", steps: [actionCallStep("result", "ingest_computer_use_artifacts", collectGenericObjectArgs(args))] };
-  if (sub === "screenshot") return { kind: "execute", label: "computer-use screenshot", steps: [actionCallStep("result", "screenshot_environment", collectGenericObjectArgs(args))] };
-  if (sub === "record") return { kind: "execute", label: "computer-use record", steps: [actionCallStep("result", "record_environment", collectGenericObjectArgs(args, { durationSec: readNumberOption(args, ["--seconds", "--duration-sec"]) }))] };
-  if (sub === "launch") return { kind: "execute", label: "computer-use launch", steps: [actionCallStep("result", "launch_app", collectGenericObjectArgs(args, { app: readValue(args, ["--app"]) ?? firstPositional(args) }))] };
-  if (sub === "interact") return { kind: "execute", label: "computer-use interact", steps: [actionCallStep("result", "interact_gui", collectGenericObjectArgs(args))] };
+  if (sub === "attach") {
+    const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const attachedPath = requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path");
+    const title = readValue(args, ["--title", "--name"]) ?? caption ?? path.basename(attachedPath);
+    return {
+      kind: "execute",
+      label: "proof attach",
+      steps: [actionCallStep("result", "ingest_computer_use_artifacts", collectGenericObjectArgs(args, {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        toolName: "proof attach",
+        ...proofOwnerBase(),
+        inputs: [{
+          kind: inferAttachedProofKind(attachedPath),
+          title,
+          ...(caption ? { description: caption } : {}),
+          path: attachedPath,
+        }],
+      }))],
+    };
+  }
+  if (sub === "screenshot" || sub === "capture") {
+    const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    return { kind: "execute", label: "computer-use screenshot", steps: [actionCallStep("result", "screenshot_environment", collectGenericObjectArgs(args, { ...proofOwnerBase(), name: readValue(args, ["--name", "--title"]) ?? caption }))], preferHeadless: true };
+  }
+  if (sub === "record") return { kind: "execute", label: "computer-use record", steps: [actionCallStep("result", "record_environment", collectGenericObjectArgs(args, { ...proofOwnerBase(), name: readValue(args, ["--name", "--title"]) ?? readValue(args, ["--caption", "--description", "--desc"]), durationSec: readNumberOption(args, ["--seconds", "--duration-sec"]) }))], preferHeadless: true };
+  if (sub === "launch") return { kind: "execute", label: "computer-use launch", steps: [actionCallStep("result", "launch_app", collectGenericObjectArgs(args, { app: readValue(args, ["--app"]) ?? firstPositional(args) }))], preferHeadless: true };
+  if (sub === "interact") return { kind: "execute", label: "computer-use interact", steps: [actionCallStep("result", "interact_gui", collectGenericObjectArgs(args, proofOwnerBase()))], preferHeadless: true };
   return { kind: "execute", label: `proof ${sub}`, steps: [actionStep("result", "computer_use_artifacts", sub, collectGenericObjectArgs(args))] };
 }
 
@@ -3108,8 +3151,11 @@ function summarizeExecution(args: {
 
 async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalOptions): Promise<unknown> {
   let connection: CliConnection;
+  const connectionOptions = plan.preferHeadless && !options.requireSocket
+    ? { ...options, headless: true }
+    : options;
   try {
-    connection = await createConnection(options);
+    connection = await createConnection(connectionOptions);
   } catch (error) {
     const roots = resolveRoots(options);
     let socketPath = path.join(roots.projectRoot, ".ade", "ade.sock");
@@ -3119,7 +3165,7 @@ async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalO
     } catch {
       // Keep the conventional Unix fallback if shared layout loading fails.
     }
-    const requestedMode = options.requireSocket ? "desktop-socket" : options.headless ? "headless" : "auto";
+    const requestedMode = connectionOptions.requireSocket ? "desktop-socket" : connectionOptions.headless ? "headless" : "auto";
     const cause = error instanceof Error ? error.message : String(error);
     const sourceRuntimeInterop = isSourceRuntimeInteropError(cause);
     throw new CliExecutionError(`Failed to initialize ADE CLI connection for ${plan.label}.`, {

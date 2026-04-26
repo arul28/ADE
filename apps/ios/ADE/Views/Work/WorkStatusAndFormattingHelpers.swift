@@ -512,21 +512,6 @@ func relativeTimestampCompact(_ value: String) -> String {
   return "\(hours / 24)d"
 }
 
-func activityTitle(for kind: String) -> String {
-  switch kind {
-  case "thinking": return "Thinking"
-  case "working": return "Working"
-  case "editing_file": return "Editing file"
-  case "running_command": return "Running command"
-  case "searching": return "Searching"
-  case "reading": return "Reading"
-  case "tool_calling": return "Calling tool"
-  case "web_searching": return "Searching the web"
-  case "spawning_agent": return "Spawning agent"
-  default: return kind.replacingOccurrences(of: "_", with: " ").capitalized
-  }
-}
-
 func pendingInputResolutionLabel(for resolution: String) -> String {
   switch resolution {
   case "accepted": return "Accepted"

@@ -510,19 +510,13 @@ func workPendingInputTimestamps(from transcript: [WorkChatEnvelope]) -> [String:
 
 private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
   switch envelope.event {
-    case .activity(let kind, let detail, _):
-      guard !isLowSignalWorkActivity(kind: kind, detail: detail) else { return nil }
-      return WorkEventCardModel(
-        id: envelope.id,
-        kind: "activity",
-        title: activityTitle(for: kind),
-        icon: "bolt.horizontal.circle.fill",
-        tint: .accent,
-        timestamp: envelope.timestamp,
-        body: detail,
-        bullets: [],
-        metadata: [kind.replacingOccurrences(of: "_", with: " ").capitalized]
-      )
+    case .activity:
+      // Activity events ("searching_glob", "running_bash", etc.) are pre-tool
+      // announcements. The corresponding tool card already represents the
+      // work, so persisting them as separate timeline entries just stacks
+      // redundant rows under each tool group. Live streaming hints come from
+      // WorkActivityIndicator, not the persisted timeline.
+      return nil
     case .plan(let steps, let explanation, _):
       return WorkEventCardModel(
         id: envelope.id,
@@ -742,12 +736,6 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
 func isLowSignalWorkReasoning(_ text: String) -> Bool {
   let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   return normalized.isEmpty || normalized == "thinking through the answer"
-}
-
-func isLowSignalWorkActivity(kind: String, detail: String?) -> Bool {
-  let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  let normalizedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-  return normalizedKind == "thinking" && (normalizedDetail.isEmpty || normalizedDetail == "thinking through the answer")
 }
 
 func isLowSignalWorkSystemNotice(kind: String, message: String, detail: String?) -> Bool {

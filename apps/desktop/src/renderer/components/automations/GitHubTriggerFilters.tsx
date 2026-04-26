@@ -15,6 +15,12 @@ function getGithubApi(): GitHubApi {
   return (window as unknown as { ade: { github?: GitHubApi } }).ade.github ?? {};
 }
 
+function parseRepoSlug(value: string | null | undefined): { owner: string; name: string } | null {
+  const trimmed = (value ?? "").trim();
+  const match = /^([^/\s]+)\/([^/\s]+)$/.exec(trimmed);
+  return match ? { owner: match[1]!, name: match[2]! } : null;
+}
+
 export function GitHubTriggerFilters({
   trigger,
   onPatch,
@@ -38,7 +44,7 @@ export function GitHubTriggerFilters({
       if (!api.detectRepo) return;
       setLoadingPickers(true);
       try {
-        const repo = await api.detectRepo();
+        const repo = parseRepoSlug(trigger.repo) ?? await api.detectRepo();
         if (!repo || cancelled) {
           if (!cancelled) setLoadingPickers(false);
           return;
@@ -61,7 +67,7 @@ export function GitHubTriggerFilters({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [trigger.repo]);
 
   return (
     <div className="space-y-3">
@@ -167,7 +173,7 @@ export function GitHubTriggerFilters({
 
       {repoInfo ? (
         <div className="text-[10px] text-[#7E8A9A]">
-          Default repo is {repoInfo.owner}/{repoInfo.name}; set Repository to scope this rule elsewhere.
+          Using {repoInfo.owner}/{repoInfo.name} for labels and authors. Leave Repository blank to use the project origin.
         </div>
       ) : null}
     </div>

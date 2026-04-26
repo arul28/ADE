@@ -355,7 +355,7 @@ struct PRsTabView: View {
       .listStyle(.plain)
       .listRowSpacing(10)
       .scrollContentBackground(.hidden)
-      .background { PrsLiquidBackdrop() }
+      .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)

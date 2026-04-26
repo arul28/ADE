@@ -939,6 +939,8 @@ describe("buildComputerUseDirective", () => {
     const result = buildComputerUseDirective(status);
     expect(result).toContain("Proof Capture");
     expect(result).toContain("ingest_computer_use_artifacts");
+    expect(result).toContain("capture visual proof first");
+    expect(result).toContain("Console logs and text files are supporting diagnostics only");
   });
 });
 
@@ -2354,6 +2356,112 @@ describe("createAgentChatService", () => {
       expect(send).toHaveBeenCalledWith(expect.stringContaining("User: Can you keep the lane warm?"));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Yes, I will keep the lane session alive."));
       expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Continuity Summary"));
+    });
+
+    it("recreates Claude sessions fresh when a resumed SDK session rejects bypassPermissions", async () => {
+      let initialStreamCall = 0;
+      const initialSession = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          initialStreamCall += 1;
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-initial",
+            slash_commands: [],
+          };
+          if (initialStreamCall > 1) {
+            yield {
+              type: "assistant",
+              session_id: "sdk-initial",
+              message: {
+                content: [{ type: "text", text: "Primed" }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+          }
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-initial",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(unstable_v2_createSession).mockReturnValue(initialSession as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "prime",
+        timeoutMs: 15_000,
+      });
+      const persistedAfterPrime = readPersistedChatState(session.id);
+      expect(persistedAfterPrime.lastLaneDirectiveKey).toBeTruthy();
+
+      writePersistedChatState(session.id, {
+        ...persistedAfterPrime,
+        sdkSessionId: "sdk-stale",
+        lastLaneDirectiveKey: persistedAfterPrime.lastLaneDirectiveKey,
+        claudePermissionMode: "bypassPermissions",
+        permissionMode: "full-auto",
+      });
+
+      const staleSession = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(),
+        close: vi.fn(),
+        sessionId: "sdk-stale",
+        setPermissionMode: vi.fn().mockRejectedValue(new Error("mode rejected")),
+      };
+      const freshSession = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-fresh",
+            slash_commands: [],
+          };
+          yield {
+            type: "assistant",
+            session_id: "sdk-fresh",
+            message: {
+              content: [{ type: "text", text: "Recovered" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-fresh",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(unstable_v2_resumeSession).mockReset();
+      vi.mocked(unstable_v2_resumeSession).mockReturnValue(staleSession as any);
+      vi.mocked(unstable_v2_createSession).mockReset();
+      vi.mocked(unstable_v2_createSession).mockReturnValue(freshSession as any);
+
+      const resumed = createService().service;
+      await resumed.resumeSession({ sessionId: session.id });
+      const result = await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "continue",
+        timeoutMs: 15_000,
+      });
+
+      expect(result.outputText).toContain("Recovered");
+      expect(unstable_v2_resumeSession).toHaveBeenCalledWith("sdk-stale", expect.any(Object));
+      expect(unstable_v2_createSession).toHaveBeenCalledWith(expect.objectContaining({
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+      }));
+      expect(staleSession.close).toHaveBeenCalled();
+      expect(freshSession.send).toHaveBeenCalled();
+      expect(readPersistedChatState(session.id).sdkSessionId).toBe("sdk-fresh");
     });
 
     it("persists a continuity snapshot and prewarms a fresh Claude session after identity session reset errors", async () => {
@@ -3994,6 +4102,7 @@ describe("createAgentChatService", () => {
         params: {
           turn: {
             id: "foreign-turn",
+            status: "inProgress",
           },
         },
       });
@@ -4017,6 +4126,66 @@ describe("createAgentChatService", () => {
       });
 
       expect(events.filter((event) => event.turnId === "foreign-turn")).toHaveLength(0);
+    });
+
+    it("attaches to in-progress Codex turn notifications after app-server resume", async () => {
+      const events: Array<{ type: string; turnId?: string; text?: string; status?: string }> = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push({
+            type: event.event.type,
+            turnId: "turnId" in event.event ? event.event.turnId ?? undefined : undefined,
+            text: "text" in event.event ? event.event.text : undefined,
+            status: "status" in event.event ? event.event.status : undefined,
+          });
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        threadId: "thread-resumed",
+      });
+
+      await service.resumeSession({ sessionId: session.id });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          turn: {
+            id: "resumed-turn",
+            status: "inProgress",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "resumed-turn",
+          delta: "Continuing after reconnect",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "resumed-turn",
+            status: "completed",
+          },
+        },
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "status", turnId: "resumed-turn" }),
+        expect.objectContaining({ type: "text", turnId: "resumed-turn", text: "Continuing after reconnect" }),
+        expect.objectContaining({ type: "done", turnId: "resumed-turn", status: "completed" }),
+      ]));
     });
 
     it("ignores stale Codex lifecycle notifications from a foreign turn", async () => {

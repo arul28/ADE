@@ -703,6 +703,17 @@ function summarizeLegacyActions(actions: AutomationAction[]): string {
   return actions.map((action) => action.type).join(", ");
 }
 
+function resolveTemplateString(template: string | undefined | null, trigger: TriggerContext): string {
+  const resolved = resolvePlaceholders(template ?? "", trigger);
+  if (typeof resolved === "string") return resolved.trim();
+  if (resolved == null) return "";
+  try {
+    return JSON.stringify(resolved).trim();
+  } catch {
+    return String(resolved).trim();
+  }
+}
+
 function mapMissionStatus(status: string, _verificationRequired: boolean): AutomationRunStatus {
   switch (status) {
     case "queued":
@@ -1107,11 +1118,13 @@ export function createAutomationService({
     return Math.max(0, Number(row?.max_position ?? 0)) + 1;
   };
 
-  const computeAllowedToolList = (rule: AutomationRule, options: { publishPhase: boolean }): string[] => {
+  const computeAllowedToolList = (rule: AutomationRule, options: { publishPhase: boolean }, action?: AutomationAction | null): string[] => {
     const families = rule.toolPalette.filter((family) => options.publishPhase || !PUBLISH_CAPABLE_TOOL_FAMILIES.has(family));
     const explicit = dedupeStrings([
       ...(rule.permissionConfig?.cli?.allowedTools ?? []),
       ...(rule.permissionConfig?.providers?.allowedTools ?? []),
+      ...(action?.permissionConfig?.cli?.allowedTools ?? []),
+      ...(action?.permissionConfig?.providers?.allowedTools ?? []),
     ]);
     return dedupeStrings([
       ...AUTOMATION_TOOL_BASELINE,
@@ -1120,10 +1133,14 @@ export function createAutomationService({
     ]);
   };
 
-  const buildPermissionConfig = (rule: AutomationRule, options: { publishPhase: boolean }) => {
-    const allowedTools = computeAllowedToolList(rule, options);
-    const cli = rule.permissionConfig?.cli;
-    const providers = rule.permissionConfig?.providers;
+  const buildPermissionConfig = (rule: AutomationRule, options: { publishPhase: boolean }, action?: AutomationAction | null) => {
+    const allowedTools = computeAllowedToolList(rule, options, action);
+    const cli = action?.permissionConfig?.cli ?? rule.permissionConfig?.cli;
+    const inProcess = action?.permissionConfig?.inProcess ?? rule.permissionConfig?.inProcess;
+    const providers = {
+      ...(rule.permissionConfig?.providers ?? {}),
+      ...(action?.permissionConfig?.providers ?? {}),
+    };
     return {
       ...(cli
         ? {
@@ -1139,16 +1156,27 @@ export function createAutomationService({
               allowedTools,
             },
           }),
-      ...(rule.permissionConfig?.inProcess ? { inProcess: rule.permissionConfig.inProcess } : {}),
+      ...(inProcess ? { inProcess } : {}),
       providers: {
-        claude: rule.verification.mode === "dry-run" ? "plan" : (providers?.claude ?? "edit"),
-        codex: rule.verification.mode === "dry-run" ? "plan" : (providers?.codex ?? "default"),
-        opencode: rule.verification.mode === "dry-run" ? "plan" : (providers?.opencode ?? "edit"),
-        codexSandbox: providers?.codexSandbox ?? "workspace-write",
-        ...(providers?.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
+        claude: rule.verification.mode === "dry-run" ? "plan" : (providers.claude ?? "edit"),
+        codex: rule.verification.mode === "dry-run" ? "plan" : (providers.codex ?? "default"),
+        cursor: rule.verification.mode === "dry-run" ? "plan" : providers.cursor,
+        opencode: rule.verification.mode === "dry-run" ? "plan" : (providers.opencode ?? "edit"),
+        codexSandbox: providers.codexSandbox ?? "workspace-write",
+        ...(providers.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
         allowedTools,
       },
     };
+  };
+
+  const resolveProviderPermissionMode = (
+    providerGroup: string,
+    permissionConfig: ReturnType<typeof buildPermissionConfig>,
+  ) => {
+    if (providerGroup === "claude") return permissionConfig.providers?.claude ?? "edit";
+    if (providerGroup === "codex") return permissionConfig.providers?.codex ?? "default";
+    if (providerGroup === "cursor") return permissionConfig.providers?.cursor ?? "edit";
+    return permissionConfig.providers?.opencode ?? "edit";
   };
 
   const requiresPublishGate = (rule: AutomationRule): boolean =>
@@ -1624,9 +1652,14 @@ export function createAutomationService({
     };
   };
 
-  const getConfiguredTargetLaneId = (rule: AutomationRule): string | null => {
-    const laneId = typeof rule.execution?.targetLaneId === "string" ? rule.execution.targetLaneId.trim() : "";
-    return laneId.length ? laneId : null;
+  const trimToNull = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  };
+
+  const getConfiguredTargetLaneId = (rule: AutomationRule, action?: AutomationAction | null): string | null => {
+    return trimToNull(action?.targetLaneId) ?? trimToNull(rule.execution?.targetLaneId);
   };
 
   const dispatchAdeAction = async (
@@ -1700,12 +1733,42 @@ export function createAutomationService({
       await conflictService.runPrediction(trigger.laneId ? { laneId: trigger.laneId } : {});
       return { status: "succeeded" };
     }
+    if (action.type === "create-lane") {
+      const fallbackName = trigger.issue?.title ?? trigger.pr?.title ?? trigger.summary ?? rule.name;
+      const laneName = resolveTemplateString(action.laneNameTemplate, trigger) || fallbackName;
+      if (!laneName.trim()) {
+        return { status: "failed", output: "create-lane action requires a lane name." };
+      }
+      const description = resolveTemplateString(action.laneDescriptionTemplate, trigger)
+        || [
+          trigger.issue ? `GitHub issue #${trigger.issue.number}` : null,
+          trigger.issue?.url ?? trigger.pr?.url ?? null,
+          trigger.summary ?? null,
+        ].filter(Boolean).join("\n");
+      const parentLaneId = trimToNull(action.parentLaneId);
+      const lane = await laneService.create({
+        name: laneName,
+        description,
+        ...(parentLaneId ? { parentLaneId } : {}),
+      });
+      trigger.laneId = lane.id;
+      trigger.laneName = lane.name;
+      trigger.branch = lane.branchRef;
+      return {
+        status: "succeeded",
+        output: JSON.stringify({
+          laneId: lane.id,
+          laneName: lane.name,
+          branchRef: lane.branchRef,
+        }),
+      };
+    }
     if (action.type === "run-tests") {
       const suiteId = (action.suiteId ?? "").trim();
       if (!suiteId) throw new Error("run-tests requires suiteId");
       if (!testService) throw new Error("Test service unavailable");
       const activeLanes = await laneService.list({ includeArchived: false });
-      const configuredLaneId = getConfiguredTargetLaneId(rule);
+      const configuredLaneId = getConfiguredTargetLaneId(rule, action);
       const laneId = configuredLaneId
         ?? trigger.laneId
         ?? activeLanes.find((lane) => lane.laneType === "primary")?.id
@@ -1729,7 +1792,7 @@ export function createAutomationService({
       if (!agentChatServiceRef) {
         return { status: "failed", output: "Agent chat service is unavailable." };
       }
-      const laneId = await resolveExecutionLaneId(rule, trigger);
+      const laneId = await resolveExecutionLaneId(rule, trigger, action);
       if (!laneId) {
         return { status: "failed", output: "No lane is available for this automation run." };
       }
@@ -1739,15 +1802,12 @@ export function createAutomationService({
       }
       const interpolated = resolvePlaceholders(rawPrompt, trigger);
       const promptText = typeof interpolated === "string" ? interpolated : rawPrompt;
-      const { modelId, modelDescriptor, providerGroup } = resolveAutomationModelDescriptor(rule);
+      const { modelId, modelDescriptor, providerGroup } = resolveAutomationModelDescriptor(rule, action);
       const resolvedChat = resolveChatProviderForDescriptor(modelDescriptor);
-      const permissionConfig = buildPermissionConfig(rule, { publishPhase: false });
-      const permissionMode = providerGroup === "claude"
-        ? permissionConfig.providers?.claude ?? "edit"
-        : providerGroup === "codex"
-          ? permissionConfig.providers?.codex ?? "default"
-          : permissionConfig.providers?.opencode ?? "edit";
-      const reasoningEffort = rule.execution?.session?.reasoningEffort
+      const permissionConfig = buildPermissionConfig(rule, { publishPhase: false }, action);
+      const permissionMode = resolveProviderPermissionMode(providerGroup, permissionConfig);
+      const reasoningEffort = action.modelConfig?.thinkingLevel
+        ?? rule.execution?.session?.reasoningEffort
         ?? rule.modelConfig?.orchestratorModel?.thinkingLevel
         ?? null;
       const timeoutMs = Math.max(
@@ -1811,7 +1871,7 @@ export function createAutomationService({
     if (action.type === "run-command") {
       const command = (action.command ?? "").trim();
       if (!command) throw new Error("run-command requires command");
-      const laneId = getConfiguredTargetLaneId(rule) ?? trigger.laneId;
+      const laneId = getConfiguredTargetLaneId(rule, action) ?? trigger.laneId;
       const baseCwd = laneId ? laneService.getLaneWorktreePath(laneId) : projectRoot;
       const configuredCwd = (action.cwd ?? "").trim();
       const cwdCandidate = configuredCwd.length
@@ -1961,15 +2021,11 @@ export function createAutomationService({
     }
   };
 
-  const resolveExecutionLaneId = async (rule: AutomationRule, trigger: TriggerContext): Promise<string | null> => {
-    const configuredLaneId = typeof rule.execution?.targetLaneId === "string" && rule.execution.targetLaneId.trim().length
-      ? rule.execution.targetLaneId.trim()
-      : null;
+  const resolveExecutionLaneId = async (rule: AutomationRule, trigger: TriggerContext, action?: AutomationAction | null): Promise<string | null> => {
+    const configuredLaneId = trimToNull(action?.targetLaneId) ?? trimToNull(rule.execution?.targetLaneId);
     if (configuredLaneId) return configuredLaneId;
 
-    const triggerLaneId = typeof trigger.laneId === "string" && trigger.laneId.trim().length
-      ? trigger.laneId.trim()
-      : null;
+    const triggerLaneId = trimToNull(trigger.laneId);
     if (triggerLaneId) return triggerLaneId;
 
     try {
@@ -1981,8 +2037,8 @@ export function createAutomationService({
     }
   };
 
-  const resolveAutomationModelDescriptor = (rule: AutomationRule) => {
-    const requestedModelId = rule.modelConfig?.orchestratorModel?.modelId;
+  const resolveAutomationModelDescriptor = (rule: AutomationRule, action?: AutomationAction | null) => {
+    const requestedModelId = action?.modelConfig?.modelId ?? rule.modelConfig?.orchestratorModel?.modelId;
     if (requestedModelId && !getModelById(requestedModelId)) {
       throw new Error(`Unknown model '${requestedModelId}'.`);
     }
@@ -2048,11 +2104,7 @@ export function createAutomationService({
     const dryRun = args.rule.verification.mode === "dry-run";
     const permissionMode = verificationRequired || dryRun
       ? "plan"
-      : providerGroup === "claude"
-        ? permissionConfig.providers?.claude ?? "edit"
-        : providerGroup === "codex"
-          ? permissionConfig.providers?.codex ?? "default"
-          : permissionConfig.providers?.opencode ?? "edit";
+      : resolveProviderPermissionMode(providerGroup, permissionConfig);
     const reasoningEffort = args.rule.execution?.session?.reasoningEffort ?? args.rule.modelConfig?.orchestratorModel?.thinkingLevel ?? null;
     const timeoutMs = Math.max(
       15_000,

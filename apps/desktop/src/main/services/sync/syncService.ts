@@ -107,6 +107,12 @@ type SyncServiceArgs = {
   processService: ReturnType<typeof createProcessService>;
   hostStartupEnabled?: boolean;
   hostDiscoveryEnabled?: boolean;
+  /**
+   * Phone sync is hosted by the local desktop app. When enabled, legacy
+   * desktop-to-desktop viewer state stored in a project DB cannot demote the
+   * phone sync surface into viewer mode.
+   */
+  forceHostRole?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
   /**
    * Optional notification bus forwarded to the sync host. The host publishes
@@ -117,6 +123,10 @@ type SyncServiceArgs = {
   projectCatalogProvider?: {
     listProjects: () => Promise<SyncProjectCatalogPayload>;
     prepareProjectConnection: (args: SyncProjectSwitchRequestPayload) => Promise<SyncProjectSwitchResultPayload>;
+    completeProjectConnection?: (
+      args: SyncProjectSwitchRequestPayload,
+      result: SyncProjectSwitchResultPayload,
+    ) => Promise<void>;
   };
 };
 
@@ -361,6 +371,7 @@ export function createSyncService(args: SyncServiceArgs) {
   let initialized = false;
   let hostStartupEnabled = args.hostStartupEnabled !== false;
   let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
+  const forceHostRole = args.forceHostRole === true;
   const isCrdtSyncAvailable = (): boolean => args.db.sync.isAvailable?.() !== false;
   const assertPhonePairingAvailable = (): void => {
     if (!hostStartupEnabled) {
@@ -391,6 +402,7 @@ export function createSyncService(args: SyncServiceArgs) {
   };
 
   const readSavedDraft = (): SyncDesktopConnectionDraft | null => {
+    if (forceHostRole) return null;
     if (!fs.existsSync(draftPath)) return null;
     const token = readToken();
     return sanitizeDraft(
@@ -430,6 +442,7 @@ export function createSyncService(args: SyncServiceArgs) {
     logger: args.logger,
     deviceRegistryService,
     onStatusChange: (status) => {
+      if (forceHostRole) return;
       if (status.savedDraft) {
         const token = readToken();
         if (token) {
@@ -572,6 +585,7 @@ export function createSyncService(args: SyncServiceArgs) {
 
   const resolveViewerDraftFromRegistry =
     (): SyncDesktopConnectionDraft | null => {
+      if (forceHostRole) return null;
       const cluster = deviceRegistryService.getClusterState();
       const token = readToken();
       if (!cluster || !token) return null;
@@ -603,12 +617,20 @@ export function createSyncService(args: SyncServiceArgs) {
         syncPeerService.setSavedDraft(savedDraft);
         const localDevice = deviceRegistryService.ensureLocalDevice();
         let cluster = deviceRegistryService.getClusterState();
-        if (!cluster && !savedDraft) {
+        if (forceHostRole) {
+          if (!cluster || cluster.brainDeviceId !== localDevice.deviceId) {
+            cluster = deviceRegistryService.setClusterState({
+              brainDeviceId: localDevice.deviceId,
+              brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
+              updatedByDeviceId: localDevice.deviceId,
+            });
+          }
+        } else if (!cluster && !savedDraft) {
           cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
         }
-        const isLocalBrain = cluster
+        const isLocalBrain = forceHostRole || (cluster
           ? cluster.brainDeviceId === localDevice.deviceId
-          : !savedDraft;
+          : !savedDraft);
         if (isLocalBrain) {
           if (syncPeerService.isConnected()) {
             syncPeerService.disconnect({ preserveDraft: true });
@@ -767,9 +789,9 @@ export function createSyncService(args: SyncServiceArgs) {
       const currentBrain = cluster
         ? deviceRegistryService.getDevice(cluster.brainDeviceId)
         : localDevice;
-      const isLocalBrain = cluster
+      const isLocalBrain = forceHostRole || (cluster
         ? cluster.brainDeviceId === localDevice.deviceId
-        : !savedDraft && !syncPeerService.isConnected();
+        : !savedDraft && !syncPeerService.isConnected());
       const role = isLocalBrain ? "brain" : "viewer";
       const crdtSyncAvailable = isCrdtSyncAvailable();
       const canHostPhonePairing = role === "brain" && hostStartupEnabled && crdtSyncAvailable;
@@ -829,14 +851,16 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     setHostDiscoveryEnabled(enabled: boolean): void {
+      if (hostDiscoveryEnabled === enabled) return;
       hostDiscoveryEnabled = enabled;
       hostService?.setDiscoveryEnabled(enabled);
       void emitStatus();
     },
 
-    setHostStartupEnabled(enabled: boolean): void {
+    async setHostStartupEnabled(enabled: boolean): Promise<void> {
+      if (hostStartupEnabled === enabled) return;
       hostStartupEnabled = enabled;
-      void refreshRoleState();
+      await refreshRoleState();
     },
 
     async updateLocalDevice(argsIn: {

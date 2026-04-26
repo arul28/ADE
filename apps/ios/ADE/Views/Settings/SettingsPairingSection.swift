@@ -45,8 +45,9 @@ struct SettingsPairingSection: View {
 
   private var discoverSubtitle: String? {
     let count = syncService.discoveredHosts.count
-    if count == 0, syncService.savedReconnectHost?.tailscaleAddress != nil {
-      return "Saved Tailscale route"
+    let savedCount = syncService.savedReconnectHosts.count
+    if count == 0, savedCount > 0 {
+      return savedCount == 1 ? "1 saved host" : "\(savedCount) saved hosts"
     }
     if count == 0 {
       return "Looking nearby"
@@ -55,10 +56,10 @@ struct SettingsPairingSection: View {
   }
 
   private var pairingHint: String? {
-    guard syncService.activeHostProfile?.hostIdentity != nil else {
+    guard !syncService.savedReconnectHosts.isEmpty else {
       return "Pick how to reach your Mac"
     }
-    return "Add another Mac or replace the paired one"
+    return "Add another Mac or switch saved hosts"
   }
 }
 
@@ -221,16 +222,21 @@ struct DiscoverHostsSheet: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 10) {
-          let savedHost = syncService.savedReconnectHost
+          let savedHosts = syncService.savedReconnectHosts
           let liveHosts = syncService.discoveredHosts.filter { host in
-            guard let savedHost else { return true }
-            if let hostIdentity = host.hostIdentity, let savedIdentity = savedHost.hostIdentity {
-              return hostIdentity != savedIdentity
+            for savedHost in savedHosts {
+              if let hostIdentity = host.hostIdentity, let savedIdentity = savedHost.hostIdentity,
+                 hostIdentity == savedIdentity {
+                return false
+              }
+              if host.id == savedHost.id {
+                return false
+              }
             }
-            return host.id != savedHost.id
+            return true
           }
 
-          if savedHost == nil && liveHosts.isEmpty {
+          if savedHosts.isEmpty && liveHosts.isEmpty {
             VStack(spacing: 14) {
               ADESkeletonView(height: 56, cornerRadius: 14)
               ADESkeletonView(height: 56, cornerRadius: 14)
@@ -241,12 +247,12 @@ struct DiscoverHostsSheet: View {
             }
             .padding(.top, 24)
           } else {
-            if let savedHost {
+            ForEach(savedHosts) { savedHost in
               Button {
                 dismiss()
                 Task {
-                  await syncService.reconnectIfPossible(
-                    userInitiated: true,
+                  await syncService.reconnectToSavedHost(
+                    savedHost,
                     preferTailnet: savedHost.tailscaleAddress != nil
                   )
                 }

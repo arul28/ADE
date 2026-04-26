@@ -433,33 +433,37 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "screenshot_environment",
-    description: "Fallback-only: capture a local screenshot and store it in ADE artifacts for proof attachment.",
+    description: "Fallback-only: capture a local screenshot/image and store it as visual ADE proof.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         name: { type: "string" },
         displayId: { type: "number" },
+        ownerKind: { type: "string" },
+        ownerId: { type: "string" },
         format: { type: "string", enum: ["png", "jpg"], default: "png" }
       }
     }
   },
   {
     name: "record_environment",
-    description: "Fallback-only: record a short local screen video and store it in ADE artifacts for proof attachment.",
+    description: "Fallback-only: record a short local screen video and store it as visual ADE proof.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         name: { type: "string" },
         displayId: { type: "number" },
+        ownerKind: { type: "string" },
+        ownerId: { type: "string" },
         durationSec: { type: "number", minimum: 1, maximum: 120, default: 10 }
       }
     }
   },
   {
     name: "ingest_computer_use_artifacts",
-    description: "Register externally-produced computer-use proof artifacts into ADE for ownership, closeout, and publishing.",
+    description: "Register externally-produced visual proof artifacts into ADE for ownership, closeout, and publishing. Console logs are supporting diagnostics and should not be the only proof unless explicitly requested.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -521,12 +525,14 @@ const TOOL_SPECS: ToolSpec[] = [
         automationRunId: { type: "string" },
         prUrl: { type: "string" },
         linearIssueId: { type: "string" },
+        ownerKind: { type: "string" },
+        ownerId: { type: "string" },
       }
     }
   },
   {
     name: "list_computer_use_artifacts",
-    description: "List ADE-managed computer-use artifacts by owner or canonical proof type.",
+    description: "List ADE-managed proof artifacts by owner or canonical type, including visual proof and supporting diagnostics.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -2056,7 +2062,7 @@ function assertNonEmptyString(value: unknown, field: string): string {
   return text;
 }
 
-function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
+export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
   const owners: ComputerUseArtifactOwner[] = [];
   const add = (
     kind: ComputerUseArtifactOwner["kind"],
@@ -2066,7 +2072,31 @@ function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string
     if (!id || !id.trim().length) return;
     owners.push({ kind, id: id.trim(), relation });
   };
+  const addExplicitOwner = () => {
+    const rawKind = asOptionalTrimmedString(toolArgs.ownerKind);
+    const ownerId = asOptionalTrimmedString(toolArgs.ownerId);
+    if (!rawKind || !ownerId) return;
+    let normalizedKind = rawKind;
+    if (rawKind === "chat") normalizedKind = "chat_session";
+    else if (rawKind === "pr") normalizedKind = "github_pr";
+    switch (normalizedKind) {
+      case "lane":
+      case "mission":
+      case "orchestrator_run":
+      case "orchestrator_step":
+      case "orchestrator_attempt":
+      case "chat_session":
+      case "automation_run":
+      case "github_pr":
+      case "linear_issue":
+        add(normalizedKind, ownerId);
+        break;
+      default:
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported proof ownerKind: ${rawKind}`);
+    }
+  };
 
+  addExplicitOwner();
   add("mission", session.identity.missionId);
   add("orchestrator_run", session.identity.runId);
   add("orchestrator_step", session.identity.stepId);

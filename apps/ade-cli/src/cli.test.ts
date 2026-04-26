@@ -351,6 +351,55 @@ describe("ADE CLI", () => {
     expect(joined.command).toEqual(["lanes", "list"]);
   });
 
+  it("prefers headless mode for local proof capture commands", () => {
+    const screenshot = buildCliPlan(["proof", "screenshot"]);
+    const capture = buildCliPlan(["proof", "capture", "--caption", "Done", "--owner-kind", "chat", "--owner-id", "chat-1"]);
+    const record = buildCliPlan(["proof", "record", "--seconds", "3"]);
+    const list = buildCliPlan(["proof", "list"]);
+
+    expect(screenshot.kind).toBe("execute");
+    expect(capture.kind).toBe("execute");
+    expect(record.kind).toBe("execute");
+    expect(list.kind).toBe("execute");
+    if (screenshot.kind !== "execute" || capture.kind !== "execute" || record.kind !== "execute" || list.kind !== "execute") return;
+
+    expect(screenshot.preferHeadless).toBe(true);
+    expect(capture.preferHeadless).toBe(true);
+    expect(capture.steps[0]?.params).toMatchObject({
+      name: "screenshot_environment",
+      arguments: {
+        name: "Done",
+        ownerKind: "chat",
+        ownerId: "chat-1",
+      },
+    });
+    expect(record.preferHeadless).toBe(true);
+    expect(list.preferHeadless).toBeUndefined();
+  });
+
+  it("maps proof attach to visual artifact ingestion", () => {
+    const plan = buildCliPlan(["proof", "attach", "/tmp/done.png", "--caption", "Checkout complete", "--owner-kind", "chat", "--owner-id", "chat-1"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "ingest_computer_use_artifacts",
+      arguments: {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        toolName: "proof attach",
+        ownerKind: "chat",
+        ownerId: "chat-1",
+        inputs: [{
+          kind: "screenshot",
+          title: "Checkout complete",
+          description: "Checkout complete",
+          path: "/tmp/done.png",
+        }],
+      },
+    });
+  });
+
   it("rejects invalid --role values", () => {
     expect(() => parseCliArgs(["--role", "bogus", "lanes", "list"])).toThrow(
       /--role must be one of/,

@@ -15,6 +15,18 @@ struct WorkDraftChatSession {
   let initialMessage: String?
 }
 
+struct WorkRootSessionPresentationTaskKey: Equatable {
+  let sessions: [TerminalSessionSummary]
+  let chatSummaries: [String: AgentChatSessionSummary]
+  let lanes: [LaneSummary]
+  let optimisticSessions: [String: TerminalSessionSummary]
+  let selectedLaneId: String
+  let selectedStatus: WorkSessionStatusFilter
+  let searchText: String
+  let archivedSessionIdsStorage: String
+  let sessionOrganizationRaw: String
+}
+
 struct WorkRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
@@ -25,6 +37,9 @@ struct WorkRootScreen: View {
   @State var chatSummaries: [String: AgentChatSessionSummary] = [:]
   @State var lanes: [LaneSummary] = []
   @State var transcriptCache: [String: [WorkChatEnvelope]] = [:]
+  @State var sessionPresentation = WorkRootSessionPresentation.empty
+  @State var sessionPresentationRebuildTask: Task<Void, Never>?
+  @State var sessionPresentationRebuildGeneration = 0
   /// Memoizes parsed transcripts for the Activity feed keyed by session id + cheap buffer fingerprint,
   /// so `localStateRevision` bumps during CRDT sync do not re-parse every terminal buffer in `body`.
   @State var activityTranscriptCache: [String: WorkActivityTranscriptCacheEntry] = [:]
@@ -90,75 +105,19 @@ struct WorkRootScreen: View {
   }
 
   var mergedSessions: [TerminalSessionSummary] {
-    let draftValues = optimisticSessions.values.filter { draft in
-      !sessions.contains(where: { $0.id == draft.id })
-    }
-    return (sessions + draftValues)
-      .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
+    sessionPresentation.mergedSessions
   }
 
   var displaySessions: [TerminalSessionSummary] {
-    workFilteredSessions(
-      mergedSessions,
-      chatSummaries: chatSummaries,
-      archivedSessionIds: archivedSessionIds,
-      selectedStatus: selectedStatus,
-      selectedLaneId: selectedLaneId,
-      searchText: searchText
-    )
-  }
-
-  var needsInputSessions: [TerminalSessionSummary] {
-    displaySessions.filter {
-      !archivedSessionIds.contains($0.id)
-      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "awaiting-input"
-    }
-  }
-
-  var pinnedSessions: [TerminalSessionSummary] {
-    displaySessions.filter {
-      $0.pinned
-      && !archivedSessionIds.contains($0.id)
-      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) != "awaiting-input"
-    }
-  }
-
-  var liveSessions: [TerminalSessionSummary] {
-    displaySessions.filter { session in
-      !session.pinned
-      && !archivedSessionIds.contains(session.id)
-      && {
-        let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-        return status == "active" || status == "idle"
-      }()
-    }
-  }
-
-  var endedSessions: [TerminalSessionSummary] {
-    displaySessions.filter {
-      !$0.pinned
-      && !archivedSessionIds.contains($0.id)
-      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "ended"
-    }
-  }
-
-  var archivedSessions: [TerminalSessionSummary] {
-    displaySessions.filter { archivedSessionIds.contains($0.id) }
+    sessionPresentation.displaySessions
   }
 
   var liveChatSessions: [TerminalSessionSummary] {
-    mergedSessions.filter { session in
-      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-      return isChatSession(session) && status != "ended" && !archivedSessionIds.contains(session.id)
-    }
+    sessionPresentation.liveChatSessions
   }
 
   var activitySessions: [TerminalSessionSummary] {
-    workActivitySourceSessions(
-      displaySessions,
-      chatSummaries: chatSummaries,
-      archivedSessionIds: archivedSessionIds
-    )
+    sessionPresentation.activitySessions
   }
 
   var hasActiveFilters: Bool {
@@ -168,37 +127,21 @@ struct WorkRootScreen: View {
   }
 
   var globalNeedsInputCount: Int {
-    mergedSessions.filter {
-      !isRunOwnedSession($0)
-      && !archivedSessionIds.contains($0.id)
-      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "awaiting-input"
-    }.count
+    sessionPresentation.globalNeedsInputCount
   }
 
   var globalLiveSessionCount: Int {
-    mergedSessions.filter { session in
-      guard !isRunOwnedSession(session) else { return false }
-      guard !archivedSessionIds.contains(session.id) else { return false }
-      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-      return status == "active" || status == "idle"
-    }.count
+    sessionPresentation.globalLiveSessionCount
   }
 
   var firstGlobalAttentionSession: TerminalSessionSummary? {
-    mergedSessions.first {
-      !isRunOwnedSession($0)
-      && !archivedSessionIds.contains($0.id)
-      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "awaiting-input"
-    }
+    guard let id = sessionPresentation.firstGlobalAttentionSessionId else { return nil }
+    return mergedSessions.first { $0.id == id }
   }
 
   var firstGlobalLiveSession: TerminalSessionSummary? {
-    mergedSessions.first { session in
-      guard !isRunOwnedSession(session) else { return false }
-      guard !archivedSessionIds.contains(session.id) else { return false }
-      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-      return status == "active" || status == "idle" || status == "awaiting-input"
-    }
+    guard let id = sessionPresentation.firstGlobalLiveSessionId else { return nil }
+    return mergedSessions.first { $0.id == id }
   }
 
   var sessionOrganizationBinding: Binding<WorkSessionOrganization> {
@@ -235,13 +178,7 @@ struct WorkRootScreen: View {
   }
 
   var sessionGroups: [WorkSessionGroup] {
-    workSessionGroups(
-      organization: WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus,
-      sessions: displaySessions,
-      chatSummaries: chatSummaries,
-      archivedSessionIds: archivedSessionIds,
-      orderedLanes: lanes
-    )
+    sessionPresentation.sessionGroups
   }
 
   var activityFeed: [WorkAgentActivity] {
@@ -250,6 +187,20 @@ struct WorkRootScreen: View {
 
   var isWorkRootActive: Bool {
     isTabActive && path.isEmpty
+  }
+
+  var sessionPresentationTaskKey: WorkRootSessionPresentationTaskKey {
+    WorkRootSessionPresentationTaskKey(
+      sessions: sessions,
+      chatSummaries: chatSummaries,
+      lanes: lanes,
+      optimisticSessions: optimisticSessions,
+      selectedLaneId: selectedLaneId,
+      selectedStatus: selectedStatus,
+      searchText: searchText,
+      archivedSessionIdsStorage: archivedSessionIdsStorage,
+      sessionOrganizationRaw: sessionOrganizationRaw
+    )
   }
 
   var workProjectionReloadKey: Int? {
@@ -449,7 +400,7 @@ struct WorkRootScreen: View {
                 attentionCount: globalNeedsInputCount,
                 onTap: {
                   guard let target = firstGlobalAttentionSession ?? firstGlobalLiveSession else { return }
-                  if displaySessions.contains(where: { $0.id == target.id }) {
+                  if sessionPresentation.displaySessionIds.contains(target.id) {
                     withAnimation(.snappy) {
                       proxy.scrollTo(target.id, anchor: .top)
                     }
@@ -497,7 +448,6 @@ struct WorkRootScreen: View {
           .transition(.move(edge: .bottom).combined(with: .opacity))
         }
       }
-      .animation(.snappy, value: isSelecting)
       .onChange(of: mergedSessions.map(\.id)) { _, newIds in
         let visible = Set(newIds)
         let pruned = selectedSessionIds.intersection(visible)
@@ -506,6 +456,11 @@ struct WorkRootScreen: View {
           if pruned.isEmpty && isSelecting {
             withAnimation(.snappy) { isSelecting = false }
           }
+        }
+      }
+      .onChange(of: path.count) { _, newCount in
+        if newCount == 0, selectedSessionTransitionId != nil {
+          selectedSessionTransitionId = nil
         }
       }
       .sheet(item: $bulkExportShare) { share in
@@ -549,6 +504,9 @@ struct WorkRootScreen: View {
         await reloadFromPersistedProjection()
         guard !Task.isCancelled, workProjectionReloadKey == revision else { return }
         lastWorkProjectionReloadRevision = revision
+      }
+      .task(id: sessionPresentationTaskKey) {
+        scheduleSessionPresentationRebuild()
       }
       .task(id: pollingKey) {
         await pollRunningChats()

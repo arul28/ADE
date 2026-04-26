@@ -16,6 +16,12 @@ type RecentProjectEntry = {
   lastOpenedAt: string;
 };
 
+export type RecentProjectInspection = {
+  summary: RecentProjectSummary;
+  projectId: string | null;
+  defaultBaseRef: string | null;
+};
+
 type LaneCountRow = {
   lane_type: string | null;
   worktree_path: string | null;
@@ -37,19 +43,62 @@ function laneExistsOnDisk(row: LaneCountRow, projectRoot: string): boolean {
   return candidatePath ? fs.existsSync(candidatePath) : false;
 }
 
-function readAdeLaneCount(projectRoot: string): number | null {
+function hasTable(db: DatabaseSyncType, tableName: string): boolean {
+  return Boolean(
+    db.prepare("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1")
+      .get<{ present?: number }>(tableName)?.present,
+  );
+}
+
+type AdeProjectInspection = {
+  projectId: string | null;
+  defaultBaseRef: string | null;
+  laneCount: number | null;
+};
+
+const EMPTY_ADE_PROJECT: AdeProjectInspection = {
+  projectId: null,
+  defaultBaseRef: null,
+  laneCount: null,
+};
+
+function inspectAdeProject(projectRoot: string): AdeProjectInspection {
   const dbPath = resolveAdeLayout(projectRoot).dbPath;
-  if (!fs.existsSync(dbPath)) return null;
+  if (!fs.existsSync(dbPath)) return EMPTY_ADE_PROJECT;
 
   let db: DatabaseSyncType | null = null;
   try {
     db = new DatabaseSync(dbPath);
     db.exec("PRAGMA busy_timeout = 5000");
-    const hasLanesTable = Boolean(
-      db.prepare("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1")
-        .get<{ present?: number }>("lanes")?.present,
-    );
-    if (!hasLanesTable) return null;
+    const hasProjectsTable = hasTable(db, "projects");
+    const hasLanesTable = hasTable(db, "lanes");
+
+    const projectRow = hasProjectsTable
+      ? db.prepare(
+        `
+          select id, default_base_ref as defaultBaseRef
+          from projects
+          where root_path = ?
+          order by last_opened_at desc, created_at desc
+          limit 1
+        `,
+      ).get<{ id?: string; defaultBaseRef?: string | null }>(projectRoot)
+        ?? db.prepare(
+          `
+            select id, default_base_ref as defaultBaseRef
+            from projects
+            order by last_opened_at desc, created_at desc
+            limit 1
+          `,
+        ).get<{ id?: string; defaultBaseRef?: string | null }>()
+      : null;
+
+    const projectId = projectRow?.id ?? null;
+    const defaultBaseRef = projectRow?.defaultBaseRef ?? null;
+
+    if (!hasLanesTable) {
+      return { projectId, defaultBaseRef, laneCount: null };
+    }
 
     const rows = db.prepare(
       `
@@ -64,9 +113,9 @@ function readAdeLaneCount(projectRoot: string): number | null {
     for (const row of rows) {
       if (laneExistsOnDisk(row, projectRoot)) count += 1;
     }
-    return count > 0 ? count : null;
+    return { projectId, defaultBaseRef, laneCount: count > 0 ? count : null };
   } catch {
-    return null;
+    return EMPTY_ADE_PROJECT;
   } finally {
     db?.close();
   }
@@ -102,15 +151,24 @@ function readGitLaneCount(projectRoot: string): number | undefined {
   }
 }
 
-export function toRecentProjectSummary(entry: RecentProjectEntry): RecentProjectSummary {
+export function inspectRecentProject(entry: RecentProjectEntry): RecentProjectInspection {
   const exists = fs.existsSync(entry.rootPath);
-  const laneCount = exists ? (readAdeLaneCount(entry.rootPath) ?? readGitLaneCount(entry.rootPath)) : undefined;
+  const adeProject = exists ? inspectAdeProject(entry.rootPath) : EMPTY_ADE_PROJECT;
+  const laneCount = exists ? (adeProject.laneCount ?? readGitLaneCount(entry.rootPath)) : undefined;
 
   return {
-    rootPath: entry.rootPath,
-    displayName: entry.displayName,
-    lastOpenedAt: entry.lastOpenedAt,
-    exists,
-    laneCount,
+    summary: {
+      rootPath: entry.rootPath,
+      displayName: entry.displayName,
+      lastOpenedAt: entry.lastOpenedAt,
+      exists,
+      laneCount,
+    },
+    projectId: adeProject.projectId,
+    defaultBaseRef: adeProject.defaultBaseRef,
   };
+}
+
+export function toRecentProjectSummary(entry: RecentProjectEntry): RecentProjectSummary {
+  return inspectRecentProject(entry).summary;
 }

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import {
   Code,
+  GitBranch,
   Lightning,
   Plus,
   Rocket,
@@ -9,11 +10,12 @@ import {
   Warning,
 } from "@phosphor-icons/react";
 import type { ElementType } from "react";
-import type { TestSuiteDefinition } from "../../../shared/types";
+import type { ModelConfig, TestSuiteDefinition } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { ActionRow, type ActionRowKind, type ActionRowValue } from "./ActionRow";
 
 const ADD_OPTIONS: Array<{ kind: ActionRowKind; label: string; icon: ElementType; disabled?: boolean; hint?: string }> = [
+  { kind: "create-lane", label: "Create lane", icon: GitBranch },
   { kind: "agent-session", label: "Agent session", icon: Lightning },
   { kind: "ade-action", label: "Run ADE action", icon: Code },
   { kind: "run-tests", label: "Run tests", icon: TestTube },
@@ -24,6 +26,12 @@ const ADD_OPTIONS: Array<{ kind: ActionRowKind; label: string; icon: ElementType
 
 function createBlankAction(kind: ActionRowKind, suites: TestSuiteDefinition[]): ActionRowValue {
   switch (kind) {
+    case "create-lane":
+      return {
+        kind,
+        laneNameTemplate: "{{trigger.issue.title}}",
+        laneDescriptionTemplate: "GitHub issue #{{trigger.issue.number}}\n{{trigger.issue.url}}\n\n{{trigger.issue.body}}",
+      };
     case "agent-session":
       return { kind, prompt: "", sessionTitle: "" };
     case "ade-action":
@@ -48,12 +56,18 @@ function newKey(): string {
 
 export function ActionList({
   actions,
+  lanes,
   suites,
+  fallbackModel,
   onChange,
+  onOpenAiSettings,
 }: {
   actions: ActionRowValue[];
+  lanes: Array<{ id: string; name: string }>;
   suites: TestSuiteDefinition[];
+  fallbackModel: ModelConfig;
   onChange: (next: ActionRowValue[]) => void;
+  onOpenAiSettings?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   // Stable per-row keys that survive reorders so React preserves focus/DOM
@@ -108,10 +122,13 @@ export function ActionList({
               index={index}
               total={actions.length}
               value={action}
+              lanes={lanes}
               suites={suites}
+              fallbackModel={fallbackModel}
               onChange={(next) => updateAction(index, next)}
               onRemove={() => removeAction(index)}
               onMove={(direction) => moveAction(index, direction)}
+              onOpenAiSettings={onOpenAiSettings}
             />
           ))}
         </div>

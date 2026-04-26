@@ -130,12 +130,20 @@ Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedToo
 
 - `type` — `AutomationActionType`.
 - Shared step controls: `condition` (gate string), `continueOnFailure`, `timeoutMs`, `retry`.
-- Action-specific config on the same object (`command`, `cwd`, `suiteId`, `adeAction`, `prompt`, `sessionTitle`).
+- Per-action overrides (apply on top of `execution.*` defaults):
+  - `targetLaneId` — overrides the lane this action runs against. Resolves through `getConfiguredTargetLaneId(rule, action)` → `execution.targetLaneId` → trigger lane → primary lane.
+  - `modelConfig` (`agent-session` only) — `{ modelId, thinkingLevel? }` overriding the rule's orchestrator model for this step. `thinkingLevel` also feeds the agent-session reasoning effort.
+  - `permissionConfig` (`agent-session` only) — `MissionPermissionConfig` whose `cli`/`providers`/`inProcess` fields are merged onto the rule's permission config; `providers.allowedTools` and `cli.allowedTools` extend (not replace) the rule's allow-list. The `cursor` provider key is supported alongside `claude`/`codex`/`opencode`.
+- Action-specific config on the same object (`command`, `cwd`, `suiteId`, `adeAction`, `prompt`, `sessionTitle`, `laneNameTemplate`, `laneDescriptionTemplate`, `parentLaneId`).
 
 Runtime `AutomationActionResult.status` is one of `running` | `succeeded` | `failed` | `skipped` | `cancelled`. Rows are persisted in the `automation_actions` table with `started_at`, `ended_at`, `output`, `error_message`.
 
 Action types (`AutomationActionType`):
 
+- `create-lane` — creates a new lane via `laneService.create` and binds the rest of the action chain to it. Subsequent actions see the new lane in `trigger.laneId` / `trigger.laneName` / `trigger.branch`.
+  - `laneNameTemplate` (default `"{{trigger.issue.title}}"`) — supports `{{trigger.*}}` placeholders; falls back to issue title, PR title, trigger summary, then rule name.
+  - `laneDescriptionTemplate` (optional) — placeholder-aware; defaults to a short auto-blurb that lists the issue number, source URL, and trigger summary.
+  - `parentLaneId` (optional) — stack the new lane under an existing lane.
 - `run-command` — shell command. `command` + optional `cwd`. Cwd validated via `validateAutomationCwd` + `resolvePathWithinRoot`; must stay inside the target lane worktree or project root.
 - `run-tests` — invokes the ADE test runner for `suiteId`.
 - `predict-conflicts` — runs the conflicts service's prediction for the target lane; no extra config.

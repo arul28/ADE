@@ -8,6 +8,7 @@ import SwiftUI
 /// the selected provider.
 struct WorkModelPickerSheet: View {
   @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var syncService: SyncService
 
   let currentModelId: String
   let currentProvider: String
@@ -33,9 +34,27 @@ struct WorkModelPickerSheet: View {
   @State private var activeProvider: String = ""
   @State private var searchText: String = ""
   @State private var reasoningEffort: String = ""
+  @State private var liveCatalog: [WorkModelCatalogGroup]?
+  @State private var isLoadingCatalog = false
+  @State private var usingCuratedFallback = false
+
+  private var curatedCatalog: [WorkModelCatalogGroup] {
+    workModelCatalogGroups(currentModelId: currentModelId, currentProvider: currentProvider)
+  }
 
   private var catalog: [WorkModelCatalogGroup] {
-    workModelCatalogGroups(currentModelId: currentModelId, currentProvider: currentProvider)
+    if let liveCatalog {
+      return liveCatalog
+    }
+    return usingCuratedFallback ? curatedCatalog : []
+  }
+
+  private var catalogIdentity: String {
+    catalog.map { group in
+      "\(group.key):" + group.providers.map { provider in
+        "\(provider.key):\(provider.models.map(\.id).joined(separator: ","))"
+      }.joined(separator: "|")
+    }.joined(separator: "||")
   }
 
   private var isSearching: Bool {
@@ -93,7 +112,11 @@ struct WorkModelPickerSheet: View {
     NavigationStack {
       VStack(spacing: 0) {
         searchBar
-        if isSearching {
+        if isLoadingCatalog && catalog.isEmpty {
+          loadingState
+        } else if catalog.isEmpty {
+          catalogEmptyState
+        } else if isSearching {
           searchList
         } else {
           reasoningRow
@@ -121,24 +144,78 @@ struct WorkModelPickerSheet: View {
     .presentationDetents([.medium, .large])
     .presentationDragIndicator(.visible)
     .onAppear {
-      if activeGroup.isEmpty {
-        let targetGroupKey = workModelCatalogGroupKey(for: currentModelId, currentProvider: currentProvider)
-        activeGroup = catalog.first(where: { $0.key == targetGroupKey })?.key
-          ?? catalog.first?.key
-          ?? ""
-      }
-      if activeProvider.isEmpty, let block = activeGroupBlock {
-        activeProvider = preferredProviderKey(in: block)
-      }
+      syncSelectionStateToCatalog()
       if reasoningEffort.isEmpty {
         reasoningEffort = currentReasoningEffort
       }
+    }
+    .onChange(of: catalogIdentity) { _, _ in
+      syncSelectionStateToCatalog()
     }
     .onChange(of: activeGroup) { _, newKey in
       if let block = catalog.first(where: { $0.key == newKey }) {
         activeProvider = preferredProviderKey(in: block)
       }
     }
+    .task(id: "\(currentModelId)\u{0}\(currentProvider)") {
+      await loadLiveCatalog()
+    }
+  }
+
+  @MainActor
+  private func syncSelectionStateToCatalog() {
+    guard !catalog.isEmpty else { return }
+    if activeGroup.isEmpty || !catalog.contains(where: { $0.key == activeGroup }) {
+      let targetGroupKey = workModelCatalogGroupKey(for: currentModelId, currentProvider: currentProvider)
+      activeGroup = catalog.first(where: { $0.key == targetGroupKey })?.key
+        ?? catalog.first?.key
+        ?? ""
+    }
+    if activeProvider.isEmpty || activeProviderBlock == nil {
+      if let block = activeGroupBlock {
+        activeProvider = preferredProviderKey(in: block)
+      }
+    }
+  }
+
+  @MainActor
+  private func loadLiveCatalog() async {
+    isLoadingCatalog = true
+    usingCuratedFallback = false
+    liveCatalog = nil
+
+    let providers = ["claude", "codex", "cursor", "opencode"]
+    var availableModelsByProvider: [String: [AgentChatModelInfo]] = [:]
+    var successCount = 0
+
+    for provider in providers {
+      do {
+        let models = try await syncService.listChatModels(provider: provider)
+        availableModelsByProvider[provider] = models
+        successCount += 1
+      } catch {
+        availableModelsByProvider[provider] = []
+      }
+    }
+
+    guard !Task.isCancelled else { return }
+
+    if successCount == 0 {
+      usingCuratedFallback = true
+      liveCatalog = nil
+      isLoadingCatalog = false
+      syncSelectionStateToCatalog()
+      return
+    }
+
+    liveCatalog = workModelCatalogGroups(
+      availableModelsByProvider: availableModelsByProvider,
+      currentModelId: currentModelId,
+      currentProvider: currentProvider
+    )
+    usingCuratedFallback = false
+    isLoadingCatalog = false
+    syncSelectionStateToCatalog()
   }
 
   private func preferredProviderKey(in block: WorkModelCatalogGroup) -> String {
@@ -234,6 +311,40 @@ struct WorkModelPickerSheet: View {
     case "max": return "Max"
     default: return tier.capitalized
     }
+  }
+
+  @ViewBuilder
+  private var loadingState: some View {
+    VStack(spacing: 12) {
+      Spacer(minLength: 24)
+      ProgressView()
+        .tint(ADEColor.accent)
+      Text("Loading models from the paired host…")
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 24)
+    }
+    .frame(maxWidth: .infinity)
+  }
+
+  @ViewBuilder
+  private var catalogEmptyState: some View {
+    VStack(spacing: 12) {
+      Spacer(minLength: 24)
+      Image(systemName: "tray")
+        .font(.title3.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      Text("No models are currently available.")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Text("Connect a provider on the host or load a local runtime, then reopen the picker.")
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 28)
+      Spacer(minLength: 24)
+    }
+    .frame(maxWidth: .infinity)
   }
 
   @ViewBuilder

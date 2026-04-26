@@ -348,9 +348,7 @@ struct WorkChatSessionView: View {
         onOpenSlash: { slashSheetPresented = true },
         onSend: onSend,
         onSent: {
-          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-            proxy.scrollTo("chat-end", anchor: .bottom)
-          }
+          scrollToLatest(proxy, animated: true)
         }
       )
     }
@@ -395,9 +393,7 @@ struct WorkChatSessionView: View {
       .overlay(alignment: .bottomTrailing) {
         if unreadBelowCount > 0 {
           WorkJumpToLatestPill(count: unreadBelowCount) {
-            withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-              proxy.scrollTo("chat-end", anchor: .bottom)
-            }
+            scrollToLatest(proxy, animated: true)
             unreadBelowCount = 0
           }
           .padding(.trailing, 16)
@@ -409,12 +405,15 @@ struct WorkChatSessionView: View {
         let delta = newCount - oldCount
         guard delta > 0 else { return }
         if isNearBottom {
-          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-            proxy.scrollTo("chat-end", anchor: .bottom)
-          }
+          scrollToLatest(proxy, animated: false)
         } else {
-          withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
-            unreadBelowCount += delta
+          let nextCount = unreadBelowCount + delta
+          if unreadBelowCount == 0 {
+            withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
+              unreadBelowCount = nextCount
+            }
+          } else {
+            unreadBelowCount = nextCount
           }
         }
       }

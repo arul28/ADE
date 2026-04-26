@@ -220,7 +220,6 @@ export function ChatComputerUsePanel({
   onRefresh: () => void | Promise<void>;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
   const artifacts = useMemo(() => snapshot?.artifacts ?? [], [snapshot]);
   const selected = useMemo(
@@ -253,40 +252,6 @@ export function ChatComputerUsePanel({
     }
   }, [selected]);
 
-  const handleAccept = useCallback(async () => {
-    if (!selected) return;
-    setBusy(true);
-    try {
-      await window.ade.computerUse.updateArtifactReview({
-        artifactId: selected.id,
-        reviewState: "accepted",
-        workflowState: "promoted",
-      });
-      await onRefresh();
-    } catch (err) {
-      console.error("[ChatComputerUsePanel] Failed to accept artifact review:", selected.id, err);
-    } finally {
-      setBusy(false);
-    }
-  }, [selected, onRefresh]);
-
-  const handleDismiss = useCallback(async () => {
-    if (!selected) return;
-    setBusy(true);
-    try {
-      await window.ade.computerUse.updateArtifactReview({
-        artifactId: selected.id,
-        reviewState: "dismissed",
-        workflowState: "dismissed",
-      });
-      await onRefresh();
-    } catch (err) {
-      console.error("[ChatComputerUsePanel] Failed to dismiss artifact review:", selected.id, err);
-    } finally {
-      setBusy(false);
-    }
-  }, [selected, onRefresh]);
-
   if (!snapshot || artifacts.length === 0) {
     return (
       <div className="px-4 py-6 text-center text-[12px] text-fg/30">
@@ -308,7 +273,6 @@ export function ChatComputerUsePanel({
         <button
           type="button"
           onClick={() => void onRefresh()}
-          disabled={busy}
           className="rounded px-1.5 py-0.5 text-[10px] text-fg/40 transition-colors hover:bg-white/[0.06] hover:text-fg/60"
         >
           Refresh
@@ -351,37 +315,9 @@ export function ChatComputerUsePanel({
               <div className="truncate text-[11px] text-fg/60">{selected.title}</div>
               <div className="mt-0.5 flex items-center gap-2 text-[10px] text-fg/30">
                 <span>{kindLabel(selected.kind)}</span>
-                <span className={cn(
-                  "rounded px-1 py-px text-[9px] font-medium",
-                  selected.reviewState === "accepted" ? "bg-emerald-500/15 text-emerald-300/70" :
-                  selected.reviewState === "dismissed" ? "bg-red-500/15 text-red-300/70" :
-                  "bg-white/[0.06] text-fg/40",
-                )}>
-                  {selected.reviewState}
-                </span>
               </div>
             </div>
             <div className="flex shrink-0 gap-1.5">
-              {selected.reviewState === "pending" && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void handleAccept()}
-                    disabled={busy}
-                    className="rounded-md border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-[10px] font-medium text-emerald-300/80 transition-colors hover:bg-emerald-500/20"
-                  >
-                    Accept
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleDismiss()}
-                    disabled={busy}
-                    className="rounded-md border border-white/[0.06] px-2 py-1 text-[10px] font-medium text-fg/40 transition-colors hover:bg-white/[0.06] hover:text-fg/60"
-                  >
-                    Dismiss
-                  </button>
-                </>
-              )}
               {selected.uri && (
                 <button
                   type="button"

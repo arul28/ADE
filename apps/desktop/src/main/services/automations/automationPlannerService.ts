@@ -638,8 +638,23 @@ function normalizeDraft(args: {
     const action = draftActions[idx] as any;
     const type = safeTrim(action?.type) as AutomationActionType;
     const condition = safeTrim(action?.condition);
+    const targetLaneId = safeTrim(action?.targetLaneId);
+    const rawModelConfig = action?.modelConfig;
+    const modelConfigModelId = safeTrim(rawModelConfig?.modelId);
+    const modelConfigThinkingLevel = safeTrim(rawModelConfig?.thinkingLevel);
+    const actionModelConfig = rawModelConfig && typeof rawModelConfig === "object" && modelConfigModelId
+      ? {
+          ...rawModelConfig,
+          modelId: modelConfigModelId,
+          ...(modelConfigThinkingLevel ? { thinkingLevel: modelConfigThinkingLevel } : {}),
+        }
+      : null;
+    const actionPermissionConfig = action?.permissionConfig && typeof action.permissionConfig === "object"
+      ? action.permissionConfig
+      : null;
     const base = {
       type,
+      ...(targetLaneId ? { targetLaneId } : {}),
       ...(condition ? { condition } : {}),
       ...(typeof action?.continueOnFailure === "boolean" ? { continueOnFailure: action.continueOnFailure } : {}),
       ...(action?.timeoutMs != null ? { timeoutMs: clampNumber(Number(action.timeoutMs), 1000, MAX_TIMEOUT_MS) } : {}),
@@ -647,6 +662,7 @@ function normalizeDraft(args: {
     } satisfies Partial<AutomationAction>;
 
     if (
+      type !== "create-lane" &&
       type !== "predict-conflicts" &&
       type !== "run-tests" &&
       type !== "run-command" &&
@@ -655,6 +671,19 @@ function normalizeDraft(args: {
       type !== "launch-mission"
     ) {
       issues.push({ level: "error", path: `actions[${idx}].type`, message: `Unknown action type '${safeTrim(action?.type)}'.` });
+      continue;
+    }
+
+    if (type === "create-lane") {
+      const laneNameTemplate = safeTrim(action?.laneNameTemplate) || "{{trigger.issue.title}}";
+      const laneDescriptionTemplate = safeTrim(action?.laneDescriptionTemplate);
+      const parentLaneId = safeTrim(action?.parentLaneId);
+      normalizedActions.push({
+        ...(base as AutomationAction),
+        laneNameTemplate,
+        ...(laneDescriptionTemplate ? { laneDescriptionTemplate } : {}),
+        ...(parentLaneId ? { parentLaneId } : {}),
+      });
       continue;
     }
 
@@ -684,6 +713,8 @@ function normalizeDraft(args: {
         ...(base as AutomationAction),
         ...(prompt ? { prompt } : {}),
         ...(safeTrim(action?.sessionTitle) ? { sessionTitle: safeTrim(action?.sessionTitle) } : {}),
+        ...(actionModelConfig ? { modelConfig: actionModelConfig } : {}),
+        ...(actionPermissionConfig ? { permissionConfig: actionPermissionConfig } : {}),
       });
       continue;
     }
@@ -729,7 +760,7 @@ function normalizeDraft(args: {
 
       const cwdRaw = safeTrim(action?.cwd);
       if (cwdRaw) {
-        const executionLaneId = safeTrim(args.draft.execution?.targetLaneId) || null;
+        const executionLaneId = targetLaneId || safeTrim(args.draft.execution?.targetLaneId) || null;
         const baseCwd = resolveAutomationCwdBase(args.projectRoot, args.laneService, executionLaneId);
         const cwdIssue = validateAutomationCwd(baseCwd, cwdRaw);
         if (cwdIssue) {
