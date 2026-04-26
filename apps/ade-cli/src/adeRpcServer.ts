@@ -2075,6 +2075,12 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
   const addExplicitOwner = () => {
     const rawKind = asOptionalTrimmedString(toolArgs.ownerKind);
     const ownerId = asOptionalTrimmedString(toolArgs.ownerId);
+    if (Boolean(rawKind) !== Boolean(ownerId)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "ownerKind and ownerId must be provided together",
+      );
+    }
     if (!rawKind || !ownerId) return;
     let normalizedKind = rawKind;
     if (rawKind === "chat") normalizedKind = "chat_session";
@@ -2089,7 +2095,15 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
       case "automation_run":
       case "github_pr":
       case "linear_issue":
-        add(normalizedKind, ownerId);
+        add(
+          normalizedKind,
+          ownerId,
+          normalizedKind === "github_pr" || normalizedKind === "linear_issue"
+            ? "published_to"
+            : normalizedKind === "orchestrator_attempt"
+              ? "produced_by"
+              : "attached_to",
+        );
         break;
       default:
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported proof ownerKind: ${rawKind}`);

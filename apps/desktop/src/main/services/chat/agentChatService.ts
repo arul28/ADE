@@ -10171,6 +10171,8 @@ export function createAgentChatService(args: {
       });
       runtime.sdkSessionId = null;
       managed.runtimeInvalidated = true;
+      refreshReconstructionContext(managed);
+      void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
       clearLaneDirectiveKey(managed);
     }
   };

@@ -4129,7 +4129,7 @@ describe("createAgentChatService", () => {
     });
 
     it("attaches to in-progress Codex turn notifications after app-server resume", async () => {
-      const events: Array<{ type: string; turnId?: string; text?: string; status?: string }> = [];
+      const events: Array<{ type: string; turnId?: string; text?: string; status?: string; turnStatus?: string }> = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => {
           events.push({
@@ -4137,6 +4137,7 @@ describe("createAgentChatService", () => {
             turnId: "turnId" in event.event ? event.event.turnId ?? undefined : undefined,
             text: "text" in event.event ? event.event.text : undefined,
             status: "status" in event.event ? event.event.status : undefined,
+            turnStatus: "turnStatus" in event.event ? event.event.turnStatus : undefined,
           });
         },
       });
@@ -4182,7 +4183,7 @@ describe("createAgentChatService", () => {
       });
 
       expect(events).toEqual(expect.arrayContaining([
-        expect.objectContaining({ type: "status", turnId: "resumed-turn" }),
+        expect.objectContaining({ type: "status", turnId: "resumed-turn", turnStatus: "started" }),
         expect.objectContaining({ type: "text", turnId: "resumed-turn", text: "Continuing after reconnect" }),
         expect.objectContaining({ type: "done", turnId: "resumed-turn", status: "completed" }),
       ]));

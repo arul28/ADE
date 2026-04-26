@@ -932,16 +932,21 @@ app.whenReady().then(async () => {
     });
   };
 
-  const reconcileSyncHostContexts = async (): Promise<void> => {
-    const hostRoot = getMobileSyncHostRoot();
-    for (const [root, ctx] of projectContexts) {
-      const isSyncHost = hostRoot != null && root === hostRoot;
-      ctx.syncService?.setHostDiscoveryEnabled?.(isSyncHost);
-    }
-    for (const [root, ctx] of projectContexts) {
-      const isSyncHost = hostRoot != null && root === hostRoot;
-      await ctx.syncService?.setHostStartupEnabled?.(isSyncHost);
-    }
+  let reconcileSyncHostContextsChain: Promise<void> = Promise.resolve();
+  const reconcileSyncHostContexts = (): Promise<void> => {
+    const next = reconcileSyncHostContextsChain.then(async () => {
+      const hostRoot = getMobileSyncHostRoot();
+      for (const [root, ctx] of projectContexts) {
+        const isSyncHost = hostRoot != null && root === hostRoot;
+        ctx.syncService?.setHostDiscoveryEnabled?.(isSyncHost);
+      }
+      for (const [root, ctx] of projectContexts) {
+        const isSyncHost = hostRoot != null && root === hostRoot;
+        await ctx.syncService?.setHostStartupEnabled?.(isSyncHost);
+      }
+    });
+    reconcileSyncHostContextsChain = next.catch(() => {});
+    return next;
   };
 
   const setActiveProject = (projectRoot: string | null): void => {

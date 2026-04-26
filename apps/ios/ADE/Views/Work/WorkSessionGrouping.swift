@@ -113,6 +113,7 @@ func buildWorkRootSessionPresentation(
     guard !isRunOwnedSession(session), !isArchived else { continue }
     if status == "awaiting-input" {
       globalNeedsInputCount += 1
+      globalLiveSessionCount += 1
       if firstGlobalAttentionSessionId == nil {
         firstGlobalAttentionSessionId = session.id
       }

@@ -28,12 +28,17 @@ export function patchPermissionConfig(
 ): MissionPermissionConfig | undefined {
   const meta = permissionControlsForModel(modelId);
   if (!meta) return permissionConfig;
-  if (!rawMode) return undefined;
+  const providers: Record<string, unknown> = { ...(permissionConfig?.providers ?? {}) };
+  if (!rawMode) {
+    delete providers[meta.key];
+    if (meta.key === "codex") delete providers.codexSandbox;
+    return { ...(permissionConfig ?? {}), providers: providers as MissionPermissionConfig["providers"] };
+  }
   const mode = rawMode as AgentChatPermissionMode;
   return {
     ...(permissionConfig ?? {}),
     providers: {
-      ...(permissionConfig?.providers ?? {}),
+      ...(providers as MissionPermissionConfig["providers"]),
       [meta.key]: mode,
       ...(meta.key === "codex" && mode !== "config-toml" ? { codexSandbox: codexSandboxForMode(mode) } : {}),
     },

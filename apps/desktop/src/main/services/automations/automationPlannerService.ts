@@ -649,8 +649,19 @@ function normalizeDraft(args: {
           ...(modelConfigThinkingLevel ? { thinkingLevel: modelConfigThinkingLevel } : {}),
         }
       : null;
-    const actionPermissionConfig = action?.permissionConfig && typeof action.permissionConfig === "object"
-      ? action.permissionConfig
+    const rawPermissionConfig = action?.permissionConfig;
+    const actionPermissionConfig = rawPermissionConfig && typeof rawPermissionConfig === "object"
+      ? {
+          ...(rawPermissionConfig.cli && typeof rawPermissionConfig.cli === "object"
+            ? { cli: rawPermissionConfig.cli }
+            : {}),
+          ...(rawPermissionConfig.providers && typeof rawPermissionConfig.providers === "object"
+            ? { providers: rawPermissionConfig.providers }
+            : {}),
+          ...(rawPermissionConfig.inProcess && typeof rawPermissionConfig.inProcess === "object"
+            ? { inProcess: rawPermissionConfig.inProcess }
+            : {}),
+        }
       : null;
     const base = {
       type,

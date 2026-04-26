@@ -1160,7 +1160,7 @@ export function createAutomationService({
       providers: {
         claude: rule.verification.mode === "dry-run" ? "plan" : (providers.claude ?? "edit"),
         codex: rule.verification.mode === "dry-run" ? "plan" : (providers.codex ?? "default"),
-        cursor: rule.verification.mode === "dry-run" ? "plan" : providers.cursor,
+        cursor: rule.verification.mode === "dry-run" ? "plan" : (providers.cursor ?? "edit"),
         opencode: rule.verification.mode === "dry-run" ? "plan" : (providers.opencode ?? "edit"),
         codexSandbox: providers.codexSandbox ?? "workspace-write",
         ...(providers.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
@@ -1735,7 +1735,9 @@ export function createAutomationService({
     }
     if (action.type === "create-lane") {
       const fallbackName = trigger.issue?.title ?? trigger.pr?.title ?? trigger.summary ?? rule.name;
-      const laneName = resolveTemplateString(action.laneNameTemplate, trigger) || fallbackName;
+      const rendered = resolveTemplateString(action.laneNameTemplate, trigger);
+      const renderedClean = rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered : "";
+      const laneName = renderedClean || fallbackName;
       if (!laneName.trim()) {
         return { status: "failed", output: "create-lane action requires a lane name." };
       }

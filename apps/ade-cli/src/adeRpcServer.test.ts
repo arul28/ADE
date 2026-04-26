@@ -4541,9 +4541,26 @@ describe("adeRpcServer", () => {
       expect((caught as JsonRpcError).code).toBe(JsonRpcErrorCode.invalidParams);
     });
 
-    it("silently skips when ownerId is missing for a valid ownerKind", () => {
-      const owners = resolveComputerUseOwners(makeSession(), { ownerKind: "lane" });
-      expect(owners.some((o) => o.kind === "lane")).toBe(false);
+    it("rejects when ownerKind is provided without ownerId", () => {
+      let caught: unknown = null;
+      try {
+        resolveComputerUseOwners(makeSession(), { ownerKind: "lane" });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(JsonRpcError);
+      expect((caught as JsonRpcError).code).toBe(JsonRpcErrorCode.invalidParams);
+    });
+
+    it("rejects when ownerId is provided without ownerKind", () => {
+      let caught: unknown = null;
+      try {
+        resolveComputerUseOwners(makeSession(), { ownerId: "lane-123" });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(JsonRpcError);
+      expect((caught as JsonRpcError).code).toBe(JsonRpcErrorCode.invalidParams);
     });
   });
 });

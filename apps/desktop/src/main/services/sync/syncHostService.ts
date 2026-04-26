@@ -1099,9 +1099,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     payload: TPayload,
     requestId?: string | null,
   ): Promise<void> {
-    if (ws.readyState !== WebSocket.OPEN) {
-      send(ws, type, payload, requestId);
-      return Promise.resolve();
+    if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
+      return Promise.reject(new Error("Cannot send on closed WebSocket."));
     }
     return new Promise<void>((resolve, reject) => {
       ws.send(

@@ -611,7 +611,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     // so simulate it here so we can assert the toggle re-exposes the token via getStatus.
     fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "toggled-token\n", "utf8");
 
-    service.setHostStartupEnabled(true);
+    await service.setHostStartupEnabled(true);
 
     await vi.waitFor(() => {
       expect(createSyncHostServiceMock).toHaveBeenCalled();

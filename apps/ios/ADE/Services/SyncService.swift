@@ -1084,6 +1084,7 @@ final class SyncService: ObservableObject {
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
     } catch {
+      removeKnownProfile(profile)
       guard isCurrentProjectSelection(selectionGeneration) else {
         throw error
       }
@@ -1438,7 +1439,13 @@ final class SyncService: ObservableObject {
 
   private func upsertKnownProfile(_ profile: HostConnectionProfile) {
     guard let key = profileStorageKey(profile) else { return }
-    let existing = loadKnownProfiles().filter { profileStorageKey($0) != key }
+    let existing = loadKnownProfiles().filter { candidate in
+      if profileStorageKey(candidate) == key { return false }
+      if let newIdentity = profile.hostIdentity, candidate.hostIdentity == newIdentity {
+        return false
+      }
+      return true
+    }
     saveKnownProfiles([profile] + existing)
     if let token = keychain.loadToken() {
       keychain.saveToken(token, forHostKey: key)
@@ -4347,7 +4354,7 @@ final class SyncService: ObservableObject {
     let remoteHostIdentity = brain?["deviceId"] as? String
     let remoteHostName = brain?["deviceName"] as? String
     if let expectedHostIdentity, let remoteHostIdentity, expectedHostIdentity != remoteHostIdentity {
-      disconnect(clearCredentials: false)
+      disconnect(clearCredentials: false, suspendAutoReconnect: false)
       remoteProjectCatalog = []
       refreshProjectCatalog()
       throw NSError(
