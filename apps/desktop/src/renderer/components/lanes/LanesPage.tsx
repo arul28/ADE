@@ -318,9 +318,16 @@ export function LanesPage() {
   );
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
+  // `availableLaneIdsKey` is the content-stable dep trigger (string changes only
+  // when the id set changes). `availableLaneIds` recomputes from the key so its
+  // identity is also content-stable, letting effects depend on either safely.
   const availableLaneIdsKey = useMemo(
     () => sortedLanes.map((lane) => lane.id).sort().join("\0"),
     [sortedLanes],
+  );
+  const availableLaneIds = useMemo(
+    () => (availableLaneIdsKey ? availableLaneIdsKey.split("\0") : []),
+    [availableLaneIdsKey],
   );
   const integrationSourcesByLaneId = useMemo(
     () => buildIntegrationSourcesByLaneId(integrationProposals, lanesById),
@@ -1385,7 +1392,7 @@ export function LanesPage() {
 
   // Deep link handling: must not re-run on lane list refreshes, or a stale
   // ?laneId / focus=single from the URL overwrites the user's current tab/split
-  // selection. Multi-lane ?laneIds= re-tries as `availableLaneIdsKey` changes.
+  // selection. Multi-lane ?laneIds= re-tries as `availableLaneIds` changes.
 
   // Intentionally depend only on `urlLaneDeeplinks.action` (not
   // prepareCreateDialog) so the create dialog is not re-opened from hook churn.
@@ -1398,11 +1405,10 @@ export function LanesPage() {
 
   useEffect(() => {
     if (!urlLaneDeeplinks.laneIdsRaw) return;
-    const availableFromKey = availableLaneIdsKey ? availableLaneIdsKey.split("\0") : [];
     const laneIdsSelection = resolveLaneIdsDeepLinkSelection({
       laneIdsRaw: urlLaneDeeplinks.laneIdsRaw,
       inspectorTabParam: urlLaneDeeplinks.inspectorTab,
-      availableLaneIds: availableFromKey,
+      availableLaneIds,
       consumedSignature: consumedLaneIdsDeepLinkSignatureRef.current,
     });
     if (laneIdsSelection) {
@@ -1415,26 +1421,28 @@ export function LanesPage() {
         setLaneInspectorTab(valid[0], urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
       }
     }
-  }, [availableLaneIdsKey, selectLane, setLaneInspectorTab, urlLaneDeeplinks.laneIdsRaw, urlLaneDeeplinks.inspectorTab]);
+  }, [availableLaneIds, selectLane, setLaneInspectorTab, urlLaneDeeplinks.laneIdsRaw, urlLaneDeeplinks.inspectorTab]);
 
   useEffect(() => {
-    const p = new URLSearchParams(location.search);
-    const laneIdsRaw = p.get("laneIds");
-    if (laneIdsRaw) {
-      return;
-    }
+    if (urlLaneDeeplinks.laneIdsRaw) return;
     consumedLaneIdsDeepLinkSignatureRef.current = null;
-    const laneId = p.get("laneId");
+    const laneId = urlLaneDeeplinks.laneId;
     if (!laneId) return;
     selectLane(laneId);
-    if (p.get("focus") === "single") {
+    if (urlLaneDeeplinks.focus === "single") {
       setActiveLaneIds([laneId]);
     }
-    const inspector = p.get("inspectorTab");
-    if (inspector) {
-      setLaneInspectorTab(laneId, inspector as LaneInspectorTab);
+    if (urlLaneDeeplinks.inspectorTab) {
+      setLaneInspectorTab(laneId, urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
     }
-  }, [location.search, selectLane, setLaneInspectorTab]);
+  }, [
+    urlLaneDeeplinks.laneIdsRaw,
+    urlLaneDeeplinks.laneId,
+    urlLaneDeeplinks.focus,
+    urlLaneDeeplinks.inspectorTab,
+    selectLane,
+    setLaneInspectorTab,
+  ]);
 
   useEffect(() => {
     if (!urlLaneDeeplinks.sessionId) return;
