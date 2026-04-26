@@ -608,7 +608,10 @@ export type AutomationActionType =
   | "predict-conflicts"
   | "run-tests"
   | "run-command"
-  | "ade-action";
+  | "ade-action"
+  // Synthetic kind written into automation_action_results when execution.laneMode
+  // is "create"; never authored by the user, but surfaced in run history.
+  | "lane-setup";
 
 /**
  * Configuration for an `ade-action` automation action. Points at a domain +
@@ -764,7 +767,10 @@ export type AutomationExecution = {
    */
   laneNamePreset?: AutomationLaneNamePreset;
   /**
-   * Free-form `{{trigger.*}}` template used when `laneNamePreset === "custom"`.
+   * Execution-level `{{trigger.*}}` template used when
+   * `laneNamePreset === "custom"`. Distinct from
+   * `AutomationAction.laneNameTemplate`, which belongs to the legacy
+   * `create-lane` built-in action.
    */
   laneNameTemplate?: string;
   /**

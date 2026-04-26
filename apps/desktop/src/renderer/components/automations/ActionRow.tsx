@@ -21,7 +21,7 @@ import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { ModelSelector } from "../missions/ModelSelector";
 import { permissionControlsForModel, patchPermissionConfig } from "./permissionControls";
-import { INPUT_CLS, INPUT_STYLE } from "./shared";
+import { inputCls, labelCls, selectCls, textareaCls } from "./designTokens";
 import { AdeActionEditor, type AdeActionValue } from "./AdeActionEditor";
 
 export type ActionRowKind =
@@ -99,20 +99,20 @@ export function ActionRow({
 
   return (
     <div
-      className="rounded-xl border border-white/[0.08] bg-black/15 p-3"
-      style={{ boxShadow: `0 0 0 1px ${meta.accent}22 inset` }}
+      className="rounded-xl border border-white/[0.08] bg-[rgba(12,10,22,0.4)] p-3 transition-colors hover:border-white/[0.12]"
+      style={{ borderLeft: `2px solid ${meta.accent}` }}
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
           <Icon size={13} weight="regular" style={{ color: meta.accent }} />
-          <span className="text-[11px] font-semibold text-[#F5FAFF]">
+          <span className="text-[11px] font-semibold text-fg">
             {index + 1}. {meta.label}
           </span>
           {value.kind === "create-lane" ? (
-            <Chip className="text-[9px] text-[#A7F3D0]">sets lane</Chip>
+            <Chip className="text-[9px] text-warning">legacy · now in Execution</Chip>
           ) : null}
           {value.kind === "agent-session" && value.modelConfig ? (
-            <Chip className="text-[9px] text-[#BFDBFE]">custom model</Chip>
+            <Chip className="text-[9px] text-accent">custom model</Chip>
           ) : null}
         </div>
         <div className="flex items-center gap-1">
@@ -120,7 +120,7 @@ export function ActionRow({
             type="button"
             onClick={() => onMove(-1)}
             disabled={index === 0}
-            className="rounded p-1 text-[#8FA1B8] hover:text-[#F5FAFF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="rounded p-1 text-muted-fg/60 transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
             title="Move up"
           >
             <ArrowUp size={12} weight="regular" />
@@ -129,7 +129,7 @@ export function ActionRow({
             type="button"
             onClick={() => onMove(1)}
             disabled={index === total - 1}
-            className="rounded p-1 text-[#8FA1B8] hover:text-[#F5FAFF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="rounded p-1 text-muted-fg/60 transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
             title="Move down"
           >
             <ArrowDown size={12} weight="regular" />
@@ -137,7 +137,7 @@ export function ActionRow({
           <button
             type="button"
             onClick={onRemove}
-            className="rounded p-1 text-[#8FA1B8] hover:text-red-200"
+            className="rounded p-1 text-muted-fg/60 transition-colors hover:text-error"
             title="Remove action"
           >
             <Trash size={12} weight="regular" />
@@ -147,73 +147,50 @@ export function ActionRow({
 
       <div className="mt-3">
         {value.kind === "create-lane" ? (
+          // Read-only legacy view. Lane creation is now an EXECUTION setting,
+          // but old rules still on disk render their stored template here so
+          // the user can see what they had before migrating.
           <div className="space-y-2">
+            <div className="rounded-md border border-warning/25 bg-warning/[0.06] px-3 py-2 text-[11px] text-warning">
+              Lane creation moved to the Execution block above. This action is
+              kept for legacy rules and ignored on save once you switch to the
+              new "Create new lane per run" mode.
+            </div>
             <div className="grid gap-2 md:grid-cols-[1.2fr_1fr]">
-              <label className="space-y-1 block">
-                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Lane name</span>
+              <label className="block space-y-1.5">
+                <div className={labelCls}>Lane name (legacy)</div>
                 <input
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
+                  className={cn(inputCls, "opacity-70")}
                   value={value.laneNameTemplate ?? ""}
-                  onChange={(event) => onChange({ ...value, laneNameTemplate: event.target.value })}
-                  placeholder="{{trigger.issue.title}}"
+                  readOnly
                 />
               </label>
-              <label className="space-y-1 block">
-                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Base lane</span>
-                <select
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
-                  value={value.parentLaneId ?? ""}
-                  onChange={(event) => onChange({ ...value, parentLaneId: event.target.value || null })}
-                >
-                  <option value="">Primary lane</option>
-                  {lanes.map((lane) => (
-                    <option key={lane.id} value={lane.id}>{lane.name}</option>
-                  ))}
-                </select>
+              <label className="block space-y-1.5">
+                <div className={labelCls}>Base lane (legacy)</div>
+                <input
+                  className={cn(inputCls, "opacity-70")}
+                  value={lanes.find((l) => l.id === value.parentLaneId)?.name ?? "Primary lane"}
+                  readOnly
+                />
               </label>
-            </div>
-            <label className="space-y-1 block">
-              <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Description</span>
-              <textarea
-                className="min-h-[72px] w-full rounded-md px-3 py-2 font-mono text-[11px] text-[#F5F7FA] placeholder:text-[#7E8A9A]"
-                style={INPUT_STYLE}
-                value={value.laneDescriptionTemplate ?? ""}
-                onChange={(event) => onChange({ ...value, laneDescriptionTemplate: event.target.value })}
-                placeholder="GitHub issue #{{trigger.issue.number}}"
-              />
-            </label>
-            <div className="rounded-md border border-[#2A4057] bg-[#0C1724] px-2.5 py-1.5 text-[10px] text-[#9FB2C7]">
-              Following actions use this lane unless they choose a different one.
             </div>
           </div>
         ) : null}
 
         {value.kind === "agent-session" ? (
           <div className="space-y-2">
-            <div className="grid gap-2 md:grid-cols-[1fr_1.2fr_1fr]">
-              <label className="space-y-1 block">
-                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Lane</span>
-                <select
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
-                  value={value.targetLaneId ?? ""}
-                  onChange={(event) => onChange({ ...value, targetLaneId: event.target.value || null })}
-                >
-                  <option value="">Current run lane</option>
-                  {lanes.map((lane) => (
-                    <option key={lane.id} value={lane.id}>{lane.name}</option>
-                  ))}
-                </select>
-              </label>
-              <div className="space-y-1 min-w-0">
+            {/* Per-action lane override removed — every action inherits the
+                rule's EXECUTION lane setting. Model + Permissions remain
+                here as overrides since users do legitimately want different
+                models per step in a multi-step pipeline. */}
+            <div className="grid gap-2 md:grid-cols-[1.2fr_1fr]">
+              <div className="min-w-0 space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Model</span>
+                  <div className={labelCls}>Model</div>
                   {value.modelConfig ? (
                     <button
                       type="button"
-                      className="text-[10px] text-[#8FA1B8] hover:text-[#F5FAFF]"
+                      className="text-[10px] text-muted-fg/60 transition-colors hover:text-fg"
                       onClick={() => onChange({ ...value, modelConfig: undefined })}
                     >
                       Use rule
@@ -227,13 +204,10 @@ export function ActionRow({
                   onOpenAiSettings={onOpenAiSettings}
                 />
               </div>
-              <label className="space-y-1 block">
-                <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">
-                  Permissions
-                </span>
+              <label className="block space-y-1.5">
+                <div className={labelCls}>Permissions</div>
                 <select
-                  className={INPUT_CLS}
-                  style={INPUT_STYLE}
+                  className={selectCls}
                   value={currentPermission}
                   onChange={(event) =>
                     onChange({
@@ -253,15 +227,13 @@ export function ActionRow({
               </label>
             </div>
             <input
-              className={INPUT_CLS}
-              style={INPUT_STYLE}
+              className={inputCls}
               value={value.sessionTitle ?? ""}
               onChange={(event) => onChange({ ...value, sessionTitle: event.target.value })}
               placeholder="Thread title (optional)"
             />
             <textarea
-              className="min-h-[72px] w-full rounded-md px-3 py-2 font-mono text-[11px] text-[#F5F7FA] placeholder:text-[#7E8A9A]"
-              style={INPUT_STYLE}
+              className={cn(textareaCls, "min-h-[72px] font-mono text-[11px]")}
               value={value.prompt ?? ""}
               onChange={(event) => onChange({ ...value, prompt: event.target.value })}
               placeholder="Prompt for the agent session"
@@ -277,11 +249,10 @@ export function ActionRow({
         ) : null}
 
         {value.kind === "run-tests" ? (
-          <label className="space-y-1 block">
-            <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Suite</span>
+          <label className="block space-y-1.5">
+            <div className={labelCls}>Suite</div>
             <select
-              className={INPUT_CLS}
-              style={INPUT_STYLE}
+              className={selectCls}
               value={value.suiteId ?? ""}
               onChange={(event) => onChange({ ...value, suiteId: event.target.value })}
             >
@@ -298,15 +269,13 @@ export function ActionRow({
         {value.kind === "run-command" ? (
           <div className="grid gap-2 md:grid-cols-[2fr_1fr]">
             <input
-              className={INPUT_CLS}
-              style={INPUT_STYLE}
+              className={inputCls}
               value={value.command ?? ""}
               onChange={(event) => onChange({ ...value, command: event.target.value })}
               placeholder="e.g. npm test"
             />
             <input
-              className={INPUT_CLS}
-              style={INPUT_STYLE}
+              className={inputCls}
               value={value.cwd ?? ""}
               onChange={(event) => onChange({ ...value, cwd: event.target.value })}
               placeholder="Working dir (optional)"
@@ -315,7 +284,7 @@ export function ActionRow({
         ) : null}
 
         {value.kind === "predict-conflicts" ? (
-          <div className="text-[11px] text-[#93A4B8]">
+          <div className="text-[11px] text-muted-fg/60">
             Runs the built-in conflict prediction pass against recent lanes. No configuration required.
           </div>
         ) : null}
@@ -323,14 +292,13 @@ export function ActionRow({
         {value.kind === "launch-mission" ? (
           <div className="space-y-2">
             <input
-              className={cn(INPUT_CLS, "opacity-60")}
-              style={INPUT_STYLE}
+              className={cn(inputCls, "opacity-60")}
               value={value.missionTitle ?? ""}
               onChange={(event) => onChange({ ...value, missionTitle: event.target.value })}
               placeholder="Mission title"
               disabled
             />
-            <Chip className="text-[9px] text-[#B6B2C9]">
+            <Chip className="text-[9px] text-muted-fg">
               <Gear size={10} weight="regular" className="mr-1" />
               Mission launches are coming soon.
             </Chip>

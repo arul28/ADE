@@ -524,6 +524,26 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
   if (!kind) return undefined;
 
   const targetLaneId = asString(value.targetLaneId)?.trim() || undefined;
+  const laneModeRaw = asString(value.laneMode)?.trim();
+  const laneMode: AutomationExecution["laneMode"] = laneModeRaw === "create" || laneModeRaw === "reuse"
+    ? laneModeRaw
+    : undefined;
+  const laneNamePresetRaw = asString(value.laneNamePreset)?.trim();
+  const laneNamePreset: AutomationExecution["laneNamePreset"] = laneNamePresetRaw === "issue-title" ||
+    laneNamePresetRaw === "issue-num-title" ||
+    laneNamePresetRaw === "pr-title-author" ||
+    laneNamePresetRaw === "custom"
+      ? laneNamePresetRaw
+      : undefined;
+  const laneNameTemplate = laneNamePreset === "custom"
+    ? asString(value.laneNameTemplate)?.trim() || undefined
+    : undefined;
+  const sharedLaneFields = {
+    ...(laneMode ? { laneMode } : {}),
+    ...(laneNamePreset ? { laneNamePreset } : {}),
+    ...(laneNameTemplate ? { laneNameTemplate } : {}),
+  };
+
   if (kind === "agent-session") {
     const session = isRecord(value.session)
       ? {
@@ -535,6 +555,7 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
       : undefined;
     return {
       kind,
+      ...sharedLaneFields,
       ...(targetLaneId ? { targetLaneId } : {}),
       ...(session && Object.keys(session).length ? { session } : {}),
     };
@@ -546,6 +567,7 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
       : undefined;
     return {
       kind,
+      ...sharedLaneFields,
       ...(targetLaneId ? { targetLaneId } : {}),
       ...(mission ? { mission } : {}),
     };
@@ -556,6 +578,7 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
     : [];
   return {
     kind,
+    ...sharedLaneFields,
     ...(targetLaneId ? { targetLaneId } : {}),
     builtIn: { actions },
   };
@@ -2216,9 +2239,25 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
   const automations: AutomationRule[] = mergedAutomations.map((entry) => {
     const triggers = coerceAutomationTriggers(entry.triggers, entry.trigger);
     const legacyTrigger = coerceAutomationTrigger(entry.trigger);
-    const execution = entry.execution ?? ((entry.actions?.length ?? 0) > 0
+    const baseExecution = entry.execution ?? ((entry.actions?.length ?? 0) > 0
       ? { kind: "built-in" as const, builtIn: { actions: entry.actions ?? [] } }
       : { kind: "mission" as const });
+    // Lane-mode migration: legacy rules with a leading `create-lane` action collapse
+    // into `execution.laneMode: "create"`, carrying the action's name template forward
+    // as a "custom" preset. Rules without that action default to "reuse".
+    const firstAction = baseExecution.kind === "built-in"
+      ? (baseExecution.builtIn?.actions?.[0] ?? null)
+      : (entry.actions?.[0] ?? null);
+    const execution = baseExecution.laneMode
+      ? baseExecution
+      : firstAction?.type === "create-lane"
+        ? {
+            ...baseExecution,
+            laneMode: "create" as const,
+            laneNamePreset: "custom" as const,
+            ...(firstAction.laneNameTemplate ? { laneNameTemplate: firstAction.laneNameTemplate } : {}),
+          }
+        : { ...baseExecution, laneMode: "reuse" as const };
 
     return {
       id: entry.id.trim(),

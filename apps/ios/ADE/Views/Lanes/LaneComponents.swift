@@ -339,70 +339,71 @@ struct LaneStackCard: View, Equatable {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .top, spacing: 10) {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .center, spacing: 10) {
         LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 10)
-          .padding(.top, 4)
           .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-icon-\(snapshot.lane.id)" : nil, in: transitionNamespace)
 
-        VStack(alignment: .leading, spacing: 4) {
-          HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(snapshot.lane.name)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
-            laneRoleBadge
-            Spacer(minLength: 0)
-            lanePriorityBadge(snapshot: snapshot)
-              .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-status-\(snapshot.lane.id)" : nil, in: transitionNamespace)
-          }
+        Text(snapshot.lane.name)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
 
-          Text(snapshot.lane.branchRef)
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-        }
+        laneRoleBadge
+
+        Spacer(minLength: 4)
 
         if let devices = snapshot.lane.devicesOpen, !devices.isEmpty {
           Image(systemName: devicePresenceSymbol(for: devices))
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.accent)
-            .padding(.top, 4)
             .accessibilityLabel("Open on \(devices.count) other device\(devices.count == 1 ? "" : "s")")
         }
 
         Image(systemName: "chevron.right")
           .font(.caption2.weight(.semibold))
           .foregroundStyle(ADEColor.textMuted)
-          .padding(.top, 4)
       }
 
-      LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
-        if snapshot.lane.status.dirty {
-          LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
-        }
-        if snapshot.lane.status.ahead > 0 {
-          LaneMicroChip(icon: "arrow.up", text: "\(snapshot.lane.status.ahead)", tint: ADEColor.success)
-        }
-        if snapshot.lane.status.behind > 0 {
-          LaneMicroChip(icon: "arrow.down", text: "\(snapshot.lane.status.behind)", tint: ADEColor.warning)
-        }
-        if snapshot.runtime.sessionCount > 0 {
-          LaneMicroChip(
-            icon: runtimeSymbol(snapshot.runtime.bucket),
-            text: "\(snapshot.runtime.sessionCount) running",
-            tint: runtimeTint(bucket: snapshot.runtime.bucket)
-          )
-        }
-        if snapshot.lane.childCount > 0 {
-          LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEColor.textMuted)
-        }
-        if isPinned {
-          LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
+      HStack(spacing: 5) {
+        Image(systemName: "arrow.triangle.branch")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+        Text(snapshot.lane.branchRef)
+          .font(.system(.caption, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          if snapshot.lane.status.dirty {
+            LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
+          }
+          if snapshot.lane.status.ahead > 0 {
+            LaneMicroChip(icon: "arrow.up", text: "\(snapshot.lane.status.ahead)", tint: ADEColor.success)
+          }
+          if snapshot.lane.status.behind > 0 {
+            LaneMicroChip(icon: "arrow.down", text: "\(snapshot.lane.status.behind)", tint: ADEColor.warning)
+          }
+          if snapshot.runtime.sessionCount > 0 {
+            LaneMicroChip(
+              icon: runtimeSymbol(snapshot.runtime.bucket),
+              text: "\(snapshot.runtime.sessionCount) running",
+              tint: runtimeTint(bucket: snapshot.runtime.bucket)
+            )
+          }
+          if snapshot.lane.childCount > 0 {
+            LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEColor.textMuted)
+          }
+          if isPinned {
+            LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
+          }
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .scrollClipDisabled()
 
       if let activity = laneActivitySummary(snapshot) {
         Text(activity)
@@ -413,11 +414,11 @@ struct LaneStackCard: View, Equatable {
     }
     .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .background(cardBackgroundTint.opacity(isPrimary ? 0.12 : 0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .glassEffect(in: .rect(cornerRadius: 14))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(isOpen ? ADEColor.accent.opacity(0.4) : ADEColor.border.opacity(0.18), lineWidth: isOpen ? 1.5 : 0.75)
+        .stroke(cardStrokeTint, lineWidth: isOpen ? 1.5 : (isPrimary ? 1.0 : 0.75))
     )
     .shadow(color: isOpen ? ADEColor.accent.opacity(0.08) : .clear, radius: 8, y: 2)
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "lane-container-\(snapshot.lane.id)" : nil, in: transitionNamespace)
@@ -425,11 +426,23 @@ struct LaneStackCard: View, Equatable {
     .accessibilityLabel(stackCardAccessibilityLabel)
   }
 
+  private var isPrimary: Bool {
+    snapshot.lane.laneType == "primary"
+  }
+
+  private var cardBackgroundTint: Color {
+    isPrimary ? ADEColor.accent : ADEColor.surfaceBackground
+  }
+
+  private var cardStrokeTint: Color {
+    if isOpen { return ADEColor.accent.opacity(0.4) }
+    if isPrimary { return ADEColor.accent.opacity(0.32) }
+    return ADEColor.border.opacity(0.18)
+  }
+
   @ViewBuilder
   private var laneRoleBadge: some View {
-    if snapshot.lane.laneType == "primary" {
-      LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
-    } else if snapshot.lane.laneType == "attached" {
+    if snapshot.lane.laneType == "attached" {
       LaneTypeBadge(text: "Attached", tint: ADEColor.textMuted)
     } else if snapshot.lane.archivedAt != nil {
       LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)

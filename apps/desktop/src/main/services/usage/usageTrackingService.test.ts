@@ -24,6 +24,8 @@ import { createUsageTrackingService, _testing } from "./usageTrackingService";
 const {
   aggregateCosts,
   calculatePacing,
+  MIN_POLL_INTERVAL_MS,
+  MAX_POLL_INTERVAL_MS,
   isCodexTokenStale,
   isTokenExpiredOrExpiring,
   parseClaudeWindows,
@@ -607,19 +609,22 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
-  it("clamps poll interval to min/max bounds", () => {
+  it("clamps out-of-range poll intervals internally", () => {
     const logger = createLogger();
+    const dependencies = createFastDependencies();
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 
-    // Too low — should clamp to 1 min
-    const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100 });
+    const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100, dependencies });
+    service1.start();
+    expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MIN_POLL_INTERVAL_MS);
     service1.dispose();
 
-    // Too high — should clamp to 15 min
-    const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000 });
+    const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000, dependencies });
+    service2.start();
+    expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_POLL_INTERVAL_MS);
     service2.dispose();
 
-    // No crash means the clamping worked
-    expect(true).toBe(true);
+    setIntervalSpy.mockRestore();
   });
 
   it("calls onUpdate when poll completes", async () => {

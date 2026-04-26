@@ -113,3 +113,28 @@ ade actions list --text
 ```
 
 Then prefer typed commands such as `ade lanes list --text`, `ade files read <path> --text`, `ade prs checks <pr> --text`, or `ade tests runs --json`. Use `ade actions run ...` as the broad escape hatch for internal ADE actions that do not yet have a typed command.
+
+## Automations
+
+Automation rules are managed with `ade automations <subcommand>`. Run `ade help automations` for the full flag reference. The lane-mode flags layer on top of `--from-file` / `--stdin` / `--text` for `create` and `update`:
+
+```bash
+# Open a fresh lane for every new GitHub issue, naming it from the issue number + title.
+ade automations example > rule.json
+ade automations create --from-file rule.json \
+  --lane-mode create --lane-name-preset issue-num-title
+
+# Reuse an existing lane instead.
+ade automations create --from-file rule.json --lane-mode reuse --lane lane-42
+
+# Custom template (only valid with --lane-name-preset custom).
+ade automations create --from-file rule.json \
+  --lane-mode create --lane-name-preset custom \
+  --lane-name-template "{{trigger.issue.author}}/{{trigger.issue.title}}"
+
+# Filter run history by status.
+ade automations runs --rule rule-1 --status failed
+ade automations run-show <runId> --text
+```
+
+The standalone `create-lane` action is deprecated. By default the CLI auto-migrates a rule whose first action is `create-lane` into `execution.laneMode: "create"` and carries the template forward. Pass `--allow-legacy` on `create` / `update` to opt out of the migration.

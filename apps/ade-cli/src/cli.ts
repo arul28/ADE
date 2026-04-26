@@ -55,7 +55,8 @@ type FormatterId =
   | "tests-runs"
   | "proof-list"
   | "actions-list"
-  | "action-result";
+  | "action-result"
+  | "automation-run-detail";
 
 type CliPlan =
   | { kind: "help"; text: string }
@@ -533,8 +534,20 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations delete <id>                   Remove a local rule
     $ ade automations toggle <id> --enabled true|false
     $ ade automations run <id> [--dry-run]          Trigger a rule manually
-    $ ade automations runs [--rule <id>] [--limit 50] [--json]
+    $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
     $ ade automations run-show <runId> [--json]     Inspect a run
+    $ ade automations example                       Print an example rule (stdout)
+
+  Lane mode flags (apply to create/update on top of --from-file/--stdin/--text):
+    --lane-mode <create|reuse>                      Spawn a new lane per run, or reuse one
+    --lane <id>                                     Target lane (only with --lane-mode reuse)
+    --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
+    --lane-name-template <string>                   Template (only with preset custom)
+    --allow-legacy                                  Pass legacy create-lane action through
+                                                    unchanged (default: auto-migrate to laneMode)
+
+  Run filter:
+    --status <queued|running|succeeded|failed|cancelled|paused|all>
 `,
 };
 
@@ -1729,6 +1742,106 @@ function parseDraftInput(args: string[]): JsonObject {
   return parsed;
 }
 
+const AUTOMATION_LANE_MODES = ["create", "reuse"] as const;
+const AUTOMATION_LANE_NAME_PRESETS = ["issue-title", "issue-num-title", "pr-title-author", "custom"] as const;
+const AUTOMATION_RUN_STATUSES = ["queued", "running", "succeeded", "failed", "cancelled", "paused", "all"] as const;
+
+type AutomationLaneModeFlag = (typeof AUTOMATION_LANE_MODES)[number];
+type AutomationLaneNamePresetFlag = (typeof AUTOMATION_LANE_NAME_PRESETS)[number];
+
+function readEnumOption<T extends string>(
+  args: string[],
+  names: string[],
+  allowed: readonly T[],
+  label: string,
+): T | null {
+  const raw = readValue(args, names);
+  if (raw == null) return null;
+  if (!(allowed as readonly string[]).includes(raw)) {
+    throw new CliUsageError(`${label} must be one of ${allowed.join(", ")}.`);
+  }
+  return raw as T;
+}
+
+function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
+  const laneMode = readEnumOption<AutomationLaneModeFlag>(args, ["--lane-mode"], AUTOMATION_LANE_MODES, "--lane-mode");
+  const laneId = readLaneId(args);
+  const preset = readEnumOption<AutomationLaneNamePresetFlag>(args, ["--lane-name-preset"], AUTOMATION_LANE_NAME_PRESETS, "--lane-name-preset");
+  const template = readValue(args, ["--lane-name-template"]);
+
+  if (laneMode == null && laneId == null && preset == null && template == null) {
+    return draft;
+  }
+
+  if (laneId != null && laneMode === "create") {
+    throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
+  }
+  if (preset != null && laneMode === "reuse") {
+    throw new CliUsageError("--lane-name-preset is only valid with --lane-mode create.");
+  }
+  if (template != null && preset != null && preset !== "custom") {
+    throw new CliUsageError("--lane-name-template is only valid with --lane-name-preset custom.");
+  }
+  if (template != null && preset == null && laneMode !== "create") {
+    throw new CliUsageError("--lane-name-template requires --lane-mode create (with --lane-name-preset custom).");
+  }
+
+  const existingExecution = isRecord(draft.execution) ? draft.execution : {};
+  const execution: JsonObject = { ...existingExecution };
+  if (laneMode != null) execution.laneMode = laneMode;
+  if (laneId != null) execution.targetLaneId = laneId;
+  if (preset != null) execution.laneNamePreset = preset;
+  if (template != null) execution.laneNameTemplate = template;
+
+  return { ...draft, execution };
+}
+
+function migrateLegacyCreateLane(draft: JsonObject, opts: { allowLegacy: boolean }): JsonObject {
+  const actions = Array.isArray(draft.actions) ? draft.actions : null;
+  if (!actions || actions.length === 0) return draft;
+  const first = actions[0];
+  if (!isRecord(first) || first.type !== "create-lane") return draft;
+  if (opts.allowLegacy) return draft;
+  const execution = isRecord(draft.execution) ? draft.execution : {};
+  const template = typeof first.laneNameTemplate === "string" ? first.laneNameTemplate : undefined;
+  const migratedExecution: JsonObject = {
+    ...execution,
+    laneMode: "create",
+    ...(template ? { laneNamePreset: "custom", laneNameTemplate: template } : {}),
+  };
+  return { ...draft, execution: migratedExecution, actions: actions.slice(1) };
+}
+
+function automationsExampleText(): string {
+  return JSON.stringify(
+    {
+      id: "example-rule",
+      name: "Open lane per GitHub issue",
+      enabled: true,
+      trigger: {
+        kind: "github.issue",
+        event: "opened",
+      },
+      execution: {
+        kind: "agent-session",
+        laneMode: "create",
+        laneNamePreset: "issue-num-title",
+        session: {
+          prompt: "Investigate and propose a fix for {{trigger.issue.title}}.",
+        },
+      },
+      actions: [
+        {
+          type: "agent-session",
+          modelId: "claude-opus-4-7",
+        },
+      ],
+    },
+    null,
+    2,
+  );
+}
+
 function buildAutomationsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
 
@@ -1741,8 +1854,14 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     return { kind: "execute", label: `automations show ${id}`, steps: [actionStep("result", "automations", "get", { id })] };
   }
 
+  if (sub === "example") {
+    return { kind: "help", text: automationsExampleText() };
+  }
+
   if (sub === "create") {
-    const draft = parseDraftInput(args);
+    const allowLegacy = readFlag(args, ["--allow-legacy"]);
+    const raw = parseDraftInput(args);
+    const draft = applyLaneFlagsToDraft(migrateLegacyCreateLane(raw, { allowLegacy }), args);
     return {
       kind: "execute",
       label: "automations create",
@@ -1752,7 +1871,9 @@ function buildAutomationsPlan(args: string[]): CliPlan {
 
   if (sub === "update") {
     const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
-    const draft = parseDraftInput(args);
+    const allowLegacy = readFlag(args, ["--allow-legacy"]);
+    const raw = parseDraftInput(args);
+    const draft = applyLaneFlagsToDraft(migrateLegacyCreateLane(raw, { allowLegacy }), args);
     return {
       kind: "execute",
       label: `automations update ${id}`,
@@ -1800,12 +1921,14 @@ function buildAutomationsPlan(args: string[]): CliPlan {
   if (sub === "runs") {
     const automationId = readValue(args, ["--rule", "--automation", "--id"]);
     const limit = readIntOption(args, ["--limit"]);
+    const status = readEnumOption(args, ["--status"], AUTOMATION_RUN_STATUSES, "--status");
     return {
       kind: "execute",
       label: "automations runs",
       steps: [actionStep("result", "automations", "listRuns", {
         ...(automationId ? { automationId } : {}),
         ...(typeof limit === "number" ? { limit } : {}),
+        ...(status ? { status } : {}),
       })],
     };
   }
@@ -1815,12 +1938,13 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: `automations run-show ${runId}`,
+      formatter: "automation-run-detail",
       steps: [actionStep("result", "automations", "getRunDetail", { runId })],
     };
   }
 
   throw new CliUsageError(
-    "automations supports list, show, create, update, delete, toggle, run, runs, or run-show.",
+    "automations supports list, show, create, update, delete, toggle, run, runs, run-show, or example.",
   );
 }
 
@@ -2721,6 +2845,43 @@ function cell(value: unknown, width = 42): string {
   return truncateCell(String(value), width);
 }
 
+function formatAutomationRunDetail(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const run = isRecord(value.run) ? value.run : value;
+  const actions = Array.isArray(value.actions)
+    ? value.actions
+    : Array.isArray(run.actions) ? run.actions : [];
+  const header = renderKeyValues("ADE automation run", [
+    ["id", run.id],
+    ["rule", run.automationId ?? run.ruleId],
+    ["status", run.status],
+    ["startedAt", run.startedAt],
+    ["finishedAt", run.finishedAt],
+    ["lane", run.laneId ?? run.targetLaneId],
+    ["error", run.errorMessage],
+  ]);
+  const rows = actions
+    .filter((action): action is JsonObject => isRecord(action))
+    .map((action) => {
+      const kind = typeof action.kind === "string" ? action.kind
+        : typeof action.type === "string" ? action.type
+        : "action";
+      const status = typeof action.status === "string" ? action.status : "?";
+      const error = typeof action.errorMessage === "string" ? action.errorMessage : "";
+      const output = typeof action.output === "string" ? action.output : "";
+      const isLaneSetup = kind === "lane-setup";
+      const note = error
+        ? (isLaneSetup ? `FAILED: ${error}` : error)
+        : isLaneSetup && output
+          ? `created lane: ${output}`
+          : output;
+      const label = isLaneSetup ? "lane-setup" : kind;
+      return [label, status, note];
+    });
+  const table = renderTable(["step", "status", "detail"], rows, "(no actions)");
+  return [header, "", "Actions", table].join("\n");
+}
+
 function renderKeyValues(title: string, entries: Array<[string, unknown]>): string {
   const rows = entries.filter(([, value]) => value !== undefined && value !== null && value !== "");
   const labelWidth = Math.max(0, ...rows.map(([label]) => label.length));
@@ -3054,6 +3215,8 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
       return formatProofList(value);
     case "actions-list":
       return formatActionsList(value);
+    case "automation-run-detail":
+      return formatAutomationRunDetail(value);
     case "action-result":
     default:
       if (isRecord(value)) return renderKeyValues("ADE result", Object.entries(value).slice(0, 24));

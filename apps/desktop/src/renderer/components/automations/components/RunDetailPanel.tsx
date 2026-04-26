@@ -1,10 +1,11 @@
-import { ArrowSquareOut } from "@phosphor-icons/react";
+import { ArrowSquareOut, GitBranch } from "@phosphor-icons/react";
 import type { AutomationRunDetail } from "../../../../shared/types";
 import { AgentChatPane } from "../../chat/AgentChatPane";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { statusToneAutomation as statusTone } from "../../../lib/format";
+import { cardCls, labelCls } from "../designTokens";
 
 function MetaCard({
   label,
@@ -14,9 +15,9 @@ function MetaCard({
   value: string;
 }) {
   return (
-    <div className="rounded-xl border border-white/[0.08] bg-black/15 p-3">
-      <div className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">{label}</div>
-      <div className="mt-1 break-all text-xs text-[#F5FAFF]">{value}</div>
+    <div className="rounded-xl border border-white/[0.07] bg-[rgba(12,10,22,0.6)] p-3">
+      <div className={labelCls}>{label}</div>
+      <div className="mt-1 break-all text-xs text-fg">{value}</div>
     </div>
   );
 }
@@ -31,11 +32,11 @@ export function RunDetailPanel({
   onOpenMission?: (missionId: string) => void;
 }) {
   if (loading) {
-    return <div className="p-5 text-sm text-[#93A4B8]">Loading run detail...</div>;
+    return <div className="p-5 text-sm text-muted-fg/60">Loading run detail...</div>;
   }
 
   if (!detail) {
-    return <div className="p-5 text-sm text-[#93A4B8]">Select a run to inspect what ADE did.</div>;
+    return <div className="p-5 text-sm text-muted-fg/60">Select a run to inspect what ADE did.</div>;
   }
 
   const triggerMetadataEntries = Object.entries(detail.run.triggerMetadata ?? {});
@@ -43,7 +44,7 @@ export function RunDetailPanel({
   return (
     <div className="h-full overflow-y-auto px-5 py-5">
       <div className="mx-auto flex max-w-5xl flex-col gap-4">
-        <section className="rounded-2xl border border-white/[0.08] bg-black/15 p-4">
+        <section className={cardCls}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -51,14 +52,14 @@ export function RunDetailPanel({
                 <Chip className="text-[9px]">{detail.run.executionKind}</Chip>
                 <Chip className="text-[9px]">{detail.run.triggerType}</Chip>
               </div>
-              <div className="mt-3 text-lg font-semibold text-[#F5FAFF]">
+              <div className="mt-3 text-lg font-semibold text-fg">
                 {detail.rule?.name ?? detail.run.automationId}
               </div>
-              <div className="mt-1 text-sm text-[#93A4B8]">
+              <div className="mt-1 text-sm text-muted-fg/70">
                 {detail.run.summary ?? "No summary recorded for this run."}
               </div>
               {detail.run.errorMessage ? (
-                <div className="mt-2 text-sm text-red-200">{detail.run.errorMessage}</div>
+                <div className="mt-2 text-sm text-error">{detail.run.errorMessage}</div>
               ) : null}
             </div>
 
@@ -83,14 +84,14 @@ export function RunDetailPanel({
         </section>
 
         {detail.chatSession ? (
-          <section className="rounded-2xl border border-white/[0.08] bg-black/15 p-4">
+          <section className={cardCls}>
             <div className="mb-3">
-              <div className="text-sm font-semibold text-[#F5FAFF]">Automation thread</div>
-              <div className="mt-1 text-xs text-[#93A4B8]">
+              <div className="text-sm font-semibold text-fg">Automation thread</div>
+              <div className="mt-1 text-xs text-muted-fg/60">
                 This thread lives inside Automations history. It does not appear in the Work tab.
               </div>
             </div>
-            <div className="h-[620px] overflow-hidden rounded-xl border border-white/[0.08] bg-[#07101A]">
+            <div className="h-[620px] overflow-hidden rounded-xl border border-white/[0.08] bg-[rgba(7,16,26,0.6)]">
               <AgentChatPane
                 laneId={detail.chatSession.laneId}
                 initialSessionSummary={detail.chatSession}
@@ -110,57 +111,71 @@ export function RunDetailPanel({
         ) : null}
 
         {detail.run.missionId && !detail.chatSession ? (
-          <section className="rounded-2xl border border-white/[0.08] bg-black/15 p-4">
-            <div className="text-sm font-semibold text-[#F5FAFF]">Mission-backed run</div>
-            <div className="mt-1 text-sm text-[#93A4B8]">
+          <section className={cardCls}>
+            <div className="text-sm font-semibold text-fg">Mission-backed run</div>
+            <div className="mt-1 text-sm text-muted-fg/70">
               This automation launched a mission instead of an automation chat thread. Open the mission to inspect the live transcript, steps, and artifacts.
             </div>
           </section>
         ) : null}
 
         {detail.actions.length > 0 ? (
-          <section className="rounded-2xl border border-white/[0.08] bg-black/15 p-4">
-            <div className="text-sm font-semibold text-[#F5FAFF]">Action output</div>
+          <section className={cardCls}>
+            <div className="text-sm font-semibold text-fg">Action output</div>
             <div className="mt-3 space-y-3">
-              {detail.actions.map((action) => (
-                <div key={action.id} className="rounded-xl border border-white/[0.08] bg-[#0B121A] p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-semibold text-[#F5FAFF]">
-                      #{action.actionIndex + 1} {action.actionType}
+              {detail.actions.map((action) => {
+                const isLaneSetup = action.actionType === "lane-setup";
+                return (
+                  <div
+                    key={action.id}
+                    className={cn(
+                      "rounded-xl border p-4",
+                      isLaneSetup
+                        ? "border-accent/25 bg-accent/[0.04]"
+                        : "border-white/[0.08] bg-[rgba(11,18,26,0.6)]",
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-fg">
+                        {isLaneSetup ? <GitBranch size={13} weight="regular" className="text-accent" /> : null}
+                        <span>
+                          {isLaneSetup ? "Lane setup" : `#${action.actionIndex + 1} ${action.actionType}`}
+                        </span>
+                      </div>
+                      <Chip className={cn("text-[9px]", statusTone(action.status as any))}>{action.status}</Chip>
                     </div>
-                    <Chip className={cn("text-[9px]", statusTone(action.status as any))}>{action.status}</Chip>
+                    {action.errorMessage ? (
+                      <div className="mt-2 text-sm text-error">{action.errorMessage}</div>
+                    ) : null}
+                    {action.output ? (
+                      <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-white/[0.06] bg-[rgba(0,0,0,0.3)] p-3 font-mono text-[11px] leading-relaxed text-fg/80">
+                        {action.output}
+                      </pre>
+                    ) : null}
                   </div>
-                  {action.errorMessage ? (
-                    <div className="mt-2 text-sm text-red-200">{action.errorMessage}</div>
-                  ) : null}
-                  {action.output ? (
-                    <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-white/[0.06] bg-black/30 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
-                      {action.output}
-                    </pre>
-                  ) : null}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         ) : null}
 
         {detail.ingressEvent ? (
-          <section className="rounded-2xl border border-white/[0.08] bg-black/15 p-4">
-            <div className="text-sm font-semibold text-[#F5FAFF]">Ingress context</div>
+          <section className={cardCls}>
+            <div className="text-sm font-semibold text-fg">Ingress context</div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <Chip className="text-[9px]">{detail.ingressEvent.source}</Chip>
               <Chip className="text-[9px]">{detail.ingressEvent.status}</Chip>
               {detail.ingressEvent.eventName ? <Chip className="text-[9px]">{detail.ingressEvent.eventName}</Chip> : null}
             </div>
             {detail.ingressEvent.summary ? (
-              <div className="mt-2 text-sm text-[#93A4B8]">{detail.ingressEvent.summary}</div>
+              <div className="mt-2 text-sm text-muted-fg/70">{detail.ingressEvent.summary}</div>
             ) : null}
           </section>
         ) : null}
 
         {triggerMetadataEntries.length > 0 ? (
-          <section className="rounded-2xl border border-white/[0.08] bg-black/15 p-4">
-            <div className="text-sm font-semibold text-[#F5FAFF]">Trigger metadata</div>
+          <section className={cardCls}>
+            <div className="text-sm font-semibold text-fg">Trigger metadata</div>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               {triggerMetadataEntries.map(([key, value]) => (
                 <MetaCard

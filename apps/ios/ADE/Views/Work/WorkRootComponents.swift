@@ -15,7 +15,9 @@ struct WorkFiltersSection: View {
   let lanes: [LaneSummary]
   let liveCount: Int
   let needsInputCount: Int
+  let isLive: Bool
   let onClear: () -> Void
+  let onNewChat: () -> Void
 
   private var selectedLaneName: String {
     if selectedLaneId == "all" { return "All lanes" }
@@ -85,22 +87,28 @@ struct WorkFiltersSection: View {
         .accessibilityLabel("Toggle filter panel")
       }
 
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
-          ForEach(WorkSessionStatusFilter.allCases) { status in
-            WorkFilterChip(
-              title: status.title,
-              selected: selectedStatus == status,
-              tint: statusFilterTint(status)
-            ) {
-              withAnimation(.snappy(duration: 0.18)) {
-                selectedStatus = status
-              }
-            }
-          }
+      Button(action: onNewChat) {
+        HStack(spacing: 8) {
+          Image(systemName: "plus")
+            .font(.system(size: 13, weight: .bold))
+          Text("Start new chat")
+            .font(.subheadline.weight(.semibold))
         }
-        .padding(.vertical, 1)
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 11)
+        .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .glassEffect(in: .rect(cornerRadius: 12))
+        .overlay(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(.white.opacity(0.18), lineWidth: 0.6)
+        )
+        .shadow(color: ADEColor.accent.opacity(0.35), radius: 12, x: 0, y: 4)
       }
+      .buttonStyle(.plain)
+      .disabled(!isLive)
+      .opacity(isLive ? 1 : 0.55)
+      .accessibilityLabel("Start new chat")
 
       HStack(spacing: 6) {
         WorkFlatCountChip(icon: "bolt.fill", text: "\(liveCount) live", tint: ADEColor.success)
@@ -122,36 +130,68 @@ struct WorkFiltersSection: View {
       }
 
       if filterOpen {
-        HStack(spacing: 8) {
-          Menu {
-            ForEach(WorkSessionOrganization.allCases) { option in
-              Button(option.title) {
-                organization = option
+        VStack(alignment: .leading, spacing: 10) {
+          Text("Status")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .textCase(.uppercase)
+            .tracking(0.5)
+
+          ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+              ForEach(WorkSessionStatusFilter.allCases) { status in
+                WorkFilterChip(
+                  title: status.title,
+                  selected: selectedStatus == status,
+                  tint: statusFilterTint(status)
+                ) {
+                  withAnimation(.snappy(duration: 0.18)) {
+                    selectedStatus = status
+                  }
+                }
               }
             }
-          } label: {
-            WorkFilterMenuLabel(
-              icon: "rectangle.stack",
-              title: "Group",
-              value: organization.title
-            )
+            .padding(.vertical, 1)
           }
-          .buttonStyle(.plain)
 
-          Menu {
-            Button("All lanes") { selectedLaneId = "all" }
-            ForEach(lanes) { lane in
-              Button(lane.name) { selectedLaneId = lane.id }
+          HStack(spacing: 8) {
+            Menu {
+              ForEach(WorkSessionOrganization.allCases) { option in
+                Button(option.title) {
+                  organization = option
+                }
+              }
+            } label: {
+              WorkFilterMenuLabel(
+                icon: "rectangle.stack",
+                title: "Group",
+                value: organization.title
+              )
             }
-          } label: {
-            WorkFilterMenuLabel(
-              icon: "arrow.triangle.branch",
-              title: "Lane",
-              value: selectedLaneName
-            )
+            .buttonStyle(.plain)
+
+            Menu {
+              Button("All lanes") { selectedLaneId = "all" }
+              ForEach(lanes) { lane in
+                Button(lane.name) { selectedLaneId = lane.id }
+              }
+            } label: {
+              WorkFilterMenuLabel(
+                icon: "arrow.triangle.branch",
+                title: "Lane",
+                value: selectedLaneName
+              )
+            }
+            .buttonStyle(.plain)
           }
-          .buttonStyle(.plain)
         }
+        .padding(12)
+        .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .glassEffect(in: .rect(cornerRadius: 14))
+        .overlay(
+          RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+        )
         .transition(.move(edge: .top).combined(with: .opacity))
       }
     }
@@ -574,6 +614,30 @@ struct WorkProviderLogo: View {
   }
 }
 
+/// Borderless provider mark — same asset as WorkProviderLogo but without the
+/// surrounding tinted square. Used inside the provider-tinted session card so
+/// the logo reads as part of the card itself, not a separate badge.
+struct WorkProviderBareLogo: View {
+  let provider: String?
+  let fallbackSymbol: String
+  let tint: Color
+  let size: CGFloat
+
+  var body: some View {
+    if let assetName = providerAssetName(provider) {
+      Image(assetName)
+        .resizable()
+        .aspectRatio(contentMode: .fit)
+        .frame(width: size, height: size)
+    } else {
+      Image(systemName: fallbackSymbol)
+        .font(.system(size: size * 0.7, weight: .semibold))
+        .foregroundStyle(tint)
+        .frame(width: size, height: size)
+    }
+  }
+}
+
 struct WorkSessionRow: View {
   let session: TerminalSessionSummary
   let lane: LaneSummary?
@@ -583,12 +647,12 @@ struct WorkSessionRow: View {
   let isSelectedTransitionSource: Bool
 
   var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      WorkProviderLogo(
+    HStack(alignment: .center, spacing: 12) {
+      WorkProviderBareLogo(
         provider: chatSummary?.provider ?? session.toolType,
         fallbackSymbol: sessionSymbol(session, provider: chatSummary?.provider),
-        tint: rowTint,
-        size: 28
+        tint: providerTintColor,
+        size: 32
       )
       .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
 
@@ -598,7 +662,7 @@ struct WorkSessionRow: View {
             .fill(rowTint)
             .frame(width: 6, height: 6)
           Text(chatSummary?.title ?? session.title)
-            .font(.footnote.weight(.semibold))
+            .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
             .truncationMode(.tail)
@@ -624,15 +688,6 @@ struct WorkSessionRow: View {
         }
 
         HStack(spacing: 6) {
-          Text(shortProviderLabel(chatSummary?.provider ?? session.toolType))
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-
-          Text("·")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-
           Image(systemName: "arrow.triangle.branch")
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
@@ -680,10 +735,21 @@ struct WorkSessionRow: View {
         }
       }
     }
-    .adeListCard()
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(providerTintColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 16))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(providerTintColor.opacity(0.25), lineWidth: 0.75)
+    )
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "work-container-\(session.id)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityLabel)
+  }
+
+  var providerTintColor: Color {
+    providerTint(chatSummary?.provider ?? session.toolType)
   }
 
   var rowTint: Color {

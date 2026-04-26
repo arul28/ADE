@@ -29,7 +29,7 @@ extension LanesTabView {
   }
 
   var normalVisibleSnapshots: [LaneListSnapshot] {
-    filteredSnapshots.filter { !visibleAttentionLaneIds.contains($0.lane.id) }
+    filteredSnapshots
   }
 
   var primaryLane: LaneSummary? {
@@ -237,14 +237,11 @@ extension LanesTabView {
   }
 
   var normalStickyPrimarySnapshot: LaneListSnapshot? {
-    guard let stickyPrimarySnapshot, !visibleAttentionLaneIds.contains(stickyPrimarySnapshot.lane.id) else {
-      return nil
-    }
-    return stickyPrimarySnapshot
+    stickyPrimarySnapshot
   }
 
   var normalTreeSnapshots: [LaneListSnapshot] {
-    treeSnapshots.filter { !visibleAttentionLaneIds.contains($0.lane.id) }
+    treeSnapshots
   }
 
   @ViewBuilder
@@ -347,6 +344,27 @@ extension LanesTabView {
       )
     } label: {
       Label("Manage lane", systemImage: "slider.horizontal.3")
+    }
+    if snapshot.lane.laneType == "primary", !primaryBranches.isEmpty {
+      Menu {
+        ForEach(primaryBranches) { branch in
+          Button(branch.name) {
+            Task {
+              do {
+                try await syncService.checkoutPrimaryBranch(laneId: snapshot.lane.id, branchName: branch.name)
+                await reload(refreshRemote: true)
+                await refreshPrimaryBranches(force: true)
+              } catch {
+                ADEHaptics.error()
+                primaryBranchError = error.localizedDescription
+              }
+            }
+          }
+          .disabled(!canRunLiveActions)
+        }
+      } label: {
+        Label("Switch primary branch", systemImage: "arrow.triangle.branch")
+      }
     }
     Button {
       toggleOpenLane(snapshot.lane.id)
