@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { DelegationContract, OrchestratorRunGraph, OrchestratorStep } from "../../../shared/types";
 import {
+  deriveMissionStatusFromRun,
+  filterExecutionSteps,
+  isDisplayOnlyTaskStep,
+  parseChatTarget,
+  sanitizeChatTarget,
+  teammateThreadIdentity,
+  deriveThreadTitle,
+} from "./orchestratorContext";
+import {
   checkCoordinatorToolPermission,
   createDelegationContract,
   createDelegationScope,
@@ -10,7 +19,154 @@ import {
   hasConflictingDelegationContract,
 } from "./delegationContracts";
 
-function createGraph(args?: {
+describe("orchestratorContext teammate chat target handling", () => {
+  it("parses teammate targets from persisted JSON payloads", () => {
+    const parsed = parseChatTarget({
+      kind: "teammate",
+      runId: "run-1",
+      teamMemberId: "tm-1",
+      sessionId: "session-1",
+    });
+
+    expect(parsed).toEqual({
+      kind: "teammate",
+      runId: "run-1",
+      teamMemberId: "tm-1",
+      sessionId: "session-1",
+    });
+  });
+
+  it("sanitizes teammate targets without dropping routing fields", () => {
+    const sanitized = sanitizeChatTarget({
+      kind: "teammate",
+      runId: " run-1 ",
+      teamMemberId: " tm-1 ",
+      sessionId: " session-1 ",
+    });
+
+    expect(sanitized).toEqual({
+      kind: "teammate",
+      runId: "run-1",
+      teamMemberId: "tm-1",
+      sessionId: "session-1",
+    });
+  });
+
+  it("builds teammate thread identity and title", () => {
+    const target = {
+      kind: "teammate" as const,
+      runId: "run-1",
+      teamMemberId: "tm-1",
+      sessionId: "session-1",
+    };
+
+    expect(teammateThreadIdentity(target)).toBe("tm-1");
+    expect(deriveThreadTitle({ target, step: null, lane: null })).toBe("Teammate: tm-1");
+  });
+});
+
+describe("deriveMissionStatusFromRun", () => {
+  it("keeps missions intervention_required while blocking manual input is open", () => {
+    const status = deriveMissionStatusFromRun(
+      {
+        run: { status: "active" },
+        steps: [],
+        attempts: [],
+        timeline: [],
+        claims: [],
+      } as any,
+      {
+        status: "in_progress",
+        interventions: [
+          {
+            id: "iv-1",
+            missionId: "mission-1",
+            interventionType: "manual_input",
+            status: "open",
+            title: "Need answer",
+            body: "Question",
+            requestedAction: null,
+            resolutionNote: null,
+            laneId: null,
+            createdAt: "",
+            updatedAt: "",
+            resolvedAt: null,
+            metadata: { canProceedWithoutAnswer: false },
+          },
+        ],
+      } as any
+    );
+
+    expect(status).toBe("intervention_required");
+  });
+
+  it("keeps active missions in progress when manual input is optional", () => {
+    const status = deriveMissionStatusFromRun(
+      {
+        run: { status: "active" },
+        steps: [],
+        attempts: [],
+        timeline: [],
+        claims: [],
+      } as any,
+      {
+        status: "in_progress",
+        interventions: [
+          {
+            id: "iv-1",
+            missionId: "mission-1",
+            interventionType: "manual_input",
+            status: "open",
+            title: "Optional note",
+            body: "Question",
+            requestedAction: null,
+            resolutionNote: null,
+            laneId: null,
+            createdAt: "",
+            updatedAt: "",
+            resolvedAt: null,
+            metadata: { canProceedWithoutAnswer: true },
+          },
+        ],
+      } as any
+    );
+
+    expect(status).toBe("in_progress");
+  });
+
+  it("maps canceled runs to canceled missions", () => {
+    const status = deriveMissionStatusFromRun(
+      {
+        run: { status: "canceled" },
+        steps: [],
+        attempts: [],
+        timeline: [],
+        claims: [],
+      } as any,
+      {
+        status: "in_progress",
+        interventions: [],
+      } as any
+    );
+
+    expect(status).toBe("canceled");
+  });
+});
+
+describe("task step helpers", () => {
+  it("filters legacy task shell steps without reviving display-only rendering", () => {
+    const steps = [
+      { id: "task-1", stepKey: "plan", metadata: { isTask: true, stepType: "task" } },
+      { id: "step-1", stepKey: "impl", metadata: { stepType: "implementation" } },
+    ] as any[];
+
+    expect(isDisplayOnlyTaskStep(steps[0])).toBe(false);
+    expect(isDisplayOnlyTaskStep(steps[1])).toBe(false);
+    expect(filterExecutionSteps(steps).map((step) => step.stepKey)).toEqual(["impl"]);
+  });
+});
+
+function createDelegationGraph(args?: {
   steps?: OrchestratorStep[];
 }): OrchestratorRunGraph {
   return {
@@ -43,7 +199,7 @@ function createPlannerContract(overrides?: Partial<DelegationContract>): Delegat
   });
 }
 
-function createStep(args?: {
+function createDelegationStep(args?: {
   id?: string;
   stepKey?: string;
   status?: OrchestratorStep["status"];
@@ -146,9 +302,9 @@ describe("delegationContracts", () => {
       status: "launching",
       launchState: "awaiting_worker_launch",
     });
-    const graph = createGraph({
+    const graph = createDelegationGraph({
       steps: [
-        createStep({
+        createDelegationStep({
           id: "step-planner",
           stepKey: "planner-worker",
           status: "running",
@@ -185,9 +341,9 @@ describe("delegationContracts", () => {
       status: "active",
       launchState: "waiting_on_worker",
     });
-    const graph = createGraph({
+    const graph = createDelegationGraph({
       steps: [
-        createStep({
+        createDelegationStep({
           id: "step-existing",
           stepKey: "planner-worker",
           status: "running",
@@ -226,9 +382,9 @@ describe("delegationContracts", () => {
       status: "active",
       launchState: "waiting_on_worker",
     });
-    const boundedGraph = createGraph({
+    const boundedGraph = createDelegationGraph({
       steps: [
-        createStep({
+        createDelegationStep({
           id: "step-bounded",
           stepKey: "parallel-worker",
           status: "running",
