@@ -14,7 +14,7 @@ import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { buildOptimisticChatSessionSummary, isChatToolType, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import {
-  buildTrackedCliLaunchCommand,
+  resolveLaunchFields,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
 } from "./cliLaunch";
@@ -1025,9 +1025,16 @@ export function useWorkSessions() {
         shell: "shell" as const,
       };
       const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
-      const defaultLaunch = args.profile === "shell"
-        ? null
-        : buildTrackedCliLaunchCommand({ provider: args.profile, permissionMode: "default" });
+      // resolveLaunchFields preserves caller intent: any caller-supplied
+      // startupCommand/command/args is used as-is, never mixed with defaults
+      // from the other fields. Only when the caller passes none of them do
+      // we substitute the profile's default launch.
+      const launchFields = resolveLaunchFields({
+        profile: args.profile,
+        ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
+        ...(args.command !== undefined ? { command: args.command } : {}),
+        ...(args.args !== undefined ? { args: args.args } : {}),
+      });
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,
@@ -1035,9 +1042,7 @@ export function useWorkSessions() {
         title: args.title ?? titleMap[args.profile],
         tracked: args.tracked ?? true,
         toolType: toolTypeMap[args.profile],
-        startupCommand: args.startupCommand ?? defaultLaunch?.startupCommand ?? undefined,
-        command: args.command ?? defaultLaunch?.command,
-        args: args.args ?? defaultLaunch?.args,
+        ...launchFields,
       });
       selectLane(args.laneId);
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up

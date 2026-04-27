@@ -151,8 +151,13 @@ struct WorkspaceCompactTrailing: View {
             } else if state.sessions.count == 1, let s = state.sessions.first {
                 // Single active session — show the model id (or provider slug
                 // fallback). Title would truncate to nothing useful in this
-                // 96pt slot.
-                Text(s.modelId?.isEmpty == false ? s.modelId! : s.providerSlug.lowercased())
+                // 96pt slot. Trim before the empty check so a whitespace-only
+                // `modelId` (e.g. " ", "\n") still falls back to the slug
+                // instead of rendering an invisible chip.
+                Text({
+                    let trimmed = (s.modelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? s.providerSlug.lowercased() : trimmed
+                }())
                     .font(.system(size: 12, weight: .semibold))
                     .kerning(-0.2)
                     .foregroundStyle(Color(red: 0xF0/255, green: 0xF0/255, blue: 0xF2/255))

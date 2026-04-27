@@ -82,7 +82,11 @@ struct LaneDetailHeaderCard<Footer: View>: View {
 
       syncActionButton(
         symbol: "arrow.down.to.line.compact",
-        label: "Pull",
+        // Action flips between Pull (when there are commits to integrate)
+        // and Fetch (when we just want to refresh remote state). The label
+        // and accessibility text must follow the action so VoiceOver users
+        // hear what the button is actually about to do.
+        label: behind > 0 ? "Pull" : "Fetch",
         tint: behind > 0 ? ADEColor.warning : ADEColor.textPrimary,
         emphasize: behind > 0,
         action: behind > 0 ? onPull : onFetch

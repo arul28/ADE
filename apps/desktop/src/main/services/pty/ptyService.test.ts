@@ -1528,7 +1528,13 @@ describe("ptyService", () => {
   });
 
   describe("ensureResumeTargets", () => {
-    it("does not assign Codex storage targets during passive session-list hydration", async () => {
+    it("backfills Codex storage resume targets during session-list hydration", async () => {
+      // The session-list path is how older sessions (whose transcripts no
+      // longer contain an explicit resume command) get their resume target
+      // backfilled. Excluding `session-list` from the Codex storage fallback
+      // breaks resumption of those sessions, so the fallback must run here.
+      // Only `resume-launch` is excluded — that flow uses the live capture
+      // poll for fresh sessions and the storage scan would slow launch.
       vi.useFakeTimers();
       try {
         const fakeNow = new Date("2026-04-15T22:00:00.000Z");
@@ -1571,7 +1577,7 @@ describe("ptyService", () => {
         // allow any microtasks to settle
         await vi.advanceTimersByTimeAsync(0);
 
-        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith("session-1", "codex resume thread-abc");
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-1", "codex resume thread-abc");
       } finally {
         vi.useRealTimers();
       }

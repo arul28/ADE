@@ -1,10 +1,14 @@
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { Copy, File, Image, X } from "@phosphor-icons/react";
 import type { AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 function attachmentName(path: string): string {
-  return path.split("/").pop() || path;
+  // Split on both POSIX and Windows separators so a Windows path
+  // like "C:\\Users\\foo\\bar.png" yields "bar.png" instead of the
+  // full path.
+  const segments = path.split(/[/\\]/);
+  return segments.pop() || path;
 }
 
 function ImageAttachmentPreview({
@@ -128,33 +132,107 @@ function ImageAttachmentPreview({
         </span>
       </div>
       {expanded && dataUrl ? (
-        <div
-          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-8"
-          role="dialog"
-          aria-modal="true"
-          aria-label={name}
-          onClick={() => setExpanded(false)}
-        >
-          <div className="relative max-h-full max-w-full">
-            <button
-              type="button"
-              className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
-              title="Close"
-              aria-label="Close"
-              onClick={() => setExpanded(false)}
-            >
-              <X size={14} weight="bold" />
-            </button>
-            <img
-              src={dataUrl}
-              alt={name}
-              className="max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] rounded-md object-contain"
-              onClick={(event) => event.stopPropagation()}
-            />
-          </div>
-        </div>
+        <ImageLightbox
+          name={name}
+          dataUrl={dataUrl}
+          onClose={() => setExpanded(false)}
+        />
       ) : null}
     </>
+  );
+}
+
+function ImageLightbox({
+  name,
+  dataUrl,
+  onClose,
+}: {
+  name: string;
+  dataUrl: string;
+  onClose: () => void;
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Save the element that opened us so focus can return there on close,
+  // and pull focus into the dialog on mount.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+    return () => {
+      if (previouslyFocused && typeof previouslyFocused.focus === "function") {
+        previouslyFocused.focus();
+      }
+    };
+  }, []);
+
+  // Close on Escape and trap Tab / Shift-Tab inside the dialog. The dialog
+  // contains exactly the close button as a focusable element, so the trap
+  // pins focus there in either direction.
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const root = containerRef.current;
+    if (!root) return;
+    const focusables = Array.from(
+      root.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((element) => element.tabIndex >= 0);
+    if (focusables.length === 0) {
+      event.preventDefault();
+      closeButtonRef.current?.focus();
+      return;
+    }
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    const active = document.activeElement as HTMLElement | null;
+    if (event.shiftKey) {
+      if (active === first || !active || !root.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last || !active || !root.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-8"
+      role="dialog"
+      aria-modal="true"
+      aria-label={name}
+      onClick={onClose}
+      onKeyDown={handleKeyDown}
+    >
+      <div className="relative max-h-full max-w-full">
+        <button
+          ref={closeButtonRef}
+          type="button"
+          className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
+          title="Close"
+          aria-label="Close"
+          onClick={onClose}
+        >
+          <X size={14} weight="bold" />
+        </button>
+        <img
+          src={dataUrl}
+          alt={name}
+          className="max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] rounded-md object-contain"
+          onClick={(event) => event.stopPropagation()}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -215,6 +293,7 @@ export function ChatAttachmentTray({
                 type="button"
                 className="rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
                 title={`Remove ${attachment.path}`}
+                aria-label={`Remove ${attachmentName(attachment.path)}`}
                 onClick={() => onRemove(attachment.path)}
               >
                 <X size={10} weight="bold" />

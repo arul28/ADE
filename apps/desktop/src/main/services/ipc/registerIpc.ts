@@ -1898,18 +1898,25 @@ export function registerIpc({
     const ctx = getCtx();
     const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
     const allowedDirs = getAllowedDirs(getCtx);
-    const allowed = allowedDirs.some((dir) => {
+    // resolvePathWithinRoot follows symlinks via fs.realpath while validating
+    // containment, so we both reject symlinks pointing outside the allowlist
+    // *and* return the canonical real path for callers to read from. Returning
+    // the lexical path would still be safe because the check resolved real
+    // paths, but handing back the realpath avoids any TOCTOU-adjacent surprises
+    // and keeps file I/O pinned to the validated target.
+    let resolved: string | null = null;
+    for (const dir of allowedDirs) {
       try {
-        resolvePathWithinRoot(dir, normalized);
-        return true;
+        resolved = resolvePathWithinRoot(dir, normalized);
+        break;
       } catch {
-        return false;
+        // try next allowed dir
       }
-    });
-    if (!allowed) {
+    }
+    if (!resolved) {
       throw new Error("Path is outside allowed directories.");
     }
-    return normalized;
+    return resolved;
   };
 
   const inferImageMimeType = (filePath: string): string => {
@@ -1988,7 +1995,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.appGetImageDataUrl, async (_event, arg: { path: string }): Promise<{ dataUrl: string }> => {
     const filePath = resolveAllowedRendererPath(arg?.path);
-    const stat = fs.statSync(filePath);
+    // Use async fs APIs and a size pre-check so a 10 MB image read never
+    // blocks the main process event loop (input dispatch, IPC, window
+    // animations all share that loop).
+    const stat = await fs.promises.stat(filePath);
     const MAX_PREVIEW_BYTES = 10 * 1024 * 1024;
     if (!stat.isFile()) {
       throw new Error("Path is not a file.");
@@ -1996,7 +2006,7 @@ export function registerIpc({
     if (stat.size > MAX_PREVIEW_BYTES) {
       throw new Error("Image preview must be 10 MB or smaller.");
     }
-    const data = fs.readFileSync(filePath);
+    const data = await fs.promises.readFile(filePath);
     return {
       dataUrl: `data:${inferImageMimeType(filePath)};base64,${data.toString("base64")}`,
     };
@@ -2222,7 +2232,15 @@ export function registerIpc({
     async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
       const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
       if (!rootPath) return { dataUrl: null, sourcePath: null, mimeType: null };
-      return resolveProjectIcon(rootPath);
+      // Validate the renderer-supplied root against the allowlist so a
+      // compromised renderer can't probe arbitrary directories for icons.
+      let validatedRoot: string;
+      try {
+        validatedRoot = resolveAllowedRendererPath(rootPath);
+      } catch {
+        return { dataUrl: null, sourcePath: null, mimeType: null };
+      }
+      return resolveProjectIcon(validatedRoot);
     },
   );
 

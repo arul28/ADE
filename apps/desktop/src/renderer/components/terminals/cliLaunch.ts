@@ -113,3 +113,44 @@ export function resolveTrackedCliResumeCommand(session: Pick<TerminalSessionSumm
   const command = session.resumeCommand?.trim() ?? "";
   return command.length > 0 ? command : null;
 }
+
+/**
+ * Resolve `pty.create` launch fields, treating caller-supplied overrides as
+ * atomic so we never mix the caller's `startupCommand` with default
+ * `command`/`args` (or vice versa). If the caller passed *any* override field,
+ * we use exactly what they supplied — defaults are skipped entirely. Only
+ * when the caller passed nothing do we fall back to the profile's default
+ * launch command.
+ */
+export function resolveLaunchFields<P extends "claude" | "codex" | "shell">(args: {
+  profile: P;
+  permissionMode?: AgentChatPermissionMode;
+  startupCommand?: string;
+  command?: string;
+  args?: string[];
+}): { startupCommand?: string; command?: string; args?: string[] } {
+  const callerHasOverride =
+    args.startupCommand !== undefined
+    || args.command !== undefined
+    || args.args !== undefined;
+
+  if (callerHasOverride) {
+    return {
+      ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
+      ...(args.command !== undefined ? { command: args.command } : {}),
+      ...(args.args !== undefined ? { args: args.args } : {}),
+    };
+  }
+
+  if (args.profile === "shell") return {};
+
+  const defaultLaunch = buildTrackedCliLaunchCommand({
+    provider: args.profile,
+    permissionMode: args.permissionMode ?? "default",
+  });
+  return {
+    startupCommand: defaultLaunch.startupCommand,
+    command: defaultLaunch.command,
+    args: defaultLaunch.args,
+  };
+}

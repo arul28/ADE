@@ -774,7 +774,10 @@ export function createPtyService({
         const cwd = typeof payload?.cwd === "string" ? payload.cwd.trim() : "";
         if (type !== "session_meta" || !id || cwd !== args.cwd) continue;
         if (args.requiredText) {
-          const prefix = readFilePrefix(candidate.filePath);
+          // The Codex session_meta record sits at the very top of the JSONL,
+          // so 16 KB is more than enough to scan for the marker without
+          // pulling half a megabyte off disk per candidate inside the poll.
+          const prefix = readFilePrefix(candidate.filePath, 16 * 1024);
           if (!prefix?.includes(args.requiredText)) continue;
         }
 
@@ -830,7 +833,12 @@ export function createPtyService({
       }
     }
 
-    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd && reason !== "session-list" && reason !== "resume-launch") {
+    // The session-list path NEEDS this Codex storage fallback: it's how we
+    // backfill resume targets for older sessions whose transcripts no longer
+    // contain an explicit resume command. Only resume-launch is excluded —
+    // that flow already has the live capture poll for fresh sessions, and
+    // running the storage scan inline would slow launch.
+    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd && reason !== "resume-launch") {
       const codexSessionId = resolveCodexSessionIdFromStorage({
         cwd,
         startedAt: session.startedAt,

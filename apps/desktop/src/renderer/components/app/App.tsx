@@ -193,8 +193,14 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
   const project = useAppStore((s) => s.project);
   const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
 
+  // Only fire the reveal once the surface is *actually* mounted with a
+  // project. On a cold `/work` boot the route renders before `projectHydrated`
+  // / `project.rootPath` settle; firing the reveal here would notify
+  // listeners about a surface that's still showing the loading fallback.
+  const hasActiveProject = Boolean(project?.rootPath);
+  const shouldReveal = active && projectHydrated && hasActiveProject && !showWelcome;
   React.useEffect(() => {
-    if (!active) return;
+    if (!shouldReveal) return;
     const raf = window.requestAnimationFrame(() => {
       dispatchWorkSurfaceRevealed();
     });
@@ -205,7 +211,7 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
       window.cancelAnimationFrame(raf);
       window.clearTimeout(settleTimer);
     };
-  }, [active]);
+  }, [shouldReveal]);
 
   React.useEffect(() => {
     const node = workSurfaceRef.current;
@@ -221,7 +227,6 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
     return active ? GuardLoadingFallback : null;
   }
 
-  const hasActiveProject = Boolean(project?.rootPath);
   if (!hasActiveProject || showWelcome) {
     return active ? <Navigate to="/project" replace /> : null;
   }

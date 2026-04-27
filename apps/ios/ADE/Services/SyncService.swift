@@ -5637,10 +5637,16 @@ extension SyncService {
   /// without re-fetching per running session.
   func cacheChatSummaries(_ summaries: [String: AgentChatSessionSummary]) {
     chatSummaryCache = summaries
+    // Chat summaries feed `lastActivityAt` / `modelId` into the LA roster, so
+    // a refreshed cache must trigger a snapshot recompute. Otherwise widgets
+    // and live activities keep showing the stale model id / elapsed timer
+    // until the next session-list refresh.
+    refreshActiveSessionsAndSnapshot()
   }
 
   func cacheChatSummary(_ summary: AgentChatSessionSummary) {
     chatSummaryCache[summary.sessionId] = summary
+    refreshActiveSessionsAndSnapshot()
   }
 
   /// Recompute `activeSessions` from the local `TerminalSessionSummary` roster
@@ -5686,13 +5692,18 @@ extension SyncService {
 
       let started = Self.parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
-      // `lastActivityAt` when available; fall back to `chatIdleSinceAt`,
-      // then to `startedAt` so the elapsed timer is real, not "now".
+      // `lastActivityAt` when available; fall back to `chatIdleSinceAt`. If
+      // neither is set yet, treat a running session as fresh by falling back
+      // to `now` — otherwise the recency gate below (`>= runningRecencyCutoff`)
+      // would drop long-lived chats whose `startedAt` was hours/days ago even
+      // while they're still streaming output. Idle / awaiting sessions still
+      // get filtered out by their runtime state, so this fallback only
+      // affects the running roster when activity timestamps are missing.
       let summary = chatSummaryCache[session.id]
       let lastActivity =
         Self.parseIso8601(summary?.lastActivityAt ?? "")
         ?? Self.parseIso8601(session.chatIdleSinceAt ?? "")
-        ?? started
+        ?? (isRunningRuntime ? now : started)
       let elapsed = Int(max(0, lastActivity.timeIntervalSince(started)))
 
       let resolvedModelId: String? = {

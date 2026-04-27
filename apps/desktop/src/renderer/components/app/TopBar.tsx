@@ -18,7 +18,32 @@ import { HelpMenu } from "../onboarding/HelpMenu";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
+
+// Bounded LRU so we don't accumulate icons for every project ever opened in
+// long-lived sessions. 24 entries keeps the working set hot for typical usage
+// (current project + a few recents in the tab list) without unbounded growth.
+const PROJECT_ICON_CACHE_MAX = 24;
 const projectIconCache = new Map<string, ProjectIcon>();
+function getProjectIconFromCache(rootPath: string): ProjectIcon | undefined {
+  const cached = projectIconCache.get(rootPath);
+  if (cached === undefined) return undefined;
+  // Touch on read to mark as most-recently-used.
+  projectIconCache.delete(rootPath);
+  projectIconCache.set(rootPath, cached);
+  return cached;
+}
+function setProjectIconCache(rootPath: string, icon: ProjectIcon): void {
+  if (projectIconCache.has(rootPath)) {
+    projectIconCache.delete(rootPath);
+  } else if (projectIconCache.size >= PROJECT_ICON_CACHE_MAX) {
+    // Map iteration order is insertion order, so the first key is the LRU.
+    const oldestKey = projectIconCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      projectIconCache.delete(oldestKey);
+    }
+  }
+  projectIconCache.set(rootPath, icon);
+}
 const PHONE_SYNC_FOCUSABLE_SELECTOR = [
   "a[href]",
   "button:not([disabled])",
@@ -76,26 +101,29 @@ function ProjectTabIcon({
   disabled: boolean;
 }) {
   const [icon, setIcon] = useState<ProjectIcon | null>(() =>
-    disabled ? null : projectIconCache.get(rootPath) ?? null
+    disabled ? null : getProjectIconFromCache(rootPath) ?? null
   );
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     setFailed(false);
-    const cached = projectIconCache.get(rootPath);
-    if (cached) {
-      setIcon(cached);
-      return;
-    }
+    // Honor `disabled` (e.g. project marked missing) BEFORE consulting the
+    // cache. Otherwise a project that was successfully resolved earlier in
+    // the session keeps showing its stale icon after it goes missing.
     if (disabled) {
       setIcon(null);
+      return;
+    }
+    const cached = getProjectIconFromCache(rootPath);
+    if (cached) {
+      setIcon(cached);
       return;
     }
 
     let cancelled = false;
     window.ade.project.resolveIcon(rootPath).then((nextIcon) => {
       if (cancelled) return;
-      projectIconCache.set(rootPath, nextIcon);
+      setProjectIconCache(rootPath, nextIcon);
       setIcon(nextIcon);
     }).catch(() => {
       if (!cancelled) setIcon(null);

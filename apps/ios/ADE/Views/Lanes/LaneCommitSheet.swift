@@ -78,6 +78,11 @@ struct LaneCommitSheet: View {
           }
         }
       }
+      .onAppear {
+        // Auto-focus the commit message field when the sheet appears so the
+        // user can start typing immediately without an extra tap.
+        messageFieldFocused = true
+      }
     }
   }
 
@@ -172,16 +177,32 @@ struct LaneCommitSheet: View {
     }
   }
 
+  // TODO(review #3146132904): drop substring matching once the desktop's
+  // git.generateCommitMessage RPC returns a structured error code (e.g.
+  // `errorCode: "ai_commit_messages_off" | "no_commit_messages_model"`).
+  // Until then we fall back to keyword detection on the localized
+  // description, which is brittle if the desktop copy ever changes. See
+  // https://github.com/anthropic-experimental/ADE/pull/212#discussion_r3146132904
   private func isAiSetupError(_ text: String) -> Bool {
-    let lower = text.lowercased()
-    return lower.contains("ai commit messages are off")
-      || lower.contains("commit messages model")
-      || lower.contains("choose a commit messages")
-      || lower.contains("not currently available")
+    let lower = text
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    let needles = [
+      "ai commit messages are off",
+      "ai commit messages are turned off",
+      "commit messages model",
+      "choose a commit messages",
+      "pick a commit messages",
+      "not currently available",
+    ]
+    return needles.contains(where: lower.contains)
   }
 
   private func aiSetupHintFor(_ text: String) -> String {
-    if text.lowercased().contains("are off") {
+    let lower = text
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    if lower.contains("are off") || lower.contains("turned off") {
       return "AI commit messages are turned off on the desktop. Open desktop Settings → AI → Commit Messages to enable it."
     }
     return "Pick a Commit Messages model on the desktop in Settings → AI → Commit Messages."

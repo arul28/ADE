@@ -392,7 +392,12 @@ final class ADETests: XCTestCase {
         port: 8787,
         addresses: [],
         tailscaleAddress: "ade-sync",
-        lastResolvedAt: "2026-04-23T00:00:01.000Z"
+        // Use a fresh `lastResolvedAt` so the discovery row is not coalesced
+        // away by the same-bucket dedup that other tests' static 2026-04-23
+        // fixtures rely on. We need this row live in `discoveredHosts` to
+        // exercise the shortcut-vs-saved-host matching logic this test
+        // regresses against.
+        lastResolvedAt: recentIso8601Fixture()
       ),
     ])
 

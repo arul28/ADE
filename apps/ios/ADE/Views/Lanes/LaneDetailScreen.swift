@@ -276,14 +276,29 @@ struct LaneDetailScreen: View {
       },
       footer: {
         if let detail {
-          VStack(spacing: 10) {
-            Rectangle()
-              .fill(ADEColor.border.opacity(0.18))
-              .frame(height: 0.5)
-              .padding(.top, 2)
-            gitStatusBanner(detail: detail)
-            if detail.lane.status.dirty || !(detail.diffChanges?.staged.isEmpty ?? true) {
-              commitCTAButton(detail: detail)
+          // Compute whether there's any actual footer content before
+          // emitting the divider. `gitStatusBanner` only renders chips when
+          // there are unstaged/staged/stashed changes; the commit CTA only
+          // shows when the lane is dirty or has staged files. If neither
+          // produces content, drawing the divider leaves a stray hairline
+          // under the section header.
+          let unstagedCount = detail.diffChanges?.unstaged.count ?? 0
+          let stagedCount = detail.diffChanges?.staged.count ?? 0
+          let stashCount = detail.stashes.count
+          let hasStatusBanner = unstagedCount > 0 || stagedCount > 0 || stashCount > 0
+          let hasCommitCTA = detail.lane.status.dirty || stagedCount > 0
+          if hasStatusBanner || hasCommitCTA {
+            VStack(spacing: 10) {
+              Rectangle()
+                .fill(ADEColor.border.opacity(0.18))
+                .frame(height: 0.5)
+                .padding(.top, 2)
+              if hasStatusBanner {
+                gitStatusBanner(detail: detail)
+              }
+              if hasCommitCTA {
+                commitCTAButton(detail: detail)
+              }
             }
           }
         }
