@@ -1423,12 +1423,20 @@ final class SyncService: ObservableObject {
       .first { !$0.isEmpty }
   }
 
+  private func profileHasTailnetRoute(_ profile: HostConnectionProfile) -> Bool {
+    if profile.tailscaleAddress != nil { return true }
+    if let last = profile.lastSuccessfulAddress, syncIsTailscaleRoute(last) { return true }
+    return profile.savedAddressCandidates.contains(where: syncIsTailscaleRoute)
+  }
+
   private func shouldPreferProfile(_ candidate: HostConnectionProfile, over existing: HostConnectionProfile) -> Bool {
     if candidate.updatedAt != existing.updatedAt {
       return candidate.updatedAt > existing.updatedAt
     }
-    if candidate.tailscaleAddress != nil && existing.tailscaleAddress == nil {
-      return true
+    let candidateTailnet = profileHasTailnetRoute(candidate)
+    let existingTailnet = profileHasTailnetRoute(existing)
+    if candidateTailnet != existingTailnet {
+      return candidateTailnet
     }
     return candidate.lastSuccessfulAddress != nil && existing.lastSuccessfulAddress == nil
   }
@@ -1476,14 +1484,44 @@ final class SyncService: ObservableObject {
     }
   }
 
+  private func profileIdentityKeys(_ profile: HostConnectionProfile) -> [String] {
+    var keys: [String] = []
+    if let id = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+      keys.append("identity:\(id)")
+    }
+    if let device = profile.lastHostDeviceId?.trimmingCharacters(in: .whitespacesAndNewlines), !device.isEmpty {
+      keys.append("device:\(device)")
+    }
+    if let name = profile.hostName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+      keys.append("name:\(name.lowercased()):\(profile.port)")
+    }
+    if let last = profile.lastSuccessfulAddress?.trimmingCharacters(in: .whitespacesAndNewlines), !last.isEmpty {
+      keys.append("addr:\(last):\(profile.port)")
+    }
+    return keys
+  }
+
   private func deduplicatedProfiles(_ profiles: [String: HostConnectionProfile]) -> [String: HostConnectionProfile] {
-    var byKey: [String: HostConnectionProfile] = [:]
-    byKey.reserveCapacity(profiles.count)
+    var canonicalProfiles: [HostConnectionProfile] = []
+    var keyToIndex: [String: Int] = [:]
     for profile in profiles.values {
-      guard let key = profileStorageKey(profile) else { continue }
-      if let existing = byKey[key], !shouldPreferProfile(profile, over: existing) {
-        continue
+      let identityKeys = profileIdentityKeys(profile)
+      let matchedIndex = identityKeys.lazy.compactMap { keyToIndex[$0] }.first
+      if let index = matchedIndex {
+        if shouldPreferProfile(profile, over: canonicalProfiles[index]) {
+          canonicalProfiles[index] = profile
+        }
+        for key in identityKeys { keyToIndex[key] = index }
+      } else {
+        let index = canonicalProfiles.count
+        canonicalProfiles.append(profile)
+        for key in identityKeys { keyToIndex[key] = index }
       }
+    }
+    var byKey: [String: HostConnectionProfile] = [:]
+    byKey.reserveCapacity(canonicalProfiles.count)
+    for profile in canonicalProfiles {
+      guard let key = profileStorageKey(profile) else { continue }
       byKey[key] = profile
     }
     return byKey
