@@ -13,6 +13,13 @@ final class KeychainService {
     return "\(tokenAccount):\(hostKey.trimmingCharacters(in: .whitespacesAndNewlines))"
   }
 
+  private func legacyTokenAccount(for hostKey: String?) -> String? {
+    guard let hostKey else { return nil }
+    let trimmed = hostKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    return "\(tokenAccount).\(trimmed)"
+  }
+
   private func saveString(_ value: String, account: String) {
     let data = Data(value.utf8)
     let query: [String: Any] = [
@@ -66,7 +73,17 @@ final class KeychainService {
   }
 
   func loadToken(hostKey: String?) -> String? {
-    loadString(account: tokenAccount(for: hostKey))
+    let newAccount = tokenAccount(for: hostKey)
+    if let token = loadString(account: newAccount) {
+      return token
+    }
+    if let legacyAccount = legacyTokenAccount(for: hostKey),
+       let migrated = loadString(account: legacyAccount) {
+      saveString(migrated, account: newAccount)
+      clearString(account: legacyAccount)
+      return migrated
+    }
+    return nil
   }
 
   func clearToken() {

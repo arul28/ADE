@@ -1424,9 +1424,21 @@ final class SyncService: ObservableObject {
   }
 
   private func loadSavedProfilesRaw() -> [String: HostConnectionProfile] {
-    if let data = UserDefaults.standard.data(forKey: profilesKey),
-       let decoded = try? decoder.decode([String: HostConnectionProfile].self, from: data) {
+    guard let data = UserDefaults.standard.data(forKey: profilesKey) else {
+      return [:]
+    }
+    if let decoded = try? decoder.decode([String: HostConnectionProfile].self, from: data) {
       return decoded
+    }
+    if let legacyArray = try? decoder.decode([HostConnectionProfile].self, from: data) {
+      var migrated: [String: HostConnectionProfile] = [:]
+      for profile in legacyArray {
+        guard let key = profileStorageKey(profile) else { continue }
+        migrated[key] = profile
+      }
+      syncConnectLog.warning("Migrated \(legacyArray.count, privacy: .public) legacy array-format host profiles to dict format (\(migrated.count, privacy: .public) keyed)")
+      saveSavedProfiles(migrated)
+      return migrated
     }
     return [:]
   }
