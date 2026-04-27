@@ -1357,12 +1357,13 @@ declare global {
         onUpdate: (cb: (event: FeedbackSubmissionEvent) => void) => () => void;
       };
       github: {
-        getStatus: () => Promise<GitHubStatus>;
+        getStatus: (opts?: { forceRefresh?: boolean }) => Promise<GitHubStatus>;
         setToken: (token: string) => Promise<GitHubStatus>;
         clearToken: () => Promise<GitHubStatus>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
         listRepoLabels: (args: { owner: string; name: string }) => Promise<Array<{ name: string; color?: string }>>;
         listRepoCollaborators: (args: { owner: string; name: string }) => Promise<Array<{ login: string; avatarUrl?: string }>>;
+        onStatusChanged: (cb: (status: GitHubStatus) => void) => () => void;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

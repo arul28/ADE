@@ -1,14 +1,27 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  CaretDown,
-  CaretRight,
+  Brain,
+  Calendar,
+  Clock,
+  CloudArrowUp,
+  Cpu,
+  FileText,
+  Flag,
   FloppyDisk,
   Flask,
   GitBranch,
+  GithubLogo,
+  Hourglass,
+  Lightning,
+  ListChecks,
   Sparkle,
+  Tag,
+  TreeStructure,
   Warning,
+  WebhooksLogo,
 } from "@phosphor-icons/react";
+import type { ElementType } from "react";
 import { getDefaultModelDescriptor } from "../../../../shared/modelRegistry";
 import type {
   AutomationAction,
@@ -25,29 +38,45 @@ import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { permissionControlsForModel, patchPermissionConfig } from "../permissionControls";
-import { cardCls, inputCls, labelCls, selectCls, textareaCls } from "../designTokens";
+import { cardCls, inputCls, labelCls, selectCls } from "../designTokens";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ActionList } from "../ActionList";
 import type { ActionRowValue } from "../ActionRow";
+import { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "../shared";
 
 const DEFAULT_MODEL_ID =
   getDefaultModelDescriptor("opencode")?.id
   ?? getDefaultModelDescriptor("claude")?.id
   ?? "anthropic/claude-sonnet-4-6";
 
-type TriggerFamily = "manual" | "schedule" | "github" | "linear" | "local-git" | "file-change" | "lane" | "session" | "webhook";
+type TriggerFamily =
+  | "manual"
+  | "schedule"
+  | "github"
+  | "linear"
+  | "local-git"
+  | "file-change"
+  | "lane"
+  | "session"
+  | "webhook";
 
-const TRIGGER_FAMILIES: Array<{ value: TriggerFamily; label: string }> = [
-  { value: "github", label: "GitHub" },
-  { value: "linear", label: "Linear" },
-  { value: "schedule", label: "Schedule" },
-  { value: "local-git", label: "Local git" },
-  { value: "file-change", label: "File change" },
-  { value: "lane", label: "Lane" },
-  { value: "session", label: "Session" },
-  { value: "webhook", label: "Webhook" },
-  { value: "manual", label: "Manual" },
+const TRIGGER_FAMILIES: Array<{
+  value: TriggerFamily;
+  label: string;
+  icon: ElementType;
+  accent: string;
+  hint: string;
+}> = [
+  { value: "github", label: "GitHub", icon: GithubLogo, accent: "#A78BFA", hint: "Pull requests, issues, comments" },
+  { value: "linear", label: "Linear", icon: Tag, accent: "#5E6AD2", hint: "Issues, status changes" },
+  { value: "schedule", label: "Schedule", icon: Calendar, accent: "#22D3EE", hint: "Cron — runs on a clock" },
+  { value: "local-git", label: "Local git", icon: GitBranch, accent: "#F59E0B", hint: "Commits, pushes" },
+  { value: "file-change", label: "File change", icon: FileText, accent: "#34D399", hint: "Watches paths in the repo" },
+  { value: "lane", label: "Lane", icon: TreeStructure, accent: "#7DD3FC", hint: "Lane lifecycle events" },
+  { value: "session", label: "Session", icon: Cpu, accent: "#94A3B8", hint: "Agent session ends" },
+  { value: "webhook", label: "Webhook", icon: WebhooksLogo, accent: "#F472B6", hint: "External relay" },
+  { value: "manual", label: "Manual", icon: Lightning, accent: "#FACC15", hint: "Run on click only" },
 ];
 
 const TRIGGER_OPTIONS: Record<TriggerFamily, Array<{ value: AutomationTrigger["type"]; label: string }>> = {
@@ -432,7 +461,6 @@ export function RuleEditorPanel({
   setDraft,
   lanes,
   suites,
-  missionsEnabled: _missionsEnabled,
   issues,
   requiredConfirmations,
   acceptedConfirmations,
@@ -459,10 +487,11 @@ export function RuleEditorPanel({
   const navigate = useNavigate();
   const openAiSettings = useCallback(() => navigate("/settings?tab=ai#ai-providers"), [navigate]);
 
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const primaryTrigger = ensurePrimaryTrigger(draft);
   const triggerFamily = triggerFamilyForType(primaryTrigger.type);
   const triggerOptions = TRIGGER_OPTIONS[triggerFamily];
+  const triggerMeta =
+    TRIGGER_FAMILIES.find((family) => family.value === triggerFamily) ?? TRIGGER_FAMILIES[0]!;
 
   const actionRows = useMemo(() => draftToActionRows(draft), [draft]);
   const includeProjectContext = computeIncludeProjectContext(draft);
@@ -477,6 +506,7 @@ export function RuleEditorPanel({
   const laneMode: AutomationLaneMode = draft.execution?.laneMode ?? "reuse";
   const lanePreset: AutomationLaneNamePreset = draft.execution?.laneNamePreset ?? "issue-title";
   const laneCustomTemplate = draft.execution?.laneNameTemplate ?? "";
+  const laneTargetLaneId = draft.execution?.targetLaneId ?? null;
 
   // Tracks whether the user has manually edited the lane mode/preset. Smart
   // defaults only fire on trigger event change while this stays false.
@@ -541,16 +571,22 @@ export function RuleEditorPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-white/[0.06] px-5 py-3">
+      {/* Sticky top bar */}
+      <div className="shrink-0 border-b border-white/[0.06] bg-[#0B121A]/80 px-5 py-3 backdrop-blur">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold text-fg">
+            <div className="flex items-center gap-2 text-[15px] font-semibold text-[#F5FAFF]">
+              <Flag size={14} weight="fill" style={{ color: triggerMeta.accent }} />
               {draft.id ? "Edit automation" : "New automation"}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2">
-              <Chip className="text-[9px]">{triggerLabel(primaryTrigger)}</Chip>
-              <Chip className="text-[9px]">{actionRows.length} action{actionRows.length === 1 ? "" : "s"}</Chip>
-              <Chip className="text-[9px]">{draft.enabled ? "enabled" : "disabled"}</Chip>
+              <AccentBadge accent={triggerMeta.accent}>{triggerLabel(primaryTrigger)}</AccentBadge>
+              <Chip className="text-[9px]">
+                {actionRows.length} step{actionRows.length === 1 ? "" : "s"}
+              </Chip>
+              <AccentBadge accent={draft.enabled ? "#34D399" : "#7E8A9A"}>
+                {draft.enabled ? "enabled" : "disabled"}
+              </AccentBadge>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -568,174 +604,247 @@ export function RuleEditorPanel({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
-        <div className="mx-auto flex max-w-4xl flex-col gap-4">
-          {errors.length ? <IssueList title="Errors" issues={errors} tone="error" /> : null}
-          {warnings.length ? <IssueList title="Notes" issues={warnings} tone="warning" /> : null}
-          <ConfirmationsChecklist
-            required={requiredConfirmations}
-            accepted={acceptedConfirmations}
-            onToggle={onToggleConfirmation}
-          />
+      {/* Body — full width 2-column layout */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="grid h-full min-h-0 grid-cols-1 gap-4 p-5 xl:grid-cols-[minmax(320px,400px)_1fr]">
+          {/* Left column — settings */}
+          <div className="flex flex-col gap-4">
+            {errors.length ? <IssueList title="Errors" issues={errors} tone="error" /> : null}
+            {warnings.length ? <IssueList title="Notes" issues={warnings} tone="warning" /> : null}
+            <ConfirmationsChecklist
+              required={requiredConfirmations}
+              accepted={acceptedConfirmations}
+              onToggle={onToggleConfirmation}
+            />
 
-          {/* Identity */}
-          <section className={cardCls}>
-            <SectionHeader>Identity</SectionHeader>
-            <div className="mt-3 space-y-3">
-              <input
-                className={inputCls}
-                value={draft.name}
-                onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-                placeholder="Automation name"
-              />
-              <textarea
-                className={cn(textareaCls, "min-h-[72px]")}
-                value={draft.description ?? ""}
-                onChange={(event) => setDraft({ ...draft, description: event.target.value })}
-                placeholder="What this automation is for"
-              />
-              <label className="flex items-center justify-between rounded-md border border-white/[0.06] bg-[rgba(12,10,22,0.6)] px-3 py-2 text-xs text-fg">
-                <span>Enabled</span>
+            {/* Identity */}
+            <Section icon={Tag} accent="#7DD3FC" title="Identity" hint="Name and describe this rule">
+              <div className="space-y-3">
                 <input
-                  type="checkbox"
-                  checked={draft.enabled}
-                  onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
-                  className="accent-accent"
+                  className={INPUT_CLS}
+                  style={INPUT_STYLE}
+                  value={draft.name}
+                  onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                  placeholder="e.g. Triage new GitHub issues"
                 />
-              </label>
-            </div>
-          </section>
-
-          {/* Trigger */}
-          <section className={cardCls}>
-            <SectionHeader>Trigger</SectionHeader>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <label className="block space-y-1.5">
-                <div className={labelCls}>Source</div>
-                <select
-                  className={selectCls}
-                  value={triggerFamily}
-                  onChange={(event) => setTriggerFamily(event.target.value as TriggerFamily)}
-                >
-                  {TRIGGER_FAMILIES.map((family) => (
-                    <option key={family.value} value={family.value}>{family.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="block space-y-1.5">
-                <div className={labelCls}>Event</div>
-                <select
-                  className={selectCls}
-                  value={primaryTrigger.type}
-                  onChange={(event) =>
-                    setPrimaryTrigger({
-                      ...defaultTriggerForFamily(triggerFamily),
-                      type: event.target.value as AutomationTrigger["type"],
-                    })
-                  }
-                >
-                  {triggerOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <div className="mt-3 rounded-lg border border-white/[0.06] bg-[rgba(12,10,22,0.4)] p-3">
-              {primaryTrigger.type === "schedule" ? (
-                <ScheduleFields trigger={primaryTrigger} onPatch={patchTrigger} />
-              ) : triggerFamily === "github" ? (
-                <GitHubTriggerFilters trigger={primaryTrigger} onPatch={patchTrigger} />
-              ) : triggerFamily === "linear" ? (
-                <LinearTriggerFilters trigger={primaryTrigger} onPatch={patchTrigger} />
-              ) : triggerFamily === "local-git" ? (
-                <LocalGitFields trigger={primaryTrigger} onPatch={patchTrigger} />
-              ) : triggerFamily === "file-change" ? (
-                <FileChangeFields trigger={primaryTrigger} onPatch={patchTrigger} />
-              ) : triggerFamily === "lane" ? (
-                <LaneFields trigger={primaryTrigger} onPatch={patchTrigger} />
-              ) : triggerFamily === "session" ? (
-                <div className="text-xs text-muted-fg/60">Runs when an agent session ends.</div>
-              ) : triggerFamily === "webhook" ? (
-                <WebhookFields trigger={primaryTrigger} onPatch={patchTrigger} />
-              ) : (
-                <div className="text-xs text-muted-fg/60">Runs only when you click Run now.</div>
-              )}
-            </div>
-          </section>
-
-          {/* Execution */}
-          <section className={cardCls}>
-            <SectionHeader>Execution</SectionHeader>
-            <div className="mt-3 grid gap-3 md:grid-cols-[1.2fr_1.25fr_1fr]">
-              <LaneModeControl
-                laneMode={laneMode}
-                targetLaneId={draft.execution?.targetLaneId ?? null}
-                lanes={lanes}
-                onChange={(next) => {
-                  laneDirtyRef.current = true;
-                  patchExecution(next);
-                }}
-              />
-
-              <div className="min-w-0 space-y-1.5">
-                <div className={labelCls}>Model</div>
-                <ModelSelector
-                  value={modelValue}
-                  onChange={(next) =>
-                    setDraft({
-                      ...draft,
-                      modelConfig: { orchestratorModel: next },
-                    })
-                  }
-                  onOpenAiSettings={openAiSettings}
+                <textarea
+                  className="min-h-[60px] w-full rounded-md px-3 py-2 text-[12px] text-[#F5F7FA] placeholder:text-[#7E8A9A]"
+                  style={INPUT_STYLE}
+                  value={draft.description ?? ""}
+                  onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+                  placeholder="What this rule is for"
+                />
+                <Toggle
+                  label="Enabled"
+                  hint={draft.enabled ? "Rule will run when its trigger fires" : "Rule is paused"}
+                  checked={draft.enabled}
+                  onChange={(next) => setDraft({ ...draft, enabled: next })}
                 />
               </div>
+            </Section>
 
-              <label className="block space-y-1.5">
-                <div className={labelCls}>Permissions</div>
-                <select
-                  className={selectCls}
-                  value={currentPermission}
-                  onChange={(event) =>
+            {/* Trigger */}
+            <Section icon={triggerMeta.icon} accent={triggerMeta.accent} title="Trigger" hint={triggerMeta.hint}>
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-1.5">
+                  {TRIGGER_FAMILIES.map((family) => {
+                    const Icon = family.icon;
+                    const active = family.value === triggerFamily;
+                    return (
+                      <button
+                        key={family.value}
+                        type="button"
+                        onClick={() => setTriggerFamily(family.value)}
+                        className={cn(
+                          "flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-[10px] font-medium transition-colors",
+                          active
+                            ? "text-[#F5FAFF]"
+                            : "border-white/[0.06] bg-black/15 text-[#93A4B8] hover:border-white/[0.14] hover:text-[#F5FAFF]",
+                        )}
+                        style={
+                          active
+                            ? { borderColor: `${family.accent}66`, background: `${family.accent}1a` }
+                            : undefined
+                        }
+                        title={family.hint}
+                      >
+                        <Icon size={14} weight={active ? "fill" : "regular"} style={{ color: family.accent }} />
+                        {family.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {triggerOptions.length > 1 ? (
+                  <label className="block space-y-1">
+                    <SmallLabel>Event</SmallLabel>
+                    <select
+                      className={INPUT_CLS}
+                      style={INPUT_STYLE}
+                      value={primaryTrigger.type}
+                      onChange={(event) =>
+                        setPrimaryTrigger({
+                          ...defaultTriggerForFamily(triggerFamily),
+                          type: event.target.value as AutomationTrigger["type"],
+                        })
+                      }
+                    >
+                      {triggerOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+
+                <div className="rounded-lg border border-white/[0.08] bg-black/20 p-2.5">
+                  {primaryTrigger.type === "schedule" ? (
+                    <ScheduleFields trigger={primaryTrigger} onPatch={patchTrigger} />
+                  ) : triggerFamily === "github" ? (
+                    <GitHubTriggerFilters trigger={primaryTrigger} onPatch={patchTrigger} />
+                  ) : triggerFamily === "linear" ? (
+                    <LinearTriggerFilters trigger={primaryTrigger} onPatch={patchTrigger} />
+                  ) : triggerFamily === "local-git" ? (
+                    <LocalGitFields trigger={primaryTrigger} onPatch={patchTrigger} />
+                  ) : triggerFamily === "file-change" ? (
+                    <FileChangeFields trigger={primaryTrigger} onPatch={patchTrigger} />
+                  ) : triggerFamily === "lane" ? (
+                    <LaneFields trigger={primaryTrigger} onPatch={patchTrigger} />
+                  ) : triggerFamily === "session" ? (
+                    <div className="text-[11px] text-[#93A4B8]">Runs after any agent session ends.</div>
+                  ) : triggerFamily === "webhook" ? (
+                    <WebhookFields trigger={primaryTrigger} onPatch={patchTrigger} />
+                  ) : (
+                    <div className="text-[11px] text-[#93A4B8]">Runs only when you click Run now.</div>
+                  )}
+                </div>
+              </div>
+            </Section>
+
+            {/* Execution — how this rule resolves a lane per run */}
+            <Section icon={GitBranch} accent="#2DD4BF" title="Execution" hint="How runs land in lanes">
+              <div className="space-y-3">
+                <LaneModeControl
+                  laneMode={laneMode}
+                  targetLaneId={laneTargetLaneId}
+                  lanes={lanes}
+                  onChange={(patch) => {
+                    laneDirtyRef.current = true;
+                    patchExecution(patch);
+                  }}
+                />
+                {laneMode === "create" ? (
+                  <LaneCreatePanel
+                    preset={lanePreset}
+                    customTemplate={laneCustomTemplate}
+                    trigger={primaryTrigger}
+                    onChange={(patch) => {
+                      laneDirtyRef.current = true;
+                      patchExecution(patch);
+                    }}
+                  />
+                ) : null}
+              </div>
+            </Section>
+
+            {/* Context + Model */}
+            <Section icon={Brain} accent="#A78BFA" title="Brains" hint="Model and project context">
+              <div className="space-y-3">
+                <Toggle
+                  label="Include project context"
+                  hint="Memory + procedures from this project"
+                  checked={includeProjectContext}
+                  onChange={(next) => {
                     setDraft({
                       ...draft,
-                      permissionConfig: patchPermissionConfig(draft.permissionConfig, modelValue.modelId, event.target.value),
+                      includeProjectContext: next,
+                      memory: { mode: next ? "automation-plus-project" : "none" },
+                      contextSources: next
+                        ? (draft.contextSources?.length ? draft.contextSources : [{ type: "project-memory" }])
+                        : [],
+                    });
+                  }}
+                />
+                <div className="space-y-1.5">
+                  <SmallLabel>Model</SmallLabel>
+                  <ModelSelector
+                    value={modelValue}
+                    onChange={(next) =>
+                      setDraft({
+                        ...draft,
+                        modelConfig: { orchestratorModel: next },
+                      })
+                    }
+                    onOpenAiSettings={openAiSettings}
+                  />
+                </div>
+                {permissionMeta ? (
+                  <label className="block space-y-1.5">
+                    <SmallLabel>Permissions</SmallLabel>
+                    <select
+                      className={selectCls}
+                      value={currentPermission}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          permissionConfig: patchPermissionConfig(
+                            draft.permissionConfig,
+                            modelValue.modelId,
+                            event.target.value,
+                          ),
+                        })
+                      }
+                    >
+                      <option value="">Default</option>
+                      {permissionMeta.options.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+              </div>
+            </Section>
+
+            {/* Limits */}
+            <Section icon={Hourglass} accent="#F59E0B" title="Limits" hint="Caps and active hours">
+              <div className="space-y-3">
+                <LabeledNumber
+                  label="Max duration (minutes)"
+                  value={draft.guardrails.maxDurationMin ?? null}
+                  onChange={(n) =>
+                    setDraft({
+                      ...draft,
+                      guardrails: { ...draft.guardrails, maxDurationMin: n ?? undefined },
                     })
                   }
-                  disabled={!permissionMeta}
-                >
-                  <option value="">Default permissions</option>
-                  {permissionMeta?.options.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
+                  placeholder="20"
+                  icon={Clock}
+                />
+                <ActiveHoursFields
+                  hours={primaryTrigger.activeHours ?? null}
+                  onChange={(next) => patchTrigger({ activeHours: next ?? undefined })}
+                />
+                <div className="rounded-md border border-[#35506B]/40 bg-[#0F1B2A]/60 px-2.5 py-2 text-[10px] leading-relaxed text-[#9FB2C7]">
+                  <CloudArrowUp size={10} weight="regular" className="mr-1 inline-block align-text-bottom" />
+                  Budget caps live in <span className="text-[#D8E3F2]">Settings → Usage</span> and apply to every rule.
+                </div>
+              </div>
+            </Section>
+          </div>
 
-            {laneMode === "create" ? (
-              <LaneCreatePanel
-                preset={lanePreset}
-                customTemplate={laneCustomTemplate}
-                trigger={primaryTrigger}
-                onChange={(patch) => {
-                  laneDirtyRef.current = true;
-                  patchExecution(patch);
-                }}
-              />
-            ) : (
-              <p className="mt-3 text-[11px] leading-relaxed text-muted-fg/60">
-                Where this rule's actions run. <span className="text-muted-fg/80">Create new lane per run</span> makes a fresh worktree for every trigger.
-              </p>
-            )}
-          </section>
-
-          {/* What to do */}
-          <section className={cardCls}>
-            <SectionHeader>What to do</SectionHeader>
-            <div className="mt-3">
+          {/* Right column — workflow steps */}
+          <div className="flex min-h-0 flex-col">
+            <Section
+              icon={ListChecks}
+              accent="#22D3EE"
+              title="Workflow steps"
+              hint={`${actionRows.length} step${actionRows.length === 1 ? "" : "s"} — runs top to bottom`}
+              dense
+              fill
+            >
               <ActionList
                 actions={actionRows}
                 lanes={lanes}
@@ -744,73 +853,8 @@ export function RuleEditorPanel({
                 onChange={setActionRows}
                 onOpenAiSettings={openAiSettings}
               />
-            </div>
-          </section>
-
-          {/* Advanced */}
-          <section className={cardCls}>
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen((open) => !open)}
-              className="flex w-full items-center justify-between text-left"
-            >
-              <SectionHeader>Advanced</SectionHeader>
-              {advancedOpen ? (
-                <CaretDown size={12} weight="bold" className="text-muted-fg/60" />
-              ) : (
-                <CaretRight size={12} weight="bold" className="text-muted-fg/60" />
-              )}
-            </button>
-
-            {advancedOpen ? (
-              <div className="mt-3 space-y-3">
-                <label className="flex items-center justify-between rounded-md border border-white/[0.06] bg-[rgba(12,10,22,0.6)] px-3 py-2 text-xs text-fg">
-                  <span>
-                    Include project context
-                    <span className="ml-2 text-[10px] text-muted-fg/50">memory + procedures</span>
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={includeProjectContext}
-                    onChange={(event) => {
-                      const next = event.target.checked;
-                      setDraft({
-                        ...draft,
-                        includeProjectContext: next,
-                        memory: { mode: next ? "automation-plus-project" : "none" },
-                        contextSources: next
-                          ? (draft.contextSources?.length ? draft.contextSources : [{ type: "project-memory" }])
-                          : [],
-                      });
-                    }}
-                    className="accent-accent"
-                  />
-                </label>
-
-                <div className="grid gap-2 md:grid-cols-2">
-                  <LabeledNumber
-                    label="Max duration (min)"
-                    value={draft.guardrails.maxDurationMin ?? null}
-                    onChange={(n) =>
-                      setDraft({
-                        ...draft,
-                        guardrails: { ...draft.guardrails, maxDurationMin: n ?? undefined },
-                      })
-                    }
-                    placeholder="20"
-                  />
-                  <ActiveHoursFields
-                    hours={primaryTrigger.activeHours ?? null}
-                    onChange={(next) => patchTrigger({ activeHours: next ?? undefined })}
-                  />
-                </div>
-
-                <div className="rounded-md border border-white/[0.06] bg-[rgba(12,10,22,0.4)] px-3 py-2 text-[11px] text-muted-fg/70">
-                  Budget and usage caps live in Settings &gt; Usage. Every rule reads the shared policy.
-                </div>
-              </div>
-            ) : null}
-          </section>
+            </Section>
+          </div>
         </div>
       </div>
     </div>
@@ -818,10 +862,6 @@ export function RuleEditorPanel({
 }
 
 // --- helpers ---
-
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return <div className={labelCls}>{children}</div>;
-}
 
 function LaneModeControl({
   laneMode,
@@ -961,6 +1001,89 @@ function LaneCreatePanel({
   );
 }
 
+function Section({
+  icon: Icon,
+  accent,
+  title,
+  hint,
+  children,
+  dense,
+  fill,
+}: {
+  icon: ElementType;
+  accent: string;
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+  dense?: boolean;
+  fill?: boolean;
+}) {
+  return (
+    <section
+      className={cn("rounded-2xl", fill ? "flex min-h-0 flex-1 flex-col" : "")}
+      style={CARD_STYLE}
+    >
+      <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-3">
+        <div
+          className="flex h-7 w-7 items-center justify-center rounded-lg"
+          style={{ background: `${accent}1f`, color: accent, boxShadow: `inset 0 0 0 1px ${accent}33` }}
+        >
+          <Icon size={14} weight="fill" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[12px] font-semibold text-[#F5FAFF]">{title}</div>
+          {hint ? <div className="text-[10px] text-[#93A4B8]">{hint}</div> : null}
+        </div>
+      </div>
+      <div className={cn(dense ? "p-3" : "p-4", fill && "min-h-0 flex-1 overflow-visible")}>
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function SmallLabel({ children }: { children: React.ReactNode }) {
+  return <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">{children}</span>;
+}
+
+function AccentBadge({ accent, children }: { accent: string; children: React.ReactNode }) {
+  return (
+    <span
+      className="inline-flex items-center px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[1px] rounded"
+      style={{ color: accent, background: `${accent}1a`, border: `1px solid ${accent}55` }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Toggle({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2 text-[12px] text-[#D8E3F2] hover:border-white/[0.12]">
+      <span className="min-w-0 flex-1">
+        <span className="block">{label}</span>
+        {hint ? <span className="block text-[10px] text-[#7E8A9A]">{hint}</span> : null}
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="h-3.5 w-3.5 accent-[#7DD3FC]"
+      />
+    </label>
+  );
+}
+
 function IssueList({
   title,
   issues,
@@ -973,8 +1096,10 @@ function IssueList({
   return (
     <div
       className={cn(
-        "rounded-lg px-3 py-2 text-[11px]",
-        tone === "error" ? "border border-error/30 bg-error/10 text-error" : "border border-warning/25 bg-warning/10 text-warning",
+        "rounded-xl px-3 py-2 text-[11px]",
+        tone === "error"
+          ? "border border-red-500/30 bg-red-500/10 text-red-200"
+          : "border border-amber-500/25 bg-amber-500/10 text-amber-200",
       )}
     >
       <div className="font-semibold">{title}</div>
@@ -1034,9 +1159,9 @@ function ScheduleFields({
 }) {
   const selectedPreset = SCHEDULE_PRESETS.find((preset) => preset.cron === trigger.cron)?.cron ?? "";
   return (
-    <div className="grid gap-2 md:grid-cols-2">
-      <label className="block space-y-1.5">
-        <div className={labelCls}>Preset</div>
+    <div className="space-y-2">
+      <label className="block space-y-1">
+        <SmallLabel>Preset</SmallLabel>
         <select
           className={selectCls}
           value={selectedPreset}
@@ -1044,12 +1169,14 @@ function ScheduleFields({
         >
           <option value="">Custom</option>
           {SCHEDULE_PRESETS.map((preset) => (
-            <option key={preset.cron} value={preset.cron}>{preset.label}</option>
+            <option key={preset.cron} value={preset.cron}>
+              {preset.label}
+            </option>
           ))}
         </select>
       </label>
-      <label className="block space-y-1.5">
-        <div className={labelCls}>Cron</div>
+      <label className="block space-y-1">
+        <SmallLabel>Cron expression</SmallLabel>
         <input
           className={inputCls}
           value={trigger.cron ?? ""}
@@ -1069,8 +1196,8 @@ function LocalGitFields({
   onPatch: (patch: Partial<AutomationTrigger>) => void;
 }) {
   return (
-    <label className="block space-y-1.5">
-      <div className={labelCls}>Branch</div>
+    <label className="block space-y-1">
+      <SmallLabel>Branch</SmallLabel>
       <input
         className={inputCls}
         value={trigger.branch ?? ""}
@@ -1089,8 +1216,8 @@ function FileChangeFields({
   onPatch: (patch: Partial<AutomationTrigger>) => void;
 }) {
   return (
-    <label className="block space-y-1.5">
-      <div className={labelCls}>Paths (comma separated globs)</div>
+    <label className="block space-y-1">
+      <SmallLabel>Paths (comma separated globs)</SmallLabel>
       <input
         className={inputCls}
         value={(trigger.paths ?? []).join(", ")}
@@ -1116,8 +1243,8 @@ function LaneFields({
   onPatch: (patch: Partial<AutomationTrigger>) => void;
 }) {
   return (
-    <label className="block space-y-1.5">
-      <div className={labelCls}>Name pattern</div>
+    <label className="block space-y-1">
+      <SmallLabel>Name pattern</SmallLabel>
       <input
         className={inputCls}
         value={trigger.namePattern ?? ""}
@@ -1137,8 +1264,8 @@ function WebhookFields({
 }) {
   return (
     <div className="grid gap-2 md:grid-cols-2">
-      <label className="block space-y-1.5">
-        <div className={labelCls}>Event name</div>
+      <label className="block space-y-1">
+        <SmallLabel>Event name</SmallLabel>
         <input
           className={inputCls}
           value={trigger.event ?? ""}
@@ -1146,8 +1273,8 @@ function WebhookFields({
           placeholder="pull_request"
         />
       </label>
-      <label className="block space-y-1.5">
-        <div className={labelCls}>Secret ref</div>
+      <label className="block space-y-1">
+        <SmallLabel>Secret ref</SmallLabel>
         <input
           className={inputCls}
           value={trigger.secretRef ?? ""}
@@ -1164,15 +1291,20 @@ function LabeledNumber({
   value,
   placeholder,
   onChange,
+  icon: Icon,
 }: {
   label: string;
   value: number | null;
   placeholder?: string;
   onChange: (next: number | null) => void;
+  icon?: ElementType;
 }) {
   return (
-    <label className="block space-y-1.5">
-      <div className={labelCls}>{label}</div>
+    <label className="block space-y-1">
+      <SmallLabel>
+        {Icon ? <Icon size={10} weight="regular" className="mr-1 inline-block align-text-bottom" /> : null}
+        {label}
+      </SmallLabel>
       <input
         className={inputCls}
         type="number"
@@ -1202,22 +1334,19 @@ function ActiveHoursFields({
 }) {
   const enabled = !!hours;
   return (
-    <div className="space-y-1.5">
-      <label className="flex items-center justify-between">
-        <div className={labelCls}>Active hours</div>
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(event) =>
-            onChange(
-              event.target.checked
-                ? hours ?? { start: "09:00", end: "18:00", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
-                : null,
-            )
-          }
-          className="accent-accent"
-        />
-      </label>
+    <div className="space-y-2">
+      <Toggle
+        label="Active hours"
+        hint={enabled && hours ? `${hours.start} – ${hours.end} (${hours.timezone})` : "Always on"}
+        checked={enabled}
+        onChange={(next) =>
+          onChange(
+            next
+              ? hours ?? { start: "09:00", end: "18:00", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
+              : null,
+          )
+        }
+      />
       {enabled && hours ? (
         <div className="grid grid-cols-2 gap-2">
           <input
@@ -1237,3 +1366,4 @@ function ActiveHoursFields({
     </div>
   );
 }
+

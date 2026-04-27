@@ -165,6 +165,73 @@ Caching layers:
 Snapshot contents include `labels` (name, color, description),
 `isBot`, and `commentCount` fields so filters can run locally.
 
+PR rows in `tabs/GitHubTab.tsx` and queue member rows in `tabs/QueueTab.tsx`
+render the linked lane's color through `LaneAccentDot` (resolved from the
+app store via `useLaneColorById` / a `Map<laneId, color>`); the rest of the
+row text inherits the lane color so a glance correlates a PR with its lane
+across the queue / GitHub / Workflows tabs.
+
+## GitHub connectivity model
+
+`getStatus()` in `apps/desktop/src/main/services/github/githubService.ts`
+returns a `GitHubStatus` shaped to be the single source of truth for
+"GitHub is usable here" — UI banners and badges read `status.connected`
+rather than re-deriving from individual fields.
+
+Fields:
+
+- `tokenStored`, `tokenDecryptionFailed`, `tokenType` — `classic` |
+  `fine-grained` | `unknown`. Set from token prefix on save.
+- `userLogin`, `scopes`, `checkedAt` — outcome of `validateToken` (calls
+  `GET /user`). Classic tokens populate `scopes` from
+  `x-oauth-scopes`; fine-grained tokens never return that header so
+  `scopes` is empty.
+- `repo` — auto-detected origin owner/name.
+- `repoAccessOk: boolean | null`, `repoAccessError: string | null` —
+  result of an explicit `GET /repos/{owner}/{name}` probe
+  (`probeRepoAccess`). `null` means no probe was run (no repo to
+  probe, or `getStatus` returned early on a token-error path).
+- `connected: boolean` — computed by `computeConnected`:
+  - `false` if token is missing or `userLogin` is null.
+  - For `fine-grained` tokens: requires the repo probe to pass (or no
+    repo to probe). This is the only reliable check because fine-grained
+    permissions are not introspectable from headers; a token can
+    authenticate as a user yet 403 every PR-tab call.
+  - For `classic` tokens: requires `getGitHubTokenAccessState(scopes)`
+    to report `hasRequiredAccess`.
+  - For `unknown` token prefixes: best-effort — `userLogin` is enough.
+
+Status is cached in-memory for 30 s. The cache is bypassed when the
+caller passes `getStatus({ forceRefresh: true })` (Settings'
+"REFRESH" button does this so the user can fix permissions on
+github.com and immediately re-check). When the cache is hit but the
+auto-detected `repo` has changed, `repoAccessOk` is reset to `null`
+because the cached probe no longer applies.
+
+Status changes broadcast through the `ade.github.statusChanged` IPC
+channel (`window.ade.github.onStatusChanged`) every time
+`setToken` / `clearToken` is called. `AppShell` subscribes so the
+unconnected-banner state reflects the latest status the moment
+Settings saves a new token — fixing the prior bug where Settings said
+CONNECTED while the AppShell banner still said disconnected.
+
+`renderer/components/settings/GitHubSection.tsx` distinguishes:
+
+- `tokenAuthenticated` — token decrypted and `userLogin` is populated.
+- `isConnected` (`status.connected` from the backend) — the actual
+  "GitHub is usable" gate. Drives the green CONNECTED / amber LIMITED
+  ACCESS / muted NOT CONNECTED label and any saved-and-verified
+  notice.
+- A repo-probe-failed inline error renders when the token authenticated
+  but the probe came back 403/404, with copy that asks the user to
+  grant Contents (Read), Pull requests (Read and write), and Metadata
+  (Read) on the active repo (fine-grained tokens) or to make sure the
+  classic token has access to the repo.
+
+`AppShell.describeGithubBanner(status)` mirrors the same three-way
+split for the banner copy: "not connected" / "cannot access
+{owner}/{repo}" / "missing required permissions".
+
 ## Background polling
 
 `prPollingService` runs at a 60 s default interval (clamped to

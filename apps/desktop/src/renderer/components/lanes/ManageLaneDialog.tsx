@@ -1,14 +1,18 @@
-import { ArrowSquareOut, GitBranch, WarningCircle, Archive, Trash, CircleNotch } from "@phosphor-icons/react";
+import React from "react";
+import { ArrowSquareOut, GitBranch, WarningCircle, Archive, Trash, CircleNotch, Palette } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import type { LaneSummary } from "../../../shared/types";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { SECTION_CLASS_NAME, LABEL_CLASS_NAME, INPUT_CLASS_NAME } from "./laneDialogTokens";
+import { LaneColorPicker } from "./LaneColorPicker";
+import { colorsInUse, laneColorName } from "./laneColorPalette";
 
 export function ManageLaneDialog({
   open,
   onOpenChange,
   managedLane,
   managedLanes,
+  allLanes,
   deleteMode,
   setDeleteMode,
   deleteRemoteName,
@@ -30,6 +34,7 @@ export function ManageLaneDialog({
   onOpenChange: (open: boolean) => void;
   managedLane: LaneSummary | null;
   managedLanes?: LaneSummary[];
+  allLanes: LaneSummary[];
   deleteMode: "worktree" | "local_branch" | "remote_branch";
   setDeleteMode: (v: "worktree" | "local_branch" | "remote_branch") => void;
   deleteRemoteName: string;
@@ -137,6 +142,11 @@ export function ManageLaneDialog({
               </div>
             </section>
           )}
+
+          {/* Appearance — single lane only */}
+          {!isBatch && lanes[0] ? (
+            <AppearanceSection lane={lanes[0]} allLanes={allLanes} disabled={laneActionBusy} />
+          ) : null}
 
           {/* Archive */}
           <section className={SECTION_CLASS_NAME}>
@@ -268,5 +278,55 @@ export function ManageLaneDialog({
         </div>
       )}
     </LaneDialogShell>
+  );
+}
+
+function AppearanceSection({
+  lane,
+  allLanes,
+  disabled,
+}: {
+  lane: LaneSummary;
+  allLanes: LaneSummary[];
+  disabled: boolean;
+}) {
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const used = React.useMemo(() => colorsInUse(allLanes, lane.id), [allLanes, lane.id]);
+  const currentName = laneColorName(lane.color);
+
+  const apply = async (next: string | null) => {
+    setError(null);
+    setBusy(true);
+    try {
+      await window.ade.lanes.updateAppearance({ laneId: lane.id, color: next });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set color");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className={SECTION_CLASS_NAME}>
+      <div className="flex items-center gap-2 text-sm font-semibold text-fg">
+        <Palette size={15} className="text-accent" />
+        Appearance
+      </div>
+      <div className="mt-1 mb-2 text-xs text-muted-fg/60">
+        {currentName ? `Color: ${currentName}` : "Pick a color to identify this lane across the app."}
+      </div>
+      <LaneColorPicker
+        value={lane.color}
+        onChange={(next) => { void apply(next); }}
+        usedColors={used}
+      />
+      {error ? (
+        <div className="mt-2 text-xs text-red-300">{error}</div>
+      ) : null}
+      {busy || disabled ? (
+        <div className="sr-only" role="status">Updating</div>
+      ) : null}
+    </section>
   );
 }

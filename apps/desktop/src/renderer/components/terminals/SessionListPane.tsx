@@ -33,6 +33,7 @@ function StickyGroupHeader({
   count,
   collapsed,
   onToggleCollapsed,
+  accentColor,
   children,
 }: {
   sectionId: string;
@@ -41,17 +42,22 @@ function StickyGroupHeader({
   count: number;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  accentColor?: string | null;
   children: React.ReactNode;
 }) {
   if (count === 0) return null;
+  const accentBg = accentColor
+    ? `color-mix(in srgb, ${accentColor} 8%, transparent)`
+    : "rgba(255, 255, 255, 0.02)";
   return (
     <div className="mt-0.5 first:mt-0">
       <button
         type="button"
         className="sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors backdrop-blur-xl cursor-pointer select-none hover:bg-white/[0.04]"
         style={{
-          background: "rgba(255, 255, 255, 0.02)",
+          background: accentBg,
           borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
+          borderLeft: accentColor ? `2px solid ${accentColor}` : undefined,
         }}
         onClick={onToggleCollapsed}
         data-section-id={sectionId}
@@ -62,7 +68,12 @@ function StickyGroupHeader({
           <CaretDown size={10} className="shrink-0 text-muted-fg/30" />
         )}
         {icon}
-        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-fg/90">{label}</span>
+        <span
+          className="min-w-0 flex-1 truncate text-[11px] font-semibold text-fg/90"
+          style={accentColor ? { color: accentColor } : undefined}
+        >
+          {label}
+        </span>
         <span className="shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-muted-fg/50">
           {count}
         </span>
@@ -316,8 +327,12 @@ export const SessionListPane = React.memo(function SessionListPane({
         const list = sessionsGroupedByLane?.get(lane.id) ?? [];
         const collapsed = workCollapsedLaneIds.includes(lane.id);
         const total = list.length;
+        const laneAccent = lane.color ?? null;
         const laneIcon = (
-          <span className="inline-flex shrink-0 items-center justify-center text-muted-fg/55">
+          <span
+            className="inline-flex shrink-0 items-center justify-center"
+            style={{ color: laneAccent ?? "var(--color-muted-fg)" }}
+          >
             {lane.icon ? iconGlyph(lane.icon) : <GitBranch size={11} weight="regular" />}
           </span>
         );
@@ -329,6 +344,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             label={lane.name}
             count={total}
             collapsed={collapsed}
+            accentColor={laneAccent}
             onToggleCollapsed={() => toggleWorkLaneCollapsed(lane.id)}
           >
             {renderCards(list)}

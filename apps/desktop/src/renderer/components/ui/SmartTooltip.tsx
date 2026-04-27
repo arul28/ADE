@@ -29,6 +29,8 @@ type SmartTooltipProps = {
   /** Override the global toggle (used for the toggle button itself) */
   forceEnabled?: boolean;
   side?: "top" | "bottom";
+  wrapperClassName?: string;
+  wrapperStyle?: React.CSSProperties;
 };
 
 const HOVER_DELAY = 320;
@@ -44,6 +46,8 @@ export function SmartTooltip({
   content,
   forceEnabled,
   side: preferredSide = "top",
+  wrapperClassName,
+  wrapperStyle,
 }: SmartTooltipProps) {
   const globalEnabled = useAppStore((s) => s.smartTooltipsEnabled);
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
@@ -155,11 +159,12 @@ export function SmartTooltip({
     <>
       <div
         ref={triggerRef}
+        className={wrapperClassName}
         onMouseEnter={show}
         onMouseLeave={hide}
         onFocus={show}
         onBlur={handleBlur}
-        style={{ display: "inline-flex" }}
+        style={{ display: "inline-flex", ...wrapperStyle }}
       >
         {trigger}
       </div>

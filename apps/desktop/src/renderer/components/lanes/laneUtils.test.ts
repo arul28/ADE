@@ -10,6 +10,14 @@ import {
   stripRemotePrefix,
   validateBranchName,
 } from "./laneUtils";
+import {
+  LANE_COLOR_PALETTE,
+  LANE_FALLBACK_COLORS,
+  colorsInUse,
+  getLaneAccent,
+  laneColorName,
+  nextAvailableColor,
+} from "./laneColorPalette";
 
 function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   return {
@@ -149,6 +157,85 @@ describe("laneUtils tiling defaults", () => {
 
     it("returns the input when there is no prefix to strip", () => {
       expect(stripRemotePrefix("main")).toBe("main");
+    });
+  });
+});
+
+describe("laneColorPalette", () => {
+  describe("getLaneAccent", () => {
+    it("returns the lane's stored color when present", () => {
+      const lane = makeLane({ color: "#abcdef" });
+      expect(getLaneAccent(lane, 0)).toBe("#abcdef");
+      expect(getLaneAccent(lane, 99)).toBe("#abcdef");
+    });
+
+    it("falls back to an indexed palette color when the lane has no color", () => {
+      expect(getLaneAccent(makeLane({ color: null }), 0)).toBe(LANE_FALLBACK_COLORS[0]);
+      expect(getLaneAccent(makeLane({ color: null }), 3)).toBe(LANE_FALLBACK_COLORS[3]);
+    });
+
+    it("wraps the fallback index around the palette length", () => {
+      const wrapped = getLaneAccent(makeLane({ color: null }), LANE_FALLBACK_COLORS.length + 2);
+      expect(wrapped).toBe(LANE_FALLBACK_COLORS[2]);
+    });
+
+    it("uses the index fallback when given a null lane", () => {
+      expect(getLaneAccent(null, 1)).toBe(LANE_FALLBACK_COLORS[1]);
+    });
+  });
+
+  describe("colorsInUse", () => {
+    it("collects lowercase hexes from active lanes only", () => {
+      const used = colorsInUse([
+        makeLane({ id: "a", color: "#A78BFA" }),
+        makeLane({ id: "b", color: "#60a5fa" }),
+        makeLane({ id: "c", color: null }),
+        makeLane({ id: "d", color: "#34d399", archivedAt: "2026-04-01T00:00:00.000Z" }),
+      ]);
+      expect(used.has("#a78bfa")).toBe(true);
+      expect(used.has("#60a5fa")).toBe(true);
+      expect(used.has("#34d399")).toBe(false);
+      expect(used.size).toBe(2);
+    });
+
+    it("excludes a specified lane (used when editing that lane's color)", () => {
+      const lanes = [
+        makeLane({ id: "self", color: "#a78bfa" }),
+        makeLane({ id: "other", color: "#60a5fa" }),
+      ];
+      const used = colorsInUse(lanes, "self");
+      expect(used.has("#a78bfa")).toBe(false);
+      expect(used.has("#60a5fa")).toBe(true);
+    });
+  });
+
+  describe("nextAvailableColor", () => {
+    it("returns the first palette entry when nothing is in use", () => {
+      expect(nextAvailableColor([])).toBe(LANE_COLOR_PALETTE[0].hex);
+    });
+
+    it("skips colors already taken by an active lane", () => {
+      const taken = LANE_COLOR_PALETTE.slice(0, 3).map((c) =>
+        makeLane({ id: c.hex, color: c.hex }),
+      );
+      expect(nextAvailableColor(taken)).toBe(LANE_COLOR_PALETTE[3].hex);
+    });
+
+    it("returns null when every palette color is already in use", () => {
+      const taken = LANE_COLOR_PALETTE.map((c) => makeLane({ id: c.hex, color: c.hex }));
+      expect(nextAvailableColor(taken)).toBeNull();
+    });
+  });
+
+  describe("laneColorName", () => {
+    it("returns the palette name for a known hex (case-insensitive)", () => {
+      expect(laneColorName(LANE_COLOR_PALETTE[0].hex.toUpperCase())).toBe(LANE_COLOR_PALETTE[0].name);
+    });
+
+    it("returns null for unknown or missing hexes", () => {
+      expect(laneColorName("#000000")).toBeNull();
+      expect(laneColorName(null)).toBeNull();
+      expect(laneColorName(undefined)).toBeNull();
     });
   });
 });

@@ -7,6 +7,7 @@ import { cn } from "../ui/cn";
 import { CaretDown, X } from "@phosphor-icons/react";
 import { ModelRowLogo } from "./ProviderLogos";
 import { createUnknownModelPlaceholder, ModelCatalogPanel } from "./ModelCatalogPanel";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 type ProviderModelSelectorProps = {
   value: string;
@@ -143,19 +144,21 @@ export function ProviderModelSelector({
                 listboxId="model-selector-listbox"
                 autoFocusSearch
                 headerTrailing={(
-                  <button
-                    type="button"
-                    className={cn(
-                      "inline-flex shrink-0 items-center justify-center border border-white/[0.06] bg-white/[0.03] text-muted-fg/45 transition-all duration-150 hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-fg/70",
-                      mobileLayout
-                        ? "h-9 w-9 rounded-xl"
-                        : "h-9 w-9 rounded-xl sm:h-8 sm:w-8 sm:rounded-lg",
-                    )}
-                    onClick={() => setOpen(false)}
-                    aria-label="Close model picker"
-                  >
-                    <X size={13} weight="bold" />
-                  </button>
+                  <SmartTooltip content={{ label: "Close model picker", description: "Close the model catalog without changing the selected model." }}>
+                    <button
+                      type="button"
+                      className={cn(
+                        "inline-flex shrink-0 items-center justify-center border border-white/[0.06] bg-white/[0.03] text-muted-fg/45 transition-all duration-150 hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-fg/70",
+                        mobileLayout
+                          ? "h-9 w-9 rounded-xl"
+                          : "h-9 w-9 rounded-xl sm:h-8 sm:w-8 sm:rounded-lg",
+                      )}
+                      onClick={() => setOpen(false)}
+                      aria-label="Close model picker"
+                    >
+                      <X size={13} weight="bold" />
+                    </button>
+                  </SmartTooltip>
                 )}
                 className={cn(
                   "max-h-[min(82dvh,48rem)] rounded-t-[26px] border-x-0 border-b-0",
@@ -175,68 +178,86 @@ export function ProviderModelSelector({
   return (
     <div className={cn("flex max-w-full flex-wrap items-center gap-1.5", className)}>
       <div ref={containerRef} className={cn("relative min-w-0", mobileLayout ? "w-full" : "w-full sm:w-auto")}>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => {
-            if (disabled) return;
-            setOpen((current) => !current);
+        <SmartTooltip
+          wrapperClassName={mobileLayout ? "w-full" : undefined}
+          content={{
+            label: "Select model",
+            description: "Open the model catalog and choose which provider/model this chat will use.",
+            effect: selectedModel ? `Current model: ${selectedModel.displayName}.` : undefined,
           }}
-          className={cn(
-            "inline-flex min-w-0 items-center gap-2 border border-white/[0.06] bg-white/[0.03] font-sans text-fg/70",
-            mobileLayout
-              ? "h-10 w-full rounded-xl px-3 text-[11px]"
-              : "h-10 w-full rounded-xl px-3 text-[11px] sm:h-7 sm:min-w-[150px] sm:max-w-[14rem] sm:flex-none sm:rounded-lg sm:px-2.5 sm:text-[10px]",
-            "transition-all duration-150 hover:border-violet-400/15 hover:bg-violet-500/[0.04]",
-            open && "border-violet-400/20 bg-violet-500/[0.06] shadow-[0_0_12px_rgba(167,139,250,0.08)]",
-            disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.06] hover:bg-white/[0.03]",
-          )}
-          aria-label="Select model"
-          aria-haspopup="listbox"
-          aria-expanded={open}
         >
-          {selectedModel ? (
-            <ModelRowLogo
-              modelFamily={selectedModel.family}
-              cliCommand={selectedModel.cliCommand}
-              modelId={selectedModel.id}
-              providerModelId={selectedModel.providerModelId}
-              size={12}
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              if (disabled) return;
+              setOpen((current) => !current);
+            }}
+            className={cn(
+              "inline-flex min-w-0 items-center gap-2 border border-white/[0.06] bg-white/[0.03] font-sans text-fg/70",
+              mobileLayout
+                ? "h-10 w-full rounded-xl px-3 text-[11px]"
+                : "h-10 w-full rounded-xl px-3 text-[11px] sm:h-7 sm:min-w-[150px] sm:max-w-[14rem] sm:flex-none sm:rounded-lg sm:px-2.5 sm:text-[10px]",
+              "transition-all duration-150 hover:border-violet-400/15 hover:bg-violet-500/[0.04]",
+              open && "border-violet-400/20 bg-violet-500/[0.06] shadow-[0_0_12px_rgba(167,139,250,0.08)]",
+              disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.06] hover:bg-white/[0.03]",
+            )}
+            aria-label="Select model"
+            aria-haspopup="listbox"
+            aria-expanded={open}
+          >
+            {selectedModel ? (
+              <ModelRowLogo
+                modelFamily={selectedModel.family}
+                cliCommand={selectedModel.cliCommand}
+                modelId={selectedModel.id}
+                providerModelId={selectedModel.providerModelId}
+                size={12}
+              />
+            ) : null}
+            <span className={cn("min-w-0 flex-1 truncate text-left text-[10px] font-medium", !selectedModel && !value && "text-muted-fg/40")}>
+              {selectedModel?.displayName ?? (value || "Select model")}
+            </span>
+            <CaretDown
+              size={9}
+              weight="bold"
+              className={cn("flex-shrink-0 text-muted-fg/40 transition-transform duration-150", open && "rotate-180")}
             />
-          ) : null}
-          <span className={cn("min-w-0 flex-1 truncate text-left text-[10px] font-medium", !selectedModel && !value && "text-muted-fg/40")}>
-            {selectedModel?.displayName ?? (value || "Select model")}
-          </span>
-          <CaretDown
-            size={9}
-            weight="bold"
-            className={cn("flex-shrink-0 text-muted-fg/40 transition-transform duration-150", open && "rotate-180")}
-          />
-        </button>
+          </button>
+        </SmartTooltip>
       </div>
 
       {panel}
 
       {showReasoning && reasoningTiers.length > 0 && onReasoningEffortChange ? (
-        <select
-          value={reasoningEffort ?? ""}
-          disabled={disabled}
-          onChange={(event) => onReasoningEffortChange(event.target.value || null)}
-          className={cn(
-            selectCls,
-            mobileLayout
-              ? "h-10 w-full rounded-xl px-3 text-[11px]"
-              : "h-10 w-full rounded-xl px-3 text-[11px] sm:h-7 sm:w-auto sm:min-w-[92px] sm:rounded-md sm:px-2 sm:text-[10px]",
-            disabled && "cursor-not-allowed opacity-70",
-          )}
-          aria-label="Reasoning effort"
+        <SmartTooltip
+          wrapperClassName={mobileLayout ? "w-full" : undefined}
+          content={{
+            label: "Reasoning effort",
+            description: "Set how much reasoning budget the selected model should use for this chat.",
+            effect: reasoningEffort ? `Current effort: ${tierLabel(reasoningEffort)}.` : undefined,
+          }}
         >
-          {reasoningTiers.map((tier) => (
-            <option key={tier} value={tier}>
-              {tierLabel(tier)}
-            </option>
-          ))}
-        </select>
+          <select
+            value={reasoningEffort ?? ""}
+            disabled={disabled}
+            onChange={(event) => onReasoningEffortChange(event.target.value || null)}
+            className={cn(
+              selectCls,
+              mobileLayout
+                ? "h-10 w-full rounded-xl px-3 text-[11px]"
+                : "h-10 w-full rounded-xl px-3 text-[11px] sm:h-7 sm:w-auto sm:min-w-[92px] sm:rounded-md sm:px-2 sm:text-[10px]",
+              disabled && "cursor-not-allowed opacity-70",
+            )}
+            aria-label="Reasoning effort"
+          >
+            {reasoningTiers.map((tier) => (
+              <option key={tier} value={tier}>
+                {tierLabel(tier)}
+              </option>
+            ))}
+          </select>
+        </SmartTooltip>
       ) : null}
     </div>
   );

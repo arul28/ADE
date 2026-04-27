@@ -410,7 +410,14 @@ cd apps/ade-cli  && npm test
 
 The desktop workspace has 3 projects (`unit-main`, `unit-renderer`, `unit-shared`); sharding distributes across all three automatically.
 
-If a shard fails, re-run **only that shard** (or only the failing test file). Never re-run all 9 to verify a one-file fix.
+If a shard fails, **re-run ONLY the failing test file(s)** — not the whole shard, and never the full sharded run. Sharding is a wall-clock optimization for the *initial* gate; once you've isolated which file failed, the cheapest signal is `npx vitest run <path/to/file.test.tsx>`. A 90-second shard rerun to verify a 5-second one-file fix is wasted time and burns the prompt cache.
+
+Anti-pattern (do NOT do this):
+- "Shard 1 had failures, let me rerun shard 1" → wrong; rerun just the failing file.
+- "I fixed the failing file, let me rerun the whole shard to be sure" → wrong; rerun just that file. The other tests in the shard already passed and didn't change.
+- "Let me rerun all 8 shards after a one-file fix" → wrong; this is the worst option.
+
+Only run the full sharded suite once at the start of Phase 3e. After that, narrow scope to failing files until they pass, then move on.
 
 Workspace-project subsets exist for debugging only; they are NOT a substitute for the sharded run:
 
@@ -463,7 +470,7 @@ git diff --name-only | sort > /tmp/finalize-session-files.txt
 comm -13 /tmp/finalize-branch-files.txt /tmp/finalize-session-files.txt
 ```
 
-Revert the simplifier's edits to the offending files and re-run only the failed shard. Do NOT rewrite the test suite in Phase 3 — tests that drift because the feature branch refactored UI are a separate follow-up.
+Revert the simplifier's edits to the offending files and re-run **only the failing test file** (not the full shard). Do NOT rewrite the test suite in Phase 3 unless the user explicitly asks — tests that drift because the feature branch refactored UI are a separate follow-up by default.
 
 ### 3i. Cleanup lingering processes
 

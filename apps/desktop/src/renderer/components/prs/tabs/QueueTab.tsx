@@ -27,6 +27,7 @@ import { getModelById } from "../../../../shared/modelRegistry";
 import { EmptyState } from "../../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { usePrs } from "../state/PrsContext";
+import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
 import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
@@ -317,6 +318,34 @@ export function QueueTab({
   const queueGroups = React.useMemo(
     () => buildQueueGroups({ prs, mergeContextByPrId, lanes, queueStates }),
     [prs, mergeContextByPrId, lanes, queueStates],
+  );
+
+  const laneColorById = React.useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const lane of lanes) map.set(lane.id, lane.color ?? null);
+    return map;
+  }, [lanes]);
+
+  const renderLaneNameWithDot = React.useCallback(
+    (laneId: string | null | undefined, laneName: string, opts?: { dotSize?: number; tint?: boolean }) => {
+      const color = laneId ? laneColorById.get(laneId) ?? null : null;
+      const dotSize = opts?.dotSize ?? 7;
+      const tint = opts?.tint ?? true;
+      return (
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            ...(color && tint ? { color } : {}),
+          }}
+        >
+          {color ? <LaneAccentDot lane={{ color }} size={dotSize} /> : null}
+          {laneName}
+        </span>
+      );
+    },
+    [laneColorById],
   );
 
   const visibleQueueGroups = React.useMemo(
@@ -833,7 +862,10 @@ export function QueueTab({
                             <span className="font-mono" style={{ fontSize: 11, color: "#71717A" }}>
                               {pad2(index + 1)}
                             </span>
-                            <span style={{ fontSize: 13, fontWeight: 700, color: "#FAFAFA" }}>{member.laneName}</span>
+                            <span style={{ fontSize: 13, fontWeight: 700, color: laneColorById.get(member.laneId) ?? "#FAFAFA", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              {laneColorById.get(member.laneId) ? <LaneAccentDot lane={{ color: laneColorById.get(member.laneId)! }} size={7} /> : null}
+                              {member.laneName}
+                            </span>
                             <MiniBadge label={status.label} theme={status.theme} />
                             {marker ? <MiniBadge label={marker.label} theme={marker.theme} /> : null}
                             {rebaseNeed ? <MiniBadge label={`${rebaseNeed.behindBy} behind`} theme={THEME_BLUE} /> : null}
@@ -1021,7 +1053,10 @@ export function QueueTab({
             <div className="grid gap-3 md:grid-cols-3">
               <div style={{ border: "1px solid #27212F", padding: 12, background: "rgba(96,165,250,0.04)" }}>
                 <SectionLabel>Current queue lane</SectionLabel>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#FAFAFA", marginTop: 8 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: (currentMember && laneColorById.get(currentMember.laneId)) || "#FAFAFA", marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  {currentMember && laneColorById.get(currentMember.laneId) ? (
+                    <LaneAccentDot lane={{ color: laneColorById.get(currentMember.laneId)! }} size={8} />
+                  ) : null}
                   {currentMember?.laneName ?? "No active lane"}
                 </div>
                 <div className="font-mono" style={{ fontSize: 11, color: "#71717A", marginTop: 6, lineHeight: "18px" }}>
@@ -1031,7 +1066,7 @@ export function QueueTab({
                 </div>
                 {nextMember ? (
                   <div style={{ fontSize: 11, color: "#A1A1AA", marginTop: 6, lineHeight: "18px" }}>
-                    Next up: {nextMember.laneName}
+                    Next up: {renderLaneNameWithDot(nextMember.laneId, nextMember.laneName, { dotSize: 6 })}
                   </div>
                 ) : null}
               </div>
@@ -1247,7 +1282,10 @@ export function QueueTab({
                       >
                         <div>
                           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                            <span style={{ fontSize: 13, fontWeight: 700, color: "#FAFAFA" }}>{member.laneName}</span>
+                            <span style={{ fontSize: 13, fontWeight: 700, color: laneColorById.get(member.laneId) ?? "#FAFAFA", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              {laneColorById.get(member.laneId) ? <LaneAccentDot lane={{ color: laneColorById.get(member.laneId)! }} size={7} /> : null}
+                              {member.laneName}
+                            </span>
                             <MiniBadge label={`${need.behindBy} behind ${need.baseBranch}`} theme={THEME_BLUE} />
                             {need.conflictPredicted ? <MiniBadge label="Conflicts predicted" theme={THEME_AMBER} /> : null}
                           </div>
@@ -1486,12 +1524,19 @@ export function QueueTab({
                     : `ADE finished ${rebaseSummary.mode === "push" ? "rebase and push" : rebaseSummary.mode === "ai" ? "AI rebase" : "local rebase"} for ${rebaseSummary.results.length} lane(s).`}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {rebaseSummary.results.map((result) => (
-                    <div key={result.laneId} className="font-mono" style={{ fontSize: 11, color: result.success ? "#BBF7D0" : "#FED7AA", lineHeight: "18px" }}>
-                      {result.success ? "✓" : "!"} {result.laneName}
-                      {result.success && result.pushed ? " — rebased and pushed" : result.success ? " — rebased locally" : ` — ${result.error ?? "failed"}`}
-                    </div>
-                  ))}
+                  {rebaseSummary.results.map((result) => {
+                    const resultLaneColor = laneColorById.get(result.laneId) ?? null;
+                    return (
+                      <div key={result.laneId} className="font-mono" style={{ fontSize: 11, color: result.success ? "#BBF7D0" : "#FED7AA", lineHeight: "18px", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                        <span>{result.success ? "✓" : "!"}</span>
+                        {resultLaneColor ? <LaneAccentDot lane={{ color: resultLaneColor }} size={6} /> : null}
+                        <span style={resultLaneColor ? { color: resultLaneColor } : undefined}>{result.laneName}</span>
+                        <span>
+                          {result.success && result.pushed ? "— rebased and pushed" : result.success ? "— rebased locally" : `— ${result.error ?? "failed"}`}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
                 {rebaseSummary.failedLaneId ? (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>

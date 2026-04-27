@@ -410,6 +410,29 @@ extension LanesTabView {
       let pinned = pinnedLaneIds.contains(snapshot.lane.id)
       Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
     }
+    Menu {
+      ForEach(LaneColorPalette.entries) { entry in
+        let used = LaneColorPalette.colorsInUse(amongLanes: laneSnapshots.map(\.lane), excluding: snapshot.lane.id)
+        let isTaken = used.contains(entry.hex.lowercased()) && snapshot.lane.color?.lowercased() != entry.hex.lowercased()
+        Button {
+          Task { await applyLaneColor(entry.hex, to: snapshot.lane.id) }
+        } label: {
+          Label(entry.name, systemImage: snapshot.lane.color?.lowercased() == entry.hex.lowercased() ? "checkmark.circle.fill" : "circle.fill")
+        }
+        .disabled(isTaken || !canRunLiveActions)
+      }
+      if snapshot.lane.color != nil {
+        Divider()
+        Button(role: .destructive) {
+          Task { await applyLaneColor(nil, to: snapshot.lane.id) }
+        } label: {
+          Label("Clear color", systemImage: "xmark.circle")
+        }
+        .disabled(!canRunLiveActions)
+      }
+    } label: {
+      Label("Color", systemImage: "paintpalette")
+    }
     Button {
       openLaneIds = [snapshot.lane.id]
     } label: {
@@ -484,6 +507,17 @@ extension LanesTabView {
         Label("Move to ADE-managed worktree", systemImage: "folder.badge.gearshape")
       }
       .disabled(!canRunLiveActions)
+    }
+  }
+
+  @MainActor
+  func applyLaneColor(_ hex: String?, to laneId: String) async {
+    do {
+      try await syncService.updateLaneAppearance(laneId, color: hex ?? "")
+      await reload(refreshRemote: false)
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
     }
   }
 

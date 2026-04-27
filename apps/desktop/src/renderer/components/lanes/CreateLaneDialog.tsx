@@ -1,9 +1,12 @@
+import React from "react";
 import { CaretDown, GitBranch, GitFork, Plus, StackSimple } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import type { LaneSummary, LaneEnvInitProgress, LaneTemplate } from "../../../shared/types";
 import type { LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
+import { LaneColorPicker } from "./LaneColorPicker";
+import { colorsInUse, nextAvailableColor } from "./laneColorPalette";
 import {
   SECTION_CLASS_NAME,
   LABEL_CLASS_NAME,
@@ -82,7 +85,9 @@ export function CreateLaneDialog({
   selectedTemplateId,
   setSelectedTemplateId,
   onNavigateToTemplates,
-  importBranchWarning
+  importBranchWarning,
+  selectedColor,
+  setSelectedColor
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -112,10 +117,20 @@ export function CreateLaneDialog({
   onNavigateToTemplates?: () => void;
   /** Warning shown below the import branch selector (e.g. uncommitted changes). */
   importBranchWarning?: string | null;
+  selectedColor: string | null;
+  setSelectedColor: (c: string | null) => void;
 }) {
   const localBranches = createBranches.filter((b) => !b.isRemote);
   const allBranches = createBranches;
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? null;
+  const usedColors = React.useMemo(() => colorsInUse(lanes), [lanes]);
+
+  React.useEffect(() => {
+    if (open && selectedColor === null) {
+      const next = nextAvailableColor(lanes);
+      if (next) setSelectedColor(next);
+    }
+  }, [open, lanes, selectedColor, setSelectedColor]);
 
   const isSubmitDisabled = laneCreated
     ? !!busy
@@ -159,6 +174,17 @@ export function CreateLaneDialog({
               data-tour="lanes.createDialog.name"
             />
           </label>
+          <div className="mt-3">
+            <span className={LABEL_CLASS_NAME}>Color</span>
+            <div className="mt-2">
+              <LaneColorPicker
+                value={selectedColor}
+                onChange={setSelectedColor}
+                usedColors={usedColors}
+                swatchSize={20}
+              />
+            </div>
+          </div>
         </section>
 
         {/* Start from — three-up source cards + contextual field */}
@@ -407,6 +433,7 @@ export function CreateLaneDialog({
               setCreateBaseBranch("");
               setCreateImportBranch("");
               setCreateChildBaseBranch("");
+              setSelectedColor(null);
             }}
           >
             Cancel

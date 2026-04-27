@@ -39,8 +39,10 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
+const runGitMock = vi.hoisted(() => vi.fn());
+
 vi.mock("../git/git", () => ({
-  runGit: vi.fn(),
+  runGit: runGitMock,
 }));
 
 // Replace global fetch
@@ -472,5 +474,100 @@ describe("githubService issue-domain helpers", () => {
 
     const [url] = lastFetchCall();
     expect(url).toContain("/repos/scary%20owner/name%20with%20space/issues");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getStatus — connection probing (regression for false-CONNECTED bug)
+// ---------------------------------------------------------------------------
+
+describe("githubService.getStatus", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.ADE_GITHUB_TOKEN;
+  });
+
+  // Mocks `git remote get-url origin` so detectRepo returns acme/ade.
+  function stubOriginRemote() {
+    runGitMock.mockResolvedValue({
+      exitCode: 0,
+      stdout: "git@github.com:acme/ade.git\n",
+      stderr: "",
+    });
+  }
+
+  it("classic token with required scopes is connected (no repo probe needed)", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "ghp_classic";
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+    // Repo probe still runs and we still mock it; the response just decorates the status.
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { full_name: "acme/ade" }));
+
+    const status = await makeService().getStatus();
+
+    expect(status.tokenStored).toBe(true);
+    expect(status.tokenType).toBe("classic");
+    expect(status.userLogin).toBe("alice");
+    expect(status.scopes).toEqual(["repo", "workflow"]);
+    expect(status.connected).toBe(true);
+  });
+
+  it("fine-grained token that authenticates but cannot read the repo is NOT connected", async () => {
+    // This is the original bug: /user works, so userLogin is set, but the
+    // active repo isn't included in the token's selected repositories. Every
+    // PR-tab call would 404. Status must reflect that with connected=false.
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "github_pat_finegrained";
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { login: "alice" }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(404, { message: "Not Found" }));
+
+    const status = await makeService().getStatus();
+
+    expect(status.tokenType).toBe("fine-grained");
+    expect(status.userLogin).toBe("alice");
+    expect(status.repoAccessOk).toBe(false);
+    expect(status.repoAccessError).toContain("404");
+    expect(status.connected).toBe(false);
+  });
+
+  it("fine-grained token with successful repo probe is connected", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "github_pat_finegrained";
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { login: "alice" }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { full_name: "acme/ade" }));
+
+    const status = await makeService().getStatus();
+
+    expect(status.tokenType).toBe("fine-grained");
+    expect(status.repoAccessOk).toBe(true);
+    expect(status.connected).toBe(true);
+  });
+
+  it("classic token without required scopes is NOT connected", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "ghp_classic";
+    // Token has only `read:user` (insufficient).
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "read:user" }),
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { full_name: "acme/ade" }));
+
+    const status = await makeService().getStatus();
+
+    expect(status.scopes).toEqual(["read:user"]);
+    expect(status.connected).toBe(false);
+  });
+
+  it("missing token returns not-connected status with all the new fields populated", async () => {
+    stubOriginRemote();
+    const status = await makeService().getStatus();
+
+    expect(status.tokenStored).toBe(false);
+    expect(status.connected).toBe(false);
+    expect(status.repoAccessOk).toBeNull();
+    expect(status.repoAccessError).toBeNull();
   });
 });

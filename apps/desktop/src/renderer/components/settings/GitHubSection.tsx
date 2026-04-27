@@ -62,16 +62,25 @@ export function GitHubSection() {
       .then((status) => {
         setGithubStatus(status);
         setGithubTokenDraft("");
-        const accessState = getGitHubTokenAccessState(status.scopes ?? []);
-        const savedFineGrainedToken = status.tokenType === "fine-grained";
-        const hasInspectableSavedScopes = !savedFineGrainedToken || (status.scopes?.length ?? 0) > 0;
-        let notice = "GitHub token saved. Additional GitHub permissions are still required.";
-        if (savedFineGrainedToken && !hasInspectableSavedScopes) {
-          notice = "GitHub token saved. Confirm fine-grained permissions in GitHub.";
-        } else if (accessState.hasRequiredAccess) {
-          notice = "GitHub token saved and verified.";
+        if (status.connected) {
+          setSaveNotice("GitHub token saved and verified.");
+          return;
         }
-        setSaveNotice(notice);
+        // Token was persisted, but it isn't actually usable. Surface the reason
+        // through `actionError` (red) rather than the green "saved" notice so
+        // the user is not misled into thinking they are done.
+        if (!status.userLogin) {
+          setActionError("Token saved, but authentication failed. Re-check the token value.");
+        } else if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
+          const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repo";
+          setActionError(
+            `Token saved, but it cannot access ${repoLabel}` +
+              (status.repoAccessError ? ` (${status.repoAccessError})` : "") +
+              ". Grant this repo Contents (read), Pull requests (read/write), and Metadata (read) on the fine-grained token.",
+          );
+        } else {
+          setActionError("Token saved, but it is missing required permissions. See the diagnostic below.");
+        }
       })
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setGithubBusy(false));
@@ -94,21 +103,30 @@ export function GitHubSection() {
   const handleRefreshStatus = () => {
     setGithubBusy(true);
     setActionError(null);
+    // forceRefresh: the user explicitly asked us to re-check, so bypass the
+    // 30s status cache. Required for the "fix permissions on github.com →
+    // come back and click REFRESH" recovery flow.
     window.ade.github
-      .getStatus()
+      .getStatus({ forceRefresh: true })
       .then((status) => setGithubStatus(status))
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setGithubBusy(false));
   };
 
-  const isConnected = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
+  // `tokenAuthenticated` = the token was decryptable AND identified a user. Not enough to claim
+  // the integration "works" — fine-grained tokens authenticate the user even when they can't
+  // read the active repo. `isConnected` (from the backend) is the real "GitHub is usable" gate.
+  const tokenAuthenticated = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
+  const isConnected = Boolean(githubStatus?.connected);
   const isFineGrainedToken = githubStatus?.tokenType === "fine-grained";
   const hasInspectableScopes = !isFineGrainedToken || (githubStatus?.scopes?.length ?? 0) > 0;
   const accessState = getGitHubTokenAccessState(githubStatus?.scopes ?? []);
-  const hasFullAccess = isConnected && (accessState.hasRequiredAccess || (isFineGrainedToken && !hasInspectableScopes));
-  const hasMissingScopes = isConnected && hasInspectableScopes && !accessState.hasRequiredAccess;
-  const statusColor = hasFullAccess ? COLORS.success : isConnected ? COLORS.warning : COLORS.textMuted;
-  const statusLabel = hasFullAccess ? "CONNECTED" : isConnected ? "LIMITED ACCESS" : "NOT CONNECTED";
+  const repoProbeFailed =
+    tokenAuthenticated && githubStatus?.repoAccessOk === false;
+  const hasMissingScopes =
+    tokenAuthenticated && hasInspectableScopes && !accessState.hasRequiredAccess;
+  const statusColor = isConnected ? COLORS.success : tokenAuthenticated ? COLORS.warning : COLORS.textMuted;
+  const statusLabel = isConnected ? "CONNECTED" : tokenAuthenticated ? "LIMITED ACCESS" : "NOT CONNECTED";
   const openExternal = (url: string) => {
     void window.ade.app.openExternal(url);
   };
@@ -194,7 +212,7 @@ export function GitHubSection() {
       {actionError ? <div style={errorStyle}>{actionError}</div> : null}
 
       <div style={cardStyle({
-        borderColor: hasFullAccess ? `${COLORS.success}30` : isConnected ? `${COLORS.warning}30` : undefined,
+        borderColor: isConnected ? `${COLORS.success}30` : tokenAuthenticated ? `${COLORS.warning}30` : undefined,
       })}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -210,7 +228,7 @@ export function GitHubSection() {
           ) : null}
         </div>
 
-        {isConnected ? (
+        {tokenAuthenticated ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div
               style={{
@@ -278,6 +296,23 @@ export function GitHubSection() {
                 Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
                 {" "}
                 Regenerate the token with the required permissions.
+              </div>
+            ) : null}
+
+            {repoProbeFailed ? (
+              <div style={errorStyle}>
+                Token authenticated as <strong>{githubStatus?.userLogin}</strong>, but cannot access{" "}
+                <strong>{githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "this repo"}</strong>
+                {githubStatus?.repoAccessError ? ` (${githubStatus.repoAccessError})` : ""}.
+                {isFineGrainedToken ? (
+                  <>
+                    {" "}
+                    Fine-grained tokens must explicitly include this repository under
+                    {" "}<em>Repository access</em>, with Contents (Read), Pull requests (Read and write), and Metadata (Read) permissions.
+                  </>
+                ) : (
+                  <> Make sure the token has access to this repository.</>
+                )}
               </div>
             ) : null}
 

@@ -26,6 +26,7 @@ Automations never duplicate Linear issue intake — the CTO owns that. Automatio
   - `components/RuleEditorPanel.tsx` — rule editor (trigger + execution + actions + guardrails).
   - `GitHubTriggerFilters.tsx` / `LinearTriggerFilters.tsx` — per-trigger filter editors (labels, authors, target branch, title/body regex, repo, team, project, assignee).
   - `ActionList.tsx` / `ActionRow.tsx` / `AdeActionEditor.tsx` — action chain UI for `built-in` rules, including the ADE Actions picker.
+  - `adeActionSchemas.ts` — curated parameter schema (~280 entries across 29 domains) consumed by `AdeActionEditor` to render typed forms (string / string-array / number / boolean / enum / json) for `run_ade_action` step parameters with `{{trigger.*}}` placeholder hints. The runtime allowlist still lives in `apps/desktop/src/main/services/adeActions/registry.ts` — this file only adds presentation metadata and parameter shapes, not new dispatch surface.
   - `RuleHistoryPanel.tsx` — per-rule run history (replaces the old cross-rule `HistoryTab`).
   - `TemplatesTab.tsx` / `AutomationsTemplatesPage.tsx` — template picker that seeds a new draft on `/automations` via router state.
   - `EmptyStateHint.tsx` — empty-state copy shared across tabs.

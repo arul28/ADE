@@ -21,6 +21,7 @@ import {
   type PrToastTone,
 } from "./prToastPresentation";
 import { TabBackground } from "../ui/TabBackground";
+import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { useAppStore } from "../../state/appStore";
 import { useOnboardingStore } from "../../state/onboardingStore";
 import { Button } from "../ui/Button";
@@ -136,6 +137,56 @@ function shortId(id: string): string {
   const trimmed = (id ?? "").trim();
   if (!trimmed) return "";
   return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
+}
+
+function describeGithubBanner(status: GitHubStatus): { message: string; linkLabel: string } {
+  if (!status.tokenStored) {
+    return {
+      message: "GitHub is not connected for this ADE app yet. ",
+      linkLabel: "Connect GitHub",
+    };
+  }
+  if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
+    const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repo";
+    return {
+      message: `GitHub token saved, but it cannot access ${repoLabel}. `,
+      linkLabel: "Fix GitHub token",
+    };
+  }
+  return {
+    message: "GitHub token saved, but it does not have the required permissions. ",
+    linkLabel: "Fix GitHub token",
+  };
+}
+
+function GithubBanner({
+  status,
+  onDismiss,
+}: {
+  status: GitHubStatus;
+  onDismiss: () => void;
+}): JSX.Element {
+  const { message, linkLabel } = describeGithubBanner(status);
+  return (
+    <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
+      <span>
+        {message}
+        <Link to="/settings?tab=integrations" className="underline">
+          {linkLabel}
+        </Link>
+      </span>
+      <button
+        type="button"
+        data-testid="dismiss-github-banner"
+        className="ml-2 text-amber-900/70 hover:text-amber-900"
+        onClick={onDismiss}
+        title="Dismiss for this session"
+        aria-label="Dismiss GitHub not connected banner for this session"
+      >
+        ×
+      </button>
+    </div>
+  );
 }
 
 function getPrToastToneClasses(tone: PrToastTone): {
@@ -668,6 +719,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [project?.rootPath]);
 
+  // Refresh the GitHub banner the moment Settings saves/clears a token, so the
+  // shell does not lag behind the Settings UI (the original "banner stays up
+  // even though Settings says CONNECTED" bug).
+  useEffect(() => {
+    return (
+      window.ade.github?.onStatusChanged?.((status) => {
+        setGithubStatus(status);
+      }) ?? (() => {})
+    );
+  }, []);
+
   useEffect(() => {
     if (!window.ade.feedback?.onUpdate) return;
     const dispose = window.ade.feedback.onUpdate((event) => {
@@ -936,29 +998,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       !showWelcome &&
       !isOnboardingRoute &&
       githubStatus !== null &&
-      !githubStatus.tokenStored &&
+      !githubStatus.connected &&
       !githubBannerDismissed ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          <span>
-            GitHub is not connected for this ADE app yet.{" "}
-            <Link to="/settings?tab=integrations" className="underline">
-              Connect GitHub
-            </Link>
-          </span>
-          <button
-            type="button"
-            data-testid="dismiss-github-banner"
-            className="ml-2 text-amber-900/70 hover:text-amber-900"
-            onClick={() => {
-              if (!currentProjectRoot) return;
-              dismissGithubBanner(currentProjectRoot);
-            }}
-            title="Dismiss for this session"
-            aria-label="Dismiss GitHub not connected banner for this session"
-          >
-            ×
-          </button>
-        </div>
+        <GithubBanner
+          status={githubStatus}
+          onDismiss={() => {
+            if (!currentProjectRoot) return;
+            dismissGithubBanner(currentProjectRoot);
+          }}
+        />
       ) : null}
 
       {!hideSidebar && providerMode === "subscription" && aiMockProvider ? (
@@ -1093,9 +1141,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </div>
               ) : null}
               {prToasts.map((toast) => {
-                const laneName =
-                  lanes.find((lane) => lane.id === toast.event.laneId)?.name ??
-                  toast.event.laneId;
+                const toastLane = lanes.find((lane) => lane.id === toast.event.laneId) ?? null;
+                const laneName = toastLane?.name ?? toast.event.laneId;
+                const laneColor = toastLane?.color ?? null;
                 const tone = getPrToastTone(toast.event.kind);
                 const toneClasses = getPrToastToneClasses(tone);
                 const Icon = getPrToastIcon(toast.event.kind);
@@ -1155,23 +1203,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         </div>
                         {meta.length > 0 ? (
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                            {meta.map((item, index) => (
-                              <span
-                                key={`${toast.id}-meta-${index}`}
-                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/50 bg-black/10 px-2 py-1 text-[10px] text-muted-fg"
-                              >
-                                {item.includes("/") ? (
-                                  <GitBranch size={10} />
-                                ) : item.includes("#") ||
-                                  (toast.event.repoOwner &&
-                                    item.includes(toast.event.repoOwner)) ? (
-                                  <GithubLogo size={10} />
-                                ) : (
-                                  <GitPullRequest size={10} />
-                                )}
-                                <span className="truncate">{item}</span>
-                              </span>
-                            ))}
+                            {meta.map((item, index) => {
+                              const isLane = laneName != null && item === laneName;
+                              return (
+                                <span
+                                  key={`${toast.id}-meta-${index}`}
+                                  className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/50 bg-black/10 px-2 py-1 text-[10px] text-muted-fg"
+                                  style={isLane && laneColor ? { color: laneColor } : undefined}
+                                >
+                                  {isLane && laneColor ? (
+                                    <LaneAccentDot lane={{ color: laneColor }} size={7} />
+                                  ) : item.includes("/") ? (
+                                    <GitBranch size={10} />
+                                  ) : item.includes("#") ||
+                                    (toast.event.repoOwner &&
+                                      item.includes(toast.event.repoOwner)) ? (
+                                    <GithubLogo size={10} />
+                                  ) : (
+                                    <GitPullRequest size={10} />
+                                  )}
+                                  <span className="truncate">{item}</span>
+                                </span>
+                              );
+                            })}
                           </div>
                         ) : null}
                         <div className="mt-2 line-clamp-3 text-[12px] leading-relaxed text-muted-fg">

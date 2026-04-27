@@ -237,7 +237,7 @@ is changing rather than which service backs it:
 | Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx` | Project identity, paths, skill files |
 | AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, AI feature flags |
 | Sync | `SyncDevicesSection.tsx` | Multi-device sync, host-role transfer, peer status, pairing PIN, Tailscale tailnet discovery |
-| Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness |
+| Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness. The GitHub section reads `status.connected` (the backend's single "GitHub is usable" gate) to decide between CONNECTED / LIMITED ACCESS / NOT CONNECTED, surfaces a dedicated repo-probe error when a fine-grained token authenticates as a user but cannot access the active repo, and the REFRESH button calls `getStatus({ forceRefresh: true })` so users who fix permissions on github.com see the change immediately. See [`pull-requests/README.md`](../pull-requests/README.md#github-connectivity-model) for the full status-shape and `connected` derivation. |
 | Memory | `MemoryHealthTab.tsx` | Memory health, browser, embedding health |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
 | Onboarding | `OnboardingSection.tsx` | First-session tutorial + per-tab tour progress and replay controls |

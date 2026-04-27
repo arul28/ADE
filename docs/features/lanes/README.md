@@ -34,6 +34,10 @@ Renderer components:
 |------|---------------|
 | `renderer/components/lanes/LanesPage.tsx` | 3-pane cockpit, tab management, dialog coordination |
 | `renderer/components/lanes/laneUtils.ts` | Pure lane list/filter helpers plus default pane trees, including the work-focused tiling tree used by parallel chat launch deep links. |
+| `renderer/components/lanes/laneColorPalette.ts` | Curated 12-swatch lane color palette (`LANE_COLOR_PALETTE`) plus helpers (`getLaneAccent`, `colorsInUse`, `nextAvailableColor`, `laneColorName`). The first 8 hexes form `LANE_FALLBACK_COLORS`, the legacy index-based fallback used for lanes that don't have an explicit color assigned. |
+| `renderer/components/lanes/LaneAccentDot.tsx` | Tiny accent dot used everywhere a lane is mentioned (lane list, tabs, PR rows, AppShell PR toasts). Resolves color via `getLaneAccent` so a lane without an explicit color falls back to a deterministic fallback hex. |
+| `renderer/components/lanes/LaneColorPicker.tsx` | Reusable swatch-row picker used inside `CreateLaneDialog` and `ManageLaneDialog`. Disables swatches already in use by other lanes (passed in as `usedColors`) and offers a clear button. |
+| `renderer/components/lanes/LaneContextMenu.tsx` | Right-click menu on the lane list. Hosts the inline color swatch row that calls `lanes.updateAppearance` directly, "Reveal/Copy path", manage/adopt/open-in-Run actions, split-tab actions, and batch manage. |
 | `renderer/components/lanes/LaneStackPane.tsx` | Stack graph sidebar, integration source chips, canvas jump |
 | `renderer/components/lanes/LaneDiffPane.tsx` | Diff viewer, per-file stage/unstage/discard |
 | `renderer/components/lanes/LaneGitActionsPane.tsx` | Commit, stash, fetch, sync, push, recent commits |
@@ -57,6 +61,9 @@ Shared code:
 
 iOS companion (`apps/ios/ADE/Views/Lanes/`):
 
+- `LaneColorPalette.swift`, `LaneColorSwatchPicker.swift` — iOS
+  mirror of the desktop lane palette and swatch picker, used by the
+  create/manage sheets.
 - `LanesTabView.swift` — mobile lane list shell, stack-canvas sheet
   routing, search/filter state, selected-lane navigation.
 - `LaneCreateSheet.swift` and `LaneEnvInitProgressView.swift` —
@@ -191,6 +198,38 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
    but keeps the worktree on disk. `unarchive` reverses it.
 8. **Delete** — `deleteLane` removes the worktree and the row. Can
    optionally delete the branch too.
+
+## Lane color
+
+Each lane carries an optional `color` (a hex string). The color appears as
+an accent dot wherever the lane is referenced — lane list, lane tabs, the
+GitHub PR rows in `prs/tabs/GitHubTab.tsx`, the QueueTab member rows, and
+the post-merge PR toast in `AppShell`. The palette and helpers live in
+`renderer/components/lanes/laneColorPalette.ts`:
+
+- `LANE_COLOR_PALETTE` — 12 curated hexes, each with a human label
+  (Violet / Blue / Emerald / Amber / Pink / Orange / Teal / Purple /
+  Red / Lime / Cyan / Fuchsia).
+- `LANE_FALLBACK_COLORS` — first 8 of the palette, kept stable for the
+  index-based fallback used by `getLaneAccent(lane, fallbackIndex)` for
+  lanes without an explicit color.
+- `colorsInUse(lanes, excludeLaneId?)` — case-insensitive set of hexes
+  in active (non-archived) lanes. Used to disable already-taken
+  swatches in `LaneColorPicker` and `LaneContextMenu`'s color row.
+- `nextAvailableColor(lanes)` — picks the first palette hex not in use.
+  `CreateLaneDialog` calls this when the dialog opens so a new lane
+  gets a unique color by default.
+
+Color is enforced at the service layer: `laneService.updateAppearance`
+rejects a color already used by another non-archived lane in the same
+project with `Error("Color already in use by lane "<name>"")`. Pickers
+should pre-filter against `colorsInUse` to surface conflicts before the
+user attempts to save, but the service is the canonical guard.
+
+The iOS companion mirrors the desktop palette in
+`apps/ios/ADE/Views/Lanes/LaneColorPalette.swift` and exposes a
+`LaneColorSwatchPicker.swift` for parity with `LaneColorPicker`. The
+iOS create/manage sheets seed and edit the same `lanes.color` field.
 
 ## Branch switching inside a lane
 

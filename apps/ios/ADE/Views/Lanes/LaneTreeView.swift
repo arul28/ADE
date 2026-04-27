@@ -163,12 +163,16 @@ struct LanePeekPreview: View {
   let snapshot: LaneListSnapshot
 
   var body: some View {
+    let laneAccent = LaneColorPalette.color(forHex: snapshot.lane.color)
     VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 9)
+        if let laneAccent {
+          Circle().fill(laneAccent).frame(width: 7, height: 7)
+        }
         Text(snapshot.lane.name)
           .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
+          .foregroundStyle(laneAccent ?? ADEColor.textPrimary)
         Spacer(minLength: 0)
       }
       Text(snapshot.lane.branchRef)

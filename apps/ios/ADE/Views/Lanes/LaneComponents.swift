@@ -39,13 +39,19 @@ struct LaneOpenChip: View {
   let isPinned: Bool
 
   var body: some View {
+    let laneAccent = LaneColorPalette.color(forHex: snapshot.lane.color)
     HStack(spacing: 6) {
       Circle()
         .fill(runtimeTint(bucket: snapshot.runtime.bucket))
         .frame(width: 6, height: 6)
+      if let laneAccent {
+        Circle()
+          .fill(laneAccent)
+          .frame(width: 7, height: 7)
+      }
       Text(snapshot.lane.name)
         .font(.caption.weight(.medium))
-        .foregroundStyle(ADEColor.textPrimary)
+        .foregroundStyle(laneAccent ?? ADEColor.textPrimary)
         .lineLimit(1)
       if isPinned {
         Image(systemName: "pin.fill")
@@ -58,7 +64,7 @@ struct LaneOpenChip: View {
     .glassEffect(in: .rect(cornerRadius: 12))
     .overlay(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
+        .stroke((laneAccent ?? ADEColor.border).opacity(laneAccent == nil ? 0.16 : 0.45), lineWidth: 0.5)
     )
     .accessibilityLabel("\(snapshot.lane.name)\(isPinned ? ", pinned" : "")")
   }
@@ -344,9 +350,14 @@ struct LaneStackCard: View, Equatable {
         LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 10)
           .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-icon-\(snapshot.lane.id)" : nil, in: transitionNamespace)
 
+        if let laneAccent = LaneColorPalette.color(forHex: snapshot.lane.color) {
+          Circle()
+            .fill(laneAccent)
+            .frame(width: 7, height: 7)
+        }
         Text(snapshot.lane.name)
           .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
+          .foregroundStyle(LaneColorPalette.color(forHex: snapshot.lane.color) ?? ADEColor.textPrimary)
           .lineLimit(1)
           .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
 

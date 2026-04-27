@@ -688,12 +688,27 @@ struct WorkSessionRow: View {
         }
 
         HStack(spacing: 6) {
-          Image(systemName: "arrow.triangle.branch")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-          Text(session.laneName)
+          Text(shortProviderLabel(chatSummary?.provider ?? session.toolType))
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+
+          Text("·")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+
+          if let laneAccent = LaneColorPalette.color(forHex: lane?.color) {
+            Circle()
+              .fill(laneAccent)
+              .frame(width: 6, height: 6)
+          } else {
+            Image(systemName: "arrow.triangle.branch")
+              .font(.system(size: 10, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+          }
+          Text(session.laneName)
+            .font(.caption2)
+            .foregroundStyle(LaneColorPalette.color(forHex: lane?.color) ?? ADEColor.textMuted)
             .lineLimit(1)
             .truncationMode(.middle)
 

@@ -26,6 +26,7 @@ struct LaneCreateSheet: View {
   @State private var envPhase: EnvSetupPhase = .form
   @State private var envPolling = false
   @State private var envPollTask: Task<Void, Never>?
+  @State private var selectedColorHex: String?
 
   private enum EnvSetupPhase {
     case form
@@ -198,6 +199,26 @@ struct LaneCreateSheet: View {
             }
           }
 
+          GlassSection(title: "Color") {
+            VStack(alignment: .leading, spacing: 8) {
+              if let hex = selectedColorHex, let name = LaneColorPalette.name(forHex: hex) {
+                Text(name)
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textMuted)
+              } else {
+                Text("Pick a color to identify this lane.")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+              LaneColorSwatchPicker(
+                selectedHex: selectedColorHex,
+                usedColors: LaneColorPalette.colorsInUse(amongLanes: lanes)
+              ) { next in
+                selectedColorHex = next
+              }
+            }
+          }
+
           if supportsTemplates {
             GlassSection(title: "Template") {
               VStack(spacing: 8) {
@@ -279,6 +300,9 @@ struct LaneCreateSheet: View {
         selectedRescueLaneId = lanes.first(where: { $0.status.dirty && $0.laneType != "primary" })?.id
           ?? (lanes.first(where: { $0.status.dirty })?.id ?? "")
       }
+      if selectedColorHex == nil {
+        selectedColorHex = LaneColorPalette.nextAvailableColor(amongLanes: lanes)
+      }
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
@@ -311,6 +335,15 @@ struct LaneCreateSheet: View {
       case .rescueUnstaged:
         created = try await syncService.createFromUnstaged(sourceLaneId: selectedRescueLaneId, name: name, description: description)
       }
+
+      if let hex = selectedColorHex, !hex.isEmpty {
+        do {
+          try await syncService.updateLaneAppearance(created.id, color: hex)
+        } catch {
+          // Non-fatal: lane was created, color failed (likely uniqueness collision).
+        }
+      }
+
       await onComplete(created.id)
 
       if supportsTemplates, let templateId = selectedTemplateId {

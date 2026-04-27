@@ -5072,21 +5072,36 @@ export function registerIpc({
 
   ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => getCtx().conflictService.suggestResolverTarget(arg));
 
-  ipcMain.handle(IPC.githubGetStatus, async (): Promise<GitHubStatus> => {
+  const broadcastGithubStatus = (status: GitHubStatus): void => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      try {
+        win.webContents.send(IPC.githubStatusChanged, status);
+      } catch {
+        // ignore broadcast failures
+      }
+    }
+  };
+
+  ipcMain.handle(IPC.githubGetStatus, async (_event, arg?: { forceRefresh?: boolean }): Promise<GitHubStatus> => {
     const ctx = getCtx();
-    return await ctx.githubService.getStatus();
+    return await ctx.githubService.getStatus({ forceRefresh: Boolean(arg?.forceRefresh) });
   });
 
   ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubStatus> => {
     const ctx = getCtx();
     ctx.githubService.setToken(arg.token);
-    return await ctx.githubService.getStatus();
+    const status = await ctx.githubService.getStatus();
+    broadcastGithubStatus(status);
+    return status;
   });
 
   ipcMain.handle(IPC.githubClearToken, async (): Promise<GitHubStatus> => {
     const ctx = getCtx();
     ctx.githubService.clearToken();
-    return await ctx.githubService.getStatus();
+    const status = await ctx.githubService.getStatus();
+    broadcastGithubStatus(status);
+    return status;
   });
 
   const resolveGithubRepoRef = async (

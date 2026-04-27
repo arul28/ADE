@@ -1983,8 +1983,8 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   github: {
-    getStatus: async (): Promise<GitHubStatus> =>
-      ipcRenderer.invoke(IPC.githubGetStatus),
+    getStatus: async (opts?: { forceRefresh?: boolean }): Promise<GitHubStatus> =>
+      ipcRenderer.invoke(IPC.githubGetStatus, opts ?? {}),
     setToken: async (token: string): Promise<GitHubStatus> =>
       ipcRenderer.invoke(IPC.githubSetToken, { token }),
     clearToken: async (): Promise<GitHubStatus> =>
@@ -1997,6 +1997,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.githubListRepoLabels, args),
     listRepoCollaborators: async (args: { owner: string; name: string }): Promise<Array<{ login: string; avatarUrl?: string }>> =>
       ipcRenderer.invoke(IPC.githubListRepoCollaborators, args),
+    onStatusChanged: (cb: (status: GitHubStatus) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: GitHubStatus) =>
+        cb(payload);
+      ipcRenderer.on(IPC.githubStatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.githubStatusChanged, listener);
+    },
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>
