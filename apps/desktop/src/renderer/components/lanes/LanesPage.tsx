@@ -298,6 +298,7 @@ export function LanesPage() {
   const [newBranchName, setNewBranchName] = useState("");
   const [newBranchStartPoint, setNewBranchStartPoint] = useState("");
   const [newBranchBaseRef, setNewBranchBaseRef] = useState("");
+  const [newBranchFormOpen, setNewBranchFormOpen] = useState(false);
   const [pendingBranchSwitch, setPendingBranchSwitch] = useState<{
     branchName: string;
     mode: "existing" | "create";
@@ -552,11 +553,10 @@ export function LanesPage() {
     if (branchDropdownOpen) {
       setBranchSearchQuery("");
       setPendingBranchSwitch(null);
-      // Reset the new-branch-creation form whenever the picker (re)opens or
-      // the target lane changes so stale start-point/base-ref values from a
-      // previous lane don't carry over.
       setNewBranchStartPoint("");
       setNewBranchBaseRef("");
+      setNewBranchName("");
+      setNewBranchFormOpen(false);
       setTimeout(() => branchSearchInputRef.current?.focus(), 0);
     }
   }, [branchDropdownOpen, branchLane?.id]);
@@ -1886,7 +1886,7 @@ export function LanesPage() {
               </button>
             </SmartTooltip>
             {branchDropdownOpen && canSwitchBranchLane ? (
-              <div className="ade-liquid-glass-menu absolute left-0 top-full z-[200] mt-1 max-h-96 overflow-hidden flex flex-col" style={{ width: 340, padding: "4px 0" }}>
+              <div className="ade-liquid-glass-menu absolute left-0 top-full z-[200] mt-1 max-h-[480px] overflow-hidden flex flex-col" style={{ width: 360, maxWidth: 360, minWidth: 0, padding: "4px 0", border: `1px solid ${COLORS.outlineBorder}`, background: COLORS.cardBgSolid, backdropFilter: "blur(24px) saturate(150%)", WebkitBackdropFilter: "blur(24px) saturate(150%)", boxShadow: "0 24px 56px -20px rgba(0, 0, 0, 0.7)", boxSizing: "border-box" }}>
                 <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
                   <MagnifyingGlass size={13} className="pointer-events-none absolute" style={{ left: 16, top: "50%", transform: "translateY(-50%)", color: COLORS.textDim }} />
                   <input
@@ -1904,82 +1904,113 @@ export function LanesPage() {
                     onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
                   />
                 </div>
-                <div style={{ padding: "8px 10px", borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}` }}>
-                  <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>NEW BRANCH</div>
-                    <input
-                      type="text"
-                      placeholder="feature/short-name"
-                      value={newBranchName}
-                      onChange={(e) => setNewBranchName(e.target.value)}
-                      aria-invalid={Boolean(newBranchName.trim()) && !branchNameValidation.ok}
-                      style={{
-                        width: "100%", padding: "6px 8px", fontSize: 12, fontFamily: MONO_FONT,
-                        color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
-                        border: `1px solid ${
-                          newBranchName.trim() && !branchNameValidation.ok ? COLORS.danger : COLORS.outlineBorder
-                        }`,
-                        borderRadius: 6, outline: "none",
-                      }}
-                    />
-                    {newBranchName.trim() && branchNameValidation.reason ? (
-                      <div style={{ fontSize: 11, color: COLORS.danger }}>{branchNameValidation.reason}</div>
-                    ) : null}
-                    <label className="flex flex-col gap-1" title="Git branch the new branch is forked from.">
-                      <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>START FROM</span>
-                      <select
-                        value={newBranchStartPoint || branchLane.branchRef}
-                        onChange={(e) => setNewBranchStartPoint(e.target.value)}
+                {newBranchFormOpen ? (
+                  <div style={{ padding: "8px 10px", borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}` }}>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div className="flex items-center justify-between">
+                        <div style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>NEW BRANCH</div>
+                        <button
+                          type="button"
+                          onClick={() => { setNewBranchFormOpen(false); setNewBranchName(""); }}
+                          style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, background: "transparent", border: "none", cursor: "pointer", padding: 0 }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="feature/short-name"
+                        value={newBranchName}
+                        onChange={(e) => setNewBranchName(e.target.value)}
+                        aria-invalid={Boolean(newBranchName.trim()) && !branchNameValidation.ok}
+                        autoFocus
                         style={{
-                          minWidth: 0, height: 30, fontSize: 12, fontFamily: MONO_FONT,
+                          width: "100%", padding: "6px 8px", fontSize: 12, fontFamily: MONO_FONT,
                           color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
-                          border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
+                          border: `1px solid ${
+                            newBranchName.trim() && !branchNameValidation.ok ? COLORS.danger : COLORS.outlineBorder
+                          }`,
+                          borderRadius: 6, outline: "none",
+                        }}
+                      />
+                      {newBranchName.trim() && branchNameValidation.reason ? (
+                        <div style={{ fontSize: 11, color: COLORS.danger }}>{branchNameValidation.reason}</div>
+                      ) : null}
+                      <label className="flex flex-col gap-1" title="Git branch the new branch is forked from.">
+                        <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>START FROM</span>
+                        <select
+                          value={newBranchStartPoint || branchLane.branchRef}
+                          onChange={(e) => setNewBranchStartPoint(e.target.value)}
+                          style={{
+                            width: "100%", minWidth: 0, maxWidth: "100%", height: 30, fontSize: 12, fontFamily: MONO_FONT,
+                            color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                            border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
+                            boxSizing: "border-box", textOverflow: "ellipsis",
+                          }}
+                        >
+                          {startPointOptions.map((opt) => <option key={`start:${opt.value}`} value={opt.value}>{opt.label}</option>)}
+                        </select>
+                        <span style={{ fontSize: 10, color: COLORS.textDim }}>The commit your new branch is forked from.</span>
+                      </label>
+                      <label className="flex flex-col gap-1" title="ADE compares this lane's commits against this base for rebase / merge readiness.">
+                        <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>REBASE BASE</span>
+                        <select
+                          value={newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef}
+                          onChange={(e) => setNewBranchBaseRef(e.target.value)}
+                          style={{
+                            width: "100%", minWidth: 0, maxWidth: "100%", height: 30, fontSize: 12, fontFamily: MONO_FONT,
+                            color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                            border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
+                            boxSizing: "border-box", textOverflow: "ellipsis",
+                          }}
+                        >
+                          {baseRefOptions.map((name) => <option key={`base:${name}`} value={name}>{name}</option>)}
+                        </select>
+                        <span style={{ fontSize: 10, color: COLORS.textDim }}>What ADE compares this lane against for rebase / merge readiness.</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-center gap-2"
+                        style={{
+                          height: 30, border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6,
+                          background: "rgba(255,255,255,0.05)", color: COLORS.textPrimary,
+                          fontSize: 12, fontFamily: SANS_FONT,
+                          cursor: branchNameValidation.ok && !branchCheckoutBusy ? "pointer" : "not-allowed",
+                          opacity: branchNameValidation.ok && !branchCheckoutBusy ? 1 : 0.5,
+                        }}
+                        disabled={branchCheckoutBusy || !branchNameValidation.ok}
+                        onClick={async () => {
+                          await checkoutLaneBranch({
+                            branchName: newBranchName,
+                            mode: "create",
+                            startPoint: newBranchStartPoint || branchLane.branchRef,
+                            baseRef: newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef,
+                          });
                         }}
                       >
-                        {startPointOptions.map((opt) => <option key={`start:${opt.value}`} value={opt.value}>{opt.label}</option>)}
-                      </select>
-                      <span style={{ fontSize: 10, color: COLORS.textDim }}>The commit your new branch is forked from.</span>
-                    </label>
-                    <label className="flex flex-col gap-1" title="ADE compares this lane's commits against this base for rebase / merge readiness.">
-                      <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>REBASE BASE</span>
-                      <select
-                        value={newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef}
-                        onChange={(e) => setNewBranchBaseRef(e.target.value)}
-                        style={{
-                          minWidth: 0, height: 30, fontSize: 12, fontFamily: MONO_FONT,
-                          color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
-                          border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
-                        }}
-                      >
-                        {baseRefOptions.map((name) => <option key={`base:${name}`} value={name}>{name}</option>)}
-                      </select>
-                      <span style={{ fontSize: 10, color: COLORS.textDim }}>What ADE compares this lane against for rebase / merge readiness.</span>
-                    </label>
-                    <button
-                      type="button"
-                      className="flex w-full items-center justify-center gap-2"
-                      style={{
-                        height: 30, border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6,
-                        background: "rgba(255,255,255,0.05)", color: COLORS.textPrimary,
-                        fontSize: 12, fontFamily: SANS_FONT,
-                        cursor: branchNameValidation.ok && !branchCheckoutBusy ? "pointer" : "not-allowed",
-                        opacity: branchNameValidation.ok && !branchCheckoutBusy ? 1 : 0.5,
-                      }}
-                      disabled={branchCheckoutBusy || !branchNameValidation.ok}
-                      onClick={async () => {
-                        await checkoutLaneBranch({
-                          branchName: newBranchName,
-                          mode: "create",
-                          startPoint: newBranchStartPoint || branchLane.branchRef,
-                          baseRef: newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef,
-                        });
-                      }}
-                    >
-                      <Plus size={13} />
-                      <span>Create in this lane</span>
-                    </button>
+                        <Plus size={13} />
+                        <span>Create in this lane</span>
+                      </button>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2"
+                    onClick={() => setNewBranchFormOpen(true)}
+                    style={{
+                      padding: "8px 12px", border: "none",
+                      borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}`,
+                      background: "transparent", color: COLORS.textSecondary,
+                      fontSize: 12, fontFamily: SANS_FONT, cursor: "pointer", textAlign: "left",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <Plus size={13} />
+                    <span>New branch…</span>
+                  </button>
+                )}
                 {pendingBranchSwitch ? (
                   <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.warning}12` }}>
                     <div style={{ fontSize: 12, color: COLORS.textPrimary, fontWeight: 600 }}>This lane has active work.</div>
@@ -2458,20 +2489,7 @@ export function LanesPage() {
 	                  {devicesOpen.length}
 	                </span>
 	              ) : null}
-	              {/* Branch ref pill — shown for every lane so identity is (name, branch) */}
-              <span
-                className="truncate"
-                style={{
-                  display: "inline-flex", alignItems: "center", padding: "2px 6px",
-                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "0.5px",
-                  borderRadius: 6, maxWidth: 160,
-                  color: isPrimary ? COLORS.accent : COLORS.textSecondary,
-                  background: isPrimary ? COLORS.accentSubtle : "rgba(255,255,255,0.04)",
-                  border: `1px solid ${isPrimary ? COLORS.accentBorder : COLORS.border}`,
-                }}
-                title={`Branch: ${lane.branchRef}`}
-              >{lane.branchRef}</span>
-              {/* Behind badge (rebase suggestion) */}
+	              {/* Behind badge (rebase suggestion) */}
               {rebaseSuggestion ? (
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,

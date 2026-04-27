@@ -313,24 +313,32 @@ export function WorkStartSurface({
 }
 
 const LOGO_SIZES = {
-  lg: { glow: "h-[680px] w-[680px]", blur: "blur(160px)", img: "h-[300px] w-[560px] max-w-[78vw]" },
-  sm: { glow: "h-[280px] w-[280px]", blur: "blur(90px)", img: "h-[180px] w-[320px] max-w-[72vw]" },
+  lg: { maxImg: 560, glowMultiplier: 1.21, blur: "blur(160px)" },
+  sm: { maxImg: 320, glowMultiplier: 0.875, blur: "blur(90px)" },
 } as const;
 
 function LogoGlow({ size }: { size: "lg" | "sm" }) {
   const s = LOGO_SIZES[size];
   return (
-    <div className="relative mb-6">
-      <div
-        className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 ${s.glow} rounded-full pointer-events-none`}
-        style={{ background: "var(--color-accent)", opacity: 0.08, filter: s.blur }}
-      />
-      <img
-        src="./logo.png"
-        alt="ADE"
-        className={`relative z-10 ${s.img} object-contain`}
-        style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
-      />
+    <div className="relative mb-6 flex w-full justify-center px-4">
+      <div className="relative w-full" style={{ maxWidth: s.maxImg }}>
+        <div
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
+          style={{
+            width: `${s.glowMultiplier * 100}%`,
+            aspectRatio: "1 / 1",
+            background: "var(--color-accent)",
+            opacity: 0.08,
+            filter: s.blur,
+          }}
+        />
+        <img
+          src="./logo.png"
+          alt="ADE"
+          className="relative z-10 block w-full h-auto object-contain"
+          style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
+        />
+      </div>
     </div>
   );
 }
