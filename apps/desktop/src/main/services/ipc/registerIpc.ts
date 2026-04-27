@@ -2278,16 +2278,47 @@ export function registerIpc({
     }
   );
 
+  // Project-root allowlist for icon resolution. Tab/catalog icons are
+  // resolved for the *current* project root and any *recently opened*
+  // project root — including ones that live outside Downloads/Documents/Temp
+  // (the generic `getAllowedDirs` set). Using `resolveAllowedRendererPath`
+  // here would silently strip icons for any project in `~/code/*` etc.
+  const getAllowedProjectRoots = (): string[] => {
+    const state = readGlobalState(globalStatePath);
+    return Array.from(new Set([
+      getCtx().project.rootPath,
+      ...(state.recentProjects ?? [])
+        .map((entry) => entry.rootPath)
+        .filter((root): root is string => typeof root === "string" && root.trim().length > 0),
+    ]));
+  };
+
+  const resolveAllowedProjectRoot = (rawPath: string): string => {
+    const raw = typeof rawPath === "string" ? rawPath.trim() : "";
+    if (!raw) throw new Error("Missing root path.");
+    const normalized = resolveRendererSuppliedPath(raw, getCtx().project.rootPath);
+    for (const dir of getAllowedProjectRoots()) {
+      try {
+        return resolvePathWithinRoot(dir, normalized);
+      } catch {
+        // try next known project root
+      }
+    }
+    throw new Error("rootPath is outside known project roots.");
+  };
+
   ipcMain.handle(
     IPC.projectResolveIcon,
     async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
       const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
       if (!rootPath) return { dataUrl: null, sourcePath: null, mimeType: null };
-      // Validate the renderer-supplied root against the allowlist so a
-      // compromised renderer can't probe arbitrary directories for icons.
+      // Validate the renderer-supplied root against the project-root
+      // allowlist (current + recent projects) so a compromised renderer
+      // can't probe arbitrary directories for icons, while still serving
+      // icons for projects that live outside the generic file allowlist.
       let validatedRoot: string;
       try {
-        validatedRoot = resolveAllowedRendererPath(rootPath);
+        validatedRoot = resolveAllowedProjectRoot(rootPath);
       } catch {
         return { dataUrl: null, sourcePath: null, mimeType: null };
       }
