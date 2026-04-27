@@ -11,6 +11,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { Check, Cpu, MagnifyingGlass } from "@phosphor-icons/react";
+import { Claude, Codex, Cursor, OpenCode } from "@lobehub/icons";
 import { ModelRowLogo, ProviderLogo } from "./ProviderLogos";
 import {
   buildProviderGroupBlocks,
@@ -32,6 +33,22 @@ import {
 } from "./providerModelSelectorGrouping";
 
 const GROUP_KEYS: ProviderGroupKey[] = ["claude", "codex", "cursor", "opencode"];
+
+function catalogGroupTabIcon(key: ProviderGroupKey, size = 15) {
+  const c = "shrink-0 inline-flex [&_svg]:max-h-none [&_svg]:max-w-none opacity-90";
+  switch (key) {
+    case "claude":
+      return <Claude.Avatar size={size} className={c} />;
+    case "codex":
+      return <Codex.Avatar size={size} className={cn("opacity-95", c)} />;
+    case "cursor":
+      return <Cursor.Avatar size={size} className={c} />;
+    case "opencode":
+      return <OpenCode.Avatar size={size} className={c} />;
+    default:
+      return null;
+  }
+}
 
 function rgbaFromHex(hex: string, alpha: number): string {
   const n = hex.replace("#", "").trim();
@@ -753,10 +770,10 @@ export function ModelCatalogPanel({
                 disabled={empty || isSearchMode}
                 title={empty ? `No ${providerGroupLabel(key)} models` : undefined}
                 className={cn(
-                  "flex-1 py-1.5 px-3 text-center font-sans text-[10px] font-semibold uppercase tracking-wide transition-all duration-150",
+                  "inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 py-1.5 px-2 sm:px-2.5 font-sans text-[9px] font-semibold uppercase tracking-wide transition-all duration-150",
                   isSearchMode && "cursor-not-allowed",
-                  !isSearchMode && segActive && "rounded-lg bg-gradient-to-r from-violet-500/[0.12] to-violet-500/[0.05] text-fg border border-violet-400/20 shadow-sm",
-                  !isSearchMode && !segActive && !empty && "rounded-lg text-muted-fg/45 hover:text-fg/60 hover:bg-white/[0.04]",
+                  !isSearchMode && segActive && "rounded-lg border border-violet-400/20 bg-gradient-to-r from-violet-500/[0.12] to-violet-500/[0.05] text-fg shadow-sm",
+                  !isSearchMode && !segActive && !empty && "rounded-lg text-muted-fg/45 hover:bg-white/[0.04] hover:text-fg/60",
                   !isSearchMode && !segActive && empty && "cursor-not-allowed text-muted-fg/25",
                 )}
                 onClick={() => {
@@ -764,9 +781,10 @@ export function ModelCatalogPanel({
                   setActiveGroup(key);
                 }}
               >
-                {providerGroupLabel(key)}
+                {catalogGroupTabIcon(key)}
+                <span className="truncate">{providerGroupLabel(key)}</span>
                 {key === "opencode" && count > 0 ? (
-                  <span className="ml-0.5 text-[9px] opacity-60">({count})</span>
+                  <span className="shrink-0 text-[9px] opacity-60">({count})</span>
                 ) : null}
               </button>
             );
@@ -780,7 +798,8 @@ export function ModelCatalogPanel({
               activeProviderKey={activeProviderBlock?.key}
               onSelect={setActiveProvider}
             />
-          ) : (
+          ) : (activeGroup === "claude" || activeGroup === "codex") ? null
+          : (
             <div className="flex flex-wrap gap-2">
               {providersInActiveGroup.map((prov) => {
                 const isProvActive = activeProviderBlock?.key === prov.key;

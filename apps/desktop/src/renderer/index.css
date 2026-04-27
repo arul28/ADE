@@ -178,7 +178,7 @@
   --work-popover-border: rgba(255, 255, 255, 0.10);
   --work-popover-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
   --work-popover-item-hover: rgba(255, 255, 255, 0.06);
-  --work-popover-item-active: rgba(167, 139, 250, 0.12);
+  --work-popover-item-active: rgba(255, 255, 255, 0.08);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -303,9 +303,9 @@
 
   --work-popover-bg: color-mix(in srgb, var(--color-card) 96%, white);
   --work-popover-border: color-mix(in srgb, var(--color-border) 90%, transparent);
-  --work-popover-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(4, 144, 104, 0.06);
+  --work-popover-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.15), 0 0 0 1px color-mix(in srgb, var(--color-border) 88%, transparent);
   --work-popover-item-hover: color-mix(in srgb, var(--color-muted) 70%, transparent);
-  --work-popover-item-active: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  --work-popover-item-active: color-mix(in srgb, var(--color-fg) 8%, var(--color-card));
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -315,7 +315,8 @@
 .tab-tint-project { --tab-tint-rgb: 167, 139, 250; }
 .tab-tint-lanes { --tab-tint-rgb: 245, 158, 11; }
 .tab-tint-files { --tab-tint-rgb: 113, 113, 122; }
-.tab-tint-work { --tab-tint-rgb: 34, 197, 94; }
+/* Neutral zinc — work surface matches rest of UI, not a second brand tint. */
+.tab-tint-work { --tab-tint-rgb: 113, 113, 122; }
 .tab-tint-conflicts { --tab-tint-rgb: 239, 68, 68; }
 .tab-tint-graph { --tab-tint-rgb: 99, 102, 241; }
 .tab-tint-prs { --tab-tint-rgb: 167, 139, 250; }
@@ -1289,9 +1290,14 @@ h6 {
 }
 
 .ade-work-segmented-item[data-active="true"] {
-  color: var(--color-accent);
-  background: var(--color-accent-muted);
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 10%, transparent);
   font-weight: 500;
+}
+
+[data-theme="light"] .ade-work-segmented-item[data-active="true"] {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 8%, var(--color-card));
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1480,6 +1486,18 @@ h6 {
 /* ═══════════════════════════════════════════════════════════
    Scrollbars
    ═══════════════════════════════════════════════════════════ */
+
+/* Utility: hide scrollbars (class was used in TSX but had no CSS — global ::-webkit-scrollbar was still showing). */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
 
 ::-webkit-scrollbar {
   width: 6px;
@@ -2352,8 +2370,8 @@ button:active, [role="button"]:active {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(ellipse 60% 50% at 20% 50%, rgba(34, 197, 94, 0.03) 0%, transparent 70%),
-    radial-gradient(ellipse 40% 60% at 80% 40%, rgba(34, 197, 94, 0.02) 0%, transparent 70%);
+    radial-gradient(ellipse 60% 50% at 20% 50%, rgba(113, 113, 122, 0.05) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 60% at 80% 40%, rgba(113, 113, 122, 0.035) 0%, transparent 70%);
   opacity: 1;
 }
 
@@ -2777,19 +2795,14 @@ button:active, [role="button"]:active {
    — follow Apple HIG: content leads, glass recedes, concentric radii
    ═══════════════════════════════════════════════════════════ */
 
-/* Floating header bar — refracts content beneath, hairline bottom */
+/* Work view tab strip — flat against pane bg (no hairline or glass strip) */
 .ade-work-glass-header {
   position: relative;
-  background:
-    linear-gradient(180deg,
-      color-mix(in srgb, var(--chat-panel-bg-strong) 62%, transparent) 0%,
-      color-mix(in srgb, var(--chat-panel-bg) 42%, transparent) 100%);
-  border-bottom: 1px solid var(--work-pane-border);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 70%, transparent),
-    0 1px 0 rgba(0, 0, 0, 0.14);
-  backdrop-filter: blur(22px) saturate(150%);
-  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  background: transparent;
+  border-bottom: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /* Session tile shell — very subtle so content stays primary */
@@ -2808,19 +2821,19 @@ button:active, [role="button"]:active {
 }
 
 .ade-work-glass-tile:hover {
-  border-color: color-mix(in srgb, var(--color-accent) 22%, var(--chat-glass-border));
+  border-color: color-mix(in srgb, var(--color-fg) 10%, var(--chat-glass-border));
 }
 
-/* Active tile — purple specular ring, no heavy fill */
+/* Active tile — neutral lift + soft ring */
 .ade-work-glass-tile-active {
-  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--chat-glass-border));
+  border-color: color-mix(in srgb, var(--color-fg) 14%, var(--chat-glass-border));
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--chat-panel-bg-strong) 40%, transparent) 0%,
     color-mix(in srgb, var(--chat-panel-bg) 26%, transparent) 100%);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 80%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--color-accent) 26%, transparent),
-    0 22px 46px -28px rgba(124, 58, 237, 0.32),
+    0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent),
+    0 22px 46px -28px rgba(0, 0, 0, 0.5),
     0 10px 24px -22px rgba(0, 0, 0, 0.55);
 }
 
@@ -2831,7 +2844,7 @@ button:active, [role="button"]:active {
   pointer-events: none;
   background: radial-gradient(
     circle at top left,
-    color-mix(in srgb, var(--color-accent-glow-strong) 55%, transparent) 0%,
+    color-mix(in srgb, var(--color-fg) 6%, transparent) 0%,
     transparent 40%
   );
   opacity: 0.85;
@@ -2841,6 +2854,58 @@ button:active, [role="button"]:active {
 .ade-work-glass-tile-active > * {
   position: relative;
   z-index: 1;
+}
+
+/* Work grid tiling: lane-colored chrome (--lane-accent on pane root; WorkViewArea only) */
+.ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent {
+  border: 1px solid color-mix(in srgb, var(--lane-accent) 22%, var(--chat-glass-border));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--lane-accent) 12%, transparent),
+    0 8px 24px -20px rgba(0, 0, 0, 0.5);
+}
+
+.ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent .ade-floating-pane-header {
+  background: color-mix(in srgb, var(--lane-accent) 8%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--lane-accent) 18%, var(--work-pane-border));
+}
+
+.ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent:hover {
+  border-color: color-mix(in srgb, var(--lane-accent) 28%, var(--chat-glass-border));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--lane-accent) 16%, transparent),
+    0 10px 26px -18px rgba(0, 0, 0, 0.52),
+    0 0 22px -12px color-mix(in srgb, var(--lane-accent) 14%, transparent);
+}
+
+.ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent:focus-within {
+  border-color: color-mix(in srgb, var(--lane-accent) 32%, var(--chat-glass-border));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--lane-accent) 18%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--lane-accent) 14%, transparent),
+    0 12px 28px -18px rgba(0, 0, 0, 0.52);
+}
+
+.ade-work-grid-tiling .ade-floating-pane.ade-work-glass-tile-active.ade-floating-pane--lane-accent {
+  border-color: color-mix(
+    in srgb,
+    var(--lane-accent) 14%,
+    color-mix(in srgb, var(--color-fg) 14%, var(--chat-glass-border))
+  );
+}
+
+.ade-work-grid-tiling .ade-floating-pane.ade-work-glass-tile-active.ade-floating-pane--lane-accent .ade-floating-pane-header {
+  background: color-mix(in srgb, var(--lane-accent) 11%, transparent);
+}
+
+.ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent.dragging,
+.ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent.drop-target {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+  opacity: 0.95;
+}
+
+.ade-work-grid-tiling .ade-floating-pane.ade-floating-pane--lane-accent.drop-target {
+  opacity: 1;
 }
 
 /* Thin header strip inside a tile */
@@ -2854,58 +2919,50 @@ button:active, [role="button"]:active {
   -webkit-backdrop-filter: blur(18px) saturate(145%);
 }
 
-/* Tab-group container (lane or custom) */
+/* Tab-group container — no framed box; tabs carry their own affordance */
 .ade-work-glass-group {
-  border-radius: 14px;
-  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 100%, transparent);
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--chat-panel-bg) 30%, transparent) 0%,
-    color-mix(in srgb, var(--chat-panel-bg-strong) 18%, transparent) 100%);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 40%, transparent);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  transition: border-color 160ms ease, box-shadow 220ms ease;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: none;
 }
 
 .ade-work-glass-group-active {
-  border-color: color-mix(in srgb, var(--color-accent) 34%, var(--chat-glass-border));
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 70%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 
-/* Active tab pill */
+/* Active tab / pill in work chrome — neutral, matches shell controls */
 .ade-work-tab-active {
   background: linear-gradient(180deg,
-    color-mix(in srgb, var(--color-accent) 22%, transparent) 0%,
-    color-mix(in srgb, var(--color-accent) 12%, transparent) 100%);
+    color-mix(in srgb, var(--color-fg) 9%, transparent) 0%,
+    color-mix(in srgb, var(--color-fg) 5%, transparent) 100%);
   color: var(--color-fg);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--color-accent) 28%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent);
 }
 
-/* Purple specular plus button ("New Chat") */
 .ade-work-new-chat-btn {
   position: relative;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 38%, transparent);
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--color-accent) 20%, transparent) 0%,
-    color-mix(in srgb, var(--color-accent) 10%, transparent) 100%);
-  color: color-mix(in srgb, var(--color-accent-bright) 85%, white);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
-    0 6px 18px -12px color-mix(in srgb, var(--color-accent) 50%, transparent);
-  transition: transform 160ms ease, box-shadow 200ms ease, background 180ms ease;
-  backdrop-filter: blur(12px) saturate(140%);
-  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  border: none;
+  background: transparent;
+  color: var(--color-muted-fg);
+  box-shadow: none;
+  transition: color 120ms ease, background 120ms ease;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .ade-work-new-chat-btn:hover {
-  transform: translateY(-0.5px);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
-    0 8px 22px -10px color-mix(in srgb, var(--color-accent) 58%, transparent);
+  transform: none;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  box-shadow: none;
 }
 
 /* Unified hero shell for the "start new conversation" surface */
@@ -2921,7 +2978,7 @@ button:active, [role="button"]:active {
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 110%, transparent),
     0 32px 72px -32px rgba(0, 0, 0, 0.58),
-    0 0 0 1px color-mix(in srgb, var(--color-accent) 14%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--chat-glass-border) 95%, transparent);
   backdrop-filter: blur(30px) saturate(160%);
   -webkit-backdrop-filter: blur(30px) saturate(160%);
 }
@@ -2933,7 +2990,7 @@ button:active, [role="button"]:active {
   pointer-events: none;
   background:
     radial-gradient(circle at 22% 0%,
-      color-mix(in srgb, var(--color-accent-glow-strong) 75%, transparent) 0%,
+      color-mix(in srgb, var(--color-fg) 5%, transparent) 0%,
       transparent 45%),
     linear-gradient(160deg,
       color-mix(in srgb, var(--chat-glass-highlight) 110%, transparent) 0%,

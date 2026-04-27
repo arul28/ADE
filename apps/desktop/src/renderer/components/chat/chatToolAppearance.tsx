@@ -98,12 +98,24 @@ export function isCodeChangeTool(toolName: string): boolean {
   return getToolMeta(toolName).category === "write";
 }
 
+type DoneStatus = "completed" | "failed" | "interrupted";
+
+function pastTense(status: DoneStatus): "complete" | "failed" | "interrupted" {
+  switch (status) {
+    case "failed":
+      return "failed";
+    case "interrupted":
+      return "interrupted";
+    case "completed":
+      return "complete";
+  }
+}
+
 export function describeToolVerb(
   toolName: string,
   status: "running" | "completed" | "failed" | "interrupted",
 ): string {
   const meta = getToolMeta(toolName);
-  const past = status === "running" ? null : status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "complete";
   const isShell = meta.category === "exec" || meta.label === "Shell";
   const isRead = meta.category === "read"
     || meta.label === "Read"
@@ -112,28 +124,25 @@ export function describeToolVerb(
     || meta.label === "Find Files";
   const isSearch = meta.label === "Search" || meta.label === "Find Files";
   const isWeb = meta.category === "web";
-  if (isShell) {
-    if (status === "running") return "Running command…";
-    return past === "complete" ? "Command run complete" : `Command ${past}`;
+  const isPlan = meta.category === "plan";
+
+  if (status === "running") {
+    if (isShell) return "Running command…";
+    if (isWeb) return "Fetching…";
+    if (isSearch && !isRead) return "Searching…";
+    if (isRead) return "Reading…";
+    if (isPlan) return "Planning…";
+    return "Running…";
   }
-  if (isWeb) {
-    if (status === "running") return "Fetching…";
-    return past === "complete" ? "Fetch complete" : `Fetch ${past}`;
-  }
-  if (isSearch && !isRead) {
-    if (status === "running") return "Searching…";
-    return past === "complete" ? "Search complete" : `Search ${past}`;
-  }
-  if (isRead) {
-    if (status === "running") return "Reading…";
-    return past === "complete" ? "Read complete" : `Read ${past}`;
-  }
-  if (meta.category === "plan") {
-    if (status === "running") return "Planning…";
-    return past === "complete" ? "Plan updated" : `Plan ${past}`;
-  }
-  if (status === "running") return "Running…";
-  return past === "complete" ? "Complete" : past!.charAt(0).toUpperCase() + past!.slice(1);
+
+  const past = pastTense(status);
+  if (isShell) return past === "complete" ? "Command run complete" : `Command ${past}`;
+  if (isWeb) return past === "complete" ? "Fetch complete" : `Fetch ${past}`;
+  if (isSearch && !isRead) return past === "complete" ? "Search complete" : `Search ${past}`;
+  if (isRead) return past === "complete" ? "Read complete" : `Read ${past}`;
+  if (isPlan) return past === "complete" ? "Plan updated" : `Plan ${past}`;
+  if (past === "complete") return "Complete";
+  return past.charAt(0).toUpperCase() + past.slice(1);
 }
 
 export function getToolMeta(toolName: string): ToolMeta {

@@ -121,9 +121,8 @@ struct WorkChatMessageBubble: View {
   }
 
   private var assistantRow: some View {
-    // Model name intentionally absent here. The turn separator above each user
-    // message already labels the active model; repeating it over every
-    // assistant response clutters the transcript.
+    // Model name intentionally absent here. Usage / composer show model; the
+    // turn line is time-only.
     WorkMarkdownRenderer(markdown: message.markdown)
       .padding(.horizontal, 14)
       .padding(.vertical, 12)
@@ -187,6 +186,7 @@ struct WorkChatMessageBubble: View {
       case "queued": return .queued
       case "delivered":
         return message.processed == true ? nil : .delivered
+      case "inline": return .inline
       case "failed": return .failed
       case "sending": return .sending
       default: return nil
@@ -222,44 +222,26 @@ struct WorkChatMessageBubble: View {
   }
 }
 
-/// Centered "11:34 AM · Claude Sonnet 4.6" pill that introduces each turn,
-/// matching desktop's transcript separator. Pulled into a dedicated view so
-/// timeline rendering can switch on `WorkTimelinePayload.turnSeparator` and
-/// drop in a single component.
+/// Centered time pill that introduces each turn (model lives in the usage
+/// row and composer; matches desktop’s time-only turn divider).
 struct WorkTurnSeparatorView: View {
   let separator: WorkTurnSeparator
 
   var body: some View {
-    let accent = ADEColor.chatSurfaceAccent(modelId: separator.modelId, provider: separator.provider)
     HStack(spacing: 8) {
       Spacer(minLength: 0)
       Text(workTurnSeparatorTimeLabel(separator.time))
         .font(.caption2.monospacedDigit())
         .foregroundStyle(ADEColor.textMuted)
-      if !separator.modelLabel.isEmpty {
-        HStack(spacing: 5) {
-          Circle()
-            .fill(accent)
-            .frame(width: 6, height: 6)
-          Text(separator.modelLabel)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(accent)
-            .lineLimit(1)
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
-        .background(accent.opacity(0.10), in: Capsule(style: .continuous))
-        .overlay(
-          Capsule(style: .continuous)
-            .stroke(accent.opacity(0.22), lineWidth: 0.5)
-        )
-      }
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity)
     .padding(.vertical, 4)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("New turn at \(workTurnSeparatorTimeLabel(separator.time))" + (separator.modelLabel.isEmpty ? "" : ", model \(separator.modelLabel)"))
+    .accessibilityLabel(
+      "New turn at \(workTurnSeparatorTimeLabel(separator.time))"
+        + (separator.modelLabel.isEmpty ? "" : ". Model: \(separator.modelLabel)")
+    )
   }
 }
 
@@ -331,13 +313,14 @@ extension EnvironmentValues {
 
 struct WorkDeliveryBadge: View {
   enum State {
-    case queued, sending, delivered, failed
+    case queued, sending, delivered, inline, failed
 
     var label: String {
       switch self {
       case .queued: return "Queued"
       case .sending: return "Sending"
       case .delivered: return "Delivered"
+      case .inline: return "During turn"
       case .failed: return "Failed"
       }
     }
@@ -347,6 +330,7 @@ struct WorkDeliveryBadge: View {
       case .queued: return "clock"
       case .sending: return "arrow.up.circle"
       case .delivered: return "checkmark.circle"
+      case .inline: return "arrow.turn.down.right"
       case .failed: return "exclamationmark.triangle"
       }
     }
@@ -356,6 +340,7 @@ struct WorkDeliveryBadge: View {
       case .queued: return ADEColor.accent
       case .sending: return ADEColor.accent
       case .delivered: return ADEColor.success
+      case .inline: return ADEColor.accent
       case .failed: return ADEColor.danger
       }
     }

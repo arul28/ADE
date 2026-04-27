@@ -82,22 +82,54 @@ Main process (the substrate):
   the path matches a recent-projects row in the global state file —
   lane count and last-opened timestamp.
 - `apps/desktop/src/main/services/projects/projectIconResolver.ts` —
-  best-effort favicon discovery for a project root. Walks a fixed list
-  of common icon paths (`favicon.svg/ico/png`, `public/favicon.*`,
-  `app/favicon.*`, `app/icon.*`, `src/(app/)?favicon.*`,
-  `assets/icon.*`, `assets/logo.*`, `.idea/icon.svg`); when none of
-  those exist it scans `index.html`, `public/index.html`, the TanStack
-  Router root file (`app/routes/__root.tsx`, `src/routes/__root.tsx`),
-  and `app/root.tsx` / `src/root.tsx` for a `<link rel="icon">` href
-  (HTML attribute or JS-object form, local hrefs only) and resolves it
-  against `public/` or the project root. `resolveProjectIcon(rootPath)`
-  returns `{ dataUrl, sourcePath, mimeType }`: any matched file under 1
-  MB is base64-encoded as a data URL (svg/ico/png MIME types only),
-  larger files report only `sourcePath` so callers can render
-  themselves. Path traversal outside the project root is blocked.
+  best-effort icon discovery and user-overridable selection for a
+  project root. Discovery walks a fixed list of base directories
+  (`./`, `app/`, `src/`, `src/app/`, `public/`, `assets/`, `build/`)
+  combined with one-deep child directories (and one-deep
+  `apps/*` / `packages/*` for monorepos), checking a curated list of
+  filenames (`macIcon.png`, `app-icon.{png,svg,webp}`,
+  `icon.{png,svg,ico,webp}`, `logo.{png,svg,webp}`,
+  `favicon.{png,svg,ico}`) and any image file whose name contains
+  `icon`/`logo` or equals `favicon`. Heavy directories
+  (`.ade`, `.git`, `.next`, `.open-next`, `coverage`, `dist`,
+  `node_modules`, `out`) are skipped. Candidates are scored: `macicon`
+  / `app-icon` win first, then `icon`, then `logo`, then any name
+  containing `icon`, then `favicon`; `/app/` and `/src/app/` placement
+  boosts score, `apps/desktop/build/` boosts further (so ADE's own
+  app icon is preferred when developing ADE), `/docs/` and
+  `/mintlify/` paths are demoted. PNG > SVG > ICO > WebP for ties,
+  shallower paths win, alphabetical tiebreak last. When automatic
+  discovery returns nothing, the resolver scans `index.html`,
+  `public/index.html`, the TanStack Router root files
+  (`app/routes/__root.tsx`, `src/routes/__root.tsx`), `app/root.tsx`,
+  `src/root.tsx`, and `src/index.html` for a `<link rel="icon">` href
+  (HTML attribute or JS-object form, local hrefs only) and resolves
+  it against `public/` or the project root.
+
+  An explicit user choice in `.ade/ade.yaml` (`project.iconPath`
+  relative to the project root) is honoured first. `iconPath: null`
+  disables automatic detection entirely so the project deliberately
+  shows the fallback glyph; an unknown / removed file silently falls
+  through to detection. `setProjectIconOverride(rootPath, iconPath)`
+  validates the path stays inside the project root and points at a
+  supported file, then writes `project.iconPath` into
+  `.ade/ade.yaml`. `removeProjectIconOverride(rootPath)` writes
+  `iconPath: null`. Both helpers return the freshly resolved
+  `ProjectIcon` so the renderer can update the cache in one round
+  trip.
+
+  `resolveProjectIcon(rootPath)` returns
+  `{ dataUrl, sourcePath, mimeType }`: any matched file under 1 MB is
+  base64-encoded as a data URL (svg / ico / png / jpeg / webp), larger
+  files report only `sourcePath`. Path traversal outside the project
+  root is blocked end-to-end (probe paths run through
+  `resolvePathWithinRoot`, so symlinks pointing outside the worktree
+  silently fail to match instead of leaking files).
 - `apps/desktop/src/main/services/projects/projectIconResolver.test.ts`
-  — vitest coverage for the resolver: direct file matches, HTML link
-  scrapes, escape-attempt rejection, and base64 data-URL emission.
+  — vitest coverage: direct file matches, HTML link scrapes,
+  escape-attempt rejection, base64 data-URL emission, scoring
+  preferences, and round-tripping `setProjectIconOverride` /
+  `removeProjectIconOverride` against `.ade/ade.yaml`.
 
 Shared types:
 
@@ -233,7 +265,7 @@ Scoped to the current run lane.
 
 ### Project icons
 
-Each project gets a best-effort favicon resolved by
+Each project gets a best-effort icon resolved by
 `projectIconResolver`. The renderer asks for it on demand through
 `window.ade.project.resolveIcon(rootPath)` (handler:
 `IPC.projectResolveIcon` →
@@ -243,6 +275,21 @@ project tab strip caches the result per `rootPath` in a module-local
 no icon (or the file is over the 1 MB cap), the tab falls back to the
 `Folder` Phosphor glyph. Missing-project tabs skip the lookup
 entirely.
+
+The TopBar tab also exposes a small icon-override dialog: clicking the
+icon button opens a Radix dialog with **Choose icon…** and **Reset to
+auto-detected**. **Choose icon…** calls
+`window.ade.project.chooseIcon(rootPath)` which opens an Electron
+file picker (filtered to `ico`/`jpeg`/`jpg`/`png`/`svg`/`webp`); the
+selected path is validated (must live inside the project root and be a
+supported image type), persisted to `.ade/ade.yaml` under
+`project.iconPath`, and the freshly resolved icon is returned to the
+renderer. **Reset to auto-detected** calls
+`window.ade.project.removeIcon(rootPath)`, which writes
+`project.iconPath: null` so the project deliberately shows the
+fallback glyph (use the file picker to pick a new one to re-enable
+detection or override). The override is committed to `.ade/ade.yaml`
+(shared, committed) so collaborators see the same project icon.
 
 The mobile companion gets the icon through a dedicated path: the host's
 `mobileProjectSummaryForContext` / `mobileProjectSummaryForRecent` in

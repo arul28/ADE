@@ -19,6 +19,7 @@ import {
   type AiRuntimeConnectionStatus,
   type AgentChatSession,
   type AgentChatOpenCodePermissionMode,
+  type AgentChatPermissionMode,
   type AgentChatParallelLaunchState,
   type AgentChatSessionProfile,
   type ChatSurfaceChip,
@@ -74,6 +75,7 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { DEFAULT_CHAT_FONT_SIZE_PX, useAppStore } from "../../state/appStore";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
+import { LaneCombobox } from "../terminals/LaneCombobox";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached } from "../../lib/aiDiscoveryCache";
@@ -396,6 +398,79 @@ function buildFallbackCursorModeSnapshot(modeId: string | null | undefined): Non
     availableModeIds: [...CURSOR_AVAILABLE_MODE_IDS],
   };
 }
+
+type HandoffCodexPreset = "default" | "plan" | "full-auto" | "config-toml" | "custom";
+
+function resolveHandoffCodexPreset(controls: {
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+}): HandoffCodexPreset {
+  if (controls.codexConfigSource === "config-toml") return "config-toml";
+  if ((controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "on-failure" || controls.codexApprovalPolicy === "untrusted") && controls.codexSandbox === "workspace-write") return "default";
+  if ((controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "untrusted") && controls.codexSandbox === "read-only") return "plan";
+  if (controls.codexApprovalPolicy === "never" && controls.codexSandbox === "danger-full-access") return "full-auto";
+  return "custom";
+}
+
+function handoffApplyCodexPreset(
+  preset: "default" | "plan" | "full-auto" | "config-toml",
+  fallbacks: { cap: AgentChatCodexApprovalPolicy; sandbox: AgentChatCodexSandbox },
+): Pick<NativeControlState, "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource"> {
+  if (preset === "default") {
+    return {
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    };
+  }
+  if (preset === "plan") {
+    return {
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    };
+  }
+  if (preset === "config-toml") {
+    return {
+      codexApprovalPolicy: fallbacks.cap,
+      codexSandbox: fallbacks.sandbox,
+      codexConfigSource: "config-toml",
+    };
+  }
+  return {
+    codexApprovalPolicy: "never",
+    codexSandbox: "danger-full-access",
+    codexConfigSource: "flags",
+  };
+}
+
+function clampHandoffReasoningToModel(current: string | null, descriptor: ModelDescriptor | null): string | null {
+  if (!descriptor) return null;
+  if (!descriptor.capabilities?.reasoning) return null;
+  const tiers = descriptor.reasoningTiers ?? [];
+  if (!tiers.length) return null;
+  if (current && tiers.includes(current)) return current;
+  return tiers[0] ?? null;
+}
+
+const HANDOFF_CLAUDE_MODES: Array<{ value: AgentChatClaudePermissionMode; label: string }> = [
+  { value: "default", label: "Ask permissions" },
+  { value: "acceptEdits", label: "Accept edits" },
+  { value: "plan", label: "Plan" },
+  { value: "bypassPermissions", label: "Bypass" },
+];
+
+const HANDOFF_OPENCODE_MODES: Array<{ value: AgentChatOpenCodePermissionMode; label: string }> = [
+  { value: "plan", label: "Plan" },
+  { value: "edit", label: "Edit" },
+  { value: "full-auto", label: "Full auto" },
+];
+
+const handoffSelectCls = cn(
+  "h-8 w-full min-w-0 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-sans text-[10px] text-fg/70",
+  "outline-none transition-colors duration-150 focus:border-violet-400/30",
+);
 
 function migrateOldPrefs(): string | null {
   try {
@@ -885,8 +960,8 @@ export function AgentChatPane({
   isTileActive?: boolean;
   shouldAutofocusComposer?: boolean;
   onSessionCreated?: (session: AgentChatSession) => void | Promise<void>;
-  /** Available lanes for the lane selector in empty state */
-  availableLanes?: Array<{ id: string; name: string; color?: string | null }>;
+  /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
+  availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null }>;
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
 }) {
@@ -967,6 +1042,24 @@ export function AgentChatPane({
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
+  const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
+  const [handoffClaudePermissionMode, setHandoffClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(
+    initialNativeControls.claudePermissionMode,
+  );
+  const [handoffCodexApprovalPolicy, setHandoffCodexApprovalPolicy] = useState<AgentChatCodexApprovalPolicy>(
+    initialNativeControls.codexApprovalPolicy,
+  );
+  const [handoffCodexSandbox, setHandoffCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
+  const [handoffCodexConfigSource, setHandoffCodexConfigSource] = useState<AgentChatCodexConfigSource>(
+    initialNativeControls.codexConfigSource,
+  );
+  const [handoffOpenCodePermissionMode, setHandoffOpenCodePermissionMode] = useState<AgentChatOpenCodePermissionMode>(
+    initialNativeControls.opencodePermissionMode,
+  );
+  const [handoffCursorModeId, setHandoffCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
+  const [handoffCursorConfigValues, setHandoffCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(
+    () => ({ ...initialNativeControls.cursorConfigValues }),
+  );
   const [parallelChatMode, setParallelChatMode] = useState(false);
   const [parallelModelSlots, setParallelModelSlots] = useState<ParallelModelRowState[]>([]);
   const [parallelConfiguringIndex, setParallelConfiguringIndex] = useState<number | null>(null);
@@ -1505,6 +1598,49 @@ export function AgentChatPane({
       && !isPersistentIdentitySurface
       && (selectedSession.surface ?? "work") === "work",
   );
+  const handoffTargetDescriptor = useMemo(
+    () => (handoffModelId ? (getModelById(handoffModelId) ?? null) : null),
+    [handoffModelId],
+  );
+  const handoffTargetProvider = useMemo(
+    () => (handoffTargetDescriptor ? resolveProviderGroupForModel(handoffTargetDescriptor) : null),
+    [handoffTargetDescriptor],
+  );
+  const handoffNativeControlState = useMemo((): NativeControlState => ({
+    interactionMode,
+    claudePermissionMode: handoffClaudePermissionMode,
+    codexApprovalPolicy: handoffCodexApprovalPolicy,
+    codexSandbox: handoffCodexSandbox,
+    codexConfigSource: handoffCodexConfigSource,
+    opencodePermissionMode: handoffOpenCodePermissionMode,
+    cursorModeId: handoffCursorModeId,
+    cursorConfigValues: handoffCursorConfigValues,
+  }), [
+    interactionMode,
+    handoffClaudePermissionMode,
+    handoffCodexApprovalPolicy,
+    handoffCodexSandbox,
+    handoffCodexConfigSource,
+    handoffOpenCodePermissionMode,
+    handoffCursorModeId,
+    handoffCursorConfigValues,
+  ]);
+  const handoffNativePermissionMode = useMemo((): AgentChatPermissionMode | undefined | null => {
+    if (!handoffTargetProvider) return null;
+    return summarizeNativeControls(handoffTargetProvider, handoffNativeControlState).permissionMode
+      ?? undefined;
+  }, [handoffTargetProvider, handoffNativeControlState]);
+  const handoffCodexPermissionPreset = useMemo(
+    () =>
+      resolveHandoffCodexPreset({
+        codexApprovalPolicy: handoffCodexApprovalPolicy,
+        codexSandbox: handoffCodexSandbox,
+        codexConfigSource: handoffCodexConfigSource,
+      }),
+    [handoffCodexApprovalPolicy, handoffCodexSandbox, handoffCodexConfigSource],
+  );
+  const handoffCodexSelectValue: "default" | "plan" | "full-auto" | "config-toml" =
+    handoffCodexPermissionPreset === "custom" ? "default" : handoffCodexPermissionPreset;
   const handoffBlocked = turnActive || selectedSessionAwaitingInput || handoffBusy;
   const handoffButtonTitle = handoffBlocked
     ? "Wait for the current output or approval to finish before handing off this chat."
@@ -2099,6 +2235,28 @@ export function AgentChatPane({
     });
   }, [handoffAvailableModelIds, handoffOpen, selectedSessionModelId]);
 
+  const prevHandoffOpenRef = useRef(false);
+  useEffect(() => {
+    if (handoffOpen && !prevHandoffOpenRef.current) {
+      setHandoffReasoningEffort(reasoningEffort ?? null);
+      setHandoffClaudePermissionMode(claudePermissionMode);
+      setHandoffCodexApprovalPolicy(codexApprovalPolicy);
+      setHandoffCodexSandbox(codexSandbox);
+      setHandoffCodexConfigSource(codexConfigSource);
+      setHandoffOpenCodePermissionMode(opencodePermissionMode);
+      setHandoffCursorModeId(cursorModeId);
+      setHandoffCursorConfigValues({ ...cursorConfigValues });
+    }
+    prevHandoffOpenRef.current = handoffOpen;
+    // Intentional: one-shot on open; avoid resetting the handoff form when underlying composer state changes while the menu is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handoffOpen]);
+
+  useEffect(() => {
+    if (!handoffOpen || !handoffModelId) return;
+    setHandoffReasoningEffort((prev) => clampHandoffReasoningToModel(prev, handoffTargetDescriptor));
+  }, [handoffOpen, handoffModelId, handoffTargetDescriptor]);
+
   useEffect(() => {
     if (!selectedSessionId) return;
     if (!lockedSingleSessionMode) {
@@ -2600,9 +2758,19 @@ export function AgentChatPane({
     setError(null);
     setHandoffBusy(true);
     try {
+      const resolvedHandoffPermissionMode = handoffNativePermissionMode ?? selectedSession?.permissionMode;
       const result = await window.ade.agentChat.handoff({
         sourceSessionId: selectedSessionId,
         targetModelId: handoffModelId,
+        reasoningEffort: handoffReasoningEffort,
+        claudePermissionMode: handoffClaudePermissionMode,
+        codexApprovalPolicy: handoffCodexApprovalPolicy,
+        codexSandbox: handoffCodexSandbox,
+        codexConfigSource: handoffCodexConfigSource,
+        opencodePermissionMode: handoffOpenCodePermissionMode,
+        ...(resolvedHandoffPermissionMode != null ? { permissionMode: resolvedHandoffPermissionMode } : {}),
+        cursorModeId: handoffCursorModeId,
+        cursorConfigValues: handoffCursorConfigValues,
       });
       setHandoffOpen(false);
       notifySessionCreated(result.session);
@@ -2612,7 +2780,24 @@ export function AgentChatPane({
     } finally {
       setHandoffBusy(false);
     }
-  }, [canShowHandoff, handoffBlocked, handoffModelId, notifySessionCreated, refreshSessions, selectedSessionId]);
+  }, [
+    canShowHandoff,
+    handoffBlocked,
+    handoffClaudePermissionMode,
+    handoffCodexApprovalPolicy,
+    handoffCodexConfigSource,
+    handoffCodexSandbox,
+    handoffCursorConfigValues,
+    handoffCursorModeId,
+    handoffModelId,
+    handoffNativePermissionMode,
+    handoffOpenCodePermissionMode,
+    handoffReasoningEffort,
+    notifySessionCreated,
+    refreshSessions,
+    selectedSession?.permissionMode,
+    selectedSessionId,
+  ]);
 
   const handleEndSelectedChat = useCallback(() => {
     if (!selectedSessionId || !selectedSession || selectedSession.status === "ended") return;
@@ -3365,12 +3550,17 @@ export function AgentChatPane({
                 Handoff
               </button>
               {handoffOpen ? (
-                <div className="absolute right-0 top-full z-[100] mt-2 w-[min(24rem,calc(100vw-2rem))] rounded-[14px] border border-violet-400/[0.10] bg-[#151325]/95 p-4 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)] backdrop-blur-[40px]">
+                <div className="absolute right-0 top-full z-[100] mt-2 w-[min(26rem,calc(100vw-2rem))] rounded-[14px] border border-violet-400/[0.10] bg-[#13101a] p-4 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)]">
                   <div className="space-y-1">
                     <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
                     <div className="text-[11px] leading-5 text-fg/54">
                       ADE will create a new work chat, inject a handoff summary from this session, and route you into the new tab.
                     </div>
+                    {laneId ? (
+                      <div className="text-[10px] leading-4 text-fg/40">
+                        New session stays in this lane ({laneDisplayLabel}).
+                      </div>
+                    ) : null}
                   </div>
                   <div className="mt-3">
                     <ProviderModelSelector
@@ -3378,9 +3568,88 @@ export function AgentChatPane({
                       onChange={setHandoffModelId}
                       availableModelIds={handoffAvailableModelIds}
                       showReasoning
+                      reasoningEffort={handoffReasoningEffort}
+                      onReasoningEffortChange={setHandoffReasoningEffort}
                       onOpenAiSettings={openAiProvidersSettings}
                     />
                   </div>
+                  {handoffTargetProvider ? (
+                    <div className="mt-2 space-y-1.5">
+                      <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Permission mode</div>
+                      {handoffTargetProvider === "claude" ? (
+                        <select
+                          value={handoffClaudePermissionMode}
+                          onChange={(e) => setHandoffClaudePermissionMode(e.target.value as AgentChatClaudePermissionMode)}
+                          className={handoffSelectCls}
+                          aria-label="Claude permission mode for handoff"
+                        >
+                          {HANDOFF_CLAUDE_MODES.map((m) => (
+                            <option key={m.value} value={m.value}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                      {handoffTargetProvider === "codex" ? (
+                        <div className="space-y-0.5">
+                          <select
+                            value={handoffCodexSelectValue}
+                            title={handoffCodexPermissionPreset === "custom" ? "Non-standard policy; choosing a preset replaces it." : undefined}
+                            onChange={(e) => {
+                              const next = e.target.value as "default" | "plan" | "full-auto" | "config-toml";
+                              const updated = handoffApplyCodexPreset(next, {
+                                cap: handoffCodexApprovalPolicy,
+                                sandbox: handoffCodexSandbox,
+                              });
+                              setHandoffCodexApprovalPolicy(updated.codexApprovalPolicy);
+                              setHandoffCodexSandbox(updated.codexSandbox);
+                              setHandoffCodexConfigSource(updated.codexConfigSource);
+                            }}
+                            className={handoffSelectCls}
+                            aria-label="Codex permission preset for handoff"
+                          >
+                            <option value="default">Default — write + prompts on risk</option>
+                            <option value="plan">Plan — read only + prompts</option>
+                            <option value="full-auto">Full auto — no prompts</option>
+                            <option value="config-toml">Use codex config.toml</option>
+                          </select>
+                          {handoffCodexPermissionPreset === "custom" ? (
+                            <div className="text-[10px] text-amber-200/55">Session uses a custom policy; select a standard preset to apply to the new chat.</div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {handoffTargetProvider === "opencode" ? (
+                        <select
+                          value={handoffOpenCodePermissionMode}
+                          onChange={(e) => setHandoffOpenCodePermissionMode(e.target.value as AgentChatOpenCodePermissionMode)}
+                          className={handoffSelectCls}
+                          aria-label="OpenCode permission mode for handoff"
+                        >
+                          {HANDOFF_OPENCODE_MODES.map((m) => (
+                            <option key={m.value} value={m.value}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                      {handoffTargetProvider === "cursor" ? (
+                        <select
+                          value={handoffCursorModeId?.trim() || "agent"}
+                          onChange={(e) => {
+                            setHandoffCursorModeId(e.target.value || "agent");
+                          }}
+                          className={handoffSelectCls}
+                          aria-label="Cursor agent mode for handoff"
+                        >
+                          {CURSOR_AVAILABLE_MODE_IDS.map((modeId) => (
+                            <option key={modeId} value={modeId}>
+                              {modeId}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <div className="mt-3 flex items-center justify-end gap-2">
                     <button
                       type="button"
@@ -3981,35 +4250,20 @@ export function AgentChatPane({
                     <h2 className="font-sans text-[18px] font-semibold tracking-tight text-fg/80">
                       Start a new conversation
                     </h2>
-                    <p className="max-w-sm text-center text-[13px] leading-relaxed text-fg/35">
-                      Ask ADE anything — refactor code, debug issues, or explore ideas.
-                    </p>
 
                     {/* Lane selector pill */}
                     {showWorkspaceChrome && availableLanes && availableLanes.length > 0 && onLaneChange ? (
                       <motion.div
+                        className="flex justify-center"
                         exit={{ opacity: 0, transition: { duration: 0.15 } }}
                       >
-                        <select
-                          aria-label="Select lane"
+                        <LaneCombobox
+                          lanes={availableLanes}
                           value={laneId ?? ""}
-                          onChange={(e) => onLaneChange(e.target.value)}
-                          className="appearance-none rounded-full px-4 py-1.5 text-[11px] font-medium text-fg/70 outline-none transition-colors cursor-pointer"
-                          style={{
-                            background: "rgba(255,255,255,0.04)",
-                            border: "1px solid rgba(255,255,255,0.08)",
-                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.4)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
-                            backgroundRepeat: "no-repeat",
-                            backgroundPosition: "right 10px center",
-                            paddingRight: "28px",
-                          }}
-                        >
-                          {availableLanes.map((lane) => (
-                            <option key={lane.id} value={lane.id}>
-                              {lane.name}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={onLaneChange}
+                          variant="pill"
+                          aria-label="Select lane"
+                        />
                       </motion.div>
                     ) : showWorkspaceChrome && laneDisplayLabel ? (
                       <motion.div

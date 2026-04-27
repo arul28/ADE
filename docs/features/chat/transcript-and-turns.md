@@ -65,7 +65,7 @@ Two helpers summarise a parsed stream:
 
 | Type | Purpose |
 |---|---|
-| `user_message` | A user turn; carries text, attachments, `turnId`, optional `steerId`/`deliveryState` for queued steers. |
+| `user_message` | A user turn; carries text, attachments, `turnId`, optional `steerId` and `deliveryState`. `deliveryState` is `"queued"` while a steer waits for turn-end delivery, `"delivered"` once flushed at turn boundary, `"inline"` when the user inline-dispatched a queued steer into the active Claude turn (SDK `shouldQuery:false` send), and `"failed"` if dispatch errored. |
 | `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. |
 | `reasoning` | Chain-of-thought or assistant-internal reasoning; surfaces as a distinct transcript row with a collapsible header. |
 | `tool_call` / `tool_result` | Paired per tool invocation; rendered inside work-log groups. `tool_result.status` can be `running`, `completed`, `failed`, or `interrupted`. |

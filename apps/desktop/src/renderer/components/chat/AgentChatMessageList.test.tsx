@@ -149,6 +149,7 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
       },
     ]);
 
+    fireEvent.click(screen.getByRole("button", { name: /Tool calls/ }));
     fireEvent.click(screen.getByRole("button", { name: "Open in Work" }));
 
     expect(screen.getByTestId("location").textContent).toBe("/work?sessionId=chat-1::null");
@@ -179,6 +180,7 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
       },
     ]);
 
+    fireEvent.click(screen.getByRole("button", { name: /Tool calls/ }));
     fireEvent.click(screen.getByRole("button", { name: "Open mission" }));
 
     expect(screen.getByTestId("location").textContent).toBe("/missions?missionId=mission-1::null");
@@ -186,7 +188,7 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
-  it("renders queued follow-ups as pending next-turn notices", () => {
+  it("renders queued user messages in-thread when not a steer placeholder", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -199,8 +201,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.getByText(/Queued.*will be delivered/)).toBeTruthy();
-    expect(screen.getByText("what are you doing?")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByText("what are you doing?")).toBeTruthy();
+    });
   });
 
   it("keeps the done summary visible when only the model attribution is available", () => {
@@ -221,7 +224,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThan(0);
   });
 
-  it("renders memory system notices as compact pills in the transcript", () => {
+  it("renders memory system notices as a minimal thought-style disclosure in the transcript", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -237,11 +240,11 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    // Memory notices now render as a compact pill, not a collapsible card
-    expect(screen.getByText("Memory: 3 relevant entries injected")).toBeTruthy();
-    // No collapsible detail sections
+    expect(screen.getByText("Memory")).toBeTruthy();
+    expect(screen.queryByText("Memory: 3 relevant entries injected")).toBeNull();
+    fireEvent.click(screen.getByText("Memory"));
+    expect(screen.getAllByText("Memory: 3 relevant entries injected")).toHaveLength(1);
     expect(screen.queryByText("Memory lookup")).toBeNull();
-    expect(screen.queryByText("Policy")).toBeNull();
   });
 
   it("renders provider health and thread error notices distinctly", () => {
@@ -931,7 +934,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     expect(rendered.container.textContent).toContain("pwd");
-    expect(rendered.container.textContent).toMatch(/Running command|Command run/);
+    expect(rendered.container.textContent).toContain("shell");
     expect(rendered.container.innerHTML).toContain("max-w-[min(100%,70ch)]");
   });
 

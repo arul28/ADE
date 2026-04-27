@@ -62,6 +62,7 @@ import type {
   MissionPermissionConfig,
   NotificationsConfig,
   NotificationApnsConfig,
+  ProjectIdentityConfig,
   StackButtonDefinition,
   TestSuiteDefinition,
   TestSuiteTag
@@ -1914,6 +1915,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   }
 
   const version = asNumber(value.version) ?? VERSION;
+  const project = coerceProjectIdentityConfig(value.project);
   const processes = Array.isArray(value.processes)
     ? value.processes.map(coerceProcessDef).filter((x): x is ConfigProcessDefinition => x != null)
     : [];
@@ -1966,6 +1968,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
 
   return {
     version,
+    ...(project ? { project } : {}),
     processes,
     processGroups,
     stackButtons,
@@ -2033,9 +2036,19 @@ function mergeNotificationsConfig(
   };
 }
 
+function coerceProjectIdentityConfig(value: unknown): ProjectIdentityConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  if (Object.prototype.hasOwnProperty.call(value, "iconPath") && value.iconPath === null) {
+    return { iconPath: null };
+  }
+  const iconPath = asString(value.iconPath)?.trim();
+  return iconPath ? { iconPath } : undefined;
+}
+
 function toCanonicalYaml(config: ProjectConfigFile): string {
   const normalized: ProjectConfigFile = {
     version: VERSION,
+    ...(config.project ? { project: config.project } : {}),
     processes: config.processes ?? [],
     stackButtons: config.stackButtons ?? [],
     testSuites: config.testSuites ?? [],
@@ -2098,6 +2111,10 @@ function resolveReadiness(readiness: ConfigProcessReadiness | undefined): Proces
 }
 
 function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigFile): EffectiveProjectConfig {
+  const project = {
+    ...(shared.project ?? {}),
+    ...(local.project ?? {}),
+  };
   const mergedProcesses = mergeById(shared.processes ?? [], local.processes ?? [], (base, over) => ({
     ...base,
     ...over,
@@ -2382,6 +2399,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
 
   return {
     version: VERSION,
+    ...(Object.keys(project).length ? { project } : {}),
     processes,
     stackButtons,
     processGroups,
@@ -2558,6 +2576,15 @@ function validateEffectiveConfig(
       issues.push({ path: "effective.github.prPollingIntervalSeconds", message: "prPollingIntervalSeconds must be > 0" });
     } else if (prPoll < 5 || prPoll > 300) {
       issues.push({ path: "effective.github.prPollingIntervalSeconds", message: "prPollingIntervalSeconds must be between 5 and 300" });
+    }
+  }
+
+  const iconPath = effective.project?.iconPath?.trim();
+  if (iconPath) {
+    if (!isPathWithinProjectRoot(projectRoot, iconPath, { allowMissing: false })) {
+      issues.push({ path: "effective.project.iconPath", message: "Project icon path must point to an existing file inside the project root" });
+    } else if (![".ico", ".jpeg", ".jpg", ".png", ".svg", ".webp"].includes(path.extname(iconPath).toLowerCase())) {
+      issues.push({ path: "effective.project.iconPath", message: "Project icon must be an ico, jpg, png, svg, or webp file" });
     }
   }
 

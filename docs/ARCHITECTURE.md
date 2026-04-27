@@ -933,8 +933,8 @@ Windows:
 
 - `npm run dist:win` — x64 installer via `electron-builder --win --x64`, wrapped with `validate:win:artifacts` (preflight) and `validate:win:release` (post-build) checks in `apps/desktop/scripts/validate-win-artifacts.mjs`.
 - Windows-only wrappers for the bundled `ade` CLI ship in `apps/desktop/scripts/`: `ade-cli-windows-wrapper.cmd` (launcher) and `ade-cli-install-path.cmd` (idempotent PATH install helper). The platform-agnostic `.sh` wrapper covers macOS/Linux.
-- The Windows installer bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/` plus a Windows node-pty ConPTY worker.
-- GitHub Actions `release-core.yml` builds and validates Windows artifacts. If Authenticode credentials are configured in GitHub secrets, electron-builder signs the installer/app; unsigned Windows builds are still allowed for now.
+- The Windows installer bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/`, a Windows node-pty ConPTY worker, and the `@huggingface/transformers` ONNX Runtime native addon + DirectML DLL used by local-only memory embedding. `validate-win-artifacts.mjs` asserts each one is unpacked.
+- GitHub Actions `release-core.yml` builds and validates Windows artifacts. The release job picks up `WINDOWS_CSC_LINK` / `WINDOWS_CSC_KEY_PASSWORD` (or legacy `WIN_CSC_*`) from secrets and forwards them as electron-builder's `CSC_LINK` / `CSC_KEY_PASSWORD` to sign the installer and `app.exe`; the desktop config sets SHA-256 hashing and the DigiCert RFC3161 timestamp server. When the secrets are absent, the workflow still produces unsigned Windows artifacts.
 - Ongoing Windows integration lane (rebase with `main`, smoke tests, backlog): `docs/development/windows-port-lane.md`.
 
 Post-packaging hardening (`apps/desktop/scripts/`):

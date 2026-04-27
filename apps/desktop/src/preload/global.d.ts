@@ -636,6 +636,8 @@ declare global {
         ) => Promise<ProjectBrowseResult>;
         getDetail: (rootPath: string) => Promise<ProjectDetail>;
         resolveIcon: (rootPath: string) => Promise<ProjectIcon>;
+        chooseIcon: (rootPath: string) => Promise<ProjectIcon | null>;
+        removeIcon: (rootPath: string) => Promise<ProjectIcon>;
         getDroppedPath: (file: File) => string;
         openAdeFolder: () => Promise<void>;
         clearLocalData: (

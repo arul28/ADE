@@ -32,6 +32,8 @@ export type PaneConfig = {
   headerActions?: React.ReactNode;
   bodyClassName?: string;
   dataTour?: string;
+  /** When set (e.g. work grid tiles), FloatingPane applies subtle lane-colored header/border chrome. */
+  laneAccentColor?: string | null;
   onPaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
   onPaneContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
   children: React.ReactNode;
@@ -384,6 +386,7 @@ export function PaneTilingLayout({
           className={config.className}
           bodyClassName={config.bodyClassName}
           dataTour={config.dataTour}
+          laneAccentColor={config.laneAccentColor}
           draggable
           isDragging={dragSourceId === paneId}
           isDropTarget={dropTargetId === paneId}

@@ -649,7 +649,18 @@ export function GitHubTab({
   }
 
   if (error && !snapshot) {
-    return <EmptyState title="GitHub" description={error} />;
+    return (
+      <EmptyState title="GitHub" description={error}>
+        <button
+          type="button"
+          onClick={() => navigate("/settings?tab=integrations")}
+          style={primaryButton({ marginTop: 16 })}
+        >
+          <GithubLogo size={14} weight="fill" />
+          Connect GitHub
+        </button>
+      </EmptyState>
+    );
   }
 
   return (

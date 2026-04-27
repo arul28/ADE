@@ -11137,12 +11137,9 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  const handoffSession = async ({
-    sourceSessionId,
-    targetModelId,
-  }: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
-    const sourceId = sourceSessionId.trim();
-    const targetId = targetModelId.trim();
+  const handoffSession = async (args: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
+    const sourceId = args.sourceSessionId.trim();
+    const targetId = args.targetModelId.trim();
     if (!sourceId.length) {
       throw new Error("A source session is required to hand off a chat.");
     }
@@ -11170,7 +11167,9 @@ export function createAgentChatService(args: {
     const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
     const targetReasoningEffort = pickHandoffReasoningEffort(
       targetDescriptor,
-      managed.session.reasoningEffort ?? sourceSession.reasoningEffort,
+      args.reasoningEffort !== undefined
+        ? args.reasoningEffort
+        : managed.session.reasoningEffort ?? sourceSession.reasoningEffort,
     );
     const transcript = await getChatTranscript({
       sessionId: sourceId,
@@ -11194,12 +11193,16 @@ export function createAgentChatService(args: {
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
       interactionMode: managed.session.interactionMode,
-      claudePermissionMode: managed.session.claudePermissionMode,
-      codexApprovalPolicy: managed.session.codexApprovalPolicy,
-      codexSandbox: managed.session.codexSandbox,
-      codexConfigSource: managed.session.codexConfigSource,
-      opencodePermissionMode: managed.session.opencodePermissionMode,
-      permissionMode: managed.session.permissionMode,
+      claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
+      codexApprovalPolicy: args.codexApprovalPolicy ?? managed.session.codexApprovalPolicy,
+      codexSandbox: args.codexSandbox ?? managed.session.codexSandbox,
+      codexConfigSource: args.codexConfigSource ?? managed.session.codexConfigSource,
+      opencodePermissionMode: args.opencodePermissionMode ?? managed.session.opencodePermissionMode,
+      permissionMode: args.permissionMode ?? managed.session.permissionMode,
+      cursorModeId: args.cursorModeId !== undefined ? args.cursorModeId : managed.session.cursorModeId,
+      cursorConfigValues: args.cursorConfigValues !== undefined
+        ? args.cursorConfigValues ?? null
+        : managed.session.cursorConfigValues,
       surface: managed.session.surface,
     });
 

@@ -930,8 +930,8 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
     ];
 
     const laneOrder = [
-      { id: "lane-a", name: "Lane A", laneType: "worktree" as const, createdAt: isoDaysAgo(0) },
-      { id: "lane-b", name: "Lane B", laneType: "worktree" as const, createdAt: isoDaysAgo(2) },
+      { id: "lane-a", name: "Lane A", laneType: "worktree" as const, createdAt: isoDaysAgo(0), color: null as string | null },
+      { id: "lane-b", name: "Lane B", laneType: "worktree" as const, createdAt: isoDaysAgo(2), color: null as string | null },
     ];
 
     const byLane = buildWorkTabGroupModel({

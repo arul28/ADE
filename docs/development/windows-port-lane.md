@@ -22,12 +22,12 @@ These are the foundations that should stay merged from this lane (see also `docs
 | Area | What shipped |
 | --- | --- |
 | **CLI ↔ desktop IPC** | Windows named-pipe path next to the Unix socket model (`adeMcpIpc.*`). |
-| **Child processes** | `processExecution` — `cmd`/`bat` via `ComSpec`, `windowsVerbatimArguments`, `taskkill` for trees. |
+| **Child processes** | `processExecution` — `cmd`/`bat` via `ComSpec`, `windowsVerbatimArguments`, `taskkill` for trees. Both `resolveWindowsCmdInvocation` (argv form) and `resolveWindowsCmdLineInvocation` (pre-built command-string form) wrap a single outer `cmd.exe /d /s /c "…"` so embedded `&&` chains don't break out of quoting. Long-running children that previously called `child.kill("SIGKILL")` (git, automation runs) now route through `terminateProcessTree` so taskkill cleans up Windows process groups. |
 | **PATH for CLIs** | `augmentProcessPathWithShellAndKnownCliDirs` has an explicit `win32` path (no POSIX `sh -ic`). |
 | **PTY** | `ptyService` picks `powershell.exe` / `cmd.exe` on Windows. |
 | **Renderer paths** | `pathUtils` — drive letters, `\`, UNC, comparison helpers for workspace UI. |
-| **Native** | `vendor/crsqlite/win32-x64`, `node-pty` Windows prebuild, packaged runtime hooks. |
-| **Installers** | `ade-cli-windows-wrapper.cmd`, `npm run dist:win`, `release-core.yml` `build-win-release` job. |
+| **Native** | `vendor/crsqlite/win32-x64`, `node-pty` Windows prebuild, packaged runtime hooks; the validator also enforces presence of the `@huggingface/transformers` ONNX Runtime DLL/native addon plus DirectML on Windows. |
+| **Installers** | `ade-cli-windows-wrapper.cmd`, `ade-cli-install-path.cmd` (now updates the user `Environment\Path` registry value via PowerShell and broadcasts `WM_SETTINGCHANGE`), `npm run dist:win`, `release-core.yml` `build-win-release` job (consumes optional `WINDOWS_CSC_LINK` / `WINDOWS_CSC_KEY_PASSWORD` to sign with electron-builder + DigiCert RFC3161 timestamp server when configured; otherwise emits an unsigned installer). |
 | **Sync / Tailscale** | `resolveTailscaleCliPath` (shared): macOS bundle, Windows `Program Files`\\Tailscale, then `PATH`. |
 
 ## Mainline feature areas to smoke-test on Windows after each rebase

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CaretDown, CaretRight, FileCode } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Check, Warning, XCircle } from "@phosphor-icons/react";
 import type { OperatorNavigationSuggestion } from "../../../shared/types";
 import {
   formatStructuredValue,
@@ -11,7 +11,7 @@ import {
   type ChatWorkLogFileChange,
 } from "./chatTranscriptRows";
 import { cn } from "../ui/cn";
-import { describeToolVerb, getToolMeta } from "./chatToolAppearance";
+import { getToolMeta } from "./chatToolAppearance";
 import { replaceInternalToolNames } from "./toolPresentation";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
@@ -68,13 +68,6 @@ function formatFileAction(kind: ChatWorkLogFileChange["kind"]): string {
 
 type EntryStatus = ChatWorkLogEntry["status"];
 
-function statusDotClass(status: EntryStatus): string {
-  if (status === "running") return "bg-violet-400/80 ade-thinking-pulse";
-  if (status === "failed") return "bg-red-400/70";
-  if (status === "interrupted") return "bg-amber-400/60";
-  return "bg-fg/22";
-}
-
 function isCodeChangeEntry(entry: ChatWorkLogEntry): boolean {
   if (entry.entryKind === "file_change") return true;
   if (entry.entryKind === "tool" && entry.toolName) {
@@ -100,26 +93,48 @@ function entryArgText(entry: ChatWorkLogEntry): string {
   return "";
 }
 
-function entryVerb(entry: ChatWorkLogEntry): string {
-  if (entry.entryKind === "command") {
-    if (entry.status === "running") return "Running command…";
-    return entry.status === "failed" ? "Command failed" : "Command run complete";
+/** Short slug for the tool rail (e.g. `bash`, `grep`, `spawn_chat`) — not a full sentence. */
+function workLogEntryKindSlug(entry: ChatWorkLogEntry): string {
+  if (entry.entryKind === "command") return "shell";
+  if (entry.entryKind === "web_search") return "search";
+  if (entry.entryKind === "tool" && entry.toolName?.trim()) {
+    let raw = entry.toolName.trim();
+    if (raw.includes(".")) {
+      raw = raw.split(".").pop() ?? raw;
+    }
+    const snake = raw
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/[-\s.]+/g, "_")
+      .toLowerCase();
+    if (snake === "exec_command") return "shell";
+    return snake;
   }
-  if (entry.entryKind === "web_search") {
-    if (entry.status === "running") return "Searching…";
-    return entry.status === "failed" ? "Search failed" : "Search complete";
-  }
-  if (entry.entryKind === "tool" && entry.toolName) {
-    return describeToolVerb(entry.toolName, entry.status);
-  }
-  return entry.label;
+  return entry.label.replace(/\s+/g, "_").toLowerCase() || "tool";
 }
 
-function aggregateGroupStatus(entries: ChatWorkLogEntry[]): EntryStatus {
-  if (entries.some((e) => e.status === "running")) return "running";
-  if (entries.some((e) => e.status === "failed")) return "failed";
-  if (entries.some((e) => e.status === "interrupted")) return "interrupted";
-  return "completed";
+function workLogStatusGlyph(status: EntryStatus) {
+  if (status === "completed") {
+    return <Check size={12} weight="bold" className="shrink-0 text-emerald-400" aria-hidden />;
+  }
+  if (status === "failed") {
+    return <XCircle size={12} weight="bold" className="shrink-0 text-red-400/90" aria-hidden />;
+  }
+  if (status === "interrupted") {
+    return <Warning size={12} weight="fill" className="shrink-0 text-amber-400/90" aria-hidden />;
+  }
+  return (
+    <span
+      className="inline-block h-2 w-2 shrink-0 rounded-full bg-violet-400/80 ade-thinking-pulse"
+      aria-hidden
+    />
+  );
+}
+
+function workLogEntryKindToneClass(status: EntryStatus): string {
+  if (status === "failed") return "text-red-300/80";
+  if (status === "running") return "text-violet-200/75";
+  if (status === "interrupted") return "text-amber-200/75";
+  return "text-fg/60";
 }
 
 function fileExtBadge(path: string): string {
@@ -235,14 +250,9 @@ function ToolCallRow({
     if (navigationSuggestions.length > 0) setOpen(true);
   }, [navigationSuggestions.length]);
 
-  const verb = replaceInternalToolNames(entryVerb(entry));
+  const kindSlug = workLogEntryKindSlug(entry);
   const argText = replaceInternalToolNames(entryArgText(entry));
-  const verbTone =
-    entry.status === "failed"
-      ? "text-red-300/80"
-      : entry.status === "running"
-        ? "text-violet-200/75"
-        : "text-fg/55";
+  const kindTone = workLogEntryKindToneClass(entry.status);
 
   const detailBody = useMemo(() => buildEntryDetail(entry), [entry]);
 
@@ -252,13 +262,12 @@ function ToolCallRow({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
+        className="flex w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
       >
-        <span
-          className={cn("inline-block h-[5px] w-[5px] shrink-0 rounded-full", statusDotClass(entry.status))}
-          style={entry.status === "running" ? { animationDelay: "0s" } : undefined}
-        />
-        <span className={cn("shrink-0 font-sans text-[11px]", verbTone)}>{verb}</span>
+        {workLogStatusGlyph(entry.status)}
+        <span className={cn("shrink-0 font-mono text-[11px] font-medium tracking-tight", kindTone)}>
+          {kindSlug}
+        </span>
         {argText ? (
           <span className="min-w-0 truncate font-mono text-[11px] text-fg/40">{argText}</span>
         ) : null}
@@ -312,28 +321,54 @@ function ToolCallsPanel({
   entries: ChatWorkLogEntry[];
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
 }) {
+  const [panelOpen, setPanelOpen] = useState(false);
   if (entries.length === 0) return null;
+
+  const latest = entries[entries.length - 1]!;
+  const latestArg = replaceInternalToolNames(entryArgText(latest));
+  const latestSlug = workLogEntryKindSlug(latest);
+  const latestTone = workLogEntryKindToneClass(latest.status);
+  const Caret = panelOpen ? CaretDown : CaretRight;
+
   return (
-    <div className="space-y-1">
-      <div className="font-sans text-[10px] uppercase tracking-[0.16em] text-fg/35">
-        Tool calls ({entries.length})
-      </div>
-      <div className="space-y-0.5">
-        {entries.map((entry) => (
-          <ToolCallRow key={entry.id} entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
-        ))}
-      </div>
+    <div className="w-full min-w-0 font-sans text-[11px]">
+      <button
+        type="button"
+        onClick={() => setPanelOpen((v) => !v)}
+        aria-expanded={panelOpen}
+        className="flex w-full min-w-0 max-w-full items-center gap-1.5 py-0.5 text-left transition-colors hover:text-fg/80"
+      >
+        <Caret size={9} weight="bold" className="shrink-0 text-violet-400/45" />
+        <span className="shrink-0 font-medium text-fg/45">Tool calls</span>
+        <span className="shrink-0 text-[10px] tabular-nums text-fg/30">({entries.length})</span>
+        {panelOpen ? null : (
+          <span className="ml-1 flex min-w-0 flex-1 items-center justify-end gap-1.5">
+            {workLogStatusGlyph(latest.status)}
+            <span className={cn("shrink-0 font-mono text-[11px] font-medium tracking-tight", latestTone)}>
+              {latestSlug}
+            </span>
+            {latestArg ? (
+              <span className="min-w-0 max-w-[min(52ch,50%)] truncate font-mono text-[10px] text-fg/38">{latestArg}</span>
+            ) : null}
+          </span>
+        )}
+      </button>
+      {panelOpen ? (
+        <div className="mt-1.5 w-full min-w-0 space-y-0.5 pl-4">
+          {entries.map((entry) => (
+            <ToolCallRow key={entry.id} entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
 
 function FilesChangedPanel({
   files,
-  groupStatus,
   onUndo,
 }: {
   files: AggregatedFile[];
-  groupStatus: EntryStatus;
   onUndo?: () => void;
 }) {
   const [open, setOpen] = useState(true);
@@ -341,6 +376,7 @@ function FilesChangedPanel({
 
   if (files.length === 0) return null;
   const fileWord = files.length === 1 ? "file" : "files";
+  const Caret = open ? CaretDown : CaretRight;
 
   return (
     <div className="space-y-1.5">
@@ -351,11 +387,7 @@ function FilesChangedPanel({
           aria-expanded={open}
           className="flex flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
         >
-          {open ? (
-            <CaretDown size={10} weight="bold" className="text-fg/35" />
-          ) : (
-            <CaretRight size={10} weight="bold" className="text-fg/35" />
-          )}
+          <Caret size={10} weight="bold" className="text-fg/35" />
           <span className="font-sans text-[11px] font-medium text-fg/70">
             {files.length} {fileWord} changed
           </span>
@@ -450,10 +482,6 @@ export function ChatWorkLogBlock({
     () => aggregateFilesFromEntries(codeChangeEntries),
     [codeChangeEntries],
   );
-  const codeChangeStatus = useMemo(
-    () => aggregateGroupStatus(codeChangeEntries),
-    [codeChangeEntries],
-  );
 
   const hasReadOnly = readOnlyEntries.length > 0;
   const hasCodeChange = aggregatedFiles.length > 0;
@@ -468,11 +496,7 @@ export function ChatWorkLogBlock({
         />
       ) : null}
       {hasCodeChange ? (
-        <FilesChangedPanel
-          files={aggregatedFiles}
-          groupStatus={codeChangeStatus}
-          onUndo={onUndoChanges}
-        />
+        <FilesChangedPanel files={aggregatedFiles} onUndo={onUndoChanges} />
       ) : null}
     </div>
   );

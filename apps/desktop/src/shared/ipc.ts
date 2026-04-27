@@ -16,6 +16,8 @@ export const IPC = {
   projectBrowseDirectories: "ade.project.browseDirectories",
   projectGetDetail: "ade.project.getDetail",
   projectResolveIcon: "ade.project.resolveIcon",
+  projectChooseIcon: "ade.project.chooseIcon",
+  projectRemoveIcon: "ade.project.removeIcon",
   projectOpenAdeFolder: "ade.project.openAdeFolder",
   projectClearLocalData: "ade.project.clearLocalData",
   projectListRecent: "ade.project.listRecent",

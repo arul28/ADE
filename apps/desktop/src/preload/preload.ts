@@ -651,6 +651,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.projectGetDetail, { rootPath }),
     resolveIcon: async (rootPath: string): Promise<ProjectIcon> =>
       ipcRenderer.invoke(IPC.projectResolveIcon, { rootPath }),
+    chooseIcon: async (rootPath: string): Promise<ProjectIcon | null> =>
+      ipcRenderer.invoke(IPC.projectChooseIcon, { rootPath }),
+    removeIcon: async (rootPath: string): Promise<ProjectIcon> =>
+      ipcRenderer.invoke(IPC.projectRemoveIcon, { rootPath }),
     getDroppedPath: (file: File): string => {
       try {
         return webUtils.getPathForFile(file);

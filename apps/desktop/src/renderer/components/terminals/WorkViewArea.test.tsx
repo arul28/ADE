@@ -542,6 +542,7 @@ describe("WorkViewArea", () => {
           id: "lane:lane-1",
           label: "Lane 1",
           kind: "lane",
+          laneColor: null,
           collapsed: true,
           sessionIds: [session.id],
           sessions: [session],

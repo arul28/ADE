@@ -613,6 +613,20 @@ export type AgentChatCreateArgs = {
 export type AgentChatHandoffArgs = {
   sourceSessionId: string;
   targetModelId: ModelId;
+  /**
+   * When set (including `null` for "no extra reasoning"), combined with the target
+   * model to pick a valid reasoning tier. When omitted, inherits from the source
+   * session the same way as a legacy handoff.
+   */
+  reasoningEffort?: string | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  permissionMode?: AgentChatPermissionMode;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
 };
 
 export type AgentChatHandoffResult = {

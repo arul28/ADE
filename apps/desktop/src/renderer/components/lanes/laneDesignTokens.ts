@@ -78,6 +78,37 @@ export function inlineBadge(color: string, overrides?: CSSProperties): CSSProper
   };
 }
 
+/**
+ * Fills, borders, and text for elements that should reflect a lane’s chosen
+ * color (from the Lanes tab) with a consistent shaded treatment.
+ */
+export function laneSurfaceTint(
+  color: string | null | undefined,
+  strength: "soft" | "default" = "default",
+): {
+  background: string;
+  border: string;
+  borderLeftAccent: string;
+  text: string | null;
+} {
+  if (color == null || String(color).trim() === "") {
+    return {
+      background: "rgba(255, 255, 255, 0.02)",
+      border: "1px solid rgba(255, 255, 255, 0.05)",
+      borderLeftAccent: "2px solid transparent",
+      text: null,
+    };
+  }
+  const c = String(color).trim();
+  const p = strength === "soft" ? 10 : 16;
+  return {
+    background: `color-mix(in srgb, ${c} ${p}%, rgba(10, 10, 12, 0.65))`,
+    border: `1px solid color-mix(in srgb, ${c} 28%, rgba(255, 255, 255, 0.06))`,
+    borderLeftAccent: `2px solid ${c}`,
+    text: c,
+  };
+}
+
 export function outlineButton(overrides?: CSSProperties): CSSProperties {
   return {
     display: "inline-flex",

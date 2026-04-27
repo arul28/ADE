@@ -87,7 +87,11 @@ export function TerminalsPage() {
 
   const handleInfoClick = useCallback(
     (session: TerminalSessionSummary, e: React.MouseEvent) => {
-      setInfoPopover({ session, x: e.clientX, y: e.clientY });
+      const r = e.currentTarget.getBoundingClientRect();
+      setInfoPopover({
+        session,
+        anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+      });
     },
     [],
   );
@@ -400,6 +404,11 @@ export function TerminalsPage() {
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
         onResumeSession={handleResumeSession}
+        sessionsPaneCollapsed={work.workFocusSessionsHidden}
+        onExpandSessionsPane={() => work.setWorkFocusSessionsHidden(false)}
+        sessionsPaneListCount={work.filtered.length}
+        sessionsPaneRunningCount={work.runningSessions.length}
+        sessionsListLoading={work.loading}
       />
     ),
     [
@@ -419,6 +428,11 @@ export function TerminalsPage() {
       work.launchPtySession,
       work.toggleWorkTabGroupCollapsed,
       work.closingPtyIds,
+      work.workFocusSessionsHidden,
+      work.setWorkFocusSessionsHidden,
+      work.filtered.length,
+      work.runningSessions.length,
+      work.loading,
       handleOpenChatSession,
       handleResumeSession,
       handleContextMenu,
@@ -551,38 +565,8 @@ export function TerminalsPage() {
         </div>
       ) : null}
       {work.workFocusSessionsHidden ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div
-            className="flex h-8 shrink-0 items-center gap-2 px-2"
-            style={{
-              borderBottom: "1px solid var(--work-pane-border)",
-              background: "var(--color-bg)",
-            }}
-            data-tour="work.focusToolbar"
-          >
-            <button
-              type="button"
-              className="ade-shell-control inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium"
-              data-variant="ghost"
-              onClick={() => work.setWorkFocusSessionsHidden(false)}
-            >
-              <SidebarSimple size={13} weight="regular" />
-              Sessions
-            </button>
-            {!work.loading && work.filtered.length > 0 ? (
-              <span className="text-[10px] text-muted-fg/40">{work.filtered.length}</span>
-            ) : null}
-            {work.runningSessions.length > 0 ? (
-              <span
-                className="ml-auto inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
-                style={{ color: "var(--color-success)", background: "rgba(34, 197, 94, 0.08)" }}
-              >
-                <span className="ade-status-dot ade-status-dot-active" style={{ width: 4, height: 4 }} />
-                {work.runningSessions.length} running
-              </span>
-            ) : null}
-          </div>
-          <div className="min-h-0 flex-1 overflow-hidden" data-tour="work.viewArea">{workViewArea}</div>
+        <div className="min-h-0 flex-1 overflow-hidden" data-tour="work.viewArea">
+          {workViewArea}
         </div>
       ) : (
         <PaneTilingLayout

@@ -168,6 +168,14 @@ function hasNoticeDetail(detail: string | AgentChatNoticeDetail | undefined): bo
   );
 }
 
+function isNoticeMessageRedundantWithDetail(message: string, detail: string | AgentChatNoticeDetail): boolean {
+  const m = message.trim();
+  if (!m) return true;
+  if (typeof detail === "string") return m === detail.trim();
+  if (detail.summary?.trim() === m) return true;
+  return false;
+}
+
 function renderNoticeDetail(detail: string | AgentChatNoticeDetail): React.ReactNode {
   if (typeof detail === "string") {
     return <div className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg/60">{detail}</div>;
@@ -847,6 +855,24 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
   );
 }
 
+/** Three dots: animated while reasoning streams; larger static dots when the turn is done (stay visible on dark chat bg). */
+function ReasoningStateDots({ animated }: { animated: boolean }) {
+  return (
+    <span className="inline-flex select-none items-center gap-[3px] pl-0.5" aria-hidden="true">
+      {[0, 1, 2].map((index) => (
+        <span
+          key={index}
+          className={cn(
+            "inline-block flex-shrink-0 translate-y-px rounded-full",
+            animated ? "h-[3px] w-[3px] bg-violet-300/72 ade-thinking-pulse" : "h-[4px] w-[4px] bg-fg/50",
+          )}
+          style={animated ? { animationDelay: `${index * 0.18}s` } : undefined}
+        />
+      ))}
+    </span>
+  );
+}
+
 function formatActivityText(activity: string, detail?: string): string {
   const label = ACTIVITY_LABELS[activity] ?? activity;
   return detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}…`;
@@ -869,18 +895,57 @@ function MinimalThought({ text, isLive }: { text: string; isLive: boolean }) {
         {isLive ? (
           <>
             <Brain size={12} weight="duotone" className="shrink-0 text-violet-300/75" />
-            <span className="font-medium text-violet-200/72">Thinking…</span>
+            <span className="inline-flex items-center font-medium text-violet-200/75">
+              Thinking
+              <ReasoningStateDots animated />
+            </span>
             {preview ? (
               <span className="min-w-0 truncate text-fg/40">{preview}</span>
             ) : null}
           </>
         ) : (
-          <span className="font-medium text-fg/45">Thought</span>
+          <span className="inline-flex items-center font-medium text-fg/55">
+            Thought
+            <ReasoningStateDots animated={false} />
+          </span>
         )}
       </button>
       {open ? (
         <div className="mt-1.5 pl-4 text-fg/55 text-[12px] leading-relaxed">
-          <MarkdownBlock markdown={trimmed.length ? text : "Thinking…"} />
+          <MarkdownBlock markdown={trimmed.length ? text : "…"} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MinimalMemoryNotice({
+  message,
+  detail,
+}: {
+  message: string;
+  detail: string | AgentChatNoticeDetail;
+}) {
+  const [open, setOpen] = useState(false);
+  const Caret = open ? CaretDown : CaretRight;
+  return (
+    <div className="font-sans text-[11px]">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex max-w-full items-center gap-1.5 py-0.5 text-left transition-colors hover:text-fg/80"
+      >
+        <Caret size={9} weight="bold" className="shrink-0 text-violet-400/45" />
+        <MagnifyingGlass size={12} weight="duotone" className="shrink-0 text-fg/40" />
+        <span className="font-medium text-fg/45">Memory</span>
+      </button>
+      {open ? (
+        <div className="mt-1.5 space-y-2 pl-4 text-[12px] leading-relaxed text-fg/55">
+          {message.trim() && !isNoticeMessageRedundantWithDetail(message, detail) ? (
+            <div className="text-fg/50">{message}</div>
+          ) : null}
+          {renderNoticeDetail(detail)}
         </div>
       ) : null}
     </div>
@@ -2096,6 +2161,10 @@ function renderEvent(
     const NoticeIcon = style.icon;
     const hasDetail = hasNoticeDetail(event.detail);
 
+    if (hasDetail && event.noticeKind === "memory" && event.detail) {
+      return <MinimalMemoryNotice message={event.message} detail={event.detail} />;
+    }
+
     if (hasDetail) {
       return (
         <CollapsibleCard
@@ -2866,14 +2935,11 @@ const EventRow = React.memo(function EventRow({
       {showTurnDivider ? (
         <div className="my-3 flex items-center gap-4">
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
-          <span className="ade-liquid-glass-pill inline-flex items-center gap-2.5 rounded-full px-3.5 py-1.5 font-sans text-[10px] text-fg/42">
+          <span
+            className="ade-liquid-glass-pill inline-flex items-center rounded-full px-3.5 py-1.5 font-sans text-[10px] text-fg/42"
+            title={turnModel?.label ?? undefined}
+          >
             <span className="text-fg/35">{turnDividerLabel ?? "Turn"}</span>
-            {turnModel?.label ? (
-              <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 text-[9px] text-fg/42">
-                <ModelGlyph modelId={turnModel.modelId} model={turnModel.model} size={10} className="text-fg/36" />
-                <span>{turnModel.label}</span>
-              </span>
-            ) : null}
           </span>
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
         </div>

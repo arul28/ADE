@@ -138,7 +138,7 @@ export function sessionStatusDot(session: {
 }): SessionStatusDot {
   const indicator = sessionIndicatorState(session);
   if (indicator === "running-active") {
-    return { cls: "border-2 border-emerald-400 border-t-transparent bg-transparent", spinning: true, label: "Running" };
+    return { cls: "rounded-full border-2 border-emerald-400 border-t-transparent bg-transparent", spinning: true, label: "Running" };
   }
   if (indicator === "running-needs-attention") {
     let label: string;
@@ -149,9 +149,9 @@ export function sessionStatusDot(session: {
     } else {
       label = "Idle";
     }
-    return { cls: "bg-amber-300", spinning: false, label };
+    return { cls: "rounded-full bg-amber-300", spinning: false, label };
   }
-  return { cls: "bg-red-400", spinning: false, label: "Ended" };
+  return { cls: "rounded-full bg-red-400", spinning: false, label: "Ended" };
 }
 
 export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): TerminalAttentionSummary {

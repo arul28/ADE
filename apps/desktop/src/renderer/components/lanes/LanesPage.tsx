@@ -2765,6 +2765,7 @@ export function LanesPage() {
             setActiveLaneIds(allIds);
           }}
           onBatchManage={openBatchManage}
+          onAppearanceChanged={() => refreshLanes().catch(() => {})}
         />
       ) : null}
 
@@ -2795,6 +2796,7 @@ export function LanesPage() {
         }}
         onArchive={() => { archiveManagedLanes().catch(() => {}); }}
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
+        onAppearanceChanged={() => refreshLanes().catch(() => {})}
       />
 
 

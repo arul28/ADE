@@ -13,7 +13,7 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
-import { resolveProjectIcon } from "../projects/projectIconResolver";
+import { removeProjectIconOverride, resolveProjectIcon, setProjectIconOverride } from "../projects/projectIconResolver";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -2327,6 +2327,51 @@ export function registerIpc({
         return { dataUrl: null, sourcePath: null, mimeType: null };
       }
       return resolveProjectIcon(validatedRoot);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.projectChooseIcon,
+    async (event, args: { rootPath: string }): Promise<ProjectIcon | null> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) return null;
+      let validatedRoot: string;
+      try {
+        validatedRoot = resolveAllowedProjectRoot(rootPath);
+      } catch {
+        return null;
+      }
+
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const options: Electron.OpenDialogOptions = {
+        title: "Choose project icon",
+        defaultPath: validatedRoot,
+        properties: ["openFile"],
+        filters: [
+          { name: "Images", extensions: ["ico", "jpeg", "jpg", "png", "svg", "webp"] },
+        ],
+      };
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (result.canceled || result.filePaths.length === 0) return null;
+
+      const selectedPath = result.filePaths[0];
+      if (!selectedPath) return null;
+      return setProjectIconOverride(validatedRoot, selectedPath);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.projectRemoveIcon,
+    async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) return { dataUrl: null, sourcePath: null, mimeType: null };
+      let validatedRoot: string;
+      try {
+        validatedRoot = resolveAllowedProjectRoot(rootPath);
+      } catch {
+        return { dataUrl: null, sourcePath: null, mimeType: null };
+      }
+      return removeProjectIconOverride(validatedRoot);
     },
   );
 

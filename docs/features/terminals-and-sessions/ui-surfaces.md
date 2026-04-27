@@ -318,11 +318,20 @@ Font stack defaults: `ui-monospace`, `SFMono-Regular`, `Menlo`,
 
 Rendered when the Work view has no open sessions. Contains:
 
-- `draftKind` switch between chat and terminal
+- A three-mode liquid-glass pill (`ModeSwitcherPills` in
+  `WorkViewArea.tsx`) toggling `draftKind` between **Chat** (compose a
+  new ADE chat in the lane), **CLI** (spawn a tracked Claude Code or
+  Codex CLI session), and **Shell** (plain shell terminal in the
+  lane's worktree). `draftKind` is `WorkDraftKind = "chat" | "cli" |
+  "shell"` in `appStore`.
+- A sessions-pane expand affordance (`SessionsPaneExpandAffordance`)
+  on the toolbar when the sidebar is collapsed: a sidebar glyph plus
+  a count chip ("N in list, M running"). Clicking it expands the
+  session sidebar without leaving the Work view.
 - lane selector (`LaneCombobox`) synced to the global `selectedLaneId`
 - for chat drafts: `AgentChatPane` in draft mode with provider-specific
   permission controls (`getPermissionOptions`, `safetyColors`)
-- for terminal drafts: provider picker (Claude / Codex / Shell),
+- for cli/shell drafts: provider picker (Claude / Codex / Shell),
   permission mode dropdown, and a "Launch" button that calls
   `onLaunchPtySession` with the launch payload from
   `buildTrackedCliLaunchCommand` (`{ command, args, startupCommand }`).

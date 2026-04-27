@@ -37,7 +37,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
 };
 
 type WorkTabGroupKind = "lane" | "status" | "time";
-type WorkTabGroupLane = Pick<LaneSummary, "id" | "name" | "laneType" | "createdAt">;
+type WorkTabGroupLane = Pick<LaneSummary, "id" | "name" | "laneType" | "createdAt" | "color">;
 
 export type WorkTabGroup = {
   id: string;
@@ -46,6 +46,8 @@ export type WorkTabGroup = {
   collapsed: boolean;
   sessionIds: string[];
   sessions: TerminalSessionSummary[];
+  /** From Lanes tab; only set for `kind === "lane"`. */
+  laneColor: string | null;
 };
 
 export type WorkTabGroupModel = {
@@ -142,12 +144,15 @@ export function buildWorkTabGroupModel(args: {
 
     const visibleSessions: TerminalSessionSummary[] = [];
     const finalGroups = groups.map((group) => {
+      const laneId = group.id.startsWith("lane:") ? group.id.slice("lane:".length) : null;
+      const lane = laneId ? args.lanes.find((l) => l.id === laneId) : null;
       const collapsed = collapseSet.has(group.id);
       if (!collapsed) visibleSessions.push(...group.sessions);
       return {
         id: group.id,
         label: group.label,
         kind: group.kind,
+        laneColor: group.kind === "lane" ? (lane?.color ?? null) : null,
         collapsed,
         sessionIds: group.sessions.map((session) => session.id),
         sessions: group.sessions,
@@ -178,6 +183,7 @@ export function buildWorkTabGroupModel(args: {
           id: groupId,
           label: bucket === "today" ? "Today" : bucket === "yesterday" ? "Yesterday" : "Older",
           kind: "time" as const,
+          laneColor: null,
           collapsed,
           sessionIds: sessions.map((session) => session.id),
           sessions,
@@ -213,6 +219,7 @@ export function buildWorkTabGroupModel(args: {
         id: groupId,
         label: getStatusBucketLabel(bucket),
         kind: "status" as const,
+        laneColor: null,
         collapsed,
         sessionIds: sessions.map((session) => session.id),
         sessions,

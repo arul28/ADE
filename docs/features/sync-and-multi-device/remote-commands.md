@@ -110,8 +110,17 @@ Listed in order of appearance in the registry:
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
 - `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
-  `approve`, `respondToInput`
+  `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
 - `resume`, `updateSession`, `dispose`, `models`
+
+`chat.dispatchSteer` (Claude V2 only) takes
+`{ sessionId, steerId, mode: "inline" | "interrupt" }` and either folds
+a queued steer into the active turn or interrupts the active turn so
+the queued message runs next; it returns `{ ok, dispatchedAt }`.
+`chat.cancelDispatchedSteer` rescinds an inline dispatch before the
+model reads it, returning `{ ok, cancelled }`. The iOS companion uses
+both via `SyncService.dispatchChatSteer` /
+`cancelDispatchedChatSteer`.
 
 **Git** (`git.*`)
 - `getChanges`, `getFile`

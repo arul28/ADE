@@ -8,6 +8,9 @@ import { sortLanesForTabs } from "../lanes/laneUtils";
 import type { WorkDraftKind, WorkSessionListOrganization, WorkStatusFilter } from "../../state/appStore";
 import { iconGlyph } from "../graph/graphHelpers";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { cn } from "../ui/cn";
+import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
+import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 
 function bucketByTime(sessions: TerminalSessionSummary[]) {
   const now = new Date();
@@ -35,6 +38,8 @@ function StickyGroupHeader({
   onToggleCollapsed,
   accentColor,
   children,
+  subLabel,
+  variant = "default",
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -44,42 +49,90 @@ function StickyGroupHeader({
   onToggleCollapsed: () => void;
   accentColor?: string | null;
   children: React.ReactNode;
+  /** Branch label shown on the right for `variant="lane"` (e.g. from `branchNameFromRef`). */
+  subLabel?: string | null;
+  /** `lane` uses a larger header and pads the nested session list. */
+  variant?: "default" | "lane";
 }) {
   if (count === 0) return null;
-  const accentBg = accentColor
-    ? `color-mix(in srgb, ${accentColor} 8%, transparent)`
-    : "rgba(255, 255, 255, 0.02)";
+  const isLane = variant === "lane";
+  const branchText = subLabel?.trim() ?? "";
+  const showBranchCluster = branchText.length > 0;
+  const laneTint = laneSurfaceTint(accentColor, isLane ? "default" : "soft");
   return (
     <div className="mt-0.5 first:mt-0">
       <button
         type="button"
-        className="sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors backdrop-blur-xl cursor-pointer select-none hover:bg-white/[0.04]"
+        className={cn(
+          "sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
+          laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
+          isLane ? "px-2.5 py-2" : "px-2 py-1.5",
+        )}
         style={{
-          background: accentBg,
-          borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
-          borderLeft: accentColor ? `2px solid ${accentColor}` : undefined,
+          background: laneTint.background,
+          borderBottom: isLane ? undefined : "1px solid rgba(255, 255, 255, 0.04)",
         }}
         onClick={onToggleCollapsed}
         data-section-id={sectionId}
       >
-        {collapsed ? (
-          <CaretRight size={10} className="shrink-0 text-muted-fg/30" />
+        {isLane ? (
+          <div className="flex w-full min-w-0 items-center gap-1.5">
+            {collapsed ? (
+              <CaretRight size={12} className="shrink-0 text-muted-fg/30" />
+            ) : (
+              <CaretDown size={12} className="shrink-0 text-muted-fg/30" />
+            )}
+            {icon}
+            <span
+              className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-tight text-fg/90"
+              style={accentColor ? { color: accentColor } : undefined}
+            >
+              {label}
+            </span>
+            {showBranchCluster ? (
+              <div
+                className="flex min-w-0 max-w-[min(50%,12rem)] shrink items-center gap-1"
+                style={{ color: "var(--color-muted-fg)" }}
+              >
+                <GitBranch size={10} weight="regular" className="shrink-0 opacity-60" aria-hidden />
+                <span className="truncate text-[10px] font-medium leading-tight text-muted-fg/75" title={branchText}>
+                  {branchText}
+                </span>
+              </div>
+            ) : null}
+            <span className="shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-muted-fg/50">
+              {count}
+            </span>
+          </div>
         ) : (
-          <CaretDown size={10} className="shrink-0 text-muted-fg/30" />
+          <>
+            {collapsed ? (
+              <CaretRight size={10} className="shrink-0 text-muted-fg/30" />
+            ) : (
+              <CaretDown size={10} className="shrink-0 text-muted-fg/30" />
+            )}
+            {icon}
+            <span
+              className="min-w-0 flex-1 truncate text-[11px] font-semibold text-fg/90"
+              style={accentColor ? { color: accentColor } : undefined}
+            >
+              {label}
+            </span>
+            <span className="shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-muted-fg/50">
+              {count}
+            </span>
+          </>
         )}
-        {icon}
-        <span
-          className="min-w-0 flex-1 truncate text-[11px] font-semibold text-fg/90"
-          style={accentColor ? { color: accentColor } : undefined}
-        >
-          {label}
-        </span>
-        <span className="shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-muted-fg/50">
-          {count}
-        </span>
       </button>
       {!collapsed && count > 0 ? (
-        <div className="space-y-px pb-0.5">{children}</div>
+        <div
+          className={cn(
+            "space-y-px pb-0.5",
+            isLane && "pl-2",
+          )}
+        >
+          {children}
+        </div>
       ) : null}
     </div>
   );
@@ -330,10 +383,10 @@ export const SessionListPane = React.memo(function SessionListPane({
         const laneAccent = lane.color ?? null;
         const laneIcon = (
           <span
-            className="inline-flex shrink-0 items-center justify-center"
+            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
             style={{ color: laneAccent ?? "var(--color-muted-fg)" }}
           >
-            {lane.icon ? iconGlyph(lane.icon) : <GitBranch size={11} weight="regular" />}
+            {lane.icon ? iconGlyph(lane.icon) : <Terminal size={12} weight="regular" />}
           </span>
         );
         return (
@@ -342,6 +395,8 @@ export const SessionListPane = React.memo(function SessionListPane({
             sectionId={lane.id}
             icon={laneIcon}
             label={lane.name}
+            subLabel={branchNameFromRef(lane.branchRef)}
+            variant="lane"
             count={total}
             collapsed={collapsed}
             accentColor={laneAccent}
@@ -359,8 +414,9 @@ export const SessionListPane = React.memo(function SessionListPane({
           <StickyGroupHeader
             key={laneId}
             sectionId={laneId}
-            icon={<GitBranch size={11} weight="regular" className="shrink-0 text-muted-fg/55" />}
+            icon={<GitBranch size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
             label={label}
+            variant="lane"
             count={list.length}
             collapsed={collapsed}
             onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}

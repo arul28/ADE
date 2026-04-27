@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ChatCircleDots, CircleNotch, DeviceMobile, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import * as Dialog from "@radix-ui/react-dialog";
 
 import { useAppStore } from "../../state/appStore";
 import { isRunOwnedSession } from "../../lib/sessions";
@@ -104,6 +105,9 @@ function ProjectTabIcon({
     disabled ? null : getProjectIconFromCache(rootPath) ?? null
   );
   const [failed, setFailed] = useState(false);
+  const [iconDialogOpen, setIconDialogOpen] = useState(false);
+  const [choosing, setChoosing] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
     setFailed(false);
@@ -133,9 +137,9 @@ function ProjectTabIcon({
     };
   }, [disabled, rootPath]);
 
-  const fallback = (
+  const fallbackIcon = (
     <Folder
-      size={12}
+      size={15}
       weight="regular"
       className={cn(
         "shrink-0 transition-opacity duration-150",
@@ -145,20 +149,137 @@ function ProjectTabIcon({
     />
   );
 
-  if (!icon?.dataUrl || failed) return fallback;
-
-  return (
+  const iconNode = !icon?.dataUrl || failed ? fallbackIcon : (
     <img
       src={icon.dataUrl}
       alt=""
       className={cn(
-        "h-3 w-3 shrink-0 rounded-[2px] object-contain transition-opacity duration-150",
+        "h-4 w-4 shrink-0 rounded-[3px] object-contain transition-opacity duration-150",
         isCurrent ? "opacity-95" : "opacity-75",
         animate && "animate-pulse",
       )}
       draggable={false}
       onError={() => setFailed(true)}
     />
+  );
+
+  const handleChooseIcon = useCallback(async () => {
+    if (disabled || choosing) return;
+    setChoosing(true);
+    try {
+      const nextIcon = await window.ade.project.chooseIcon(rootPath);
+      if (nextIcon) {
+        setProjectIconCache(rootPath, nextIcon);
+        setFailed(false);
+        setIcon(nextIcon);
+        setIconDialogOpen(false);
+      }
+    } catch {
+      // Keep the current icon; the dialog path is best-effort UI chrome.
+    } finally {
+      setChoosing(false);
+    }
+  }, [choosing, disabled, rootPath]);
+
+  const handleRemoveIcon = useCallback(async () => {
+    if (disabled || removing) return;
+    setRemoving(true);
+    try {
+      const nextIcon = await window.ade.project.removeIcon(rootPath);
+      setProjectIconCache(rootPath, nextIcon);
+      setFailed(false);
+      setIcon(nextIcon);
+      setIconDialogOpen(false);
+    } catch {
+      // Keep the current icon.
+    } finally {
+      setRemoving(false);
+    }
+  }, [disabled, removing, rootPath]);
+
+  if (disabled) return iconNode;
+
+  return (
+    <Dialog.Root open={iconDialogOpen} onOpenChange={setIconDialogOpen}>
+      <Dialog.Trigger asChild>
+        <button
+          type="button"
+          aria-label="Project icon"
+          title="Project icon"
+          className={cn(
+            "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[4px]",
+            "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
+          )}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          {choosing || removing ? <CircleNotch size={14} weight="bold" className="animate-spin opacity-80" /> : iconNode}
+        </button>
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-[120] bg-black/45 backdrop-blur-sm" />
+        <Dialog.Content
+          className={cn(
+            "fixed left-1/2 top-1/2 z-[121] w-[min(320px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2",
+            "rounded-lg border border-border bg-surface p-4 text-fg shadow-2xl",
+          )}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <Dialog.Title className="text-sm font-semibold">Project icon</Dialog.Title>
+              <Dialog.Description className="sr-only">
+                Preview and manage this project's shared icon.
+              </Dialog.Description>
+            </div>
+            <Dialog.Close asChild>
+              <button
+                type="button"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/10 hover:text-fg"
+                aria-label="Close"
+              >
+                <X size={15} />
+              </button>
+            </Dialog.Close>
+          </div>
+
+          <div className="mt-4 flex items-center justify-center rounded-md border border-border bg-bg/60 p-5">
+            {icon?.dataUrl && !failed ? (
+              <img
+                src={icon.dataUrl}
+                alt=""
+                className="h-20 w-20 rounded-md object-contain"
+                draggable={false}
+              />
+            ) : (
+              <Folder size={52} className="text-muted-fg" />
+            )}
+          </div>
+
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-muted-fg transition-colors hover:bg-white/10 hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={choosing || removing}
+              onClick={handleRemoveIcon}
+            >
+              {removing ? <CircleNotch size={13} weight="bold" className="mr-1.5 animate-spin" /> : null}
+              Remove
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center justify-center rounded-md bg-accent px-3 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={choosing || removing}
+              onClick={handleChooseIcon}
+            >
+              {choosing ? <CircleNotch size={13} weight="bold" className="mr-1.5 animate-spin" /> : null}
+              Replace
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 

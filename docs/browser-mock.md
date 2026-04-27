@@ -12,6 +12,8 @@ npm run dev:vite
 
 Open **http://localhost:5173/**. The console will log that the browser mock is active.
 
+`dev:vite` refreshes the local browser snapshot first, using the nearest project root with `.ade/ade.db` (or `ADE_PROJECT_ROOT` when set). If no ADE database exists, Vite still starts and the mock falls back to built-in demo data.
+
 The full dev launcher (Vite + main-process watch + Electron) is:
 
 ```bash
@@ -26,9 +28,9 @@ On `http://localhost:5173` the app uses **path-based** routing (`/work`, `/graph
 
 The mock reapplies on hot reload so `window.ade` is not left half-initialized. If you see “missing” APIs after a long session, do a full page reload.
 
-## Use real project + lane rows from your local `.ade` database
+## Use real project rows from your local `.ade` database
 
-The mock’s default lanes/PRs are **demonstration data**. To mirror the **current** `projects` and `lanes` tables from **your** repo’s SQLite (same data shape the desktop app uses), generate a local snapshot the mock can read:
+The mock’s default data is **demonstration data**. To mirror the **current** local ADE SQLite state (same source the desktop app uses), generate a local snapshot the mock can read:
 
 1. Open the project in ADE (Electron) at least once so `.ade/ade.db` exists, **or** point at a project root that already has `.ade/ade.db`.
 2. From `apps/desktop` run:
@@ -49,9 +51,11 @@ The mock’s default lanes/PRs are **demonstration data**. To mirror the **curre
 
    (gitignored). Restart Vite or hard-refresh the browser.
 
-4. **While that file exists**, inline PR/queue/rebase **demo** data in the mock is **disabled** so lane IDs stay consistent. Delete the generated file to restore the full built-in PR demos.
+4. **While that file exists**, the browser mock prefers exported DB-backed rows and uses built-in demo data only for domains that were not exported. Delete the generated file to restore the full built-in demos.
 
-**Scope:** The export covers **project metadata** and **lanes** (and lane status snapshots when present). It does not replace every domain (missions, real PRs, file contents, etc.)—use the **Electron** app for full backend fidelity.
+**Scope:** The export covers project metadata, lanes, lane status snapshots, PR summaries and cached PR detail snapshots, queue landing state, integration workflow rows, rebase signals, history operations, terminal sessions, chat transcript event histories, process definitions/runtime, automation run/ingress history, CTO memory state, usage summaries, and mission summaries when those tables have rows.
+
+It is still a static browser snapshot, not a main-process replacement. Actions that need GitHub, git, PTYs, file contents, live process control, computer use, or fresh backend computation are no-ops or safe defaults. Re-run `npm run dev:vite` or `npm run export:browser-mock-ade` after the desktop app changes the database.
 
 ## Known dev-only issues
 

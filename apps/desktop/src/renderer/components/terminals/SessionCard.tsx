@@ -92,13 +92,12 @@ export const SessionCard = React.memo(function SessionCard({
           borderTop: highlightedBorder,
           borderRight: highlightedBorder,
           borderBottom: highlightedBorder,
-          borderLeftColor: !isHighlighted && laneAccent ? laneAccent : undefined,
         }}
         onClick={(event) => onSelect(session.id, event)}
       >
-        <div className="flex items-start gap-2.5 px-2.5 py-2">
-          {/* Logo */}
-          <div className="shrink-0 mt-0.5">
+        <div className="flex items-stretch gap-2.5 px-2.5 py-2">
+          {/* Logo — vertically centered against full card height */}
+          <div className="flex shrink-0 self-stretch items-center justify-center">
             <ToolLogo toolType={session.toolType} size={22} />
           </div>
 
@@ -196,12 +195,13 @@ export const SessionCard = React.memo(function SessionCard({
         </div>
       </button>
 
-      {/* Hover actions */}
-      <div className="absolute right-1.5 top-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      {/* Hover actions — bottom-right so they don’t compete with title row */}
+      <div className="absolute bottom-1.5 right-1.5 z-10 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <SmartTooltip content={{ label: "Session details", description: "View session info, resume command, and management actions." }}>
           <button
             type="button"
             className="inline-flex items-center justify-center h-5 w-5 rounded-full border border-white/[0.08] bg-white/[0.06] text-muted-fg/60 hover:text-fg hover:bg-white/[0.10] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent"
+            onMouseDown={(e) => { e.stopPropagation(); }}
             onClick={(e) => { e.stopPropagation(); onInfoClick(e); }}
             aria-label="Session details"
           >

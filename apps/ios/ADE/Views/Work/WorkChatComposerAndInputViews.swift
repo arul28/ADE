@@ -4,8 +4,7 @@ import AVKit
 
 struct WorkTurnUsageSummaryBanner: View {
   let summary: WorkUsageSummary
-  /// Retained for call-site compatibility; the inline model chip was removed
-  /// so model labels only appear in the turn separator and composer pickers.
+  /// Retained for call-site compatibility. Model is shown in usage and composer, not the turn line.
   /// Kept as optional params in case future rows need provider context.
   var provider: String? = nil
   var modelLabel: String? = nil
@@ -133,7 +132,7 @@ struct WorkComposerChipStrip: View {
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 6) {
+      HStack(spacing: 10) {
         if let chatSummary {
           accessPill(summary: chatSummary)
           modelPill(summary: chatSummary)
@@ -201,10 +200,10 @@ struct WorkComposerChipStrip: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
-        .background(ADEColor.raisedBackground.opacity(0.78), in: Capsule(style: .continuous))
+        .background(Color.clear, in: Capsule(style: .continuous))
         .overlay(
           Capsule(style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+            .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
         )
       }
       .menuStyle(.borderlessButton)
@@ -248,10 +247,10 @@ struct WorkComposerChipStrip: View {
       }
       .padding(.horizontal, 9)
       .padding(.vertical, 6)
-      .background(ADEColor.raisedBackground.opacity(0.78), in: Capsule(style: .continuous))
+      .background(Color.clear, in: Capsule(style: .continuous))
       .overlay(
         Capsule(style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
       )
     }
     .buttonStyle(.plain)
@@ -308,10 +307,10 @@ struct WorkComposerChipStrip: View {
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 6)
-    .background(dotColor.opacity(0.12), in: Capsule(style: .continuous))
+    .background(dotColor.opacity(0.06), in: Capsule(style: .continuous))
     .overlay(
       Capsule(style: .continuous)
-        .stroke(dotColor.opacity(0.35), lineWidth: 0.6)
+        .stroke(dotColor.opacity(0.22), lineWidth: 0.5)
     )
   }
 
