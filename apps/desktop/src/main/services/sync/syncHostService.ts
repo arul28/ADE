@@ -1113,6 +1113,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   }
 
+  function closeExistingPeersForDevice(deviceId: string, currentPeer: PeerState): void {
+    const normalized = toOptionalString(deviceId);
+    if (!normalized) return;
+    for (const peer of peers) {
+      if (peer === currentPeer) continue;
+      if (peer.metadata?.deviceId !== normalized && peer.pairedDeviceId !== normalized) continue;
+      peer.authenticated = false;
+      peer.metadata = null;
+      peer.authKind = null;
+      peer.pairedDeviceId = null;
+      try {
+        peer.ws.close(4000, "Superseded by a newer connection for this device");
+      } catch {
+        // ignore close failures
+      }
+    }
+  }
+
   async function buildProjectCatalogPayload(): Promise<SyncProjectCatalogPayload> {
     if (!args.projectCatalogProvider) {
       return { projects: [] };
@@ -1704,6 +1722,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
 
+      closeExistingPeersForDevice(hello.peer.deviceId, peer);
       peer.authenticated = true;
       peer.metadata = hello.peer;
       const auth = hello.auth ?? { kind: "bootstrap", token: "" };
@@ -2171,9 +2190,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     getPeerStates(): SyncPeerConnectionState[] {
       const dbVersion = args.db.sync.getDbVersion();
-      return [...peers]
+      const latestByDevice = new Map<string, SyncPeerConnectionState>();
+      for (const peer of [...peers]
         .map((peer) => toSyncPeerConnectionState(peer, dbVersion))
-        .filter((peer): peer is SyncPeerConnectionState => peer != null);
+        .filter((peer): peer is SyncPeerConnectionState => peer != null)) {
+        const existing = latestByDevice.get(peer.deviceId);
+        if (!existing || peer.connectedAt > existing.connectedAt) {
+          latestByDevice.set(peer.deviceId, peer);
+        }
+      }
+      return [...latestByDevice.values()];
     },
 
     getTailnetDiscoveryStatus(): SyncTailnetDiscoveryStatus {
