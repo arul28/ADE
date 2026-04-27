@@ -805,7 +805,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
 
     expect(rendered.container.textContent).toContain("Thinking: Thinking through the answer");
-    expect(rendered.container.innerHTML).toContain("bg-violet-400");
+    expect(rendered.container.innerHTML).toContain("ade-shimmer-text");
   });
 
   it("keeps the live assistant bubble stable until the turn finishes", () => {
@@ -930,12 +930,13 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(rendered.container.textContent).toContain("Run pwd");
+    expect(rendered.container.textContent).toContain("pwd");
+    expect(rendered.container.textContent).toMatch(/Running command|Command run/);
     expect(rendered.container.innerHTML).toContain("max-w-[min(100%,70ch)]");
   });
 
-  it("renders a bottom turn summary card with task, file, and background-agent totals", () => {
-    renderMessageList(
+  it("renders an end-of-turn divider with tasks/agents and an inline files-changed panel", () => {
+    const rendered = renderMessageList(
       [
         {
           sessionId: "session-1",
@@ -973,24 +974,33 @@ describe("AgentChatMessageList transcript rendering", () => {
             turnId: "turn-1",
           },
         },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:03.000Z",
+          event: {
+            type: "done",
+            turnId: "turn-1",
+            status: "completed",
+          },
+        },
       ],
       {
         initialState: { laneId: "lane-123" },
       },
     );
 
-    expect(screen.getByText("Turn recap")).toBeTruthy();
-    expect(screen.getAllByText("1/2 complete").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/^1 file$/i).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/^1 agent$/i).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("1 active").length).toBeGreaterThanOrEqual(1);
+    // End-of-turn divider shows tasks + agents, no files duplication.
+    expect(rendered.container.textContent).toMatch(/Response/);
+    expect(rendered.container.textContent).toMatch(/1\/2 tasks complete/);
+    expect(rendered.container.textContent).toMatch(/1 background agent/);
+
+    // Files now live in the inline FilesChangedPanel — diff stats appear next to the path.
+    expect(rendered.container.textContent).toMatch(/1 file changed/);
     expect(screen.getAllByText("+1").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("-1").length).toBeGreaterThanOrEqual(1);
-    expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
+    expect(screen.getAllByText("−1").length).toBeGreaterThanOrEqual(1);
 
-    fireEvent.click(screen.getByText("Turn recap"));
-    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
-
+    // Undo affordance lives on the FilesChangedPanel header and routes to /files.
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(screen.getByTestId("location").textContent).toBe("/files::{\"laneId\":\"lane-123\"}");
   });
 
@@ -1136,8 +1146,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByText("Claude Haiku 4.5 (claude-haiku-4-5)").length).toBeGreaterThan(0);
   });
 
-  it("surfaces the latest turn task summary with review changes near the composer", () => {
-    renderMessageList(
+  it("surfaces the latest turn task rollup and inline file changes", () => {
+    const rendered = renderMessageList(
       [
         {
           sessionId: "session-1",
@@ -1185,30 +1195,34 @@ describe("AgentChatMessageList transcript rendering", () => {
             background: true,
           },
         },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:04.000Z",
+          event: {
+            type: "done",
+            turnId: "turn-7",
+            status: "completed",
+          },
+        },
       ],
       {
         initialState: { laneId: "lane-123" },
       },
     );
 
-    expect(screen.getByText("Turn recap")).toBeTruthy();
-    expect(screen.getAllByText("1/2 complete").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Inspect shared renderer").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Implement calmer transcript rows").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/^1 file$/i).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/^1 agent$/i).length).toBeGreaterThanOrEqual(1);
-    expect(screen.queryByRole("button", { name: /Review changes/i })).toBeNull();
+    expect(rendered.container.textContent).toMatch(/Response/);
+    expect(rendered.container.textContent).toMatch(/1\/2 tasks complete/);
+    expect(rendered.container.textContent).toMatch(/1 background agent/);
+    expect(rendered.container.textContent).toMatch(/1 file changed/);
 
-    fireEvent.click(screen.getByText("Turn recap"));
-    fireEvent.click(screen.getByRole("button", { name: /Review changes/i }));
-
+    fireEvent.click(screen.getByRole("button", { name: /Undo/i }));
     expect(screen.getByTestId("location").textContent).toBe(
       "/files::{\"laneId\":\"lane-123\"}",
     );
   });
 
-  it("shows the active Claude model on the latest turn summary card", () => {
-    renderMessageList([
+  it("shows the latest turn task rollup alongside model attribution", () => {
+    const rendered = renderMessageList([
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
@@ -1232,8 +1246,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.getByText("Turn recap")).toBeTruthy();
-    expect(screen.getAllByText("1/1 complete").length).toBeGreaterThanOrEqual(1);
+    expect(rendered.container.textContent).toMatch(/Response/);
+    expect(rendered.container.textContent).toMatch(/1\/1 tasks complete/);
+    // Model attribution still surfaces on the done usage card.
     expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThanOrEqual(1);
   });
 

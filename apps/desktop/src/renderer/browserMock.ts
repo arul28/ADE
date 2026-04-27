@@ -10,6 +10,11 @@
  *   Queue   – 4 PRs in 2 queue groups with pipeline state
  *   Integration – 2 integration PRs with multi-source merge contexts
  *   Rebase  – 6 rebase needs across all urgency categories
+ *
+ * Optional: generate `browser-mock-ade-snapshot.generated.json` with
+ *   npm run export:browser-mock-ade
+ * to mirror the current project’s `projects` + `lanes` from `.ade/ade.db` (strips
+ * inline PR/queue/rebase demo data so lane IDs stay consistent).
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -32,7 +37,7 @@ const resolvedArg2 =
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
   getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
 
-const MOCK_PROJECT = {
+const BUILTIN_MOCK_PROJECT = {
   id: "browser-mock",
   name: "Browser Preview",
   rootPath: "/tmp/mock",
@@ -41,8 +46,59 @@ const MOCK_PROJECT = {
   createdAt: new Date().toISOString(),
 };
 
+const adeDbSnapshotByPath = import.meta.glob<{
+  version: 1;
+  exportedAt: string;
+  project: {
+    id: string;
+    name: string;
+    rootPath: string;
+    gitDefaultBranch: string;
+    createdAt: string;
+  };
+  lanes: any[];
+}>("./browser-mock-ade-snapshot.generated.json", {
+  eager: true,
+  import: "default",
+});
+
+const ADE_DB_SNAPSHOT = adeDbSnapshotByPath["./browser-mock-ade-snapshot.generated.json"] ?? null;
+const USE_ADE_DB_SNAPSHOT = Boolean(ADE_DB_SNAPSHOT?.lanes?.length);
+
+const MOCK_PROJECT = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.project
+  ? {
+      ...BUILTIN_MOCK_PROJECT,
+      id: ADE_DB_SNAPSHOT.project.id,
+      name: ADE_DB_SNAPSHOT.project.name,
+      rootPath: ADE_DB_SNAPSHOT.project.rootPath,
+      gitDefaultBranch: ADE_DB_SNAPSHOT.project.gitDefaultBranch ?? BUILTIN_MOCK_PROJECT.gitDefaultBranch,
+      createdAt: ADE_DB_SNAPSHOT.project.createdAt ?? BUILTIN_MOCK_PROJECT.createdAt,
+    }
+  : BUILTIN_MOCK_PROJECT;
+
 // ── Timestamps ────────────────────────────────────────────────
 const now = new Date().toISOString();
+
+/** Browser mock lane health; matches `LaneHealthCheck` in shared types. */
+function mockBrowserLaneHealth(laneId: string) {
+  return {
+    laneId,
+    status: "unknown" as const,
+    processAlive: false,
+    portResponding: false,
+    respondingPort: null as number | null,
+    proxyRouteActive: false,
+    fallbackMode: false,
+    lastCheckedAt: now,
+    issues: [] as Array<{
+      type: "process-dead" | "port-unresponsive" | "proxy-route-missing" | "port-conflict" | "env-init-failed";
+      message: string;
+      actionLabel?: string;
+      actionType?: "reassign-port" | "restart-proxy" | "reinit-env" | "enable-fallback" | "refresh-preview";
+    }>,
+  };
+}
+
 const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
 const yesterday = new Date(Date.now() - 86400000).toISOString();
 const twoDaysAgo = new Date(Date.now() - 172800000).toISOString();
@@ -173,7 +229,7 @@ function makeLane(
 }
 
 // ── Mock Lanes ────────────────────────────────────────────────
-const MOCK_LANES: any[] = [
+const BUILTIN_MOCK_LANES: any[] = [
   // Primary
   makeLane("lane-main", "main", "refs/heads/main"),
   // Normal PR lanes
@@ -229,6 +285,61 @@ const MOCK_LANES: any[] = [
     "refs/heads/feature/accessibility",
   ),
 ];
+
+function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
+  const childCounts = new Map<string, number>();
+  for (const row of laneRows) {
+    const pid = row.parentLaneId;
+    if (typeof pid === "string" && pid.length > 0) {
+      childCounts.set(pid, (childCounts.get(pid) ?? 0) + 1);
+    }
+  }
+  return laneRows.map((raw) => {
+    const id = String(raw.id);
+    let branchRef = String(raw.branchRef ?? "refs/heads/main");
+    if (!branchRef.startsWith("refs/")) {
+      branchRef = `refs/heads/${branchRef.replace(/^refs\/heads\//, "")}`;
+    }
+    const st = raw.status;
+    return {
+      id,
+      name: String(raw.name ?? "lane"),
+      description: raw.description ?? null,
+      laneType:
+        raw.laneType === "primary" || raw.laneType === "worktree" || raw.laneType === "attached"
+          ? raw.laneType
+          : "worktree",
+      baseRef: String(raw.baseRef ?? "main"),
+      branchRef,
+      worktreePath: String(raw.worktreePath ?? "/tmp/mock"),
+      attachedRootPath: raw.attachedRootPath ?? null,
+      parentLaneId: raw.parentLaneId ?? null,
+      childCount: childCounts.get(id) ?? 0,
+      stackDepth: 0,
+      parentStatus: null,
+      isEditProtected: Boolean(raw.isEditProtected),
+      status: {
+        dirty: Boolean(st?.dirty),
+        ahead: st?.ahead ?? 0,
+        behind: st?.behind ?? 0,
+        remoteBehind: st?.remoteBehind ?? -1,
+        rebaseInProgress: Boolean(st?.rebaseInProgress),
+      },
+      color: raw.color ?? null,
+      icon: raw.icon ?? null,
+      tags: Array.isArray(raw.tags) ? raw.tags : [],
+      folder: raw.folder ?? null,
+      missionId: raw.missionId ?? null,
+      laneRole: raw.laneRole ?? null,
+      createdAt: raw.createdAt ?? now,
+      archivedAt: raw.archivedAt ?? null,
+    };
+  });
+}
+
+const MOCK_LANES: any[] = USE_ADE_DB_SNAPSHOT
+  ? buildMockLanesFromAdeSnapshot(ADE_DB_SNAPSHOT!.lanes)
+  : BUILTIN_MOCK_LANES;
 
 /** Returns a fresh snapshot object on every call to avoid shared-state leakage. */
 function makeLaneSnapshot(lane: any): any {
@@ -552,10 +663,12 @@ const INTEGRATION_PRS: any[] = [
 ];
 
 // ── All PRs combined ──────────────────────────────────────────
-const ALL_PRS = [...NORMAL_PRS, ...QUEUE_PRS, ...INTEGRATION_PRS];
+const ALL_PRS = USE_ADE_DB_SNAPSHOT
+  ? []
+  : [...NORMAL_PRS, ...QUEUE_PRS, ...INTEGRATION_PRS];
 
 // ── Merge Contexts ────────────────────────────────────────────
-const MOCK_MERGE_CONTEXTS: Record<string, any> = {
+const BUILTIN_MOCK_MERGE_CONTEXTS: Record<string, any> = {
   // Normal PRs — no group
   "pr-1": {
     prId: "pr-1",
@@ -796,6 +909,10 @@ const MOCK_MERGE_CONTEXTS: Record<string, any> = {
     ],
   },
 };
+
+const MOCK_MERGE_CONTEXTS: Record<string, any> = USE_ADE_DB_SNAPSHOT
+  ? {}
+  : BUILTIN_MOCK_MERGE_CONTEXTS;
 
 // ── Per-PR detail data (keyed by prId) ────────────────────────
 const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
@@ -1152,7 +1269,7 @@ function createDefaultConvergenceRuntime(prId: string) {
 }
 
 // ── Rebase Needs (all urgency categories) ─────────────────────
-const MOCK_REBASE_NEEDS: any[] = [
+const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
   // Attention: behind + conflicts predicted
   {
     laneId: "lane-dashboard",
@@ -1255,8 +1372,10 @@ const MOCK_REBASE_NEEDS: any[] = [
   },
 ];
 
+const MOCK_REBASE_NEEDS: any[] = USE_ADE_DB_SNAPSHOT ? [] : BUILTIN_MOCK_REBASE_NEEDS;
+
 // ── Queue Landing State ───────────────────────────────────────
-const MOCK_QUEUE_STATE: Record<string, any> = {
+const BUILTIN_MOCK_QUEUE_STATE: Record<string, any> = {
   "queue-commerce-v3": {
     queueId: "queue-commerce-v3",
     groupId: "queue-commerce-v3",
@@ -1363,8 +1482,12 @@ const MOCK_QUEUE_STATE: Record<string, any> = {
   },
 };
 
+const MOCK_QUEUE_STATE: Record<string, any> = USE_ADE_DB_SNAPSHOT
+  ? {}
+  : BUILTIN_MOCK_QUEUE_STATE;
+
 // ── Integration simulation result ─────────────────────────────
-const MOCK_INTEGRATION_SIMULATION: any = {
+const BUILTIN_MOCK_INTEGRATION_SIMULATION: any = {
   proposalId: "sim-mock-1",
   sourceLaneIds: ["lane-search", "lane-analytics"],
   baseBranch: "main",
@@ -1393,7 +1516,18 @@ const MOCK_INTEGRATION_SIMULATION: any = {
   createdAt: now,
 };
 
-const MOCK_INTEGRATION_WORKFLOWS: any[] = [
+const MOCK_INTEGRATION_SIMULATION: any = USE_ADE_DB_SNAPSHOT
+  ? {
+      proposalId: "empty",
+      sourceLaneIds: [] as string[],
+      baseBranch: "main",
+      overallOutcome: "clean",
+      steps: [] as any[],
+      createdAt: now,
+    }
+  : BUILTIN_MOCK_INTEGRATION_SIMULATION;
+
+const BUILTIN_MOCK_INTEGRATION_WORKFLOWS: any[] = [
   {
     proposalId: "workflow-int-active",
     sourceLaneIds: ["lane-search", "lane-analytics"],
@@ -1419,7 +1553,7 @@ const MOCK_INTEGRATION_WORKFLOWS: any[] = [
         diffStat: { insertions: 980, deletions: 120, filesChanged: 14 },
       },
     ],
-    steps: MOCK_INTEGRATION_SIMULATION.steps,
+    steps: BUILTIN_MOCK_INTEGRATION_SIMULATION.steps,
     overallOutcome: "clean",
     createdAt: twoDaysAgo,
     title: "Search & Analytics integration branch",
@@ -1519,6 +1653,10 @@ const MOCK_INTEGRATION_WORKFLOWS: any[] = [
   },
 ];
 
+const MOCK_INTEGRATION_WORKFLOWS: any[] = USE_ADE_DB_SNAPSHOT
+  ? []
+  : BUILTIN_MOCK_INTEGRATION_WORKFLOWS;
+
 const MOCK_GITHUB_SNAPSHOT: any = {
   repo: { owner: "acme", name: "ade" },
   viewerLogin: "mock-user",
@@ -1610,13 +1748,30 @@ const MOCK_GITHUB_SNAPSHOT: any = {
 // Wire it up
 // ═══════════════════════════════════════════════════════════════
 
-if (typeof window !== "undefined" && !(window as any).ade) {
-  console.warn(
-    "[ADE] Running outside Electron — injecting browser mock for window.ade",
+if (typeof window !== "undefined") {
+  const w = window as any;
+  // In Electron, preload already set `window.ade` and must win.
+  // In the Vite dev browser we set `__adeBrowserMock` so we can re-run this file on HMR
+  // (Vite re-executes the module, but `window.ade` already exists from the first load
+  // — a naive `!window.ade` guard would skip the mock and leave a stale, broken stub).
+  // Only skip the mock when the real Electron preload is present: a partial `window.ade`
+  // from another script would otherwise keep a broken object (missing `sync`, `onboarding`, …).
+  const hasNativeAdeBridge = Boolean(
+    w.ade &&
+      !w.__adeBrowserMock &&
+      typeof w.ade.sync?.getStatus === "function"
   );
-
-  // Flag for App.tsx to switch to BrowserRouter
-  (window as any).__adeBrowserMock = true;
+  if (hasNativeAdeBridge) {
+    // keep native bridge
+  } else {
+  if (w.ade) {
+    console.warn("[ADE] Re-applying full window.ade browser mock (e.g. Vite HMR).");
+  } else {
+    console.warn(
+      "[ADE] Running outside Electron — injecting browser mock for window.ade",
+    );
+  }
+  w.__adeBrowserMock = true;
   const sharedMemoryHealthStats = createMockMemoryHealthStats();
   const resolveDownloadedMemoryHealthStats = async () => {
     sharedMemoryHealthStats.embeddings = {
@@ -1634,6 +1789,264 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       },
     };
     return sharedMemoryHealthStats;
+  };
+
+  const BROWSER_MOCK_LOCAL_DEVICE: any = {
+    deviceId: "browser-mock-device",
+    siteId: "browser-mock-site",
+    name: "Browser preview",
+    platform: "macOS",
+    deviceType: "desktop",
+    createdAt: now,
+    updatedAt: now,
+    lastSeenAt: now,
+    lastHost: null,
+    lastPort: null,
+    tailscaleIp: null,
+    ipAddresses: ["127.0.0.1"],
+    metadata: {},
+  };
+
+  const BROWSER_MOCK_SYNC_SNAPSHOT: any = {
+    mode: "standalone",
+    role: "brain",
+    localDevice: BROWSER_MOCK_LOCAL_DEVICE,
+    currentBrain: BROWSER_MOCK_LOCAL_DEVICE,
+    clusterState: null,
+    bootstrapToken: null,
+    pairingPin: null,
+    pairingPinConfigured: false,
+    pairingConnectInfo: null,
+    connectedPeers: [],
+    tailnetDiscovery: {
+      state: "disabled",
+      serviceName: "ade-sync",
+      servicePort: 0,
+      target: null,
+      updatedAt: null,
+      error: null,
+      stderr: null,
+    },
+    client: {
+      state: "disconnected",
+      host: null,
+      port: null,
+      connectedAt: null,
+      lastSeenAt: null,
+      latencyMs: null,
+      syncLag: null,
+      lastRemoteDbVersion: 0,
+      brainDeviceId: BROWSER_MOCK_LOCAL_DEVICE.deviceId,
+      hostName: "Browser preview",
+      error: null,
+      message: null,
+      savedDraft: null,
+    },
+    transferReadiness: {
+      ready: true,
+      blockers: [],
+      survivableState: [],
+    },
+    survivableStateText: "Idle (browser preview)",
+    blockingStateText: "",
+  };
+
+  const BROWSER_MOCK_PROVIDER_CONNECTION = (
+    provider: "claude" | "codex" | "cursor",
+  ) => ({
+    provider,
+    authAvailable: false,
+    runtimeDetected: false,
+    runtimeAvailable: false,
+    usageAvailable: false,
+    path: null,
+    blocker: null,
+    lastCheckedAt: now,
+    sources: [] as { kind: string }[],
+  });
+
+  const BROWSER_MOCK_AI_STATUS: any = {
+    mode: "guest",
+    availableProviders: { claude: false, codex: false, cursor: false },
+    models: { claude: [], codex: [], cursor: [] },
+    features: [],
+    providerConnections: {
+      claude: BROWSER_MOCK_PROVIDER_CONNECTION("claude"),
+      codex: BROWSER_MOCK_PROVIDER_CONNECTION("codex"),
+      cursor: BROWSER_MOCK_PROVIDER_CONNECTION("cursor"),
+    },
+  };
+
+  const BROWSER_MOCK_TOUR_PROGRESS: any = {
+    wizardCompletedAt: now,
+    wizardDismissedAt: null,
+    tours: {},
+    tourVariants: {},
+    glossaryTermsSeen: [],
+    tutorial: {
+      completedAt: null,
+      dismissedAt: null,
+      silenced: false,
+      inProgress: false,
+      lastActIndex: 0,
+      ctxSnapshot: {},
+    },
+  };
+
+  const BROWSER_MOCK_USAGE_SNAPSHOT: any = {
+    windows: [],
+    pacing: {
+      status: "on-track",
+      projectedWeeklyPercent: 0,
+      weekElapsedPercent: 0,
+      expectedPercent: 0,
+      deltaPercent: 0,
+      etaHours: null,
+      willLastToReset: true,
+      resetsInHours: 168,
+    },
+    costs: [],
+    extraUsage: [],
+    lastPolledAt: now,
+    errors: [],
+  };
+
+  const BROWSER_MOCK_BUDGET_CONFIG: any = {
+    refreshIntervalMin: 15,
+    budgetCaps: [] as any[],
+    preset: "conservative",
+  };
+
+  /** Full enough for Settings, lane behavior, and Missions `applyMissionSettingsSnapshot` in the dev browser. */
+  const BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT: any = {
+    shared: {
+      version: 1,
+      processes: [],
+      stackButtons: [],
+      processGroups: [],
+      testSuites: [],
+      automations: [],
+      laneOverlayPolicies: [],
+    },
+    local: {
+      version: 1,
+      processes: [],
+      stackButtons: [],
+      processGroups: [],
+      testSuites: [],
+      automations: [],
+      laneOverlayPolicies: [],
+      git: { autoRebaseOnHeadChange: false },
+      laneCleanup: {},
+      ai: {
+        orchestrator: {
+          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-4-6" },
+          teammatePlanMode: "auto",
+        },
+        permissions: {
+          cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+          inProcess: { mode: "full-auto" },
+          providers: {
+            claude: "full-auto",
+            codex: "default",
+            opencode: "full-auto",
+            codexSandbox: "workspace-write",
+          },
+        },
+      },
+    },
+    effective: {
+      version: 1,
+      processes: [],
+      stackButtons: [],
+      processGroups: [],
+      testSuites: [],
+      automations: [],
+      laneOverlayPolicies: [],
+      git: { autoRebaseOnHeadChange: false },
+      ai: {
+        orchestrator: {
+          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-4-6" },
+          teammatePlanMode: "auto",
+        },
+        permissions: {
+          cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+          inProcess: { mode: "full-auto" },
+          providers: {
+            claude: "full-auto",
+            codex: "default",
+            opencode: "full-auto",
+            codexSandbox: "workspace-write",
+          },
+        },
+      },
+    },
+    validation: { ok: true, issues: [] },
+    trust: {
+      sharedHash: "mock",
+      localHash: "mock",
+      approvedSharedHash: null,
+      requiresSharedTrust: false,
+    },
+    paths: {
+      sharedPath: "/tmp/.ade/ade.yaml",
+      localPath: "/tmp/.ade/local.yaml",
+    },
+  };
+
+  const BROWSER_MOCK_MISSION_DASHBOARD: any = {
+    active: [],
+    recent: [],
+    weekly: {
+      missions: 0,
+      successRate: 0,
+      avgDurationMs: 0,
+      totalCostUsd: 0,
+    },
+  };
+
+  const BROWSER_MOCK_EMPTY_FULL_MISSION_VIEW: any = {
+    mission: null,
+    runGraph: null,
+    artifacts: [],
+    checkpoints: [],
+    dashboard: null,
+  };
+
+  const BROWSER_MOCK_PHASE_PROFILE: any = {
+    id: "mock-profile",
+    name: "Mock profile",
+    description: "Browser mock phase profile",
+    phases: [] as any[],
+    isBuiltIn: true,
+    isDefault: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const BROWSER_MOCK_DEVTOOLS_CHECK: any = {
+    tools: [
+      {
+        id: "git" as const,
+        label: "Git",
+        command: "git",
+        installed: true,
+        detectedPath: "/usr/bin/git",
+        detectedVersion: "2.0.0",
+        required: true,
+      },
+    ],
+    platform: "darwin",
+  };
+
+  const BROWSER_MOCK_APNS_STATUS: any = {
+    enabled: false,
+    configured: false,
+    keyStored: false,
+    keyId: null,
+    teamId: null,
+    bundleId: null,
+    env: "sandbox" as const,
   };
 
   (window as any).ade = {
@@ -1659,7 +2072,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       writeClipboardText: resolvedArg(undefined),
       getImageDataUrl: resolvedArg({ dataUrl: "" }),
       writeClipboardImage: resolvedArg(undefined),
+      openPath: resolvedArg(undefined),
       openPathInEditor: resolvedArg(undefined),
+      logDebugEvent: () => {},
     },
     project: {
       openRepo: resolved(MOCK_PROJECT),
@@ -1732,27 +2147,124 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       get: resolved({ definitions: [], overrides: [] }),
       set: resolvedArg({ definitions: [], overrides: [] }),
     },
+    sync: {
+      getStatus: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      refreshDiscovery: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      listDevices: resolved([]),
+      updateLocalDevice: resolvedArg(BROWSER_MOCK_LOCAL_DEVICE),
+      connectToBrain: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
+      disconnectFromBrain: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      forgetDevice: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
+      getTransferReadiness: resolved({
+        ready: true,
+        blockers: [],
+        survivableState: [],
+      }),
+      transferBrainToLocal: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      getPin: resolved({ pin: null }),
+      setPin: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
+      clearPin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      setActiveLanePresence: resolvedArg(undefined),
+      onEvent: () => () => {},
+    },
     ai: {
-      getStatus: resolved({ provider: "none", status: "unconfigured" }),
+      getStatus: resolved(BROWSER_MOCK_AI_STATUS),
+      getOpenCodeRuntimeDiagnostics: resolved({} as any),
+      storeApiKey: resolvedArg(undefined),
+      deleteApiKey: resolvedArg(undefined),
+      listApiKeys: resolved([]),
+      verifyApiKey: resolvedArg({
+        provider: "mock",
+        ok: false,
+        message: "browser",
+        verifiedAt: now,
+      } as any),
+      updateConfig: resolvedArg(undefined),
     },
     agentTools: {
       detect: resolved([]),
+    },
+    notifications: {
+      apns: {
+        getStatus: resolved(BROWSER_MOCK_APNS_STATUS),
+        saveConfig: resolvedArg({ ...BROWSER_MOCK_APNS_STATUS }),
+        uploadKey: resolvedArg({ ...BROWSER_MOCK_APNS_STATUS }),
+        clearKey: resolved(BROWSER_MOCK_APNS_STATUS),
+        sendTestPush: resolvedArg({ ok: false, reason: "browser mock" }),
+      },
+    },
+    devTools: {
+      detect: resolved(BROWSER_MOCK_DEVTOOLS_CHECK),
+    },
+    usage: {
+      getSnapshot: resolved(BROWSER_MOCK_USAGE_SNAPSHOT),
+      refresh: resolved(BROWSER_MOCK_USAGE_SNAPSHOT),
+      checkBudget: resolvedArg({
+        allowed: true,
+        warnings: [] as string[],
+      }),
+      getCumulativeUsage: resolvedArg({
+        totalTokens: 0,
+        totalCostUsd: 0,
+        weekKey: "2026-W01",
+      }),
+      getBudgetConfig: resolved(BROWSER_MOCK_BUDGET_CONFIG),
+      saveBudgetConfig: resolvedArg(BROWSER_MOCK_BUDGET_CONFIG),
+      onUpdate: (cb: (snapshot: any) => void) => {
+        queueMicrotask(() => {
+          try {
+            cb(BROWSER_MOCK_USAGE_SNAPSHOT);
+          } catch {
+            // noop
+          }
+        });
+        return () => {};
+      },
+    },
+    computerUse: {
+      listArtifacts: resolvedArg([]),
+      getOwnerSnapshot: resolvedArg({} as any),
+      routeArtifact: resolvedArg({} as any),
+      updateArtifactReview: resolvedArg({} as any),
+      readArtifactPreview: resolvedArg(null),
+      onEvent: () => () => {},
     },
     onboarding: {
       getStatus: resolved({
         completedAt: new Date().toISOString(),
         dismissedAt: null,
+        freshProject: false,
       }),
-      detectDefaults: resolved({}),
+      detectDefaults: resolved({} as any),
       detectExistingLanes: resolved([]),
       setDismissed: resolvedArg({
         completedAt: null,
         dismissedAt: new Date().toISOString(),
-      }),
+      } as any),
       complete: resolved({
         completedAt: new Date().toISOString(),
         dismissedAt: null,
       }),
+      getTourProgress: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+      markWizardCompleted: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+      markWizardDismissed: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+      markTourCompleted: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+      markTourDismissed: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+      updateTourStep: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
+      markGlossaryTermSeen: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+      resetTourProgress: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+      markTourCompletedVariant: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
+      markTourDismissedVariant: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
+      updateTourStepVariant: async (_a: any, _b: any, _c: any) => BROWSER_MOCK_TOUR_PROGRESS,
+      tutorial: {
+        start: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+        dismiss: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+        complete: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+        updateAct: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
+        setSilenced: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+        clearSessionDismissal: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+        shouldPrompt: resolved(false),
+      },
     },
     automations: {
       list: resolved([
@@ -2283,11 +2795,57 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       get: resolvedArg(null),
       create: resolvedArg({ id: "mock" }),
       update: resolvedArg({ id: "mock" }),
+      archive: resolvedArg(undefined),
       delete: resolvedArg(undefined),
       updateStep: resolvedArg({ id: "mock" }),
       addArtifact: resolvedArg({ id: "mock" }),
       addIntervention: resolvedArg({ id: "mock" }),
       resolveIntervention: resolvedArg({ id: "mock" }),
+      listPhaseItems: resolved([]),
+      savePhaseItem: resolvedArg({} as any),
+      deletePhaseItem: resolvedArg(undefined),
+      importPhaseItems: resolvedArg([]),
+      exportPhaseItems: resolvedArg({ items: [], savedPath: null }),
+      listPhaseProfiles: resolved([]),
+      savePhaseProfile: resolvedArg({
+        ...BROWSER_MOCK_PHASE_PROFILE,
+        id: "mock-profile-saved",
+        name: "Saved profile",
+      } as any),
+      deletePhaseProfile: resolvedArg(undefined),
+      clonePhaseProfile: resolvedArg({
+        ...BROWSER_MOCK_PHASE_PROFILE,
+        id: "mock-profile-clone",
+        isBuiltIn: false,
+        isDefault: false,
+        name: "Cloned profile",
+      } as any),
+      exportPhaseProfile: resolvedArg({
+        profile: BROWSER_MOCK_PHASE_PROFILE,
+        savedPath: null,
+      } as any),
+      importPhaseProfile: resolvedArg({
+        ...BROWSER_MOCK_PHASE_PROFILE,
+        id: "mock-profile-imported",
+        isBuiltIn: false,
+        isDefault: false,
+        name: "Imported profile",
+      } as any),
+      getPhaseConfiguration: resolvedArg(null),
+      getDashboard: resolved(BROWSER_MOCK_MISSION_DASHBOARD),
+      getFullMissionView: resolvedArg(BROWSER_MOCK_EMPTY_FULL_MISSION_VIEW),
+      preflight: resolvedArg({
+        canLaunch: true,
+        checkedAt: now,
+        profileName: null,
+        selectedPhaseCount: 0,
+        hardFailures: 0,
+        warnings: 0,
+        checklist: [] as any[],
+        budgetEstimate: null,
+      } as any),
+      getRunView: resolvedArg(null),
+      subscribeRunView: () => () => {},
       onEvent: noop,
     },
     orchestrator: {
@@ -2620,6 +3178,34 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         active: false,
       }),
       proxyOpenPreview: resolvedArg(undefined),
+      oauthGetStatus: resolved({
+        enabled: false,
+        routingMode: "state-parameter" as const,
+        activeSessions: [],
+        callbackPaths: [],
+      }),
+      oauthUpdateConfig: resolvedArg(undefined),
+      oauthGenerateRedirectUris: resolvedArg([{ provider: "google", uris: [] as string[], instructions: "" }]),
+      oauthEncodeState: resolvedArg("ade:mock"),
+      oauthDecodeState: resolvedArg(null),
+      oauthListSessions: resolved([]),
+      onOAuthEvent: noop,
+      diagnosticsGetStatus: resolved({
+        lanes: [],
+        proxyRunning: false,
+        proxyPort: 8080,
+        totalRoutes: 0,
+        activeConflicts: 0,
+        fallbackLanes: [] as string[],
+      }),
+      diagnosticsGetLaneHealth: async (args: { laneId: string }) =>
+        typeof args?.laneId === "string" ? mockBrowserLaneHealth(args.laneId) : null,
+      diagnosticsRunHealthCheck: async (args: { laneId: string }) =>
+        mockBrowserLaneHealth(typeof args?.laneId === "string" ? args.laneId : "mock"),
+      diagnosticsRunFullCheck: resolved([]),
+      diagnosticsActivateFallback: resolvedArg(undefined),
+      diagnosticsDeactivateFallback: resolvedArg(undefined),
+      onDiagnosticsEvent: noop,
       onProxyEvent: noop,
     },
     sessions: {
@@ -2930,8 +3516,13 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onExit: noop,
     },
     diff: {
-      getChanges: resolvedArg({ files: [] }),
-      getFile: resolvedArg({ hunks: [] }),
+      getChanges: resolvedArg({ unstaged: [], staged: [] }),
+      getFile: resolvedArg({
+        path: "",
+        mode: "unstaged" as const,
+        original: { exists: false, text: "" },
+        modified: { exists: false, text: "" },
+      }),
     },
     files: {
       writeTextAtomic: resolvedArg(undefined),
@@ -3104,8 +3695,12 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onStatusChanged: noop,
     },
     prs: {
-      createFromLane: resolvedArg(NORMAL_PRS[0]),
-      linkToLane: resolvedArg(NORMAL_PRS[0]),
+      createFromLane: resolvedArg(
+        USE_ADE_DB_SNAPSHOT ? null : NORMAL_PRS[0] ?? null,
+      ),
+      linkToLane: resolvedArg(
+        USE_ADE_DB_SNAPSHOT ? null : NORMAL_PRS[0] ?? null,
+      ),
       getForLane: resolvedArg(null),
       listAll: resolved(ALL_PRS),
       refresh: resolved(ALL_PRS),
@@ -3138,7 +3733,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       commitIntegration: resolvedArg({
         groupId: "group-int-mock",
         integrationLaneId: "lane-search",
-        pr: INTEGRATION_PRS[0],
+        pr: USE_ADE_DB_SNAPSHOT ? null : INTEGRATION_PRS[0] ?? null,
         mergeResults: [],
       }),
       landStackEnhanced: resolvedArg([]),
@@ -3341,7 +3936,11 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         mergeReadiness: "ready",
       }),
       listProposals: resolved([]),
-      dismissIntegrationCleanup: resolvedArg(MOCK_INTEGRATION_WORKFLOWS[1]),
+      dismissIntegrationCleanup: resolvedArg(
+        USE_ADE_DB_SNAPSHOT
+          ? undefined
+          : BUILTIN_MOCK_INTEGRATION_WORKFLOWS[1] ?? undefined,
+      ),
       cleanupIntegrationWorkflow: resolvedArg({
         proposalId: "workflow-int-active",
         archivedLaneIds: ["lane-search"],
@@ -3408,14 +4007,16 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onEvent: noop,
     },
     projectConfig: {
-      get: resolved({ effective: { providerMode: "guest" }, overrides: {} }),
-      validate: resolvedArg({ valid: true }),
-      save: resolvedArg({
-        effective: { providerMode: "guest" },
-        overrides: {},
-      }),
-      diffAgainstDisk: resolved({ changed: false }),
-      confirmTrust: resolved({ trusted: true }),
+      get: resolved(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
+      validate: resolvedArg({ ok: true, issues: [] as any[] }),
+      save: resolvedArg(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
+      diffAgainstDisk: resolved({ changed: false } as any),
+      confirmTrust: resolved({
+        sharedHash: "mock",
+        localHash: "mock",
+        approvedSharedHash: null,
+        requiresSharedTrust: false,
+      } as any),
     },
     adeCli: {
       getStatus: resolved({
@@ -3529,4 +4130,5 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,
   };
-}
+  } // !Electron: browser or HMR mock
+} // window

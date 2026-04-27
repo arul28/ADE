@@ -1,13 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import {
-  CaretDown,
-  CaretRight,
-  FileCode,
-  Globe,
-  Terminal,
-  Warning,
-} from "@phosphor-icons/react";
-import type { Icon } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, FileCode } from "@phosphor-icons/react";
 import type { OperatorNavigationSuggestion } from "../../../shared/types";
 import {
   formatStructuredValue,
@@ -19,13 +11,8 @@ import {
   type ChatWorkLogFileChange,
 } from "./chatTranscriptRows";
 import { cn } from "../ui/cn";
-import { getToolMeta } from "./chatToolAppearance";
-import { ChatStatusGlyph, chatStatusTextClass, type ChatStatusVisualState } from "./chatStatusVisuals";
+import { describeToolVerb, getToolMeta } from "./chatToolAppearance";
 import { replaceInternalToolNames } from "./toolPresentation";
-
-const MAX_SUMMARY_WORK_LOG_ENTRIES = 4;
-const RECESSED_BLOCK_CLASS =
-  "ade-chat-recessed overflow-auto whitespace-pre-wrap break-words rounded-[10px] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 
@@ -79,24 +66,150 @@ function formatFileAction(kind: ChatWorkLogFileChange["kind"]): string {
   }
 }
 
-function DiffPreview({ diff }: { diff: string }) {
+type EntryStatus = ChatWorkLogEntry["status"];
+
+function statusDotClass(status: EntryStatus): string {
+  if (status === "running") return "bg-violet-400/80 ade-thinking-pulse";
+  if (status === "failed") return "bg-red-400/70";
+  if (status === "interrupted") return "bg-amber-400/60";
+  return "bg-fg/22";
+}
+
+function isCodeChangeEntry(entry: ChatWorkLogEntry): boolean {
+  if (entry.entryKind === "file_change") return true;
+  if (entry.entryKind === "tool" && entry.toolName) {
+    return getToolMeta(entry.toolName).category === "write";
+  }
+  return false;
+}
+
+function entryArgText(entry: ChatWorkLogEntry): string {
+  if (entry.entryKind === "command") {
+    return summarizeInlineText(entry.command ?? "", 140);
+  }
+  if (entry.entryKind === "web_search") {
+    return summarizeInlineText(entry.query ?? "", 140);
+  }
+  if (entry.entryKind === "tool" && entry.toolName) {
+    const meta = getToolMeta(entry.toolName);
+    const args = readRecord(entry.args) ?? {};
+    const target = meta.getTarget ? meta.getTarget(args) : null;
+    if (target) return summarizeInlineText(target, 140);
+    if (entry.detail) return summarizeInlineText(entry.detail, 140);
+  }
+  return "";
+}
+
+function entryVerb(entry: ChatWorkLogEntry): string {
+  if (entry.entryKind === "command") {
+    if (entry.status === "running") return "Running command…";
+    return entry.status === "failed" ? "Command failed" : "Command run complete";
+  }
+  if (entry.entryKind === "web_search") {
+    if (entry.status === "running") return "Searching…";
+    return entry.status === "failed" ? "Search failed" : "Search complete";
+  }
+  if (entry.entryKind === "tool" && entry.toolName) {
+    return describeToolVerb(entry.toolName, entry.status);
+  }
+  return entry.label;
+}
+
+function aggregateGroupStatus(entries: ChatWorkLogEntry[]): EntryStatus {
+  if (entries.some((e) => e.status === "running")) return "running";
+  if (entries.some((e) => e.status === "failed")) return "failed";
+  if (entries.some((e) => e.status === "interrupted")) return "interrupted";
+  return "completed";
+}
+
+function fileExtBadge(path: string): string {
+  const basename = basenamePathLabel(path);
+  const dot = basename.lastIndexOf(".");
+  if (dot <= 0) return "FILE";
+  const ext = basename.slice(dot + 1).toUpperCase();
+  return ext.length > 4 ? "FILE" : ext;
+}
+
+type AggregatedFile = {
+  path: string;
+  kind: ChatWorkLogFileChange["kind"];
+  additions: number;
+  deletions: number;
+  diff: string;
+  status: EntryStatus;
+};
+
+function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): AggregatedFile[] {
+  const map = new Map<string, AggregatedFile>();
+  for (const entry of entries) {
+    if (entry.entryKind === "file_change" && entry.changedFiles?.length) {
+      for (const file of entry.changedFiles) {
+        const existing = map.get(file.path);
+        if (existing) {
+          existing.additions += file.additions;
+          existing.deletions += file.deletions;
+          if (file.diff.length > existing.diff.length) existing.diff = file.diff;
+        } else {
+          map.set(file.path, {
+            path: file.path,
+            kind: file.kind,
+            additions: file.additions,
+            deletions: file.deletions,
+            diff: file.diff,
+            status: entry.status,
+          });
+        }
+      }
+      continue;
+    }
+    if (entry.entryKind === "tool" && entry.toolName) {
+      const meta = getToolMeta(entry.toolName);
+      if (meta.category !== "write") continue;
+      const args = readRecord(entry.args) ?? {};
+      const path = meta.getTarget ? meta.getTarget(args) : null;
+      if (!path) continue;
+      const resultRecord = readRecord(entry.result);
+      const diff = typeof resultRecord?.diff === "string" ? resultRecord.diff : "";
+      const stats = diff ? summarizeDiffStats(diff) : { additions: 0, deletions: 0 };
+      const existing = map.get(path);
+      if (existing) {
+        existing.additions += stats.additions;
+        existing.deletions += stats.deletions;
+        if (diff.length > existing.diff.length) existing.diff = diff;
+      } else {
+        map.set(path, {
+          path,
+          kind: "modify",
+          additions: stats.additions,
+          deletions: stats.deletions,
+          diff,
+          status: entry.status,
+        });
+      }
+    }
+  }
+  return [...map.values()];
+}
+
+function FlatPre({ children }: { children: React.ReactNode }) {
+  return (
+    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[11px] leading-[1.55] text-fg/55">
+      {children}
+    </pre>
+  );
+}
+
+function DiffBody({ diff }: { diff: string }) {
   const lines = diff.split(/\r?\n/);
   return (
-    <pre className={cn("max-h-64", RECESSED_BLOCK_CLASS)}>
+    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[11px] leading-[1.55] text-fg/65">
       {lines.map((line, index) => {
-        let tone = "text-fg/70";
-        let background = "";
-        if (line.startsWith("+")) {
-          tone = "text-emerald-400/90";
-          background = "bg-emerald-500/[0.05]";
-        } else if (line.startsWith("-")) {
-          tone = "text-red-400/90";
-          background = "bg-rose-500/[0.05]";
-        } else if (line.startsWith("@@")) {
-          tone = "text-violet-400/60";
-        }
+        let tone = "text-fg/65";
+        if (line.startsWith("+")) tone = "text-emerald-400/85";
+        else if (line.startsWith("-")) tone = "text-red-400/85";
+        else if (line.startsWith("@@")) tone = "text-violet-400/55";
         return (
-          <div key={`${index}:${line}`} className={cn(tone, background, "px-1 -mx-1")}>
+          <div key={`${index}:${line}`} className={tone}>
             {line}
           </div>
         );
@@ -105,515 +218,261 @@ function DiffPreview({ diff }: { diff: string }) {
   );
 }
 
-const FAILED_ICON_CLASS = "text-red-300/80";
-
-const MEMORY_TOOL_LABELS = new Set(["Memory", "Core Memory", "Memory Add", "Memory Pin"]);
-
-function isMemoryToolEntry(entry: ChatWorkLogEntry): boolean {
-  if (entry.entryKind !== "tool" || !entry.toolName) return false;
-  return MEMORY_TOOL_LABELS.has(getToolMeta(entry.toolName).label);
-}
-
-function workToneIcon(entry: ChatWorkLogEntry): { icon: Icon; className: string } {
-  const isFailed = entry.status === "failed";
-
-  switch (entry.entryKind) {
-    case "tool":
-      if (entry.toolName) {
-        return { icon: getToolMeta(entry.toolName).icon, className: isFailed ? FAILED_ICON_CLASS : "text-fg/34" };
-      }
-      break;
-    case "command":
-      return { icon: Terminal, className: isFailed ? FAILED_ICON_CLASS : "text-amber-300/75" };
-    case "file_change":
-      return { icon: FileCode, className: isFailed ? FAILED_ICON_CLASS : "text-violet-300/75" };
-    case "web_search":
-      return { icon: Globe, className: isFailed ? FAILED_ICON_CLASS : "text-cyan-300/75" };
-  }
-
-  return { icon: Warning, className: "text-fg/34" };
-}
-
-function workStatusState(status: ChatWorkLogEntry["status"]): ChatStatusVisualState {
-  if (status === "completed" || status === "failed") return status;
-  if (status === "interrupted") return "waiting";
-  return "working";
-}
-
-function workStatusLabel(status: ChatWorkLogEntry["status"]): string {
-  if (status === "completed" || status === "failed") return status;
-  if (status === "interrupted") return "interrupted";
-  return "running";
-}
-
-function workEntryHeading(entry: ChatWorkLogEntry): string {
-  if (entry.entryKind === "tool" && entry.toolName) {
-    const meta = getToolMeta(entry.toolName);
-    const args = readRecord(entry.args) ?? {};
-    const targetLine = meta.getTarget ? meta.getTarget(args) : null;
-
-    if (meta.label === "Shell") {
-      return targetLine ? `Run ${summarizeInlineText(targetLine, 72)}` : "Run shell";
-    }
-    if (meta.label === "Read") {
-      return targetLine ? `Read ${basenamePathLabel(targetLine)}` : "Read files";
-    }
-    if (meta.label === "Search") {
-      return meta.category === "web"
-        ? "Search web"
-        : targetLine ? `Search ${summarizeInlineText(targetLine, 72)}` : "Search";
-    }
-    if (meta.label === "Find Files") {
-      return targetLine ? `Find ${summarizeInlineText(targetLine, 72)}` : "Find files";
-    }
-    if (meta.label === "List Files" || meta.label === "List") {
-      return targetLine ? `List ${summarizeInlineText(targetLine, 72)}` : "List files";
-    }
-    if (meta.label === "Write") {
-      return targetLine ? `Write ${basenamePathLabel(targetLine)}` : "Write file";
-    }
-    if (meta.label === "Edit" || meta.label === "Multi Edit" || meta.label === "Patch") {
-      return targetLine ? `Edit ${basenamePathLabel(targetLine)}` : "Edit files";
-    }
-    if (meta.label === "Plan") {
-      return "Update plan";
-    }
-    if (meta.label === "Plan Approval") {
-      return "Review plan";
-    }
-    if (meta.label === "Memory" || meta.label === "Core Memory" || meta.label === "Memory Add" || meta.label === "Memory Pin") {
-      return "Update memory";
-    }
-
-    return targetLine ? `${meta.label} ${summarizeInlineText(targetLine, 72)}`.trim() : meta.label;
-  }
-
-  if (entry.entryKind === "command") {
-    const cmdText = summarizeInlineText(entry.command ?? "", 72);
-    return cmdText.length > 0 ? `Run ${cmdText}` : "Run shell";
-  }
-
-  if (entry.entryKind === "file_change") {
-    const firstFile = entry.changedFiles?.[0];
-    if (!firstFile) return "File change";
-    const action = formatFileAction(firstFile.kind);
-    if (entry.changedFiles!.length === 1) return `${action} ${basenamePathLabel(firstFile.path)}`;
-    return `${action} ${basenamePathLabel(firstFile.path)} +${entry.changedFiles!.length - 1} more`;
-  }
-
-  if (entry.entryKind === "web_search") {
-    return "Search web";
-  }
-
-  return entry.label;
-}
-
-function workEntryPreview(entry: ChatWorkLogEntry): string {
-  if (entry.entryKind === "command") {
-    const cmdText = summarizeInlineText(entry.command ?? "", 110);
-    return cmdText.length > 0 ? cmdText : "Run shell";
-  }
-
-  if (entry.entryKind === "file_change") {
-    const firstFile = entry.changedFiles?.[0];
-    if (!firstFile) return "";
-    const stats = summarizeDiffStats(firstFile.diff);
-    const statsText = [
-      stats.additions > 0 ? `+${stats.additions}` : null,
-      stats.deletions > 0 ? `-${stats.deletions}` : null,
-    ].filter(Boolean).join(" ");
-    return summarizeInlineText(
-      statsText.length ? `${basenamePathLabel(firstFile.path)} ${statsText}` : basenamePathLabel(firstFile.path),
-      110,
-    );
-  }
-
-  if (entry.entryKind === "web_search") {
-    const queryText = summarizeInlineText(entry.query ?? "", 110);
-    return queryText.length > 0 ? queryText : "Search web";
-  }
-
-  if (entry.entryKind === "tool") {
-    if (entry.toolName) {
-      const meta = getToolMeta(entry.toolName);
-      if (meta.label === "Shell") {
-        const args = readRecord(entry.args);
-        const shellCmd = summarizeInlineText(typeof args?.command === "string" ? args.command : "", 110);
-        return shellCmd.length > 0 ? shellCmd : "Run shell";
-      }
-      if (meta.label === "Search" && meta.category === "web") return "Search web";
-    }
-    const resultRecord = readRecord(entry.result);
-    const resultSummary = typeof resultRecord?.summary === "string" ? resultRecord.summary.trim() : "";
-    if (resultSummary.length > 0) {
-      return summarizeInlineText(resultSummary, 110);
-    }
-    if (typeof entry.result === "string" && entry.result.trim().length > 0) {
-      return summarizeInlineText(entry.result, 110);
-    }
-    const argsRecord = readRecord(entry.args);
-    if (argsRecord) {
-      const values = Object.values(argsRecord)
-        .map((value) => typeof value === "string" ? value : JSON.stringify(value))
-        .filter((value): value is string => Boolean(value && value.trim().length));
-      if (values.length > 0) return summarizeInlineText(values.join(" "), 110);
-    }
-  }
-
-  return summarizeInlineText(entry.detail ?? "", 110);
-}
-
-function workGroupSummaryLabel(entry: ChatWorkLogEntry): string {
-  if (entry.entryKind === "command") return "ran shell";
-  if (entry.entryKind === "file_change") {
-    const firstFile = entry.changedFiles?.[0];
-    if (firstFile?.kind === "create") return "created files";
-    if (firstFile?.kind === "delete") return "deleted files";
-    return "edited files";
-  }
-  if (entry.entryKind === "web_search") return "searched web";
-  if (entry.entryKind === "tool" && entry.toolName) {
-    const meta = getToolMeta(entry.toolName);
-    if (meta.label === "Shell") return "ran shell";
-    if (meta.label === "Read" || meta.label === "List Files" || meta.label === "List" || meta.label === "Find Files") return "read files";
-    if (meta.label === "Search") return "searched";
-    if (meta.label === "Write" || meta.label === "Edit" || meta.label === "Multi Edit" || meta.label === "Patch") return "edited files";
-    if (meta.label === "Plan") return "updated plan";
-    if (meta.label === "Plan Approval") return "reviewed plan";
-    if (meta.label === "Memory" || meta.label === "Core Memory" || meta.label === "Memory Add" || meta.label === "Memory Pin") return "updated memory";
-    return summarizeInlineText(replaceInternalToolNames(meta.label).toLowerCase(), 32);
-  }
-  return summarizeInlineText(replaceInternalToolNames(entry.label).toLowerCase(), 32);
-}
-
-function buildWorkGroupSummary({
-  summary,
-  entries,
-}: {
-  summary?: string;
-  entries: ChatWorkLogEntry[];
-}): string {
-  const cleanedSummary = replaceInternalToolNames(summary?.trim() ?? "");
-  if (cleanedSummary.length > 0) return cleanedSummary;
-
-  const latestEntries = entries.slice(Math.max(0, entries.length - MAX_SUMMARY_WORK_LOG_ENTRIES));
-  const labels: string[] = [];
-  const seen = new Set<string>();
-  for (const entry of latestEntries) {
-    const label = workGroupSummaryLabel(entry);
-    if (!label.length || seen.has(label)) continue;
-    seen.add(label);
-    labels.push(label);
-  }
-  if (labels.length === 0) return "Recent tool calls";
-  const summaryText = labels.slice(0, 3).join(", ");
-  return `${summaryText.charAt(0).toUpperCase()}${summaryText.slice(1)}`;
-}
-
-function WorkLogEntryDetail({
+function ToolCallRow({
   entry,
   onNavigateSuggestion,
 }: {
   entry: ChatWorkLogEntry;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
 }) {
-  const sections: React.ReactNode[] = [];
-  const navigationSuggestions = readNavigationSuggestions(entry.result);
-
-  if (navigationSuggestions.length > 0 && onNavigateSuggestion) {
-    sections.push(
-      <div key="navigation" className="flex flex-wrap gap-2">
-        {navigationSuggestions.map((suggestion) => (
-          <button
-            key={`${suggestion.surface}:${suggestion.href}`}
-            type="button"
-            className="ade-liquid-glass-pill rounded-full px-2.5 py-1 font-mono text-[10px] font-semibold text-accent/85 transition-colors hover:border-accent/25 hover:bg-accent/[0.14] hover:text-accent"
-            onClick={() => onNavigateSuggestion(suggestion)}
-          >
-            {suggestion.label}
-          </button>
-        ))}
-      </div>,
-    );
-  }
-
-  if (entry.entryKind === "tool") {
-    const args = readRecord(entry.args);
-    if (args && Object.keys(args).length > 0) {
-      sections.push(
-        <div key="args">
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Arguments</div>
-          <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
-            {formatStructuredValue(args)}
-          </pre>
-        </div>,
-      );
-    }
-    if (entry.result !== undefined) {
-      sections.push(
-        <div key="result">
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Result</div>
-          <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
-            {formatStructuredValue(entry.result)}
-          </pre>
-        </div>,
-      );
-    }
-  }
-
-  if (entry.entryKind === "command") {
-    if (entry.command) {
-      sections.push(
-        <div key="command">
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Command</div>
-          <pre className={cn("max-h-40", RECESSED_BLOCK_CLASS)}>
-            <span className="select-none text-amber-500/40">$ </span>
-            {entry.command}
-          </pre>
-        </div>,
-      );
-    }
-    if (entry.output?.trim().length) {
-      sections.push(
-        <div key="output">
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Output</div>
-          <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
-            {entry.output}
-          </pre>
-        </div>,
-      );
-    }
-  }
-
-  if (entry.entryKind === "file_change" && entry.changedFiles?.length) {
-    sections.push(
-      <div key="files" className="space-y-3">
-        {entry.changedFiles.map((file) => (
-          <div key={`${file.path}:${file.kind}`} className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-fg/45">
-              <span>{formatFileAction(file.kind)}</span>
-              <span className="normal-case tracking-normal text-fg/70">{file.path}</span>
-              {file.additions > 0 ? <span className="text-emerald-400/70">+{file.additions}</span> : null}
-              {file.deletions > 0 ? <span className="text-red-400/70">-{file.deletions}</span> : null}
-            </div>
-            {file.diff.trim().length ? (
-              <DiffPreview diff={file.diff} />
-            ) : (
-              <div className="font-mono text-[11px] text-muted-fg/40">No diff payload available.</div>
-            )}
-          </div>
-        ))}
-      </div>,
-    );
-  }
-
-  if (entry.entryKind === "web_search") {
-    sections.push(
-      <div key="web" className="space-y-2">
-        {entry.query?.trim().length ? (
-          <div>
-            <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Query</div>
-            <pre className={cn("max-h-40", RECESSED_BLOCK_CLASS)}>
-              {entry.query}
-            </pre>
-          </div>
-        ) : null}
-        {entry.action?.trim().length ? (
-          <div>
-            <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Action</div>
-            <pre className={cn("max-h-32", RECESSED_BLOCK_CLASS)}>
-              {entry.action}
-            </pre>
-          </div>
-        ) : null}
-      </div>,
-    );
-  }
-
-  if (sections.length === 0 && entry.detail?.trim().length) {
-    sections.push(
-      <div key="detail">
-        <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Detail</div>
-        <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
-          {replaceInternalToolNames(entry.detail)}
-        </pre>
-      </div>,
-    );
-  }
-
-  if (sections.length === 0) {
-    return <div className="font-mono text-[11px] text-muted-fg/40">No additional detail available.</div>;
-  }
-
-  return <div className="space-y-3">{sections}</div>;
-}
-
-export function ChatWorkLogBlock({
-  entries,
-  summary,
-  className,
-  onNavigateSuggestion,
-  animate = true,
-}: {
-  entries: ChatWorkLogEntry[];
-  summary?: ChatWorkLogGroupEvent["summary"];
-  className?: string;
-  onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
-  animate?: boolean;
-}) {
-  const hasNavigationSuggestions = useMemo(
-    () => entries.some((e) => readNavigationSuggestions(e.result).length > 0),
-    [entries],
+  const navigationSuggestions = useMemo(
+    () => readNavigationSuggestions(entry.result),
+    [entry.result],
   );
-  const [expanded, setExpanded] = useState(hasNavigationSuggestions);
-  const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({});
+  const [open, setOpen] = useState(entry.status === "failed" || navigationSuggestions.length > 0);
 
   useEffect(() => {
-    if (hasNavigationSuggestions) {
-      setExpanded(true);
-    }
-  }, [hasNavigationSuggestions]);
+    if (navigationSuggestions.length > 0) setOpen(true);
+  }, [navigationSuggestions.length]);
 
-  const groupSummary = useMemo(() => buildWorkGroupSummary({ summary, entries }), [entries, summary]);
+  const verb = replaceInternalToolNames(entryVerb(entry));
+  const argText = replaceInternalToolNames(entryArgText(entry));
+  const verbTone =
+    entry.status === "failed"
+      ? "text-red-300/80"
+      : entry.status === "running"
+        ? "text-violet-200/75"
+        : "text-fg/55";
 
-  const groupStatus: ChatStatusVisualState = useMemo(() => {
-    if (entries.some((e) => e.status === "failed")) return "failed";
-    if (entries.some((e) => e.status === "interrupted")) return "waiting";
-    if (entries.some((e) => e.status === "running")) return "working";
-    return "completed";
-  }, [entries]);
-
-  const groupStatusLabel = useMemo(() => {
-    if (groupStatus === "failed") return "failed";
-    if (groupStatus === "working") return "running";
-    if (groupStatus === "waiting") return "interrupted";
-    return "completed";
-  }, [groupStatus]);
-
-  const latestEntry = entries[entries.length - 1];
-  const { icon: LatestIcon, className: latestIconClass } = latestEntry
-    ? workToneIcon(latestEntry)
-    : { icon: Warning, className: "text-fg/34" };
-  const latestIsMemory = latestEntry ? isMemoryToolEntry(latestEntry) : false;
-
-  const toggleEntry = (entryId: string) => {
-    setExpandedEntries((current) => ({
-      ...current,
-      [entryId]: !current[entryId],
-    }));
-  };
-
-  const summaryText = entries.length === 1 && latestEntry
-    ? replaceInternalToolNames(workEntryHeading(latestEntry))
-    : groupSummary;
+  const detailBody = useMemo(() => buildEntryDetail(entry), [entry]);
 
   return (
-    <div className={cn(
-      "ade-chat-work-card max-w-full rounded-[16px] px-3 py-2.5 transition-all",
-      groupStatus === "failed" && "border-red-400/14 bg-red-500/[0.05] shadow-[0_16px_32px_-28px_rgba(239,68,68,0.45)]",
-      className,
-    )}>
-      {/* Collapsed one-line summary */}
+    <div>
       <button
         type="button"
-        className="group flex w-full items-center gap-2 rounded-[12px] px-1 py-1.5 text-left transition-colors hover:bg-white/[0.03]"
-        onClick={() => setExpanded((prev) => !prev)}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
       >
-        <span className="inline-flex h-3 w-3 shrink-0 items-center justify-center">
-          <ChatStatusGlyph status={groupStatus} size={11} animate={animate} />
-        </span>
-        {latestIsMemory ? (
-          <span className="ade-memory-chip inline-flex h-5 w-5 shrink-0 items-center justify-center">
-            <LatestIcon size={11} weight="regular" className={latestIconClass} />
-          </span>
-        ) : (
-          <LatestIcon size={12} weight="regular" className={cn("shrink-0", latestIconClass)} />
-        )}
-        <span className="min-w-0 truncate font-mono text-[11px] text-fg/58">
-          {summaryText}
-        </span>
-        {entries.length > 1 ? (
-          <>
-            <span className="shrink-0 text-[10px] text-fg/20">&middot;</span>
-            <span className="ade-liquid-glass-pill shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px] text-fg/34">
-              {entries.length} calls
-            </span>
-          </>
+        <span
+          className={cn("inline-block h-[5px] w-[5px] shrink-0 rounded-full", statusDotClass(entry.status))}
+          style={entry.status === "running" ? { animationDelay: "0s" } : undefined}
+        />
+        <span className={cn("shrink-0 font-sans text-[11px]", verbTone)}>{verb}</span>
+        {argText ? (
+          <span className="min-w-0 truncate font-mono text-[11px] text-fg/40">{argText}</span>
         ) : null}
-        <span className="shrink-0 text-[10px] text-fg/20">&middot;</span>
-        <span className={cn(
-          "ade-liquid-glass-pill shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em]",
-          chatStatusTextClass(groupStatus),
-        )}>
-          {groupStatusLabel}
-        </span>
-        {expanded ? (
-          <CaretDown size={10} weight="bold" className="ml-auto shrink-0 text-fg/20" />
-        ) : (
-          <CaretRight size={10} weight="bold" className="ml-auto shrink-0 text-fg/20 transition-colors group-hover:text-fg/40" />
-        )}
       </button>
+      {open && navigationSuggestions.length > 0 && onNavigateSuggestion ? (
+        <div className="mt-1 ml-[18px] flex flex-wrap gap-1.5 border-t border-white/[0.05] pt-2">
+          {navigationSuggestions.map((suggestion) => (
+            <button
+              key={`${suggestion.surface}:${suggestion.href}`}
+              type="button"
+              onClick={() => onNavigateSuggestion(suggestion)}
+              className="rounded-[6px] border border-accent/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-accent/85 transition-colors hover:border-accent/40 hover:text-accent"
+            >
+              {suggestion.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {open && detailBody ? <FlatPre>{detailBody}</FlatPre> : null}
+    </div>
+  );
+}
 
-      {/* Expanded entry list */}
-      {expanded ? (
-        <div className="ml-[23px] mt-1 space-y-1 border-l border-white/[0.06] pl-3 pb-1">
-          {entries.map((entry) => {
-            const { icon: EntryIcon, className: iconClassName } = workToneIcon(entry);
-            const entryIsMemory = isMemoryToolEntry(entry);
-            const hasSuggestions = readNavigationSuggestions(entry.result).length > 0;
-            const isEntryExpanded = expandedEntries[entry.id] ?? (hasSuggestions || entry.status === "failed");
-            const heading = replaceInternalToolNames(workEntryHeading(entry));
-            const preview = workEntryPreview(entry);
-            const statusLabel = workStatusLabel(entry.status);
-            const entryStatusState = workStatusState(entry.status);
+function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
+  if (entry.entryKind === "command") {
+    const out = entry.output?.trim();
+    if (!out) return null;
+    return out;
+  }
+  if (entry.entryKind === "web_search") {
+    const action = entry.action?.trim();
+    return action && action.length ? action : null;
+  }
+  if (entry.entryKind === "tool") {
+    if (entry.result !== undefined) {
+      return formatStructuredValue(entry.result);
+    }
+    const args = readRecord(entry.args);
+    if (args && Object.keys(args).length > 0) return formatStructuredValue(args);
+  }
+  if (entry.detail?.trim().length) {
+    return replaceInternalToolNames(entry.detail);
+  }
+  return null;
+}
 
+function ToolCallsPanel({
+  entries,
+  onNavigateSuggestion,
+}: {
+  entries: ChatWorkLogEntry[];
+  onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
+}) {
+  if (entries.length === 0) return null;
+  return (
+    <div className="space-y-1">
+      <div className="font-sans text-[10px] uppercase tracking-[0.16em] text-fg/35">
+        Tool calls ({entries.length})
+      </div>
+      <div className="space-y-0.5">
+        {entries.map((entry) => (
+          <ToolCallRow key={entry.id} entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FilesChangedPanel({
+  files,
+  groupStatus,
+  onUndo,
+}: {
+  files: AggregatedFile[];
+  groupStatus: EntryStatus;
+  onUndo?: () => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({});
+
+  if (files.length === 0) return null;
+  const fileWord = files.length === 1 ? "file" : "files";
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
+        >
+          {open ? (
+            <CaretDown size={10} weight="bold" className="text-fg/35" />
+          ) : (
+            <CaretRight size={10} weight="bold" className="text-fg/35" />
+          )}
+          <span className="font-sans text-[11px] font-medium text-fg/70">
+            {files.length} {fileWord} changed
+          </span>
+        </button>
+        {onUndo ? (
+          <button
+            type="button"
+            onClick={onUndo}
+            className="font-sans text-[11px] text-fg/40 transition-colors hover:text-fg/65"
+          >
+            Undo
+          </button>
+        ) : null}
+      </div>
+      {open ? (
+        <div className="space-y-0.5 pl-[18px]">
+          {files.map((file) => {
+            const expanded = expandedFiles[file.path] ?? false;
             return (
-              <div key={entry.id}>
+              <div key={file.path}>
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left transition-colors hover:bg-white/[0.03]"
-                  onClick={() => toggleEntry(entry.id)}
+                  onClick={() =>
+                    setExpandedFiles((current) => ({ ...current, [file.path]: !expanded }))
+                  }
+                  aria-expanded={expanded}
+                  className="flex w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
                 >
-                  {isEntryExpanded ? (
-                    <CaretDown size={9} weight="bold" className="shrink-0 text-fg/25" />
-                  ) : (
-                    <CaretRight size={9} weight="bold" className="shrink-0 text-fg/25" />
-                  )}
-                  <span className="inline-flex h-2.5 w-2.5 shrink-0 items-center justify-center">
-                    <ChatStatusGlyph status={entryStatusState} size={10} animate={animate} />
+                  <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[8px] font-bold tracking-wider text-fg/40">
+                    {fileExtBadge(file.path)}
                   </span>
-                  {entryIsMemory ? (
-                    <span className="ade-memory-chip inline-flex h-5 w-5 shrink-0 items-center justify-center">
-                      <EntryIcon size={10} weight="regular" className={iconClassName} />
-                    </span>
-                  ) : (
-                    <EntryIcon size={11} weight="regular" className={cn("shrink-0", iconClassName)} />
-                  )}
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-fg/70">
-                    {heading}
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg/65">
+                    {file.path}
                   </span>
-                  {preview.length > 0 && preview !== heading ? (
-                    <span className="hidden max-w-[240px] shrink truncate font-mono text-[10px] text-fg/30 sm:inline">
-                      {replaceInternalToolNames(preview)}
+                  {file.kind !== "modify" ? (
+                    <span className="shrink-0 font-sans text-[10px] text-fg/40">
+                      {formatFileAction(file.kind)}
                     </span>
                   ) : null}
-                  <span className={cn(
-                    "ml-auto shrink-0 font-mono text-[9px] uppercase tracking-[0.12em]",
-                    chatStatusTextClass(entryStatusState),
-                  )}>
-                    {statusLabel}
-                  </span>
+                  {file.additions > 0 ? (
+                    <span className="shrink-0 font-mono text-[11px] text-emerald-400/80">
+                      +{file.additions}
+                    </span>
+                  ) : null}
+                  {file.deletions > 0 ? (
+                    <span className="shrink-0 font-mono text-[11px] text-red-400/80">
+                      −{file.deletions}
+                    </span>
+                  ) : null}
                 </button>
-
-                {isEntryExpanded ? (
-                  <div className="ade-liquid-glass ml-5 mb-1.5 mt-1 rounded-[14px] px-3 py-2.5">
-                    <WorkLogEntryDetail entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
+                {expanded && file.diff.trim().length ? <DiffBody diff={file.diff} /> : null}
+                {expanded && !file.diff.trim().length ? (
+                  <div className="mt-1 ml-[18px] border-t border-white/[0.05] pt-2 font-mono text-[11px] text-fg/35">
+                    No diff payload available.
                   </div>
                 ) : null}
               </div>
             );
           })}
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function ChatWorkLogBlock({
+  entries,
+  summary: _summary,
+  className,
+  onNavigateSuggestion,
+  onUndoChanges,
+  animate: _animate = true,
+}: {
+  entries: ChatWorkLogEntry[];
+  summary?: ChatWorkLogGroupEvent["summary"];
+  className?: string;
+  onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
+  onUndoChanges?: () => void;
+  animate?: boolean;
+}) {
+  const { readOnlyEntries, codeChangeEntries } = useMemo(() => {
+    const readOnly: ChatWorkLogEntry[] = [];
+    const codeChange: ChatWorkLogEntry[] = [];
+    for (const entry of entries) {
+      if (isCodeChangeEntry(entry)) codeChange.push(entry);
+      else readOnly.push(entry);
+    }
+    return { readOnlyEntries: readOnly, codeChangeEntries: codeChange };
+  }, [entries]);
+
+  const aggregatedFiles = useMemo(
+    () => aggregateFilesFromEntries(codeChangeEntries),
+    [codeChangeEntries],
+  );
+  const codeChangeStatus = useMemo(
+    () => aggregateGroupStatus(codeChangeEntries),
+    [codeChangeEntries],
+  );
+
+  const hasReadOnly = readOnlyEntries.length > 0;
+  const hasCodeChange = aggregatedFiles.length > 0;
+  if (!hasReadOnly && !hasCodeChange) return null;
+
+  return (
+    <div className={cn("max-w-full space-y-3", className)}>
+      {hasReadOnly ? (
+        <ToolCallsPanel
+          entries={readOnlyEntries}
+          onNavigateSuggestion={onNavigateSuggestion}
+        />
+      ) : null}
+      {hasCodeChange ? (
+        <FilesChangedPanel
+          files={aggregatedFiles}
+          groupStatus={codeChangeStatus}
+          onUndo={onUndoChanges}
+        />
       ) : null}
     </div>
   );

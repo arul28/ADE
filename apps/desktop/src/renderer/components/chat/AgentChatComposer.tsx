@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, SquareSplitHorizontal, Plus, Trash } from "@phosphor-icons/react";
+import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -216,10 +216,14 @@ function PendingSteerItem({
   steer,
   onCancel,
   onEdit,
+  onSendNow,
+  onInterrupt,
 }: {
   steer: { steerId: string; text: string };
   onCancel: () => void;
   onEdit: (text: string) => void;
+  onSendNow?: () => void;
+  onInterrupt?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(steer.text);
@@ -293,12 +297,41 @@ function PendingSteerItem({
           </div>
         </div>
       ) : (
-        <span className="flex-1 min-w-0 truncate text-[12px] leading-[1.5] text-fg/62">
-          {steer.text}
-        </span>
+        <div className="flex-1 min-w-0">
+          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
+            Sends after turn
+          </div>
+          <div className="truncate text-[12px] leading-[1.5] text-fg/62">
+            {steer.text}
+          </div>
+        </div>
       )}
       {!editing ? (
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          {onSendNow ? (
+            <SmartTooltip content={{ label: "Send now", description: "Fold this message into the active turn — Claude picks it up between tool calls." }}>
+              <button
+                type="button"
+                onClick={onSendNow}
+                className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-[var(--chat-accent)]/12 hover:text-[var(--chat-accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
+                aria-label="Send now"
+              >
+                <ArrowBendDownRight size={11} weight="bold" />
+              </button>
+            </SmartTooltip>
+          ) : null}
+          {onInterrupt ? (
+            <SmartTooltip content={{ label: "Send & interrupt", description: "Stop the current turn and run this message instead." }}>
+              <button
+                type="button"
+                onClick={onInterrupt}
+                className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-amber-500/12 hover:text-amber-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
+                aria-label="Send and interrupt"
+              >
+                <Lightning size={11} weight="fill" />
+              </button>
+            </SmartTooltip>
+          ) : null}
           <SmartTooltip content={{ label: "Edit queued message", description: "Change this queued steer message before ADE sends it to the running chat." }}>
             <button
               type="button"
@@ -387,6 +420,8 @@ export function AgentChatComposer({
   pendingSteers = [],
   onCancelSteer,
   onEditSteer,
+  onDispatchSteerInline,
+  onDispatchSteerInterrupt,
   onOpenAiSettings,
   sessionId,
   parallelChatMode = false,
@@ -472,6 +507,8 @@ export function AgentChatComposer({
   pendingSteers?: Array<{ steerId: string; text: string }>;
   onCancelSteer?: (steerId: string) => void;
   onEditSteer?: (steerId: string, text: string) => void;
+  onDispatchSteerInline?: (steerId: string) => void;
+  onDispatchSteerInterrupt?: (steerId: string) => void;
   onOpenAiSettings?: () => void;
   sessionId?: string | null;
   parallelChatMode?: boolean;
@@ -1904,8 +1941,13 @@ export function AgentChatComposer({
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
         <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1.5">
-          <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg/30">
-            Pending {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
+          <div className="flex items-baseline gap-2">
+            <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg/30">
+              Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
+            </span>
+            <span className="font-sans text-[9px] text-fg/30">
+              Hover to send now, interrupt, edit, or remove.
+            </span>
           </div>
           {pendingSteers.map((steer) => (
             <PendingSteerItem
@@ -1913,6 +1955,8 @@ export function AgentChatComposer({
               steer={steer}
               onCancel={() => onCancelSteer?.(steer.steerId)}
               onEdit={(text) => onEditSteer?.(steer.steerId, text)}
+              onSendNow={onDispatchSteerInline ? () => onDispatchSteerInline(steer.steerId) : undefined}
+              onInterrupt={onDispatchSteerInterrupt ? () => onDispatchSteerInterrupt(steer.steerId) : undefined}
             />
           ))}
         </div>

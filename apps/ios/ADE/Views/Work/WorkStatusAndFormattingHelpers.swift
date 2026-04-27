@@ -612,6 +612,57 @@ func toolDisplayName(_ tool: String) -> String {
   return trimmed
 }
 
+private func toolNameSuffix(_ tool: String) -> String {
+  let normalized = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if let last = normalized.split(separator: ".").last { return String(last) }
+  return normalized
+}
+
+/// Tools that mutate the workspace. Used to partition adjacent tool/file
+/// events between the read-only "Tool calls" panel and the "Files changed"
+/// panel on the timeline.
+func isCodeChangeToolName(_ tool: String) -> Bool {
+  let suffix = toolNameSuffix(tool)
+  let writeNames: Set<String> = [
+    "edit", "multiedit", "write", "notebookedit",
+    "applypatch", "apply_patch",
+    "str_replace", "str_replace_based_edit_tool",
+    "write_file", "edit_file", "create_file",
+    "writefile", "editfile",
+  ]
+  return writeNames.contains(suffix)
+}
+
+/// Past-/present-tense verb describing a tool's run, mirroring the desktop
+/// `describeToolVerb` helper. Used in the collapsed `Last: …` breadcrumb and
+/// the row labels inside the expanded panel.
+func describeToolVerb(_ tool: String, status: WorkToolCardStatus) -> String {
+  let suffix = toolNameSuffix(tool)
+  let isShell = ["bash", "shell", "exec_command", "execcommand"].contains(suffix)
+  let isRead = ["read", "readfile", "read_file", "cat",
+                "list", "listdir", "ls", "lsdir",
+                "glob", "find_files", "findfiles",
+                "grep", "search"].contains(suffix)
+  let isWeb = ["webfetch", "web_fetch", "websearch", "web_search", "fetch"].contains(suffix)
+  switch status {
+  case .running:
+    if isShell { return "Running command…" }
+    if isRead { return "Reading…" }
+    if isWeb { return "Fetching…" }
+    return "Running…"
+  case .completed:
+    if isShell { return "Command run complete" }
+    if isRead { return "Read complete" }
+    if isWeb { return "Fetch complete" }
+    return "Complete"
+  case .failed:
+    if isShell { return "Command failed" }
+    if isRead { return "Read failed" }
+    if isWeb { return "Fetch failed" }
+    return "Failed"
+  }
+}
+
 func fileExtension(for mimeType: String?, fallback: String) -> String {
   guard let mimeType else { return fallback }
   if mimeType.contains("png") { return "png" }

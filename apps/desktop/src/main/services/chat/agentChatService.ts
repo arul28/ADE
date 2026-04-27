@@ -19,9 +19,13 @@ type ClaudeV2Session = {
     }>;
     setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
     supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
+    cancelAsyncMessage?: (messageUuid: string) => Promise<{ cancelled?: boolean }>;
+    interrupt?: () => Promise<void>;
   };
   setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
   supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
+  cancelAsyncMessage?: (messageUuid: string) => Promise<{ cancelled?: boolean }>;
+  interrupt?: () => Promise<void>;
 };
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { discoverClaudeSlashCommands, resolveClaudeSlashCommandInvocation } from "./claudeSlashCommandDiscovery";
@@ -79,6 +83,10 @@ import type {
   AgentChatCodexSandbox,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
+  AgentChatDispatchSteerArgs,
+  AgentChatDispatchSteerResult,
+  AgentChatCancelDispatchedSteerArgs,
+  AgentChatCancelDispatchedSteerResult,
   AgentChatDisposeArgs,
   AgentChatEditSteerArgs,
   AgentChatExecutionMode,
@@ -263,7 +271,15 @@ type PersistedChatState = {
   idleSinceAt?: string | null;
   /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
   approvalOverrides?: string[];
+  /** Queued mid-turn steers for the Claude runtime, restored on app restart. */
+  pendingSteers?: PersistedPendingSteer[];
   updatedAt: string;
+};
+
+type PersistedPendingSteer = {
+  steerId: string;
+  text: string;
+  attachments?: AgentChatFileRef[];
 };
 
 type PendingRpc = {
@@ -355,6 +371,12 @@ type ClaudeRuntime = {
   busy: boolean;
   activeTurnId: string | null;
   pendingSteers: QueuedSteer[];
+  /**
+   * UUIDs of inline-dispatched steer messages, keyed by steerId. The SDK queues
+   * the message server-side until the model reads it; until then it can be
+   * cancelled via query.cancelAsyncMessage(uuid). Cleared on read.
+   */
+  dispatchedInlineSteers: Map<string, string>;
   approvals: Map<string, PendingClaudeApproval>;
   interrupted: boolean;
   /** Set when early interrupt events have been emitted to avoid duplicate emission later. */
@@ -3747,6 +3769,8 @@ export function createAgentChatService(args: {
     }>;
     setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
     supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
+    cancelAsyncMessage?: (messageUuid: string) => Promise<{ cancelled?: boolean }>;
+    interrupt?: () => Promise<void>;
   } => {
     const sessionRecord = session as (ClaudeV2Session & { query?: ClaudeV2Session["query"] }) | null | undefined;
     const query = sessionRecord?.query;
@@ -3759,6 +3783,12 @@ export function createAgentChatService(args: {
       supportedCommands: typeof sessionRecord?.supportedCommands === "function"
         ? sessionRecord.supportedCommands.bind(sessionRecord)
         : (typeof query?.supportedCommands === "function" ? query.supportedCommands.bind(query) : undefined),
+      cancelAsyncMessage: typeof sessionRecord?.cancelAsyncMessage === "function"
+        ? sessionRecord.cancelAsyncMessage.bind(sessionRecord)
+        : (typeof query?.cancelAsyncMessage === "function" ? query.cancelAsyncMessage.bind(query) : undefined),
+      interrupt: typeof sessionRecord?.interrupt === "function"
+        ? sessionRecord.interrupt.bind(sessionRecord)
+        : (typeof query?.interrupt === "function" ? query.interrupt.bind(query) : undefined),
     };
   };
 
@@ -5191,6 +5221,15 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
         ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
         : prevPersisted?.approvalOverrides?.length ? { approvalOverrides: prevPersisted.approvalOverrides } : {}),
+      ...(managed.runtime?.kind === "claude" && managed.runtime.pendingSteers.length > 0
+        ? {
+            pendingSteers: managed.runtime.pendingSteers.map((s): PersistedPendingSteer => ({
+              steerId: s.steerId,
+              text: s.text,
+              ...(s.attachments.length ? { attachments: s.attachments } : {}),
+            })),
+          }
+        : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
       ...(managed.runtime?.kind === "opencode"
         ? { providerSessionId: managed.runtime.handle.sessionId }
         : prevPersisted?.providerSessionId ? { providerSessionId: prevPersisted.providerSessionId } : {}),
@@ -5295,6 +5334,17 @@ export function createAgentChatService(args: {
       const approvalOverrides = Array.isArray(record.approvalOverrides)
         ? record.approvalOverrides.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
         : undefined;
+      const pendingSteers: PersistedPendingSteer[] | undefined = Array.isArray(record.pendingSteers)
+        ? record.pendingSteers
+            .filter((entry): entry is PersistedPendingSteer => {
+              if (!entry || typeof entry !== "object") return false;
+              const e = entry as PersistedPendingSteer;
+              if (typeof e.steerId !== "string" || !e.steerId.trim().length) return false;
+              if (typeof e.text !== "string" || !e.text.length) return false;
+              return true;
+            })
+            .slice(0, MAX_PENDING_STEERS)
+        : undefined;
       const hydrated: PersistedChatState = {
         version: 2,
         sessionId,
@@ -5334,6 +5384,7 @@ export function createAgentChatService(args: {
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(providerSessionId ? { providerSessionId } : {}),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
+        ...(pendingSteers?.length ? { pendingSteers } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
         ...(typeof record.continuitySummary === "string" && record.continuitySummary.trim().length
           ? { continuitySummary: record.continuitySummary.trim() }
@@ -6990,7 +7041,7 @@ export function createAgentChatService(args: {
 
       // V2 pattern: send() then stream() per turn. Session stays alive between turns.
       bumpClaudeIdleDeadline();
-      await runtime.v2Session.send(messageToSend);
+      await runtime.v2Session.send(messageToSend as string | Partial<SDKUserMessage>);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
       // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
@@ -10551,6 +10602,46 @@ export function createAgentChatService(args: {
     });
   };
 
+  const hydratePersistedPendingSteers = (
+    persisted: PersistedChatState | null,
+    managed: ManagedChatSession,
+  ): QueuedSteer[] => {
+    if (!persisted?.pendingSteers?.length) return [];
+    const out: QueuedSteer[] = [];
+    for (const entry of persisted.pendingSteers) {
+      const text = entry.text;
+      const attachments: AgentChatFileRef[] = Array.isArray(entry.attachments)
+        ? entry.attachments.filter((a): a is AgentChatFileRef =>
+            !!a
+            && typeof a === "object"
+            && typeof (a as AgentChatFileRef).path === "string"
+            && ((a as AgentChatFileRef).type === "file" || (a as AgentChatFileRef).type === "image"))
+        : [];
+      let resolvedAttachments: ResolvedAgentChatFileRef[] = [];
+      try {
+        resolvedAttachments = attachments.map((attachment) => {
+          const isAbsolute = path.isAbsolute(attachment.path);
+          const root = isAbsolute ? projectRoot : managed.laneWorktreePath;
+          return {
+            ...attachment,
+            _resolvedPath: resolvePathWithinRoot(root, attachment.path, { allowMissing: true }),
+            _rootPath: root,
+          };
+        });
+      } catch (err) {
+        logger.warn("agent_chat.pending_steer_attachment_resolve_failed", {
+          sessionId: managed.session.id,
+          steerId: entry.steerId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      out.push({ steerId: entry.steerId, text, attachments, resolvedAttachments });
+      if (out.length >= MAX_PENDING_STEERS) break;
+    }
+    return out;
+  };
+
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
     if (managed.runtime?.kind === "claude") return managed.runtime;
     // Evict least-recent runtime if at capacity
@@ -10578,7 +10669,8 @@ export function createAgentChatService(args: {
       slashCommands: [],
       busy: false,
       activeTurnId: null,
-      pendingSteers: [],
+      pendingSteers: hydratePersistedPendingSteers(persisted, managed),
+      dispatchedInlineSteers: new Map<string, string>(),
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
       interruptEventsEmitted: false,
@@ -12732,6 +12824,171 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  const dispatchSteer = async ({
+    sessionId,
+    steerId,
+    mode,
+  }: AgentChatDispatchSteerArgs): Promise<AgentChatDispatchSteerResult> => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.session.provider === "codex") {
+      throw new Error("dispatchSteer is not supported on Codex sessions.");
+    }
+    const runtime = managed.runtime;
+    if (!runtime) return { dispatchedAt: null };
+    if (runtime.kind !== "claude") {
+      throw new Error(`dispatchSteer is not supported on ${runtime.kind} sessions.`);
+    }
+
+    const queue = runtime.pendingSteers;
+    const idx = queue.findIndex((s) => s.steerId === steerId);
+    if (idx === -1) {
+      return { dispatchedAt: null };
+    }
+
+    const steer = queue[idx];
+
+    if (mode === "inline") {
+      queue.splice(idx, 1);
+      const session = runtime.v2Session;
+      if (!session) {
+        // No active V2 session — can't fold mid-turn; fall back to a fresh send.
+        const prepared = prepareSendMessage({
+          sessionId,
+          text: steer.text,
+          displayText: steer.text,
+          attachments: steer.attachments,
+        });
+        if (prepared) await executePreparedSendMessage(prepared);
+        persistChatState(managed);
+        return { dispatchedAt: Date.now() };
+      }
+
+      // Build an SDK user message with shouldQuery:false. The SDK appends it
+      // to the in-flight transcript and the model picks it up at the next
+      // thinking step (verified in the V2 mid-turn spike, test C).
+      const dispatchUuid = randomUUID();
+      const sdkMsg = buildClaudeV2Message(steer.text, steer.resolvedAttachments, {
+        baseDir: managed.laneWorktreePath,
+        sessionId: runtime.sdkSessionId ?? null,
+        forceUserMessage: true,
+      }) as unknown as Partial<SDKUserMessage> & { shouldQuery?: boolean; uuid?: string };
+      sdkMsg.shouldQuery = false;
+      sdkMsg.uuid = dispatchUuid;
+
+      try {
+        await session.send(sdkMsg as Partial<SDKUserMessage>);
+      } catch (err) {
+        // Re-queue at the original position so the user can retry / it flushes naturally.
+        queue.splice(idx, 0, steer);
+        logger.warn("agent_chat.dispatch_steer_inline_failed", {
+          sessionId,
+          steerId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+
+      runtime.dispatchedInlineSteers.set(steerId, dispatchUuid);
+
+      emitChatEvent(managed, {
+        type: "user_message",
+        text: steer.text,
+        ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
+        steerId,
+        deliveryState: "inline",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      return { dispatchedAt: Date.now() };
+    }
+
+    if (mode === "interrupt") {
+      // Move to head of queue so the existing post-turn flush at the end of
+      // runClaudeTurn (`if (runtime.pendingSteers.length) deliverNextQueuedSteer`)
+      // delivers our message as the next turn after the abort drains.
+      if (idx !== 0) {
+        queue.splice(idx, 1);
+        queue.unshift(steer);
+      }
+
+      runtime.interrupted = true;
+      const control = getClaudeV2SessionControl(runtime.v2Session);
+      if (control.interrupt) {
+        try {
+          await control.interrupt();
+        } catch (err) {
+          logger.warn("agent_chat.dispatch_steer_interrupt_failed", {
+            sessionId,
+            steerId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        logger.warn("agent_chat.dispatch_steer_interrupt_unavailable", {
+          sessionId,
+          steerId,
+        });
+      }
+
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Interrupting current turn to run queued message.",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      return { dispatchedAt: Date.now() };
+    }
+
+    return { dispatchedAt: null };
+  };
+
+  const cancelDispatchedSteer = async ({
+    sessionId,
+    steerId,
+  }: AgentChatCancelDispatchedSteerArgs): Promise<AgentChatCancelDispatchedSteerResult> => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.session.provider === "codex") {
+      throw new Error("cancelDispatchedSteer is not supported on Codex sessions.");
+    }
+    const runtime = managed.runtime;
+    if (!runtime || runtime.kind !== "claude") {
+      return { cancelled: false };
+    }
+    const uuid = runtime.dispatchedInlineSteers.get(steerId);
+    if (!uuid) return { cancelled: false };
+
+    const control = getClaudeV2SessionControl(runtime.v2Session);
+    if (!control.cancelAsyncMessage) {
+      logger.warn("agent_chat.cancel_dispatched_steer_unavailable", { sessionId, steerId });
+      return { cancelled: false };
+    }
+    let cancelled = false;
+    try {
+      const response = await control.cancelAsyncMessage(uuid);
+      cancelled = Boolean(response?.cancelled);
+    } catch (err) {
+      logger.warn("agent_chat.cancel_dispatched_steer_failed", {
+        sessionId,
+        steerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { cancelled: false };
+    }
+    runtime.dispatchedInlineSteers.delete(steerId);
+    if (cancelled) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Cancelled inline-dispatched message before the model read it.",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+    }
+    return { cancelled };
+  };
+
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
 
@@ -14573,6 +14830,8 @@ export function createAgentChatService(args: {
     steer,
     cancelSteer,
     editSteer,
+    dispatchSteer,
+    cancelDispatchedSteer,
     interrupt,
     resumeSession,
     listSessions,

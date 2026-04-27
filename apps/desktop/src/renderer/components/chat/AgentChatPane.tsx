@@ -3576,7 +3576,7 @@ export function AgentChatPane({
             executionMode={selectedExecutionMode?.value ?? "focused"}
             computerUseSnapshot={computerUseSnapshot}
             proofOpen={proofDrawerOpen}
-            proofArtifactCount={computerUseSnapshot?.artifacts.length ?? 0}
+            proofArtifactCount={computerUseSnapshot?.artifacts?.length ?? 0}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
@@ -3718,6 +3718,16 @@ export function AgentChatPane({
                 void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text });
               }
             }}
+            onDispatchSteerInline={selectedSession?.provider === "claude" ? (steerId) => {
+              if (selectedSessionId) {
+                void window.ade.agentChat.dispatchSteer({ sessionId: selectedSessionId, steerId, mode: "inline" });
+              }
+            } : undefined}
+            onDispatchSteerInterrupt={selectedSession?.provider === "claude" ? (steerId) => {
+              if (selectedSessionId) {
+                void window.ade.agentChat.dispatchSteer({ sessionId: selectedSessionId, steerId, mode: "interrupt" });
+              }
+            } : undefined}
             sessionId={selectedSessionId}
             showParallelChatToggle={Boolean(
               embeddedWorkLayout && forceDraft && !lockSessionId && !initialSessionId && selectedSessionId == null,

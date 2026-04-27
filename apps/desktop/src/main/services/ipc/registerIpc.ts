@@ -217,6 +217,10 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatDispatchSteerArgs,
+  AgentChatDispatchSteerResult,
+  AgentChatCancelDispatchedSteerArgs,
+  AgentChatCancelDispatchedSteerResult,
   AgentChatOpenCodePermissionMode,
   AgentChatUpdateSessionArgs,
   AgentChatSlashCommand,
@@ -4287,6 +4291,39 @@ export function registerIpc({
     return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), text: record.text };
   };
 
+  const parseAgentChatDispatchSteerArgs = (
+    value: unknown,
+  ): AgentChatDispatchSteerArgs => {
+    const record = requireRecord(value, "Agent chat dispatch steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat dispatch steer sessionId must be a non-empty string");
+    }
+    if (typeof record.steerId !== "string" || !record.steerId.trim()) {
+      throw new Error("Agent chat dispatch steer steerId must be a non-empty string");
+    }
+    if (record.mode !== "inline" && record.mode !== "interrupt") {
+      throw new Error("Agent chat dispatch steer mode must be 'inline' or 'interrupt'");
+    }
+    return {
+      sessionId: record.sessionId.trim(),
+      steerId: record.steerId.trim(),
+      mode: record.mode,
+    };
+  };
+
+  const parseAgentChatCancelDispatchedSteerArgs = (
+    value: unknown,
+  ): AgentChatCancelDispatchedSteerArgs => {
+    const record = requireRecord(value, "Agent chat cancel dispatched steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat cancel dispatched steer sessionId must be a non-empty string");
+    }
+    if (typeof record.steerId !== "string" || !record.steerId.trim()) {
+      throw new Error("Agent chat cancel dispatched steer steerId must be a non-empty string");
+    }
+    return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim() };
+  };
+
   const parseAgentChatSuggestLaneNameArgs = (value: unknown): AgentChatSuggestLaneNameArgs => {
     const record = requireRecord(value, "Agent chat suggest lane name request");
     if (typeof record.prompt !== "string" || !record.prompt.trim()) {
@@ -4656,6 +4693,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatEditSteer, async (_event, arg: unknown): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.editSteer(parseAgentChatEditSteerArgs(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatDispatchSteer, async (_event, arg: unknown): Promise<AgentChatDispatchSteerResult> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.dispatchSteer(parseAgentChatDispatchSteerArgs(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatCancelDispatchedSteer, async (_event, arg: unknown): Promise<AgentChatCancelDispatchedSteerResult> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.cancelDispatchedSteer(parseAgentChatCancelDispatchedSteerArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {

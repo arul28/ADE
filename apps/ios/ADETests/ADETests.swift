@@ -3759,6 +3759,12 @@ final class ADETests: XCTestCase {
         return "assistant:\(message.itemId ?? "")"
       case .toolCard(let card):
         return "tool:\(card.id)"
+      case .toolGroup(let group):
+        // Single tool calls now wrap in a one-member toolGroup payload.
+        if case .tool(let card) = group.members.first {
+          return "tool:\(card.id)"
+        }
+        return nil
       default:
         return nil
       }

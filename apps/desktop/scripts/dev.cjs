@@ -143,7 +143,7 @@ function resolveSpawnInvocation(cmd, args, env) {
   }
   return {
     command: env.ComSpec && env.ComSpec.trim() ? env.ComSpec.trim() : "cmd.exe",
-    args: ["/d", "/s", "/c", [cmd, ...args].map(quoteWindowsCmdArg).join(" ")],
+    args: ["/d", "/s", "/c", `"${[cmd, ...args].map(quoteWindowsCmdArg).join(" ")}"`],
     windowsVerbatimArguments: true,
   };
 }

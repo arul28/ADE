@@ -25,6 +25,28 @@ export function buildDefaultFilter(): GraphFilterState {
   };
 }
 
+/**
+ * Session snapshots can end up with a partial `filters` object (e.g. only `{ search }` if the
+ * previous `snapshot.filters` was undefined when spreading). Coalesce with defaults so
+ * filter UI and `*.length` checks never see undefined array fields.
+ */
+export function coalesceGraphFilters(
+  active: Partial<GraphFilterState> | null | undefined,
+): GraphFilterState {
+  const base = buildDefaultFilter();
+  if (active == null) return base;
+  return {
+    status: Array.isArray(active.status) ? active.status : base.status,
+    laneTypes: Array.isArray(active.laneTypes) ? active.laneTypes : base.laneTypes,
+    tags: Array.isArray(active.tags) ? active.tags : base.tags,
+    hidePrimary: typeof active.hidePrimary === "boolean" ? active.hidePrimary : base.hidePrimary,
+    hideAttached: typeof active.hideAttached === "boolean" ? active.hideAttached : base.hideAttached,
+    hideArchived: typeof active.hideArchived === "boolean" ? active.hideArchived : base.hideArchived,
+    rootLaneId: active.rootLaneId !== undefined ? active.rootLaneId : base.rootLaneId,
+    search: typeof active.search === "string" ? active.search : base.search,
+  };
+}
+
 export function createSnapshot(viewMode: GraphViewMode): GraphLayoutSnapshot {
   return {
     nodePositions: {},

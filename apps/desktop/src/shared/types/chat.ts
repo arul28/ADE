@@ -132,7 +132,7 @@ export type AgentChatEvent =
       attachments?: AgentChatFileRef[];
       turnId?: string;
       steerId?: string;
-      deliveryState?: "queued" | "delivered" | "failed";
+      deliveryState?: "queued" | "delivered" | "inline" | "failed";
       processed?: boolean;
     }
   | {
@@ -692,6 +692,27 @@ export type AgentChatEditSteerArgs = {
   sessionId: string;
   steerId: string;
   text: string;
+};
+
+export type AgentChatDispatchSteerMode = "inline" | "interrupt";
+
+export type AgentChatDispatchSteerArgs = {
+  sessionId: string;
+  steerId: string;
+  mode: AgentChatDispatchSteerMode;
+};
+
+export type AgentChatDispatchSteerResult = {
+  dispatchedAt: number | null;
+};
+
+export type AgentChatCancelDispatchedSteerArgs = {
+  sessionId: string;
+  steerId: string;
+};
+
+export type AgentChatCancelDispatchedSteerResult = {
+  cancelled: boolean;
 };
 
 export type AgentChatInterruptArgs = {

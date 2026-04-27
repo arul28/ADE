@@ -95,6 +95,10 @@ import type {
   AgentChatSteerArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatDispatchSteerArgs,
+  AgentChatDispatchSteerResult,
+  AgentChatCancelDispatchedSteerArgs,
+  AgentChatCancelDispatchedSteerResult,
   AgentChatTurnFileDiff,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
@@ -1159,6 +1163,8 @@ declare global {
         steer: (args: AgentChatSteerArgs) => Promise<void>;
         cancelSteer: (args: AgentChatCancelSteerArgs) => Promise<void>;
         editSteer: (args: AgentChatEditSteerArgs) => Promise<void>;
+        dispatchSteer: (args: AgentChatDispatchSteerArgs) => Promise<AgentChatDispatchSteerResult>;
+        cancelDispatchedSteer: (args: AgentChatCancelDispatchedSteerArgs) => Promise<AgentChatCancelDispatchedSteerResult>;
         interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
         resume: (args: AgentChatResumeArgs) => Promise<AgentChatSession>;
         approve: (args: AgentChatApproveArgs) => Promise<void>;

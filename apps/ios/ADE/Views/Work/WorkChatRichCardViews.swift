@@ -179,181 +179,369 @@ struct WorkToolCardView: View {
   }
 }
 
-/// Cluster of consecutive tool/command/file-change entries shown as one row
-/// to preserve space in the iOS chat. Collapsed: icon + latest-call title +
-/// count/status, with only a visual stack hint for older calls. Expanded:
-/// each member renders as its full card inline, matching the desktop
-/// `ChatWorkLogBlock` behavior.
-struct WorkToolGroupCardView: View {
+/// Minimal "Tool calls (N)" panel — the iOS counterpart to the desktop
+/// `Tool calls (n)` block. Collapsed by default: just a single tappable row
+/// showing the count and a `Last: <verb> <target>` breadcrumb. Tap the header
+/// to reveal the row list; tap a row to reveal its output inline beneath it.
+/// No glass card, no per-tool icons, no count pill chip — the row itself
+/// carries the count.
+struct WorkToolCallsPanelView: View {
   let group: WorkToolGroupModel
   let isExpanded: Bool
   let onToggle: () -> Void
-  let onOpenFile: (String) -> Void
-  let onOpenPr: (Int) -> Void
 
-  private var effectiveExpanded: Bool { isExpanded }
+  @State private var expandedMemberIds: Set<String> = []
 
   var body: some View {
-    ZStack(alignment: .bottom) {
-      if !effectiveExpanded && group.count > 1 {
-        collapsedStackBackdrop
-      }
-
-      VStack(alignment: .leading, spacing: 10) {
-        header
-        if effectiveExpanded {
-          expandedMembers
+    VStack(alignment: .leading, spacing: 0) {
+      header
+      if isExpanded {
+        Divider()
+          .background(ADEColor.glassBorder.opacity(0.4))
+          .padding(.top, 8)
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(group.members) { member in
+            memberRow(member)
+          }
         }
+        .padding(.top, 4)
       }
-      .padding(12)
-      .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 16))
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
     }
-    // Backdrop rectangles use offset(y: 4/8) below the ZStack frame, so the
-    // bottom padding needs at least 10pt of breathing room to keep them from
-    // clipping against the next row on smaller devices.
-    .padding(.bottom, !effectiveExpanded && group.count > 1 ? 10 : 0)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .strokeBorder(ADEColor.glassBorder.opacity(0.6), lineWidth: 0.5)
+    )
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Tool call cluster, \(group.count) calls, \(effectiveExpanded ? "expanded" : "collapsed")")
+    .accessibilityLabel("Tool calls cluster, \(group.count) calls, \(isExpanded ? "expanded" : "collapsed")")
   }
 
   private var header: some View {
     Button(action: onToggle) {
       HStack(alignment: .center, spacing: 10) {
-        Image(systemName: latestIcon)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(latestTint)
-          .frame(width: 28, height: 28)
-          .background(latestTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        VStack(alignment: .leading, spacing: 3) {
-          HStack(spacing: 6) {
-            Text(latestTitle)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .truncationMode(.middle)
-            Text("\(group.count) calls")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .padding(.horizontal, 7)
-              .padding(.vertical, 2)
-              .background(ADEColor.recessedBackground.opacity(0.8), in: Capsule(style: .continuous))
-          }
-          if !headerSubtitle.isEmpty {
-            Text(headerSubtitle)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-          }
-        }
-        Spacer(minLength: 8)
-        Image(systemName: effectiveExpanded ? "chevron.up" : "chevron.down")
-          .font(.caption.weight(.semibold))
+        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+          .font(.system(size: 10, weight: .semibold))
           .foregroundStyle(ADEColor.textMuted)
+        Circle()
+          .fill(headerDotTint)
+          .frame(width: 6, height: 6)
+        Text("Tool calls (\(group.count))")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        if !isExpanded, let breadcrumb = lastBreadcrumb {
+          Text("· \(breadcrumb)")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+        Spacer(minLength: 0)
       }
     }
     .buttonStyle(.plain)
   }
 
-  /// Non-textual stack hint for hidden earlier calls. The collapsed row keeps
-  /// only the latest call readable; the depth lives in the count pill.
-  private var collapsedStackBackdrop: some View {
-    ZStack(alignment: .bottom) {
-      RoundedRectangle(cornerRadius: 15, style: .continuous)
-        .fill(ADEColor.surfaceBackground.opacity(0.18))
-        .overlay(
-          RoundedRectangle(cornerRadius: 15, style: .continuous)
-            .stroke(ADEColor.border.opacity(0.08), lineWidth: 0.5)
-        )
-        .padding(.horizontal, 10)
-        .offset(y: 4)
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(ADEColor.surfaceBackground.opacity(0.12))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(ADEColor.border.opacity(0.06), lineWidth: 0.5)
-        )
-        .padding(.horizontal, 20)
-        .offset(y: 8)
-    }
-    .frame(height: 36)
-    .allowsHitTesting(false)
-  }
+  @ViewBuilder
+  private func memberRow(_ member: WorkToolGroupMember) -> some View {
+    let memberId = member.id
+    let expanded = expandedMemberIds.contains(memberId)
+    let verb = memberVerb(member)
+    let target = memberTarget(member)
 
-  private var expandedMembers: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      ForEach(group.members) { member in
-        WorkToolGroupMemberRow(
-          member: member,
-          onOpenFile: onOpenFile,
-          onOpenPr: onOpenPr
-        )
+    Button {
+      if expandedMemberIds.contains(memberId) {
+        expandedMemberIds.remove(memberId)
+      } else {
+        expandedMemberIds.insert(memberId)
       }
-    }
-  }
-
-  private var latest: WorkToolGroupMember? { group.latest }
-
-  private var latestTitle: String {
-    guard let latest else { return "Tool calls" }
-    return memberTitle(latest)
-  }
-
-  private var latestIcon: String {
-    guard let latest else { return "hammer.fill" }
-    return memberIcon(latest)
-  }
-
-  private var latestTint: Color {
-    // If any member is still running, surface that on the group icon —
-    // otherwise a just-completed latest member hides the fact that earlier
-    // calls in the cluster are still in flight.
-    if group.hasRunning { return color(for: .running) }
-    return color(for: latest?.status ?? .completed)
-  }
-
-  private var headerSubtitle: String {
-    var tools = 0, commands = 0, files = 0
-    for m in group.members {
-      switch m {
-      case .tool: tools += 1
-      case .command: commands += 1
-      case .fileChange: files += 1
+    } label: {
+      VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+          Circle()
+            .fill(rowDotTint(member.status))
+            .frame(width: 5, height: 5)
+          Text(verb)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(rowVerbColor(member.status))
+          if let target, !target.isEmpty {
+            Text(target)
+              .font(.caption.monospaced())
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+          Spacer(minLength: 0)
+        }
+        if expanded, let detail = memberDetail(member) {
+          Divider()
+            .background(ADEColor.glassBorder.opacity(0.4))
+            .padding(.leading, 17)
+            .padding(.top, 4)
+          ScrollView {
+            Text(detail)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .font(.system(.caption, design: .monospaced))
+              .foregroundStyle(ADEColor.textSecondary)
+              .textSelection(.enabled)
+          }
+          .frame(maxHeight: 220)
+          .padding(.leading, 17)
+          .padding(.top, 4)
+        }
       }
+      .padding(.vertical, 6)
     }
-    var parts: [String] = []
-    if tools > 0 { parts.append("\(tools) tool\(tools == 1 ? "" : "s")") }
-    if commands > 0 { parts.append("\(commands) cmd\(commands == 1 ? "" : "s")") }
-    if files > 0 { parts.append("\(files) file\(files == 1 ? "" : "s")") }
-    if let latest {
-      parts.append(relativeTimestamp(latest.timestamp))
-    }
-    return parts.joined(separator: " · ")
+    .buttonStyle(.plain)
   }
 
-  private func memberTitle(_ member: WorkToolGroupMember) -> String {
-    switch member {
-    case .tool(let card): return toolDisplayName(card.toolName)
-    case .command(let card): return card.command.isEmpty ? "Command" : card.command
-    case .fileChange(let card): return workReferenceLabel(for: card.path)
-    }
+  // MARK: – Header helpers
+
+  private var headerDotTint: Color {
+    if group.hasRunning { return ADEColor.warning }
+    if group.members.contains(where: { $0.status == .failed }) { return ADEColor.danger }
+    return ADEColor.textMuted.opacity(0.5)
   }
 
-  private func memberIcon(_ member: WorkToolGroupMember) -> String {
+  private var lastBreadcrumb: String? {
+    guard let latest = group.latest else { return nil }
+    let verb = memberVerb(latest)
+    if let target = memberTarget(latest), !target.isEmpty {
+      return "Last: \(verb) \(target)"
+    }
+    return "Last: \(verb)"
+  }
+
+  // MARK: – Member helpers
+
+  private func memberVerb(_ member: WorkToolGroupMember) -> String {
     switch member {
-    case .tool: return "hammer.fill"
-    case .command: return "terminal"
+    case .tool(let card):
+      return describeToolVerb(card.toolName, status: card.status)
+    case .command(let card):
+      return describeToolVerb("bash", status: card.status)
     case .fileChange(let card):
       switch card.kind.lowercased() {
-      case "create": return "doc.badge.plus"
-      case "delete": return "trash"
-      default: return "pencil.line"
+      case "create": return card.status == .running ? "Creating…" : "Created"
+      case "delete": return card.status == .running ? "Deleting…" : "Deleted"
+      default: return card.status == .running ? "Editing…" : "Edited"
       }
     }
+  }
+
+  private func memberTarget(_ member: WorkToolGroupMember) -> String? {
+    switch member {
+    case .tool(let card):
+      return workToolResultPreview(card.argsText)
+        ?? workToolResultPreview(card.resultText)
+        ?? toolDisplayName(card.toolName)
+    case .command(let card):
+      return card.command.isEmpty ? nil : card.command
+    case .fileChange(let card):
+      return workReferenceLabel(for: card.path)
+    }
+  }
+
+  private func memberDetail(_ member: WorkToolGroupMember) -> String? {
+    switch member {
+    case .tool(let card):
+      if let result = card.resultText, !result.isEmpty { return result }
+      if let args = card.argsText, !args.isEmpty { return args }
+      return nil
+    case .command(let card):
+      let parts: [String] = [
+        card.command.isEmpty ? nil : "$ \(card.command)",
+        card.output.isEmpty ? nil : card.output,
+      ].compactMap { $0 }
+      return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    case .fileChange(let card):
+      return card.diff.isEmpty ? nil : card.diff
+    }
+  }
+
+  private func rowDotTint(_ status: WorkToolCardStatus) -> Color {
+    switch status {
+    case .running: return ADEColor.warning
+    case .failed: return ADEColor.danger
+    case .completed: return ADEColor.textMuted.opacity(0.5)
+    }
+  }
+
+  private func rowVerbColor(_ status: WorkToolCardStatus) -> Color {
+    switch status {
+    case .failed: return ADEColor.danger
+    case .running: return ADEColor.textPrimary
+    case .completed: return ADEColor.textMuted
+    }
+  }
+}
+
+/// Minimal "N files changed" panel. Header-only by default; tap to reveal one
+/// row per file with diff stats; tap a row to reveal the full diff inline.
+struct WorkChangedFilesPanelView: View {
+  let group: WorkChangedFilesGroupModel
+  let isExpanded: Bool
+  let onToggle: () -> Void
+  let onUndo: (() -> Void)?
+
+  @State private var expandedFileIds: Set<String> = []
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      header
+      if isExpanded {
+        Divider()
+          .background(ADEColor.glassBorder.opacity(0.4))
+          .padding(.top, 8)
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(group.files) { file in
+            fileRow(file)
+          }
+        }
+        .padding(.top, 4)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .strokeBorder(ADEColor.glassBorder.opacity(0.6), lineWidth: 0.5)
+    )
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Files changed cluster, \(group.count) files, \(isExpanded ? "expanded" : "collapsed")")
+  }
+
+  private var header: some View {
+    HStack(alignment: .center, spacing: 10) {
+      Button(action: onToggle) {
+        HStack(alignment: .center, spacing: 10) {
+          Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+          Circle()
+            .fill(headerDotTint)
+            .frame(width: 6, height: 6)
+          Text("\(group.count) \(group.count == 1 ? "file" : "files") changed")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Spacer(minLength: 0)
+        }
+      }
+      .buttonStyle(.plain)
+      if isExpanded, let onUndo {
+        Button(action: onUndo) {
+          HStack(spacing: 4) {
+            Image(systemName: "arrow.uturn.backward")
+              .font(.system(size: 10, weight: .semibold))
+            Text("Undo")
+              .font(.caption.weight(.semibold))
+          }
+          .foregroundStyle(ADEColor.textMuted)
+        }
+        .buttonStyle(.plain)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func fileRow(_ file: WorkChangedFileEntry) -> some View {
+    let expanded = expandedFileIds.contains(file.id)
+    Button {
+      if expandedFileIds.contains(file.id) {
+        expandedFileIds.remove(file.id)
+      } else {
+        expandedFileIds.insert(file.id)
+      }
+    } label: {
+      VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+          Text(fileExtBadge(file.path))
+            .font(.system(size: 9, weight: .heavy, design: .monospaced))
+            .tracking(0.4)
+            .foregroundStyle(ADEColor.textMuted)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .overlay(
+              RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .strokeBorder(ADEColor.glassBorder.opacity(0.6), lineWidth: 0.5)
+            )
+          Text(file.path)
+            .font(.caption.monospaced())
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          Spacer(minLength: 4)
+          if file.kind.lowercased() != "modify" {
+            Text(file.kind.capitalized)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+          }
+          if file.additions > 0 {
+            Text("+\(file.additions)")
+              .font(.caption.monospacedDigit())
+              .foregroundStyle(ADEColor.success.opacity(0.85))
+          }
+          if file.deletions > 0 {
+            Text("−\(file.deletions)")
+              .font(.caption.monospacedDigit())
+              .foregroundStyle(ADEColor.danger.opacity(0.85))
+          }
+        }
+        if expanded {
+          Divider()
+            .background(ADEColor.glassBorder.opacity(0.4))
+            .padding(.top, 4)
+          if file.diff.isEmpty {
+            Text("No diff payload available.")
+              .font(.caption.monospaced())
+              .foregroundStyle(ADEColor.textMuted)
+              .padding(.top, 6)
+          } else {
+            ScrollView([.horizontal, .vertical]) {
+              VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array(file.diff.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, line in
+                  let str = String(line)
+                  Text(str.isEmpty ? " " : str)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(diffLineTint(str))
+                }
+              }
+            }
+            .frame(maxHeight: 220)
+            .padding(.top, 6)
+          }
+        }
+      }
+      .padding(.vertical, 6)
+    }
+    .buttonStyle(.plain)
+  }
+
+  // MARK: – Helpers
+
+  private var headerDotTint: Color {
+    if group.hasRunning { return ADEColor.warning }
+    if group.files.contains(where: { $0.status == .failed }) { return ADEColor.danger }
+    return ADEColor.textMuted.opacity(0.5)
+  }
+
+  private func diffLineTint(_ line: String) -> Color {
+    if line.hasPrefix("+") && !line.hasPrefix("+++") { return ADEColor.success.opacity(0.9) }
+    if line.hasPrefix("-") && !line.hasPrefix("---") { return ADEColor.danger.opacity(0.9) }
+    if line.hasPrefix("@@") { return ADEColor.accent.opacity(0.7) }
+    return ADEColor.textSecondary
+  }
+
+  private func fileExtBadge(_ path: String) -> String {
+    let basename = (path as NSString).lastPathComponent
+    if let dot = basename.lastIndex(of: ".") {
+      let ext = String(basename[basename.index(after: dot)...]).uppercased()
+      if !ext.isEmpty && ext.count <= 4 { return ext }
+    }
+    return "FILE"
   }
 }
 

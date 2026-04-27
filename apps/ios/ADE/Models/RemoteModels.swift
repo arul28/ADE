@@ -1778,6 +1778,17 @@ struct AgentChatEditSteerRequest: Codable, Equatable {
   var text: String
 }
 
+struct AgentChatDispatchSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var steerId: String
+  var mode: String
+}
+
+struct AgentChatCancelDispatchedSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var steerId: String
+}
+
 struct AgentChatInterruptRequest: Codable, Equatable {
   var sessionId: String
 }

@@ -667,6 +667,17 @@ func buildWorkToolCards(
 ) -> [WorkToolCardModel] {
   var cards: [String: WorkToolCardModel] = [:]
   var orderedIds: [String] = []
+  func resolveToolName(_ existing: String?, _ incoming: String) -> String {
+    let trimmedExisting = existing?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !trimmedExisting.isEmpty { return existing! }
+    let trimmedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedIncoming.isEmpty { return incoming }
+    // Last-resort placeholder so `toolDisplayName(_:)` produces the readable
+    // "Tool" fallback rather than a blank-looking row when the SDK emitted no
+    // tool name on either the call or the result.
+    return "tool"
+  }
+
   for envelope in transcript {
     switch envelope.event {
     case .toolCall(let tool, let argsText, let itemId, _, _):
@@ -682,11 +693,11 @@ func buildWorkToolCards(
       }
       cards[itemId] = WorkToolCardModel(
         id: itemId,
-        toolName: tool,
+        toolName: resolveToolName(cards[itemId]?.toolName, tool),
         status: .running,
         startedAt: envelope.timestamp,
         completedAt: nil,
-        argsText: argsText,
+        argsText: nonEmpty(argsText),
         resultText: cards[itemId]?.resultText
       )
     case .toolResult(let tool, let resultText, let itemId, _, _, let status):
@@ -696,12 +707,12 @@ func buildWorkToolCards(
       }
       cards[itemId] = WorkToolCardModel(
         id: itemId,
-        toolName: existing?.toolName ?? tool,
+        toolName: resolveToolName(existing?.toolName, tool),
         status: status,
         startedAt: existing?.startedAt ?? envelope.timestamp,
         completedAt: envelope.timestamp,
         argsText: existing?.argsText,
-        resultText: resultText
+        resultText: nonEmpty(resultText)
       )
     default:
       continue

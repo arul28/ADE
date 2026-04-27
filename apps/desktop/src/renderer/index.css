@@ -2996,38 +2996,6 @@ button:active, [role="button"]:active {
    — thinking, subagents, task rows, memory
    ═══════════════════════════════════════════════════════════ */
 
-/* Reasoning/thinking block — violet-tinted glass with soft specular */
-.ade-chat-thinking-glass {
-  position: relative;
-  overflow: hidden;
-  border-radius: 14px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, var(--chat-glass-border));
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--chat-panel-bg-strong) 58%, transparent) 0%,
-    color-mix(in srgb, var(--chat-panel-bg) 42%, transparent) 100%);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 60%, transparent),
-    0 10px 28px -22px color-mix(in srgb, var(--color-accent) 30%, transparent);
-  backdrop-filter: blur(22px) saturate(150%);
-  -webkit-backdrop-filter: blur(22px) saturate(150%);
-}
-
-.ade-chat-thinking-glass::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(circle at 18% 0%,
-    color-mix(in srgb, var(--color-accent-glow-strong) 50%, transparent) 0%,
-    transparent 45%);
-  opacity: 0.7;
-}
-
-.ade-chat-thinking-glass > * {
-  position: relative;
-  z-index: 1;
-}
-
 /* Subagent card — idle glass, subtle border */
 .ade-chat-subagent-card {
   position: relative;
@@ -3335,6 +3303,26 @@ button:active, [role="button"]:active {
 }
 .ade-thinking-pulse {
   animation: ade-thinking-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ade-text-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.ade-shimmer-text {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-fg) 28%, transparent) 0%,
+    color-mix(in srgb, var(--color-fg) 28%, transparent) 40%,
+    color-mix(in srgb, var(--color-fg) 78%, transparent) 50%,
+    color-mix(in srgb, var(--color-fg) 28%, transparent) 60%,
+    color-mix(in srgb, var(--color-fg) 28%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ade-text-shimmer 2.4s ease-in-out infinite;
 }
 
 @keyframes pull-btn-flash {

@@ -169,6 +169,8 @@ struct WorkSessionDestinationView: View {
           },
           onCancelSteer: cancelSteer,
           onEditSteer: editSteer,
+          onDispatchSteerInline: dispatchSteerInline,
+          onDispatchSteerInterrupt: dispatchSteerInterrupt,
           onSelectModel: selectModel,
           onSelectRuntimeMode: selectRuntimeMode,
           onSelectEffort: selectReasoningEffort,

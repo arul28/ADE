@@ -519,6 +519,8 @@ export type SyncRemoteCommandAction =
   | "chat.steer"
   | "chat.cancelSteer"
   | "chat.editSteer"
+  | "chat.dispatchSteer"
+  | "chat.cancelDispatchedSteer"
   | "chat.approve"
   | "chat.respondToInput"
   | "chat.resume"

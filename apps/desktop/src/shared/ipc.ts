@@ -140,6 +140,8 @@ export const IPC = {
   agentChatSteer: "ade.agentChat.steer",
   agentChatCancelSteer: "ade.agentChat.cancelSteer",
   agentChatEditSteer: "ade.agentChat.editSteer",
+  agentChatDispatchSteer: "ade.agentChat.dispatchSteer",
+  agentChatCancelDispatchedSteer: "ade.agentChat.cancelDispatchedSteer",
   agentChatInterrupt: "ade.agentChat.interrupt",
   agentChatResume: "ade.agentChat.resume",
   agentChatApprove: "ade.agentChat.approve",

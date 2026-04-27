@@ -10,9 +10,16 @@ import {
   useNavigate
 } from "react-router-dom";
 
-// Use BrowserRouter when running in a regular browser (for Figma capture compatibility).
-// The browser mock sets __isBrowserMock when window.ade is stubbed.
-const Router = (window as any).__adeBrowserMock ? BrowserRouter : HashRouter;
+// Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
+// Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
+// the history API is not tied to a normal origin.
+// Relying only on `__adeBrowserMock` breaks when the flag is not set at module-eval
+// time, which can strand Cursor's embedded browser on a single path.
+const Router =
+  typeof window !== "undefined" &&
+  (window.location.protocol === "http:" || window.location.protocol === "https:")
+    ? BrowserRouter
+    : HashRouter;
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
@@ -94,11 +101,13 @@ class PageErrorBoundaryInner extends React.Component<
     return { hasError: true, message: error instanceof Error ? error.message : String(error) };
   }
 
-  componentDidCatch(error: unknown): void {
-    console.error("page.crash", error);
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    console.error("page.crash", error, errorInfo, error?.stack);
     logRendererDebugEvent("renderer.page_boundary_crash", {
-      message: error instanceof Error ? error.message : String(error),
+      message: error?.message ?? String(error),
       route: window.location.hash || window.location.pathname,
+      componentStack: errorInfo.componentStack ?? null,
+      causeStack: error?.stack ?? null,
     });
   }
 

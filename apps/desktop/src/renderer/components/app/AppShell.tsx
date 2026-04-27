@@ -670,6 +670,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (previousProjectRoot === undefined) return;
     if (!nextProjectRoot || showWelcome) return;
     if (previousProjectRoot === nextProjectRoot) return;
+    // First attach of a project (null → /path) must not restore localStorage, or we
+    // clobber a deep link / address-bar route (e.g. Vite, Cursor Simple Browser) with
+    // the last tab the user had for that project — often /graph.
+    if (previousProjectRoot == null) return;
     if (previousProjectRoot) {
       const previousRoute = serializeLocationRoute(location);
       if (previousRoute) writeStoredProjectRoute(previousProjectRoot, previousRoute);
@@ -1060,7 +1064,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex-1 flex min-h-0">
         {hideSidebar ? null : (
-          <aside className="ade-sidebar-clip shrink-0 z-10 border-r" data-tour="app.sidebar">
+          // Graph page uses `fixed` viewport layers up to z-[96]; keep the tab rail above them.
+          <aside className="ade-sidebar-clip shrink-0 z-[100] border-r" data-tour="app.sidebar">
             <div className="ade-sidebar flex flex-col py-2 h-full">
               <TabNav githubStatus={githubStatus} />
             </div>

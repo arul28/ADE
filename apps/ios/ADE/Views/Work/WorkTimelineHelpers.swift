@@ -270,22 +270,42 @@ func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [Work
   var buffered: [WorkTimelineEntry] = []
 
   func flushCluster() {
-    if cluster.count >= 2 {
+    if !cluster.isEmpty {
       let members = cluster.compactMap(workToolGroupMember(from:))
       if members.count == cluster.count {
         let anchor = cluster[0]
-        let groupId = "tool-group:\(anchor.id)"
-        result.append(WorkTimelineEntry(
-          id: groupId,
-          timestamp: anchor.timestamp,
-          rank: anchor.rank,
-          payload: .toolGroup(WorkToolGroupModel(id: groupId, members: members))
-        ))
+        var readOnly: [WorkToolGroupMember] = []
+        var codeChange: [WorkToolGroupMember] = []
+        for member in members {
+          if isCodeChangeMember(member) { codeChange.append(member) }
+          else { readOnly.append(member) }
+        }
+        if !readOnly.isEmpty {
+          let groupId = "tool-group:\(anchor.id)"
+          result.append(WorkTimelineEntry(
+            id: groupId,
+            timestamp: anchor.timestamp,
+            rank: anchor.rank,
+            payload: .toolGroup(WorkToolGroupModel(id: groupId, members: readOnly))
+          ))
+        }
+        if !codeChange.isEmpty {
+          let groupId = "files-group:\(anchor.id)"
+          let files = aggregateChangedFiles(from: codeChange)
+          if !files.isEmpty {
+            result.append(WorkTimelineEntry(
+              id: groupId,
+              timestamp: anchor.timestamp,
+              rank: anchor.rank,
+              payload: .changedFiles(WorkChangedFilesGroupModel(id: groupId, files: files))
+            ))
+          }
+        }
       } else {
+        // A member kind we don't recognise crept in — fall back to the raw
+        // entries so we never silently drop transcript content.
         result.append(contentsOf: cluster)
       }
-    } else {
-      result.append(contentsOf: cluster)
     }
     result.append(contentsOf: buffered)
     cluster.removeAll(keepingCapacity: true)
@@ -324,6 +344,109 @@ private func workToolGroupMember(from entry: WorkTimelineEntry) -> WorkToolGroup
   case .fileChangeCard(let card): return .fileChange(card)
   default: return nil
   }
+}
+
+/// Code-change membership: file_change events are always code-change; tool
+/// cards route by their tool name (Edit / Write / MultiEdit / etc.). Commands
+/// are always read-only since they don't directly mutate files in a way the
+/// chat surface can attribute.
+private func isCodeChangeMember(_ member: WorkToolGroupMember) -> Bool {
+  switch member {
+  case .tool(let card): return isCodeChangeToolName(card.toolName)
+  case .command: return false
+  case .fileChange: return true
+  }
+}
+
+/// Aggregate the code-change members of a cluster into one `WorkChangedFileEntry`
+/// per file path. Diff stats sum across every event that touched the same file;
+/// the longest diff payload wins as the canonical text shown when the user
+/// expands the row to view changes.
+private func aggregateChangedFiles(from members: [WorkToolGroupMember]) -> [WorkChangedFileEntry] {
+  struct Pending {
+    var path: String
+    var kind: String
+    var additions: Int
+    var deletions: Int
+    var diff: String
+    var status: WorkToolCardStatus
+  }
+  var byPath: [String: Pending] = [:]
+  var order: [String] = []
+
+  func upsert(path: String, kind: String, diff: String, status: WorkToolCardStatus) {
+    let stats = aggregateDiffStats(diff)
+    if var existing = byPath[path] {
+      existing.additions += stats.additions
+      existing.deletions += stats.deletions
+      if diff.count > existing.diff.count { existing.diff = diff }
+      // Promote to a "still running" status if any contributing event hasn't
+      // finished — otherwise prefer the most recent terminal status.
+      if status == .running { existing.status = .running }
+      else if existing.status != .running { existing.status = status }
+      byPath[path] = existing
+    } else {
+      byPath[path] = Pending(
+        path: path,
+        kind: kind,
+        additions: stats.additions,
+        deletions: stats.deletions,
+        diff: diff,
+        status: status
+      )
+      order.append(path)
+    }
+  }
+
+  for member in members {
+    switch member {
+    case .fileChange(let card):
+      upsert(path: card.path, kind: card.kind, diff: card.diff, status: card.status)
+    case .tool(let card):
+      // Code-change tools (Edit/Write/etc.) don't carry a structured file
+      // path on iOS today; their `argsText` may include `file_path` JSON. We
+      // skip them here unless we can extract a path — falling back to a
+      // deterministic placeholder rather than emitting empty rows.
+      if let path = extractCodeChangeFilePath(fromArgsText: card.argsText) {
+        upsert(path: path, kind: "modify", diff: "", status: card.status)
+      }
+    case .command:
+      continue
+    }
+  }
+
+  return order.compactMap { path in
+    guard let entry = byPath[path] else { return nil }
+    return WorkChangedFileEntry(
+      id: path,
+      path: entry.path,
+      kind: entry.kind,
+      additions: entry.additions,
+      deletions: entry.deletions,
+      diff: entry.diff,
+      status: entry.status
+    )
+  }
+}
+
+/// Lightweight `file_path` / `path` extractor for code-change tool argsText.
+/// The argsText is pretty-printed JSON so a regex over the canonical key form
+/// is good enough — we're only using it to surface the path on the row, not
+/// for any execution-critical decision.
+private func extractCodeChangeFilePath(fromArgsText argsText: String?) -> String? {
+  guard let argsText, !argsText.isEmpty else { return nil }
+  let patterns = [#""file_path"\s*:\s*"([^"]+)""#, #""path"\s*:\s*"([^"]+)""#]
+  for pattern in patterns {
+    if let regex = try? NSRegularExpression(pattern: pattern) {
+      let range = NSRange(argsText.startIndex..<argsText.endIndex, in: argsText)
+      if let match = regex.firstMatch(in: argsText, range: range), match.numberOfRanges >= 2,
+         let pathRange = Range(match.range(at: 1), in: argsText) {
+        let value = String(argsText[pathRange])
+        if !value.isEmpty { return value }
+      }
+    }
+  }
+  return nil
 }
 
 /// Soft-break entries don't end a tool cluster — they get buffered and

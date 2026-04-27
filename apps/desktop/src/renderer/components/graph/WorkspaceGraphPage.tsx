@@ -96,6 +96,7 @@ import {
 } from "./graphHelpers";
 import {
   buildDefaultFilter,
+  coalesceGraphFilters,
   createSnapshot,
   createGraphPreferences,
   createSessionState,
@@ -369,7 +370,7 @@ function GraphInner() {
     () => sessionState[viewMode] ?? createSnapshot(viewMode),
     [sessionState, viewMode]
   );
-  const filters = activeSnapshot.filters ?? buildDefaultFilter();
+  const filters = coalesceGraphFilters(activeSnapshot.filters);
 
   const environmentByLaneId = React.useMemo(() => {
     const compiled = environmentMappings
@@ -587,7 +588,7 @@ function GraphInner() {
       if (filters.hideArchived && lane.archivedAt) return false;
       if (filters.laneTypes.length > 0 && !filters.laneTypes.includes(lane.laneType)) return false;
       if (filters.status.length > 0 && !filters.status.includes(laneStatusGroup(statusByLane.get(lane.id)))) return false;
-      if (filters.tags.length > 0 && !filters.tags.some((tag) => lane.tags.includes(tag))) return false;
+      if (filters.tags.length > 0 && !filters.tags.some((tag) => (lane.tags ?? []).includes(tag))) return false;
       if (filters.rootLaneId) {
         const descendants = collectDescendants(lanes, filters.rootLaneId);
         if (!descendants.has(lane.id) && lane.id !== filters.rootLaneId) return false;
@@ -616,10 +617,20 @@ function GraphInner() {
   const updateGraphSnapshot = React.useCallback(
     (updater: (snapshot: GraphLayoutSnapshot) => GraphLayoutSnapshot) => {
       setSessionState((prev) => {
-        const nextSnapshot = updater(prev[viewMode] ?? createSnapshot(viewMode));
+        const base = prev[viewMode] ?? createSnapshot(viewMode);
+        const current: GraphLayoutSnapshot = {
+          ...base,
+          filters: coalesceGraphFilters(base.filters),
+        };
+        const nextSnapshot = updater(current);
         return {
           ...prev,
-          [viewMode]: { ...nextSnapshot, updatedAt: new Date().toISOString(), viewMode }
+          [viewMode]: {
+            ...nextSnapshot,
+            filters: coalesceGraphFilters(nextSnapshot.filters),
+            updatedAt: new Date().toISOString(),
+            viewMode,
+          },
         };
       });
     },
@@ -2489,7 +2500,7 @@ function GraphInner() {
             y: anchor.y,
             color: lane.color,
             icon: lane.icon,
-            tags: [...lane.tags],
+            tags: [...(lane.tags ?? [])],
             newTag: ""
           });
         } else if (action === "collapse") {
@@ -2579,7 +2590,7 @@ function GraphInner() {
   const availableTags = React.useMemo(() => {
     const tags = new Set<string>();
     for (const lane of lanes) {
-      for (const tag of lane.tags) {
+      for (const tag of lane.tags ?? []) {
         if (tag.trim()) tags.add(tag.trim());
       }
     }

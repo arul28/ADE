@@ -18,6 +18,8 @@ __pycache__/
 
 # Database
 *.db
+# Local Vite browser mock: generated from .ade/ade.db (see npm run export:browser-mock-ade)
+/apps/desktop/src/renderer/browser-mock-ade-snapshot.generated.json
 
 # Build outputs
 /apps/ade-cli/dist/

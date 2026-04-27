@@ -15,6 +15,8 @@ import type {
   AgentChatSteerArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatDispatchSteerArgs,
+  AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
   AgentChatUpdateSessionArgs,
   AgentStatus,
@@ -587,6 +589,25 @@ function parseAgentChatEditSteerArgs(value: Record<string, unknown>): AgentChatE
     sessionId: requireString(value.sessionId, "chat.editSteer requires sessionId."),
     steerId: requireString(value.steerId, "chat.editSteer requires steerId."),
     text: requireString(value.text, "chat.editSteer requires text."),
+  };
+}
+
+function parseAgentChatDispatchSteerArgs(value: Record<string, unknown>): AgentChatDispatchSteerArgs {
+  const mode = value.mode;
+  if (mode !== "inline" && mode !== "interrupt") {
+    throw new Error("chat.dispatchSteer requires mode of 'inline' or 'interrupt'.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "chat.dispatchSteer requires sessionId."),
+    steerId: requireString(value.steerId, "chat.dispatchSteer requires steerId."),
+    mode,
+  };
+}
+
+function parseAgentChatCancelDispatchedSteerArgs(value: Record<string, unknown>): AgentChatCancelDispatchedSteerArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.cancelDispatchedSteer requires sessionId."),
+    steerId: requireString(value.steerId, "chat.cancelDispatchedSteer requires steerId."),
   };
 }
 
@@ -1670,6 +1691,14 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("chat.editSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").editSteer(parseAgentChatEditSteerArgs(payload));
     return { ok: true };
+  });
+  register("chat.dispatchSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").dispatchSteer(parseAgentChatDispatchSteerArgs(payload));
+    return { ok: true, dispatchedAt: result.dispatchedAt };
+  });
+  register("chat.cancelDispatchedSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").cancelDispatchedSteer(parseAgentChatCancelDispatchedSteerArgs(payload));
+    return { ok: true, cancelled: result.cancelled };
   });
   register("chat.approve", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").approveToolUse(parseAgentChatApproveArgs(payload));

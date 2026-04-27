@@ -45,7 +45,7 @@ Recent `main` work that is **not** inherently macOS-only but can surface path/sh
 ## Intentionally not Windows-complete (product reality)
 
 - **Local computer use** (screenshot, video, Apple GUI automation) remains **macOS-first**; other platforms are `blocked_by_capability` by design — do not block the Windows port on this.
-- **Releases** — `release-core.yml` builds a Windows `exe` but, as in `docs/ARCHITECTURE.md`, **Windows artifacts are not code-signed** today. Shipping broadly may require Authenticode signing and SmartScreen posture — track as release engineering, not only app code.
+- **Releases** — `release-core.yml` builds a Windows `exe`; Authenticode signing is supported when credentials are configured, but unsigned Windows release artifacts are allowed for now. SmartScreen reputation is still a release-engineering concern, not only app code.
 - **Docs in `AGENTS.md`** still emphasize macOS Codex/Computer Use; Windows developers should use this file + `docs/ARCHITECTURE.md` for WSL/VM dev notes if applicable.
 
 ## Engineering backlog (complete the “parity” bar)
@@ -54,8 +54,8 @@ Do these to move from “runs on Windows” to “first-class for Windows users�
 
 1. **Rebase hygiene** — whenever `main` adds desktop surfaces, re-run the smoke list above; add Vitest cases under `pathUtils` / `processExecution` if new path or spawn patterns appear.
 2. **Non-default Tailscale installs** — if the binary is not under standard `Program Files` locations and not on `PATH`, set `ADE_TAILSCALE_CLI` to the full `tailscale.exe` path.
-3. **Code signing** — wire Authenticode in CI if you need enterprise or SmartScreen-friendly installs; keep `latest.yml` + `exe.blockmap` flow as today.
-4. **Download + updates** — ensure the web download page and auto-update story include Windows (if not already) once installers are signed; verify `autoUpdateService` for Windows channel if applicable.
+3. **Code signing reputation** — wire Authenticode credentials in CI when ready and monitor SmartScreen reputation; keep `latest.yml` + `exe.blockmap` flow as today.
+4. **Download + updates** — ensure the web download page and auto-update story include Windows; verify `autoUpdateService` for Windows channel if applicable.
 
 ## Suggested validation commands (from repo root)
 

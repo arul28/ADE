@@ -38,7 +38,10 @@ import { logRendererDebugEvent } from "./lib/debugLog";
   document.head.appendChild(style);
 })();
 
-const RootWrapper = (window as any).__adeBrowserMock ? React.StrictMode : React.Fragment;
+// Vite/embedded browser: StrictMode double-invokes the graph (and other) mount
+// effects and clears graph session state, so the canvas flashes then empties. Electron
+// is already on Fragment; match that for the out-of-Electron dev preview.
+const RootWrapper = React.Fragment;
 
 function readRendererMemory() {
   const perf = performance as Performance & {
@@ -78,6 +81,17 @@ window.addEventListener("error", (event) => {
 
 window.addEventListener("unhandledrejection", (event) => {
   const reason = event.reason;
+  // Vite 6+ module-runner HMR can race: `send`/`invoke` run before the WS transport
+  // reports connected (notably on heavy routes e.g. /files + Monaco). Harmless in dev.
+  if (
+    import.meta.env.DEV
+    && reason instanceof Error
+    && (reason.message === "send was called before connect"
+      || reason.message === "invoke was called before connect")
+  ) {
+    event.preventDefault();
+    return;
+  }
   logRendererDebugEvent("renderer.unhandled_rejection", {
     reason: reason instanceof Error ? reason.message : String(reason),
     stack: reason instanceof Error ? reason.stack ?? null : null,

@@ -281,6 +281,10 @@ import type {
   AgentChatSteerArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatDispatchSteerArgs,
+  AgentChatDispatchSteerResult,
+  AgentChatCancelDispatchedSteerArgs,
+  AgentChatCancelDispatchedSteerResult,
   AgentChatTurnFileDiff,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
@@ -1641,6 +1645,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatCancelSteer, args),
     editSteer: async (args: AgentChatEditSteerArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatEditSteer, args),
+    dispatchSteer: async (args: AgentChatDispatchSteerArgs): Promise<AgentChatDispatchSteerResult> =>
+      ipcRenderer.invoke(IPC.agentChatDispatchSteer, args),
+    cancelDispatchedSteer: async (args: AgentChatCancelDispatchedSteerArgs): Promise<AgentChatCancelDispatchedSteerResult> =>
+      ipcRenderer.invoke(IPC.agentChatCancelDispatchedSteer, args),
     interrupt: async (args: AgentChatInterruptArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatInterrupt, args),
     resume: async (args: AgentChatResumeArgs): Promise<AgentChatSession> =>

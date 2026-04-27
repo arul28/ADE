@@ -10,6 +10,9 @@ export default defineConfig({
   base: "./",
   plugins: [react()],
   server: {
+    // Default `localhost` can bind ::1 only on macOS; then http://127.0.0.1:5173
+    // refuses. Listening on all interfaces fixes 127.0.0.1 and "localhost" equally.
+    host: true,
     port: 5173,
     strictPort: true,
     fs: {
