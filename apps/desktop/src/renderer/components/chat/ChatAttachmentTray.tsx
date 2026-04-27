@@ -155,11 +155,15 @@ function ImageLightbox({
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Save the element that opened us so focus can return there on close,
-  // and pull focus into the dialog on mount.
+  // pull focus into the dialog on mount, and lock body scroll while open so
+  // the wheel doesn't move the page behind the overlay.
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     closeButtonRef.current?.focus();
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     return () => {
+      document.body.style.overflow = previousBodyOverflow;
       if (previouslyFocused && typeof previouslyFocused.focus === "function") {
         previouslyFocused.focus();
       }
