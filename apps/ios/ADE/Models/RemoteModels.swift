@@ -105,6 +105,14 @@ struct MobileProjectCatalogPayload: Codable, Equatable {
   var projects: [MobileProjectSummary]
 }
 
+struct MobileProjectCatalogChunkPayload: Codable, Equatable {
+  var catalogId: String
+  var index: Int
+  var total: Int
+  var done: Bool
+  var projects: [MobileProjectSummary]
+}
+
 struct MobileProjectConnectionPayload: Codable, Equatable {
   var authKind: String
   var token: String?

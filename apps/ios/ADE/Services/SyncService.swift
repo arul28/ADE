@@ -396,6 +396,11 @@ private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
   ].joined(separator: " ")
 }
 
+private func syncIsMessageTooLongError(_ error: Error) -> Bool {
+  let message = (error as NSError).localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return message.contains("message too long")
+}
+
 func syncShouldRoamToTailnet(
   currentAddress: String?,
   hasTailnetRoute: Bool,
@@ -482,6 +487,9 @@ enum SyncUserFacingError {
     }
     if lowered.contains("unable to start gzip decoder") || lowered.contains("unable to decode compressed sync payload") {
       return "The host sent unreadable sync data. Reconnect and try again."
+    }
+    if lowered.contains("message too long") {
+      return "The desktop sent too much sync data in one message. Update ADE on the desktop, then reconnect."
     }
 
     return rawMessage
@@ -670,6 +678,7 @@ final class SyncService: ObservableObject {
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   private var remoteProjectCatalog: [MobileProjectSummary] = []
+  private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
   private var supportsChatStreaming = false
   private var projectSelectionTask: Task<Void, Never>?
@@ -949,6 +958,25 @@ final class SyncService: ObservableObject {
     refreshProjectCatalog(preferRemoteSelection: true)
   }
 
+  private func applyRemoteProjectCatalogChunk(
+    _ chunk: MobileProjectCatalogChunkPayload,
+    requestId: String?
+  ) {
+    guard chunk.index >= 0, chunk.total > 0, chunk.index < chunk.total else { return }
+    var chunks = pendingProjectCatalogChunks[chunk.catalogId] ?? [:]
+    chunks[chunk.index] = chunk.projects
+    pendingProjectCatalogChunks[chunk.catalogId] = chunks
+
+    guard chunks.count == chunk.total else { return }
+    let projects = (0..<chunk.total).flatMap { chunks[$0] ?? [] }
+    pendingProjectCatalogChunks.removeValue(forKey: chunk.catalogId)
+    let payload = MobileProjectCatalogPayload(projects: projects)
+    applyRemoteProjectCatalog(payload)
+    resolve(requestId: requestId, result: .success(["projects": projects.map { project in
+      (try? JSONSerialization.jsonObject(with: encoder.encode(project))) ?? [:]
+    }]))
+  }
+
   private func refreshRemoteProjectCatalog() async {
     guard supportsProjectCatalog, canSendLiveRequests() else { return }
     let requestId = makeRequestId()
@@ -1076,8 +1104,8 @@ final class SyncService: ObservableObject {
 
     let connectAttemptGeneration = beginConnectAttempt()
     do {
-      keychain.saveToken(connection.token)
-      keychain.saveToken(connection.token, hostKey: profileStorageKey(profile))
+      keychain.saveToken(resolvedToken)
+      keychain.saveToken(resolvedToken, hostKey: profileStorageKey(profile))
       saveProfile(profile)
       teardownSocket(reason: "Switching desktop project.")
       let connectedEndpoint = try await connectUsingProfile(
@@ -4459,6 +4487,7 @@ final class SyncService: ObservableObject {
       return false
     }()
     remoteProjectCatalog = []
+    pendingProjectCatalogChunks.removeAll()
     let commandDescriptors: [SyncRemoteCommandDescriptor] = {
       guard
         let commandRouting = features?["commandRouting"],
@@ -4536,6 +4565,7 @@ final class SyncService: ObservableObject {
     let friendlyError = SyncUserFacingError.error(from: error)
     let completions = pending
     pending.removeAll()
+    pendingProjectCatalogChunks.removeAll()
     for request in completions.values {
       request.timeoutTask.cancel()
       request.completion(.failure(friendlyError))
@@ -4632,6 +4662,9 @@ final class SyncService: ObservableObject {
       let catalog = try decode(payload, as: MobileProjectCatalogPayload.self)
       applyRemoteProjectCatalog(catalog)
       resolve(requestId: requestId, result: .success(payload))
+    case "project_catalog_chunk":
+      let chunk = try decode(payload, as: MobileProjectCatalogChunkPayload.self)
+      applyRemoteProjectCatalogChunk(chunk, requestId: requestId)
     case "project_switch_result":
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":
@@ -4896,6 +4929,7 @@ final class SyncService: ObservableObject {
     socket?.cancel(with: closeCode, reason: reason?.data(using: .utf8))
     socket = nil
     currentAddress = nil
+    pendingProjectCatalogChunks.removeAll()
     connectionGeneration &+= 1
   }
 
@@ -4915,6 +4949,12 @@ final class SyncService: ObservableObject {
       setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     }
     failPendingRequests(with: friendlyError)
+    if syncIsMessageTooLongError(error) {
+      allowAutoReconnect = false
+      setAutoReconnectPausedByUser(true)
+      cancelReconnectLoop()
+      return
+    }
     scheduleReconnectIfNeeded(after: reconnectDelayNanoseconds ?? reconnectDelay())
   }
 

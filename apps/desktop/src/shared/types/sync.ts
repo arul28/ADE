@@ -234,6 +234,14 @@ export type SyncProjectCatalogPayload = {
   projects: SyncMobileProjectSummary[];
 };
 
+export type SyncProjectCatalogChunkPayload = {
+  catalogId: string;
+  index: number;
+  total: number;
+  done: boolean;
+  projects: SyncMobileProjectSummary[];
+};
+
 export type SyncProjectSwitchRequestPayload = {
   projectId?: string | null;
   rootPath?: string | null;
@@ -853,6 +861,7 @@ export type SyncHelloOkEnvelope = SyncEnvelopeWithPayload<"hello_ok", SyncHelloO
 export type SyncHelloErrorEnvelope = SyncEnvelopeWithPayload<"hello_error", SyncHelloErrorPayload>;
 export type SyncProjectCatalogRequestEnvelope = SyncEnvelopeWithPayload<"project_catalog_request", Record<string, never>>;
 export type SyncProjectCatalogEnvelope = SyncEnvelopeWithPayload<"project_catalog", SyncProjectCatalogPayload>;
+export type SyncProjectCatalogChunkEnvelope = SyncEnvelopeWithPayload<"project_catalog_chunk", SyncProjectCatalogChunkPayload>;
 export type SyncProjectSwitchRequestEnvelope = SyncEnvelopeWithPayload<"project_switch_request", SyncProjectSwitchRequestPayload>;
 export type SyncProjectSwitchResultEnvelope = SyncEnvelopeWithPayload<"project_switch_result", SyncProjectSwitchResultPayload>;
 export type SyncPairingRequestEnvelope = SyncEnvelopeWithPayload<"pairing_request", SyncPairingRequestPayload>;
@@ -886,6 +895,7 @@ export type SyncEnvelope =
   | SyncHelloErrorEnvelope
   | SyncProjectCatalogRequestEnvelope
   | SyncProjectCatalogEnvelope
+  | SyncProjectCatalogChunkEnvelope
   | SyncProjectSwitchRequestEnvelope
   | SyncProjectSwitchResultEnvelope
   | SyncPairingRequestEnvelope

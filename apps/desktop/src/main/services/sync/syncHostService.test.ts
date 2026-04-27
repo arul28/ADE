@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -784,6 +785,141 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
 
     await client.close();
   });
+
+  it("chunks oversized mobile project catalog responses", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-project-catalog-large-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-project-catalog-large-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+
+    const projects = Array.from({ length: 2_000 }, (_, index) => {
+      const entropy = randomBytes(256).toString("hex");
+      return {
+        id: `project-${index}-${entropy.slice(0, 16)}`,
+        displayName: `Project ${index} ${entropy.slice(16, 80)}`,
+        rootPath: path.join(projectRoot, entropy),
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T12:00:00.000Z",
+        laneCount: index % 7,
+        isAvailable: true,
+        isCached: false,
+        isOpen: false,
+      };
+    });
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      pinStore: createStubPinStore(),
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
+      sessionService: {
+        list: () => [],
+        get: () => null,
+        readTranscriptTail: async () => "",
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects })),
+        prepareProjectConnection: vi.fn(),
+      },
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const port = await host.waitUntilListening();
+    const client = await connectClient({
+      port,
+      token: host.getBootstrapToken(),
+      deviceId: "ios-phone-large-catalog",
+      deviceName: "Arul iPhone",
+      siteId: "ios-site-large-catalog",
+      dbVersion: 0,
+      platform: "iOS",
+      deviceType: "phone",
+    });
+
+    const helloPayload = client.helloOk.payload as { projects?: unknown[] };
+    expect(helloPayload.projects).toEqual([]);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "project_catalog_request",
+      requestId: "catalog-large",
+      payload: {},
+    }));
+
+    const receivedProjects: unknown[] = [];
+    let chunkCount = 0;
+    let done = false;
+    while (!done) {
+      const chunk = await client.queue.next("project_catalog_chunk");
+      expect(chunk.requestId).toBe("catalog-large");
+      const payload = chunk.payload as {
+        index: number;
+        total: number;
+        done: boolean;
+        projects: unknown[];
+      };
+      chunkCount += 1;
+      done = payload.done;
+      expect(payload.index).toBe(chunkCount - 1);
+      expect(payload.total).toBeGreaterThan(1);
+      receivedProjects.push(...payload.projects);
+    }
+    expect(chunkCount).toBeGreaterThan(1);
+    expect(receivedProjects).toHaveLength(projects.length);
+
+    await host.broadcastProjectCatalog();
+    const broadcastProjects: unknown[] = [];
+    chunkCount = 0;
+    done = false;
+    while (!done) {
+      const chunk = await client.queue.next("project_catalog_chunk");
+      expect(chunk.requestId).toBeNull();
+      const payload = chunk.payload as {
+        index: number;
+        total: number;
+        done: boolean;
+        projects: unknown[];
+      };
+      chunkCount += 1;
+      done = payload.done;
+      expect(payload.index).toBe(chunkCount - 1);
+      expect(payload.total).toBeGreaterThan(1);
+      broadcastProjects.push(...payload.projects);
+    }
+    expect(chunkCount).toBeGreaterThan(1);
+    expect(broadcastProjects).toHaveLength(projects.length);
+
+    await client.close();
+  }, 30_000);
 
   it("authenticates peers, relays CRDT changes, and rebroadcasts to other peers", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-brain-"), createLogger() as any);
