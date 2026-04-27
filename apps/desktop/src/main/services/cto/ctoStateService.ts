@@ -367,10 +367,6 @@ const CTO_CAPABILITY_MANIFEST = [
   "  searchWorkspaceText — Search for text patterns in workspace files. Params: query, laneId.",
   "  searchCodebase — Search the ADE codebase itself for patterns (for self-debugging). Params: pattern, fileGlob.",
   "",
-  "## Context & Documentation",
-  "  getContextStatus — Check what ADE context docs exist and staleness.",
-  "  generateContextDocs — Generate context packs for workers or export.",
-  "",
   "## Processes (managed dev servers, builds, etc.)",
   "  listManagedProcesses — List defined processes and their runtime status.",
   "  startManagedProcess — Start a defined process. Params: processId, laneId.",
@@ -758,7 +754,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   // The remaining files here are generated local/runtime state.
   const coreMemoryPath = path.join(ctoDir, "core-memory.json");
   const memoryDocPath = path.join(ctoDir, "MEMORY.md");
-  const currentContextDocPath = path.join(ctoDir, "CURRENT.md");
+  const currentContextPath = path.join(ctoDir, "CURRENT.md");
   const sessionsPath = path.join(ctoDir, "sessions.jsonl");
   const subordinateActivityPath = path.join(ctoDir, "subordinate-activity.jsonl");
 
@@ -1036,17 +1032,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
   };
 
-  const listProjectContextDocPaths = (): string[] => {
-    const projectRoot = path.dirname(args.adeDir);
-    return [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"].filter((rel) => {
-      try {
-        return fs.existsSync(path.join(projectRoot, rel));
-      } catch {
-        return false;
-      }
-    });
-  };
-
   const listDurableMemoryHighlights = (limit = 12): Memory[] => {
     if (!args.memoryService) return [];
     const promoted = args.memoryService.listMemories({
@@ -1158,13 +1143,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       }
     }
 
-    const contextDocs = listProjectContextDocPaths();
-    if (contextDocs.length > 0) {
-      lines.push("");
-      lines.push("## Project context docs");
-      lines.push(...contextDocs.map((docPath) => `- ${docPath}`));
-    }
-
     const recentLogs = listRecentDailyLogSnippets();
     if (recentLogs.length > 0) {
       lines.push("");
@@ -1200,13 +1178,13 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       "Internal ADE-generated long-term CTO memory. This mirrors the persistent continuity brief plus promoted durable project memory.",
       buildLongTermMemoryLines(snapshot),
     );
-    const currentContextDoc = renderGeneratedMemoryDoc(
+    const currentContextBody = renderGeneratedMemoryDoc(
       "CTO Current Context",
       "Internal ADE-generated working context for continuity across compaction and session resumes.",
       buildCurrentContextLines(snapshot),
     );
     writeTextAtomic(memoryDocPath, `${longTermDoc}\n`);
-    writeTextAtomic(currentContextDocPath, `${currentContextDoc}\n`);
+    writeTextAtomic(currentContextPath, `${currentContextBody}\n`);
   };
 
   const updateCoreMemory = (patch: CoreMemoryPatch): CtoSnapshot => {

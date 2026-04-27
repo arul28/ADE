@@ -33,9 +33,11 @@ import type {
   SyncFileRequest,
   SyncFileResponsePayload,
   SyncHelloPayload,
+  SyncMobileProjectSummary,
   SyncPairingRequestPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
+  SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
@@ -392,6 +394,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
   const compressionThresholdBytes = Math.max(256, Math.floor(args.compressionThresholdBytes ?? DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES));
+  const maxChangesetBatchBytes = 256 * 1024;
+  const maxChangesetBatchRows = 250;
+  const maxProjectCatalogEnvelopeBytes = 768 * 1024;
+  const maxProjectCatalogChunkBytes = 192 * 1024;
   const localPresenceCommandDescriptors: SyncRemoteCommandDescriptor[] = [
     {
       action: "lanes.presence.announce",
@@ -1113,6 +1119,80 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   }
 
+  function encodedEnvelopeBytes<TPayload>(
+    type: SyncEnvelope["type"],
+    payload: TPayload,
+    requestId?: string | null,
+  ): number {
+    return Buffer.byteLength(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }), "utf8");
+  }
+
+  function closeExistingPeersForDevice(deviceId: string, currentPeer: PeerState): void {
+    const normalized = toOptionalString(deviceId);
+    if (!normalized) return;
+    for (const peer of peers) {
+      if (peer === currentPeer) continue;
+      if (peer.metadata?.deviceId !== normalized && peer.pairedDeviceId !== normalized) continue;
+      peer.authenticated = false;
+      peer.metadata = null;
+      peer.authKind = null;
+      peer.pairedDeviceId = null;
+      try {
+        peer.ws.close(4000, "Superseded by a newer connection for this device");
+      } catch {
+        // ignore close failures
+      }
+    }
+  }
+
+  function sendChangesetBatch(
+    peer: PeerState,
+    reason: SyncChangesetBatchPayload["reason"],
+    fromDbVersion: number,
+    toDbVersion: number,
+    changes: CrsqlChangeRow[],
+  ): void {
+    let chunk: CrsqlChangeRow[] = [];
+    let chunkFromDbVersion = fromDbVersion;
+    let chunkBytes = 0;
+
+    const flush = (): void => {
+      if (chunk.length === 0) return;
+      const chunkToDbVersion = Math.max(...chunk.map((change) => Number(change.db_version ?? chunkFromDbVersion)));
+      send(peer.ws, "changeset_batch", {
+        reason,
+        fromDbVersion: chunkFromDbVersion,
+        toDbVersion: chunkToDbVersion,
+        changes: chunk,
+      });
+      chunkFromDbVersion = chunkToDbVersion;
+      chunk = [];
+      chunkBytes = 0;
+    };
+
+    for (const change of changes) {
+      const changeBytes = Buffer.byteLength(JSON.stringify(change), "utf8");
+      if (
+        chunk.length > 0
+        && (chunk.length >= maxChangesetBatchRows || chunkBytes + changeBytes > maxChangesetBatchBytes)
+      ) {
+        flush();
+      }
+      chunk.push(change);
+      chunkBytes += changeBytes;
+    }
+    flush();
+
+    if (changes.length === 0 && toDbVersion > fromDbVersion) {
+      send(peer.ws, "changeset_batch", {
+        reason,
+        fromDbVersion,
+        toDbVersion,
+        changes: [],
+      });
+    }
+  }
+
   async function buildProjectCatalogPayload(): Promise<SyncProjectCatalogPayload> {
     if (!args.projectCatalogProvider) {
       return { projects: [] };
@@ -1125,6 +1205,80 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       return { projects: [] };
     }
+  }
+
+  function splitProjectCatalog(projects: SyncMobileProjectSummary[]): SyncMobileProjectSummary[][] {
+    const chunks: SyncMobileProjectSummary[][] = [];
+    let chunk: SyncMobileProjectSummary[] = [];
+    let chunkBytes = 0;
+
+    const flush = (): void => {
+      if (chunk.length === 0) return;
+      chunks.push(chunk);
+      chunk = [];
+      chunkBytes = 0;
+    };
+
+    for (const project of projects) {
+      const projectBytes = Buffer.byteLength(JSON.stringify(project), "utf8");
+      if (chunk.length > 0 && chunkBytes + projectBytes > maxProjectCatalogChunkBytes) {
+        flush();
+      }
+      chunk.push(project);
+      chunkBytes += projectBytes;
+    }
+    flush();
+    return chunks;
+  }
+
+  function projectsForHello(projectCatalog: SyncProjectCatalogPayload): SyncMobileProjectSummary[] {
+    const payload = {
+      peer: readBrainMetadata(),
+      brain: readBrainMetadata(),
+      serverDbVersion: args.db.sync.getDbVersion(),
+      heartbeatIntervalMs,
+      pollIntervalMs,
+      projects: projectCatalog.projects,
+      features: {},
+    };
+    return encodedEnvelopeBytes("hello_ok", payload) <= maxProjectCatalogEnvelopeBytes
+      ? projectCatalog.projects
+      : [];
+  }
+
+  function sendProjectCatalog(
+    peer: PeerState,
+    projectCatalog: SyncProjectCatalogPayload,
+    requestId?: string | null,
+  ): void {
+    if (encodedEnvelopeBytes("project_catalog", projectCatalog, requestId) <= maxProjectCatalogEnvelopeBytes) {
+      send(peer.ws, "project_catalog", projectCatalog, requestId);
+      return;
+    }
+
+    const chunks = splitProjectCatalog(projectCatalog.projects);
+    const total = Math.max(1, chunks.length);
+    const catalogId = randomBytes(8).toString("hex");
+    if (chunks.length === 0) {
+      send(peer.ws, "project_catalog_chunk", {
+        catalogId,
+        index: 0,
+        total,
+        done: true,
+        projects: [],
+      } satisfies SyncProjectCatalogChunkPayload, requestId);
+      return;
+    }
+
+    chunks.forEach((projects, index) => {
+      send(peer.ws, "project_catalog_chunk", {
+        catalogId,
+        index,
+        total,
+        done: index === total - 1,
+        projects,
+      } satisfies SyncProjectCatalogChunkPayload, requestId);
+    });
   }
 
   async function handleProjectSwitchRequest(
@@ -1303,13 +1457,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         .exportChangesSince(peer.lastKnownServerDbVersion)
         .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId);
       if (changes.length > 0) {
-        const payload: SyncChangesetBatchPayload = {
-          reason: "broadcast",
-          fromDbVersion: peer.lastKnownServerDbVersion,
-          toDbVersion: currentDbVersion,
-          changes,
-        };
-        send(peer.ws, "changeset_batch", payload);
+        sendChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, currentDbVersion, changes);
         lastBroadcastAt = nowIso();
       }
       peer.lastKnownServerDbVersion = currentDbVersion;
@@ -1704,6 +1852,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
 
+      closeExistingPeersForDevice(hello.peer.deviceId, peer);
       peer.authenticated = true;
       peer.metadata = hello.peer;
       const auth = hello.auth ?? { kind: "bootstrap", token: "" };
@@ -1722,7 +1871,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         serverDbVersion: args.db.sync.getDbVersion(),
         heartbeatIntervalMs,
         pollIntervalMs,
-        projects: projectCatalog.projects,
+        projects: projectsForHello(projectCatalog),
         features: {
           fileAccess: true,
           terminalStreaming: true,
@@ -1758,7 +1907,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     switch (envelope.type) {
       case "project_catalog_request": {
-        send(peer.ws, "project_catalog", await buildProjectCatalogPayload(), envelope.requestId);
+        sendProjectCatalog(peer, await buildProjectCatalogPayload(), envelope.requestId);
         break;
       }
       case "project_switch_request": {
@@ -2171,9 +2320,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     getPeerStates(): SyncPeerConnectionState[] {
       const dbVersion = args.db.sync.getDbVersion();
-      return [...peers]
+      const latestByDevice = new Map<string, SyncPeerConnectionState>();
+      for (const peer of [...peers]
         .map((peer) => toSyncPeerConnectionState(peer, dbVersion))
-        .filter((peer): peer is SyncPeerConnectionState => peer != null);
+        .filter((peer): peer is SyncPeerConnectionState => peer != null)) {
+        const existing = latestByDevice.get(peer.deviceId);
+        if (!existing || peer.connectedAt > existing.connectedAt) {
+          latestByDevice.set(peer.deviceId, peer);
+        }
+      }
+      return [...latestByDevice.values()];
     },
 
     getTailnetDiscoveryStatus(): SyncTailnetDiscoveryStatus {
@@ -2204,7 +2360,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const payload = await buildProjectCatalogPayload();
       for (const peer of peers) {
         if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
-        send(peer.ws, "project_catalog", payload);
+        sendProjectCatalog(peer, payload);
       }
     },
 

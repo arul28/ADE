@@ -938,6 +938,7 @@ describe("buildComputerUseDirective", () => {
     const status = makeBackendStatus({ ghostOs: true });
     const result = buildComputerUseDirective(status);
     expect(result).toContain("Proof Capture");
+    expect(result).toContain("ade proof");
     expect(result).toContain("ingest_computer_use_artifacts");
     expect(result).toContain("capture visual proof first");
     expect(result).toContain("Console logs and text files are supporting diagnostics only");
@@ -1052,9 +1053,10 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("internal ADE work");
-      expect(opts?.systemPrompt?.append).toContain("Before saying an ADE task is blocked");
+      expect(opts?.systemPrompt?.append).toContain("default control plane");
+      expect(opts?.systemPrompt?.append).toContain("only normal reason to skip ADE CLI");
       expect(opts?.systemPrompt?.append).toContain("ade lanes list");
+      expect(opts?.systemPrompt?.append).toContain("ADE proof drawer");
       expect(opts?.systemPrompt?.append).toContain("clean up old, stale, or finished processes");
     });
 
@@ -1665,10 +1667,10 @@ describe("createAgentChatService", () => {
       expect(firstUserContent).toContain("[ADE launch directive]");
       expect(firstUserContent).toContain(tmpRoot);
       expect(firstUserContent).toContain("only inside that worktree");
-      expect(firstUserContent).toContain("Before saying an ADE task is blocked");
+      expect(firstUserContent).toContain("only normal reason to skip ADE CLI");
       expect(firstUserContent).toContain("ade actions list --text");
       expect(secondUserContent).not.toContain("[ADE launch directive]");
-      expect(secondUserContent).toContain("Before saying an ADE task is blocked");
+      expect(secondUserContent).toContain("only normal reason to skip ADE CLI");
     });
 
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
@@ -1697,7 +1699,7 @@ describe("createAgentChatService", () => {
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnParams = turnStartRequest?.params as { input?: Array<{ text?: unknown }> } | undefined;
       const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
-      expect(textInput).toContain("Before saying an ADE task is blocked");
+      expect(textInput).toContain("only normal reason to skip ADE CLI");
       expect(textInput).toContain("ade actions list --text");
     });
 

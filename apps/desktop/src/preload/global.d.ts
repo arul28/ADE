@@ -21,11 +21,6 @@ import type {
   ConflictProposal,
   ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
-  ContextDocPrefs,
-  ContextGenerateDocsArgs,
-  ContextGenerateDocsResult,
-  ContextOpenDocArgs,
-  ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -1354,16 +1349,6 @@ declare global {
           args: SuggestResolverTargetArgs,
         ) => Promise<SuggestResolverTargetResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
-      };
-      context: {
-        getStatus: () => Promise<ContextStatus>;
-        generateDocs: (
-          args: ContextGenerateDocsArgs,
-        ) => Promise<ContextGenerateDocsResult>;
-        openDoc: (args: ContextOpenDocArgs) => Promise<void>;
-        getPrefs: () => Promise<ContextDocPrefs>;
-        savePrefs: (prefs: ContextDocPrefs) => Promise<ContextDocPrefs>;
-        onStatusChanged: (cb: (status: ContextStatus) => void) => () => void;
       };
       feedback: {
         prepareDraft: (args: FeedbackPrepareDraftArgs) => Promise<FeedbackPreparedDraft>;

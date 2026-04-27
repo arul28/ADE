@@ -98,8 +98,8 @@ and a footer that contains the composer.
   handoff.
 - **Reasoning effort.** Dropdown for models that support reasoning
   tiers.
-- **Context pack injection.** Allows the user to attach a context pack
-  (PRD, ARCHITECTURE, mission pack) to the next turn.
+- **Attachments.** Allows the user to attach files and artifacts to
+  the next turn.
 - **Permission controls.** Inline with the composer:
   - Interaction mode selector (`default` / `plan`).
   - Claude permission mode — a trigger button that opens a popover

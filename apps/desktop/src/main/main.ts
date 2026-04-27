@@ -20,7 +20,6 @@ import { createPortAllocationService } from "./services/lanes/portAllocationServ
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
-import { createContextDocService } from "./services/context/contextDocService";
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
@@ -2115,19 +2114,6 @@ app.whenReady().then(async () => {
       proceduralLearningService,
     });
     skillRegistryServiceRef = skillRegistryService;
-    const contextDocService = createContextDocService({
-      db,
-      logger,
-      projectRoot,
-      projectId,
-      packsDir: adePaths.packsDir,
-      laneService,
-      projectConfigService,
-      aiIntegrationService,
-      onStatusChanged: (status) =>
-        emitProjectEvent(projectRoot, IPC.contextStatusChanged, status),
-    });
-
     const ctoStateService = createCtoStateService({
       db,
       projectId,
@@ -2279,7 +2265,6 @@ app.whenReady().then(async () => {
       getAutomationService: () => automationService,
       getGitService: () => gitServiceRef,
       conflictService,
-      contextDocService,
       getWorkerBudgetService: () => workerBudgetService,
       getMissionBudgetService: () => missionBudgetServiceRef,
       episodicSummaryService,
@@ -3346,7 +3331,6 @@ app.whenReady().then(async () => {
       syncHostService: syncService.getHostService(),
       syncService,
       automationIngressService,
-      contextDocService,
       feedbackReporterService,
       usageTrackingService,
       budgetCapService,
@@ -3574,7 +3558,6 @@ app.whenReady().then(async () => {
       missionBudgetService,
       aiOrchestratorService,
       agentChatService,
-      contextDocService,
       projectConfigService,
       processService,
       sessionDeltaService,
@@ -3682,7 +3665,6 @@ app.whenReady().then(async () => {
       orchestratorService: null,
       missionBudgetService: null,
       aiOrchestratorService: null,
-      contextDocService: null,
       projectConfigService: null,
       processService: null,
       sessionDeltaService: null,

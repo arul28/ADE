@@ -58,19 +58,19 @@ describe("fileService", () => {
     const service = createFileService({ laneService });
 
     try {
-      fs.mkdirSync(path.join(rootPath, ".ade", "context"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, ".ade", "notes"), { recursive: true });
       fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
-      fs.writeFileSync(path.join(rootPath, ".ade", "context", "PRD.ade.md"), "# PRD\nRenderer-safe content\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, ".ade", "notes", "project.md"), "# Project notes\nRenderer-safe content\n", "utf8");
       fs.writeFileSync(path.join(rootPath, "src", "index.ts"), "export const visible = true;\n", "utf8");
 
       const quickOpenDefault = await service.quickOpen({
         workspaceId: "workspace-1",
-        query: "prd",
+        query: "project",
         includeIgnored: false,
       });
       const quickOpenIgnored = await service.quickOpen({
         workspaceId: "workspace-1",
-        query: "prd",
+        query: "project",
         includeIgnored: true,
       });
       const searchDefault = await service.searchText({
@@ -85,9 +85,9 @@ describe("fileService", () => {
       });
 
       expect(quickOpenDefault).toEqual([]);
-      expect(quickOpenIgnored.map((item) => item.path)).toContain(".ade/context/PRD.ade.md");
+      expect(quickOpenIgnored.map((item) => item.path)).toContain(".ade/notes/project.md");
       expect(searchDefault).toEqual([]);
-      expect(searchIgnored.map((item) => item.path)).toContain(".ade/context/PRD.ade.md");
+      expect(searchIgnored.map((item) => item.path)).toContain(".ade/notes/project.md");
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }

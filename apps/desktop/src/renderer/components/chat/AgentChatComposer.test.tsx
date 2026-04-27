@@ -469,30 +469,6 @@ describe("AgentChatComposer", () => {
     expect(screen.getByText("3")).toBeTruthy();
   });
 
-  it("shows inline context toggle only before first message", () => {
-    const onIncludeProjectDocsChange = vi.fn();
-    renderComposer({
-      chatHasMessages: false,
-      includeProjectDocs: false,
-      onIncludeProjectDocsChange,
-    });
-
-    const contextButton = screen.getByTitle("Include project context (PRD + architecture) with first message");
-    fireEvent.click(contextButton);
-    expect(onIncludeProjectDocsChange).toHaveBeenCalledWith(true);
-  });
-
-  it("hides context toggle after first message is sent", () => {
-    const onIncludeProjectDocsChange = vi.fn();
-    renderComposer({
-      chatHasMessages: true,
-      includeProjectDocs: false,
-      onIncludeProjectDocsChange,
-    });
-
-    expect(screen.queryByTitle("Include project context (PRD + architecture) with first message")).toBeNull();
-  });
-
   it("marks the textarea layout variant in grid-tile mode", () => {
     const { container } = renderComposer({
       layoutVariant: "grid-tile",

@@ -472,7 +472,6 @@ type AppState = {
   /** Session-scoped banner dismissals. Pruned when a project is closed/switched so the maps don't leak. */
   dismissedMissingAiBannerRoots: SessionDismissMap;
   dismissedGithubBannerRoots: SessionDismissMap;
-  dismissedContextBannerRoots: SessionDismissMap;
 
   setProject: (project: ProjectInfo | null) => void;
   setProjectHydrated: (hydrated: boolean) => void;
@@ -518,7 +517,6 @@ type AppState = {
   refreshKeybindings: () => Promise<void>;
   dismissMissingAiBanner: (projectRoot: string) => void;
   dismissGithubBanner: (projectRoot: string) => void;
-  dismissContextBanner: (projectRoot: string) => void;
 
   openNewTab: () => void;
   cancelNewTab: () => void;
@@ -616,7 +614,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
   dismissedMissingAiBannerRoots: {},
   dismissedGithubBannerRoots: {},
-  dismissedContextBannerRoots: {},
 
   setProject: (project) =>
     set((prev) => {
@@ -912,14 +909,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       dismissedGithubBannerRoots: { ...prev.dismissedGithubBannerRoots, [key]: true },
     }));
   },
-  dismissContextBanner: (projectRoot) => {
-    const key = normalizeProjectKey(projectRoot);
-    if (!key) return;
-    set((prev) => ({
-      dismissedContextBannerRoots: { ...prev.dismissedContextBannerRoots, [key]: true },
-    }));
-  },
-
   openRepo: async () => {
     // Invalidate in-flight lane refreshes before the async open so stale
     // responses from the previous project are discarded immediately.
@@ -955,7 +944,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         terminalAttention: EMPTY_TERMINAL_ATTENTION,
         dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
         dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
-        dismissedContextBannerRoots: pickDismissMapForRoots(prev.dismissedContextBannerRoots, [project.rootPath]),
       }));
       invalidateAiDiscoveryCache(project.rootPath);
       invalidateProjectConfigCache(project.rootPath);
@@ -1040,7 +1028,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           laneWorkViewByScope: nextLaneWorkViews,
           dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, retainedRoots),
           dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, retainedRoots),
-          dismissedContextBannerRoots: pickDismissMapForRoots(prev.dismissedContextBannerRoots, retainedRoots),
         };
       });
     } catch (error) {
@@ -1084,7 +1071,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         // No active project: drop every dismiss entry so reopening the same project later starts with a clean slate.
         dismissedMissingAiBannerRoots: {},
         dismissedGithubBannerRoots: {},
-        dismissedContextBannerRoots: {},
       });
     } catch (error) {
       set({

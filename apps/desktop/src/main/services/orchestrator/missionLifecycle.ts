@@ -307,8 +307,6 @@ export function discoverProjectDocs(ctx: OrchestratorContext): {
   const candidatePaths = [
     ...new Set(
       [
-        ".ade/context/PRD.ade.md",
-        ".ade/context/ARCHITECTURE.ade.md",
         "README.md",
         "CLAUDE.md",
         "AGENTS.md",

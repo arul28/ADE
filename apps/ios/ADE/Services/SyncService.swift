@@ -396,6 +396,11 @@ private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
   ].joined(separator: " ")
 }
 
+private func syncIsMessageTooLongError(_ error: Error) -> Bool {
+  let message = (error as NSError).localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return message.contains("message too long")
+}
+
 func syncShouldRoamToTailnet(
   currentAddress: String?,
   hasTailnetRoute: Bool,
@@ -482,6 +487,9 @@ enum SyncUserFacingError {
     }
     if lowered.contains("unable to start gzip decoder") || lowered.contains("unable to decode compressed sync payload") {
       return "The host sent unreadable sync data. Reconnect and try again."
+    }
+    if lowered.contains("message too long") {
+      return "The desktop sent too much sync data in one message. Update ADE on the desktop, then reconnect."
     }
 
     return rawMessage
@@ -670,6 +678,7 @@ final class SyncService: ObservableObject {
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   private var remoteProjectCatalog: [MobileProjectSummary] = []
+  private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
   private var supportsChatStreaming = false
   private var projectSelectionTask: Task<Void, Never>?
@@ -949,6 +958,25 @@ final class SyncService: ObservableObject {
     refreshProjectCatalog(preferRemoteSelection: true)
   }
 
+  private func applyRemoteProjectCatalogChunk(
+    _ chunk: MobileProjectCatalogChunkPayload,
+    requestId: String?
+  ) {
+    guard chunk.index >= 0, chunk.total > 0, chunk.index < chunk.total else { return }
+    var chunks = pendingProjectCatalogChunks[chunk.catalogId] ?? [:]
+    chunks[chunk.index] = chunk.projects
+    pendingProjectCatalogChunks[chunk.catalogId] = chunks
+
+    guard chunks.count == chunk.total else { return }
+    let projects = (0..<chunk.total).flatMap { chunks[$0] ?? [] }
+    pendingProjectCatalogChunks.removeValue(forKey: chunk.catalogId)
+    let payload = MobileProjectCatalogPayload(projects: projects)
+    applyRemoteProjectCatalog(payload)
+    resolve(requestId: requestId, result: .success(["projects": projects.map { project in
+      (try? JSONSerialization.jsonObject(with: encoder.encode(project))) ?? [:]
+    }]))
+  }
+
   private func refreshRemoteProjectCatalog() async {
     guard supportsProjectCatalog, canSendLiveRequests() else { return }
     let requestId = makeRequestId()
@@ -993,7 +1021,7 @@ final class SyncService: ObservableObject {
     let previousActiveProjectId = activeProjectId
     let previousActiveProjectRootPath = activeProjectRootPath
     let previousProfile = loadProfile()
-    let previousToken = previousProfile.flatMap { token(for: $0) } ?? keychain.loadToken()
+    let previousToken = tokenForProfile(previousProfile)
     let previousLatestRemoteDbVersion = latestRemoteDbVersion
     let previousRemoteProjectCatalog = remoteProjectCatalog
     remoteProjectCatalog.removeAll { existing in
@@ -1077,6 +1105,7 @@ final class SyncService: ObservableObject {
     let connectAttemptGeneration = beginConnectAttempt()
     do {
       keychain.saveToken(resolvedToken)
+      keychain.saveToken(resolvedToken, hostKey: profileStorageKey(profile))
       saveProfile(profile)
       teardownSocket(reason: "Switching desktop project.")
       let connectedEndpoint = try await connectUsingProfile(
@@ -1093,7 +1122,6 @@ final class SyncService: ObservableObject {
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
     } catch {
-      removeKnownProfile(profile)
       guard isCurrentProjectSelection(selectionGeneration) else {
         throw error
       }
@@ -1102,6 +1130,7 @@ final class SyncService: ObservableObject {
       remoteProjectCatalog = previousRemoteProjectCatalog
       if let previousToken {
         keychain.saveToken(previousToken)
+        keychain.saveToken(previousToken, hostKey: previousProfile.flatMap { profileStorageKey($0) })
       } else {
         keychain.clearToken()
       }
@@ -1370,7 +1399,7 @@ final class SyncService: ObservableObject {
   func loadProfile() -> HostConnectionProfile? {
     if let data = UserDefaults.standard.data(forKey: profileKey),
        let profile = try? decoder.decode(HostConnectionProfile.self, from: data) {
-      upsertKnownProfile(profile)
+      migrateTokenIfNeeded(for: profile)
       return profile
     }
     guard let data = UserDefaults.standard.data(forKey: legacyDraftKey),
@@ -1384,95 +1413,70 @@ final class SyncService: ObservableObject {
   }
 
   private func profileStorageKey(_ profile: HostConnectionProfile) -> String? {
-    if let identity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !identity.isEmpty {
-      return "device:\(identity.lowercased())"
-    }
-    if let lastSuccessfulAddress = profile.lastSuccessfulAddress,
-       let host = syncEndpointHost(lastSuccessfulAddress)?.lowercased(),
-       !host.isEmpty {
-      return "route:\(host):\(profile.port)"
-    }
-    if let hostName = profile.hostName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !hostName.isEmpty {
-      return "name:\(hostName):\(profile.port)"
-    }
-    return nil
+    [
+      profile.hostIdentity,
+      profile.lastHostDeviceId,
+      profile.hostName.map { "\($0):\(profile.port)" },
+      profile.lastSuccessfulAddress.map { "\($0):\(profile.port)" },
+    ]
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .first { !$0.isEmpty }
   }
 
-  private func loadKnownProfiles() -> [HostConnectionProfile] {
-    guard let data = UserDefaults.standard.data(forKey: profilesKey),
-          let profiles = try? decoder.decode([HostConnectionProfile].self, from: data) else {
-      return []
+  private func loadSavedProfilesRaw() -> [String: HostConnectionProfile] {
+    guard let data = UserDefaults.standard.data(forKey: profilesKey) else {
+      return [:]
     }
-    return deduplicatedProfiles(profiles)
+    if let decoded = try? decoder.decode([String: HostConnectionProfile].self, from: data) {
+      return decoded
+    }
+    if let legacyArray = try? decoder.decode([HostConnectionProfile].self, from: data) {
+      var migrated: [String: HostConnectionProfile] = [:]
+      for profile in legacyArray {
+        guard let key = profileStorageKey(profile) else { continue }
+        migrated[key] = profile
+      }
+      syncConnectLog.warning("Migrated \(legacyArray.count, privacy: .public) legacy array-format host profiles to dict format (\(migrated.count, privacy: .public) keyed)")
+      saveSavedProfiles(migrated)
+      return migrated
+    }
+    return [:]
   }
 
-  private func saveKnownProfiles(_ profiles: [HostConnectionProfile]) {
-    let normalized = deduplicatedProfiles(profiles)
-    if normalized.isEmpty {
+  private func loadSavedProfiles() -> [String: HostConnectionProfile] {
+    var profiles = loadSavedProfilesRaw()
+    if let active = loadProfile(), let key = profileStorageKey(active), profiles[key] == nil {
+      profiles[key] = active
+      saveSavedProfiles(profiles)
+    }
+    return profiles
+  }
+
+  private func saveSavedProfiles(_ profiles: [String: HostConnectionProfile]) {
+    if profiles.isEmpty {
       UserDefaults.standard.removeObject(forKey: profilesKey)
       return
     }
-    if let data = try? encoder.encode(normalized) {
+    if let data = try? encoder.encode(profiles) {
       UserDefaults.standard.set(data, forKey: profilesKey)
     }
   }
 
-  private func deduplicatedProfiles(_ profiles: [HostConnectionProfile]) -> [HostConnectionProfile] {
-    var byKey: [String: HostConnectionProfile] = [:]
-    var anonymous: [HostConnectionProfile] = []
-    for profile in profiles {
-      guard let key = profileStorageKey(profile) else {
-        anonymous.append(profile)
-        continue
-      }
-      if let existing = byKey[key] {
-        byKey[key] = shouldPreferProfile(profile, over: existing) ? profile : existing
-      } else {
-        byKey[key] = profile
-      }
+  private func migrateTokenIfNeeded(for profile: HostConnectionProfile) {
+    guard let key = profileStorageKey(profile),
+          keychain.loadToken(hostKey: key) == nil,
+          let legacyToken = keychain.loadToken() else {
+      return
     }
-    return (Array(byKey.values) + anonymous).sorted { left, right in
-      left.updatedAt > right.updatedAt
-    }
+    keychain.saveToken(legacyToken, hostKey: key)
   }
 
-  private func shouldPreferProfile(_ candidate: HostConnectionProfile, over existing: HostConnectionProfile) -> Bool {
-    if candidate.updatedAt != existing.updatedAt {
-      return candidate.updatedAt > existing.updatedAt
-    }
-    if candidate.tailscaleAddress != nil && existing.tailscaleAddress == nil {
-      return true
-    }
-    return candidate.lastSuccessfulAddress != nil && existing.lastSuccessfulAddress == nil
-  }
-
-  private func upsertKnownProfile(_ profile: HostConnectionProfile) {
-    guard let key = profileStorageKey(profile) else { return }
-    let existing = loadKnownProfiles().filter { candidate in
-      if profileStorageKey(candidate) == key { return false }
-      if let newIdentity = profile.hostIdentity, candidate.hostIdentity == newIdentity {
-        return false
-      }
-      return true
-    }
-    saveKnownProfiles([profile] + existing)
-    if let token = keychain.loadToken() {
-      keychain.saveToken(token, forHostKey: key)
-    }
-  }
-
-  private func removeKnownProfile(_ profile: HostConnectionProfile) {
-    guard let key = profileStorageKey(profile) else { return }
-    saveKnownProfiles(loadKnownProfiles().filter { profileStorageKey($0) != key })
-    keychain.clearToken(forHostKey: key)
-  }
-
-  private func token(for profile: HostConnectionProfile) -> String? {
-    if let key = profileStorageKey(profile),
-       let token = keychain.loadToken(forHostKey: key) {
+  private func tokenForProfile(_ profile: HostConnectionProfile?) -> String? {
+    guard let profile else { return nil }
+    if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
       return token
     }
-    if let activeHostProfile, profile == activeHostProfile {
+    if activeHostProfile == profile {
       return keychain.loadToken()
     }
     return nil
@@ -1483,21 +1487,25 @@ final class SyncService: ObservableObject {
   }
 
   var canReconnectToSavedHost: Bool {
-    guard let profile = activeHostProfile else { return false }
-    return token(for: profile) != nil
+    tokenForProfile(activeHostProfile) != nil
   }
 
   var savedReconnectHost: DiscoveredSyncHost? {
-    savedReconnectHosts.first
+    guard let profile = activeHostProfile ?? loadProfile(),
+          tokenForProfile(profile) != nil else {
+      return nil
+    }
+    return discoveredHost(fromSavedProfile: profile)
   }
 
   var savedReconnectHosts: [DiscoveredSyncHost] {
-    loadKnownProfiles()
-      .filter { token(for: $0) != nil }
-      .compactMap { savedReconnectHost(for: $0) }
+    let profiles = loadSavedProfiles().values
+      .filter { tokenForProfile($0) != nil }
+      .sorted { lhs, rhs in lhs.updatedAt > rhs.updatedAt }
+    return profiles.compactMap(discoveredHost(fromSavedProfile:))
   }
 
-  private func savedReconnectHost(for profile: HostConnectionProfile) -> DiscoveredSyncHost? {
+  private func discoveredHost(fromSavedProfile profile: HostConnectionProfile) -> DiscoveredSyncHost? {
     let tailscaleAddress =
       profile.tailscaleAddress
       ?? profile.savedAddressCandidates.first(where: syncIsTailscaleRoute)
@@ -1523,6 +1531,27 @@ final class SyncService: ObservableObject {
       tailscaleAddress: tailscaleAddress,
       lastResolvedAt: profile.updatedAt
     )
+  }
+
+  func reconnect(toSavedHost host: DiscoveredSyncHost, preferTailnet: Bool = false) async {
+    let profiles = loadSavedProfiles()
+    let candidates = profiles.values.filter { profile in
+      if let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !identity.isEmpty {
+        return profile.hostIdentity == identity || profile.lastHostDeviceId == identity
+      }
+      if host.id.hasPrefix("saved-"), let key = profileStorageKey(profile) {
+        return host.id == "saved-\(key)"
+      }
+      return matchesDiscoveredHost(host, profile: profile)
+    }
+    guard let profile = candidates.sorted(by: { $0.updatedAt > $1.updatedAt }).first,
+          tokenForProfile(profile) != nil else {
+      lastError = "This saved computer no longer has pairing credentials. Pair again from Settings."
+      connectionState = .error
+      return
+    }
+    saveProfile(profile)
+    await reconnectIfPossible(userInitiated: true, preferTailnet: preferTailnet)
   }
 
   func reconnectIfPossible(userInitiated: Bool = false, preferTailnet: Bool = false) async {
@@ -1555,8 +1584,7 @@ final class SyncService: ObservableObject {
       return
     }
     allowAutoReconnect = true
-    guard let profile = loadProfile(), let token = token(for: profile) else { return }
-    keychain.saveToken(token)
+    guard let profile = loadProfile(), let token = tokenForProfile(profile) else { return }
     if preferTailnet || (userInitiated && shouldPreferTailnetForUserReconnect(profile)) {
       preferTailnetForUpcomingReconnect()
     }
@@ -1612,7 +1640,7 @@ final class SyncService: ObservableObject {
   }
 
   func reconnectToSavedHost(_ host: DiscoveredSyncHost, preferTailnet: Bool = false) async {
-    guard let profile = profile(forSavedHost: host), let token = token(for: profile) else {
+    guard let profile = profile(forSavedHost: host), let token = tokenForProfile(profile) else {
       lastError = "That saved host is missing pairing credentials. Pair it again from Settings."
       connectionState = .error
       return
@@ -1625,7 +1653,7 @@ final class SyncService: ObservableObject {
   private func profile(forSavedHost host: DiscoveredSyncHost) -> HostConnectionProfile? {
     let normalizedHostId = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let hostAddresses = Set((host.addresses + (host.tailscaleAddress.map { [$0] } ?? [])).map(syncNormalizedRouteHost))
-    return loadKnownProfiles().first { profile in
+    return loadSavedProfiles().values.first { profile in
       if let normalizedHostId,
          let profileIdentity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
          profileIdentity == normalizedHostId {
@@ -1849,7 +1877,26 @@ final class SyncService: ObservableObject {
         throw NSError(domain: "ADE", code: 3, userInfo: [NSLocalizedDescriptionKey: "Pairing secret missing from response."])
       }
       let pairedDeviceId = payload["deviceId"] as? String ?? deviceId
+      let profile = HostConnectionProfile(
+        hostIdentity: hostIdentity,
+        hostName: hostName,
+        port: preferredPort,
+        authKind: "paired",
+        pairedDeviceId: pairedDeviceId,
+        lastRemoteDbVersion: 0,
+        lastHostDeviceId: nil,
+        lastSuccessfulAddress: preferredAddress,
+        savedAddressCandidates: addressCandidates,
+        discoveredLanAddresses: addressCandidates.filter { host in
+          guard !host.contains(":") else { return false }
+          if host == "127.0.0.1" { return false }
+          return !syncIsTailscaleRoute(host)
+        },
+        tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute)
+      )
       keychain.saveToken(secret)
+      keychain.saveToken(secret, hostKey: profileStorageKey(profile))
+      saveProfile(profile)
       currentAddress = preferredAddress
       try await hello(
         host: preferredAddress,
@@ -1929,8 +1976,12 @@ final class SyncService: ObservableObject {
     outboundLocalDbVersion = database.currentDbVersion()
     setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     if clearCredentials {
-      if let profile = activeHostProfile {
-        removeKnownProfile(profile)
+      let profileToClear = activeHostProfile ?? loadProfile()
+      if let key = profileToClear.flatMap({ profileStorageKey($0) }) {
+        keychain.clearToken(hostKey: key)
+        var profiles = loadSavedProfilesRaw()
+        profiles.removeValue(forKey: key)
+        saveSavedProfiles(profiles)
       }
       keychain.clearToken()
       saveProfile(nil)
@@ -3614,9 +3665,14 @@ final class SyncService: ObservableObject {
   private func saveProfile(_ profile: HostConnectionProfile?) {
     if let profile, let data = try? encoder.encode(profile) {
       UserDefaults.standard.set(data, forKey: profileKey)
+      if let key = profileStorageKey(profile) {
+        var profiles = loadSavedProfilesRaw()
+        profiles[key] = profile
+        saveSavedProfiles(profiles)
+        migrateTokenIfNeeded(for: profile)
+      }
       activeHostProfile = profile
       hostName = profile.hostName
-      upsertKnownProfile(profile)
     } else {
       UserDefaults.standard.removeObject(forKey: profileKey)
       UserDefaults.standard.removeObject(forKey: legacyDraftKey)
@@ -4137,10 +4193,8 @@ final class SyncService: ObservableObject {
   }
 
   private func scheduleReconnectIfNeeded(after delayNanoseconds: UInt64) {
-    guard allowAutoReconnect,
-          !autoReconnectPausedByUser,
-          let profile = loadProfile(),
-          token(for: profile) != nil else { return }
+    let profile = loadProfile()
+    guard allowAutoReconnect, !autoReconnectPausedByUser, profile != nil, tokenForProfile(profile) != nil else { return }
     reconnectTask?.cancel()
     reconnectTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: delayNanoseconds)
@@ -4227,7 +4281,7 @@ final class SyncService: ObservableObject {
           !reconnectConnectInFlight,
           !canSendLiveRequests(),
           let refreshedProfile = activeHostProfile,
-          token(for: refreshedProfile) != nil,
+          tokenForProfile(refreshedProfile) != nil,
           !automaticReconnectAddresses(for: refreshedProfile).isEmpty else {
       return
     }
@@ -4445,6 +4499,7 @@ final class SyncService: ObservableObject {
       return false
     }()
     remoteProjectCatalog = []
+    pendingProjectCatalogChunks.removeAll()
     let commandDescriptors: [SyncRemoteCommandDescriptor] = {
       guard
         let commandRouting = features?["commandRouting"],
@@ -4522,6 +4577,7 @@ final class SyncService: ObservableObject {
     let friendlyError = SyncUserFacingError.error(from: error)
     let completions = pending
     pending.removeAll()
+    pendingProjectCatalogChunks.removeAll()
     for request in completions.values {
       request.timeoutTask.cancel()
       request.completion(.failure(friendlyError))
@@ -4618,6 +4674,9 @@ final class SyncService: ObservableObject {
       let catalog = try decode(payload, as: MobileProjectCatalogPayload.self)
       applyRemoteProjectCatalog(catalog)
       resolve(requestId: requestId, result: .success(payload))
+    case "project_catalog_chunk":
+      let chunk = try decode(payload, as: MobileProjectCatalogChunkPayload.self)
+      applyRemoteProjectCatalogChunk(chunk, requestId: requestId)
     case "project_switch_result":
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":
@@ -4882,6 +4941,7 @@ final class SyncService: ObservableObject {
     socket?.cancel(with: closeCode, reason: reason?.data(using: .utf8))
     socket = nil
     currentAddress = nil
+    pendingProjectCatalogChunks.removeAll()
     connectionGeneration &+= 1
   }
 
@@ -4901,6 +4961,12 @@ final class SyncService: ObservableObject {
       setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     }
     failPendingRequests(with: friendlyError)
+    if syncIsMessageTooLongError(error) {
+      allowAutoReconnect = false
+      setAutoReconnectPausedByUser(true)
+      cancelReconnectLoop()
+      return
+    }
     scheduleReconnectIfNeeded(after: reconnectDelayNanoseconds ?? reconnectDelay())
   }
 

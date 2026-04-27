@@ -70,7 +70,7 @@ export function GeneralSection() {
                 {setupComplete ? "Project setup completed" : onboardingStatus?.freshProject ? "Fresh project setup available" : "Project setup can be reopened"}
               </div>
               <div style={{ marginTop: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-                The guided setup flow covers AI, GitHub, Linear, and context docs for fresh projects. You can reopen it any time if you want to walk through those steps again.
+                The guided setup flow covers AI, GitHub, Linear, and local helpers for fresh projects. You can reopen it any time if you want to walk through those steps again.
               </div>
             </div>
             <span

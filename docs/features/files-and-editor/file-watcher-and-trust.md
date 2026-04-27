@@ -212,7 +212,7 @@ All registered in `registerIpc.ts`:
 
 `onLaneWorktreeMutation` is an optional callback passed to
 `createFileService`. It fires when the user mutates a lane worktree
-so other services (lane manager, context doc generator) can invalidate
+so other services (lane manager, search index, and editor surfaces) can invalidate
 their caches.
 
 ## Gotchas

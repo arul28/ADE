@@ -191,15 +191,6 @@
             ]
           },
           {
-            "group": "Context Packs",
-            "icon": "cubes",
-            "pages": [
-              "context-packs/overview",
-              "context-packs/structure",
-              "context-packs/freshness"
-            ]
-          },
-          {
             "group": "AI Tool Integrations",
             "icon": "wand-magic-sparkles",
             "pages": [

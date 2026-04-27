@@ -68,36 +68,13 @@ ADE tracks rebase suggestions per-lane. When an upstream branch changes, a compa
 
 ---
 
-## Pack
+## Runtime context
 
-A **Pack** is a durable context bundle injected into agent system prompts, stored in `.ade/artifacts/packs/`. Packs give agents project awareness before they write any code.
+ADE keeps runtime context local to the work being done. Agents receive lane/session state, selected artifacts, mission details, memory retrievals, and explicit user instructions. When they need product or architecture knowledge, they inspect the repo directly instead of relying on generated PRD or architecture summaries.
 
-ADE defines several pack types:
+ADE also stores some compatibility artifacts under `.ade/artifacts/packs/` for audit and replay:
 
 <AccordionGroup>
-  <Accordion title="Project Pack" icon="folder">
-    A project-wide context document generated from the repository's source code, documentation, and git history. Contains:
-    - High-level architecture description
-    - Key modules and their responsibilities
-    - Coding conventions and patterns
-    - Risk signals (files that frequently cause conflicts, complex areas)
-    - Recent significant changes
-
-    The Project Pack is regenerated periodically by the Job Engine and whenever you explicitly trigger a context refresh.
-  </Accordion>
-  <Accordion title="Lane Pack" icon="code-branch">
-    A lane-specific context document. Contains:
-    - The lane's **intent** — what this lane is supposed to accomplish
-    - **Acceptance criteria** — how success is defined
-    - **Checkpoints** — immutable snapshots of progress so far
-    - **Touched files** — which files the lane's agent has modified
-    - **Outstanding risks** — known issues the agent flagged
-
-    Lane Packs are updated at session boundaries and after commits.
-  </Accordion>
-  <Accordion title="Feature Pack" icon="puzzle-piece">
-    An issue-scoped aggregate pack that combines the Project Pack, relevant Lane Packs, and Linear issue context into a single context bundle for a specific feature. Used when a feature spans multiple lanes.
-  </Accordion>
   <Accordion title="Conflict Pack" icon="triangle-exclamation">
     A resolution-context pack created when a conflict is detected between two lanes. Contains the conflicting file regions, each lane's intent, and suggested resolution strategies. Injected into the resolver agent's context.
   </Accordion>

@@ -1774,6 +1774,7 @@ export function buildComputerUseDirective(
       "ADE will automatically capture screenshots and other visual artifacts from your computer-use tool calls into the proof drawer — you do not need to manually call ingest_computer_use_artifacts for normal captures.",
       "",
       "Call `get_computer_use_backend_status` to check available backends before attempting computer use.",
+      "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
     ].join("\n"),
   );
 
@@ -2679,7 +2680,6 @@ export function createAgentChatService(args: {
   getAutomationService?: () => { list: () => any[]; triggerManually: (args: any) => Promise<any>; listRuns: (args?: any) => any[] } | null;
   getGitService?: () => CtoOperatorToolDeps["gitService"];
   conflictService?: CtoOperatorToolDeps["conflictService"];
-  contextDocService?: CtoOperatorToolDeps["contextDocService"];
   getWorkerBudgetService?: () => CtoOperatorToolDeps["workerBudgetService"];
   getMissionBudgetService?: () => CtoOperatorToolDeps["missionBudgetService"];
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
@@ -2719,7 +2719,6 @@ export function createAgentChatService(args: {
     getAutomationService,
     getGitService,
     conflictService,
-    contextDocService,
     getWorkerBudgetService,
     getMissionBudgetService,
     computerUseArtifactBrokerService,
@@ -3691,7 +3690,6 @@ export function createAgentChatService(args: {
         automationService: getAutomationService?.() ?? null,
         gitService: getGitService?.() ?? null,
         conflictService: conflictService ?? null,
-        contextDocService: contextDocService ?? null,
         computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
         workerBudgetService: getWorkerBudgetService?.() ?? null,
         missionBudgetService: getMissionBudgetService?.() ?? null,

@@ -1,6 +1,6 @@
 ---
 title: "Chat Capabilities"
-description: "What the chat agent can do — file operations, terminal commands, git, PRs, Linear integration, mission spawning, context pack queries, and ADE action tools."
+description: "What the chat agent can do — file operations, terminal commands, git, PRs, Linear integration, mission spawning, repo inspection, and ADE action tools."
 icon: "toolbox"
 ---
 
@@ -27,8 +27,8 @@ The chat agent has access to a broad tool palette. The exact tools available dep
   <Card title="Mission spawning" icon="target">
     Escalate the current task into a new Mission, carrying over conversation context as the planner's seed.
   </Card>
-  <Card title="Context pack queries" icon="database">
-    Query the lane's pack for architectural context, file maps, open PRs, recent activity, and human work digests.
+  <Card title="Repo inspection" icon="database">
+    Inspect repository docs, source files, file maps, open PRs, recent activity, and human work digests.
   </Card>
   <Card title="Image attachments" icon="image">
     Attach images (JPEG, PNG, GIF, WebP) to any message. Images are sent as inline base64 content blocks so the agent can see screenshots, diagrams, or UI mockups natively.
@@ -58,7 +58,7 @@ The most common workflow is: make changes in chat → have the agent create a PR
     Say "create a PR" or "open a pull request." The agent will:
 
     - Read the current branch name and recent commits
-    - Query the lane pack for architectural context
+    - Inspect relevant repo docs and source files for architectural context
     - Generate a PR title and description based on the changes
     - Pre-fill reviewer suggestions if you have GitHub team integration enabled
     - Apply relevant labels based on the branch name and changed files
@@ -69,7 +69,7 @@ The most common workflow is: make changes in chat → have the agent create a PR
 </Steps>
 
 <Tip>
-  If your project has a PR description template, put it in the lane's context pack. The agent will use it automatically when generating PR descriptions.
+  If your project has a PR description template, keep it in the repository. The agent can inspect it when generating PR descriptions.
 </Tip>
 
 ---

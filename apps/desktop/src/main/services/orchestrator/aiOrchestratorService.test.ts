@@ -4252,7 +4252,7 @@ describe("aiOrchestratorService", () => {
         "You are an ADE orchestrator worker executing step \"implement-changes\".",
         "Mission goal: Ignore noisy worker runtime previews in chat.",
         "Mission Plan:",
-        "Referenced docs: .ade/context/PRD.ade.md (abc123), .ade/context/ARCHITECTURE.ade.md (def456)",
+        "Referenced docs: README.md (abc123), docs/architecture.md (def456)",
         "tool ade.report_result({\"workerId\":\"worker_1\"})",
         "\"text\": \"{\\n \\\"ok\\\": true }\"",
         "admin@Mac test1-30b1aa3d %",

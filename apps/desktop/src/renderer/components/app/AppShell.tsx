@@ -26,7 +26,6 @@ import { useOnboardingStore } from "../../state/onboardingStore";
 import { Button } from "../ui/Button";
 import type {
   AiSettingsStatus,
-  ContextStatus,
   GitHubStatus,
   LinearWorkflowEventPayload,
   OnboardingStatus,
@@ -45,11 +44,6 @@ import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
 import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { cn } from "../ui/cn";
-import {
-  describeContextDocHealth,
-  listActionableContextDocs,
-  listContextDocsByHealth,
-} from "../context/contextShared";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
 import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
 
@@ -238,17 +232,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [onboardingStatus, setOnboardingStatus] =
     useState<OnboardingStatus | null>(null);
   const [onboardingStatusLoading, setOnboardingStatusLoading] = useState(false);
-  const [contextStatus, setContextStatus] = useState<ContextStatus | null>(
-    null,
-  );
   // Banner dismissals live in the store so they can be pruned when projects close/switch
   // — AppShell used to own these as local state, which leaked entries across a long session.
-  const dismissedContextBannerRoots = useAppStore((s) => s.dismissedContextBannerRoots);
   const dismissedMissingAiBannerRoots = useAppStore((s) => s.dismissedMissingAiBannerRoots);
   const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
   const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
   const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
-  const dismissContextBanner = useAppStore((s) => s.dismissContextBanner);
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
@@ -653,7 +642,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     if (!project?.rootPath) {
-      setContextStatus(null);
       setAiStatus(null);
       setAiStatusLoaded(false);
       setGithubStatus(null);
@@ -662,15 +650,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setAiStatusLoaded(false);
     const timer = window.setTimeout(() => {
       void Promise.allSettled([
-        window.ade.context.getStatus(),
         window.ade.ai.getStatus(),
         window.ade.github.getStatus(),
       ]).then((results) => {
         if (cancelled) return;
-        const [contextResult, aiResult, githubResult] = results;
-        setContextStatus(
-          contextResult.status === "fulfilled" ? contextResult.value : null,
-        );
+        const [aiResult, githubResult] = results;
         setAiStatus(aiResult.status === "fulfilled" ? aiResult.value : null);
         setAiStatusLoaded(true);
         setGithubStatus(
@@ -682,15 +666,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [project?.rootPath]);
-
-  useEffect(() => {
-    if (!project?.rootPath) return;
-    return (
-      window.ade.context?.onStatusChanged?.((status) => {
-        setContextStatus(status);
-      }) ?? (() => {})
-    );
   }, [project?.rootPath]);
 
   useEffect(() => {
@@ -738,28 +713,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return Boolean(runtimeOrLocal || (aiStatus.detectedAuth?.length ?? 0) > 0);
   }, [aiStatus]);
 
-  const missingContextDocs = useMemo(
-    () => listContextDocsByHealth(contextStatus, "missing"),
-    [contextStatus],
-  );
-
-  const actionableContextDocs = useMemo(
-    () => listActionableContextDocs(contextStatus),
-    [contextStatus],
-  );
-
-  const actionableContextSummary = useMemo(
-    () =>
-      actionableContextDocs
-        .map((doc) => `${doc.label} (${describeContextDocHealth(doc)})`)
-        .join(", "),
-    [actionableContextDocs],
-  );
-
-  const missingContextSummary = useMemo(
-    () => missingContextDocs.map((doc) => doc.label).join(", "),
-    [missingContextDocs],
-  );
   const currentProjectRoot = project?.rootPath ?? null;
   const missingAiBannerDismissed = Boolean(
     currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
@@ -767,11 +720,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const githubBannerDismissed = Boolean(
     currentProjectRoot && dismissedGithubBannerRoots[currentProjectRoot],
   );
-  const contextBannerDismissed = Boolean(
-    currentProjectRoot && dismissedContextBannerRoots[currentProjectRoot],
-  );
-  const generationState = contextStatus?.generation.state;
-
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
     [keybindings],
@@ -893,16 +841,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     staleCliNotice && currentProjectRoot
       ? `${currentProjectRoot}:${staleCliNotice.count}:${staleCliNotice.oldestStartedAt}`
       : null;
-  const showContextBanner =
-    !hideSidebar &&
-    Boolean(project?.rootPath) &&
-    !showWelcome &&
-    !tourActive &&
-    generationState !== "pending" &&
-    generationState !== "running" &&
-    actionableContextDocs.length > 0 &&
-    !contextBannerDismissed;
-
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
       <div className="shrink-0 relative z-20">
@@ -1066,63 +1004,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar &&
-      project?.rootPath &&
-      !showWelcome &&
-      !tourActive &&
-      (contextStatus?.generation.state === "pending" ||
-        contextStatus?.generation.state === "running") ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-sky-500/6 px-3 py-1.5 text-[11px] font-mono text-sky-800 animate-pulse">
-          Generating context docs...{" "}
-          <Link to="/settings?tab=workspace" className="underline">
-            Open context settings
-          </Link>
-        </div>
-      ) : null}
-
       {!hideSidebar && feedbackGenerating ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-violet-500/6 px-3 py-1.5 text-[11px] font-mono text-violet-800 animate-pulse">
           Generating feedback report...
-        </div>
-      ) : null}
-
-      {!hideSidebar &&
-      project?.rootPath &&
-      !showWelcome &&
-      !tourActive &&
-      contextStatus?.generation.state === "failed" ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-red-500/6 px-3 py-1.5 text-[11px] font-mono text-red-800">
-          Context doc generation failed
-          {contextStatus.generation.error
-            ? `: ${contextStatus.generation.error}`
-            : "."}{" "}
-          <Link to="/settings?tab=workspace" className="underline">
-            Retry generation
-          </Link>
-        </div>
-      ) : null}
-
-      {showContextBanner ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          <span>
-            {missingContextDocs.length > 0
-              ? `Missing ADE context docs: ${missingContextSummary}.`
-              : `ADE context docs need regeneration: ${actionableContextSummary}.`}
-            <Link to="/settings?tab=workspace" className="ml-2 underline">
-              Generate docs
-            </Link>
-          </span>
-          <button
-            type="button"
-            className="ml-2 text-amber-900/70 hover:text-amber-900"
-            onClick={() => {
-              if (!currentProjectRoot) return;
-              dismissContextBanner(currentProjectRoot);
-            }}
-            title="Dismiss for this session"
-          >
-            ×
-          </button>
         </div>
       ) : null}
 

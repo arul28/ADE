@@ -216,8 +216,6 @@ For deeper detail on the watcher + trust boundary, see
 ## Cross-links
 
 - Lane worktrees feed the workspace list: [../lanes/](../lanes/)
-- Files drive context doc freshness (the context doc generator scans
-  the workspace): [../context-packs/](../context-packs/)
 - Processes and tests can monitor the workspace for changes via the
   watcher — see [../terminals-and-sessions/](../terminals-and-sessions/)
   for the transcript and log story.
