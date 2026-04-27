@@ -1951,6 +1951,11 @@ export function registerIpc({
     if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
       return "image/bmp";
     }
+    if (buffer.length >= 4
+      && buffer[0] === 0x00 && buffer[1] === 0x00
+      && buffer[2] === 0x01 && buffer[3] === 0x00) {
+      return "image/x-icon";
+    }
     // SVG/XML: scan a small prefix as text so leading whitespace, BOM, or an
     // <?xml ... ?> declaration before <svg ...> are tolerated.
     const head = buffer.slice(0, Math.min(buffer.length, 1024)).toString("utf8");
@@ -2056,9 +2061,11 @@ export function registerIpc({
     // Apply the same size + magic-byte preflight as `appGetImageDataUrl` so
     // we can't hand `nativeImage.createFromPath` a giant or non-image file
     // (which would otherwise silently produce an empty image, or worse,
-    // attempt a sync read of a 100 MB binary on the main process).
-    await readImageFileAndSniffMime(filePath);
-    const image = nativeImage.createFromPath(filePath);
+    // attempt a sync read of a 100 MB binary on the main process). We then
+    // hand the already-read buffer to `nativeImage.createFromBuffer` so the
+    // file isn't read a second time off the main thread.
+    const { data } = await readImageFileAndSniffMime(filePath);
+    const image = nativeImage.createFromBuffer(data);
     if (image.isEmpty()) {
       throw new Error("Unable to read image.");
     }
