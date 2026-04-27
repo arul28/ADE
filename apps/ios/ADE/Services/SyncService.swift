@@ -1436,7 +1436,10 @@ final class SyncService: ObservableObject {
     if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
       return token
     }
-    return keychain.loadToken()
+    if activeHostProfile == profile {
+      return keychain.loadToken()
+    }
+    return nil
   }
 
   private func publishMergedDiscoveredHosts() {
