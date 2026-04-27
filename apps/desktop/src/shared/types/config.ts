@@ -1306,8 +1306,6 @@ export type ProjectConfigFile = {
   laneCleanup?: LaneCleanupConfig;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
-  /** Event-based checklist for context doc auto-regeneration */
-  contextRefreshEvents?: import("./packs").ContextRefreshEvents;
   /** Mobile push notification configuration (APNs). */
   notifications?: NotificationsConfig;
 };

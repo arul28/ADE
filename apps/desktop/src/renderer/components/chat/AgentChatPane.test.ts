@@ -78,12 +78,10 @@ describe("parallel launch helpers", () => {
     const result = buildParallelLaunchPrompt({
       text: "",
       attachmentCount: 2,
-      includeProjectDocs: true,
     });
 
     expect(result.displayText).toBe("Please review the attached files.");
-    expect(result.sendText).toContain("[Project Context");
-    expect(result.sendText).toContain("Please review the attached files.");
+    expect(result.sendText).toBe("Please review the attached files.");
   });
 
   it("force-cleans transient lanes and refreshes lane state after rollback", async () => {

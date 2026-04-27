@@ -8,7 +8,6 @@ const ENTRIES: Entry[] = [
   { name: "Automations", page: "28", href: "/automations/overview" },
   { name: "Byok (Bring your own keys)", page: "22", href: "/configuration/settings" },
   { name: "Computer Use", page: "30", href: "/computer-use/overview" },
-  { name: "Context packs", page: "26", href: "/context-packs/overview" },
   { name: "CTO (chief technical officer)", page: "15", href: "/cto/overview" },
   { name: "CLI · ade", page: "12", href: "/tools/project-home" },
   { name: "Dispatch", page: "17", href: "/missions/creating" },

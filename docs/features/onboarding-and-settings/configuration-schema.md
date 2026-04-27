@@ -43,7 +43,6 @@ type ProjectConfigFile = {
   laneCleanup?: LaneCleanupConfig;
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
-  contextRefreshEvents?: ContextRefreshEvents;
 };
 ```
 
@@ -311,22 +310,6 @@ Resolved through `projectConfigService.linearSync` and surfaced in
 `LinearSection.tsx`.
 
 ## Context refresh events
-
-```ts
-type ContextRefreshEvents = {
-  onSessionEnd?: boolean;
-  onCommit?: boolean;
-  onPrCreate?: boolean;
-  onPrLand?: boolean;
-  onMissionStart?: boolean;
-  onMissionEnd?: boolean;
-  onLaneCreate?: boolean;
-};
-```
-
-Stored under the `contextRefreshEvents` key. Consumed by
-`contextDocService` to decide when to auto-regenerate PRD/architecture
-docs. See [../context-packs/freshness-and-delivery.md](../context-packs/freshness-and-delivery.md).
 
 ## Merge rules
 

@@ -81,7 +81,6 @@ import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
-const PROJECT_CONTEXT_DOC_PATHS = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"] as const;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
@@ -700,22 +699,9 @@ export function parallelLaneModelSuffix(descriptor: ModelDescriptor | null | und
   return candidate.slice(0, 40) || prefix || "model";
 }
 
-function projectContextDocsPrelude(docPaths: readonly string[] = PROJECT_CONTEXT_DOC_PATHS): string {
-  return [
-    "[Project Context — generated from main branch, may not reflect in-progress lane work]",
-    "The following project-level docs are available for reference. Read them with read_file if you need project context:",
-    ...docPaths.map((path) => `- ${path}`),
-  ].join("\n");
-}
-
-function prependProjectContextDocs(text: string): string {
-  return `${projectContextDocsPrelude()}\n\n---\n\n${text}`;
-}
-
 export function buildParallelLaunchPrompt(args: {
   text: string;
   attachmentCount: number;
-  includeProjectDocs: boolean;
 }): { sendText: string; displayText: string } {
   const trimmed = args.text.trim();
   const displayText = trimmed.length
@@ -726,10 +712,7 @@ export function buildParallelLaunchPrompt(args: {
   if (!displayText.length) {
     return { sendText: "", displayText: "" };
   }
-  const sendText = args.includeProjectDocs && !trimmed.startsWith("/")
-    ? prependProjectContextDocs(displayText)
-    : displayText;
-  return { sendText, displayText };
+  return { sendText: displayText, displayText };
 }
 
 export type ParallelLaunchCleanupIssue = {
@@ -956,7 +939,6 @@ export function AgentChatPane({
     cursor: AiProviderConnectionStatus | null;
   } | null>(null);
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
-  const [includeProjectDocs, setIncludeProjectDocs] = useState(false);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
@@ -2765,7 +2747,6 @@ export function AgentChatPane({
 
       const draftSnapshot = draft;
       const attachmentsSnapshot = [...attachments];
-      const includeDocsSnapshot = includeProjectDocs;
       submitInFlightRef.current = true;
       setParallelLaunchBusy(true);
       setParallelLaunchStatus("Naming lanes…");
@@ -2822,7 +2803,6 @@ export function AgentChatPane({
         const { sendText, displayText: displayForSend } = buildParallelLaunchPrompt({
           text,
           attachmentCount: attachmentsSnapshot.length,
-          includeProjectDocs: includeDocsSnapshot,
         });
 
         setParallelLaunchStatus("Sending prompt to each lane…");
@@ -2895,7 +2875,6 @@ export function AgentChatPane({
         setParallelChatMode(false);
         setParallelModelSlots([]);
         setParallelConfiguringIndex(null);
-        if (includeDocsSnapshot) setIncludeProjectDocs(false);
         await persistParallelLaunchState(null);
 
         const q = new URLSearchParams();
@@ -2960,12 +2939,6 @@ export function AgentChatPane({
     try {
       let justCreatedSession = false;
       let finalText = text;
-
-      // Prepend project context docs if the user toggled the checkbox
-      if (!isLiteralSlashCommand && includeProjectDocs) {
-        finalText = prependProjectContextDocs(finalText);
-        setIncludeProjectDocs(false);
-      }
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
@@ -3084,7 +3057,6 @@ export function AgentChatPane({
     draft,
     executionMode,
     hasComputerUseSelectionChanged,
-    includeProjectDocs,
     interactionMode,
     laneId,
     launchModeEditable,
@@ -3723,8 +3695,6 @@ export function AgentChatPane({
             onAddAttachment={addAttachment}
             onRemoveAttachment={removeAttachment}
             onSearchAttachments={searchAttachments}
-            includeProjectDocs={includeProjectDocs}
-            onIncludeProjectDocsChange={setIncludeProjectDocs}
             onClearEvents={() => {
               if (selectedSessionId) {
                 clearSessionView(selectedSessionId);

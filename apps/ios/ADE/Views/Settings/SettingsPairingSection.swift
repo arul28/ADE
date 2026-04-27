@@ -224,16 +224,12 @@ struct DiscoverHostsSheet: View {
         LazyVStack(spacing: 10) {
           let savedHosts = syncService.savedReconnectHosts
           let liveHosts = syncService.discoveredHosts.filter { host in
-            for savedHost in savedHosts {
-              if let hostIdentity = host.hostIdentity, let savedIdentity = savedHost.hostIdentity,
-                 hostIdentity == savedIdentity {
-                return false
+            !savedHosts.contains { savedHost in
+              if let hostIdentity = host.hostIdentity, let savedIdentity = savedHost.hostIdentity {
+                return hostIdentity == savedIdentity
               }
-              if host.id == savedHost.id {
-                return false
-              }
+              return host.id == savedHost.id
             }
-            return true
           }
 
           if savedHosts.isEmpty && liveHosts.isEmpty {
@@ -251,8 +247,8 @@ struct DiscoverHostsSheet: View {
               Button {
                 dismiss()
                 Task {
-                  await syncService.reconnectToSavedHost(
-                    savedHost,
+                  await syncService.reconnect(
+                    toSavedHost: savedHost,
                     preferTailnet: savedHost.tailscaleAddress != nil
                   )
                 }

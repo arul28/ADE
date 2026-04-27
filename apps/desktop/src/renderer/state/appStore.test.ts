@@ -67,7 +67,6 @@ function resetStore() {
     laneWorkViewByScope: {},
     dismissedMissingAiBannerRoots: {},
     dismissedGithubBannerRoots: {},
-    dismissedContextBannerRoots: {},
   });
 }
 
@@ -550,7 +549,6 @@ describe("appStore", () => {
       useAppStore.setState({
         dismissedMissingAiBannerRoots: { "/p/a": true, "/p/b": true, "/p/c": true },
         dismissedGithubBannerRoots: { "/p/a": true, "/p/b": true },
-        dismissedContextBannerRoots: { "/p/c": true },
       } as any);
 
       const nextProject = { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any;
@@ -562,7 +560,7 @@ describe("appStore", () => {
 
       await useAppStore.getState().switchProjectToPath("/p/a");
 
-      // `/p/c` was neither active nor in recents → pruned from all three maps.
+      // `/p/c` was neither active nor in recents → pruned from all banner maps.
       expect(useAppStore.getState().dismissedMissingAiBannerRoots).toEqual({
         "/p/a": true,
         "/p/b": true,
@@ -571,7 +569,6 @@ describe("appStore", () => {
         "/p/a": true,
         "/p/b": true,
       });
-      expect(useAppStore.getState().dismissedContextBannerRoots).toEqual({});
     });
 
     it("clears all banner-dismiss maps when the project is closed", async () => {
@@ -579,14 +576,12 @@ describe("appStore", () => {
         project: { rootPath: "/p/x" } as any,
         dismissedMissingAiBannerRoots: { "/p/x": true, "/p/y": true },
         dismissedGithubBannerRoots: { "/p/x": true },
-        dismissedContextBannerRoots: { "/p/y": true },
       } as any);
 
       await useAppStore.getState().closeProject();
 
       expect(useAppStore.getState().dismissedMissingAiBannerRoots).toEqual({});
       expect(useAppStore.getState().dismissedGithubBannerRoots).toEqual({});
-      expect(useAppStore.getState().dismissedContextBannerRoots).toEqual({});
     });
 
     it("dismiss setters append to the session-scoped map without touching other keys", () => {

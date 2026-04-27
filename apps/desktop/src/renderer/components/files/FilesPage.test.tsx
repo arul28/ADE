@@ -103,8 +103,8 @@ const ignoredTree: FileTreeNode[] = [
     type: "directory",
     children: [
       {
-        name: "context",
-        path: ".ade/context",
+        name: "notes",
+        path: ".ade/notes",
         type: "directory",
       },
     ],
@@ -206,8 +206,7 @@ describe("FilesPage", () => {
     fileContents = {
       "src/index.ts": "export const value = 1;\n",
       "src/main.ts": "export const value = 2;\n",
-      ".ade/context/PRD.ade.md": "# PRD.ade\n\n## What this is\nRenderer-safe content",
-      ".ade/context/ARCHITECTURE.ade.md": "# ARCHITECTURE.ade\n\n## System shape\nRenderer-safe content",
+      ".ade/notes/project.md": "# Project notes\n\nRenderer-safe content",
     };
     window.localStorage.clear();
     globalThis.window.confirm = vi.fn(() => true);
@@ -250,13 +249,13 @@ describe("FilesPage", () => {
           };
         }),
         quickOpen: vi.fn(async ({ includeIgnored, query }: { includeIgnored?: boolean; query: string }) => (
-          includeIgnored && query.toLowerCase().includes("prd")
-            ? [{ path: ".ade/context/PRD.ade.md", score: 100 }]
+          includeIgnored && query.toLowerCase().includes("project")
+            ? [{ path: ".ade/notes/project.md", score: 100 }]
             : []
         )),
         searchText: vi.fn(async ({ includeIgnored, query }: { includeIgnored?: boolean; query: string }) => (
           includeIgnored && query.toLowerCase().includes("renderer")
-            ? [{ path: ".ade/context/PRD.ade.md", line: 3, column: 1, preview: "Renderer-safe content" }]
+            ? [{ path: ".ade/notes/project.md", line: 3, column: 1, preview: "Renderer-safe content" }]
             : []
         )),
         writeText: vi.fn(async () => undefined),
@@ -292,13 +291,13 @@ describe("FilesPage", () => {
     }
   });
 
-  it("shows ignored paths by default and opens PRD context docs without a toggle", async () => {
+  it("shows ignored paths by default and opens ignored dotfile notes without a toggle", async () => {
     renderFilesPage({
-      openFilePath: ".ade/context/PRD.ade.md",
+      openFilePath: ".ade/notes/project.md",
       preferPrimaryWorkspace: true,
     });
 
-    await waitForEditorText("# PRD.ade");
+    await waitForEditorText("# Project notes");
     expect(screen.queryByText(/OPEN A FILE TO START EDITING/i)).toBeNull();
     expect(await screen.findByTitle(".ade")).toBeTruthy();
     expect(screen.queryByTitle("Hide dotfiles")).toBeNull();
@@ -316,11 +315,11 @@ describe("FilesPage", () => {
 
   it("passes includeIgnored through quick open and search affordances", async () => {
     renderFilesPage({
-      openFilePath: ".ade/context/PRD.ade.md",
+      openFilePath: ".ade/notes/project.md",
       preferPrimaryWorkspace: true,
     });
 
-    await waitForEditorText("# PRD.ade");
+    await waitForEditorText("# Project notes");
 
     fireEvent.change(screen.getByPlaceholderText("SEARCH FILES"), {
       target: { value: "renderer" },
@@ -333,21 +332,21 @@ describe("FilesPage", () => {
         includeIgnored: true,
       });
     });
-    expect(await screen.findByText(".ade/context/PRD.ade.md:3:1")).toBeTruthy();
+    expect(await screen.findByText(".ade/notes/project.md:3:1")).toBeTruthy();
 
     fireEvent.click(screen.getByText(/QUICK OPEN/i));
     fireEvent.change(screen.getByPlaceholderText(/Type to search files/i), {
-      target: { value: "prd" },
+      target: { value: "project" },
     });
 
     await waitFor(() => {
       expect((window.ade.files.quickOpen as any).mock.calls.at(-1)?.[0]).toMatchObject({
         workspaceId: "primary",
-        query: "prd",
+        query: "project",
         includeIgnored: true,
       });
     });
-    expect(await screen.findByText(".ade/context/PRD.ade.md")).toBeTruthy();
+    expect(await screen.findByText(".ade/notes/project.md")).toBeTruthy();
   });
 
   it("remaps clean open tabs when files are renamed", async () => {
@@ -380,8 +379,8 @@ describe("FilesPage", () => {
         type: "directory",
         children: [
           {
-            name: "context",
-            path: ".ade/context",
+            name: "notes",
+            path: ".ade/notes",
             type: "directory",
           },
         ],
@@ -426,8 +425,8 @@ describe("FilesPage", () => {
         type: "directory",
         children: [
           {
-            name: "context",
-            path: ".ade/context",
+            name: "notes",
+            path: ".ade/notes",
             type: "directory",
           },
         ],

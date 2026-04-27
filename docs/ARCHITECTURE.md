@@ -200,9 +200,6 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   ├── transcripts/             # PTY transcripts (ignored)
 │   ├── cache/                   # Runtime scratch (ignored)
 │   ├── artifacts/               # Pack exports, history artifacts (ignored)
-│   ├── context/                 # Generated agent bootstrap docs (ignored)
-│   │   ├── PRD.ade.md
-│   │   └── ARCHITECTURE.ade.md
 │   ├── memory/                  # Promoted-memory markdown mirror (ignored)
 │   ├── cto/
 │   │   ├── identity.yaml        # Shared CTO identity (tracked)
@@ -347,7 +344,6 @@ ade.git.*                    # stage/commit/push/sync/revert/cherry-pick/stash
 ade.github.*                 # PR list, review, merge, checks
 ade.prs.*                    # stacked PR queue, integration, issue inventory
 ade.conflicts.*              # risk matrix, simulation, proposals
-ade.context.*                # context doc generation, status events
 ade.memory.*                 # memory CRUD, search, health, embeddings
 ade.missions.* / ade.orchestrator.*
 ade.cto.*                    # identity, core memory, agent roster, Linear
@@ -390,7 +386,6 @@ High-frequency events flow from main → renderer via `webContents.send(channel,
 | `ade.lanes.rebaseSuggestions.event` / `ade.lanes.autoRebase.event` / `ade.lanes.rebase.event` | rebase services | Lanes + Graph |
 | `ade.project.missing` | projectService | Shell banner |
 | `ade.project.state.event` | projectState | Startup flow |
-| `ade.context.statusChanged` | contextDocService | Settings → Context |
 | `ade.memory.*` events | memory services | Settings → Memory |
 | `ade.sync.*` events | syncService | Settings → Sync |
 
@@ -413,7 +408,6 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
-| `context/` | `contextDocService.ts`, `contextDocBuilder.ts` | Generate `.ade/context/PRD.ade.md` + `ARCHITECTURE.ade.md` with budgets and quality gates. |
 | `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `openclawBridgeService.ts`, `flowPolicyService.ts` | CTO identity + core memory; worker agents; Linear sync/ingress/OAuth/routing/dispatcher/closeout; OpenClaw bridge. |
 | `devTools/` | `devToolsService.ts` | Probe for git + `gh` CLI availability. |
 | `diffs/` | `diffService.ts` | Diff computation for file panes. |
@@ -502,7 +496,6 @@ lanes/          # list/detail/inspector, stacks, laneDesignTokens.ts
 files/          # tree, editor, diffs
 terminals/      # TerminalView, WorkViewArea (PaneTilingLayout-backed grid), workSessionTiling, LaneCombobox
 conflicts/      # risk matrix, simulation, resolution
-context/        # shared helpers (contextShared.ts)
 graph/          # WorkspaceGraphPage (decomposed into nodes/edges/dialogs)
 prs/            # PR list/detail, stacked queue, shared/
 history/        # operation timeline
@@ -740,49 +733,20 @@ Full surface: [`docs/architecture/MEMORY.md`](../docs/architecture/MEMORY.md).
 
 ---
 
-## 11. Context Contract
+## 11. Runtime context
 
-### 11.1 Two layers
+ADE does not generate PRD or architecture bootstrap documents. Agent prompts tell models to inspect the repository directly when they need product or architecture context, starting with `AGENTS.md`, `README.md`, `docs/`, package manifests, and relevant source files.
 
-- **Canonical docs** (`docs/`) — human-owned, broad-coverage. `docs/PRD.md` owns product; `docs/architecture/*` owns technical design.
-- **Generated bootstrap cards** (`.ade/context/`) — agent-facing summaries, bounded token budget.
-
-### 11.2 Generated docs
-
-| File | Required headings | Default budget |
-|------|-------------------|----------------|
-| `.ade/context/PRD.ade.md` | `## What this is`, `## Who it's for`, `## Feature areas`, `## Current state`, `## Working norms` | 8,000 chars |
-| `.ade/context/ARCHITECTURE.ade.md` | `## System shape`, `## Core services`, `## Data and state`, `## Integration points`, `## Key patterns` | 8,000 chars |
-
-Generation inputs (hybrid source-digest model):
-
-- Product sources: `docs/PRD.md`, `docs/features/*`, `README.md`, `AGENTS.md`.
-- Technical sources: `docs/architecture/*`, selected shared contracts + IPC/preload surfaces, selected main-process anchors, recent git history.
-- Each source is summarized into a `ContextSourceDigest` (title, blurb, headings) before bundling — no raw doc is shipped to the AI.
-
-### 11.3 Quality gates
-
-- Fit inside per-doc char budget (overflow → proportional per-section trimming, not outright rejection).
-- Required heading scaffold present.
-- PRD ↔ architecture token-level Jaccard < 0.72.
-- Validation is **per-doc independent** — PRD can succeed while architecture falls back.
-
-Fallback order when AI path fails: `previous_good` → `deterministic`. Status model: health ∈ `{missing, incomplete, fallback, stale, ready}`; source ∈ `{ai, deterministic, previous_good}`. Helpers in `apps/desktop/src/renderer/components/context/contextShared.ts` (`isContextDocReady`, `describeContextDocHealth`, etc.) keep shell banners + Settings + onboarding consistent.
-
-### 11.4 What gets shipped to each AI call
+### 11.1 What gets shipped to each AI call
 
 | Call type | Payload |
 |-----------|---------|
 | Narrative generation | `LaneExportStandard` (lane, bounded) |
 | Conflict proposal | `LaneExportLite` (lane) + `LaneExportLite` (peer, optional) + `ConflictExportStandard` |
 | PR description | `LaneExportStandard` with commit history |
-| Mission planning | Generated `.ade/context/*` bootstrap cards + memory briefing + mission-scoped data |
+| Mission planning | Memory briefing + mission-scoped data + direct repo inspection guidance |
 | Memory briefing (worker turn) | `MemoryBriefing` (l0/l1/l2/mission sections + shared facts + direct-source injections) |
 | Initial context (repo scan) | Targeted file/commit digests |
-
-Runtime health is **pushed**, not polled — `contextStatusChanged` IPC event fires whenever generation status or doc health changes. Stale generations (>5 min in `pending`/`running` without an active promise) auto-reset to `failed`.
-
-Full spec: [`docs/architecture/CONTEXT_CONTRACT.md`](../docs/architecture/CONTEXT_CONTRACT.md).
 
 ---
 
@@ -977,7 +941,7 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 ### 14.5 Documentation
 
 - **Internal docs** (this directory + `docs/`) — for engineers and agents. Not published.
-- **Public docs site** — Mintlify, configured in `docs.json` at repo root. Content lives alongside the repo (`introduction.mdx`, `quickstart.mdx`, `welcome.mdx`, `key-concepts.mdx`, plus subdirs `getting-started/`, `guides/`, `lanes/`, `chat/`, `missions/`, `cto/`, `pull-requests/`, `configuration/`, `tools/`, `computer-use/`, `automations/`, `context-packs/`, `ai-tools/`). Theme `maple`, brand primary `#7C3AED`.
+- **Public docs site** — Mintlify, configured in `docs.json` at repo root. Content lives alongside the repo (`introduction.mdx`, `quickstart.mdx`, `welcome.mdx`, `key-concepts.mdx`, plus subdirs `getting-started/`, `guides/`, `lanes/`, `chat/`, `missions/`, `cto/`, `pull-requests/`, `configuration/`, `tools/`, `computer-use/`, `automations/`, `ai-tools/`). Theme `maple`, brand primary `#7C3AED`.
 - **Doc validation**: `scripts/validate-docs.mjs` runs in CI to catch broken links / structure drift.
 
 ---
@@ -1011,7 +975,6 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 - **Dev tools probe** — `devToolsService.ts` checks for `git` and `gh` CLI availability at startup, surfacing warnings in UI.
 - **Port allocation** — `portAllocationService.ts` manages per-lane port leases with orphan recovery.
 - **Runtime diagnostics** — `runtimeDiagnosticsService.ts` surfaces lane launch context and runtime state.
-- **Context status stream** — push-based (`contextStatusChanged`) replaces earlier poll loop.
 - **Embedding health** — polled at 10s intervals in Settings → Memory (raised from 1.5s to reduce renderer churn).
 - **Sync telemetry** — `sync_cluster_state` + device registry surfaced in Settings → Sync.
 - **Operation timeline** — `operationService.ts` + History page provide full audit trail for debugging and undo.

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen, SquareSplitHorizontal, Plus, Trash } from "@phosphor-icons/react";
+import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, SquareSplitHorizontal, Plus, Trash } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -377,8 +377,6 @@ export function AgentChatComposer({
   onOpenCodePermissionModeChange,
   onCursorModeChange,
   onCursorConfigChange,
-  includeProjectDocs,
-  onIncludeProjectDocsChange,
   onToggleProof,
   onClearEvents,
   promptSuggestion,
@@ -463,8 +461,6 @@ export function AgentChatComposer({
   onOpenCodePermissionModeChange?: (mode: AgentChatOpenCodePermissionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
   onCursorConfigChange?: (configId: string, value: string | boolean) => void;
-  includeProjectDocs?: boolean;
-  onIncludeProjectDocsChange?: (checked: boolean) => void;
   onComputerUsePolicyChange?: (policy: unknown) => void;
   onToggleProof?: () => void;
   onClearEvents?: () => void;
@@ -1767,24 +1763,6 @@ export function AgentChatComposer({
                     {proofArtifactCount}
                   </span>
                 ) : null}
-              </button>
-            ) : null}
-
-            {/* Include context toggle */}
-            {!chatHasMessages && onIncludeProjectDocsChange ? (
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-sans text-[10px] font-medium transition-colors",
-                  includeProjectDocs
-                    ? "border-accent/22 bg-accent/10 text-accent"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-white/[0.10] hover:text-fg/60",
-                )}
-                onClick={() => onIncludeProjectDocsChange(!includeProjectDocs)}
-                title="Include project context (PRD + architecture) with first message"
-                aria-pressed={!!includeProjectDocs}
-              >
-                <BookOpen size={11} weight={includeProjectDocs ? "fill" : "regular"} />
               </button>
             ) : null}
 

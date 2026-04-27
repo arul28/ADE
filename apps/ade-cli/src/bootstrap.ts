@@ -59,7 +59,6 @@ import { createMissionBudgetService } from "../../desktop/src/main/services/orch
 import type { createSyncService } from "../../desktop/src/main/services/sync/syncService";
 import type { createSyncHostService } from "../../desktop/src/main/services/sync/syncHostService";
 import type { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
-import type { createContextDocService } from "../../desktop/src/main/services/context/contextDocService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import type { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import type { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
@@ -170,7 +169,6 @@ export type AdeRuntime = {
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
-  contextDocService?: ReturnType<typeof createContextDocService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;

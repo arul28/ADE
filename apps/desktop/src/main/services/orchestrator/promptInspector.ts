@@ -208,7 +208,8 @@ function buildWorkerBaseGuidance(step: OrchestratorStep, graph: OrchestratorRunG
     ].join("\n"),
   );
   sections.push(
-    "You are working within ADE (Autonomous Development Environment), an Electron-based multi-agent development tool. ADE manages lanes (git worktrees), missions (task orchestration), PRs, and agent sessions. You have access to the project's full context including PRD and architecture docs when provided.",
+    "You are working within ADE (Autonomous Development Environment), an Electron-based multi-agent development tool. ADE manages lanes (git worktrees), missions (task orchestration), PRs, and agent sessions.",
+    "Project orientation: do not assume generated PRD or architecture summaries exist. When you need product or architecture context, inspect the repo directly: start with AGENTS.md, README.md, docs/, package manifests, and the relevant source files in your lane worktree.",
   );
   sections.push(
     [

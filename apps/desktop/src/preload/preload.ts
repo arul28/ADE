@@ -132,11 +132,6 @@ import type {
   ConflictExternalResolverRunSummary,
   ConflictProposal,
   ConflictProposalPreview,
-  ContextDocPrefs,
-  ContextGenerateDocsArgs,
-  ContextGenerateDocsResult,
-  ContextOpenDocArgs,
-  ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -1969,29 +1964,6 @@ contextBridge.exposeInMainWorld("ade", {
       ) => cb(payload);
       ipcRenderer.on(IPC.conflictsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.conflictsEvent, listener);
-    },
-  },
-  context: {
-    getStatus: async (): Promise<ContextStatus> =>
-      ipcRenderer.invoke(IPC.contextGetStatus),
-    generateDocs: async (
-      args: ContextGenerateDocsArgs,
-    ): Promise<ContextGenerateDocsResult> =>
-      ipcRenderer.invoke(IPC.contextGenerateDocs, args),
-    openDoc: async (args: ContextOpenDocArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.contextOpenDoc, args),
-    getPrefs: async (): Promise<ContextDocPrefs> =>
-      ipcRenderer.invoke(IPC.contextGetPrefs),
-    savePrefs: async (prefs: ContextDocPrefs): Promise<ContextDocPrefs> =>
-      ipcRenderer.invoke(IPC.contextSavePrefs, prefs),
-    onStatusChanged: (cb: (status: ContextStatus) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: ContextStatus,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.contextStatusChanged, listener);
-      return () =>
-        ipcRenderer.removeListener(IPC.contextStatusChanged, listener);
     },
   },
   feedback: {

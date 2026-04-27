@@ -33,7 +33,6 @@ ADE is the control plane. It does not execute browser automation or computer-use
 | Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
 | Runtime | Per-lane process pool + env + ports + proxy + diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
 | Session | PTY-backed terminal session pinned to a lane. | [terminals-and-sessions/README.md](./features/terminals-and-sessions/README.md) |
-| Context pack | Canonical `.ade/context/*.ade.md` docs generated from repo state. | [context-packs/README.md](./features/context-packs/README.md) |
 | Memory | Structured, searchable, compaction-aware knowledge entries. | [memory/README.md](./features/memory/README.md) |
 | Proof | Normalized computer-use artifact (screenshot, recording, network log). | [computer-use/artifact-broker.md](./features/computer-use/artifact-broker.md) |
 
@@ -72,7 +71,6 @@ ADE is the control plane. It does not execute browser automation or computer-use
 
 - [**Linear Integration**](./features/linear-integration/README.md) — Webhook + relay + reconciliation. Workflow presets, target types (mission/session/worker/PR), bidirectional sync.
 - [**Computer Use**](./features/computer-use/README.md) — Control plane for Ghost OS, agent-browser, ADE local backends. Canonical artifact model, ownership-linked storage.
-- [**Context Packs**](./features/context-packs/README.md) — Three notions: canonical docs, live exports, persisted packs. Event-driven regeneration with seven refresh events.
 - [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation). Host/controller model. WebSocket envelope. Remote commands.
 
 ---

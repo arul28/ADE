@@ -2,7 +2,7 @@
 
 The wizard that turns a freshly-opened project into something usable.
 Covers stack detection, AI provider setup, optional integrations, and
-initial context doc generation.
+semantic search setup.
 
 The canonical backend is
 `apps/desktop/src/main/services/onboarding/onboardingService.ts`. The
@@ -12,7 +12,7 @@ wizard UI is
 
 ## Wizard steps
 
-`STEP_ORDER = ["tools", "ai", "helpers", "github", "embeddings", "linear", "context"]`.
+`STEP_ORDER = ["tools", "ai", "helpers", "github", "embeddings", "linear"]`.
 
 | Step | Heading | Subtitle | Purpose |
 |---|---|---|---|
@@ -22,7 +22,6 @@ wizard UI is
 | `github` | GitHub Integration | "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." | GitHub PAT setup. |
 | `embeddings` | Semantic Search | "A small local model that enables meaning-based memory search instead of just keyword matching." | Local embeddings opt-in. |
 | `linear` | Linear Integration | "Connect your Linear workspace to route issues, sync statuses, and enable CTO workflows." | Optional Linear connection. |
-| `context` | Context Documents | "Generate a PRD and architecture overview from your codebase. These help ADE understand your project deeply." | PRD/architecture doc generation. |
 
 All steps are visited in order but none *block* completion — the user
 can Skip on any step and come back via Settings.
@@ -105,11 +104,6 @@ The page is stateful and reacts to:
 
 - `window.ade.onboarding.getStatus()` on mount
 - `window.ade.ai.getStatus()` for `availableModelIds`
-- `window.ade.context.getPrefs()` for context doc preferences
-- `window.ade.context.getStatus()` when the `context` step is active,
-  and whenever a generation event fires
-- `window.ade.context.onStatusChanged` push events (replacing the
-  previous polling path) — new in the current branch
 
 Step-to-section embedding:
 
@@ -121,21 +115,6 @@ Step-to-section embedding:
 | `github` | `GitHubSection` |
 | `embeddings` | `EmbeddingsSection` |
 | `linear` | `LinearSection` |
-| `context` | inline generation controls driven by
-   `ContextSection` helpers and `listActionableContextDocs` |
-
-### Context step specifics
-
-- `ProviderModelSelector` and `deriveConfiguredModelIds(aiStatus)` let
-  the user pick the generation model.
-- `EVENT_TOGGLES` renders the seven `ContextRefreshEvents` toggles;
-  saving writes through `window.ade.context.savePrefs`.
-- `describeContextStatusLine` composes a user-friendly status string
-  ("generating...", "last generation failed: ...", "both docs
-  present, regenerate if needed", etc.).
-- Generation is not required to finish onboarding — the user can
-  queue it and move on.
-
 ### Completion
 
 Clicking "Finish" calls `window.ade.onboarding.complete()` and
@@ -150,8 +129,8 @@ leaving the onboarding banner available via a re-entry from Settings.
 
 Onboarding follows a small rule set:
 
-- Do not block on optional integrations. GitHub, Linear, embeddings,
-  and context generation are all skippable.
+- Do not block on optional integrations. GitHub, Linear, and embeddings
+  are all skippable.
 - Keep setup responsive. Model detection, CLI probes, and lane
   detection run concurrently where possible.
 - Show the fastest path first. For Linear that means personal API
@@ -184,7 +163,5 @@ Onboarding follows a small rule set:
 
 - Configuration schema (where suggested configs land):
   [configuration-schema.md](./configuration-schema.md)
-- Context docs flow (what the `context` step triggers):
-  [../context-packs/freshness-and-delivery.md](../context-packs/freshness-and-delivery.md)
 - Project home (the screen users arrive at after onboarding):
   [../project-home/README.md](../project-home/README.md)

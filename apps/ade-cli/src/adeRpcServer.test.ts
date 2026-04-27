@@ -1906,13 +1906,14 @@ describe("adeRpcServer", () => {
     // it ends with the user prompt and carries the inline guidance preamble.
     const createCall = (fixture.runtime.ptyService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { args: string[] };
     const finalArg = createCall.args[createCall.args.length - 1];
-    expect(finalArg).toContain("Before reporting an ADE lane");
+    expect(finalArg).toContain("only normal reason to skip ADE CLI");
+    expect(finalArg).toContain("ADE proof drawer");
     expect(finalArg).toContain("clean up old, stale, or finished processes");
     expect(finalArg.endsWith("Implement API wiring")).toBe(true);
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
     expect(response.structuredContent.startupCommand).toContain("--permission-mode");
-    expect(response.structuredContent.startupCommand).toContain("Before reporting an ADE lane");
+    expect(response.structuredContent.startupCommand).toContain("only normal reason to skip ADE CLI");
     expect(response.structuredContent.permissionMode).toBe("default");
     expect(response.structuredContent.contextRef?.path).toBeNull();
   });
@@ -2874,7 +2875,7 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.permissionMode).toBe("plan");
     expect(response.structuredContent.startupCommand).toContain("--sandbox");
     expect(response.structuredContent.startupCommand).toContain("read-only");
-    expect(response.structuredContent.startupCommand).toContain("Before reporting an ADE lane");
+    expect(response.structuredContent.startupCommand).toContain("only normal reason to skip ADE CLI");
     const contextPath = response.structuredContent.contextRef?.path as string | null;
     expect(contextPath).toBeTruthy();
     expect(contextPath?.includes("/.ade/cache/orchestrator/agent-context/run-123/")).toBe(true);

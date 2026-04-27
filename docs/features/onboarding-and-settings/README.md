@@ -12,7 +12,7 @@ Two related but distinct flows:
 
 The runtime no longer assumes first-run setup must hydrate every
 service. Project open favors a cheap first pass; secondary hydration
-(full lane status, provider modes, context generation) happens after
+(full lane status, provider modes, semantic indexing) happens after
 the app is interactive.
 
 ## Source file map
@@ -153,8 +153,6 @@ Renderer — settings:
   target isn't on the user's `$PATH`.
 - `apps/desktop/src/renderer/components/settings/WorkspaceSettingsSection.tsx`
   + `ProjectSection.tsx` — project identity, base ref, paths.
-- `apps/desktop/src/renderer/components/settings/ContextSection.tsx`
-  — context docs management and generation preferences.
 - `apps/desktop/src/renderer/components/settings/AiSettingsSection.tsx`
   / `AiFeaturesSection.tsx` — AI provider preferences.
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
@@ -202,7 +200,7 @@ Repository onboarding covers five things:
 2. detect stack signals (node, rust, go, python, docker, make)
 3. suggest config defaults for processes, tests, stacks
 4. optionally import existing git branches as lanes
-5. prepare initial deterministic context state
+5. prepare initial deterministic workspace state
 
 Timing: project open runs a cheap first pass and defers heavy work.
 Current behavior:
@@ -210,8 +208,8 @@ Current behavior:
 - lanes load without expensive per-lane status first
 - keybindings load immediately (they are tiny)
 - provider mode and full lane status warm later
-- context doc generation is no longer gated on "must finish before the
-  app feels usable"
+- expensive background work is no longer gated on "must finish before
+  the app feels usable"
 
 ### CTO first-run setup
 
@@ -236,7 +234,7 @@ is changing rather than which service backs it:
 | Tab | Section file | What lives here |
 |---|---|---|
 | General | `GeneralSection.tsx` (embeds `AdeCliSection` in compact form) | Theme, AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link, and the `ade` CLI install / status surface |
-| Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx`, `ContextSection.tsx` | Project identity, context docs, skill files |
+| Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx` | Project identity, paths, skill files |
 | AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, AI feature flags |
 | Sync | `SyncDevicesSection.tsx` | Multi-device sync, host-role transfer, peer status, pairing PIN, Tailscale tailnet discovery |
 | Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness |
@@ -313,8 +311,6 @@ Onboarding and settings follow a simple rule:
 ## Cross-links
 
 - Run/Project home: [../project-home/README.md](../project-home/README.md)
-- Context docs (consumed by Settings > Workspace > Context):
-  [../context-packs/](../context-packs/)
 - Lane templates used during lane creation: Lanes feature
 - Terminal preferences applied at runtime:
   [../terminals-and-sessions/ui-surfaces.md](../terminals-and-sessions/ui-surfaces.md)

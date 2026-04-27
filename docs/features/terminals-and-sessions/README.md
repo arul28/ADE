@@ -350,5 +350,3 @@ Processes (managed):
   [../files-and-editor/](../files-and-editor/) (the file watcher is
   scoped per workspace, not per session).
 - Configuration-driven processes: [../onboarding-and-settings/configuration-schema.md](../onboarding-and-settings/configuration-schema.md)
-- Context packs / exports that reference session deltas:
-  [../context-packs/](../context-packs/)

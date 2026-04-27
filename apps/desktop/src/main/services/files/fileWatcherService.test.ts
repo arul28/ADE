@@ -72,7 +72,7 @@ describe("fileWatcherService", () => {
     const handlers = chokidarState.watchers[0]?.handlers;
     expect(handlers).toBeTruthy();
 
-    handlers?.get("add")?.("/repo/.ade/context/PRD.ade.md");
+    handlers?.get("add")?.("/repo/.ade/notes/project.md");
     handlers?.get("change")?.("/repo/.git/config");
     vi.runAllTimers();
 
@@ -80,7 +80,7 @@ describe("fileWatcherService", () => {
     expect(callback).toHaveBeenCalledWith({
       workspaceId: "ws-1",
       type: "created",
-      path: ".ade/context/PRD.ade.md",
+      path: ".ade/notes/project.md",
       ts: expect.any(String),
     });
   });
@@ -109,7 +109,7 @@ describe("fileWatcherService", () => {
     const handlers = chokidarState.watchers[0]?.handlers;
     expect(handlers).toBeTruthy();
 
-    handlers?.get("add")?.("/repo/.ade/context/PRD.ade.md");
+    handlers?.get("add")?.("/repo/.ade/notes/project.md");
     vi.runAllTimers();
 
     expect(callback).not.toHaveBeenCalled();

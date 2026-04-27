@@ -246,10 +246,6 @@ import type {
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
-  ContextGenerateDocsArgs,
-  ContextGenerateDocsResult,
-  ContextOpenDocArgs,
-  ContextStatus,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessRuntime,
@@ -525,7 +521,6 @@ import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
-import type { ContextDocService, ContextRefreshEventName } from "../context/contextDocService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { SessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPtyService } from "../pty/ptyService";
@@ -654,7 +649,6 @@ export type AppContext = {
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   missionBudgetService: ReturnType<typeof createMissionBudgetService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
-  contextDocService?: ContextDocService | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
   testService: ReturnType<typeof createTestService>;
@@ -1683,7 +1677,7 @@ export function registerIpc({
           })(),
           args: summarizeIpcValue(args),
         });
-        const IPC_TIMEOUT_MS = channel === IPC.contextGenerateDocs ? null : 30_000;
+        const IPC_TIMEOUT_MS = 30_000;
         try {
           const result = await (
             IPC_TIMEOUT_MS == null
@@ -1719,25 +1713,6 @@ export function registerIpc({
       })) as typeof ipcMain.handle;
     tracedIpcMain.__adeTraceWrapped = true;
   }
-
-  const triggerAutoContextDocs = (
-    ctx: AppContext,
-    args: { event: ContextRefreshEventName; reason: string }
-  ): void => {
-    if (!ctx.contextDocService) return;
-    void ctx.contextDocService
-      .maybeAutoRefreshDocs({
-        event: args.event,
-        reason: args.reason
-      })
-      .catch((error: unknown) => {
-        ctx.logger.debug("ipc.context_docs_auto_refresh_failed", {
-          event: args.event,
-          reason: args.reason,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      });
-  };
 
   const ensureComputerUseBroker = (): AppContext => {
     const ctx = getCtx();
@@ -2975,10 +2950,6 @@ export function registerIpc({
 
       void (async () => {
         try {
-          triggerAutoContextDocs(ctx, {
-            event: "mission_start",
-            reason: `missions_create_autostart:${created.id}`
-          });
           await ctx.aiOrchestratorService.startMissionRun({
             missionId: created.id,
             runMode,
@@ -3107,10 +3078,6 @@ export function registerIpc({
     IPC.orchestratorStartRunFromMission,
     async (_event, arg: StartOrchestratorRunFromMissionArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
       const ctx = getCtx();
-      triggerAutoContextDocs(ctx, {
-        event: "mission_start",
-        reason: `orchestrator_start_run_from_mission:${arg.missionId}`
-      });
       const started = await ctx.aiOrchestratorService.startMissionRun({
         missionId: arg.missionId,
         runMode: arg.runMode,
@@ -3174,7 +3141,6 @@ export function registerIpc({
     }
     const run = ctx.orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === arg.runId);
     if (!run) throw new Error(`Run not found after cancellation: ${arg.runId}`);
-    triggerAutoContextDocs(ctx, { event: "mission_end", reason: `orchestrator_cancel_run:${arg.runId}` });
     return run;
   });
 
@@ -3238,10 +3204,6 @@ export function registerIpc({
     IPC.orchestratorStartMissionRun,
     async (_event, arg: StartMissionRunWithAIArgs): Promise<StartMissionRunWithAIResult> => {
       const ctx = getCtx();
-      triggerAutoContextDocs(ctx, {
-        event: "mission_start",
-        reason: `orchestrator_start_mission_run:${arg.missionId}`
-      });
       return ctx.aiOrchestratorService.startMissionRun(arg);
     }
   );
@@ -3282,9 +3244,7 @@ export function registerIpc({
     IPC.orchestratorFinalizeRun,
     async (_event, arg: FinalizeRunArgs): Promise<FinalizeRunResult> => {
       const ctx = getCtx();
-      const result = ctx.orchestratorService.finalizeRun(arg);
-      triggerAutoContextDocs(ctx, { event: "mission_end", reason: `orchestrator_finalize_run:${arg.runId}` });
-      return result;
+      return ctx.orchestratorService.finalizeRun(arg);
     }
   );
 
@@ -3636,10 +3596,6 @@ export function registerIpc({
     });
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_create:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3648,10 +3604,6 @@ export function registerIpc({
     const lane = await ctx.laneService.createChild(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_create_child:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3660,10 +3612,6 @@ export function registerIpc({
     const lane = await ctx.laneService.createFromUnstaged(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_create_from_unstaged:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3672,10 +3620,6 @@ export function registerIpc({
     const lane = await ctx.laneService.importBranch(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_import_branch:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3694,10 +3638,6 @@ export function registerIpc({
     const lane = await ctx.laneService.attach(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_attach:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3711,10 +3651,6 @@ export function registerIpc({
     const lane = await ctx.laneService.adoptAttached(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_adopt_attached:${lane.id}`,
-    });
     return lane;
   });
 
@@ -4765,12 +4701,6 @@ export function registerIpc({
   ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<void> => {
     const ctx = getCtx();
     ctx.ptyService.dispose(arg);
-    if (arg.sessionId) {
-      triggerAutoContextDocs(ctx, {
-        event: "session_end",
-        reason: `pty_dispose:${arg.sessionId}`,
-      });
-    }
   });
 
   ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
@@ -4913,9 +4843,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.gitCommit, async (_event, arg: GitCommitArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
-    const result = ctx.gitService.commit(arg);
-    triggerAutoContextDocs(ctx, { event: "commit", reason: "git_commit" });
-    return result;
+    return ctx.gitService.commit(arg);
   });
 
   ipcMain.handle(
@@ -5144,44 +5072,6 @@ export function registerIpc({
 
   ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => getCtx().conflictService.suggestResolverTarget(arg));
 
-  ipcMain.handle(IPC.contextGetStatus, async (): Promise<ContextStatus> => {
-    const ctx = getCtx();
-    if (!ctx.contextDocService) {
-      throw new Error("Context doc service is not available.");
-    }
-    return ctx.contextDocService.getStatus();
-  });
-
-  ipcMain.handle(IPC.contextGenerateDocs, async (_event, arg: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
-    const ctx = getCtx();
-    if (!ctx.contextDocService) {
-      throw new Error("Context doc service is not available.");
-    }
-    return ctx.contextDocService.generateDocs(arg);
-  });
-
-  ipcMain.handle(IPC.contextGetPrefs, async () => {
-    const ctx = getCtx();
-    if (!ctx.contextDocService) throw new Error("Context doc service is not available.");
-    return ctx.contextDocService.getPrefs();
-  });
-
-  ipcMain.handle(IPC.contextSavePrefs, async (_event, arg) => {
-    const ctx = getCtx();
-    if (!ctx.contextDocService) throw new Error("Context doc service is not available.");
-    return ctx.contextDocService.savePrefs(arg);
-  });
-
-  ipcMain.handle(IPC.contextOpenDoc, async (_event, arg: ContextOpenDocArgs): Promise<void> => {
-    const ctx = getCtx();
-    const explicitPath = typeof arg.path === "string" ? arg.path.trim() : "";
-    const target = explicitPath || (arg.docId ? ctx.contextDocService?.getDocPath(arg.docId) ?? "" : "");
-    if (!target) {
-      throw new Error("contextOpenDoc requires docId or path");
-    }
-    await shell.openPath(target);
-  });
-
   ipcMain.handle(IPC.githubGetStatus, async (): Promise<GitHubStatus> => {
     const ctx = getCtx();
     return await ctx.githubService.getStatus();
@@ -5255,22 +5145,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    const created = await ctx.prService.createFromLane(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_create_from_lane:${created.id}`
-    });
-    return created;
+    return await ctx.prService.createFromLane(arg);
   });
 
   ipcMain.handle(IPC.prsLinkToLane, async (_event, arg: LinkPrToLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    const linked = await ctx.prService.linkToLane(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_link_to_lane:${linked.id}`
-    });
-    return linked;
+    return await ctx.prService.linkToLane(arg);
   });
 
   const ensurePrPolling = () => {
@@ -5348,20 +5228,11 @@ export function registerIpc({
   ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.prService.updateDescription(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_update_description:${arg.prId}`
-    });
   });
 
   ipcMain.handle(IPC.prsDelete, async (_event, arg: DeletePrArgs): Promise<DeletePrResult> => {
     const ctx = getCtx();
-    const deleted = await ctx.prService.delete(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_delete:${arg.prId}`
-    });
-    return deleted;
+    return await ctx.prService.delete(arg);
   });
 
   ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
@@ -5371,22 +5242,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
     const ctx = getCtx();
-    const landed = await ctx.prService.land(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_land",
-      reason: `prs_land:${arg.prId}`
-    });
-    return landed;
+    return await ctx.prService.land(arg);
   });
 
   ipcMain.handle(IPC.prsLandStack, async (_event, arg: LandStackArgs): Promise<LandResult[]> => {
     const ctx = getCtx();
-    const landed = await ctx.prService.landStack(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_land",
-      reason: `prs_land_stack:${arg.rootLaneId}`
-    });
-    return landed;
+    return await ctx.prService.landStack(arg);
   });
 
   ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
@@ -5396,22 +5257,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
     const ctx = getCtx();
-    const created = await ctx.prService.createIntegrationPr(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_create_integration:${arg.integrationLaneName}:${arg.baseBranch}`
-    });
-    return created;
+    return await ctx.prService.createIntegrationPr(arg);
   });
 
   ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg: LandStackEnhancedArgs): Promise<LandResult[]> => {
     const ctx = getCtx();
-    const landed = await ctx.prService.landStackEnhanced(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_land",
-      reason: `prs_land_stack_enhanced:${arg.rootLaneId}`
-    });
-    return landed;
+    return await ctx.prService.landStackEnhanced(arg);
   });
 
   ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => getCtx().prService.getConflictAnalysis(arg.prId));
@@ -5426,24 +5277,14 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
     const ctx = getCtx();
-    const created = await ctx.prService.createQueuePrs(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_create_queue:${arg.targetBranch ?? "queue"}`
-    });
-    return created;
+    return await ctx.prService.createQueuePrs(arg);
   });
 
   ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> => getCtx().prService.simulateIntegration(arg));
 
   ipcMain.handle(IPC.prsCommitIntegration, async (_event, arg: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => {
     const ctx = getCtx();
-    const committed = await ctx.prService.commitIntegration(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_commit_integration:${arg.proposalId}:${arg.integrationLaneName}`
-    });
-    return committed;
+    return await ctx.prService.commitIntegration(arg);
   });
 
   ipcMain.handle(IPC.prsListProposals, async (): Promise<IntegrationProposal[]> =>
@@ -5472,34 +5313,19 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => {
     const ctx = getCtx();
-    const landed = await ctx.prService.landQueueNext(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_land",
-      reason: `prs_land_queue_next:${arg.groupId}`
-    });
-    return landed;
+    return await ctx.prService.landQueueNext(arg);
   });
 
   ipcMain.handle(IPC.prsStartQueueAutomation, async (_event, arg) => {
     const ctx = getCtx();
-    const state = await ctx.queueLandingService.startQueue(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_start_queue_automation:${arg.groupId}`,
-    });
-    return state;
+    return await ctx.queueLandingService.startQueue(arg);
   });
 
   ipcMain.handle(IPC.prsPauseQueueAutomation, async (_event, arg) => getCtx().queueLandingService.pauseQueue(arg.queueId));
 
   ipcMain.handle(IPC.prsResumeQueueAutomation, async (_event, arg) => {
     const ctx = getCtx();
-    const state = ctx.queueLandingService.resumeQueue(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_resume_queue_automation:${arg.queueId}`,
-    });
-    return state;
+    return ctx.queueLandingService.resumeQueue(arg);
   });
 
   ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));

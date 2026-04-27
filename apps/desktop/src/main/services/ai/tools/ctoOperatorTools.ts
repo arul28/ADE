@@ -44,7 +44,7 @@ import type { createIssueInventoryService } from "../../prs/issueInventoryServic
 import { computeConvergenceStatus, detectSource, extractSeverity } from "../../prs/issueInventoryService";
 import { launchPrIssueResolutionChat } from "../../prs/prIssueResolver";
 import type { createPrService } from "../../prs/prService";
-import { isNoisyIssueComment, mapPermissionMode } from "../../prs/resolverUtils";
+import { isNoisyIssueComment } from "../../prs/resolverUtils";
 import type { createProcessService } from "../../processes/processService";
 import type { createSessionService } from "../../sessions/sessionService";
 import type { createCtoStateService } from "../../cto/ctoStateService";
@@ -114,10 +114,6 @@ export interface CtoOperatorToolDeps {
     requestProposal: (args: any) => Promise<any>;
     applyProposal: (args: any) => Promise<any>;
     undoProposal: (args: any) => Promise<any>;
-  } | null;
-  contextDocService?: {
-    getStatus: () => any;
-    generateDocs: (args: any) => Promise<any>;
   } | null;
   steerChat?: (args: { sessionId: string; instruction: string }) => Promise<{ steerId: string; queued: boolean }>;
   cancelSteer?: (args: { sessionId: string }) => Promise<void>;
@@ -2777,39 +2773,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     description: "Undo an applied conflict resolution proposal.",
     inputSchema: z.object({ laneId: z.string().min(1), proposalId: z.string().min(1) }),
     execute: ({ laneId, proposalId }) => conflictGuard(() => deps.conflictService!.undoProposal({ laneId, proposalId })),
-  });
-
-  // ---------------------------------------------------------------------------
-  // Context Pack Export
-  // ---------------------------------------------------------------------------
-
-  tools.getContextStatus = tool({
-    description: "Check what ADE context docs exist and whether they are stale.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      if (!deps.contextDocService) return { success: false, error: "Context doc service is not available." };
-      try {
-        return { success: true, ...deps.contextDocService.getStatus() };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.generateContextDocs = tool({
-    description: "Generate bounded context packs for bootstrapping workers or exporting project state.",
-    inputSchema: z.object({
-      scope: z.string().optional(),
-      categories: z.array(z.string()).optional(),
-    }),
-    execute: async ({ scope, categories }) => {
-      if (!deps.contextDocService) return { success: false, error: "Context doc service is not available." };
-      try {
-        return { success: true, ...(await deps.contextDocService.generateDocs({ scope, categories })) };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
   });
 
   // ---------------------------------------------------------------------------

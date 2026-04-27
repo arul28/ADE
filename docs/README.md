@@ -25,7 +25,6 @@ new-docs/
     ├── chat/                              # multi-provider agent chat
     ├── computer-use/                      # proof control plane, backends, broker
     ├── conflicts/                         # detection + simulation + resolution
-    ├── context-packs/                     # context docs + live exports + packs
     ├── cto/                               # CTO agent: identity, pipeline, workers, Linear
     ├── files-and-editor/                  # watcher, editor, Monaco, search
     ├── history/                           # operations timeline, transcripts, export
