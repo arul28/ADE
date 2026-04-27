@@ -2,7 +2,6 @@ import {
   ArrowDown,
   ArrowUp,
   Code,
-  Gear,
   GitBranch,
   Lightning,
   Rocket,
@@ -59,11 +58,11 @@ export type ActionRowValue = {
 const KIND_META: Record<ActionRowKind, { label: string; icon: ElementType; accent: string }> = {
   "create-lane": { label: "Create lane", icon: GitBranch, accent: "#2DD4BF" },
   "agent-session": { label: "Agent session", icon: Lightning, accent: "#38BDF8" },
-  "ade-action": { label: "Run ADE action", icon: Code, accent: "#A78BFA" },
+  "ade-action": { label: "ADE action", icon: Code, accent: "#A78BFA" },
   "run-tests": { label: "Run tests", icon: TestTube, accent: "#22C55E" },
   "run-command": { label: "Run command", icon: TerminalWindow, accent: "#F59E0B" },
   "predict-conflicts": { label: "Predict conflicts", icon: Warning, accent: "#F97316" },
-  "launch-mission": { label: "Mission", icon: Rocket, accent: "#94A3B8" },
+  "launch-mission": { label: "Launch mission", icon: Rocket, accent: "#94A3B8" },
 };
 
 export function ActionRow({
@@ -99,15 +98,28 @@ export function ActionRow({
 
   return (
     <div
-      className="rounded-xl border border-white/[0.08] bg-[rgba(12,10,22,0.4)] p-3 transition-colors hover:border-white/[0.12]"
-      style={{ borderLeft: `2px solid ${meta.accent}` }}
+      className="rounded-xl border border-white/[0.08] bg-black/20"
+      style={{ boxShadow: `inset 0 0 0 1px ${meta.accent}1f` }}
     >
-      <div className="flex items-center justify-between gap-2">
+      <div
+        className="flex items-center justify-between gap-2 rounded-t-xl border-b border-white/[0.06] px-3 py-2"
+        style={{ background: `${meta.accent}0d` }}
+      >
         <div className="flex min-w-0 items-center gap-2">
-          <Icon size={13} weight="regular" style={{ color: meta.accent }} />
-          <span className="text-[11px] font-semibold text-fg">
-            {index + 1}. {meta.label}
+          <span
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
+            style={{
+              background: `${meta.accent}26`,
+              color: meta.accent,
+              boxShadow: `inset 0 0 0 1px ${meta.accent}55`,
+            }}
+          >
+            <Icon size={12} weight="fill" />
           </span>
+          <span className="text-[10px] font-bold tracking-wider text-[#7E8A9A]">
+            STEP {index + 1}
+          </span>
+          <span className="text-[12px] font-semibold text-[#F5FAFF]">{meta.label}</span>
           {value.kind === "create-lane" ? (
             <Chip className="text-[9px] text-warning">legacy · now in Execution</Chip>
           ) : null}
@@ -115,37 +127,37 @@ export function ActionRow({
             <Chip className="text-[9px] text-accent">custom model</Chip>
           ) : null}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           <button
             type="button"
             onClick={() => onMove(-1)}
             disabled={index === 0}
-            className="rounded p-1 text-muted-fg/60 transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+            className="rounded p-1 text-[#8FA1B8] hover:text-[#F5FAFF] disabled:cursor-not-allowed disabled:opacity-30"
             title="Move up"
           >
-            <ArrowUp size={12} weight="regular" />
+            <ArrowUp size={11} weight="bold" />
           </button>
           <button
             type="button"
             onClick={() => onMove(1)}
             disabled={index === total - 1}
-            className="rounded p-1 text-muted-fg/60 transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+            className="rounded p-1 text-[#8FA1B8] hover:text-[#F5FAFF] disabled:cursor-not-allowed disabled:opacity-30"
             title="Move down"
           >
-            <ArrowDown size={12} weight="regular" />
+            <ArrowDown size={11} weight="bold" />
           </button>
           <button
             type="button"
             onClick={onRemove}
-            className="rounded p-1 text-muted-fg/60 transition-colors hover:text-error"
-            title="Remove action"
+            className="rounded p-1 text-[#8FA1B8] hover:text-red-300"
+            title="Remove step"
           >
-            <Trash size={12} weight="regular" />
+            <Trash size={11} weight="regular" />
           </button>
         </div>
       </div>
 
-      <div className="mt-3">
+      <div className="p-3">
         {value.kind === "create-lane" ? (
           // Read-only legacy view. Lane creation is now an EXECUTION setting,
           // but old rules still on disk render their stored template here so
@@ -249,8 +261,8 @@ export function ActionRow({
         ) : null}
 
         {value.kind === "run-tests" ? (
-          <label className="block space-y-1.5">
-            <div className={labelCls}>Suite</div>
+          <label className="block space-y-1">
+            <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Suite</span>
             <select
               className={selectCls}
               value={value.suiteId ?? ""}
@@ -284,7 +296,7 @@ export function ActionRow({
         ) : null}
 
         {value.kind === "predict-conflicts" ? (
-          <div className="text-[11px] text-muted-fg/60">
+          <div className="text-[11px] leading-relaxed text-[#93A4B8]">
             Runs the built-in conflict prediction pass against recent lanes. No configuration required.
           </div>
         ) : null}
@@ -298,10 +310,7 @@ export function ActionRow({
               placeholder="Mission title"
               disabled
             />
-            <Chip className="text-[9px] text-muted-fg">
-              <Gear size={10} weight="regular" className="mr-1" />
-              Mission launches are coming soon.
-            </Chip>
+            <Chip className="text-[9px] text-[#B6B2C9]">Mission launches are coming soon.</Chip>
           </div>
         ) : null}
       </div>

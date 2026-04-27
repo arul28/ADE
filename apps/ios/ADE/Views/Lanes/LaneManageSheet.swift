@@ -120,7 +120,25 @@ struct LaneManageSheet: View {
 
           GlassSection(title: "Appearance") {
             VStack(alignment: .leading, spacing: 12) {
-              LaneTextField("Color token or hex", text: $colorText).textInputAutocapitalization(.never)
+              VStack(alignment: .leading, spacing: 6) {
+                Text("Color")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(ADEColor.textSecondary)
+                if let name = LaneColorPalette.name(forHex: colorText) {
+                  Text(name)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textMuted)
+                }
+                LaneColorSwatchPicker(
+                  selectedHex: colorText.isEmpty ? nil : colorText,
+                  usedColors: LaneColorPalette.colorsInUse(
+                    amongLanes: allLaneSnapshots.map(\.lane),
+                    excluding: snapshot.lane.id
+                  )
+                ) { next in
+                  colorText = next ?? ""
+                }
+              }
               LaneTextField("Icon (star, flag, bolt, shield, tag)", text: $iconText).textInputAutocapitalization(.never)
               LaneTextField("Tags (comma separated)", text: $tagsText)
               LaneActionButton(title: "Save appearance", symbol: "paintpalette", tint: ADEColor.accent) {

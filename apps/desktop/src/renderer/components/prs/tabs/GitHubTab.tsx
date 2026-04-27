@@ -6,6 +6,8 @@ import type { GitHubPrListItem, GitHubPrSnapshot, LaneSummary, MergeMethod, PrSu
 import { EmptyState } from "../../ui/EmptyState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { isMissionResultLane } from "../../lanes/laneUtils";
+import { LaneAccentDot } from "../../lanes/LaneAccentDot";
+import { useAppStore } from "../../../state/appStore";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatters";
 import { PrCiRunningIndicator } from "../shared/prVisuals";
@@ -169,6 +171,13 @@ const FILTER_COLORS: Record<GitHubFilter, { active: { bg: string; border: string
   },
 };
 
+function useLaneColorById(laneId: string | null | undefined): string | null {
+  return useAppStore((s) => {
+    if (!laneId) return null;
+    return s.lanes.find((l) => l.id === laneId)?.color ?? null;
+  });
+}
+
 function GitHubReadOnlyPane({
   item,
   lanes,
@@ -188,6 +197,8 @@ function GitHubReadOnlyPane({
     () => lanes.filter((lane) => !lane.archivedAt && lane.laneType !== "primary" && isMissionResultLane(lane)),
     [lanes],
   );
+
+  const linkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
 
   const sc = stateColor(item.state);
 
@@ -240,7 +251,20 @@ function GitHubReadOnlyPane({
           <div style={LABEL_STYLE}>ADE Status</div>
           {item.linkedPrId ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 4 }}>
-              Linked to <span style={{ fontFamily: MONO_FONT, color: COLORS.accent }}>{item.linkedLaneName ?? item.linkedLaneId ?? "lane"}</span>
+              Linked to{" "}
+              <span
+                style={{
+                  fontFamily: MONO_FONT,
+                  color: linkedLaneColor ?? COLORS.accent,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  verticalAlign: "middle",
+                }}
+              >
+                {linkedLaneColor ? <LaneAccentDot lane={{ color: linkedLaneColor }} size={7} /> : null}
+                {item.linkedLaneName ?? item.linkedLaneId ?? "lane"}
+              </span>
             </div>
           ) : item.scope === "external" ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6, marginTop: 4 }}>
@@ -928,6 +952,7 @@ function GitHubTabPrRow({
   const ago = formatTimeAgoCompact(item.createdAt);
   const visibleLabels = item.labels.slice(0, 4);
   const overflowCount = item.labels.length - 4;
+  const rowLinkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
   return (
     <button
       type="button"
@@ -1083,7 +1108,19 @@ function GitHubTabPrRow({
           </span>
         ) : null}
         {item.linkedLaneName ? (
-          <span style={{ ...inlineBadge(COLORS.textSecondary), fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>
+          <span
+            style={{
+              ...inlineBadge(COLORS.textSecondary),
+              fontSize: 10,
+              padding: "2px 7px",
+              borderRadius: 5,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              ...(rowLinkedLaneColor ? { color: rowLinkedLaneColor } : {}),
+            }}
+          >
+            {rowLinkedLaneColor ? <LaneAccentDot lane={{ color: rowLinkedLaneColor }} size={6} /> : null}
             {item.linkedLaneName}
           </span>
         ) : (

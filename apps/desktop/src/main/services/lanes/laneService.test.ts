@@ -2238,3 +2238,89 @@ describe("laneService missionId and laneRole", () => {
     expect(lane?.laneRole).toBe("integration");
   });
 });
+
+describe("laneService updateAppearance color uniqueness", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  async function setup() {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-color-uniqueness-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-color-uniqueness", repoRoot });
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-color-uniqueness",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+    return { db, service };
+  }
+
+  it("rejects an update when another active lane already uses the color", async () => {
+    const { db, service } = await setup();
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-parent"]);
+
+    expect(() =>
+      service.updateAppearance({ laneId: "lane-child", color: "#a78bfa" }),
+    ).toThrow(/already in use by lane "Parent"/);
+
+    const child = db.get<{ color: string | null }>("select color from lanes where id = ?", ["lane-child"]);
+    expect(child?.color).toBeNull();
+  });
+
+  it("treats hex comparison case-insensitively when detecting conflicts", async () => {
+    const { service, db } = await setup();
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-parent"]);
+
+    expect(() =>
+      service.updateAppearance({ laneId: "lane-child", color: "#A78BFA" }),
+    ).toThrow(/already in use/i);
+  });
+
+  it("allows assigning a color that no other active lane is using", async () => {
+    const { db, service } = await setup();
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-parent"]);
+
+    service.updateAppearance({ laneId: "lane-child", color: "#60a5fa" });
+
+    const child = db.get<{ color: string | null }>("select color from lanes where id = ?", ["lane-child"]);
+    expect(child?.color).toBe("#60a5fa");
+  });
+
+  it("ignores archived lanes when checking for color conflicts", async () => {
+    const { db, service } = await setup();
+    db.run(
+      "update lanes set color = ?, status = 'archived', archived_at = ? where id = ?",
+      ["#a78bfa", "2026-04-01T00:00:00.000Z", "lane-parent"],
+    );
+
+    service.updateAppearance({ laneId: "lane-child", color: "#a78bfa" });
+
+    const child = db.get<{ color: string | null }>("select color from lanes where id = ?", ["lane-child"]);
+    expect(child?.color).toBe("#a78bfa");
+  });
+
+  it("does not run the conflict probe when the color is unchanged (idempotent appearance updates)", async () => {
+    const { db, service } = await setup();
+    // Two active lanes share the same stored color (e.g. legacy data before
+    // the uniqueness check existed). Updating one of them with the SAME color
+    // should succeed because the new value equals lane.color.
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-parent"]);
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-child"]);
+
+    expect(() =>
+      service.updateAppearance({ laneId: "lane-child", color: "#a78bfa", icon: "star" }),
+    ).not.toThrow();
+
+    const child = db.get<{ color: string | null; icon: string | null }>(
+      "select color, icon from lanes where id = ?",
+      ["lane-child"],
+    );
+    expect(child?.color).toBe("#a78bfa");
+    expect(child?.icon).toBe("star");
+  });
+});

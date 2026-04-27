@@ -33,6 +33,7 @@ import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 import { modifierKeyLabel } from "../../lib/platform";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
@@ -298,24 +299,26 @@ function PendingSteerItem({
       )}
       {!editing ? (
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-white/[0.06] hover:text-fg/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
-            title="Edit message"
-            aria-label="Edit message"
-          >
-            <PencilSimple size={11} />
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-red-500/10 hover:text-red-400/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
-            title="Remove from queue"
-            aria-label="Remove from queue"
-          >
-            <X size={11} weight="bold" />
-          </button>
+          <SmartTooltip content={{ label: "Edit queued message", description: "Change this queued steer message before ADE sends it to the running chat." }}>
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-white/[0.06] hover:text-fg/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
+              aria-label="Edit queued message"
+            >
+              <PencilSimple size={11} />
+            </button>
+          </SmartTooltip>
+          <SmartTooltip content={{ label: "Remove queued message", description: "Remove this steer message from the queue without interrupting the active turn." }}>
+            <button
+              type="button"
+              onClick={onCancel}
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-red-500/10 hover:text-red-400/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40"
+              aria-label="Remove queued message"
+            >
+              <X size={11} weight="bold" />
+            </button>
+          </SmartTooltip>
         </div>
       ) : null}
     </div>
@@ -820,27 +823,34 @@ export function AgentChatComposer({
             const active = value === option.value;
             const colors = option.safety ? safetyColors(option.safety) : null;
             return (
-              <button
+              <SmartTooltip
                 key={option.value}
-                type="button"
-                className={cn(
-                  "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
-                  active
-                    ? (colors ? `${colors.activeBg} text-fg/80` : "bg-white/[0.08] text-fg/80")
-                    : "text-muted-fg/35 hover:text-muted-fg/60",
-                  disabled ? "cursor-not-allowed opacity-50" : "",
-                )}
-                disabled={disabled || !onChange}
-                onClick={() => onChange?.(option.value)}
-                onMouseEnter={() => onHoverChange?.(option.value)}
-                onMouseLeave={() => onHoverChange?.(null)}
-                onFocus={() => onHoverChange?.(option.value)}
-                onBlur={() => onHoverChange?.(null)}
-                title={option.detail}
-                aria-pressed={active}
+                content={{
+                  label: option.label,
+                  description: option.detail,
+                  effect: active ? "Currently selected." : undefined,
+                }}
               >
-                {option.label}
-              </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                    active
+                      ? (colors ? `${colors.activeBg} text-fg/80` : "bg-white/[0.08] text-fg/80")
+                      : "text-muted-fg/35 hover:text-muted-fg/60",
+                    disabled ? "cursor-not-allowed opacity-50" : "",
+                  )}
+                  disabled={disabled || !onChange}
+                  onClick={() => onChange?.(option.value)}
+                  onMouseEnter={() => onHoverChange?.(option.value)}
+                  onMouseLeave={() => onHoverChange?.(null)}
+                  onFocus={() => onHoverChange?.(option.value)}
+                  onBlur={() => onHoverChange?.(null)}
+                  aria-pressed={active}
+                >
+                  {option.label}
+                </button>
+              </SmartTooltip>
             );
           })}
         </div>
@@ -1266,9 +1276,23 @@ export function AgentChatComposer({
   };
 
   const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (!canAttach || !event.clipboardData.files.length) return;
+    if (!canAttach) return;
+    const collected: File[] = [];
+    if (event.clipboardData.files.length) {
+      for (const file of Array.from(event.clipboardData.files)) collected.push(file);
+    }
+    if (!collected.length && event.clipboardData.items?.length) {
+      for (const item of Array.from(event.clipboardData.items)) {
+        if (item.kind !== "file") continue;
+        const file = item.getAsFile();
+        if (file) collected.push(file);
+      }
+    }
+    if (!collected.length) return;
     event.preventDefault();
-    void addFileAttachments(event.clipboardData.files);
+    const dt = new DataTransfer();
+    for (const file of collected) dt.items.add(file);
+    void addFileAttachments(dt.files);
   };
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
@@ -1529,28 +1553,6 @@ export function AgentChatComposer({
       }
       footer={
         <div className="flex flex-col gap-2 px-3 py-1.5">
-          {showParallelChatToggle && !parallelChatMode ? (
-            <button
-              type="button"
-              disabled={turnActive || busy}
-              onClick={() => onParallelChatModeChange?.(true)}
-              className={cn(
-                "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
-                "border-white/[0.08] bg-white/[0.02] hover:border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)]",
-                turnActive || busy ? "cursor-not-allowed opacity-40" : "",
-              )}
-            >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-[var(--chat-accent)]">
-                <SquareSplitHorizontal size={18} weight="regular" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block font-sans text-[12px] font-medium text-fg/85">Parallel models</span>
-                <span className="mt-0.5 block font-sans text-[11px] leading-snug text-muted-fg/55">
-                  Same prompt and attachments in one child lane per model
-                </span>
-              </span>
-            </button>
-          ) : null}
           {parallelChatMode ? (
             <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
               <div className="flex items-start justify-between gap-2">
@@ -1560,17 +1562,19 @@ export function AgentChatComposer({
                     Configure each model, then send once. Attachments go to every lane (max {PARALLEL_CHAT_MAX_ATTACHMENTS}).
                   </p>
                 </div>
-                <button
-                  type="button"
-                  disabled={parallelLaunchBusy}
-                  className="shrink-0 rounded-lg border border-white/[0.1] px-2 py-1 font-sans text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
-                  onClick={() => {
-                    onParallelChatModeChange?.(false);
-                    onParallelConfiguringIndexChange?.(null);
-                  }}
-                >
-                  Single model
-                </button>
+                <SmartTooltip content={{ label: "Single model", description: "Turn off parallel launch and return this draft to one chat session." }}>
+                  <button
+                    type="button"
+                    disabled={parallelLaunchBusy}
+                    className="shrink-0 rounded-lg border border-white/[0.1] px-2 py-1 font-sans text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
+                    onClick={() => {
+                      onParallelChatModeChange?.(false);
+                      onParallelConfiguringIndexChange?.(null);
+                    }}
+                  >
+                    Single model
+                  </button>
+                </SmartTooltip>
               </div>
               <div className="mt-3 flex flex-col gap-2">
                 {parallelModelSlots.map((slotRow, idx) => {
@@ -1592,44 +1596,51 @@ export function AgentChatComposer({
                       <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[12px] font-medium text-fg/82">
                         {(desc?.displayName ?? slotRow.modelId) || "Pick a model"}
                       </span>
-                      <button
-                        type="button"
-                        className={cn(
-                          "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
-                          configuring
-                            ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
-                            : "text-muted-fg/55 hover:bg-white/[0.06] hover:text-fg/75",
-                        )}
-                        disabled={parallelLaunchBusy}
-                        onClick={() => onParallelConfiguringIndexChange?.(configuring ? null : idx)}
-                      >
-                        {configuring ? "Editing" : "Configure"}
-                      </button>
-                      {parallelModelSlots.length > 2 ? (
+                      <SmartTooltip content={{ label: configuring ? "Stop configuring" : "Configure model", description: "Edit the model, reasoning, permissions, and launch mode for this parallel lane." }}>
                         <button
                           type="button"
-                          className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 font-sans text-[10px] text-red-400/75 transition-colors hover:bg-red-500/10"
+                          className={cn(
+                            "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
+                            configuring
+                              ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
+                              : "text-muted-fg/55 hover:bg-white/[0.06] hover:text-fg/75",
+                          )}
                           disabled={parallelLaunchBusy}
-                          onClick={() => onParallelRemoveModel?.(idx)}
-                          title="Remove this model from the parallel set"
+                          onClick={() => onParallelConfiguringIndexChange?.(configuring ? null : idx)}
                         >
-                          <Trash size={12} />
-                          Remove
+                          {configuring ? "Editing" : "Configure"}
                         </button>
+                      </SmartTooltip>
+                      {parallelModelSlots.length > 2 ? (
+                        <span className="ml-auto inline-flex">
+                          <SmartTooltip content={{ label: "Remove model", description: "Remove this model from the parallel launch set." }}>
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-sans text-[10px] text-red-400/75 transition-colors hover:bg-red-500/10"
+                              disabled={parallelLaunchBusy}
+                              onClick={() => onParallelRemoveModel?.(idx)}
+                            >
+                              <Trash size={12} />
+                              Remove
+                            </button>
+                          </SmartTooltip>
+                        </span>
                       ) : null}
                     </div>
                   );
                 })}
               </div>
-              <button
-                type="button"
-                className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.12] px-2.5 py-1.5 font-sans text-[11px] font-medium text-muted-fg/65 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04] hover:text-fg/75 disabled:opacity-40"
-                disabled={parallelLaunchBusy}
-                onClick={() => onParallelAddModel?.()}
-              >
-                <Plus size={14} weight="bold" />
-                Add model
-              </button>
+              <SmartTooltip content={{ label: "Add model", description: "Add another model and child lane to this parallel launch." }}>
+                <button
+                  type="button"
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.12] px-2.5 py-1.5 font-sans text-[11px] font-medium text-muted-fg/65 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04] hover:text-fg/75 disabled:opacity-40"
+                  disabled={parallelLaunchBusy}
+                  onClick={() => onParallelAddModel?.()}
+                >
+                  <Plus size={14} weight="bold" />
+                  Add model
+                </button>
+              </SmartTooltip>
               {parallelLaunchBusy && parallelLaunchStatus ? (
                 <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
                   <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--chat-accent)]" />
@@ -1649,21 +1660,28 @@ export function AgentChatComposer({
                 {parallelSlotExecutionModeOptions.map((option) => {
                   const active = parallelSlotExecutionMode === option.value;
                   return (
-                    <button
+                    <SmartTooltip
                       key={option.value}
-                      type="button"
-                      className={cn(
-                        "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
-                        active ? "bg-white/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
-                        parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
-                      )}
-                      disabled={parallelLaunchBusy}
-                      onClick={() => onParallelSlotExecutionModeChange?.(option.value)}
-                      title={option.helper}
-                      aria-pressed={active}
+                      content={{
+                        label: option.label,
+                        description: option.helper,
+                        effect: active ? "Currently selected for this parallel lane." : undefined,
+                      }}
                     >
-                      {option.label}
-                    </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                          active ? "bg-white/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
+                          parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
+                        )}
+                        disabled={parallelLaunchBusy}
+                        onClick={() => onParallelSlotExecutionModeChange?.(option.value)}
+                        aria-pressed={active}
+                      >
+                        {option.label}
+                      </button>
+                    </SmartTooltip>
                   );
                 })}
               </div>
@@ -1696,127 +1714,187 @@ export function AgentChatComposer({
 
           {/* Right: attachment, commands, proof, context, send */}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            <button
-              type="button"
-              className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-              disabled={!canAttach}
-              onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-              title={
-                parallelChatMode
-                  ? attachBlockedReason ?? "Search repo for files (@)"
-                  : "Attach files or images (@)"
-              }
-              aria-label="Open attachment picker"
-            >
-              @
-            </button>
-            <button
-              type="button"
-              className="rounded-md px-1 py-1 text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-              disabled={!canAttach}
-              onClick={openUploadPicker}
-              title={parallelChatMode ? (attachBlockedReason ?? "Upload files") : "Upload file from disk"}
-              aria-label="Upload file from disk"
-            >
-              <Paperclip size={11} />
-            </button>
-            <button
-              type="button"
-              className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-              onClick={() => {
-                const el = textareaRef.current;
-                const currentDraft = el?.value ?? "";
-                if (!currentDraft.length) onDraftChange("/");
-                const rect = el?.getBoundingClientRect();
-                setCommandMenuTrigger({
-                  type: "slash",
-                  query: currentDraft.startsWith("/") ? currentDraft.slice(1).match(/^[^\s/]*/)?.[0] ?? "" : "",
-                  cursorIndex: 0,
-                });
-                if (rect) setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
-                el?.focus();
+            <SmartTooltip
+              content={{
+                label: "Attach from project",
+                description: parallelChatMode
+                  ? attachBlockedReason ?? "Search the project for files to send to every parallel lane."
+                  : "Search the project for files or images to attach to this message.",
+                shortcut: "@",
               }}
-              title="Commands (/)"
-              aria-label="Open command picker"
             >
-              /
-            </button>
+              <button
+                type="button"
+                className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
+                disabled={!canAttach}
+                onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
+                aria-label="Open attachment picker"
+              >
+                @
+              </button>
+            </SmartTooltip>
+            <SmartTooltip
+              content={{
+                label: "Upload file",
+                description: parallelChatMode
+                  ? attachBlockedReason ?? "Upload files from disk and send them to every parallel lane."
+                  : "Upload a file from disk and attach it to this message.",
+              }}
+            >
+              <button
+                type="button"
+                className="rounded-md px-1 py-1 text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
+                disabled={!canAttach}
+                onClick={openUploadPicker}
+                aria-label="Upload file from disk"
+              >
+                <Paperclip size={11} />
+              </button>
+            </SmartTooltip>
+            <SmartTooltip content={{ label: "Commands", description: "Open the slash-command picker for this chat.", shortcut: "/" }}>
+              <button
+                type="button"
+                className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
+                onClick={() => {
+                  const el = textareaRef.current;
+                  const currentDraft = el?.value ?? "";
+                  if (!currentDraft.length) onDraftChange("/");
+                  const rect = el?.getBoundingClientRect();
+                  setCommandMenuTrigger({
+                    type: "slash",
+                    query: currentDraft.startsWith("/") ? currentDraft.slice(1).match(/^[^\s/]*/)?.[0] ?? "" : "",
+                    cursorIndex: 0,
+                  });
+                  if (rect) setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                  el?.focus();
+                }}
+                aria-label="Open command picker"
+              >
+                /
+              </button>
+            </SmartTooltip>
+
+            {showParallelChatToggle && !parallelChatMode ? (
+              <SmartTooltip
+                content={{
+                  label: "Parallel models",
+                  description: "Send the same prompt and attachments to one child lane per model.",
+                  effect: "Opens parallel model setup for this draft.",
+                }}
+              >
+                <button
+                  type="button"
+                  disabled={turnActive || busy}
+                  onClick={() => onParallelChatModeChange?.(true)}
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-sans text-[10px] font-medium transition-colors",
+                    "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
+                    turnActive || busy ? "cursor-not-allowed opacity-40" : "",
+                  )}
+                  aria-label="Configure parallel models"
+                >
+                  <SquareSplitHorizontal size={11} weight="regular" />
+                </button>
+              </SmartTooltip>
+            ) : null}
 
             {/* Proof drawer toggle */}
             {onToggleProof ? (
-              <button
-                type="button"
-                className={cn(
-                  "relative inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-sans text-[10px] font-medium transition-colors",
-                  proofOpen
-                    ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-200/80"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-white/[0.10] hover:text-fg/60",
-                )}
-                onClick={onToggleProof}
-                title={proofOpen ? "Close proof drawer" : "Open proof drawer"}
-                aria-label={proofOpen ? "Close proof drawer" : "Open proof drawer"}
-                aria-pressed={proofOpen}
+              <SmartTooltip
+                content={{
+                  label: proofOpen ? "Close proof drawer" : "Open proof drawer",
+                  description: proofOpen
+                    ? "Hide captured screenshots, videos, browser traces, and proof artifacts."
+                    : "Show captured screenshots, videos, browser traces, and proof artifacts for this chat.",
+                  effect: proofArtifactCount > 0 ? `${proofArtifactCount} artifact${proofArtifactCount === 1 ? "" : "s"} available.` : undefined,
+                }}
               >
-                <Cube size={11} weight={proofOpen ? "fill" : "regular"} />
-                {proofArtifactCount > 0 ? (
-                  <span className="inline-flex h-[12px] min-w-[12px] items-center justify-center rounded-full bg-emerald-500/20 px-0.5 font-mono text-[8px] font-bold text-emerald-200/90">
-                    {proofArtifactCount}
-                  </span>
-                ) : null}
-              </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "relative inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-sans text-[10px] font-medium transition-colors",
+                    proofOpen
+                      ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-200/80"
+                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-white/[0.10] hover:text-fg/60",
+                  )}
+                  onClick={onToggleProof}
+                  aria-label={proofOpen ? "Close proof drawer" : "Open proof drawer"}
+                  aria-pressed={proofOpen}
+                >
+                  <Cube size={11} weight={proofOpen ? "fill" : "regular"} />
+                  {proofArtifactCount > 0 ? (
+                    <span className="inline-flex h-[12px] min-w-[12px] items-center justify-center rounded-full bg-emerald-500/20 px-0.5 font-mono text-[8px] font-bold text-emerald-200/90">
+                      {proofArtifactCount}
+                    </span>
+                  ) : null}
+                </button>
+              </SmartTooltip>
             ) : null}
 
             {turnActive ? (
               <>
                 {draft.trim().length > 0 && onClearDraft ? (
-                  <button
-                    type="button"
-                    className="inline-flex h-6 items-center justify-center rounded-md border border-white/[0.06] px-1.5 font-sans text-[10px] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
-                    onClick={onClearDraft}
-                    title="Clear draft only"
-                  >
-                    Clear
-                  </button>
+                  <SmartTooltip content={{ label: "Clear draft", description: "Clear the unsent text without interrupting the active turn." }}>
+                    <button
+                      type="button"
+                      className="inline-flex h-6 items-center justify-center rounded-md border border-white/[0.06] px-1.5 font-sans text-[10px] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
+                      onClick={onClearDraft}
+                    >
+                      Clear
+                    </button>
+                  </SmartTooltip>
                 ) : null}
                 {draft.trim().length > 0 ? (
+                  <SmartTooltip content={{ label: "Send steer message", description: "Queue this message for the running chat after the current turn finishes." }}>
+                    <button
+                      type="button"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
+                      onClick={submitComposerDraft}
+                      aria-label="Send steer message"
+                    >
+                      <PaperPlaneTilt size={10} weight="fill" />
+                    </button>
+                  </SmartTooltip>
+                ) : null}
+                <SmartTooltip content={{ label: "Stop active turn", description: "Interrupt only the current model turn for this chat.", shortcut: `${modifierKeyLabel}+.` }}>
                   <button
                     type="button"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-                    onClick={submitComposerDraft}
-                    title="Send steer message"
-                    aria-label="Send steer message"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-red-500/25 bg-red-500/[0.08] text-red-400/80 transition-all hover:border-red-500/40 hover:bg-red-500/[0.14] hover:text-red-400"
+                    aria-label="Stop active turn"
+                    onClick={onInterrupt}
                   >
-                    <PaperPlaneTilt size={10} weight="fill" />
+                    <Square size={9} weight="fill" />
                   </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-red-500/25 bg-red-500/[0.08] text-red-400/80 transition-all hover:border-red-500/40 hover:bg-red-500/[0.14] hover:text-red-400"
-                  title={`Stop the active turn only (${modifierKeyLabel}+.)`}
-                  aria-label="Stop active turn"
-                  onClick={onInterrupt}
-                >
-                  <Square size={9} weight="fill" />
-                </button>
+                </SmartTooltip>
               </>
             ) : (
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-8 items-center justify-center rounded-lg border px-4 transition-all",
-                  sendEnabled
-                    ? "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]"
-                    : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
-                )}
-                disabled={!sendEnabled}
-                onClick={submitComposerDraft}
-                title={sendButtonTitle()}
+              <SmartTooltip
+                content={{
+                  label: parallelChatMode ? "Send to lanes" : "Send message",
+                  description: parallelChatMode
+                    ? "Create child lanes and send this prompt with its attachments to every configured model."
+                    : "Send this prompt to the selected model.",
+                  effect: sendButtonTitle(),
+                }}
               >
-                <PaperPlaneTilt size={10} weight="fill" />
-                <span className="ml-1 font-sans text-[10px]">
-                  {parallelChatMode ? "Send to lanes" : "Send"}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex h-8 items-center justify-center rounded-lg border px-4 transition-all",
+                    sendEnabled
+                      ? "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]"
+                      : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
+                  )}
+                  disabled={!sendEnabled}
+                  onClick={submitComposerDraft}
+                  aria-label={parallelChatMode ? "Send to parallel lanes" : "Send message"}
+                >
+                  <PaperPlaneTilt size={10} weight="fill" />
+                  <span className="ml-1 font-sans text-[10px]">
+                    {parallelChatMode ? "Send to lanes" : "Send"}
+                  </span>
+                </button>
+              </SmartTooltip>
             )}
           </div>
           </div>

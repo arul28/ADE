@@ -2880,6 +2880,21 @@ export function createLaneService({
       const normalizedColor = color === undefined ? lane.color : color;
       const normalizedIcon = icon === undefined ? parseLaneIcon(lane.icon) : icon;
 
+      if (normalizedColor && normalizedColor !== lane.color) {
+        const conflict = db.get<{ name: string }>(
+          `select name from lanes
+           where project_id = ?
+             and id != ?
+             and archived_at is null
+             and lower(color) = lower(?)
+           limit 1`,
+          [projectId, laneId, normalizedColor]
+        );
+        if (conflict) {
+          throw new Error(`Color already in use by lane "${conflict.name}"`);
+        }
+      }
+
       db.run(
         `
           update lanes

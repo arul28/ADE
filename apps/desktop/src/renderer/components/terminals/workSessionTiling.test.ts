@@ -73,4 +73,42 @@ describe("buildWorkSessionTilingTree", () => {
     }
     expect(collectLeafIds(tree)).toEqual(ids);
   });
+
+  it("builds a single column of stacked rows for the rows preset", () => {
+    const ids = ["one", "two", "three", "four"];
+    const tree = buildWorkSessionTilingTree(ids, "rows");
+    expect(tree.direction).toBe("vertical");
+    expect(tree.children).toHaveLength(4);
+    for (const child of tree.children) {
+      expect(child.node).toMatchObject({ type: "pane" });
+      expect(child.defaultSize).toBe(25);
+    }
+    expect(collectLeafIds(tree)).toEqual(ids);
+  });
+
+  it("builds a single horizontal strip for the columns preset", () => {
+    const ids = ["one", "two", "three", "four"];
+    const tree = buildWorkSessionTilingTree(ids, "columns");
+    expect(tree.direction).toBe("horizontal");
+    expect(tree.children).toHaveLength(4);
+    for (const child of tree.children) {
+      expect(child.node).toMatchObject({ type: "pane" });
+      expect(child.defaultSize).toBe(25);
+    }
+    expect(collectLeafIds(tree)).toEqual(ids);
+  });
+
+  it("returns a single full-size leaf for the rows preset with one session", () => {
+    const tree = buildWorkSessionTilingTree(["solo"], "rows");
+    expect(collectLeafIds(tree)).toEqual(["solo"]);
+    expect(tree.children).toHaveLength(1);
+    expect(tree.children[0]?.defaultSize).toBe(100);
+  });
+
+  it("returns a single full-size leaf for the columns preset with one session", () => {
+    const tree = buildWorkSessionTilingTree(["solo"], "columns");
+    expect(collectLeafIds(tree)).toEqual(["solo"]);
+    expect(tree.children).toHaveLength(1);
+    expect(tree.children[0]?.defaultSize).toBe(100);
+  });
 });

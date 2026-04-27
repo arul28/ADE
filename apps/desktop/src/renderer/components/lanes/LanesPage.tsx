@@ -21,6 +21,7 @@ import { AttachLaneDialog } from "./AttachLaneDialog";
 import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
 import { ManageLaneDialog } from "./ManageLaneDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
+import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
 import { HelpChip } from "../onboarding/HelpChip";
 import { useOnboardingStore } from "../../state/onboardingStore";
@@ -79,11 +80,6 @@ type RebasePushReviewState = {
 };
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
-
-const LANE_ACCENT_COLORS = [
-  "#a78bfa", "#60a5fa", "#34d399", "#fbbf24",
-  "#f472b6", "#fb923c", "#2dd4bf", "#c084fc",
-] as const;
 
 function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string {
   const names = (devicesOpen ?? [])
@@ -253,6 +249,7 @@ export function LanesPage() {
   const createBaseBranchUserPickedRef = useRef(false);
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [createSelectedColor, setCreateSelectedColor] = useState<string | null>(null);
   const [multiAttachOpen, setMultiAttachOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
@@ -1459,6 +1456,7 @@ export function LanesPage() {
     setCreateError(null);
     setCreateEnvInitProgress(null);
     setSelectedTemplateId("");
+    setCreateSelectedColor(null);
   }, []);
 
   const prepareCreateDialog = useCallback(() => {
@@ -1657,6 +1655,14 @@ export function LanesPage() {
       createEnvInitLaneIdRef.current = lane.id;
       setLaneCreated(true);
 
+      if (createSelectedColor) {
+        try {
+          await window.ade.lanes.updateAppearance({ laneId: lane.id, color: createSelectedColor });
+        } catch {
+          // Color collisions or transient errors shouldn't block lane creation.
+        }
+      }
+
       await refreshLanes();
       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
 
@@ -1666,7 +1672,7 @@ export function LanesPage() {
       setCreateError(err instanceof Error ? err.message : String(err));
       setCreateBusy(false);
     }
-  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createChildBaseBranch, lanes, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates]);
+  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createChildBaseBranch, lanes, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates, createSelectedColor]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -2678,7 +2684,7 @@ export function LanesPage() {
             return (
               <Fragment key={laneId}>
                 <Panel id={`lane-column:${laneId}`} minSize="12%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
-                  <div className="ade-lane-column" style={{ "--lane-accent": LANE_ACCENT_COLORS[index % LANE_ACCENT_COLORS.length] } as React.CSSProperties}>
+                  <div className="ade-lane-column" style={{ "--lane-accent": getLaneAccent(lane, index) } as React.CSSProperties}>
                     <div className="flex items-center gap-1.5 px-2 shrink-0" style={{ height: 22, background: `color-mix(in srgb, var(--lane-accent) 6%, transparent)` }}>
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--lane-accent)", opacity: 0.85 }}>{laneName}</span>
                     </div>
@@ -2768,6 +2774,7 @@ export function LanesPage() {
         onOpenChange={setManageOpen}
         managedLane={managedLane}
         managedLanes={managedLanes}
+        allLanes={lanes}
         deleteMode={deleteMode}
         setDeleteMode={setDeleteMode}
         deleteRemoteName={deleteRemoteName}
@@ -2818,6 +2825,8 @@ export function LanesPage() {
         templates={templates}
         selectedTemplateId={selectedTemplateId}
         setSelectedTemplateId={setSelectedTemplateId}
+        selectedColor={createSelectedColor}
+        setSelectedColor={setCreateSelectedColor}
         onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
         importBranchWarning={
           createMode === "existing" && createImportBranch && primaryLane?.status.dirty

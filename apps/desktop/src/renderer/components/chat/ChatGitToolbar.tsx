@@ -20,6 +20,8 @@ import {
   scheduleLaneGitActionRuntimeClear,
   useLaneGitActionRuntimeState,
 } from "../lanes/LaneGitActionsPane";
+import { LaneAccentDot } from "../lanes/LaneAccentDot";
+import { useAppStore } from "../../state/appStore";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,6 +76,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
+  const laneColor = useAppStore((s) => s.lanes.find((l) => l.id === laneId)?.color ?? null);
 
   const [laneName, setLaneName] = useState<string | null>(null);
   const [dirtyCount, setDirtyCount] = useState(0);
@@ -279,7 +282,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
             onClick={() => navigate(`/lanes/${laneId}`)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/10 bg-violet-500/[0.04] px-2.5 py-1 font-mono text-[10px] text-violet-200/60 cursor-pointer transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08]"
           >
-            <GitBranch size={10} weight="bold" className="shrink-0 text-violet-400/50" />
+            {laneColor ? (
+              <LaneAccentDot lane={{ color: laneColor }} size={7} className="shrink-0" />
+            ) : (
+              <GitBranch size={10} weight="bold" className="shrink-0 text-violet-400/50" />
+            )}
             <span className="max-w-[140px] truncate">{laneName ?? laneId}</span>
           </button>
           <QuickRunMenu laneId={laneId} compact label="Run" triggerStyle={{ height: 22, padding: "0 8px" }} />

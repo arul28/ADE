@@ -9,6 +9,7 @@ The complete surface of triggers the automation runtime listens for, and the act
 - `apps/desktop/src/main/services/automations/githubPollingService.ts` — GitHub REST polling that emits `github.issue_*` and `github.pr_*` events by diffing per-repo snapshots.
 - `apps/desktop/src/main/services/automations/automationPlannerService.ts` — natural-language rule authoring (creates triggers + actions from a free-text brief).
 - `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist for the `ade-action` action type.
+- `apps/desktop/src/renderer/components/automations/adeActionSchemas.ts` — UI-side parameter schema for each allowlisted action; drives the structured form in `AdeActionEditor` (per-param input type, required flag, placeholder hints like `{{trigger.lane.id}}`, enum options).
 - `apps/desktop/src/shared/types/config.ts` — `AutomationTriggerType`, `AutomationActionType`, `AutomationTrigger`, `AutomationAction`, `RunAdeActionConfig`, `LEGACY_GITHUB_PR_TRIGGER_ALIASES`, `AUTOMATION_TRIGGER_TYPES`.
 - `apps/desktop/src/shared/types/automations.ts` — `AutomationDraftAction`, `AutomationIngressSource`, `AutomationIngressEventRecord`, `AutomationTriggerIssueContext`, `AutomationTriggerPrContext`, `AutomationTriggerLinearIssueContext`, `AdeActionRegistryEntry`.
 
@@ -156,6 +157,8 @@ Action types (`AutomationActionType`):
   - `resolvers` — optional explicit `{ key: "trigger.path" }` mapping for placeholders that are not embedded in `args` strings.
 
 `isAllowedAdeAction(domain, action)` gates every `ade-action` dispatch; `listAllowedAdeActionNames(domain, service)` powers the picker in `AdeActionEditor`. The full allowlist lives in `apps/desktop/src/main/services/adeActions/registry.ts`.
+
+`AdeActionEditor` is split into two modes: a structured form driven by `adeActionSchemas.ts` (one input per declared `AdeActionParam`, with type-aware widgets — strings, numbers, booleans, comma-separated string arrays, enum dropdowns, and a JSON editor for free-form `json` params) and a raw JSON fallback (`Show JSON` toggle) for actions that have no schema entry or for users who want full control. The action picker filters by domain and search, surfaces `description` text, and inserts `{{trigger.*}}` placeholders (`trigger.lane.id`, `trigger.pr.id`, `trigger.pr.number`, `trigger.pr.title`, `trigger.pr.author`, `trigger.branch`) directly into the focused string input.
 
 ## Natural-language rule authoring
 

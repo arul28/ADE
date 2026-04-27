@@ -337,6 +337,7 @@ export const IPC = {
   githubGetStatus: "ade.github.getStatus",
   githubSetToken: "ade.github.setToken",
   githubClearToken: "ade.github.clearToken",
+  githubStatusChanged: "ade.github.statusChanged",
   githubListRepoLabels: "ade.github.listRepoLabels",
   githubListRepoCollaborators: "ade.github.listRepoCollaborators",
   githubListRepoIssues: "ade.github.listRepoIssues",

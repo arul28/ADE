@@ -3,6 +3,8 @@ import type { PaneLayoutEntry, PaneSplit } from "../ui/PaneTilingLayout";
 const MIN_PANE_SIZE = 8;
 const MIN_ROW_SIZE = 12;
 
+export type TilingPreset = "auto" | "rows" | "columns";
+
 function paneEntry(id: string, defaultSize: number, minSize: number): PaneLayoutEntry {
   return { node: { type: "pane", id }, defaultSize, minSize };
 }
@@ -13,12 +15,31 @@ function rowSizes(total: number, rowCount: number): number[] {
   return Array.from({ length: rowCount }, (_, index) => base + (index < remainder ? 1 : 0));
 }
 
-export function buildWorkSessionTilingTree(sessionIds: string[]): PaneSplit {
+export function buildWorkSessionTilingTree(
+  sessionIds: string[],
+  preset: TilingPreset = "auto",
+): PaneSplit {
   if (sessionIds.length <= 1) {
     return {
       type: "split",
       direction: "vertical",
       children: sessionIds.map((id) => paneEntry(id, 100, MIN_ROW_SIZE)),
+    };
+  }
+
+  if (preset === "rows") {
+    return {
+      type: "split",
+      direction: "vertical",
+      children: sessionIds.map((id) => paneEntry(id, 100 / sessionIds.length, MIN_ROW_SIZE)),
+    };
+  }
+
+  if (preset === "columns") {
+    return {
+      type: "split",
+      direction: "horizontal",
+      children: sessionIds.map((id) => paneEntry(id, 100 / sessionIds.length, MIN_PANE_SIZE)),
     };
   }
 

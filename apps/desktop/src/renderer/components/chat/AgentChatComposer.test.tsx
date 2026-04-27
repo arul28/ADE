@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { AgentChatComposer } from "./AgentChatComposer";
-import { modifierKeyLabel } from "../../lib/platform";
 
 function installMatchMediaMock(): void {
   if (typeof window.matchMedia === "function") return;
@@ -147,7 +146,7 @@ describe("AgentChatComposer", () => {
   it("stop only interrupts the active turn", () => {
     const props = renderComposer();
 
-    const stopButtons = screen.getAllByTitle(`Stop the active turn only (${modifierKeyLabel}+.)`);
+    const stopButtons = screen.getAllByLabelText("Stop active turn");
     fireEvent.click(stopButtons[stopButtons.length - 1]!);
 
     expect(props.onInterrupt).toHaveBeenCalledTimes(1);
@@ -415,8 +414,8 @@ describe("AgentChatComposer", () => {
   it("allows attachments while steering an active Codex turn", () => {
     renderComposer({ turnActive: true });
 
-    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("allows attachments while steering an active Claude turn", () => {
@@ -427,8 +426,8 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["anthropic/claude-sonnet-4-6"],
     });
 
-    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("allows attachments while steering an active Cursor turn", () => {
@@ -439,8 +438,8 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["cursor/auto"],
     });
 
-    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("allows attachments while steering an active OpenCode turn", () => {
@@ -451,8 +450,8 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["opencode/openai/gpt-5.4"],
     });
 
-    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("shows inline proof toggle and wires callback", () => {
@@ -463,7 +462,7 @@ describe("AgentChatComposer", () => {
       proofArtifactCount: 3,
     });
 
-    const proofButton = screen.getByTitle("Open proof drawer");
+    const proofButton = screen.getByLabelText("Open proof drawer");
     fireEvent.click(proofButton);
     expect(onToggleProof).toHaveBeenCalledTimes(1);
     expect(screen.getByText("3")).toBeTruthy();

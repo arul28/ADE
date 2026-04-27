@@ -73,6 +73,7 @@ import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { DEFAULT_CHAT_FONT_SIZE_PX, useAppStore } from "../../state/appStore";
+import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached } from "../../lib/aiDiscoveryCache";
@@ -903,6 +904,10 @@ export function AgentChatPane({
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
   const refreshLanesStore = useAppStore((s) => s.refreshLanes);
+  const laneAccentColor = useAppStore((s) => {
+    if (!laneId) return null;
+    return s.lanes.find((l) => l.id === laneId)?.color ?? null;
+  });
   const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs);
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
@@ -4002,8 +4007,17 @@ export function AgentChatPane({
                         style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
                         exit={{ opacity: 0, transition: { duration: 0.15 } }}
                       >
-                        <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: draftAccent }} />
-                        <span className="text-[11px] font-medium text-fg/60">{laneDisplayLabel}</span>
+                        {laneAccentColor ? (
+                          <LaneAccentDot lane={{ color: laneAccentColor }} size={8} />
+                        ) : (
+                          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: draftAccent }} />
+                        )}
+                        <span
+                          className="text-[11px] font-medium"
+                          style={laneAccentColor ? { color: laneAccentColor } : { color: "rgba(255,255,255,0.6)" }}
+                        >
+                          {laneDisplayLabel}
+                        </span>
                       </motion.div>
                     ) : null}
 

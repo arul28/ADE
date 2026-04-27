@@ -140,7 +140,13 @@ Owns the render target for open sessions. Supports three modes tied to
 - `grid` — tiled pane layout. Each session becomes a `PaneConfig` that
   mounts a `SessionSurface` in `grid-tile` variant. The tiling tree is
   rendered by `PaneTilingLayout`, seeded by
-  `buildWorkSessionTilingTree(visibleSessionIds)`.
+  `buildWorkSessionTilingTree(visibleSessionIds, tilingPreset)`. Grid
+  mode renders an inline arrange menu (Auto / Rows / Columns) next to
+  the visible-session count when more than one session is open;
+  switching presets rewrites the persisted tiling tree
+  (`window.ade.tilingTree.set(gridLayoutId, …)`) and resets pane sizes
+  via `window.ade.layout.set(gridLayoutId, {})` so the new preset
+  starts from `defaultSize` rather than inherited percentages.
 - `single` — a single focused session with no tab chrome.
 
 ### `SessionSurface` (internal component)
@@ -177,15 +183,18 @@ Constants:
 The Work grid is a standard `PaneTilingLayout` instance with one leaf
 per visible session. Two helpers build the inputs:
 
-- `buildWorkSessionTilingTree(sessionIds)` (in `workSessionTiling.ts`)
-  returns the seed `PaneSplit` used when nothing has been persisted for
-  the current `gridLayoutId`. It biases toward near-square layouts:
+- `buildWorkSessionTilingTree(sessionIds, preset = "auto")` (in
+  `workSessionTiling.ts`) returns the seed `PaneSplit` used when
+  nothing has been persisted for the current `gridLayoutId`, and is
+  also called by the arrange menu when the user requests a specific
+  preset. `auto` biases toward near-square layouts:
   `columnCount = ceil(sqrt(n))`, `rowCount = ceil(n / columnCount)`,
   then `rowSizes(n, rowCount)` spreads sessions across rows so
-  earlier rows absorb the remainder. The outer split is vertical; each
-  row becomes an inline horizontal split (or a single leaf when the row
-  has one session). `minSize: 8%` (MIN_PANE_SIZE) / `12%` (MIN_ROW_SIZE)
-  floors protect against accidentally collapsing a row.
+  earlier rows absorb the remainder. `rows` produces one full-width
+  vertical split per session; `columns` produces one full-height
+  horizontal split per session. `minSize: 8%` (MIN_PANE_SIZE) /
+  `12%` (MIN_ROW_SIZE) floors protect against accidentally collapsing
+  a row.
 - `WorkViewArea` builds one `PaneConfig` per visible session (keyed by
   `session.id`) with title, status dot, close button, mouse/context
   handlers that forward to `onSelectItem` / `onContextMenu`, and a

@@ -2,6 +2,7 @@ import React from "react";
 import type { LaneSummary } from "../../../shared/types";
 import { revealLabel } from "../../lib/platform";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
+import { LANE_COLOR_PALETTE, colorsInUse } from "./laneColorPalette";
 
 const menuItemStyle: React.CSSProperties = {
   display: "block",
@@ -189,6 +190,14 @@ export function LaneContextMenu({
         </>
       ) : null}
 
+      {ctxLane ? (
+        <>
+          <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
+          <div style={menuHeaderStyle}>Color</div>
+          <ColorSwatchRow ctxLane={ctxLane} lanesById={lanesById} onClose={onClose} />
+        </>
+      ) : null}
+
       {/* ── Split / multi-tab actions ── */}
       {splitCount > 1 || !isInSplit ? (
         <>
@@ -258,6 +267,90 @@ export function LaneContextMenu({
             Manage {deletableVisibleIds.length} Open Lanes...
           </HoverButton>
         </>
+      ) : null}
+    </div>
+  );
+}
+
+function ColorSwatchRow({
+  ctxLane,
+  lanesById,
+  onClose,
+}: {
+  ctxLane: LaneSummary;
+  lanesById: Map<string, LaneSummary>;
+  onClose: () => void;
+}) {
+  const [error, setError] = React.useState<string | null>(null);
+  const used = React.useMemo(() => colorsInUse(Array.from(lanesById.values()), ctxLane.id), [lanesById, ctxLane.id]);
+  const currentLower = ctxLane.color?.toLowerCase() ?? null;
+
+  const apply = async (next: string | null) => {
+    setError(null);
+    try {
+      await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next });
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set color");
+    }
+  };
+
+  return (
+    <div style={{ padding: "4px 12px 8px" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {LANE_COLOR_PALETTE.map((entry) => {
+          const isSelected = currentLower === entry.hex.toLowerCase();
+          const isTaken = !isSelected && used.has(entry.hex.toLowerCase());
+          return (
+            <button
+              key={entry.hex}
+              type="button"
+              title={isTaken ? `${entry.name} — in use` : entry.name}
+              disabled={isTaken}
+              aria-label={entry.name}
+              aria-pressed={isSelected}
+              onClick={() => apply(entry.hex)}
+              style={{
+                width: 18,
+                height: 18,
+                borderRadius: 9999,
+                backgroundColor: entry.hex,
+                opacity: isTaken ? 0.25 : 1,
+                cursor: isTaken ? "not-allowed" : "pointer",
+                outline: isSelected ? `2px solid ${COLORS.textPrimary}` : "none",
+                outlineOffset: 1,
+                boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18)",
+                border: "none",
+                padding: 0,
+              }}
+            />
+          );
+        })}
+        {currentLower ? (
+          <button
+            type="button"
+            title="Clear color"
+            aria-label="Clear color"
+            onClick={() => apply(null)}
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: 9999,
+              backgroundColor: "transparent",
+              cursor: "pointer",
+              border: "1px dashed rgba(255,255,255,0.35)",
+              padding: 0,
+              color: "rgba(255,255,255,0.55)",
+              fontSize: 10,
+              lineHeight: "16px",
+            }}
+          >
+            ✕
+          </button>
+        ) : null}
+      </div>
+      {error ? (
+        <div style={{ marginTop: 6, fontSize: 10, color: "#f87171", fontFamily: MONO_FONT }}>{error}</div>
       ) : null}
     </div>
   );

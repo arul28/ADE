@@ -217,6 +217,15 @@ export type GitHubStatus = {
   userLogin: string | null;
   scopes: string[];
   checkedAt: string | null;
+  // null = no repo to probe / probe not run; true/false = result of GET /repos/{owner}/{repo}.
+  // Required because fine-grained tokens pass /user validation even when the user forgot to
+  // grant the active repo, which then 403s every PR-tab call.
+  repoAccessOk: boolean | null;
+  repoAccessError: string | null;
+  // Single source of truth for "GitHub is usable here" — UI banners and badges read this so
+  // they cannot disagree (the bug we just fixed: Settings said CONNECTED while the AppShell
+  // banner stayed up).
+  connected: boolean;
 };
 
 export type ListOperationsArgs = {

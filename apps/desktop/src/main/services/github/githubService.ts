@@ -5,7 +5,7 @@ import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
 import type { GitHubRepoRef, GitHubStatus } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { parseGitHubScopeHeaders } from "../../../shared/githubScopes";
+import { getGitHubTokenAccessState, parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 
 import { nowIso, asString } from "../shared/utils";
 
@@ -207,6 +207,36 @@ export function createGithubService({
     };
   };
 
+  // Verifies the active token actually has access to the active repo by hitting
+  // /repos/{owner}/{name} (cheapest endpoint that requires Metadata: Read on
+  // fine-grained tokens; classic tokens with `repo` scope also pass). This is
+  // the only reliable connectivity check for fine-grained tokens, which never
+  // return x-oauth-scopes and so cannot be introspected via headers.
+  const probeRepoAccess = async (
+    token: string,
+    repo: GitHubRepoRef,
+  ): Promise<{ ok: boolean; error: string | null }> => {
+    try {
+      const response = await fetch(
+        `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${token}`,
+            "user-agent": "ade-desktop",
+          },
+        },
+      );
+      if (response.ok) return { ok: true, error: null };
+      const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      const message = asString(payload.message) || `HTTP ${response.status}`;
+      return { ok: false, error: `${response.status}: ${message}` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
   // ETag cache for conditional GET requests. Responses that return 304 Not Modified
   // don't count against GitHub's rate limit, so this dramatically reduces API usage.
   const etagCache = new Map<string, { etag: string; data: unknown; linkHeader: string | null }>();
@@ -337,7 +367,37 @@ export function createGithubService({
   let cachedStatus: GitHubStatus | null = null;
   let cachedAt = 0;
 
-  const getStatus = async (): Promise<GitHubStatus> => {
+  // Decides whether the saved token is actually usable for the project. Classic
+  // tokens require both required scopes; fine-grained tokens require a successful
+  // repo probe (since their permissions are not introspectable via headers).
+  const computeConnected = (args: {
+    tokenStored: boolean;
+    userLogin: string | null;
+    tokenType: GitHubStatus["tokenType"];
+    scopes: string[];
+    repo: GitHubRepoRef | null;
+    repoAccessOk: boolean | null;
+  }): boolean => {
+    if (!args.tokenStored || !args.userLogin) return false;
+    if (args.tokenType === "fine-grained") {
+      // No repo to probe (e.g. project without a GitHub remote): a fine-grained
+      // token that authenticates as a user is the best signal we have.
+      if (!args.repo) return true;
+      return args.repoAccessOk === true;
+    }
+    if (args.tokenType === "classic") {
+      const access = getGitHubTokenAccessState(args.scopes);
+      return access.hasRequiredAccess;
+    }
+    // Unknown prefix — fall back to "user lookup worked" (best-effort).
+    return Boolean(args.userLogin);
+  };
+
+  const getStatus = async (opts: { forceRefresh?: boolean } = {}): Promise<GitHubStatus> => {
+    if (opts.forceRefresh) {
+      cachedStatus = null;
+      cachedAt = 0;
+    }
     const token = readStoredToken();
     const repo = await detectRepo().catch(() => null);
     if (!token) {
@@ -349,7 +409,10 @@ export function createGithubService({
         repo,
         userLogin: null,
         scopes: [],
-        checkedAt: null
+        checkedAt: null,
+        repoAccessOk: null,
+        repoAccessError: null,
+        connected: false,
       };
       cachedAt = Date.now();
       return cachedStatus;
@@ -357,12 +420,48 @@ export function createGithubService({
 
     const now = Date.now();
     if (cachedStatus && now - cachedAt < 30_000 && cachedStatus.tokenStored) {
-      // Still re-detect repo, it is cheap and reflects changed remotes.
-      return { ...cachedStatus, repo };
+      // Still re-detect repo and re-evaluate `connected` so a remote change is reflected.
+      const repoChanged =
+        (cachedStatus.repo?.owner ?? null) !== (repo?.owner ?? null) ||
+        (cachedStatus.repo?.name ?? null) !== (repo?.name ?? null);
+      // If the repo just changed we can't trust the cached probe result.
+      const repoAccessOk = repoChanged ? null : cachedStatus.repoAccessOk;
+      const repoAccessError = repoChanged ? null : cachedStatus.repoAccessError;
+      const connected = computeConnected({
+        tokenStored: true,
+        userLogin: cachedStatus.userLogin,
+        tokenType: cachedStatus.tokenType,
+        scopes: cachedStatus.scopes,
+        repo,
+        repoAccessOk,
+      });
+      return { ...cachedStatus, repo, repoAccessOk, repoAccessError, connected };
     }
 
     try {
       const validated = await validateToken(token);
+      let repoAccessOk: boolean | null = null;
+      let repoAccessError: string | null = null;
+      if (repo) {
+        const probe = await probeRepoAccess(token, repo);
+        repoAccessOk = probe.ok;
+        repoAccessError = probe.error;
+        if (!probe.ok) {
+          logger.warn("github.repo_probe_failed", {
+            repo: `${repo.owner}/${repo.name}`,
+            tokenType: validated.tokenType,
+            error: probe.error,
+          });
+        }
+      }
+      const connected = computeConnected({
+        tokenStored: true,
+        userLogin: validated.userLogin,
+        tokenType: validated.tokenType,
+        scopes: validated.scopes,
+        repo,
+        repoAccessOk,
+      });
       cachedStatus = {
         tokenStored: true,
         tokenDecryptionFailed: false,
@@ -371,7 +470,10 @@ export function createGithubService({
         repo,
         userLogin: validated.userLogin,
         scopes: validated.scopes,
-        checkedAt: nowIso()
+        checkedAt: nowIso(),
+        repoAccessOk,
+        repoAccessError,
+        connected,
       };
       cachedAt = now;
       return cachedStatus;
@@ -385,7 +487,10 @@ export function createGithubService({
         repo,
         userLogin: null,
         scopes: [],
-        checkedAt: nowIso()
+        checkedAt: nowIso(),
+        repoAccessOk: null,
+        repoAccessError: null,
+        connected: false,
       };
       cachedAt = now;
       return cachedStatus;

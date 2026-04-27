@@ -98,9 +98,13 @@ Renderer surfaces:
   counters.
 - `apps/desktop/src/renderer/components/terminals/workSessionTiling.ts` —
   pure helper that produces the seed `PaneSplit` for the Work grid from
-  an ordered list of session IDs (single-column for ≤1 session, single
-  row when `ceil(sqrt(n)) == n`, otherwise a vertical stack of horizontal
-  rows with counts distributed by `rowSizes`).
+  an ordered list of session IDs. Accepts a `TilingPreset` of
+  `"auto"` (default — single-column for ≤1 session, single row when
+  `ceil(sqrt(n)) == n`, otherwise a vertical stack of horizontal rows
+  with counts distributed by `rowSizes`), `"rows"` (one full-width row
+  per session), or `"columns"` (one column per session). The
+  `WorkViewArea` arrange menu rewrites the persisted tiling tree when
+  the user picks a non-auto preset.
 - `apps/desktop/src/renderer/components/ui/PaneTilingLayout.tsx` +
   `paneTreeOps.ts` — recursive pane tree component + pure operations
   (`reconcilePaneTree`, `splitPaneAtEdge`, `swapPanes`, `removePaneFromTree`,

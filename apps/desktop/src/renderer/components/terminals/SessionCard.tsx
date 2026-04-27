@@ -69,6 +69,7 @@ export const SessionCard = React.memo(function SessionCard({
   const highlightedBorder = isHighlighted
     ? "1px solid rgba(255,255,255,0.08)"
     : "1px solid transparent";
+  const laneAccent = lane?.color ?? null;
   const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
     provider: session.toolType === "claude-chat" ? "claude" : null,
     status: session.runtimeState === "idle" ? "idle" : "active",
@@ -91,6 +92,7 @@ export const SessionCard = React.memo(function SessionCard({
           borderTop: highlightedBorder,
           borderRight: highlightedBorder,
           borderBottom: highlightedBorder,
+          borderLeftColor: !isHighlighted && laneAccent ? laneAccent : undefined,
         }}
         onClick={(event) => onSelect(session.id, event)}
       >
@@ -143,10 +145,16 @@ export const SessionCard = React.memo(function SessionCard({
                 {shortToolTypeLabel(session.toolType)}
               </span>
               <span className="text-muted-fg/25">&middot;</span>
-              <span className="inline-flex shrink-0 items-center justify-center text-muted-fg/55">
+              <span
+                className="inline-flex shrink-0 items-center justify-center"
+                style={{ color: laneAccent ?? undefined }}
+              >
                 {laneMarker}
               </span>
-              <span className="min-w-0 flex-1 truncate text-[10px] text-muted-fg/50">
+              <span
+                className="min-w-0 flex-1 truncate text-[10px] text-muted-fg/50"
+                style={laneAccent ? { color: laneAccent, opacity: 0.85 } : undefined}
+              >
                 {lane?.name ?? session.laneName}
               </span>
 

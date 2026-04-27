@@ -6,6 +6,7 @@ import type { IntegrationLaneSource } from "../../lib/integrationLanes";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "./laneDesignTokens";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { LaneAccentDot } from "./LaneAccentDot";
 
 const TREE_ROW_H = 34;
 const TREE_INDENT = 22;
@@ -256,6 +257,7 @@ function StackGraph({
               }}
             >
               <LaneRuntimeDot bucket={runtimeByLaneId.get(lane.id)?.bucket ?? "none"} />
+              {lane.color ? <LaneAccentDot lane={lane} size={7} /> : null}
               <span className="flex flex-col items-start min-w-0" style={{
                 maxWidth: integrationSources.length > 0 ? 120 : 160,
                 lineHeight: 1.05,

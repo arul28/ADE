@@ -5,6 +5,8 @@ import type { MissionSummary } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 import { STATUS_CONFIG, TERMINAL_MISSION_STATUSES } from "./missionHelpers";
 import { useMissionsStore } from "./useMissionsStore";
+import { LaneAccentDot } from "../lanes/LaneAccentDot";
+import { useAppStore } from "../../state/appStore";
 
 /* ════════════════════ MANAGE MISSION DIALOG ════════════════════ */
 
@@ -23,6 +25,12 @@ export function ManageMissionDialog() {
   const refreshMissionList = useMissionsStore((s) => s.refreshMissionList);
   const loadDashboard = useMissionsStore((s) => s.loadDashboard);
   const setError = useMissionsStore((s) => s.setError);
+
+  const baseLaneColor = useAppStore((s) => {
+    const laneId = manageMission?.laneId ?? null;
+    if (!laneId) return null;
+    return s.lanes.find((l) => l.id === laneId)?.color ?? null;
+  });
 
   const closeDialog = useCallback(
     (force = false) => {
@@ -132,7 +140,16 @@ export function ManageMissionDialog() {
             </div>
             <div className="mt-3 flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
               <span className="px-1.5 py-0.5 font-bold uppercase tracking-[1px]" style={{ background: STATUS_CONFIG[manageMission.status].background, color: STATUS_CONFIG[manageMission.status].color, border: STATUS_CONFIG[manageMission.status].border }}>{STATUS_CONFIG[manageMission.status].label}</span>
-              {manageMission.laneName ? <span>BASE {manageMission.laneName}</span> : null}
+              {manageMission.laneName ? (
+                <span
+                  className="inline-flex items-center gap-1"
+                  style={baseLaneColor ? { color: baseLaneColor } : undefined}
+                >
+                  BASE
+                  {baseLaneColor ? <LaneAccentDot lane={{ color: baseLaneColor }} size={6} /> : null}
+                  {manageMission.laneName}
+                </span>
+              ) : null}
             </div>
             <div className="mt-4 space-y-3">
               {TERMINAL_MISSION_STATUSES.has(manageMission.status) ? (
