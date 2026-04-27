@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from "electron";
 import { createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -13,6 +13,7 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
+import { resolveProjectIcon } from "../projects/projectIconResolver";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -258,6 +259,7 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  ProjectIcon,
   ProjectInfo,
   RecentProjectSummary,
   PtyCreateArgs,
@@ -1890,6 +1892,107 @@ export function registerIpc({
     return path.resolve(path.isAbsolute(inputPath) ? inputPath : path.join(projectRoot, inputPath));
   };
 
+  const resolveAllowedRendererPath = (rawPath: string): string => {
+    const raw = typeof rawPath === "string" ? rawPath.trim() : "";
+    if (!raw) throw new Error("Missing path.");
+    const ctx = getCtx();
+    const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
+    const allowedDirs = getAllowedDirs(getCtx);
+    // resolvePathWithinRoot follows symlinks via fs.realpath while validating
+    // containment, so we both reject symlinks pointing outside the allowlist
+    // *and* return the canonical real path for callers to read from. Returning
+    // the lexical path would still be safe because the check resolved real
+    // paths, but handing back the realpath avoids any TOCTOU-adjacent surprises
+    // and keeps file I/O pinned to the validated target.
+    let resolved: string | null = null;
+    for (const dir of allowedDirs) {
+      try {
+        resolved = resolvePathWithinRoot(dir, normalized);
+        break;
+      } catch {
+        // try next allowed dir
+      }
+    }
+    if (!resolved) {
+      throw new Error("Path is outside allowed directories.");
+    }
+    return resolved;
+  };
+
+  /**
+   * Sniff the first bytes of a buffer for known image magic numbers and
+   * return the corresponding MIME type. Returns null if the buffer doesn't
+   * match any supported image format.
+   *
+   * We deliberately do NOT trust the file extension here — extension-only
+   * inference would let a renderer hand us any allow-listed file (text,
+   * binary, etc.) and get it back as a base64 `image/png` data URL.
+   */
+  const sniffImageMimeType = (buffer: Buffer): string | null => {
+    if (buffer.length >= 8
+      && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47
+      && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) {
+      return "image/png";
+    }
+    if (buffer.length >= 3
+      && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+      return "image/jpeg";
+    }
+    if (buffer.length >= 6
+      && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38
+      && (buffer[4] === 0x37 || buffer[4] === 0x39) && buffer[5] === 0x61) {
+      return "image/gif";
+    }
+    if (buffer.length >= 12
+      && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
+      && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+      return "image/webp";
+    }
+    if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
+      return "image/bmp";
+    }
+    if (buffer.length >= 4
+      && buffer[0] === 0x00 && buffer[1] === 0x00
+      && buffer[2] === 0x01 && buffer[3] === 0x00) {
+      return "image/x-icon";
+    }
+    // SVG/XML: scan a small prefix as text so leading whitespace, BOM, or an
+    // <?xml ... ?> declaration before <svg ...> are tolerated.
+    const head = buffer.slice(0, Math.min(buffer.length, 1024)).toString("utf8");
+    const stripped = head.replace(/^﻿/, "").trimStart();
+    if (/^<\?xml\b/i.test(stripped) && /<svg\b/i.test(head)) {
+      return "image/svg+xml";
+    }
+    if (/^<svg\b/i.test(stripped)) {
+      return "image/svg+xml";
+    }
+    return null;
+  };
+
+  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+  /**
+   * Read an allow-listed image file from disk after a stat-based size check,
+   * sniff its bytes for a known image magic, and return both the bytes and
+   * the sniffed MIME type. Throws if the file is too large, isn't a regular
+   * file, or doesn't look like a supported image.
+   */
+  const readImageFileAndSniffMime = async (filePath: string): Promise<{ data: Buffer; mimeType: string }> => {
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) {
+      throw new Error("Path is not a file.");
+    }
+    if (stat.size > MAX_IMAGE_BYTES) {
+      throw new Error("Image must be 10 MB or smaller.");
+    }
+    const data = await fs.promises.readFile(filePath);
+    const mimeType = sniffImageMimeType(data);
+    if (!mimeType) {
+      throw new Error("Path is not an image.");
+    }
+    return { data, mimeType };
+  };
+
   ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
@@ -1938,6 +2041,35 @@ export function registerIpc({
   ipcMain.handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
     const text = typeof arg?.text === "string" ? arg.text : "";
     clipboard.writeText(text);
+  });
+
+  ipcMain.handle(IPC.appGetImageDataUrl, async (_event, arg: { path: string }): Promise<{ dataUrl: string }> => {
+    const filePath = resolveAllowedRendererPath(arg?.path);
+    // Use async fs APIs and a size pre-check so a 10 MB image read never
+    // blocks the main process event loop (input dispatch, IPC, window
+    // animations all share that loop). The MIME type is derived from the
+    // file's *bytes*, not its extension, so a renderer can't smuggle
+    // arbitrary text/binary back as a base64 `image/png` data URL.
+    const { data, mimeType } = await readImageFileAndSniffMime(filePath);
+    return {
+      dataUrl: `data:${mimeType};base64,${data.toString("base64")}`,
+    };
+  });
+
+  ipcMain.handle(IPC.appWriteClipboardImage, async (_event, arg: { path: string }): Promise<void> => {
+    const filePath = resolveAllowedRendererPath(arg?.path);
+    // Apply the same size + magic-byte preflight as `appGetImageDataUrl` so
+    // we can't hand `nativeImage.createFromPath` a giant or non-image file
+    // (which would otherwise silently produce an empty image, or worse,
+    // attempt a sync read of a 100 MB binary on the main process). We then
+    // hand the already-read buffer to `nativeImage.createFromBuffer` so the
+    // file isn't read a second time off the main thread.
+    const { data } = await readImageFileAndSniffMime(filePath);
+    const image = nativeImage.createFromBuffer(data);
+    if (image.isEmpty()) {
+      throw new Error("Unable to read image.");
+    }
+    clipboard.writeImage(image);
   });
 
   ipcMain.handle(
@@ -2144,6 +2276,54 @@ export function registerIpc({
       if (!rootPath) throw new Error("rootPath is required");
       return getProjectDetail(rootPath, { globalStatePath });
     }
+  );
+
+  // Project-root allowlist for icon resolution. Tab/catalog icons are
+  // resolved for the *current* project root and any *recently opened*
+  // project root — including ones that live outside Downloads/Documents/Temp
+  // (the generic `getAllowedDirs` set). Using `resolveAllowedRendererPath`
+  // here would silently strip icons for any project in `~/code/*` etc.
+  const getAllowedProjectRoots = (): string[] => {
+    const state = readGlobalState(globalStatePath);
+    return Array.from(new Set([
+      getCtx().project.rootPath,
+      ...(state.recentProjects ?? [])
+        .map((entry) => entry.rootPath)
+        .filter((root): root is string => typeof root === "string" && root.trim().length > 0),
+    ]));
+  };
+
+  const resolveAllowedProjectRoot = (rawPath: string): string => {
+    const raw = typeof rawPath === "string" ? rawPath.trim() : "";
+    if (!raw) throw new Error("Missing root path.");
+    const normalized = resolveRendererSuppliedPath(raw, getCtx().project.rootPath);
+    for (const dir of getAllowedProjectRoots()) {
+      try {
+        return resolvePathWithinRoot(dir, normalized);
+      } catch {
+        // try next known project root
+      }
+    }
+    throw new Error("rootPath is outside known project roots.");
+  };
+
+  ipcMain.handle(
+    IPC.projectResolveIcon,
+    async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) return { dataUrl: null, sourcePath: null, mimeType: null };
+      // Validate the renderer-supplied root against the project-root
+      // allowlist (current + recent projects) so a compromised renderer
+      // can't probe arbitrary directories for icons, while still serving
+      // icons for projects that live outside the generic file allowlist.
+      let validatedRoot: string;
+      try {
+        validatedRoot = resolveAllowedProjectRoot(rootPath);
+      } catch {
+        return { dataUrl: null, sourcePath: null, mimeType: null };
+      }
+      return resolveProjectIcon(validatedRoot);
+    },
   );
 
   ipcMain.handle(IPC.projectOpenAdeFolder, async (): Promise<void> => {

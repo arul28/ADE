@@ -16,7 +16,7 @@ stream plus session metadata.
 | `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, and parallel model-slot controls. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
 | `ChatComposerShell.tsx` | Input container chrome reused by the composer. |
-| `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. |
+| `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. Image attachments render an inline thumbnail (loaded through `window.ade.app.getImageDataUrl`), open a full-size lightbox on click, and expose a copy-to-clipboard button that ships the image bytes via `window.ade.app.writeClipboardImage` so the user can paste them into another app. Non-image attachments fall back to the file glyph. |
 | `ChatCommandMenu.tsx` | Popover for slash commands and `@`-prefixed file search. |
 | `ChatTasksPanel.tsx` | Todo list rendered from `todo_update` events. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |

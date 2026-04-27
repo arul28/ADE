@@ -50,8 +50,10 @@ apps/ios/
 │   │   │                            # haptics, shimmer, mobile primitives
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Lanes/                   # LaneDetailScreen, LaneActionsCard,
+│   │   │                            # LaneAdvancedScreen (gearshape destination),
 │   │   │                            # LaneBatchManageSheet, LaneManageSheet,
 │   │   │                            # LaneMultiAttachSheet, LaneStackCanvasScreen,
+│   │   │                            # LaneCommitSheet (review + per-file stage/diff),
 │   │   │                            # LaneEnvInitProgressView, etc.
 │   │   ├── Files/                   # FilesRootScreen, FilesDirectoryScreen,
 │   │   │                            # FilesDetailScreen, *+Actions helpers
@@ -121,6 +123,14 @@ hosts it alongside its back-button affordance). It replaces the
 older `ADEConnectionPill` and the per-tab "connection notice" banner
 cards — controllers no longer ship duplicate offline / reconnect /
 hydrating cards inside each screen body.
+
+`ProjectHomeView` is the exception: with the navigation bar hidden
+(brand-mark hero only) it surfaces the same connection state through
+an inline "Attached to <host>" banner above the open-project button.
+The banner uses the same tint mapping as `ADEConnectionDot` (success
+when connected/syncing, warning when connecting/error, muted when
+disconnected) and routes taps through `syncService.settingsPresented`
+to the same Settings sheet the dot opens.
 
 Accessibility: the dot exposes `accessibilityLabel` that includes the
 host name when connected and trims the last error message for the
@@ -436,20 +446,29 @@ activity per app at a time; the coordinator ends stale per-session
 activities from older builds on launch.
 
 `ADESessionAttributes.ContentState` carries:
-- `sessions: [ActiveSession]` — sorted by awaiting-input → failed →
-  newest running.
+- `sessions: [ActiveSession]` — currently-streaming chats only,
+  sorted failed → newest. SyncService filters at the source by
+  `runtimeState == "running"` and a recent `lastActivityAt`, so the
+  Live Activity roster is always the streaming subset; idle, awaiting,
+  and stale chats stay in the in-app Attention Drawer.
 - `attention: Attention?` — one of `awaitingInput`, `failed`,
   `ciFailing`, `reviewRequested`, `mergeReady`. Nil when nothing
   requires immediate action.
 - `failingCheckCount`, `awaitingReviewCount`, `mergeReadyCount` — PR
   aggregate counts.
 
-`LiveActivityCoordinator` exposes a single `reconcile(with:prs:)`
-call wired from `SyncService`. Push-to-start (iOS 17.2+) and
-per-activity update tokens are collected via `pushTokenUpdates` and
-forwarded to the host through `LiveActivityHost.sendPushToken`.
-The host sends `liveactivity` APNs pushes to the update tokens via
-`notificationEventBus` whenever an attention-eligible event fires.
+`LiveActivityCoordinator.reconcile(with:prs:focusedLaneName:)` is the
+single entry point from `SyncService`. `focusedLaneName` is the
+most-recently-active running chat's lane name; the coordinator uses it
+as the system-header suffix (`ADE · <lane>`). Because
+`ActivityAttributes` are immutable across an activity's lifetime, a
+focus-lane change forces the coordinator to end the existing activity
+and request a new one, so the header always matches the lane the user
+is watching. Push-to-start (iOS 17.2+) and per-activity update tokens
+are collected via `pushTokenUpdates` and forwarded to the host through
+`LiveActivityHost.sendPushToken`. The host sends `liveactivity` APNs
+pushes to the update tokens via `notificationEventBus` whenever an
+attention-eligible event fires.
 
 The `ADELiveActivity` widget registers the `ActivityConfiguration`
 for the lock-screen / banner presentation and the Dynamic Island
@@ -493,15 +512,19 @@ when no active project is selected or the user taps the Projects toolbar
 button. It merges the host-provided catalog with projects already present
 in the local replicated DB, marks cached/unavailable rows, and requests a
 fresh bootstrap connection for the selected desktop project through
-`project_switch_request`.
+`project_switch_request`. Each tile renders `MobileProjectSummary.iconDataUrl`
+when the host's `projectIconResolver` found a favicon for the project,
+falling back to the brand glyph otherwise. The host pre-renders icons
+to a 64×64 PNG via Electron `nativeImage` before they reach the phone,
+so the iOS side can decode them with stock UIImage.
 
 ### Shipped
 
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
-| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. |
+| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane gear opens `LaneAdvancedScreen`, a single page that groups Manage / Switch branch / Stash and the destructive git escape hatches (rebase lane, rebase descendants, rebase + push, force push) with an inline description per row and an offline disabled banner. The commit sheet (`LaneCommitSheet`) renders staged + unstaged file lists with per-file stage / unstage / discard / restore / open-diff / open-files actions, a "Suggest" AI button gated by host capability, and a setup-hint card surfaced when the host returns "AI commit messages are off". |
 | **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`; quick-open and text-search result lists cap visible rows at 40 and ask the user to refine when more matches exist. |
-| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, typed terminal input and Ctrl-C forwarding for subscribed live PTYs, quick-launch actions, session pinning, live chat-event push from the host (no polling lag once subscribed). |
+| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, character-by-character terminal input (Termius-style: each typed glyph forwards a single `terminal_input` byte and the field clears so PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, quick-launch actions, session pinning, live chat-event push from the host (no polling lag once subscribed). The terminal viewer renders ANSI SGR colors + bold and replays cursor/erase sequences via `WorkTerminalTextReplay` so agent CLI output stays readable on iPhone. The earlier "activity feed" section was retired — running chats are surfaced through the session list and the live-count chip. |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
 | **CTO** | `sparkles` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
 | **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. |

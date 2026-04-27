@@ -2,44 +2,31 @@ import SwiftUI
 import UIKit
 import AVKit
 
-struct WorkActivityTranscriptCacheEntry {
-  let fingerprint: String
-  let transcript: [WorkChatEnvelope]
-}
-
 struct WorkTerminalDisplay {
   let text: String
+  let attributedText: AttributedString
   let truncated: Bool
 }
 
 private let workTerminalDisplayMaxCharacters = 24_000
 
-/// Cheap, deterministic fingerprint for a terminal buffer. We intentionally avoid hashing the whole
-/// string on every `localStateRevision` tick — length + short head/tail windows give us >99% stability
-/// against spurious cache invalidations while still changing whenever new output actually arrives.
-func workActivityBufferFingerprint(_ buffer: String) -> String {
-  if buffer.isEmpty {
-    return "0:"
-  }
-  let count = buffer.utf8.count
-  let headLen = min(64, buffer.count)
-  let tailLen = min(64, buffer.count)
-  let head = buffer.prefix(headLen)
-  let tail = buffer.suffix(tailLen)
-  var hasher = Hasher()
-  hasher.combine(head)
-  hasher.combine(tail)
-  return "\(count):\(hasher.finalize())"
-}
-
 func workTerminalDisplay(raw: String?, fallback: String?) -> WorkTerminalDisplay {
   let source = (raw?.isEmpty == false ? raw : fallback) ?? "No output yet."
-  let sanitized = sanitizeTerminalOutputForDisplay(source)
+  let replay = WorkTerminalTextReplay()
+  replay.write(source)
+  let replayText = replay.text
+  let sanitized = collapseDuplicatedWorkStreamTextIfNeeded(replayText)
   guard sanitized.count > workTerminalDisplayMaxCharacters else {
-    return WorkTerminalDisplay(text: sanitized, truncated: false)
+    return WorkTerminalDisplay(
+      text: sanitized,
+      attributedText: sanitized == replayText ? replay.attributedText() : workTerminalPlainAttributedString(sanitized),
+      truncated: false
+    )
   }
+  let displayText = String(sanitized.suffix(workTerminalDisplayMaxCharacters))
   return WorkTerminalDisplay(
-    text: String(sanitized.suffix(workTerminalDisplayMaxCharacters)),
+    text: displayText,
+    attributedText: workTerminalPlainAttributedString(displayText),
     truncated: true
   )
 }
@@ -51,15 +38,33 @@ func sanitizeTerminalOutputForDisplay(_ input: String) -> String {
 }
 
 private final class WorkTerminalTextReplay {
-  private var lines: [[UnicodeScalar]] = [[]]
+  private var lines: [[WorkTerminalCell]] = [[]]
   private var row = 0
   private var column = 0
+  private var foreground: WorkANSIColor?
+  private var bold = false
 
   var text: String {
-    lines
-      .map { String(String.UnicodeScalarView($0)).trimmingTrailingTerminalPadding() }
+    renderedLines()
+      .map { String(String.UnicodeScalarView($0.map(\.scalar))) }
       .joined(separator: "\n")
       .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  func attributedText() -> AttributedString {
+    let renderedLines = renderedLines(trimEmptyEdges: true)
+    guard !renderedLines.isEmpty else {
+      return workTerminalPlainAttributedString("")
+    }
+
+    var attributed = AttributedString("")
+    for lineIndex in renderedLines.indices {
+      if lineIndex > renderedLines.startIndex {
+        attributed.append(workTerminalPlainAttributedString("\n"))
+      }
+      attributed.append(attributedLine(renderedLines[lineIndex]))
+    }
+    return attributed
   }
 
   func write(_ input: String) {
@@ -96,12 +101,13 @@ private final class WorkTerminalTextReplay {
   private func put(_ scalar: UnicodeScalar) {
     ensureCursor()
     while lines[row].count < column {
-      lines[row].append(" ")
+      lines[row].append(WorkTerminalCell(scalar: " "))
     }
+    let cell = WorkTerminalCell(scalar: scalar, foreground: foreground, bold: bold)
     if column < lines[row].count {
-      lines[row][column] = scalar
+      lines[row][column] = cell
     } else {
-      lines[row].append(scalar)
+      lines[row].append(cell)
     }
     column += 1
   }
@@ -132,6 +138,8 @@ private final class WorkTerminalTextReplay {
       lines = [[]]
       row = 0
       column = 0
+      foreground = nil
+      bold = false
     case "(", ")", "*", "+":
       if index < scalars.endIndex {
         index = scalars.index(after: index)
@@ -199,7 +207,7 @@ private final class WorkTerminalTextReplay {
     case "K":
       ensureCursor()
       if first == 1 {
-        let space: UnicodeScalar = " "
+        let space = WorkTerminalCell(scalar: " ")
         let endIndex = min(column + 1, lines[row].count)
         for index in 0..<endIndex {
           lines[row][index] = space
@@ -215,10 +223,186 @@ private final class WorkTerminalTextReplay {
       } else if column < lines[row].count {
         lines[row].removeSubrange(column..<lines[row].count)
       }
+    case "m":
+      applySGR(params)
     default:
       break
     }
   }
+
+  private func applySGR(_ rawParams: [Int]) {
+    let params = rawParams.isEmpty ? [0] : rawParams
+    var index = params.startIndex
+    while index < params.endIndex {
+      let code = params[index]
+      switch code {
+      case 0:
+        foreground = nil
+        bold = false
+      case 1:
+        bold = true
+      case 22:
+        bold = false
+      case 30, 90:
+        foreground = .black
+      case 31, 91:
+        foreground = .red
+      case 32, 92:
+        foreground = .green
+      case 33, 93:
+        foreground = .yellow
+      case 34, 94:
+        foreground = .blue
+      case 35, 95:
+        foreground = .magenta
+      case 36, 96:
+        foreground = .cyan
+      case 37, 97:
+        foreground = .white
+      case 38:
+        if index + 2 < params.endIndex, params[index + 1] == 5 {
+          foreground = workTerminalANSI256Color(params[index + 2])
+          index += 2
+        } else if index + 4 < params.endIndex, params[index + 1] == 2 {
+          foreground = workTerminalRGBColor(red: params[index + 2], green: params[index + 3], blue: params[index + 4])
+          index += 4
+        }
+      case 39:
+        foreground = nil
+      default:
+        break
+      }
+      index += 1
+    }
+  }
+
+  private func renderedLines(trimEmptyEdges: Bool = false) -> [[WorkTerminalCell]] {
+    var rendered = lines.map { line in
+      var trimmed = line
+      while let last = trimmed.last, CharacterSet.whitespaces.contains(last.scalar) {
+        trimmed.removeLast()
+      }
+      return trimmed
+    }
+
+    if trimEmptyEdges {
+      while rendered.first?.isEmpty == true {
+        rendered.removeFirst()
+      }
+      while rendered.last?.isEmpty == true {
+        rendered.removeLast()
+      }
+    }
+    return rendered
+  }
+
+  private func attributedLine(_ line: [WorkTerminalCell]) -> AttributedString {
+    var attributed = AttributedString("")
+    var index = line.startIndex
+    while index < line.endIndex {
+      let start = index
+      let style = line[start].style
+      index = line.index(after: index)
+      while index < line.endIndex, line[index].style == style {
+        index = line.index(after: index)
+      }
+      let text = String(String.UnicodeScalarView(line[start..<index].map(\.scalar)))
+      attributed.append(workTerminalAttributedString(text, foreground: style.foreground, bold: style.bold))
+    }
+    return attributed
+  }
+}
+
+private struct WorkTerminalCell {
+  let scalar: UnicodeScalar
+  let foreground: WorkANSIColor?
+  let bold: Bool
+
+  init(scalar: UnicodeScalar, foreground: WorkANSIColor? = nil, bold: Bool = false) {
+    self.scalar = scalar
+    self.foreground = foreground
+    self.bold = bold
+  }
+
+  var style: WorkTerminalCellStyle {
+    WorkTerminalCellStyle(foreground: foreground, bold: bold)
+  }
+}
+
+private struct WorkTerminalCellStyle: Equatable {
+  let foreground: WorkANSIColor?
+  let bold: Bool
+}
+
+func workTerminalPlainAttributedString(_ text: String, fontSize: CGFloat = 12) -> AttributedString {
+  workTerminalAttributedString(text, foreground: nil, bold: false, fontSize: fontSize)
+}
+
+private func workTerminalAttributedString(
+  _ text: String,
+  foreground: WorkANSIColor?,
+  bold: Bool,
+  fontSize: CGFloat = 12
+) -> AttributedString {
+  var attributed = AttributedString(text)
+  attributed.font = .system(size: fontSize, weight: bold ? .semibold : .regular, design: .monospaced)
+  attributed.foregroundColor = workTerminalForegroundColor(foreground)
+  return attributed
+}
+
+private func workTerminalForegroundColor(_ color: WorkANSIColor?) -> Color {
+  switch color {
+  case .red: return .red
+  case .green: return .green
+  case .yellow: return .yellow
+  case .blue: return .blue
+  case .magenta: return .purple
+  case .cyan: return .cyan
+  case .white: return .white
+  case .black: return ADEColor.textMuted
+  case .none: return ADEColor.textPrimary
+  }
+}
+
+private func workTerminalANSI256Color(_ code: Int) -> WorkANSIColor? {
+  switch code {
+  case 0, 8: return .black
+  case 1, 9: return .red
+  case 2, 10: return .green
+  case 3, 11: return .yellow
+  case 4, 12: return .blue
+  case 5, 13: return .magenta
+  case 6, 14: return .cyan
+  case 7, 15: return .white
+  case 16...231:
+    let value = code - 16
+    let red = value / 36
+    let green = (value / 6) % 6
+    let blue = value % 6
+    return workTerminalRGBColor(red: red * 51, green: green * 51, blue: blue * 51)
+  case 232...255:
+    return code >= 244 ? .white : .black
+  default:
+    return nil
+  }
+}
+
+private func workTerminalRGBColor(red: Int, green: Int, blue: Int) -> WorkANSIColor? {
+  let red = max(0, min(255, red))
+  let green = max(0, min(255, green))
+  let blue = max(0, min(255, blue))
+  let maxChannel = max(red, green, blue)
+  let minChannel = min(red, green, blue)
+  guard maxChannel >= 80 else { return .black }
+  if maxChannel - minChannel < 32 {
+    return maxChannel > 180 ? .white : nil
+  }
+  if red == maxChannel && green == maxChannel { return .yellow }
+  if green == maxChannel && blue == maxChannel { return .cyan }
+  if red == maxChannel && blue == maxChannel { return .magenta }
+  if red == maxChannel { return .red }
+  if green == maxChannel { return .green }
+  return .blue
 }
 
 private extension String {
@@ -525,67 +709,6 @@ func buildWorkToolCards(
   }
 
   return orderedIds.compactMap { cards[$0] }
-}
-
-func deriveWorkAgentActivities(from transcript: [WorkChatEnvelope], session: WorkAgentActivityContext) -> [WorkAgentActivity] {
-  var activeSubagents: [String: WorkAgentActivity] = [:]
-  let toolCards = buildWorkToolCards(from: transcript)
-  let runningTool = toolCards.last(where: { $0.status == .running })
-
-  for envelope in transcript {
-    switch envelope.event {
-    case .subagentStarted(let taskId, let description, _, _):
-      activeSubagents[taskId] = WorkAgentActivity(
-        sessionId: session.sessionId,
-        taskId: taskId,
-        agentName: description.isEmpty ? session.title : description,
-        toolName: nil,
-        laneName: session.laneName,
-        startedAt: envelope.timestamp,
-        detail: nil
-      )
-    case .subagentProgress(let taskId, let description, let summary, let toolName, _):
-      let existing = activeSubagents[taskId]
-      activeSubagents[taskId] = WorkAgentActivity(
-        sessionId: session.sessionId,
-        taskId: taskId,
-        agentName: description ?? existing?.agentName ?? session.title,
-        toolName: toolName ?? existing?.toolName,
-        laneName: session.laneName,
-        startedAt: existing?.startedAt ?? envelope.timestamp,
-        detail: summary
-      )
-    case .subagentResult(let taskId, _, _, _):
-      activeSubagents.removeValue(forKey: taskId)
-    default:
-      continue
-    }
-  }
-
-  let subagents = activeSubagents.values.sorted { $0.startedAt > $1.startedAt }
-  if !subagents.isEmpty {
-    return subagents
-  }
-
-  guard session.status == "active" else { return [] }
-  let latestActivityDetail = transcript.reversed().compactMap { envelope -> String? in
-    switch envelope.event {
-    case .activity(_, let detail, _): return detail
-    case .reasoning(let text, _, _, _): return text
-    case .status(_, let message, _): return message
-    default: return nil
-    }
-  }.first
-
-  return [WorkAgentActivity(
-    sessionId: session.sessionId,
-    taskId: nil,
-    agentName: session.title,
-    toolName: runningTool?.toolName,
-    laneName: session.laneName,
-    startedAt: runningTool?.startedAt ?? session.startedAt,
-    detail: latestActivityDetail
-  )]
 }
 
 func parseANSISegments(_ input: String) -> [ANSISegment] {

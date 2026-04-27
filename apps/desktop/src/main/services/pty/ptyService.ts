@@ -697,13 +697,40 @@ export function createPtyService({
     }
   }
 
+  function readFilePrefix(filePath: string, maxBytes = 512 * 1024): string | null {
+    let fd: number | null = null;
+    try {
+      fd = fs.openSync(filePath, "r");
+      const buf = Buffer.alloc(maxBytes);
+      const bytesRead = fs.readSync(fd, buf, 0, maxBytes, 0);
+      if (bytesRead <= 0) return null;
+      return buf.subarray(0, bytesRead).toString("utf8");
+    } catch {
+      return null;
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // Ignore close errors while scanning best-effort session metadata.
+        }
+      }
+    }
+  }
+
   /**
    * Try to find the Codex session ID from Codex's local storage.
    * Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
    * Each JSONL starts with a session_meta event containing `payload.id` and `payload.cwd`.
    * We score recent candidates by cwd match and closeness to ADE's session startedAt.
    */
-  const resolveCodexSessionIdFromStorage = (args: { cwd: string; startedAt?: string | null }): string | null => {
+  const resolveCodexSessionIdFromStorage = (args: {
+    cwd: string;
+    startedAt?: string | null;
+    maxStartDeltaMs?: number;
+    notBeforeMs?: number;
+    requiredText?: string;
+  }): string | null => {
     try {
       const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
       if (!fs.existsSync(sessionsBase)) return null;
@@ -746,13 +773,22 @@ export function createPtyService({
         const id = typeof payload?.id === "string" ? payload.id.trim() : "";
         const cwd = typeof payload?.cwd === "string" ? payload.cwd.trim() : "";
         if (type !== "session_meta" || !id || cwd !== args.cwd) continue;
+        if (args.requiredText) {
+          // The Codex session_meta record sits at the very top of the JSONL,
+          // so 16 KB is more than enough to scan for the marker without
+          // pulling half a megabyte off disk per candidate inside the poll.
+          const prefix = readFilePrefix(candidate.filePath, 16 * 1024);
+          if (!prefix?.includes(args.requiredText)) continue;
+        }
 
         if (!hasStartedAt) return id;
 
         const payloadTimestamp = typeof payload?.timestamp === "string" ? payload.timestamp : "";
         const payloadTimestampMs = Date.parse(payloadTimestamp);
         const referenceMs = Number.isFinite(payloadTimestampMs) ? payloadTimestampMs : candidate.mtimeMs;
+        if (typeof args.notBeforeMs === "number" && referenceMs < args.notBeforeMs) continue;
         const score = Math.abs(referenceMs - requestedStartedAtMs);
+        if (typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
         if (!bestMatch || score < bestMatch.score || (score === bestMatch.score && candidate.mtimeMs > bestMatch.mtimeMs)) {
           bestMatch = { id, score, mtimeMs: candidate.mtimeMs };
         }
@@ -797,8 +833,17 @@ export function createPtyService({
       }
     }
 
-    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd) {
-      const codexSessionId = resolveCodexSessionIdFromStorage({ cwd, startedAt: session.startedAt });
+    // The session-list path NEEDS this Codex storage fallback: it's how we
+    // backfill resume targets for older sessions whose transcripts no longer
+    // contain an explicit resume command. Only resume-launch is excluded —
+    // that flow already has the live capture poll for fresh sessions, and
+    // running the storage scan inline would slow launch.
+    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd && reason !== "resume-launch") {
+      const codexSessionId = resolveCodexSessionIdFromStorage({
+        cwd,
+        startedAt: session.startedAt,
+        maxStartDeltaMs: 10 * 60_000,
+      });
       if (codexSessionId) {
         const resumeCmd = `codex resume ${codexSessionId}`;
         sessionService.setResumeCommand(sessionId, resumeCmd);
@@ -844,7 +889,14 @@ export function createPtyService({
           const session = sessionService.get(sessionId);
           if (!session) return;
           if (session.resumeMetadata?.targetId?.trim()) return;
-          const codexSessionId = resolveCodexSessionIdFromStorage({ cwd, startedAt });
+          const startedAtMs = Date.parse(startedAt);
+          const codexSessionId = resolveCodexSessionIdFromStorage({
+            cwd,
+            startedAt,
+            maxStartDeltaMs: 2 * 60_000,
+            ...(Number.isFinite(startedAtMs) ? { notBeforeMs: startedAtMs - 1_000 } : {}),
+            requiredText: "ADE session guidance",
+          });
           if (codexSessionId) {
             sessionService.setResumeCommand(sessionId, `codex resume ${codexSessionId}`);
             logger.info("pty.codex_session_id_captured_live", { sessionId, codexSessionId, attempt });
@@ -1176,6 +1228,7 @@ export function createPtyService({
       let selectedShell: ShellSpec | null = null;
       const directCommand = typeof args.command === "string" ? args.command.trim() : "";
       const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
+      let launchedDirectCommand = false;
       try {
         const ptyLib = loadPty();
         const opts: IWindowsPtyForkOptions = {
@@ -1194,14 +1247,17 @@ export function createPtyService({
               ? invocation.args.join(" ")
               : invocation.args;
             created = ptyLib.spawn(invocation.command, ptyArgs, opts);
+            launchedDirectCommand = true;
           } catch (err) {
             lastErr = err;
           }
-        } else {
+        }
+        if (!created && (!directCommand || startupCommand)) {
           for (const shell of shellCandidates) {
             try {
               created = ptyLib.spawn(shell.file, shell.args, opts);
               selectedShell = shell;
+              launchedDirectCommand = false;
               break;
             } catch (err) {
               lastErr = err;
@@ -1380,10 +1436,10 @@ export function createPtyService({
       });
 
       // Only type the startup command into the terminal when we launched an
-      // interactive shell (no directCommand). If directCommand is set we either
-      // already threw on spawn failure or the command is running directly — in
-      // neither case do we want to feed an extra startupCommand string.
-      if (startupCommand && !directCommand && selectedShell) {
+      // interactive shell. Direct command launches already received argv; if a
+      // direct launch fell back to shell, startupCommand keeps compatibility
+      // with CLIs that are only available through shell startup files.
+      if (startupCommand && !launchedDirectCommand && selectedShell) {
         try {
           pty.write(`${startupCommand}\r`);
           setRuntimeState(sessionId, "running");

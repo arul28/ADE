@@ -573,9 +573,19 @@ Builder responsibilities:
 - **Workflow cards** (`buildWorkflowCards`) — pulls non-terminal
   queue entries from `queue_landing_state` joined with `pr_groups`,
   active integration proposals via `listIntegrationWorkflows({ view:
-  "active" })`, and undismissed rebase suggestions from
-  `rebaseSuggestionService`. Failures in any source log a warning
-  and skip that card category rather than failing the whole snapshot.
+  "active" })`, and rebase needs from `conflictService.scanRebaseNeeds()`
+  (filtered to `kind === "lane_base"` with `behindBy > 0` and a live
+  defer window). Using the same source the desktop Rebase tab consumes
+  via `window.ade.rebase.scanNeeds` keeps the phone's rebase cards
+  in sync with the desktop — including drift against a local `main`
+  that hasn't been pushed yet, which `rebaseSuggestionService` misses
+  because it only reads `origin/<base>`. Dismiss / defer rebase from
+  the phone (`lanes.dismissRebaseSuggestion`,
+  `lanes.deferRebaseSuggestion`) updates `conflictService` first so
+  the next snapshot reflects the action immediately, then forwards to
+  `rebaseSuggestionService` for legacy parity. Failures in any source
+  log a warning and skip that card category rather than failing the
+  whole snapshot.
 
 The snapshot is read-only; create/merge/close/comment actions go
 through the existing command surface (`prs.createFromLane`,

@@ -14,6 +14,13 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
     /// Provider slug: "claude", "codex", "cursor", "opencode", "google",
     /// "mistral", "deepseek", "xai", "groq". Keyed into `ADESharedTheme`.
     public let provider: String
+    /// Specific model id (e.g. "claude-sonnet-4-6"). Rendered as the LA
+    /// subtitle in place of the generic provider slug when present.
+    public let modelId: String?
+    /// Lane name for this session ("Primary", "feature/x"). Used by the
+    /// LA header so the activity reads "ADE · Primary" instead of the
+    /// hardcoded "Workspace".
+    public let laneName: String?
     /// Goal / session title. May be nil for brand-new sessions.
     public let title: String?
     /// "running" | "idle" | "awaiting_input" | "failed" | "completed".
@@ -32,6 +39,8 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
     public init(
         sessionId: String,
         provider: String,
+        modelId: String? = nil,
+        laneName: String? = nil,
         title: String?,
         status: String,
         awaitingInput: Bool,
@@ -44,6 +53,8 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
     ) {
         self.sessionId = sessionId
         self.provider = provider
+        self.modelId = modelId
+        self.laneName = laneName
         self.title = title
         self.status = status
         self.awaitingInput = awaitingInput
@@ -53,6 +64,29 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
         self.progress = progress
         self.phase = phase
         self.toolCalls = toolCalls
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId, provider, modelId, laneName, title, status,
+             awaitingInput, lastActivityAt, elapsedSeconds, preview,
+             progress, phase, toolCalls
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.sessionId = try c.decode(String.self, forKey: .sessionId)
+        self.provider = try c.decode(String.self, forKey: .provider)
+        self.modelId = try c.decodeIfPresent(String.self, forKey: .modelId)
+        self.laneName = try c.decodeIfPresent(String.self, forKey: .laneName)
+        self.title = try c.decodeIfPresent(String.self, forKey: .title)
+        self.status = try c.decode(String.self, forKey: .status)
+        self.awaitingInput = try c.decode(Bool.self, forKey: .awaitingInput)
+        self.lastActivityAt = try c.decode(Date.self, forKey: .lastActivityAt)
+        self.elapsedSeconds = try c.decode(Int.self, forKey: .elapsedSeconds)
+        self.preview = try c.decodeIfPresent(String.self, forKey: .preview)
+        self.progress = try c.decodeIfPresent(Double.self, forKey: .progress)
+        self.phase = try c.decodeIfPresent(String.self, forKey: .phase)
+        self.toolCalls = try c.decode(Int.self, forKey: .toolCalls)
     }
 }
 

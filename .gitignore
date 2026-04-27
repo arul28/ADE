@@ -10,6 +10,7 @@ node_modules
 *.png
 !docs/**/*.png
 !apps/web/public/**/*.png
+!apps/ios/**/*.png
 
 # Python cache
 __pycache__/
@@ -45,6 +46,7 @@ release-stable/
 # Xcode user data & derived data
 xcuserdata/
 *.xcuserstate
+/.derived-data/
 apps/ios/.dry-run-derived-data/
 apps/ios/build/
 ios-signing/

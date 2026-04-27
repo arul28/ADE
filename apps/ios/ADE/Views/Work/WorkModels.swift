@@ -2,25 +2,6 @@ import SwiftUI
 import UIKit
 import AVKit
 
-struct WorkAgentActivityContext: Equatable {
-  let sessionId: String
-  let title: String
-  let laneName: String
-  let status: String
-  let startedAt: String
-}
-
-struct WorkAgentActivity: Identifiable, Equatable {
-  var id: String { "\(sessionId):\(taskId ?? "session")" }
-  let sessionId: String
-  let taskId: String?
-  let agentName: String
-  let toolName: String?
-  let laneName: String
-  let startedAt: String
-  let detail: String?
-}
-
 enum WorkToolCardStatus: String, Equatable {
   case running
   case completed

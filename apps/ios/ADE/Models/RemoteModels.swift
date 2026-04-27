@@ -73,6 +73,7 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
   var rootPath: String?
   var defaultBaseRef: String?
   var lastOpenedAt: String?
+  var iconDataUrl: String?
   var laneCount: Int
   var isAvailable: Bool
   var isCached: Bool
@@ -84,6 +85,7 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
     rootPath: String? = nil,
     defaultBaseRef: String? = nil,
     lastOpenedAt: String? = nil,
+    iconDataUrl: String? = nil,
     laneCount: Int,
     isAvailable: Bool,
     isCached: Bool,
@@ -94,6 +96,7 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
     self.rootPath = rootPath
     self.defaultBaseRef = defaultBaseRef
     self.lastOpenedAt = lastOpenedAt
+    self.iconDataUrl = iconDataUrl
     self.laneCount = laneCount
     self.isAvailable = isAvailable
     self.isCached = isCached

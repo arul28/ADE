@@ -149,6 +149,33 @@ func sessionSymbol(_ session: TerminalSessionSummary, provider: String?) -> Stri
 }
 
 func normalizedWorkChatSessionStatus(session: TerminalSessionSummary?, summary: AgentChatSessionSummary?) -> String {
+  let raw = rawWorkChatSessionStatus(session: session, summary: summary)
+  // Stale-session guard: a chat that's been "awaiting-input", "active", or
+  // "idle" but hasn't moved in over 7 days is almost certainly never going
+  // to resume. Desktop drops these from its Work list; iOS now does too so
+  // the two devices stay in agreement.
+  if raw == "awaiting-input" || raw == "active" || raw == "idle" {
+    let lastActivityRaw = summary?.lastActivityAt ?? session?.chatIdleSinceAt ?? session?.startedAt
+    if let last = lastActivityRaw,
+       let date = workChatLastActivityDate(last),
+       Date().timeIntervalSince(date) > workChatStaleAfterSeconds {
+      return "ended"
+    }
+  }
+  return raw
+}
+
+private let workChatStaleAfterSeconds: TimeInterval = 7 * 24 * 60 * 60
+
+private func workChatLastActivityDate(_ raw: String) -> Date? {
+  let iso = ISO8601DateFormatter()
+  iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  if let d = iso.date(from: raw) { return d }
+  iso.formatOptions = [.withInternetDateTime]
+  return iso.date(from: raw)
+}
+
+private func rawWorkChatSessionStatus(session: TerminalSessionSummary?, summary: AgentChatSessionSummary?) -> String {
   if summary?.awaitingInput == true {
     return "awaiting-input"
   }

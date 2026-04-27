@@ -1657,6 +1657,8 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       openExternal: resolvedArg(undefined),
       revealPath: resolvedArg(undefined),
       writeClipboardText: resolvedArg(undefined),
+      getImageDataUrl: resolvedArg({ dataUrl: "" }),
+      writeClipboardImage: resolvedArg(undefined),
       openPathInEditor: resolvedArg(undefined),
     },
     project: {
@@ -1698,6 +1700,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       }),
       listRecent: resolved([]),
       closeCurrent: resolved(undefined),
+      resolveIcon: resolvedArg({ dataUrl: null, sourcePath: null, mimeType: null }),
       switchToPath: resolvedArg(MOCK_PROJECT),
       forgetRecent: resolvedArg([]),
       reorderRecent: resolvedArg([]),

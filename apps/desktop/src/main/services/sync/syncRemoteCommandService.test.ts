@@ -433,6 +433,8 @@ function createMockConflictService() {
     getLaneStatus: vi.fn().mockResolvedValue(null),
     listOverlaps: vi.fn().mockResolvedValue([]),
     getBatchAssessment: vi.fn().mockResolvedValue({ lanes: [] }),
+    dismissRebase: vi.fn(),
+    deferRebase: vi.fn(),
   } as any;
 }
 
@@ -2205,6 +2207,38 @@ describe("createSyncRemoteCommandService", () => {
         runId: "run-1",
         laneIds: [],
       }))).rejects.toThrow("lanes.rebasePush requires laneIds.");
+    });
+
+    it("lanes.dismissRebaseSuggestion routes to conflictService even without a rebaseSuggestionService", async () => {
+      const result = await service.execute(makePayload("lanes.dismissRebaseSuggestion", {
+        laneId: "lane-1",
+      }));
+      expect(conflictService.dismissRebase).toHaveBeenCalledWith("lane-1");
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("lanes.deferRebaseSuggestion clamps minutes and forwards an ISO timestamp to conflictService", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-04-15T22:00:00.000Z"));
+        await service.execute(makePayload("lanes.deferRebaseSuggestion", {
+          laneId: "lane-1",
+          minutes: 1,
+        }));
+        expect(conflictService.deferRebase).toHaveBeenCalledWith(
+          "lane-1",
+          "2026-04-15T22:05:00.000Z",
+        );
+        conflictService.deferRebase.mockClear();
+        await service.execute(makePayload("lanes.deferRebaseSuggestion", {
+          laneId: "lane-1",
+          minutes: 60 * 24 * 30,
+        }));
+        const [, until] = conflictService.deferRebase.mock.calls.at(-1) ?? [];
+        expect(until).toBe(new Date(Date.parse("2026-04-15T22:00:00.000Z") + 7 * 24 * 60 * 60_000).toISOString());
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

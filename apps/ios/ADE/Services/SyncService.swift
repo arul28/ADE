@@ -385,6 +385,8 @@ private func syncLogPathSummary(_ snapshot: SyncNetworkPathSnapshot?) -> String 
   return "satisfied=\(snapshot.isSatisfied) interfaces=\(interfaces.isEmpty ? "none" : interfaces.joined(separator: "+")) expensive=\(snapshot.isExpensive)"
 }
 
+private let syncAmbiguousRouteAuthFailureKey = "ADEAmbiguousRouteAuthFailure"
+
 private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
   [
     "host=\(profile.hostName ?? "unknown")",
@@ -417,6 +419,9 @@ func syncShouldRoamToTailnet(
 enum SyncUserFacingError {
   static func message(for error: Error) -> String {
     let nsError = error as NSError
+    if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
+      return "Reached an ADE host over Tailnet, but it did not match this saved computer. ADE kept the pairing and will keep trying other routes."
+    }
     if let code = nsError.userInfo["ADEErrorCode"] as? String, code == "auth_failed" {
       return "This phone is no longer paired with the host. Pair again from Settings."
     }
@@ -616,6 +621,10 @@ final class SyncService: ObservableObject {
   private(set) var terminalBuffers: [String: String] = [:]
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
+  /// Latest known chat summary keyed by session id. Populated by the Work
+  /// list and chat detail screens so the LA reconcile can read `modelId`
+  /// + a real `lastActivityAt` without round-tripping for each running chat.
+  private(set) var chatSummaryCache: [String: AgentChatSessionSummary] = [:]
 
   private let legacyDraftKey = "ade.sync.connectionDraft"
   private let profileKey = "ade.sync.hostProfile"
@@ -834,13 +843,16 @@ final class SyncService: ObservableObject {
 
   func refreshProjectCatalog(preferRemoteSelection: Bool = false) {
     let cachedProjects = database.listMobileProjects()
-    var mergedById = Dictionary(uniqueKeysWithValues: deduplicatedRemoteProjectCatalog().map { ($0.id, $0) })
+    let remoteCatalog = deduplicatedRemoteProjectCatalog()
+    let hasRemoteCatalog = !remoteCatalog.isEmpty
+    var mergedById = Dictionary(uniqueKeysWithValues: remoteCatalog.map { ($0.id, $0) })
     for cachedProject in cachedProjects {
       if var existing = mergedById[cachedProject.id] {
         existing.displayName = cachedProject.displayName
         existing.rootPath = cachedProject.rootPath ?? existing.rootPath
         existing.defaultBaseRef = cachedProject.defaultBaseRef ?? existing.defaultBaseRef
         existing.lastOpenedAt = cachedProject.lastOpenedAt ?? existing.lastOpenedAt
+        existing.iconDataUrl = cachedProject.iconDataUrl ?? existing.iconDataUrl
         existing.laneCount = cachedProject.laneCount
         existing.isCached = true
         existing.isAvailable = existing.isAvailable || cachedProject.isAvailable
@@ -856,11 +868,12 @@ final class SyncService: ObservableObject {
         existing.displayName = cachedProject.displayName
         existing.defaultBaseRef = cachedProject.defaultBaseRef ?? existing.defaultBaseRef
         existing.lastOpenedAt = cachedProject.lastOpenedAt ?? existing.lastOpenedAt
+        existing.iconDataUrl = cachedProject.iconDataUrl ?? existing.iconDataUrl
         existing.laneCount = cachedProject.laneCount
         existing.isCached = true
         existing.isAvailable = existing.isAvailable || cachedProject.isAvailable
         mergedById[cachedProject.id] = existing
-      } else {
+      } else if !hasRemoteCatalog {
         mergedById[cachedProject.id] = cachedProject
       }
     }
@@ -3995,12 +4008,6 @@ final class SyncService: ObservableObject {
       return true
     }
 
-    if let tailnetService = discovered.tailscaleAddress,
-       syncIsTailnetDiscoveryHost(tailnetService),
-       profileHasTailnetRoute(profile) {
-      return true
-    }
-
     if let hostIdentity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
        !hostIdentity.isEmpty {
       let discoveredIdentity = discovered.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -4023,12 +4030,6 @@ final class SyncService: ObservableObject {
     }
 
     return false
-  }
-
-  private func profileHasTailnetRoute(_ profile: HostConnectionProfile) -> Bool {
-    if profile.tailscaleAddress.map(syncIsTailscaleRoute) == true { return true }
-    if profile.lastSuccessfulAddress.map(syncIsTailscaleRoute) == true { return true }
-    return profile.savedAddressCandidates.contains(where: syncIsTailscaleRoute)
   }
 
   private func preferTailnetForUpcomingReconnect() {
@@ -4179,11 +4180,12 @@ final class SyncService: ObservableObject {
           syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(address, privacy: .public) port=\(candidatePort)")
           return (host: address, port: candidatePort)
         } catch {
-          syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(address, privacy: .public) port=\(candidatePort) error=\(syncLogErrorSummary(error), privacy: .public)")
-          lastFailure = error
-          if shouldInvalidateSavedPairing(for: error) {
+          let reconnectError = errorByMarkingAmbiguousRouteAuthFailure(error, attemptedAddress: address)
+          syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(address, privacy: .public) port=\(candidatePort) error=\(syncLogErrorSummary(reconnectError), privacy: .public)")
+          lastFailure = reconnectError
+          if shouldInvalidateSavedPairing(for: reconnectError) {
             forgetHost()
-            throw error
+            throw reconnectError
           }
           // Tear down this attempt's socket and keep iterating through the
           // remaining ports and addresses. Only surface an error if every
@@ -4245,7 +4247,21 @@ final class SyncService: ObservableObject {
 
   private func shouldInvalidateSavedPairing(for error: Error) -> Bool {
     let nsError = error as NSError
+    if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
+      return false
+    }
     return nsError.userInfo["ADEErrorCode"] as? String == "auth_failed"
+  }
+
+  private func errorByMarkingAmbiguousRouteAuthFailure(_ error: Error, attemptedAddress: String) -> Error {
+    let nsError = error as NSError
+    guard nsError.userInfo["ADEErrorCode"] as? String == "auth_failed",
+          syncIsTailnetDiscoveryHost(syncNormalizedRouteHost(attemptedAddress)) else {
+      return error
+    }
+    var userInfo = nsError.userInfo
+    userInfo[syncAmbiguousRouteAuthFailureKey] = true
+    return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
   }
 
   private func applyDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) {
@@ -5615,6 +5631,24 @@ extension SyncService {
 
   // MARK: - Workspace snapshot debounce
 
+  /// Push the latest chat-summary set into the LA-reconcile cache. Callers
+  /// (Work list refresh, chat detail load) hand off the summaries they
+  /// already have so the LA can read `modelId` and a real `lastActivityAt`
+  /// without re-fetching per running session.
+  func cacheChatSummaries(_ summaries: [String: AgentChatSessionSummary]) {
+    chatSummaryCache = summaries
+    // Chat summaries feed `lastActivityAt` / `modelId` into the LA roster, so
+    // a refreshed cache must trigger a snapshot recompute. Otherwise widgets
+    // and live activities keep showing the stale model id / elapsed timer
+    // until the next session-list refresh.
+    refreshActiveSessionsAndSnapshot()
+  }
+
+  func cacheChatSummary(_ summary: AgentChatSessionSummary) {
+    chatSummaryCache[summary.sessionId] = summary
+    refreshActiveSessionsAndSnapshot()
+  }
+
   /// Recompute `activeSessions` from the local `TerminalSessionSummary` roster
   /// and schedule a debounced snapshot write so widgets + live activities pick
   /// up the delta.
@@ -5633,6 +5667,12 @@ extension SyncService {
     var awaitingInputCount = 0
     var idleCount = 0
 
+    // The Live Activity should only ever surface a chat that is actively
+    // streaming output right now. Anything older than this gate is dropped
+    // from the LA roster (it can still appear in the in-app Attention Drawer
+    // via `allAgents`).
+    let runningRecencyCutoff = now.addingTimeInterval(-120)
+
     for session in sessions {
       let isChat = (session.toolType?.contains("chat") == true)
       guard isChat else { continue }
@@ -5643,23 +5683,39 @@ extension SyncService {
       }
 
       let runtime = session.runtimeState.lowercased()
-      // Trust runtimeState (per-tick) over status (high-level) for the
-      // running-vs-idle distinction the user cares about.
       let isAwaiting = runtime == "waiting-input" || status == "awaiting_input"
       let isRunningRuntime = runtime == "running"
       let isIdleRuntime = runtime == "idle"
       let isEndedRuntime = runtime == "exited"
 
-      // Anything that's terminated mid-stream goes in the bin too.
       if isEndedRuntime { continue }
 
       let started = Self.parseIso8601(session.startedAt) ?? now
-      let lastActivity = Self.parseIso8601(session.endedAt ?? "") ?? now
+      // For active sessions there is no `endedAt`. Use the chat summary's
+      // `lastActivityAt` when available; fall back to `chatIdleSinceAt`. If
+      // neither is set yet, treat a running session as fresh by falling back
+      // to `now` — otherwise the recency gate below (`>= runningRecencyCutoff`)
+      // would drop long-lived chats whose `startedAt` was hours/days ago even
+      // while they're still streaming output. Idle / awaiting sessions still
+      // get filtered out by their runtime state, so this fallback only
+      // affects the running roster when activity timestamps are missing.
+      let summary = chatSummaryCache[session.id]
+      let lastActivity =
+        Self.parseIso8601(summary?.lastActivityAt ?? "")
+        ?? Self.parseIso8601(session.chatIdleSinceAt ?? "")
+        ?? (isRunningRuntime ? now : started)
       let elapsed = Int(max(0, lastActivity.timeIntervalSince(started)))
 
+      let resolvedModelId: String? = {
+        if let id = summary?.modelId, !id.isEmpty { return id }
+        if let m = summary?.model, !m.isEmpty { return m }
+        return nil
+      }()
       let snap = AgentSnapshot(
         sessionId: session.id,
         provider: session.toolType ?? "claude",
+        modelId: resolvedModelId,
+        laneName: session.laneName.isEmpty ? nil : session.laneName,
         title: session.title.isEmpty ? session.goal : session.title,
         status: isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status),
         awaitingInput: isAwaiting,
@@ -5673,18 +5729,15 @@ extension SyncService {
 
       allAgents.append(snap)
 
-      if isAwaiting {
-        awaitingInputCount += 1
-      } else if isRunningRuntime {
+      // LA roster: ONLY truly streaming chats (runtime == running and seen
+      // recently). Idle / awaiting / stale-running drop out entirely so the
+      // lock screen never shows a session that isn't producing output now.
+      if isRunningRuntime && lastActivity >= runningRecencyCutoff {
         runningAgents.append(snap)
+      } else if isAwaiting {
+        awaitingInputCount += 1
       } else if isIdleRuntime {
         idleCount += 1
-      } else if status == "running" {
-        // Transient runtimeState we don't enumerate ("starting", "spawning",
-        // anything new from the desktop). Mirror `normalizedWorkChatSessionStatus`'s
-        // default branch — if the lane still says it's running, treat it as
-        // actively running so the LA + widgets agree.
-        runningAgents.append(snap)
       }
     }
 
@@ -5711,14 +5764,15 @@ extension SyncService {
             branch: item.headBranch.isEmpty ? nil : item.headBranch
           )
         }
-      // Coordinator only sees running sessions in the roster — counts roll
-      // up into a chip / minimal glyph so the LA never carries old, idle, or
-      // pending sessions through into the user-visible roster.
+      // Header label = focused (most-recently-active) running chat's lane.
+      // Falls back to nil → "ADE" alone in the system header.
+      let focusedLaneName = runningAgents
+        .max(by: { $0.lastActivityAt < $1.lastActivityAt })?
+        .laneName
       coord.reconcile(
         with: runningAgents,
         prs: currentPrs,
-        awaitingInputCount: awaitingInputCount,
-        idleCount: idleCount
+        focusedLaneName: focusedLaneName
       )
     }
 

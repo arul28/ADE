@@ -43,6 +43,24 @@ export function quoteShellArg(arg: string, options: { platform?: ShellPlatform }
     return quoteWindowsArg(arg);
   }
   if (/^[a-zA-Z0-9_.:@%+=,-]+$/.test(arg)) return arg;
+  // If the argument contains line terminators or other ANSI control bytes,
+  // use ANSI-C quoting (`$'...'`). Plain double-quoting preserves them
+  // literally to the receiving program, but when the resulting line is
+  // injected into an interactive PTY shell via `pty.write` the terminal's
+  // line discipline fires on every embedded \n, producing PS2 continuation
+  // noise mid-command. ANSI-C quoting keeps the line single-line on the wire
+  // and lets the shell expand the escapes back into the original bytes.
+  if (/[\n\r\t\v\f]/.test(arg)) {
+    const escaped = arg
+      .replace(/\\/g, "\\\\")
+      .replace(/'/g, "\\'")
+      .replace(/\n/g, "\\n")
+      .replace(/\r/g, "\\r")
+      .replace(/\t/g, "\\t")
+      .replace(/\v/g, "\\v")
+      .replace(/\f/g, "\\f");
+    return `$'${escaped}'`;
+  }
   return `"${arg.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 

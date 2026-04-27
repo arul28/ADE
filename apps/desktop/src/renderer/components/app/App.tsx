@@ -59,6 +59,7 @@ const CtoPage = React.lazy(() =>
 
 import { useAppStore } from "../../state/appStore";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
+import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 
 const StartupSplashScreen = (
   <div className="flex h-full w-full flex-col items-center justify-center relative overflow-hidden" style={{ background: "var(--color-bg)" }}>
@@ -190,20 +191,64 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const project = useAppStore((s) => s.project);
+  const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Only fire the reveal once the surface is *actually* mounted with a
+  // project. On a cold `/work` boot the route renders before `projectHydrated`
+  // / `project.rootPath` settle; firing the reveal here would notify
+  // listeners about a surface that's still showing the loading fallback.
+  const hasActiveProject = Boolean(project?.rootPath);
+  const shouldReveal = active && projectHydrated && hasActiveProject && !showWelcome;
+  React.useEffect(() => {
+    if (!shouldReveal) return;
+    const raf = window.requestAnimationFrame(() => {
+      dispatchWorkSurfaceRevealed();
+    });
+    const settleTimer = window.setTimeout(() => {
+      dispatchWorkSurfaceRevealed();
+    }, 120);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(settleTimer);
+    };
+  }, [shouldReveal]);
+
+  React.useEffect(() => {
+    const node = workSurfaceRef.current;
+    // The `<div ref={workSurfaceRef}>` below is gated by the `projectHydrated`
+    // / `hasActiveProject` / `showWelcome` early returns, so on a cold `/work`
+    // boot the ref is null on the first run when `active` flips true. Re-run
+    // once those guards settle so the inert state lands on the real node.
+    if (!node) return;
+    if (active) {
+      node.removeAttribute("inert");
+    } else {
+      node.setAttribute("inert", "");
+    }
+  }, [active, projectHydrated, hasActiveProject, showWelcome]);
 
   if (!projectHydrated) {
     return active ? GuardLoadingFallback : null;
   }
 
-  const hasActiveProject = Boolean(project?.rootPath);
   if (!hasActiveProject || showWelcome) {
     return active ? <Navigate to="/project" replace /> : null;
   }
 
   return (
     <div
+      ref={workSurfaceRef}
       className="h-full min-h-0 w-full"
-      hidden={!active}
+      aria-hidden={!active}
+      style={!active
+        ? {
+          position: "absolute",
+          inset: 0,
+          zIndex: -1,
+          opacity: 0,
+          pointerEvents: "none",
+        }
+        : undefined}
     >
       <PageErrorBoundary>
         <React.Suspense fallback={LazyFallback}>

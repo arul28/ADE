@@ -77,7 +77,11 @@ public final class LiveActivityCoordinator: ObservableObject {
 
     private weak var host: LiveActivityHost?
     private let configuration: Configuration
-    private let workspaceName: String
+    /// Latest header label for the activity (e.g. "Primary"). Mutable so a
+    /// new focused lane forces an end+restart on the next reconcile —
+    /// `ActivityAttributes` are immutable across an activity's lifetime, so
+    /// renaming is the only way to keep the system header in sync.
+    private var workspaceName: String
 
     /// One listener task for push-token updates on the current activity.
     private var pushTokenTask: Task<Void, Never>?
@@ -102,7 +106,7 @@ public final class LiveActivityCoordinator: ObservableObject {
 
     public init(
         host: LiveActivityHost,
-        workspaceName: String = "Workspace",
+        workspaceName: String = "",
         configuration: Configuration = Configuration()
     ) {
         self.host = host
@@ -132,18 +136,19 @@ public final class LiveActivityCoordinator: ObservableObject {
 
     /// Called by the host whenever the set of active sessions changes.
     /// - Parameters:
-    ///   - sessions: live sessions actively producing output (filtered to
-    ///     `runtimeState == "running"` by `SyncService`).
-    ///   - prs: optional PR snapshot for the pending-PR counts. Pass nil
-    ///     to leave the PR counts unchanged from the previous tick.
-    ///   - awaitingInputCount: chats waiting on user input — rendered as a
-    ///     count chip rather than a roster row.
-    ///   - idleCount: chats connected but not currently producing output.
+    ///   - sessions: chats currently streaming output. SyncService filters to
+    ///     `runtimeState == "running"` AND a recent `lastActivityAt` so this
+    ///     list is the LA roster verbatim — idle / awaiting / stale chats are
+    ///     handled by the in-app Attention Drawer instead.
+    ///   - prs: PR snapshot for the attention selector.
+    ///   - focusedLaneName: lane name of the most-recently-active running
+    ///     chat. Used as the LA system-header suffix ("ADE · Primary"); a
+    ///     change forces an end+restart since `ActivityAttributes` are
+    ///     immutable across an activity's lifetime.
     public func reconcile(
         with sessions: [AgentSnapshot],
         prs: [PrSnapshot] = [],
-        awaitingInputCount: Int = 0,
-        idleCount: Int = 0
+        focusedLaneName: String? = nil
     ) {
         let previousTask = reconcileTask
         reconcileTask = Task { @MainActor [weak self] in
@@ -152,8 +157,7 @@ public final class LiveActivityCoordinator: ObservableObject {
             await self.reconcileNow(
                 with: sessions,
                 prs: prs,
-                awaitingInputCount: awaitingInputCount,
-                idleCount: idleCount
+                focusedLaneName: focusedLaneName
             )
         }
     }
@@ -161,33 +165,38 @@ public final class LiveActivityCoordinator: ObservableObject {
     private func reconcileNow(
         with sessions: [AgentSnapshot],
         prs: [PrSnapshot],
-        awaitingInputCount: Int,
-        idleCount: Int
+        focusedLaneName: String?
     ) async {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             await endAllActivities(dismissalPolicy: .immediate)
             return
         }
 
-        let desiredState = makeContentState(
-            sessions: sessions,
-            prs: prs,
-            awaitingInputCount: awaitingInputCount,
-            idleCount: idleCount
-        )
+        // Per-tick header label. Falls back to "" so iOS just shows "ADE"
+        // when nothing better is available (no focused session).
+        let desiredHeader = (focusedLaneName?.trimmingCharacters(in: .whitespaces).isEmpty == false)
+            ? focusedLaneName!
+            : ""
 
-        // If there's literally nothing to show, make sure no activity is
-        // visible and return. Counts alone (awaiting / idle) don't justify
-        // surfacing a Live Activity — only an actively-running roster, an
-        // attention signal, or pending PRs do.
+        let desiredState = makeContentState(sessions: sessions, prs: prs)
+
+        // The LA only ever surfaces actively-streaming chats now. No roster +
+        // no attention + no PR signals → tear it down.
         if sessions.isEmpty && desiredState.attention == nil && desiredState.pendingPrCount == 0 {
             await endAllActivities(dismissalPolicy: .after(Date().addingTimeInterval(configuration.terminalDismissalDelay)))
             return
         }
 
+        // ActivityAttributes are immutable; the only way to change the system
+        // header is to end and re-request. Do it here so a focus-lane swap
+        // ("Primary" → "feature/x") is reflected immediately.
+        if desiredHeader != workspaceName {
+            workspaceName = desiredHeader
+            await endAllActivities(dismissalPolicy: .immediate)
+        }
+
         let existing = Activity<ADESessionAttributes>.activities
         if let canonical = canonicalActivity(from: existing) {
-            // End everything except the canonical; update it.
             for stray in existing where stray.id != canonical.id {
                 await stray.end(nil, dismissalPolicy: .immediate)
             }
@@ -196,8 +205,6 @@ public final class LiveActivityCoordinator: ObservableObject {
         } else if shouldStartFreshActivity(for: desiredState) {
             await startActivity(with: desiredState)
         }
-        // else: user dismissed recently and there's no urgent reason to re-summon.
-        // Home widget still reflects state; the LA stays out of the way.
     }
 
     /// Guard against re-summoning a freshly-dismissed Live Activity. Within
@@ -227,12 +234,10 @@ public final class LiveActivityCoordinator: ObservableObject {
 
     private func makeContentState(
         sessions: [AgentSnapshot],
-        prs: [PrSnapshot],
-        awaitingInputCount: Int = 0,
-        idleCount: Int = 0
+        prs: [PrSnapshot]
     ) -> ADESessionAttributes.ContentState {
-        // Prioritise: failed first (rare, urgent), then most-recently-active.
-        // Awaiting-input is no longer in this list (rolled into the count chip).
+        // Roster is now strictly currently-streaming chats; SyncService
+        // filters at source. Failed sessions still bubble to the top.
         let sorted = sessions.sorted { a, b in
             if isFailed(a) != isFailed(b) { return isFailed(a) }
             return a.lastActivityAt > b.lastActivityAt
@@ -242,6 +247,7 @@ public final class LiveActivityCoordinator: ObservableObject {
             .init(
                 id: snap.sessionId,
                 providerSlug: snap.provider,
+                modelId: snap.modelId,
                 title: snap.title ?? snap.sessionId,
                 isAwaitingInput: snap.awaitingInput,
                 isFailed: isFailed(snap),
@@ -261,12 +267,10 @@ public final class LiveActivityCoordinator: ObservableObject {
             if pr.mergeReady { mergeReady += 1 }
         }
 
-        // The single most important attention signal. Priority order:
-        // awaiting-input > failed > CI-failing > review-requested > merge-ready.
         let attention: ADESessionAttributes.ContentState.Attention? = selectAttention(
             sessions: sorted,
             prs: prs,
-            awaitingInputCount: awaitingInputCount,
+            awaitingInputCount: 0,
             failingChecks: failingChecks,
             awaitingReviews: awaitingReviews,
             mergeReady: mergeReady
@@ -278,8 +282,8 @@ public final class LiveActivityCoordinator: ObservableObject {
             failingCheckCount: failingChecks,
             awaitingReviewCount: awaitingReviews,
             mergeReadyCount: mergeReady,
-            awaitingInputCount: awaitingInputCount,
-            idleCount: idleCount,
+            awaitingInputCount: 0,
+            idleCount: 0,
             generatedAt: Date()
         )
     }

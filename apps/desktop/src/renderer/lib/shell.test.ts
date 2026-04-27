@@ -62,4 +62,18 @@ describe("shell helpers", () => {
       "d",
     ]);
   });
+
+  it("uses ANSI-C $'...' quoting for posix args with embedded newlines", () => {
+    // Plain double-quotes would preserve the \n literally, but when the
+    // resulting startupCommand is written into an interactive PTY shell the
+    // terminal's line discipline fires on every \n, dropping PS2 continuation
+    // prompts into the command stream. $'...' keeps the line single-line on
+    // the wire and lets the shell decode the escapes.
+    expect(quoteShellArg("hello\nworld", { platform: "linux" })).toBe("$'hello\\nworld'");
+    expect(quoteShellArg("ADE guidance.\n\nUse `ade`.", { platform: "linux" })).toBe(
+      "$'ADE guidance.\\n\\nUse `ade`.'",
+    );
+    // Single quotes inside the arg must be backslash-escaped for ANSI-C form.
+    expect(quoteShellArg("it's\nfine", { platform: "linux" })).toBe("$'it\\'s\\nfine'");
+  });
 });

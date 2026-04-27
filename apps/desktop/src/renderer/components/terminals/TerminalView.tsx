@@ -10,6 +10,7 @@ import {
   type TerminalPreferences,
   type ThemeId,
 } from "../../state/appStore";
+import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
 type TerminalRendererMode = "webgl" | "dom";
@@ -1116,9 +1117,27 @@ export function TerminalView({
     const onWindowResize = () => {
       requestAnimationFrame(() => schedule(true));
     };
+    const onWorkSurfaceRevealed = () => {
+      if (!mountConfigRef.current.isVisible) return;
+      clearTextureAtlas(runtime);
+      flushPendingFrameWrites(runtime);
+      requestAnimationFrame(() => {
+        schedule(true);
+        try {
+          runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
+          if (mountConfigRef.current.isActive) {
+            runtime.term.focus();
+            runtime.term.scrollToBottom();
+          }
+        } catch {
+          // ignore redraw failures after disposal
+        }
+      });
+    };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onWindowFocus);
     window.addEventListener("resize", onWindowResize);
+    window.addEventListener(WORK_SURFACE_REVEALED_EVENT, onWorkSurfaceRevealed);
     window.visualViewport?.addEventListener("resize", onWindowResize);
 
     const setupDprListener = () => {
@@ -1177,6 +1196,7 @@ export function TerminalView({
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onWindowFocus);
       window.removeEventListener("resize", onWindowResize);
+      window.removeEventListener(WORK_SURFACE_REVEALED_EVENT, onWorkSurfaceRevealed);
       window.visualViewport?.removeEventListener("resize", onWindowResize);
       el.removeEventListener("wheel", onWheel);
 

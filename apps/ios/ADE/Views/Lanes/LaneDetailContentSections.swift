@@ -1,15 +1,18 @@
 import SwiftUI
 
-struct LaneDetailHeaderCard: View {
+struct LaneDetailHeaderCard<Footer: View>: View {
   let snapshot: LaneListSnapshot
   let detail: LaneDetailPayload?
   let linkedPullRequests: [PullRequestListItem]
   let transitionNamespace: Namespace.ID?
   let transitionLaneId: String?
-  let canManage: Bool
-  let onManageTapped: () -> Void
+  let canRunLiveActions: Bool
   let onStackTapped: () -> Void
   let onOpenLinkedPullRequest: (PullRequestListItem) -> Void
+  let onPush: () -> Void
+  let onPull: () -> Void
+  let onFetch: () -> Void
+  @ViewBuilder let footer: () -> Footer
 
   // transitionNamespace / transitionLaneId are retained on the init for
   // caller compatibility but intentionally unused in body:
@@ -29,6 +32,8 @@ struct LaneDetailHeaderCard: View {
           .foregroundStyle(ADEColor.textSecondary)
       }
       activeSessionsRow
+      syncActionsRow
+      footer()
     }
     .adeGlassCard(cornerRadius: 18, padding: 16)
     .accessibilityElement(children: .contain)
@@ -52,18 +57,90 @@ struct LaneDetailHeaderCard: View {
       }
 
       Spacer(minLength: 8)
-
-      Button(action: onManageTapped) {
-        Image(systemName: "gearshape.fill")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(width: 44, height: 44)
-          .background(ADEColor.surfaceBackground.opacity(0.45), in: Circle())
-      }
-      .buttonStyle(.plain)
-      .disabled(!canManage)
-      .accessibilityLabel("Manage lane")
     }
+  }
+
+  /// Inline Pull / Push / Fetch row pinned to the bottom of the header card.
+  /// Sync details + the underlying full sync screen live in Advanced now —
+  /// this is the everyday "I'm done, push it" affordance.
+  @ViewBuilder
+  private var syncActionsRow: some View {
+    let ahead = snapshot.lane.status.ahead
+    let behind = snapshot.lane.status.behind
+    let summary = syncSummaryText(ahead: ahead, behind: behind)
+
+    HStack(spacing: 8) {
+      Image(systemName: "arrow.triangle.2.circlepath")
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      Text(summary)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Spacer(minLength: 8)
+
+      syncActionButton(
+        symbol: "arrow.down.to.line.compact",
+        // Action flips between Pull (when there are commits to integrate)
+        // and Fetch (when we just want to refresh remote state). The label
+        // and accessibility text must follow the action so VoiceOver users
+        // hear what the button is actually about to do.
+        label: behind > 0 ? "Pull" : "Fetch",
+        tint: behind > 0 ? ADEColor.warning : ADEColor.textPrimary,
+        emphasize: behind > 0,
+        action: behind > 0 ? onPull : onFetch
+      )
+      syncActionButton(
+        symbol: "arrow.up.to.line.compact",
+        label: "Push",
+        tint: ahead > 0 ? ADEColor.success : ADEColor.textPrimary,
+        emphasize: ahead > 0,
+        action: onPush
+      )
+    }
+    .padding(.top, 2)
+  }
+
+  private func syncSummaryText(ahead: Int, behind: Int) -> String {
+    switch (ahead, behind) {
+    case (0, 0): return "In sync with remote"
+    case (let a, 0): return "\(a) ahead"
+    case (0, let b): return "\(b) behind"
+    case (let a, let b): return "\(a) ahead · \(b) behind"
+    }
+  }
+
+  @ViewBuilder
+  private func syncActionButton(
+    symbol: String,
+    label: String,
+    tint: Color,
+    emphasize: Bool,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Image(systemName: symbol)
+          .font(.system(size: 11, weight: .bold))
+        Text(label)
+          .font(.caption.weight(.semibold))
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(
+        (emphasize ? tint.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.45)),
+        in: Capsule()
+      )
+      .overlay(
+        Capsule().stroke(tint.opacity(emphasize ? 0.32 : 0.16), lineWidth: 0.6)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(!canRunLiveActions)
+    .opacity(canRunLiveActions ? 1 : 0.5)
+    .accessibilityLabel(label)
   }
 
   @ViewBuilder

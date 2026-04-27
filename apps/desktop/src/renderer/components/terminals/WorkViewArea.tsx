@@ -279,6 +279,8 @@ export function WorkViewArea({
     profile: "claude" | "codex" | "shell";
     title?: string;
     startupCommand?: string;
+    command?: string;
+    args?: string[];
     tracked?: boolean;
   }) => Promise<unknown>;
   onShowDraftKind: (kind: WorkDraftKind) => void;

@@ -784,49 +784,6 @@ struct WorkSessionRow: View {
   }
 }
 
-struct WorkActivityRow: View {
-  @Environment(\.accessibilityReduceMotion) var reduceMotion
-
-  let activity: WorkAgentActivity
-  var animatesPulse: Bool = true
-  @State var pulse = false
-
-  var body: some View {
-    HStack(spacing: 12) {
-      Circle()
-        .fill(ADEColor.success)
-        .frame(width: 10, height: 10)
-        .scaleEffect(animatesPulse && pulse && !reduceMotion ? 1.25 : 1.0)
-        .animation(animatesPulse ? ADEMotion.pulse(reduceMotion: reduceMotion) : nil, value: pulse)
-        .onAppear {
-          guard !reduceMotion, animatesPulse else { return }
-          pulse = true
-        }
-      VStack(alignment: .leading, spacing: 4) {
-        Text(activity.agentName)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text("\(activity.laneName) · \(activity.toolName ?? "Waiting")")
-          .font(.caption.monospaced())
-          .foregroundStyle(ADEColor.textSecondary)
-        if let detail = activity.detail, !detail.isEmpty {
-          Text(detail)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
-      }
-      Spacer()
-      Text(formattedSessionDuration(startedAt: activity.startedAt, endedAt: nil))
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .adeListCard()
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(activity.agentName), \(activity.laneName), \(activity.toolName ?? "Waiting")")
-  }
-}
-
 struct WorkTag: View {
   let text: String
   let icon: String

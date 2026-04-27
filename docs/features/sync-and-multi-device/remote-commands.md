@@ -197,7 +197,16 @@ A handful have more logic:
   PR's action capabilities, resolves per-lane create-PR eligibility
   (using `resolveStableLaneBaseBranch`), and collects queue /
   integration / rebase workflow cards from the DB and
-  `rebaseSuggestionService`.
+  `conflictService.scanRebaseNeeds()` (the same source the desktop
+  Rebase tab consumes).
+- **`lanes.dismissRebaseSuggestion` / `lanes.deferRebaseSuggestion`** —
+  dual-write the lane state. The handler calls
+  `conflictService.dismissRebase(laneId)` /
+  `conflictService.deferRebase(laneId, until)` first so the next
+  `prs.getMobileSnapshot` rebuild reflects the action immediately,
+  then forwards to `rebaseSuggestionService.dismiss/defer` for the
+  legacy desktop banner. `defer` clamps the requested minutes to
+  `[5, 7 days]` before computing the absolute `until` ISO string.
 - **`lanes.presence.announce` / `lanes.presence.release`** — handled
   in `syncHostService` directly (not in the remote command
   registry); the host upserts a per-lane `DeviceMarker` map and
