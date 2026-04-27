@@ -299,6 +299,18 @@ func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [Work
               rank: anchor.rank,
               payload: .changedFiles(WorkChangedFilesGroupModel(id: groupId, files: files))
             ))
+          } else {
+            // Aggregation found no extractable file paths (e.g. all members
+            // are tool cards whose argsText didn't include `file_path`). Fall
+            // back to a tool-group of the raw code-change members so the
+            // activity still surfaces in the timeline rather than vanishing.
+            let fallbackId = "tool-group-files:\(anchor.id)"
+            result.append(WorkTimelineEntry(
+              id: fallbackId,
+              timestamp: anchor.timestamp,
+              rank: anchor.rank,
+              payload: .toolGroup(WorkToolGroupModel(id: fallbackId, members: codeChange))
+            ))
           }
         }
       } else {

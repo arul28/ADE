@@ -2356,7 +2356,16 @@ export function registerIpc({
 
       const selectedPath = result.filePaths[0];
       if (!selectedPath) return null;
-      return setProjectIconOverride(validatedRoot, selectedPath);
+      try {
+        return setProjectIconOverride(validatedRoot, selectedPath);
+      } catch (error) {
+        // setProjectIconOverride throws when the picked file is outside the
+        // project root or has an unsupported extension. Surface the message
+        // so the renderer can display a meaningful error instead of a
+        // silently rejected promise.
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to set project icon: ${message}`);
+      }
     },
   );
 

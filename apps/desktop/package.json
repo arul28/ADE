@@ -201,10 +201,12 @@
         }
       ],
       "icon": "build/icon.ico",
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
-      "rfc3161TimeStampServer": "http://timestamp.digicert.com",
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+      },
       "artifactName": "${productName}-${version}-win-${arch}.${ext}"
     },
     "mac": {

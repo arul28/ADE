@@ -456,13 +456,21 @@ function stopChildProcess(proc: ChildProcess): void {
   proc.kill();
 }
 
+// `--port` may appear in a recorded command line either bare (`--port=N` or
+// `--port N`) or wrapped in cmd.exe-style quotes (`"--port=N"` / `"--port" "N"`)
+// because the Windows launch path quotes every token through
+// {@link quoteWindowsCmdArg}. Allow leading/trailing `"` as a token boundary
+// alongside whitespace so PID discovery still matches managed servers spawned
+// via the Windows wrapper.
 function commandHasPort(command: string, port: number): boolean {
   const escapedPort = String(port).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:^|\\s)--port(?:=|\\s+)${escapedPort}(?:\\s|$)`).test(command);
+  return new RegExp(
+    `(?:^|[\\s"])--port(?:=|\\s+|"\\s+")${escapedPort}(?:[\\s"]|$)`,
+  ).test(command);
 }
 
 function parseManagedOpenCodePort(command: string): number | null {
-  const match = command.match(/(?:^|\s)--port(?:=|\s+)(\d+)(?:\s|$)/);
+  const match = command.match(/(?:^|[\s"])--port(?:=|\s+|"\s+")(\d+)(?:[\s"]|$)/);
   if (!match) return null;
   const port = Number(match[1]);
   return Number.isInteger(port) && port > 0 ? port : null;

@@ -159,9 +159,43 @@ function listSubdirectories(root: string, relativeDir: string): string[] {
   }
 }
 
-function iconSearchRoots(projectRoot: string): string[] {
-  const roots = new Set<string>(["."]);
+type IconSearchRootsCacheEntry = {
+  rootMtimeMs: number;
+  appsMtimeMs: number;
+  packagesMtimeMs: number;
+  value: string[];
+};
 
+const iconSearchRootsCache = new Map<string, IconSearchRootsCacheEntry>();
+
+function dirMtimeMs(absPath: string): number {
+  try {
+    return fs.statSync(absPath).mtimeMs;
+  } catch {
+    return -1;
+  }
+}
+
+// Resolving a project icon scans the project root and every first-level child
+// of `apps/` and `packages/`. On large monorepos the project-tab render fan-out
+// turned into hundreds of `readdirSync` calls per refresh; cache the result
+// keyed on the mtime of those three directories so it invalidates when a
+// workspace dir is added/removed.
+function iconSearchRoots(projectRoot: string): string[] {
+  const rootMtimeMs = dirMtimeMs(projectRoot);
+  const appsMtimeMs = dirMtimeMs(path.join(projectRoot, "apps"));
+  const packagesMtimeMs = dirMtimeMs(path.join(projectRoot, "packages"));
+  const cached = iconSearchRootsCache.get(projectRoot);
+  if (
+    cached
+    && cached.rootMtimeMs === rootMtimeMs
+    && cached.appsMtimeMs === appsMtimeMs
+    && cached.packagesMtimeMs === packagesMtimeMs
+  ) {
+    return cached.value;
+  }
+
+  const roots = new Set<string>(["."]);
   for (const dir of listSubdirectories(projectRoot, ".")) {
     roots.add(dir);
   }
@@ -171,7 +205,14 @@ function iconSearchRoots(projectRoot: string): string[] {
     }
   }
 
-  return Array.from(roots);
+  const value = Array.from(roots);
+  iconSearchRootsCache.set(projectRoot, {
+    rootMtimeMs,
+    appsMtimeMs,
+    packagesMtimeMs,
+    value,
+  });
+  return value;
 }
 
 function candidateDirectoriesForRoot(root: string): string[] {
@@ -352,7 +393,17 @@ function writeProjectIconPathOverride(projectRoot: string, iconPath: string | nu
   config.version = typeof config.version === "number" ? config.version : 1;
 
   fs.mkdirSync(path.dirname(sharedConfigPath), { recursive: true });
-  fs.writeFileSync(sharedConfigPath, YAML.stringify(config, { indent: 2 }));
+  // Write to a sibling temp file then rename so a crash mid-write can never
+  // leave .ade/ade.yaml truncated/corrupted. The rename is atomic on the
+  // same filesystem.
+  const tempPath = `${sharedConfigPath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, YAML.stringify(config, { indent: 2 }));
+  try {
+    fs.renameSync(tempPath, sharedConfigPath);
+  } catch (renameError) {
+    try { fs.unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
+    throw renameError;
+  }
 }
 
 export function setProjectIconOverride(projectRoot: string, iconPath: string): ProjectIcon {

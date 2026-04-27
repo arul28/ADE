@@ -12851,20 +12851,31 @@ export function createAgentChatService(args: {
     const steer = queue[idx];
 
     if (mode === "inline") {
-      queue.splice(idx, 1);
       const session = runtime.v2Session;
       if (!session) {
-        // No active V2 session — can't fold mid-turn; fall back to a fresh send.
+        // No active V2 session — can't fold mid-turn; fall back to a fresh
+        // send. Only splice from the queue once `prepareSendMessage` accepts
+        // the steer; otherwise leave it queued so the user can retry rather
+        // than losing the message silently.
         const prepared = prepareSendMessage({
           sessionId,
           text: steer.text,
           displayText: steer.text,
           attachments: steer.attachments,
         });
-        if (prepared) await executePreparedSendMessage(prepared);
+        if (!prepared) {
+          logger.warn("agent_chat.dispatch_steer_inline_drop_skipped", {
+            sessionId,
+            steerId,
+          });
+          return { dispatchedAt: null };
+        }
+        queue.splice(idx, 1);
+        await executePreparedSendMessage(prepared);
         persistChatState(managed);
         return { dispatchedAt: Date.now() };
       }
+      queue.splice(idx, 1);
 
       // Build an SDK user message with shouldQuery:false. The SDK appends it
       // to the in-flight transcript and the model picks it up at the next
