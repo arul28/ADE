@@ -119,8 +119,30 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
 - `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` —
-  builds Claude/Codex CLI command strings with permission and sandbox
-  flags.
+  builds Claude/Codex CLI launch payloads with permission and sandbox
+  flags. `buildTrackedCliLaunchCommand` returns a typed
+  `TrackedCliLaunchCommand` (`{ command, args, startupCommand }`) so
+  `ptyService.create` can spawn the CLI directly via argv (preferred)
+  while `startupCommand` stays as a shell-typed fallback for systems
+  whose Claude/Codex shim only resolves through the user's shell rc.
+  Both providers get ADE session guidance injected at launch:
+  Claude through `--append-system-prompt` (text from
+  `ADE_CLI_AGENT_GUIDANCE`), Codex through a leading initial prompt
+  built from `ADE_CLI_INLINE_GUIDANCE`. The legacy
+  `buildTrackedCliStartupCommand` and `defaultTrackedCliStartupCommand`
+  are now thin wrappers over `buildTrackedCliLaunchCommand` for
+  callers that only need the shell string.
+- `apps/desktop/src/shared/adeCliGuidance.ts` — single source of truth
+  for the ADE session guidance text injected into Claude/Codex CLI
+  launches. Exported as `ADE_CLI_AGENT_GUIDANCE` and
+  `ADE_CLI_INLINE_GUIDANCE`.
+- `apps/desktop/src/renderer/components/terminals/workSurfaceVisibility.ts`
+  — exports the `WORK_SURFACE_REVEALED_EVENT` window-event constant
+  and a `dispatchWorkSurfaceRevealed()` helper. The persistent Work
+  surface fires this event whenever the work area becomes active again
+  so xterm tiles can clear their texture atlas, force a refit against
+  the new viewport, and restore focus/scroll without waiting for a
+  resize event that will never come.
 - `apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx`
   and `SessionInfoPopover.tsx` — right-click actions and info overlay.
   Ended chat sessions get an additional "Delete chat" action wired to

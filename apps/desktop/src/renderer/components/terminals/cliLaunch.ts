@@ -56,15 +56,7 @@ export function buildTrackedCliLaunchCommand(args: {
       commandArgs.push("--session-id", args.sessionId);
     }
     commandArgs.push("--append-system-prompt", ADE_CLI_AGENT_GUIDANCE);
-    if (args.permissionMode === "full-auto") {
-      commandArgs.push("--dangerously-skip-permissions");
-    } else if (args.permissionMode === "edit") {
-      commandArgs.push("--permission-mode", "acceptEdits");
-    } else if (args.permissionMode === "default") {
-      commandArgs.push("--permission-mode", "default");
-    } else {
-      commandArgs.push("--permission-mode", "plan");
-    }
+    commandArgs.push(...permissionModeToClaudeFlag(args.permissionMode));
     return {
       command: "claude",
       args: commandArgs,
@@ -72,17 +64,11 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
-  const commandArgs: string[] = ["--no-alt-screen"];
-  if (args.permissionMode === "full-auto") {
-    commandArgs.push("--dangerously-bypass-approvals-and-sandbox");
-  } else if (args.permissionMode === "default") {
-    commandArgs.push("--full-auto");
-  } else if (args.permissionMode !== "config-toml") {
-    const approvalPolicy = args.permissionMode === "edit" ? "untrusted" : "on-request";
-    const sandboxMode = args.permissionMode === "edit" ? "workspace-write" : "read-only";
-    commandArgs.push("--sandbox", sandboxMode, "--ask-for-approval", approvalPolicy);
-  }
-  commandArgs.push(workTabCodexPreamblePrompt());
+  const commandArgs: string[] = [
+    "--no-alt-screen",
+    ...permissionModeToCodexFlags(args.permissionMode),
+    workTabCodexPreamblePrompt(),
+  ];
   return {
     command: "codex",
     args: commandArgs,

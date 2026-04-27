@@ -300,6 +300,16 @@ Key behaviors:
   backgrounded, so background terminals don't stall on `rAF` ticks
   that the browser suppresses. `flushPendingFrameWrites` / `clearFrameWriteSchedule`
   own both code paths.
+- **Work-surface reveal redraw** — `TerminalView` listens for the
+  `WORK_SURFACE_REVEALED_EVENT` window event (dispatched from
+  `PersistentWorkSurface` whenever it returns to the foreground). On
+  reveal, the view clears the WebGL texture atlas, flushes any
+  pending frame writes, schedules a forced refit on the next animation
+  frame, and re-runs `term.refresh(0, rows-1)` plus a focus +
+  `scrollToBottom()` when the tile is the active one. This is the only
+  reliable signal that "the surface is back on screen at its new
+  size" since hidden surfaces no longer fire layout/resize events;
+  without it, terminals come back blank after a tab swap.
 
 Font stack defaults: `ui-monospace`, `SFMono-Regular`, `Menlo`,
 `Monaco`, `Cascadia Mono`, `JetBrains Mono`, `Geist Mono`, `monospace`.
@@ -314,12 +324,22 @@ Rendered when the Work view has no open sessions. Contains:
   permission controls (`getPermissionOptions`, `safetyColors`)
 - for terminal drafts: provider picker (Claude / Codex / Shell),
   permission mode dropdown, and a "Launch" button that calls
-  `onLaunchPtySession` with the built startup command from
-  `buildTrackedCliStartupCommand`
+  `onLaunchPtySession` with the launch payload from
+  `buildTrackedCliLaunchCommand` (`{ command, args, startupCommand }`).
+  `onLaunchPtySession` forwards `command` + `args` to `pty.create`
+  for direct argv spawn; `startupCommand` rides along as the shell
+  fallback for hosts that need rc-resolved CLI shims.
 
 Launch commands are built by `cliLaunch.ts`:
 
+- `buildTrackedCliLaunchCommand({ provider, permissionMode, ... })`
+  returns the canonical `{ command, args, startupCommand }` triple
+  used for both fresh launches and resumes. The args list now embeds
+  the ADE CLI guidance prompt — Claude through `--append-system-prompt`,
+  Codex as the leading initial prompt — so every tracked CLI session
+  starts with the agent already aware of the ADE wrappers.
 - `buildTrackedCliStartupCommand({ provider, permissionMode, ... })`
+  thin wrapper that returns just the shell-typed `startupCommand`.
 - `resolveTrackedCliResumeCommand(session)` — used for the resume
   action on the session card
 
@@ -351,7 +371,14 @@ A single hook that owns a lot of state:
 
 The hook exposes `openSessionTab`, `focusSession`, `selectLane`,
 `upsertOptimisticChatSession` (so new chats appear in the tab strip
-before the IPC round-trip completes), and `refresh`.
+before the IPC round-trip completes), and `refresh`. The
+`launchPtySession({ laneId, profile, command?, args?, startupCommand?,
+title?, tracked? })` helper (and its lane-scoped twin in
+`useLaneWorkSessions`) builds a default launch payload with
+`buildTrackedCliLaunchCommand` when the caller didn't override
+`command`/`args`, so every entry point — chat composer launch button,
+TopBar work controls, lane Work pane — produces the same argv-based
+spawn with ADE CLI guidance baked in.
 
 `useLaneWorkSessions` (same file) wraps the same state but scopes to a
 single lane for the Lanes tab.

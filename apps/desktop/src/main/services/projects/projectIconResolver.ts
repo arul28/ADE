@@ -83,10 +83,8 @@ function resolveIconHref(projectRoot: string, href: string): string[] {
 
 export function resolveProjectIconPath(projectRoot: string): string | null {
   const root = path.resolve(projectRoot);
-  for (const candidate of ICON_CANDIDATES) {
-    const existing = findExistingFile(root, [path.join(root, candidate)]);
-    if (existing) return existing;
-  }
+  const directMatch = findExistingFile(root, ICON_CANDIDATES.map((candidate) => path.join(root, candidate)));
+  if (directMatch) return directMatch;
 
   for (const sourceFile of ICON_SOURCE_FILES) {
     const sourcePath = path.join(root, sourceFile);

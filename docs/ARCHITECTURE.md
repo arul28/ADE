@@ -334,8 +334,8 @@ Full contract: [`docs/architecture/AI_INTEGRATION.md`](../docs/architecture/AI_I
 `apps/desktop/src/shared/ipc.ts` defines the single `IPC` const with ~550 named channel strings in a `ade.<domain>.<action>` namespace:
 
 ```
-ade.app.*                    # app lifecycle, clipboard, paths
-ade.project.*                # project open/close/switch/state, in-app directory browser (browseDirectories, getDetail)
+ade.app.*                    # app lifecycle, clipboard text and image (writeClipboardText, writeClipboardImage), paths, image data-URL preview (getImageDataUrl)
+ade.project.*                # project open/close/switch/state, in-app directory browser (browseDirectories, getDetail), favicon resolver (resolveIcon)
 ade.onboarding.*
 ade.lanes.*                  # lane list/create/delete/stack/template/env/port/proxy/rebase
 ade.files.*                  # file tree, read, write, search, watch
@@ -516,6 +516,8 @@ Design tokens have been intentionally trimmed. The CTO design tokens at `apps/de
 - `PaneTilingLayout` — recursive pane trees for high-density workspaces, backed by pure ops in `paneTreeOps.ts` (`reconcilePaneTree`, `splitPaneAtEdge`, `swapPanes`, `detectDropEdge`). Trees persist per `layoutId` via `window.ade.tilingTree`; panel sizes persist separately via `DockLayoutState` and are reset whenever the tree mutates.
 - `SplitPane` / resizable panels — structured 2/3-pane views.
 - Work view's grid mode is `PaneTilingLayout` seeded by `buildWorkSessionTilingTree(sessionIds)` (in `renderer/components/terminals/workSessionTiling.ts`); every session becomes a `FloatingPane` leaf with `grid-tile` chrome.
+- The Work surface mounts persistently: `App.tsx`'s `PersistentWorkSurface` keeps `WorkViewArea` in the tree across tab swaps so terminals never tear down on navigation. While inactive the surface is positioned absolute, `inert`, `aria-hidden`, opacity-0, `pointer-events: none`, and pushed behind via `z-index: -1` (the older `hidden` attribute was dropping xterm dimensions on reveal). When it goes back to active, it dispatches the `WORK_SURFACE_REVEALED_EVENT` window event on the next animation frame and again 120 ms later so terminal tiles can clear their texture atlas, force-fit, and refocus.
+- The desktop TopBar project tab strip resolves a per-project favicon via `window.ade.project.resolveIcon(rootPath)` and caches the result in a module-local `Map`. Tabs without an icon (or a missing project root) fall back to the `Folder` Phosphor glyph; the same component drives the loading-pulse animation when a tab is being switched into or closed.
 - Layout state persists to SQLite (`layout`, `tilingTree`, `graphState` domains via the `kv` table).
 
 ### 7.5 Performance contract

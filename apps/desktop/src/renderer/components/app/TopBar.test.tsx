@@ -120,6 +120,7 @@ describe("TopBar", () => {
         onMissing: vi.fn(() => () => {}),
         forgetRecent: vi.fn(async () => []),
         reorderRecent: vi.fn(async () => undefined),
+        resolveIcon: vi.fn(async () => ({ dataUrl: null, sourcePath: null, mimeType: null })),
       },
       sync: {
         getStatus: vi.fn(async () => makeSyncSnapshot()),

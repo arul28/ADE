@@ -81,12 +81,32 @@ Main process (the substrate):
   depth-2 walk capped at 2,000 files), subdirectory count, and — when
   the path matches a recent-projects row in the global state file —
   lane count and last-opened timestamp.
+- `apps/desktop/src/main/services/projects/projectIconResolver.ts` —
+  best-effort favicon discovery for a project root. Walks a fixed list
+  of common icon paths (`favicon.svg/ico/png`, `public/favicon.*`,
+  `app/favicon.*`, `app/icon.*`, `src/(app/)?favicon.*`,
+  `assets/icon.*`, `assets/logo.*`, `.idea/icon.svg`); when none of
+  those exist it scans `index.html`, `public/index.html`, the TanStack
+  Router root file (`app/routes/__root.tsx`, `src/routes/__root.tsx`),
+  and `app/root.tsx` / `src/root.tsx` for a `<link rel="icon">` href
+  (HTML attribute or JS-object form, local hrefs only) and resolves it
+  against `public/` or the project root. `resolveProjectIcon(rootPath)`
+  returns `{ dataUrl, sourcePath, mimeType }`: any matched file under 1
+  MB is base64-encoded as a data URL (svg/ico/png MIME types only),
+  larger files report only `sourcePath` so callers can render
+  themselves. Path traversal outside the project root is blocked.
+- `apps/desktop/src/main/services/projects/projectIconResolver.test.ts`
+  — vitest coverage for the resolver: direct file matches, HTML link
+  scrapes, escape-attempt rejection, and base64 data-URL emission.
 
 Shared types:
 
 - `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`,
   `ProcessRuntime`, `StackButtonDefinition`, `TestSuiteDefinition`,
   `LaneOverlayPolicy`, `ProxyConfig`, `PortLease`, `LanePreviewInfo`.
+- `apps/desktop/src/shared/types/core.ts` — `ProjectIcon` (`{ dataUrl,
+  sourcePath, mimeType }`), the return shape of `resolveProjectIcon`
+  consumed by the TopBar tab strip and the iOS project list.
 
 Preload bridge:
 
@@ -210,6 +230,28 @@ fuzzy-search over:
 - recent run-shell commands
 
 Scoped to the current run lane.
+
+### Project icons
+
+Each project gets a best-effort favicon resolved by
+`projectIconResolver`. The renderer asks for it on demand through
+`window.ade.project.resolveIcon(rootPath)` (handler:
+`IPC.projectResolveIcon` →
+`ipcMain.handle("ade.project.resolveIcon", …)`); the desktop TopBar
+project tab strip caches the result per `rootPath` in a module-local
+`Map` so a tab swap doesn't re-scan the disk. When the resolver finds
+no icon (or the file is over the 1 MB cap), the tab falls back to the
+`Folder` Phosphor glyph. Missing-project tabs skip the lookup
+entirely.
+
+The mobile companion gets the icon through a dedicated path: the host's
+`mobileProjectSummaryForContext` / `mobileProjectSummaryForRecent` in
+`apps/desktop/src/main/main.ts` runs `resolveProjectIcon` on every
+project entry, downsamples it to 64×64 via Electron's
+`nativeImage.createFromPath(...).resize(...)` (PNG fallback for SVG /
+ICO sources that `nativeImage` can't read), and ships the resulting
+data URL to iOS as `MobileProjectSummary.iconDataUrl`. The iOS
+`ProjectHomeView` renders that string as the project tile artwork.
 
 ## Data model
 

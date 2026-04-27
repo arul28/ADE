@@ -150,11 +150,20 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
    `running`.
 8. Best-effort capture of `headShaStart` via `computeHeadShaBestEffort`
    so `sessionDeltaService` has a git anchor.
-9. Select a shell (`/bin/zsh`, `/bin/bash`, `/bin/sh`, or Windows
-   equivalents) or spawn a direct command. Retries across candidates if
-   the first spawn fails.
-10. Write `args.startupCommand` to the PTY so the shell executes the
-    CLI. Returns `{ ptyId, sessionId, pid }`.
+9. Pick a launch strategy:
+   - When `args.command` is present (e.g. the renderer asked for
+     `claude` with explicit argv from `buildTrackedCliLaunchCommand`),
+     spawn that program directly. If the direct spawn fails, fall back
+     to a shell candidate so an `args.startupCommand` shadow command
+     can still execute the CLI through the user's shell rc — useful
+     when Claude/Codex are only resolvable through `~/.zshrc` shims.
+   - Otherwise iterate the shell candidate list (`/bin/zsh`,
+     `/bin/bash`, `/bin/sh`, or Windows equivalents), retrying across
+     candidates if the first spawn fails.
+10. If the spawn ended up in a shell (no direct launch, or direct
+    launch fell back), type `args.startupCommand` into the PTY so the
+    shell executes the CLI. Direct launches that succeeded skip this —
+    they already received argv. Returns `{ ptyId, sessionId, pid }`.
 
 ### Data, preview, and runtime state
 
@@ -245,7 +254,18 @@ resolved. Strategies, in order:
    `payload.timestamp` (or the file `mtime` when absent) and the ADE
    session's `startedAt`. The best-scoring match wins, so re-running
    Codex in the same cwd doesn't clobber the resume target of a
-   concurrent terminal.
+   concurrent terminal. The matcher accepts three optional gates so the
+   close-time pass is tighter than the on-demand pass:
+   `maxStartDeltaMs` (drop matches whose timestamp drifts more than N
+   ms from `startedAt`), `notBeforeMs` (ignore rollouts older than this
+   floor — used to refuse a recycled rollout from a previous launch),
+   and `requiredText` (reads up to 512 KB of the candidate's prefix and
+   only accepts the file when that substring appears, e.g. the
+   `"ADE session guidance"` marker that the renderer's CLI launcher
+   embeds in the initial Codex prompt). The live polling backfill that
+   runs while a Codex session is still streaming uses all three gates;
+   the close-time backfill only enforces a 10-minute drift window so
+   it can match older sessions on resume.
 
 Any found ID updates the row's `resumeMetadata.targetId` through
 `sessionService.updateMeta`. A resume command is always written even
@@ -257,6 +277,17 @@ lazily hydrate missing resume targets for Claude/Codex sessions when
 the renderer first asks for them. Each call de-dupes IDs and logs a
 single `pty.resume_target_backfill_failed` warn per failing ID; it
 never throws.
+
+The Codex storage scan is gated by the `reason` argument that the
+backfill runs under: `"close"` and `"dispose"` (the regular end-of-
+session paths) consult `~/.codex/sessions` with the 10-minute drift
+window; `"session-list"` and `"resume-launch"` skip the storage
+lookup entirely. Lazy hydration over `sessions.list` therefore relies
+only on transcript regex matches, which keeps the list-render hot path
+off the disk and prevents one renderer's idle list refresh from
+adopting another lane's Codex rollout. Live Codex sessions still get
+their resume target through the polling path, which uses the strict
+`requiredText: "ADE session guidance"` gate.
 
 ### Dispose and orphan disposal
 

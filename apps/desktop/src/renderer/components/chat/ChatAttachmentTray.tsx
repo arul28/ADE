@@ -58,6 +58,19 @@ function ImageAttachmentPreview({
     }
   };
 
+  let copyTitle: string;
+  switch (copyState) {
+    case "copied":
+      copyTitle = "Copied";
+      break;
+    case "failed":
+      copyTitle = "Copy failed";
+      break;
+    default:
+      copyTitle = `Copy ${name}`;
+      break;
+  }
+
   return (
     <>
       <div
@@ -92,7 +105,7 @@ function ImageAttachmentPreview({
           <button
             type="button"
             className="pointer-events-auto inline-flex h-5 w-5 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
-            title={copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : `Copy ${name}`}
+            title={copyTitle}
             aria-label={`Copy ${name}`}
             onClick={copyImage}
           >

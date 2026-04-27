@@ -10,6 +10,7 @@ node_modules
 *.png
 !docs/**/*.png
 !apps/web/public/**/*.png
+!apps/ios/**/*.png
 
 # Python cache
 __pycache__/

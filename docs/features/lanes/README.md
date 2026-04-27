@@ -76,14 +76,24 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
 - `LaneStackCanvasScreen.swift` and `LaneStackGraphSheet.swift` —
   mobile stack graph/canvas projection for parent-child lane chains.
 - `LaneDetailScreen.swift`, `LaneDetailGitSection.swift`,
-  `LaneDetailRebaseBanner.swift`, `LaneDiffScreen.swift`,
-  `LaneCommitSheet.swift`, `LaneCommitHistoryScreen.swift`,
-  `LaneStashesScreen.swift`, `LaneSyncDetailScreen.swift`,
-  `LaneActionsCard.swift`, `LaneManageSheet.swift`,
-  `LaneBatchManageSheet.swift`, `LaneChatLaunchSheet.swift`,
-  `LaneTreeView.swift`, `LaneFileTreeComponents.swift` — mobile
-  detail, git, rebase, diff, stash, sync, manage, chat-launch, and
-  file-tree parity surfaces.
+  `LaneDetailContentSections.swift`, `LaneDetailRebaseBanner.swift`,
+  `LaneDiffScreen.swift`, `LaneCommitSheet.swift`,
+  `LaneCommitHistoryScreen.swift`, `LaneStashesScreen.swift`,
+  `LaneSyncDetailScreen.swift`, `LaneActionsCard.swift`,
+  `LaneAdvancedScreen.swift` (single Advanced page that hosts Manage,
+  Switch branch, Stash, and the four destructive git escape hatches —
+  rebase lane, rebase descendants, rebase + push, force push — with a
+  description per row and an offline disabled banner),
+  `LaneManageSheet.swift`, `LaneBatchManageSheet.swift`,
+  `LaneChatLaunchSheet.swift`, `LaneTreeView.swift`,
+  `LaneFileTreeComponents.swift` — mobile detail, git, rebase, diff,
+  stash, sync, manage, chat-launch, and file-tree parity surfaces.
+  `LaneCommitSheet.swift` is now a "review & commit" sheet: staged
+  and unstaged files render with per-file stage / unstage / discard /
+  restore / open-diff / open-files affordances, plus a "Suggest"
+  button that calls `aiCommitMessages.generate` and shows an inline
+  setup hint when the host reports AI commit messages aren't
+  configured.
 
 Detail docs in this folder:
 
