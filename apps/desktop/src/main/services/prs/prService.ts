@@ -6534,27 +6534,23 @@ export function createPrService({
       });
     }
 
-    if (rebaseSuggestionService) {
+    if (conflictService) {
       try {
-        const suggestions = await rebaseSuggestionService.listSuggestions();
-        for (const suggestion of suggestions) {
-          if (suggestion.dismissedAt) continue;
-          const parentLaneId = suggestion.parentLaneId;
-          const parentLane = parentLaneId
-            ? db.get<{ name: string }>(
-                `select name from lanes where id = ? and project_id = ? limit 1`,
-                [parentLaneId, projectId],
-              )
-            : null;
-          const parentName = parentLane?.name ?? suggestion.baseLabel ?? null;
-          const laneRow = db.get<{ name: string }>(
-            `select name from lanes where id = ? and project_id = ? limit 1`,
-            [suggestion.laneId, projectId],
-          );
-          const linkedPr = prSummariesForLane(suggestion.laneId);
-          // Resolve rebase mode from the lane's most-recent open/draft PR. Mirrors
-          // `autoRebaseService.resolveLaneRebaseMode` so desktop drift classification,
-          // auto-rebase gating, and mobile copy all agree on the same source of truth.
+        // Use the same source as the desktop Rebase tab (`window.ade.rebase.scanNeeds`)
+        // so iOS sees the exact same lanes, including drift against local `main`
+        // that hasn't been pushed yet. `rebaseSuggestionService.listSuggestions`
+        // only reads `origin/<base>`, so it misses that case.
+        const needs = await conflictService.scanRebaseNeeds();
+        const nowMs = Date.now();
+        for (const need of needs) {
+          if (need.kind !== "lane_base") continue;
+          if (need.behindBy <= 0) continue;
+          if (need.dismissedAt) continue;
+          if (need.deferredUntil) {
+            const untilMs = Date.parse(need.deferredUntil);
+            if (Number.isFinite(untilMs) && nowMs < untilMs) continue;
+          }
+          const linkedPr = prSummariesForLane(need.laneId);
           let creationStrategy: PrCreationStrategy | null = null;
           try {
             const strategyRow = db.get<{ creation_strategy: string | null }>(
@@ -6566,37 +6562,34 @@ export function createPrService({
                 order by updated_at desc, created_at desc
                 limit 1
               `,
-              [suggestion.laneId],
+              [need.laneId],
             );
             creationStrategy = normalizePrCreationStrategy(strategyRow?.creation_strategy);
           } catch (error) {
             logger.warn("prs.mobile_snapshot.rebase_strategy_lookup_failed", {
-              laneId: suggestion.laneId,
+              laneId: need.laneId,
               error: error instanceof Error ? error.message : String(error),
             });
           }
           const rebaseMode = resolvePrRebaseMode(creationStrategy);
           cards.push({
             kind: "rebase",
-            id: `rebase:${suggestion.laneId}`,
-            laneId: suggestion.laneId,
-            laneName: laneRow?.name ?? suggestion.laneId,
-            baseBranch: parentName ?? "",
-            behindBy: suggestion.behindCount,
-            conflictPredicted: false,
-            prId: linkedPr?.id ?? null,
+            id: `rebase:${need.laneId}`,
+            laneId: need.laneId,
+            laneName: need.laneName,
+            baseBranch: need.baseBranch,
+            behindBy: need.behindBy,
+            conflictPredicted: need.conflictPredicted,
+            prId: need.prId ?? linkedPr?.id ?? null,
             prNumber: linkedPr ? Number(linkedPr.githubPrNumber) : null,
-            dismissedAt: suggestion.dismissedAt,
-            deferredUntil: suggestion.deferredUntil,
+            dismissedAt: need.dismissedAt,
+            deferredUntil: need.deferredUntil,
             rebaseMode,
             creationStrategy,
-            ...(suggestion.targetCommits && suggestion.targetCommits.length > 0
-              ? { targetCommits: suggestion.targetCommits }
-              : {}),
           });
         }
       } catch (error) {
-        logger.warn("prs.mobile_snapshot.rebase_suggestions_failed", {
+        logger.warn("prs.mobile_snapshot.rebase_scan_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       }

@@ -15,13 +15,43 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 ## Execution contract
 
 - **Autonomous.** Do not pause for user confirmation mid-loop.
-- **Bounded.** Hard cap: 5 iterations. Exit earlier if clean or blocked. **At the cap, the loop must land the lane**: run the iteration's fix work as normal and then route through Phase 3c (auto-merge). Only if Phase 3c is genuinely blocked (base-branch policy + no admin rights + no auto-merge enabled) do you stop and leave a handoff comment for a human.
+- **Bounded with a force-finalize escape hatch.** Soft cap: 5 normal iterations of fix-and-poll. Exit earlier if clean or blocked. **At the cap, the loop must land the lane**: if the PR is not merged after iteration 5, run **one** additional force-finalize iteration (Phase 3d) that ignores all open review comments, fixes only CI failures so every required check goes green, then routes through Phase 3c (auto-merge). Only if iteration 6 cannot make CI green, or Phase 3c is genuinely blocked (base-branch policy + no admin rights + no auto-merge enabled), do you stop and leave a handoff comment for a human. The playbook's exit contract is "PR merged into `main`, or merge genuinely impossible" — never "PR green and parked".
 - **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2.
 - **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
 - **One push per iteration. Wait for BOTH signals before fixing anything.** Never push a CI-only fix while review bots are still running, and never push a review-only fix while CI is still running. Both signals must be **terminal** before the iteration commits — that is, every required check has a final conclusion AND every expected review bot has posted (or its status check has settled). This is not just an efficiency rule: **review-comment fixes routinely introduce new CI failures**, so applying them on a partial signal means the next push fails and you've thrown away the prior CI cycle. Wait for both, then dispatch ci-fix-agent and review-fix-agent in parallel with full knowledge of both, and combine their edits into one commit. If only one signal has landed when you wake, do not iterate — reschedule and sleep.
 - **Default wait is 12 minutes.** After any push, schedule the next poll ~720s out (unless CI hasn't started at all — then 270s to stay in cache). 12 minutes is the **floor** that lets both CI shards and the slower review bots (Greptile, Copilot) finish. Re-entering before that almost always shows a partial state and produces the wrong decision. Only schedule shorter (270s) in Phase 0 immediately post-push to observe CI has kicked off.
 - **Token-idle waits.** Waiting is done by the agent's native scheduler/resume primitive, or by a shell `sleep` followed by one-shot checks. Between wake-ups, agents should be asleep, not consuming model context or tokens.
 - **Idempotent resume.** All state lives in `.ade/shipLane/<branch>.json`. A re-invocation reads that file and picks up where it left off.
+
+## Fix discipline (read this; every fix-agent prompt should link here)
+
+These two rules drive most of the cost and most of the regressions in this loop. The lead and every sub-agent must follow them.
+
+### 1. Fix CI failures and review comments together, in one push, with both in view
+
+Review-comment fixes routinely introduce new CI failures (different file gets touched, a mock drifts, a snapshot moves). If you push CI fixes while review-bot results are still pending, the next CI cycle re-fails on the review-driven changes and you've burned a 12-minute cycle for nothing. Same trap in reverse if you push review fixes while CI is still running.
+
+Therefore:
+
+- **Wait for both signals to be terminal** before doing any fix work. CI terminal = every required check has a final conclusion. Review-bots terminal = every expected bot has posted (or its status check has settled). If only one is back, sleep — don't iterate.
+- **Decide holistically.** Read the failing CI list AND the new-comments list together before deciding what to change. A review comment that asks for "guard against null at line 42" and a CI failure in a test asserting null-handling on the same function are *one* fix, not two.
+- **Dispatch `ci-fix-agent` and `review-fix-agent` in parallel** (Phase 3b.3), each with its own minimum scope but in the same iteration.
+- **One commit, one push.** The lead reviews the combined diff, runs the narrow checks below, and pushes once. Never one push for CI and a second push for review feedback in the same iteration.
+
+### 2. Never run a full test suite inside the loop — narrowest target only
+
+Running `npm test` or a full vitest shard inside the fix loop is wrong. The full sharded run is a `/finalize` gate, not an iteration tool. Re-running 1,000 tests to verify a 5-line fix burns wall clock and prompt cache.
+
+Therefore, when verifying a fix:
+
+- **CI failure** → run only the failing test file: `npx vitest run path/to/that.test.ts`. If a shard reported multiple failures, run those specific files. Never re-run the whole shard.
+- **Typecheck/lint/build failure** → run only the package-level command for the package whose file you touched (`cd apps/desktop && npx tsc --noEmit -p .`, etc.). Never run all three packages.
+- **Review-only edits with no CI link** → run colocated/directly-affected tests when they exist (the `*.test.ts(x)` neighbor of the file you touched). Otherwise, run only the smallest package typecheck/lint that covers the touched surface. If you suspect adjacent tests might break, run only those *suspected* files — not the whole package.
+- **Suite-wide rerun is forbidden inside the loop.** If you genuinely think the change is broad enough to need it, that's a signal the change is out of scope for an iteration; revert the speculative parts and narrow.
+
+`ci-fix-agent` and `review-fix-agent` prompts should both cite this section by name and forbid the agent from running anything broader than the narrowest target that proves its fix.
+
+---
 
 ## Concurrency model
 
@@ -124,7 +154,11 @@ git push -u origin "$CURRENT_BRANCH"
 
 The `ade` surface evolves. Don't assume flag names or output shapes from this playbook; discover them live.
 
-1. **Is `ade` on PATH?** `command -v ade`. If not, skip to the fallback.
+1. **Find an `ade` binary.** Try in order, and stop at the first hit:
+   1. `command -v ade` (PATH).
+   2. `<repo-root>/apps/ade-cli/bin/ade` (project-local launcher, when committed).
+   3. `node <repo-root>/apps/ade-cli/dist/cli.cjs` (project-local build output — present after `apps/ade-cli && npm run build`, which is what `/finalize` runs).
+   If none exist, skip to the `gh` fallback at the bottom of this section. Whichever one wins, use it everywhere this playbook says `ade` for the remainder of the run, and record the resolved path under `adeBin` in the state file.
 2. **Confirm the PR subcommand exists.** `ade --help` (or `ade -h`). Look for `prs` (or whatever the current noun is — the help text is authoritative, this playbook is not).
 3. **Read the exact create invocation.** `ade prs --help` then `ade prs create --help`. Note the actual required flags — expect something like `--lane <id>`, `--base <branch>`, and an output format flag (`--json`, `--text`, or global `--json`). Do not trust any specific invocation this playbook gives you; trust the help output.
 4. **Resolve current branch → lane id.**
@@ -369,8 +403,8 @@ If both CI fixes and review-comment fixes are needed, spawn them **in parallel**
 - Failing test file paths
 - Error snippets (not full logs)
 - Allowed to read any source file, but MUST NOT rewrite tests unless the test is genuinely wrong
-- Must verify each fix with `cd <app> && npx vitest run <specific file>` before reporting done
-- Must not run the full suite or an entire CI shard when the failing file is known
+- **Must follow "Fix discipline" §2 (top of this playbook): only run the narrowest target that proves the fix.** Verify each fix with `cd <app> && npx vitest run <specific file>` (or the package-level typecheck/lint when that's the failing job). Never re-run a full shard or full suite. Never run an unrelated package's checks.
+- The companion `review-fix-agent` is editing files in parallel for the same iteration; assume the combined diff will be reviewed by the lead before commit.
 
 **review-fix-agent** input:
 - List of new comments: `{id, author, body, path, line}`
@@ -381,6 +415,7 @@ If both CI fixes and review-comment fixes are needed, spawn them **in parallel**
   - IDs already in `addressedCommentIds`
 - Repeated comments for the same already-fixed issue
 - Record every comment id it addressed, resolved, or dismissed as stale/duplicate (for the lead to merge into state)
+- **Must follow "Fix discipline" §2: after editing, only run the colocated `*.test.ts(x)` neighbor of files it touched, plus the smallest package-level typecheck/lint when the touched surface needs it.** Never run a full suite or shard. If a review fix touches the same file `ci-fix-agent` is editing, the lead resolves the conflict at commit time — do not coordinate edits live.
 
 Both agents edit files directly. They do not commit; only the lead commits.
 
@@ -466,6 +501,79 @@ If `state == MERGED`, exit `done-clean`, clear `.ade/shipLane/<branch>.json`, an
 
 ---
 
+## Phase 3d — Force-finalize (iteration 6 only)
+
+Runs at most once per lane, only when iteration 5 has just completed and the PR is still not merged. The point of this phase is to **land** the lane — review feedback is intentionally bypassed; CI must end green.
+
+### 3d.1 Preconditions
+
+- State file shows `iteration >= 5` AND `forceFinalize` is unset/false.
+- `merged == false` from the latest poll.
+- The previous wake's poll has BOTH signals terminal (CI conclusion known, review bots settled). If only the review-bots signal is back and CI is still running, sleep on the normal cadence and let CI settle first — force-finalize is a CI-fix pass, not a partial-signal push.
+
+If preconditions fail (PR is merged, or this phase already ran), do not enter 3d.
+
+### 3d.2 Snapshot review state, then ignore it
+
+Capture every still-unaddressed `newComment.id` from the latest poll into `addressedCommentIds` in the state file. The bookkeeping is honest (we are choosing not to fix them); the next poll will not resurface them.
+
+Do NOT spawn `review-fix-agent`. Do NOT edit code in response to review comments during this iteration.
+
+### 3d.3 Dispatch ci-fix-agent only
+
+Same input shape as Phase 3b.3, but with explicit constraints:
+
+- Goal: every required check must end with conclusion `success` (or `skipped`/`neutral` if that's the historical norm for the check). No `failure`, no `cancelled`, no `timed_out`.
+- Allowed fixes:
+  - Production code edits to make tests pass.
+  - Test edits when the production behavior is clearly correct and the test is the cause of the red signal — e.g. an outdated mock, an assertion that no longer matches an intentional UI change.
+  - Lockfile re-syncs after dependency-related failures.
+- Forbidden:
+  - Deleting tests or whole test files.
+  - Adding `.skip` / `it.skip` / `describe.skip` to side-step a failure.
+  - Adding `.only` (would silently shrink coverage).
+  - Disabling lint rules or relaxing tsconfig settings to clear errors.
+  - Bypassing required checks via `gh pr merge --admin` without first making CI green. Admin merge is for branch-protection policy in Phase 3c, not for skipping red CI.
+- Each fix is verified by re-running the narrow target (`npx vitest run <file>` / package typecheck / package lint) before reporting done.
+
+### 3d.4 Lead commit + push
+
+```bash
+git status
+git diff --stat
+git commit -m "ship: iteration 6 (force-finalize, review skipped) — fix $CI_JOBS"
+git push
+```
+
+Post the standard Phase 4 bot ping (`@copilot review but do not make fixes`). Update state:
+
+```json
+{
+  "iteration": 6,
+  "forceFinalize": true,
+  "lastPushSha": "<new HEAD sha>",
+  "addressedCommentIds": [<prev>, <every still-open new-comment id>],
+  "lastPolledAt": "<ISO 8601 now>",
+  "status": "running"
+}
+```
+
+Schedule the next wake at the normal post-push cadence (270s if CI hasn't started, otherwise 720s).
+
+### 3d.5 Next wake — merge, do not iterate further
+
+When the next wake polls:
+
+- `merged == true` → `done-clean`, exit.
+- `behindMain == true` → run Phase 3a (rebase) once, push, schedule next wake. Do NOT count it as a new iteration; force-finalize already ran.
+- CI terminal AND green → route **immediately** through Phase 3c (auto-merge). Do NOT wait on review bots; review is intentionally bypassed in this phase.
+- CI terminal AND any required check still failing → exit `blocked`, `exitReason: "force-finalize-ci-failed"`, post a PR comment listing the failing job names + links. Do not start a seventh iteration.
+- CI still running → sleep on the normal cadence; do not act on a partial signal.
+
+There is no second force-finalize. Iteration 6 is one shot at landing the lane.
+
+---
+
 ## Phase 4 — Post-push bot pings
 
 Runs after **any** push (initial or re-push). Always:
@@ -504,8 +612,10 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ### 5.2 Decide exit vs next wake
 
-- `iteration >= 5` → this is the **final push**. The cap is not a stop sign; it's a "land it now" trigger. Run the iteration's fix work as normal, then immediately route through Phase 3c (auto-merge) on the resulting green state. Only if Phase 3c can't merge (policy blocked + no admin + auto-merge disabled) do you set `status: done-max` and leave a handoff comment.
 - `merged == true` (observed during this iteration) → set `status: done-clean`, exit.
+- `iteration >= 5` AND `forceFinalize` unset/false AND not merged → run Phase 3d (force-finalize) on the next wake's fix turn. Do not exit; the cap is not a stop sign, it's a "land it now" trigger that switches the loop into review-ignoring CI-only mode.
+- `forceFinalize == true` AND CI green AND not merged → route immediately through Phase 3c (auto-merge). Only if Phase 3c can't merge (policy blocked + no admin + auto-merge disabled) do you set `status: done-max` and leave a handoff comment.
+- `forceFinalize == true` AND CI still red after the iteration-6 push → set `status: blocked`, `exitReason: "force-finalize-ci-failed"`, exit. Do not run a seventh iteration.
 - Otherwise → schedule next wake.
 
 ### 5.3 Self-pace the next wake
@@ -527,9 +637,9 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 
 | status | meaning | next action |
 | --- | --- | --- |
-| `done-clean` | PR merged on `main` (Phase 3c succeeded) | clear state file; print summary |
-| `done-max` | 5 iterations exhausted AND Phase 3c could not merge (policy block + no admin + no auto-merge) | leave state file; post PR handoff comment to human |
-| `blocked` | Unrecoverable conflict, gate failure, or API error | leave state file; post PR comment with reason |
+| `done-clean` | PR merged on `main` (Phase 3c succeeded, possibly after Phase 3d force-finalize) | clear state file; print summary |
+| `done-max` | 5 normal iterations + 1 force-finalize iteration exhausted AND Phase 3c could not merge (policy block + no admin + no auto-merge) | leave state file; post PR handoff comment to human |
+| `blocked` | Unrecoverable conflict, gate failure, API error, or `force-finalize-ci-failed` (iteration 6 could not turn CI green) | leave state file; post PR comment with reason |
 
 ## Summary output (always print on exit)
 
