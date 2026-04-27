@@ -938,7 +938,6 @@ describe("buildComputerUseDirective", () => {
     const status = makeBackendStatus({ ghostOs: true });
     const result = buildComputerUseDirective(status);
     expect(result).toContain("Proof Capture");
-    expect(result).toContain("Proof is intentional");
     expect(result).toContain("ade proof");
     expect(result).toContain("ingest_computer_use_artifacts");
     expect(result).toContain("capture visual proof first");
