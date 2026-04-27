@@ -94,6 +94,57 @@ const TOOL_META: Record<string, ToolMeta> = {
   report_validation: { label: "Validation", icon: Checks, badgeCls: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200", category: "meta", sourceTone: "success", getTarget: a => String(a.workerId ?? a.targetWorkerId ?? "") || null },
 };
 
+export function isCodeChangeTool(toolName: string): boolean {
+  return getToolMeta(toolName).category === "write";
+}
+
+type DoneStatus = "completed" | "failed" | "interrupted";
+
+function pastTense(status: DoneStatus): "complete" | "failed" | "interrupted" {
+  switch (status) {
+    case "failed":
+      return "failed";
+    case "interrupted":
+      return "interrupted";
+    case "completed":
+      return "complete";
+  }
+}
+
+export function describeToolVerb(
+  toolName: string,
+  status: "running" | "completed" | "failed" | "interrupted",
+): string {
+  const meta = getToolMeta(toolName);
+  const isShell = meta.category === "exec" || meta.label === "Shell";
+  const isRead = meta.category === "read"
+    || meta.label === "Read"
+    || meta.label === "List Files"
+    || meta.label === "List"
+    || meta.label === "Find Files";
+  const isSearch = meta.label === "Search" || meta.label === "Find Files";
+  const isWeb = meta.category === "web";
+  const isPlan = meta.category === "plan";
+
+  if (status === "running") {
+    if (isShell) return "Running command…";
+    if (isWeb) return "Fetching…";
+    if (isSearch && !isRead) return "Searching…";
+    if (isRead) return "Reading…";
+    if (isPlan) return "Planning…";
+    return "Running…";
+  }
+
+  const past = pastTense(status);
+  if (isShell) return past === "complete" ? "Command run complete" : `Command ${past}`;
+  if (isWeb) return past === "complete" ? "Fetch complete" : `Fetch ${past}`;
+  if (isSearch && !isRead) return past === "complete" ? "Search complete" : `Search ${past}`;
+  if (isRead) return past === "complete" ? "Read complete" : `Read ${past}`;
+  if (isPlan) return past === "complete" ? "Plan updated" : `Plan ${past}`;
+  if (past === "complete") return "Complete";
+  return past.charAt(0).toUpperCase() + past.slice(1);
+}
+
 export function getToolMeta(toolName: string): ToolMeta {
   const direct = TOOL_META[toolName];
   if (direct) return direct;

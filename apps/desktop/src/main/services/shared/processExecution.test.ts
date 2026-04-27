@@ -15,6 +15,7 @@ import {
   killWindowsProcessTree,
   quoteWindowsCmdArg,
   resolveCliSpawnInvocation,
+  resolveWindowsCmdLineInvocation,
   resolveWindowsCmdInvocation,
   shouldUseWindowsCmdWrapper,
   terminateProcessTree,
@@ -52,16 +53,50 @@ describe("processExecution", () => {
         "/d",
         "/s",
         "/c",
-        '"C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd" "exec" "--cd" "C:\\repo path"',
+        '""C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd" "exec" "--cd" "C:\\repo path""',
       ],
       windowsVerbatimArguments: true,
     });
   });
 
+  it("keeps metacharacters quoted inside the outer cmd /c payload", () => {
+    const invocation = resolveCliSpawnInvocation(
+      "C:\\Program Files\\ADE Tools\\ade.cmd",
+      ["chat", "send", "--text", "a & b | c"],
+      { ComSpec: "cmd.exe" } as NodeJS.ProcessEnv,
+      "win32",
+    );
+
+    expect(invocation.args).toEqual([
+      "/d",
+      "/s",
+      "/c",
+      '""C:\\Program Files\\ADE Tools\\ade.cmd" "chat" "send" "--text" "a & b | c""',
+    ]);
+  });
+
   it("builds explicit Windows shell invocations", () => {
     expect(resolveWindowsCmdInvocation("npm", ["run", "test"], {} as NodeJS.ProcessEnv)).toEqual({
       command: "cmd.exe",
-      args: ["/d", "/s", "/c", '"npm" "run" "test"'],
+      args: ["/d", "/s", "/c", '""npm" "run" "test""'],
+      windowsVerbatimArguments: true,
+    });
+  });
+
+  it("wraps pre-built Windows cmd lines without re-quoting the payload", () => {
+    expect(
+      resolveWindowsCmdLineInvocation(
+        'set "ADE_OPENCODE_MANAGED=1"&&"C:\\Program Files\\OpenCode\\opencode.cmd" "serve"',
+        { ComSpec: "C:\\Windows\\System32\\cmd.exe" } as NodeJS.ProcessEnv,
+      ),
+    ).toEqual({
+      command: "C:\\Windows\\System32\\cmd.exe",
+      args: [
+        "/d",
+        "/s",
+        "/c",
+        '"set "ADE_OPENCODE_MANAGED=1"&&"C:\\Program Files\\OpenCode\\opencode.cmd" "serve""',
+      ],
       windowsVerbatimArguments: true,
     });
   });

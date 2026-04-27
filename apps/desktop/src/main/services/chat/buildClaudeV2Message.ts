@@ -83,6 +83,16 @@ export type SDKUserMessagePartial = {
 export function buildClaudeV2Message(
   promptText: string,
   attachments: ResolvedAgentChatFileRef[],
+  options: { baseDir?: string; sessionId?: string | null; forceUserMessage: true },
+): SDKUserMessagePartial;
+export function buildClaudeV2Message(
+  promptText: string,
+  attachments: ResolvedAgentChatFileRef[],
+  options?: { baseDir?: string; sessionId?: string | null; forceUserMessage?: boolean },
+): string | SDKUserMessagePartial;
+export function buildClaudeV2Message(
+  promptText: string,
+  attachments: ResolvedAgentChatFileRef[],
   options: { baseDir?: string; sessionId?: string | null; forceUserMessage?: boolean } = {},
 ): string | SDKUserMessagePartial {
   const wrapAsUserMessage = (text: string): SDKUserMessagePartial => ({

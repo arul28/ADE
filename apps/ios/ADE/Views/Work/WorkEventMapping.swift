@@ -235,6 +235,30 @@ func color(for status: WorkToolCardStatus) -> Color {
   }
 }
 
+/// Returns `nil` when `value` is empty or whitespace-only. Useful for
+/// normalizing the output of `prettyPrintedJSONString` (which returns "" for
+/// nil/empty JSON) into an optional that downstream UI checks treat as
+/// genuinely absent rather than "present but empty".
+func nonEmpty(_ value: String) -> String? {
+  let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : value
+}
+
+/// Counts unified-diff `+` / `-` lines, ignoring file-header (`+++ `, `--- `)
+/// and hunk-header (`@@`) lines. Mirrors the desktop `summarizeDiffStats` so
+/// inline file-row stats stay consistent across platforms.
+func aggregateDiffStats(_ diff: String) -> (additions: Int, deletions: Int) {
+  var additions = 0
+  var deletions = 0
+  diff.enumerateLines { line, _ in
+    if line.isEmpty { return }
+    if line.hasPrefix("+++ ") || line.hasPrefix("--- ") || line.hasPrefix("@@") { return }
+    if line.hasPrefix("+") { additions += 1 }
+    else if line.hasPrefix("-") { deletions += 1 }
+  }
+  return (additions, deletions)
+}
+
 func prettyPrintedJSONString(_ value: Any?) -> String {
   guard let value else { return "" }
   if let string = value as? String {

@@ -26,6 +26,10 @@ function hasFlag(name) {
   return process.argv.slice(2).includes(name);
 }
 
+function shouldRequireSignedArtifacts() {
+  return hasFlag("--require-signed") || process.env.ADE_REQUIRE_WIN_SIGNING === "1";
+}
+
 function resolveAbsolute(input) {
   if (!input) return null;
   return path.isAbsolute(input) ? input : path.resolve(desktopRoot, input);
@@ -306,6 +310,17 @@ async function validatePackagedRuntime(appDir) {
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
   const sqlJsModulePath = path.join(nodeModulesPath, "sql.js");
+  const onnxRuntimeWinPath = path.join(
+    nodeModulesPath,
+    "@huggingface",
+    "transformers",
+    "node_modules",
+    "onnxruntime-node",
+    "bin",
+    "napi-v3",
+    "win32",
+    "x64",
+  );
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
 
@@ -317,6 +332,9 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(sqlJsModulePath, "unpacked sql.js module");
+  await assertPathExists(path.join(onnxRuntimeWinPath, "onnxruntime_binding.node"), "Windows ONNX Runtime native addon");
+  await assertPathExists(path.join(onnxRuntimeWinPath, "onnxruntime.dll"), "Windows ONNX Runtime DLL");
+  await assertPathExists(path.join(onnxRuntimeWinPath, "DirectML.dll"), "Windows DirectML DLL");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");
 
@@ -420,6 +438,44 @@ async function validatePackagedRuntime(appDir) {
   console.log(`[validate-win-artifacts] Windows packaged runtime smoke passed: ${path.relative(appDir, nodePtyAddon)}`);
 }
 
+async function validateAuthenticodeSignature(filePath, description) {
+  if (!shouldRequireSignedArtifacts()) return;
+  if (process.platform !== "win32") {
+    fail(`Cannot verify Authenticode signature for ${description} on ${process.platform}; run signed Windows validation on Windows.`);
+  }
+
+  const script = [
+    "$sig = Get-AuthenticodeSignature -LiteralPath $args[0]",
+    "[pscustomobject]@{",
+    "  Status = [string]$sig.Status;",
+    "  StatusMessage = [string]$sig.StatusMessage;",
+    "  Subject = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { $null }",
+    "} | ConvertTo-Json -Compress",
+  ].join("\n");
+  const { stdout } = await runCommand("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    script,
+    filePath,
+  ]);
+
+  let payload;
+  try {
+    payload = JSON.parse(stdout.trim());
+  } catch {
+    fail(`Unable to parse Authenticode signature status for ${description}: ${stdout.trim() || "empty output"}`);
+  }
+
+  if (payload?.Status !== "Valid") {
+    fail(
+      `${description} is not Authenticode signed with a valid signature: ` +
+        `${payload?.Status ?? "unknown"} ${payload?.StatusMessage ?? ""}`.trim(),
+    );
+  }
+}
+
 async function validateReleaseArtifacts() {
   const releaseDir = resolveAbsolute(readFlag("--release-dir")) ?? path.join(desktopRoot, "release");
   const installerRegex = new RegExp(`^${escapeRegExp(productName)}-.+-win-x64\\.exe$`);
@@ -436,6 +492,8 @@ async function validateReleaseArtifacts() {
   await assertPathExists(appDir, "win-unpacked app directory");
   await validateLatestYaml(latestPath, installerPath);
   await validatePackagedRuntime(appDir);
+  await validateAuthenticodeSignature(installerPath, "Windows installer");
+  await validateAuthenticodeSignature(path.join(appDir, `${productName}.exe`), "packaged Windows app executable");
 
   console.log("[validate-win-artifacts] Windows release artifacts passed updater and packaged-runtime checks.");
 }

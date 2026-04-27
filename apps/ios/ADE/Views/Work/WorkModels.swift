@@ -147,11 +147,16 @@ enum WorkTimelinePayload: Equatable {
   case toolCard(WorkToolCardModel)
   case commandCard(WorkCommandCardModel)
   case fileChangeCard(WorkFileChangeCardModel)
-  /// Cluster of consecutive tool-like entries (tool cards, commands, file
-  /// changes) collapsed into a single row. Matches the desktop `work_log_group`
-  /// pattern: only the latest call is shown, older calls stack underneath, and
-  /// expanding reveals the full list with per-entry detail.
+  /// Cluster of consecutive read-only tool-like entries (tool cards,
+  /// commands) collapsed into a single header-only row. Tap to reveal the
+  /// member list; tap a row to reveal its output. Matches the desktop
+  /// `Tool calls (n)` panel.
   case toolGroup(WorkToolGroupModel)
+  /// Cluster of consecutive code-change entries (file_change events plus
+  /// write-category tool calls) collapsed into a single header-only row.
+  /// Tap to reveal per-file rows with diff stats; tap a row to reveal its
+  /// diff. Matches the desktop `N files changed` panel.
+  case changedFiles(WorkChangedFilesGroupModel)
   case eventCard(WorkEventCardModel)
   case usageSummary(WorkUsageSummary)
   case artifact(ComputerUseArtifactSummary)
@@ -205,6 +210,30 @@ struct WorkToolGroupModel: Identifiable, Equatable {
   var hasRunning: Bool { members.contains { $0.status == .running } }
   var latest: WorkToolGroupMember? { members.last }
   var count: Int { members.count }
+}
+
+/// One file's worth of aggregated diff data inside a `WorkChangedFilesGroupModel`.
+/// Stats are summed across every event that touched the same path during the
+/// cluster, so a file edited by both an `Edit` tool and a `file_change` event
+/// renders as a single row.
+struct WorkChangedFileEntry: Identifiable, Equatable {
+  let id: String
+  let path: String
+  let kind: String
+  let additions: Int
+  let deletions: Int
+  let diff: String
+  let status: WorkToolCardStatus
+}
+
+struct WorkChangedFilesGroupModel: Identifiable, Equatable {
+  let id: String
+  let files: [WorkChangedFileEntry]
+
+  var hasRunning: Bool { files.contains { $0.status == .running } }
+  var count: Int { files.count }
+  var totalAdditions: Int { files.reduce(0) { $0 + $1.additions } }
+  var totalDeletions: Int { files.reduce(0) { $0 + $1.deletions } }
 }
 
 struct WorkTurnSeparator: Equatable {

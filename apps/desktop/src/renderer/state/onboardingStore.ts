@@ -81,7 +81,11 @@ function navigateToRoute(route: string): void {
   if (typeof window === "undefined") return;
   const target = route.trim();
   if (!target) return;
-  if ((window as any).__adeBrowserMock) {
+  const usePathRouter =
+    (window as any).__adeBrowserMock ||
+    window.location.protocol === "http:" ||
+    window.location.protocol === "https:";
+  if (usePathRouter) {
     window.history.pushState(null, "", target);
     window.dispatchEvent(new PopStateEvent("popstate"));
     return;

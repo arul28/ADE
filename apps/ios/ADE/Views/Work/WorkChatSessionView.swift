@@ -45,6 +45,8 @@ struct WorkChatSessionView: View {
   let onRefreshArtifacts: @MainActor () async -> Void
   let onCancelSteer: @MainActor (String) async -> Void
   let onEditSteer: @MainActor (String, String) async -> Void
+  let onDispatchSteerInline: (@MainActor (String) async -> Void)?
+  let onDispatchSteerInterrupt: (@MainActor (String) async -> Void)?
   let onSelectModel: @MainActor (String) async -> Void
   let onSelectRuntimeMode: @MainActor (String) async -> Void
   let onSelectEffort: @MainActor (String) async -> Void
@@ -293,6 +295,22 @@ struct WorkChatSessionView: View {
             await runSessionAction {
               await onEditSteer(steerId, text)
               steerEditDrafts.removeValue(forKey: steerId)
+            }
+          },
+          onDispatchInline: onDispatchSteerInline.map { dispatch in
+            { steerId in
+              await runSessionAction {
+                await dispatch(steerId)
+                steerEditDrafts.removeValue(forKey: steerId)
+              }
+            }
+          },
+          onDispatchInterrupt: onDispatchSteerInterrupt.map { dispatch in
+            { steerId in
+              await runSessionAction {
+                await dispatch(steerId)
+                steerEditDrafts.removeValue(forKey: steerId)
+              }
             }
           }
         )

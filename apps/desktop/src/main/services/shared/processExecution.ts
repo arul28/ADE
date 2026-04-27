@@ -25,11 +25,10 @@ export function processOutputToString(value: Buffer | string | null | undefined)
  * SAFETY: this function strips `%` (variable expansion) and `\r\n` (line
  * breaks) but does NOT escape other cmd metacharacters such as `|`, `&`,
  * `<`, `>`, `!`, `^`. Those characters are inert only because the resulting
- * string is embedded inside the outer `/c "…"` double-quoted block used by
- * {@link resolveWindowsCmdInvocation} (with `/s` so cmd preserves the outer
- * quotes). Do NOT reuse this helper outside of that context — if the caller
- * builds a cmd line without the surrounding `/s /c "…"` wrapper, untrusted
- * input can break out of quoting and become a shell injection vector.
+ * string is embedded inside a correctly delimited `cmd.exe /s /c "…"` command
+ * line, usually through {@link resolveWindowsCmdInvocation} or
+ * {@link resolveWindowsCmdLineInvocation}. Do NOT reuse this helper as a
+ * general-purpose escaping primitive.
  */
 export function quoteWindowsCmdArg(value: string): string {
   let quoted = "\"";
@@ -64,11 +63,18 @@ export function resolveWindowsCmdInvocation(
   args: string[],
   env: NodeJS.ProcessEnv = process.env,
 ): SpawnInvocation {
-  const comSpec = env.ComSpec?.trim() || "cmd.exe";
   const cmdLine = [command, ...args].map(quoteWindowsCmdArg).join(" ");
+  return resolveWindowsCmdLineInvocation(cmdLine, env);
+}
+
+export function resolveWindowsCmdLineInvocation(
+  cmdLine: string,
+  env: NodeJS.ProcessEnv = process.env,
+): SpawnInvocation {
+  const comSpec = env.ComSpec?.trim() || "cmd.exe";
   return {
     command: comSpec,
-    args: ["/d", "/s", "/c", cmdLine],
+    args: ["/d", "/s", "/c", `"${cmdLine}"`],
     windowsVerbatimArguments: true,
   };
 }

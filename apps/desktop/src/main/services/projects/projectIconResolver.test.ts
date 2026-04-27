@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { resolveProjectIcon, resolveProjectIconPath } from "./projectIconResolver";
+import { removeProjectIconOverride, resolveProjectIcon, resolveProjectIconPath, setProjectIconOverride } from "./projectIconResolver";
 
 function makeProjectRoot(): string {
   // Resolve through realpath so the assertions still hold on platforms
@@ -33,6 +33,44 @@ describe("projectIconResolver", () => {
     const iconPath = writeFile(root, "public/brand/logo.svg", "<svg>brand</svg>");
 
     expect(resolveProjectIconPath(root)).toBe(iconPath);
+  });
+
+  it("detects nested app icons in monorepos", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "favicon.svg", "<svg>docs</svg>");
+    const iconPath = writeFile(root, "apps/web/app/icon.png", Buffer.from("png"));
+
+    expect(resolveProjectIconPath(root)).toBe(iconPath);
+  });
+
+  it("uses a tracked project icon override before auto-detection", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "apps/web/app/icon.png", Buffer.from("auto"));
+    const iconPath = writeFile(root, "brand/custom-logo.svg", "<svg>brand</svg>");
+    writeFile(root, ".ade/ade.yaml", "version: 1\nproject:\n  iconPath: brand/custom-logo.svg\n");
+
+    expect(resolveProjectIconPath(root)).toBe(iconPath);
+  });
+
+  it("persists selected icons as project-relative tracked config", () => {
+    const root = makeProjectRoot();
+    const iconPath = writeFile(root, "assets/icon.svg", "<svg>brand</svg>");
+
+    const icon = setProjectIconOverride(root, iconPath);
+
+    expect(icon.sourcePath).toBe(iconPath);
+    expect(fs.readFileSync(path.join(root, ".ade", "ade.yaml"), "utf8")).toContain("iconPath: assets/icon.svg");
+  });
+
+  it("can explicitly disable automatic icon detection", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "apps/web/app/icon.png", Buffer.from("auto"));
+
+    const icon = removeProjectIconOverride(root);
+
+    expect(icon.sourcePath).toBeNull();
+    expect(resolveProjectIconPath(root)).toBeNull();
+    expect(fs.readFileSync(path.join(root, ".ade", "ade.yaml"), "utf8")).toContain("iconPath: null");
   });
 
   it("does not resolve linked icons outside the project root", () => {

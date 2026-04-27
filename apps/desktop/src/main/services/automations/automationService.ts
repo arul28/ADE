@@ -45,6 +45,7 @@ import type { BudgetCapProvider } from "../../../shared/types/usage";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/providerOrchestratorAdapter";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
+import { terminateProcessTree } from "../shared/processExecution";
 import { getDefaultModelDescriptor, getModelById, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 
 type CronTask = {
@@ -1650,11 +1651,7 @@ export function createAutomationService({
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
+        terminateProcessTree(child, "SIGKILL");
         settled = true;
         reject(new Error(`Command timed out after ${timeoutMs}ms`));
       }, timeoutMs);

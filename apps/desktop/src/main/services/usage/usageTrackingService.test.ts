@@ -493,7 +493,7 @@ describe("pollCodexViaCliRpc", () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     expect(mockState.spawn).toHaveBeenCalledWith(
       "cmd.exe",
-      ["/d", "/s", "/c", '"C:\\Users\\me\\AppData\\Local\\Programs\\codex" "-s" "read-only" "-a" "untrusted" "app-server"'],
+      ["/d", "/s", "/c", '""C:\\Users\\me\\AppData\\Local\\Programs\\codex" "-s" "read-only" "-a" "untrusted" "app-server""'],
       expect.objectContaining({ windowsVerbatimArguments: true }),
     );
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);

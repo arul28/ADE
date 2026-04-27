@@ -451,7 +451,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Queued — will be delivered after this turn/i)).toBeTruthy();
+      expect(screen.getByText("Ship the optimistic bubble.")).toBeTruthy();
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Ship the optimistic bubble.",
@@ -460,10 +460,6 @@ describe("AgentChatPane submit recovery", () => {
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
 
     resolveSend();
-
-    await waitFor(() => {
-      expect(screen.queryByText(/Queued — will be delivered after this turn/i)).toBeNull();
-    });
   });
 
   it("keeps the draft cleared after steer succeeds even if session refresh fails", async () => {
@@ -909,10 +905,18 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
 
     await waitFor(() => {
-      expect(handoff).toHaveBeenCalledWith({
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
         targetModelId: "openai/gpt-5.4-mini",
-      });
+        reasoningEffort: null,
+        claudePermissionMode: "default",
+        opencodePermissionMode: "edit",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      }));
       expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }));
     });
   });

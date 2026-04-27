@@ -245,6 +245,8 @@ private enum WorkPreviewData {
       onRefreshArtifacts: {},
       onCancelSteer: { _ in },
       onEditSteer: { _, _ in },
+      onDispatchSteerInline: nil,
+      onDispatchSteerInterrupt: nil,
       onSelectModel: { _ in },
       onSelectRuntimeMode: { _ in },
       onSelectEffort: { _ in }

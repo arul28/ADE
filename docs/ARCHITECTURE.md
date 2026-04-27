@@ -92,13 +92,17 @@ bridge.
 - **Headless mode** — with `--headless`, the CLI bootstraps the same
   project services directly from the repository.
 - **Windows packaging** — the installer lays down `ade-cli-windows-wrapper.cmd`
-  plus an `ade-cli-install-path.cmd` helper alongside the bundled Node
-  runtime so that `ade` works from a normal Windows shell without a
-  global Node install. See §14.4 for the packaging flow.
+  plus an `ade-cli-install-path.cmd` helper alongside the bundled Electron
+  Node runtime. The helper installs `%LOCALAPPDATA%\ADE\bin\ade.cmd`, updates
+  the user PATH when needed, and then `ade` works from a new normal Windows
+  shell without a global Node install. See §14.4 for the packaging flow.
 - **Install + PATH wiring (`adeCliService`)** — on macOS / Linux the
   desktop installer drops the launcher at `$HOME/.local/bin/ade`; on
   Windows it lands at `%LOCALAPPDATA%\ADE\bin\ade.cmd`. After a
-  successful install on POSIX, `ensureUserBinOnShellPath` appends a
+  successful install on Windows, the packaged `.cmd` installer adds the
+  target directory to HKCU `Environment\Path` when needed and broadcasts an
+  environment-change notification. After a successful install on POSIX,
+  `ensureUserBinOnShellPath` appends a
   marked `export PATH="$HOME/.local/bin:$PATH"` block to the user's
   shell rc (`.zshrc` for zsh, `.bashrc` for bash, `.profile` otherwise)
   iff (a) the install dir isn't already on the inherited `PATH` and
@@ -929,15 +933,15 @@ Windows:
 
 - `npm run dist:win` — x64 installer via `electron-builder --win --x64`, wrapped with `validate:win:artifacts` (preflight) and `validate:win:release` (post-build) checks in `apps/desktop/scripts/validate-win-artifacts.mjs`.
 - Windows-only wrappers for the bundled `ade` CLI ship in `apps/desktop/scripts/`: `ade-cli-windows-wrapper.cmd` (launcher) and `ade-cli-install-path.cmd` (idempotent PATH install helper). The platform-agnostic `.sh` wrapper covers macOS/Linux.
-- The Windows installer bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/` plus a Windows node-pty ConPTY worker.
-- GitHub Actions `release-core.yml` builds and validates Windows artifacts; they are not currently code-signed or notarized.
+- The Windows installer bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/`, a Windows node-pty ConPTY worker, and the `@huggingface/transformers` ONNX Runtime native addon + DirectML DLL used by local-only memory embedding. `validate-win-artifacts.mjs` asserts each one is unpacked.
+- GitHub Actions `release-core.yml` builds and validates Windows artifacts. The release job picks up `WINDOWS_CSC_LINK` / `WINDOWS_CSC_KEY_PASSWORD` (or legacy `WIN_CSC_*`) from secrets and forwards them as electron-builder's `CSC_LINK` / `CSC_KEY_PASSWORD` to sign the installer and `app.exe`; the desktop config sets SHA-256 hashing and the DigiCert RFC3161 timestamp server. When the secrets are absent, the workflow still produces unsigned Windows artifacts.
 - Ongoing Windows integration lane (rebase with `main`, smoke tests, backlog): `docs/development/windows-port-lane.md`.
 
 Post-packaging hardening (`apps/desktop/scripts/`):
 
 - `runtimeBinaryPermissions.cjs` — restores exec bits on `node-pty` spawn helpers, Codex vendor binaries, Claude SDK ripgrep helpers; patches `node-pty` `unixTerminal.js` for ASAR-unpacked paths.
 - `after-pack-runtime-fixes.cjs` — electron-builder after-pack hook. Covers both platforms: runs the permissions pass on macOS and stages CLI wrappers + runtime shims on Windows.
-- `validate-mac-artifacts.mjs` / `validate-win-artifacts.mjs` — per-platform artifact validators; confirm expected binaries and signing state.
+- `validate-mac-artifacts.mjs` / `validate-win-artifacts.mjs` — per-platform artifact validators; confirm expected binaries and release signing state. Windows signing verification is opt-in with `--require-signed` or `ADE_REQUIRE_WIN_SIGNING=1`.
 - `notarize-mac-dmg.mjs` — Apple notarization.
 
 ### 14.5 Documentation

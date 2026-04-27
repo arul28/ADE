@@ -1261,6 +1261,14 @@ export type NotificationsConfig = {
   apns?: NotificationApnsConfig;
 };
 
+export type ProjectIdentityConfig = {
+  /**
+   * Project-root-relative path to the icon shown in ADE project tabs/catalogs.
+   * `null` explicitly disables automatic icon detection for the project.
+   */
+  iconPath?: string | null;
+};
+
 export type AiIntegrationStatus = {
   mode: ProviderMode;
   availableProviders: {
@@ -1282,6 +1290,7 @@ export type AiIntegrationStatus = {
 
 export type ProjectConfigFile = {
   version?: number;
+  project?: ProjectIdentityConfig;
   processes?: ConfigProcessDefinition[];
   stackButtons?: ConfigStackButtonDefinition[];
   processGroups?: ConfigProcessGroupDefinition[];
@@ -1317,6 +1326,7 @@ export type ProjectConfigCandidate = {
 
 export type EffectiveProjectConfig = {
   version: number;
+  project?: ProjectIdentityConfig;
   processes: ProcessDefinition[];
   stackButtons: StackButtonDefinition[];
   processGroups: ProcessGroupDefinition[];

@@ -31,7 +31,6 @@ export function ChatSurfaceShell({
   containerRef?: Ref<HTMLElement>;
   contentScale?: number;
 }) {
-  const mobileChrome = layoutVariant === "mobile";
   const scale = Number.isFinite(contentScale) && contentScale > 0 ? contentScale : 1;
   const scaled = Math.abs(scale - 1) > 0.001;
   const scaleWrapperStyle: CSSProperties | undefined = scaled
@@ -48,18 +47,14 @@ export function ChatSurfaceShell({
     <>
       {header ? (
         <div
-          className={cn(
-            "relative z-10 overflow-visible rounded-[var(--chat-radius-shell)]",
-            mobileChrome
-              ? "mx-2 mt-2"
-              : "mx-2 mt-2 sm:mx-3 sm:mt-2.5",
-          )}
+          className="relative z-10 w-full overflow-visible rounded-t-none rounded-b-[var(--chat-radius-shell)]"
           style={{
             backdropFilter: "blur(30px)",
             WebkitBackdropFilter: "blur(30px)",
             background: "var(--chat-panel-bg)",
-            border: "1px solid var(--chat-panel-border)",
-            boxShadow: "var(--chat-shell-shadow)",
+            borderStyle: "solid",
+            borderWidth: "0 0 1px 0",
+            borderColor: "var(--chat-panel-border)",
           }}
         >
           {header}

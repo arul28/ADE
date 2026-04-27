@@ -84,6 +84,8 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "chat.steer",
   "chat.cancelSteer",
   "chat.editSteer",
+  "chat.dispatchSteer",
+  "chat.cancelDispatchedSteer",
   "chat.approve",
   "chat.respondToInput",
   "chat.resume",

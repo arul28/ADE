@@ -3185,6 +3185,20 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func dispatchChatSteer(sessionId: String, steerId: String, mode: String) async throws {
+    _ = try await sendChatCommand(
+      action: "chat.dispatchSteer",
+      payload: AgentChatDispatchSteerRequest(sessionId: sessionId, steerId: steerId, mode: mode)
+    )
+  }
+
+  func cancelDispatchedChatSteer(sessionId: String, steerId: String) async throws {
+    _ = try await sendChatCommand(
+      action: "chat.cancelDispatchedSteer",
+      payload: AgentChatCancelDispatchedSteerRequest(sessionId: sessionId, steerId: steerId)
+    )
+  }
+
   func approveChatSession(
     sessionId: String,
     itemId: String,

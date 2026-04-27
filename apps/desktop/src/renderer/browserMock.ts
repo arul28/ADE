@@ -10,6 +10,12 @@
  *   Queue   – 4 PRs in 2 queue groups with pipeline state
  *   Integration – 2 integration PRs with multi-source merge contexts
  *   Rebase  – 6 rebase needs across all urgency categories
+ *
+ * Optional: generate `browser-mock-ade-snapshot.generated.json` with
+ *   npm run export:browser-mock-ade
+ * to mirror the current project’s `.ade/ade.db` snapshot. Exported lanes, PRs,
+ * queue/rebase/history/session/process rows replace the built-in demo data so
+ * browser-only UI work follows the same local state as the desktop app.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -31,8 +37,10 @@ const resolvedArg2 =
     v;
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
   getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
+const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
+  getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
 
-const MOCK_PROJECT = {
+const BUILTIN_MOCK_PROJECT = {
   id: "browser-mock",
   name: "Browser Preview",
   rootPath: "/tmp/mock",
@@ -41,8 +49,48 @@ const MOCK_PROJECT = {
   createdAt: new Date().toISOString(),
 };
 
+const adeDbSnapshotByPath = import.meta.glob<any>("./browser-mock-ade-snapshot.generated.json", {
+  eager: true,
+  import: "default",
+});
+
+const ADE_DB_SNAPSHOT = adeDbSnapshotByPath["./browser-mock-ade-snapshot.generated.json"] ?? null;
+const USE_ADE_DB_SNAPSHOT = Boolean(ADE_DB_SNAPSHOT?.project);
+
+const MOCK_PROJECT = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.project
+  ? {
+      ...BUILTIN_MOCK_PROJECT,
+      id: ADE_DB_SNAPSHOT.project.id,
+      name: ADE_DB_SNAPSHOT.project.name,
+      rootPath: ADE_DB_SNAPSHOT.project.rootPath,
+      gitDefaultBranch: ADE_DB_SNAPSHOT.project.gitDefaultBranch ?? BUILTIN_MOCK_PROJECT.gitDefaultBranch,
+      createdAt: ADE_DB_SNAPSHOT.project.createdAt ?? BUILTIN_MOCK_PROJECT.createdAt,
+    }
+  : BUILTIN_MOCK_PROJECT;
+
 // ── Timestamps ────────────────────────────────────────────────
 const now = new Date().toISOString();
+
+/** Browser mock lane health; matches `LaneHealthCheck` in shared types. */
+function mockBrowserLaneHealth(laneId: string) {
+  return {
+    laneId,
+    status: "unknown" as const,
+    processAlive: false,
+    portResponding: false,
+    respondingPort: null as number | null,
+    proxyRouteActive: false,
+    fallbackMode: false,
+    lastCheckedAt: now,
+    issues: [] as Array<{
+      type: "process-dead" | "port-unresponsive" | "proxy-route-missing" | "port-conflict" | "env-init-failed";
+      message: string;
+      actionLabel?: string;
+      actionType?: "reassign-port" | "restart-proxy" | "reinit-env" | "enable-fallback" | "refresh-preview";
+    }>,
+  };
+}
+
 const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
 const yesterday = new Date(Date.now() - 86400000).toISOString();
 const twoDaysAgo = new Date(Date.now() - 172800000).toISOString();
@@ -173,7 +221,7 @@ function makeLane(
 }
 
 // ── Mock Lanes ────────────────────────────────────────────────
-const MOCK_LANES: any[] = [
+const BUILTIN_MOCK_LANES: any[] = [
   // Primary
   makeLane("lane-main", "main", "refs/heads/main"),
   // Normal PR lanes
@@ -229,6 +277,213 @@ const MOCK_LANES: any[] = [
     "refs/heads/feature/accessibility",
   ),
 ];
+
+function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
+  const childCounts = new Map<string, number>();
+  for (const row of laneRows) {
+    const pid = row.parentLaneId;
+    if (typeof pid === "string" && pid.length > 0) {
+      childCounts.set(pid, (childCounts.get(pid) ?? 0) + 1);
+    }
+  }
+  return laneRows.map((raw) => {
+    const id = String(raw.id);
+    let branchRef = String(raw.branchRef ?? "refs/heads/main");
+    if (!branchRef.startsWith("refs/")) {
+      branchRef = `refs/heads/${branchRef.replace(/^refs\/heads\//, "")}`;
+    }
+    const st = raw.status;
+    return {
+      id,
+      name: String(raw.name ?? "lane"),
+      description: raw.description ?? null,
+      laneType:
+        raw.laneType === "primary" || raw.laneType === "worktree" || raw.laneType === "attached"
+          ? raw.laneType
+          : "worktree",
+      baseRef: String(raw.baseRef ?? "main"),
+      branchRef,
+      worktreePath: String(raw.worktreePath ?? "/tmp/mock"),
+      attachedRootPath: raw.attachedRootPath ?? null,
+      parentLaneId: raw.parentLaneId ?? null,
+      childCount: childCounts.get(id) ?? 0,
+      stackDepth: 0,
+      parentStatus: null,
+      isEditProtected: Boolean(raw.isEditProtected),
+      status: {
+        dirty: Boolean(st?.dirty),
+        ahead: st?.ahead ?? 0,
+        behind: st?.behind ?? 0,
+        remoteBehind: st?.remoteBehind ?? -1,
+        rebaseInProgress: Boolean(st?.rebaseInProgress),
+      },
+      color: raw.color ?? null,
+      icon: raw.icon ?? null,
+      tags: Array.isArray(raw.tags) ? raw.tags : [],
+      folder: raw.folder ?? null,
+      missionId: raw.missionId ?? null,
+      laneRole: raw.laneRole ?? null,
+      createdAt: raw.createdAt ?? now,
+      archivedAt: raw.archivedAt ?? null,
+    };
+  });
+}
+
+const MOCK_LANES: any[] = USE_ADE_DB_SNAPSHOT
+  ? buildMockLanesFromAdeSnapshot(Array.isArray(ADE_DB_SNAPSHOT?.lanes) ? ADE_DB_SNAPSHOT.lanes : [])
+  : BUILTIN_MOCK_LANES;
+
+const ADE_DB_PR_SNAPSHOTS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.prSnapshots)
+  ? ADE_DB_SNAPSHOT.prSnapshots
+  : [];
+const ADE_DB_PR_SNAPSHOT_BY_ID = new Map<string, any>(
+  ADE_DB_PR_SNAPSHOTS.map((snapshot) => [String(snapshot.prId), snapshot]),
+);
+const ADE_DB_OPERATIONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.operations)
+  ? ADE_DB_SNAPSHOT.operations
+  : [];
+const ADE_DB_SESSIONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.sessions)
+  ? ADE_DB_SNAPSHOT.sessions
+  : [];
+const ADE_DB_CHAT_TRANSCRIPTS: Record<string, { events?: any[]; path?: string | null }> =
+  USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.chatTranscripts && typeof ADE_DB_SNAPSHOT.chatTranscripts === "object"
+    ? ADE_DB_SNAPSHOT.chatTranscripts
+    : {};
+const ADE_DB_PROCESS_DEFINITIONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processDefinitions)
+  ? ADE_DB_SNAPSHOT.processDefinitions
+  : [];
+const ADE_DB_PROCESS_RUNTIME: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processRuntime)
+  ? ADE_DB_SNAPSHOT.processRuntime
+  : [];
+const ADE_DB_AUTOMATIONS = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.automations
+  ? ADE_DB_SNAPSHOT.automations
+  : null;
+
+function isMockChatToolType(toolType: unknown): boolean {
+  const normalized = String(toolType ?? "").trim().toLowerCase();
+  return Boolean(
+    normalized
+      && (
+        normalized === "codex-chat"
+        || normalized === "claude-chat"
+        || normalized === "opencode-chat"
+        || normalized === "cursor"
+        || normalized.endsWith("-chat")
+      ),
+  );
+}
+
+function inferMockChatProvider(session: any): "claude" | "codex" | "cursor" | "opencode" {
+  const metadataProvider = String(session?.resumeMetadata?.provider ?? "").trim().toLowerCase();
+  if (metadataProvider === "claude" || metadataProvider === "codex" || metadataProvider === "cursor" || metadataProvider === "opencode") {
+    return metadataProvider;
+  }
+  const toolType = String(session?.toolType ?? "").trim().toLowerCase();
+  if (toolType.startsWith("claude")) return "claude";
+  if (toolType.startsWith("codex")) return "codex";
+  if (toolType === "cursor" || toolType.startsWith("cursor")) return "cursor";
+  return "opencode";
+}
+
+function getMockChatTranscriptEvents(sessionId: string): any[] {
+  const events = ADE_DB_CHAT_TRANSCRIPTS[sessionId]?.events;
+  return Array.isArray(events) ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event) : [];
+}
+
+function latestMockDoneEvent(events: any[]): any | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]?.event;
+    if (event?.type === "done") return event;
+  }
+  return null;
+}
+
+function fallbackMockModelForProvider(provider: "claude" | "codex" | "cursor" | "opencode"): string {
+  if (provider === "claude") return "sonnet";
+  if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
+  if (provider === "cursor") return "auto";
+  return "opencode/mock";
+}
+
+function fallbackMockModelIdForProvider(provider: "claude" | "codex" | "cursor" | "opencode"): string {
+  if (provider === "claude") return DEFAULT_BROWSER_MOCK_CLAUDE_MODEL;
+  if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
+  if (provider === "cursor") return "cursor/auto";
+  return "opencode/mock";
+}
+
+function mockAgentChatSummaryFromSession(session: any): any | null {
+  if (!session || !isMockChatToolType(session.toolType)) return null;
+  const provider = inferMockChatProvider(session);
+  const events = getMockChatTranscriptEvents(String(session.id));
+  const done = latestMockDoneEvent(events);
+  const modelId = String(
+    session.resumeMetadata?.modelId
+      ?? session.resumeMetadata?.launch?.modelId
+      ?? done?.modelId
+      ?? fallbackMockModelIdForProvider(provider),
+  );
+  const model = String(
+    session.resumeMetadata?.model
+      ?? session.resumeMetadata?.launch?.model
+      ?? done?.model
+      ?? fallbackMockModelForProvider(provider),
+  );
+  const endedAt = session.endedAt ?? null;
+  const lastActivityAt = session.lastActivityAt ?? session.endedAt ?? session.startedAt ?? now;
+  const status = session.status === "running" ? "idle" : "ended";
+  return {
+    sessionId: String(session.id),
+    laneId: String(session.laneId ?? ""),
+    provider,
+    model,
+    modelId,
+    sessionProfile: session.resumeMetadata?.sessionProfile ?? "workflow",
+    title: session.title ?? null,
+    goal: session.goal ?? null,
+    reasoningEffort: session.resumeMetadata?.reasoningEffort ?? null,
+    executionMode: session.resumeMetadata?.executionMode ?? null,
+    permissionMode: session.resumeMetadata?.permissionMode ?? null,
+    interactionMode: session.resumeMetadata?.interactionMode ?? null,
+    claudePermissionMode: session.resumeMetadata?.claudePermissionMode ?? undefined,
+    codexApprovalPolicy: session.resumeMetadata?.codexApprovalPolicy ?? undefined,
+    codexSandbox: session.resumeMetadata?.codexSandbox ?? undefined,
+    codexConfigSource: session.resumeMetadata?.codexConfigSource ?? undefined,
+    opencodePermissionMode: session.resumeMetadata?.opencodePermissionMode ?? undefined,
+    cursorModeSnapshot: session.resumeMetadata?.cursorModeSnapshot ?? undefined,
+    cursorModeId: session.resumeMetadata?.cursorModeId ?? null,
+    cursorConfigValues: session.resumeMetadata?.cursorConfigValues ?? null,
+    identityKey: session.resumeMetadata?.identityKey ?? undefined,
+    surface: session.resumeMetadata?.surface ?? "work",
+    automationId: session.resumeMetadata?.automationId ?? null,
+    automationRunId: session.resumeMetadata?.automationRunId ?? null,
+    capabilityMode: session.resumeMetadata?.capabilityMode ?? null,
+    completion: session.resumeMetadata?.completion ?? null,
+    status,
+    idleSinceAt: status === "idle" ? lastActivityAt : null,
+    startedAt: session.startedAt ?? now,
+    endedAt,
+    archivedAt: session.archivedAt ?? null,
+    lastActivityAt,
+    lastOutputPreview: session.lastOutputPreview ?? null,
+    summary: session.summary ?? null,
+    threadId: session.resumeMetadata?.threadId ?? undefined,
+    requestedCwd: session.resumeMetadata?.requestedCwd ?? null,
+  };
+}
+
+function listMockAgentChatSummaries(args: any = {}): any[] {
+  let rows = ADE_DB_SESSIONS
+    .map(mockAgentChatSummaryFromSession)
+    .filter((session): session is any => Boolean(session));
+  if (typeof args?.laneId === "string" && args.laneId.trim()) {
+    rows = rows.filter((session) => session.laneId === args.laneId.trim());
+  }
+  if (!args?.includeAutomation) {
+    rows = rows.filter((session) => session.surface !== "automation");
+  }
+  return rows;
+}
 
 /** Returns a fresh snapshot object on every call to avoid shared-state leakage. */
 function makeLaneSnapshot(lane: any): any {
@@ -552,10 +807,12 @@ const INTEGRATION_PRS: any[] = [
 ];
 
 // ── All PRs combined ──────────────────────────────────────────
-const ALL_PRS = [...NORMAL_PRS, ...QUEUE_PRS, ...INTEGRATION_PRS];
+const ALL_PRS = USE_ADE_DB_SNAPSHOT
+  ? (Array.isArray(ADE_DB_SNAPSHOT?.prs) ? ADE_DB_SNAPSHOT.prs : [])
+  : [...NORMAL_PRS, ...QUEUE_PRS, ...INTEGRATION_PRS];
 
 // ── Merge Contexts ────────────────────────────────────────────
-const MOCK_MERGE_CONTEXTS: Record<string, any> = {
+const BUILTIN_MOCK_MERGE_CONTEXTS: Record<string, any> = {
   // Normal PRs — no group
   "pr-1": {
     prId: "pr-1",
@@ -796,6 +1053,10 @@ const MOCK_MERGE_CONTEXTS: Record<string, any> = {
     ],
   },
 };
+
+const MOCK_MERGE_CONTEXTS: Record<string, any> = USE_ADE_DB_SNAPSHOT
+  ? (ADE_DB_SNAPSHOT?.prMergeContexts ?? {})
+  : BUILTIN_MOCK_MERGE_CONTEXTS;
 
 // ── Per-PR detail data (keyed by prId) ────────────────────────
 const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
@@ -1152,7 +1413,7 @@ function createDefaultConvergenceRuntime(prId: string) {
 }
 
 // ── Rebase Needs (all urgency categories) ─────────────────────
-const MOCK_REBASE_NEEDS: any[] = [
+const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
   // Attention: behind + conflicts predicted
   {
     laneId: "lane-dashboard",
@@ -1255,8 +1516,12 @@ const MOCK_REBASE_NEEDS: any[] = [
   },
 ];
 
+const MOCK_REBASE_NEEDS: any[] = USE_ADE_DB_SNAPSHOT
+  ? (Array.isArray(ADE_DB_SNAPSHOT?.rebaseNeeds) ? ADE_DB_SNAPSHOT.rebaseNeeds : [])
+  : BUILTIN_MOCK_REBASE_NEEDS;
+
 // ── Queue Landing State ───────────────────────────────────────
-const MOCK_QUEUE_STATE: Record<string, any> = {
+const BUILTIN_MOCK_QUEUE_STATE: Record<string, any> = {
   "queue-commerce-v3": {
     queueId: "queue-commerce-v3",
     groupId: "queue-commerce-v3",
@@ -1363,8 +1628,19 @@ const MOCK_QUEUE_STATE: Record<string, any> = {
   },
 };
 
+const MOCK_QUEUE_STATE: Record<string, any> = USE_ADE_DB_SNAPSHOT
+  ? Object.fromEntries(
+      (Array.isArray(ADE_DB_SNAPSHOT?.queueStates) ? ADE_DB_SNAPSHOT.queueStates : []).flatMap(
+        (state: any) => {
+          const keys = [state?.groupId, state?.queueId].filter(Boolean).map(String);
+          return keys.map((key) => [key, state]);
+        },
+      ),
+    )
+  : BUILTIN_MOCK_QUEUE_STATE;
+
 // ── Integration simulation result ─────────────────────────────
-const MOCK_INTEGRATION_SIMULATION: any = {
+const BUILTIN_MOCK_INTEGRATION_SIMULATION: any = {
   proposalId: "sim-mock-1",
   sourceLaneIds: ["lane-search", "lane-analytics"],
   baseBranch: "main",
@@ -1393,7 +1669,18 @@ const MOCK_INTEGRATION_SIMULATION: any = {
   createdAt: now,
 };
 
-const MOCK_INTEGRATION_WORKFLOWS: any[] = [
+const MOCK_INTEGRATION_SIMULATION: any = USE_ADE_DB_SNAPSHOT
+  ? {
+      proposalId: "empty",
+      sourceLaneIds: [] as string[],
+      baseBranch: "main",
+      overallOutcome: "clean",
+      steps: [] as any[],
+      createdAt: now,
+    }
+  : BUILTIN_MOCK_INTEGRATION_SIMULATION;
+
+const BUILTIN_MOCK_INTEGRATION_WORKFLOWS: any[] = [
   {
     proposalId: "workflow-int-active",
     sourceLaneIds: ["lane-search", "lane-analytics"],
@@ -1419,7 +1706,7 @@ const MOCK_INTEGRATION_WORKFLOWS: any[] = [
         diffStat: { insertions: 980, deletions: 120, filesChanged: 14 },
       },
     ],
-    steps: MOCK_INTEGRATION_SIMULATION.steps,
+    steps: BUILTIN_MOCK_INTEGRATION_SIMULATION.steps,
     overallOutcome: "clean",
     createdAt: twoDaysAgo,
     title: "Search & Analytics integration branch",
@@ -1519,7 +1806,11 @@ const MOCK_INTEGRATION_WORKFLOWS: any[] = [
   },
 ];
 
-const MOCK_GITHUB_SNAPSHOT: any = {
+const MOCK_INTEGRATION_WORKFLOWS: any[] = USE_ADE_DB_SNAPSHOT
+  ? (Array.isArray(ADE_DB_SNAPSHOT?.integrationWorkflows) ? ADE_DB_SNAPSHOT.integrationWorkflows : [])
+  : BUILTIN_MOCK_INTEGRATION_WORKFLOWS;
+
+const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   repo: { owner: "acme", name: "ade" },
   viewerLogin: "mock-user",
   syncedAt: now,
@@ -1606,17 +1897,37 @@ const MOCK_GITHUB_SNAPSHOT: any = {
   ],
 };
 
+const MOCK_GITHUB_SNAPSHOT: any = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.githubSnapshot
+  ? ADE_DB_SNAPSHOT.githubSnapshot
+  : BUILTIN_MOCK_GITHUB_SNAPSHOT;
+
 // ═══════════════════════════════════════════════════════════════
 // Wire it up
 // ═══════════════════════════════════════════════════════════════
 
-if (typeof window !== "undefined" && !(window as any).ade) {
-  console.warn(
-    "[ADE] Running outside Electron — injecting browser mock for window.ade",
-  );
+/**
+ * In Electron, preload already set `window.ade` and must win. In the Vite dev browser
+ * we set `__adeBrowserMock` so we can re-run this file on HMR (Vite re-executes the module,
+ * but `window.ade` already exists from the first load — a naive `!window.ade` guard would skip
+ * the mock and leave a stale, broken stub). Only skip the mock when the real Electron preload
+ * is present: a partial `window.ade` from another script would otherwise keep a broken object
+ * (missing `sync`, `onboarding`, …).
+ */
+function shouldInstallBrowserMock(target: Window): boolean {
+  const w = target as any;
+  return !(w.ade && !w.__adeBrowserMock && typeof w.ade.sync?.getStatus === "function");
+}
 
-  // Flag for App.tsx to switch to BrowserRouter
-  (window as any).__adeBrowserMock = true;
+if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
+  const w = window as any;
+  if (w.ade) {
+    console.warn("[ADE] Re-applying full window.ade browser mock (e.g. Vite HMR).");
+  } else {
+    console.warn(
+      "[ADE] Running outside Electron — injecting browser mock for window.ade",
+    );
+  }
+  w.__adeBrowserMock = true;
   const sharedMemoryHealthStats = createMockMemoryHealthStats();
   const resolveDownloadedMemoryHealthStats = async () => {
     sharedMemoryHealthStats.embeddings = {
@@ -1634,6 +1945,270 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       },
     };
     return sharedMemoryHealthStats;
+  };
+
+  const BROWSER_MOCK_LOCAL_DEVICE: any = {
+    deviceId: "browser-mock-device",
+    siteId: "browser-mock-site",
+    name: "Browser preview",
+    platform: "macOS",
+    deviceType: "desktop",
+    createdAt: now,
+    updatedAt: now,
+    lastSeenAt: now,
+    lastHost: null,
+    lastPort: null,
+    tailscaleIp: null,
+    ipAddresses: ["127.0.0.1"],
+    metadata: {},
+  };
+
+  const BROWSER_MOCK_SYNC_SNAPSHOT: any = {
+    mode: "standalone",
+    role: "brain",
+    localDevice: BROWSER_MOCK_LOCAL_DEVICE,
+    currentBrain: BROWSER_MOCK_LOCAL_DEVICE,
+    clusterState: null,
+    bootstrapToken: null,
+    pairingPin: null,
+    pairingPinConfigured: false,
+    pairingConnectInfo: null,
+    connectedPeers: [],
+    tailnetDiscovery: {
+      state: "disabled",
+      serviceName: "ade-sync",
+      servicePort: 0,
+      target: null,
+      updatedAt: null,
+      error: null,
+      stderr: null,
+    },
+    client: {
+      state: "disconnected",
+      host: null,
+      port: null,
+      connectedAt: null,
+      lastSeenAt: null,
+      latencyMs: null,
+      syncLag: null,
+      lastRemoteDbVersion: 0,
+      brainDeviceId: BROWSER_MOCK_LOCAL_DEVICE.deviceId,
+      hostName: "Browser preview",
+      error: null,
+      message: null,
+      savedDraft: null,
+    },
+    transferReadiness: {
+      ready: true,
+      blockers: [],
+      survivableState: [],
+    },
+    survivableStateText: "Idle (browser preview)",
+    blockingStateText: "",
+  };
+
+  const BROWSER_MOCK_PROVIDER_CONNECTION = (
+    provider: "claude" | "codex" | "cursor",
+  ) => ({
+    provider,
+    authAvailable: false,
+    runtimeDetected: false,
+    runtimeAvailable: false,
+    usageAvailable: false,
+    path: null,
+    blocker: null,
+    lastCheckedAt: now,
+    sources: [] as { kind: string }[],
+  });
+
+  const BROWSER_MOCK_AI_STATUS: any = {
+    mode: "guest",
+    availableProviders: { claude: false, codex: false, cursor: false },
+    models: { claude: [], codex: [], cursor: [] },
+    features: [],
+    providerConnections: {
+      claude: BROWSER_MOCK_PROVIDER_CONNECTION("claude"),
+      codex: BROWSER_MOCK_PROVIDER_CONNECTION("codex"),
+      cursor: BROWSER_MOCK_PROVIDER_CONNECTION("cursor"),
+    },
+  };
+
+  const BROWSER_MOCK_TOUR_PROGRESS: any = {
+    wizardCompletedAt: now,
+    wizardDismissedAt: null,
+    tours: {},
+    tourVariants: {},
+    glossaryTermsSeen: [],
+    tutorial: {
+      completedAt: null,
+      dismissedAt: null,
+      silenced: false,
+      inProgress: false,
+      lastActIndex: 0,
+      ctxSnapshot: {},
+    },
+  };
+
+  const BROWSER_MOCK_USAGE_SNAPSHOT: any = {
+    windows: [],
+    pacing: {
+      status: "on-track",
+      projectedWeeklyPercent: 0,
+      weekElapsedPercent: 0,
+      expectedPercent: 0,
+      deltaPercent: 0,
+      etaHours: null,
+      willLastToReset: true,
+      resetsInHours: 168,
+    },
+    costs: [],
+    extraUsage: [],
+    lastPolledAt: now,
+    errors: [],
+  };
+  const BROWSER_USAGE_SNAPSHOT: any = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.usageSnapshot
+    ? ADE_DB_SNAPSHOT.usageSnapshot
+    : BROWSER_MOCK_USAGE_SNAPSHOT;
+
+  const BROWSER_MOCK_BUDGET_CONFIG: any = {
+    refreshIntervalMin: 15,
+    budgetCaps: [] as any[],
+    preset: "conservative",
+  };
+
+  /** Full enough for Settings, lane behavior, and Missions `applyMissionSettingsSnapshot` in the dev browser. */
+  const BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT: any = {
+    shared: {
+      version: 1,
+      processes: ADE_DB_PROCESS_DEFINITIONS,
+      stackButtons: [],
+      processGroups: [],
+      testSuites: [],
+      automations: [],
+      laneOverlayPolicies: [],
+    },
+    local: {
+      version: 1,
+      processes: ADE_DB_PROCESS_DEFINITIONS,
+      stackButtons: [],
+      processGroups: [],
+      testSuites: [],
+      automations: [],
+      laneOverlayPolicies: [],
+      git: { autoRebaseOnHeadChange: false },
+      laneCleanup: {},
+      ai: {
+        orchestrator: {
+          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-4-6" },
+          teammatePlanMode: "auto",
+        },
+        permissions: {
+          cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+          inProcess: { mode: "full-auto" },
+          providers: {
+            claude: "full-auto",
+            codex: "default",
+            opencode: "full-auto",
+            codexSandbox: "workspace-write",
+          },
+        },
+      },
+    },
+    effective: {
+      version: 1,
+      processes: ADE_DB_PROCESS_DEFINITIONS,
+      stackButtons: [],
+      processGroups: [],
+      testSuites: [],
+      automations: [],
+      laneOverlayPolicies: [],
+      git: { autoRebaseOnHeadChange: false },
+      ai: {
+        orchestrator: {
+          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-4-6" },
+          teammatePlanMode: "auto",
+        },
+        permissions: {
+          cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+          inProcess: { mode: "full-auto" },
+          providers: {
+            claude: "full-auto",
+            codex: "default",
+            opencode: "full-auto",
+            codexSandbox: "workspace-write",
+          },
+        },
+      },
+    },
+    validation: { ok: true, issues: [] },
+    trust: {
+      sharedHash: "mock",
+      localHash: "mock",
+      approvedSharedHash: null,
+      requiresSharedTrust: false,
+    },
+    paths: {
+      sharedPath: "/tmp/.ade/ade.yaml",
+      localPath: "/tmp/.ade/local.yaml",
+    },
+  };
+
+  const BROWSER_MOCK_MISSION_DASHBOARD: any = {
+    active: [],
+    recent: [],
+    weekly: {
+      missions: 0,
+      successRate: 0,
+      avgDurationMs: 0,
+      totalCostUsd: 0,
+    },
+  };
+  const BROWSER_MISSION_DASHBOARD: any = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.missionDashboard
+    ? ADE_DB_SNAPSHOT.missionDashboard
+    : BROWSER_MOCK_MISSION_DASHBOARD;
+
+  const BROWSER_MOCK_EMPTY_FULL_MISSION_VIEW: any = {
+    mission: null,
+    runGraph: null,
+    artifacts: [],
+    checkpoints: [],
+    dashboard: null,
+  };
+
+  const BROWSER_MOCK_PHASE_PROFILE: any = {
+    id: "mock-profile",
+    name: "Mock profile",
+    description: "Browser mock phase profile",
+    phases: [] as any[],
+    isBuiltIn: true,
+    isDefault: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const BROWSER_MOCK_DEVTOOLS_CHECK: any = {
+    tools: [
+      {
+        id: "git" as const,
+        label: "Git",
+        command: "git",
+        installed: true,
+        detectedPath: "/usr/bin/git",
+        detectedVersion: "2.0.0",
+        required: true,
+      },
+    ],
+    platform: "darwin",
+  };
+
+  const BROWSER_MOCK_APNS_STATUS: any = {
+    enabled: false,
+    configured: false,
+    keyStored: false,
+    keyId: null,
+    teamId: null,
+    bundleId: null,
+    env: "sandbox" as const,
   };
 
   (window as any).ade = {
@@ -1659,7 +2234,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       writeClipboardText: resolvedArg(undefined),
       getImageDataUrl: resolvedArg({ dataUrl: "" }),
       writeClipboardImage: resolvedArg(undefined),
+      openPath: resolvedArg(undefined),
       openPathInEditor: resolvedArg(undefined),
+      logDebugEvent: () => {},
     },
     project: {
       openRepo: resolved(MOCK_PROJECT),
@@ -1680,9 +2257,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         };
       },
       getDetail: resolvedArg({
-        rootPath: "/tmp/mock",
+        rootPath: MOCK_PROJECT.rootPath,
         isGitRepo: true,
-        branchName: "main",
+        branchName: MOCK_PROJECT.gitDefaultBranch,
         dirtyCount: 0,
         aheadBehind: null,
         lastCommit: null,
@@ -1701,6 +2278,8 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listRecent: resolved([]),
       closeCurrent: resolved(undefined),
       resolveIcon: resolvedArg({ dataUrl: null, sourcePath: null, mimeType: null }),
+      chooseIcon: resolvedArg(null),
+      removeIcon: resolvedArg({ dataUrl: null, sourcePath: null, mimeType: null }),
       switchToPath: resolvedArg(MOCK_PROJECT),
       forgetRecent: resolvedArg([]),
       reorderRecent: resolvedArg([]),
@@ -1732,30 +2311,127 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       get: resolved({ definitions: [], overrides: [] }),
       set: resolvedArg({ definitions: [], overrides: [] }),
     },
+    sync: {
+      getStatus: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      refreshDiscovery: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      listDevices: resolved([]),
+      updateLocalDevice: resolvedArg(BROWSER_MOCK_LOCAL_DEVICE),
+      connectToBrain: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
+      disconnectFromBrain: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      forgetDevice: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
+      getTransferReadiness: resolved({
+        ready: true,
+        blockers: [],
+        survivableState: [],
+      }),
+      transferBrainToLocal: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      getPin: resolved({ pin: null }),
+      setPin: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
+      clearPin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      setActiveLanePresence: resolvedArg(undefined),
+      onEvent: () => () => {},
+    },
     ai: {
-      getStatus: resolved({ provider: "none", status: "unconfigured" }),
+      getStatus: resolved(BROWSER_MOCK_AI_STATUS),
+      getOpenCodeRuntimeDiagnostics: resolved({} as any),
+      storeApiKey: resolvedArg(undefined),
+      deleteApiKey: resolvedArg(undefined),
+      listApiKeys: resolved([]),
+      verifyApiKey: resolvedArg({
+        provider: "mock",
+        ok: false,
+        message: "browser",
+        verifiedAt: now,
+      } as any),
+      updateConfig: resolvedArg(undefined),
     },
     agentTools: {
       detect: resolved([]),
+    },
+    notifications: {
+      apns: {
+        getStatus: resolved(BROWSER_MOCK_APNS_STATUS),
+        saveConfig: resolvedArg({ ...BROWSER_MOCK_APNS_STATUS }),
+        uploadKey: resolvedArg({ ...BROWSER_MOCK_APNS_STATUS }),
+        clearKey: resolved(BROWSER_MOCK_APNS_STATUS),
+        sendTestPush: resolvedArg({ ok: false, reason: "browser mock" }),
+      },
+    },
+    devTools: {
+      detect: resolved(BROWSER_MOCK_DEVTOOLS_CHECK),
+    },
+    usage: {
+      getSnapshot: resolved(BROWSER_USAGE_SNAPSHOT),
+      refresh: resolved(BROWSER_USAGE_SNAPSHOT),
+      checkBudget: resolvedArg({
+        allowed: true,
+        warnings: [] as string[],
+      }),
+      getCumulativeUsage: resolvedArg({
+        totalTokens: 0,
+        totalCostUsd: 0,
+        weekKey: "2026-W01",
+      }),
+      getBudgetConfig: resolved(BROWSER_MOCK_BUDGET_CONFIG),
+      saveBudgetConfig: resolvedArg(BROWSER_MOCK_BUDGET_CONFIG),
+      onUpdate: (cb: (snapshot: any) => void) => {
+        queueMicrotask(() => {
+          try {
+            cb(BROWSER_USAGE_SNAPSHOT);
+          } catch {
+            // noop
+          }
+        });
+        return () => {};
+      },
+    },
+    computerUse: {
+      listArtifacts: resolvedArg([]),
+      getOwnerSnapshot: resolvedArg({} as any),
+      routeArtifact: resolvedArg({} as any),
+      updateArtifactReview: resolvedArg({} as any),
+      readArtifactPreview: resolvedArg(null),
+      onEvent: () => () => {},
     },
     onboarding: {
       getStatus: resolved({
         completedAt: new Date().toISOString(),
         dismissedAt: null,
+        freshProject: false,
       }),
-      detectDefaults: resolved({}),
+      detectDefaults: resolved({} as any),
       detectExistingLanes: resolved([]),
       setDismissed: resolvedArg({
         completedAt: null,
         dismissedAt: new Date().toISOString(),
-      }),
+      } as any),
       complete: resolved({
         completedAt: new Date().toISOString(),
         dismissedAt: null,
       }),
+      getTourProgress: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+      markWizardCompleted: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+      markWizardDismissed: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+      markTourCompleted: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+      markTourDismissed: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+      updateTourStep: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
+      markGlossaryTermSeen: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+      resetTourProgress: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+      markTourCompletedVariant: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
+      markTourDismissedVariant: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
+      updateTourStepVariant: async (_a: any, _b: any, _c: any) => BROWSER_MOCK_TOUR_PROGRESS,
+      tutorial: {
+        start: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+        dismiss: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+        complete: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+        updateAct: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
+        setSilenced: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
+        clearSessionDismissal: resolved(BROWSER_MOCK_TOUR_PROGRESS),
+        shouldPrompt: resolved(false),
+      },
     },
     automations: {
-      list: resolved([
+      list: resolved(USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.rules) ? ADE_DB_AUTOMATIONS.rules : [
         {
           id: "auto-session-review",
           name: "PR follow-up thread",
@@ -1829,7 +2505,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         summary: "Manual run completed.",
         billingCode: "auto:session-review",
       }),
-      getHistory: resolvedArg([
+      getHistory: resolvedArg(USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs) ? ADE_DB_AUTOMATIONS.runs : [
         {
           id: "run-1",
           automationId: "auto-session-review",
@@ -1925,7 +2601,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           receivedAt: now,
         },
       }),
-      listRuns: resolvedArg([
+      listRuns: resolvedArg(USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs) ? ADE_DB_AUTOMATIONS.runs : [
         {
           id: "run-1",
           automationId: "auto-session-review",
@@ -1973,7 +2649,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           lastError: null,
         },
       }),
-      listIngressEvents: resolvedArg([
+      listIngressEvents: resolvedArg(USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.ingressEvents) ? ADE_DB_AUTOMATIONS.ingressEvents : [
         {
           id: "ingress-1",
           source: "github-relay",
@@ -2279,15 +2955,89 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listRegistry: resolved([]),
     },
     missions: {
-      list: resolved([]),
-      get: resolvedArg(null),
+      list: async (args: any = {}) => {
+        const rows = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.missions)
+          ? ADE_DB_SNAPSHOT.missions
+          : [];
+        const status = typeof args?.status === "string" ? args.status : null;
+        const laneId = typeof args?.laneId === "string" ? args.laneId : null;
+        const includeArchived = args?.includeArchived === true;
+        const activeStatuses = new Set(["queued", "planning", "plan_review", "in_progress", "intervention_required"]);
+        let filtered = rows;
+        if (!includeArchived) filtered = filtered.filter((mission: any) => !mission.archivedAt);
+        if (laneId) filtered = filtered.filter((mission: any) => mission.laneId === laneId);
+        if (status === "active") {
+          filtered = filtered.filter((mission: any) => activeStatuses.has(mission.status));
+        } else if (status === "in_progress") {
+          filtered = filtered.filter((mission: any) => mission.status === "in_progress" || mission.status === "plan_review");
+        } else if (status) {
+          filtered = filtered.filter((mission: any) => mission.status === status);
+        }
+        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : filtered.length;
+        return filtered.slice(0, limit);
+      },
+      get: async (missionId: string) => {
+        const rows = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.missions)
+          ? ADE_DB_SNAPSHOT.missions
+          : [];
+        return rows.find((mission: any) => mission.id === missionId) ?? null;
+      },
       create: resolvedArg({ id: "mock" }),
       update: resolvedArg({ id: "mock" }),
+      archive: resolvedArg(undefined),
       delete: resolvedArg(undefined),
       updateStep: resolvedArg({ id: "mock" }),
       addArtifact: resolvedArg({ id: "mock" }),
       addIntervention: resolvedArg({ id: "mock" }),
       resolveIntervention: resolvedArg({ id: "mock" }),
+      listPhaseItems: resolved([]),
+      savePhaseItem: resolvedArg({} as any),
+      deletePhaseItem: resolvedArg(undefined),
+      importPhaseItems: resolvedArg([]),
+      exportPhaseItems: resolvedArg({ items: [], savedPath: null }),
+      listPhaseProfiles: resolved([]),
+      savePhaseProfile: resolvedArg({
+        ...BROWSER_MOCK_PHASE_PROFILE,
+        id: "mock-profile-saved",
+        name: "Saved profile",
+      } as any),
+      deletePhaseProfile: resolvedArg(undefined),
+      clonePhaseProfile: resolvedArg({
+        ...BROWSER_MOCK_PHASE_PROFILE,
+        id: "mock-profile-clone",
+        isBuiltIn: false,
+        isDefault: false,
+        name: "Cloned profile",
+      } as any),
+      exportPhaseProfile: resolvedArg({
+        profile: BROWSER_MOCK_PHASE_PROFILE,
+        savedPath: null,
+      } as any),
+      importPhaseProfile: resolvedArg({
+        ...BROWSER_MOCK_PHASE_PROFILE,
+        id: "mock-profile-imported",
+        isBuiltIn: false,
+        isDefault: false,
+        name: "Imported profile",
+      } as any),
+      getPhaseConfiguration: resolvedArg(null),
+      getDashboard: resolved(BROWSER_MISSION_DASHBOARD),
+      getFullMissionView: async (missionId: string) =>
+        (USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.missionFullViews?.[missionId])
+          ? ADE_DB_SNAPSHOT.missionFullViews[missionId]
+          : BROWSER_MOCK_EMPTY_FULL_MISSION_VIEW,
+      preflight: resolvedArg({
+        canLaunch: true,
+        checkedAt: now,
+        profileName: null,
+        selectedPhaseCount: 0,
+        hardFailures: 0,
+        warnings: 0,
+        checklist: [] as any[],
+        budgetEstimate: null,
+      } as any),
+      getRunView: resolvedArg(null),
+      subscribeRunView: () => () => {},
       onEvent: noop,
     },
     orchestrator: {
@@ -2620,42 +3370,127 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         active: false,
       }),
       proxyOpenPreview: resolvedArg(undefined),
+      oauthGetStatus: resolved({
+        enabled: false,
+        routingMode: "state-parameter" as const,
+        activeSessions: [],
+        callbackPaths: [],
+      }),
+      oauthUpdateConfig: resolvedArg(undefined),
+      oauthGenerateRedirectUris: resolvedArg([{ provider: "google", uris: [] as string[], instructions: "" }]),
+      oauthEncodeState: resolvedArg("ade:mock"),
+      oauthDecodeState: resolvedArg(null),
+      oauthListSessions: resolved([]),
+      onOAuthEvent: noop,
+      diagnosticsGetStatus: resolved({
+        lanes: [],
+        proxyRunning: false,
+        proxyPort: 8080,
+        totalRoutes: 0,
+        activeConflicts: 0,
+        fallbackLanes: [] as string[],
+      }),
+      diagnosticsGetLaneHealth: async (args: { laneId: string }) =>
+        typeof args?.laneId === "string" ? mockBrowserLaneHealth(args.laneId) : null,
+      diagnosticsRunHealthCheck: async (args: { laneId: string }) =>
+        mockBrowserLaneHealth(typeof args?.laneId === "string" ? args.laneId : "mock"),
+      diagnosticsRunFullCheck: resolved([]),
+      diagnosticsActivateFallback: resolvedArg(undefined),
+      diagnosticsDeactivateFallback: resolvedArg(undefined),
+      onDiagnosticsEvent: noop,
       onProxyEvent: noop,
     },
     sessions: {
-      list: resolved([]),
-      get: resolvedArg(null),
+      list: async (args: any = {}) => {
+        let rows = ADE_DB_SESSIONS;
+        if (typeof args?.laneId === "string" && args.laneId.trim()) {
+          rows = rows.filter((session) => session.laneId === args.laneId.trim());
+        }
+        if (typeof args?.status === "string" && args.status.trim()) {
+          rows = rows.filter((session) => session.status === args.status.trim());
+        }
+        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : rows.length;
+        return rows.slice(0, limit);
+      },
+      get: async (sessionId: string) =>
+        ADE_DB_SESSIONS.find((session) => session.id === sessionId) ?? null,
       delete: resolvedArg(undefined),
       updateMeta: resolvedArg(null),
-      readTranscriptTail: resolvedArg(""),
+      readTranscriptTail: async (args: any = {}) => {
+        const sessionId = String(args?.sessionId ?? "").trim();
+        const lines = getMockChatTranscriptEvents(sessionId).map((entry) => JSON.stringify(entry));
+        const raw = lines.join("\n");
+        const maxBytes = Number.isFinite(args?.maxBytes) ? Math.max(0, Math.floor(args.maxBytes)) : raw.length;
+        return raw.length > maxBytes ? raw.slice(Math.max(0, raw.length - maxBytes)) : raw;
+      },
       getDelta: resolvedArg(null),
       onChanged: noop,
     },
     agentChat: {
-      list: resolved([]),
+      list: async (args: any = {}) => listMockAgentChatSummaries(args),
+      getSummary: async (args: any = {}) => {
+        const sessionId = String(args?.sessionId ?? "").trim();
+        const session = ADE_DB_SESSIONS.find((row) => row.id === sessionId);
+        return mockAgentChatSummaryFromSession(session) ?? null;
+      },
       create: resolvedArg({ id: "mock" }),
+      suggestLaneName: resolvedArg("browser-mock-chat"),
+      parallelLaunchState: {
+        get: resolvedArg(null),
+        set: resolvedArg(undefined),
+      },
+      handoff: resolvedArg({ session: { id: "mock" }, events: [] }),
       send: resolvedArg(undefined),
       steer: resolvedArg(undefined),
+      cancelSteer: resolvedArg(undefined),
+      editSteer: resolvedArg(undefined),
+      dispatchSteer: resolvedArg({ delivered: false, reason: "Browser mock does not run chat sessions." }),
+      cancelDispatchedSteer: resolvedArg({ cancelled: false }),
       interrupt: resolvedArg(undefined),
       resume: resolvedArg({ id: "mock" }),
       approve: resolvedArg(undefined),
       respondToInput: resolvedArg(undefined),
       models: resolvedArg([]),
       dispose: resolvedArg(undefined),
+      archive: resolvedArg(undefined),
+      unarchive: resolvedArg(undefined),
       delete: resolvedArg(undefined),
       updateSession: resolvedArg({ id: "mock" }),
+      warmupModel: resolvedArg(undefined),
       onEvent: noop,
       slashCommands: resolvedArg([]),
       fileSearch: resolvedArg([]),
+      getTurnFileDiff: resolvedArg(null),
+      listSubagents: resolvedArg([]),
+      getSessionCapabilities: resolvedArg({
+        supportsModelSwitch: false,
+        supportsSteer: false,
+        supportsInterrupt: false,
+      }),
+      saveTempAttachment: resolvedArg({ path: "/tmp/browser-mock-attachment" }),
       getEventHistory: async (arg: { sessionId: string; maxEvents?: number }) => ({
         sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : "",
-        events: [],
-        truncated: false,
+        events: (() => {
+          const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId : "";
+          const events = getMockChatTranscriptEvents(sessionId);
+          const maxEvents = Number.isFinite(arg?.maxEvents)
+            ? Math.max(1, Math.floor(arg.maxEvents!))
+            : events.length;
+          return events.length > maxEvents ? events.slice(-maxEvents) : events;
+        })(),
+        truncated: (() => {
+          const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId : "";
+          const events = getMockChatTranscriptEvents(sessionId);
+          const maxEvents = Number.isFinite(arg?.maxEvents)
+            ? Math.max(1, Math.floor(arg.maxEvents!))
+            : events.length;
+          return events.length > maxEvents;
+        })(),
       }),
     },
     cto: {
       getState: resolvedArg({
-        identity: {
+        identity: ADE_DB_SNAPSHOT?.ctoState?.identity ?? {
           name: "CTO",
           version: 1,
           persona: "Mock CTO persona",
@@ -2668,7 +3503,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           },
           updatedAt: now,
         },
-        coreMemory: {
+        coreMemory: ADE_DB_SNAPSHOT?.ctoState?.coreMemory ?? {
           version: 1,
           updatedAt: now,
           projectSummary: "Mock project summary",
@@ -2677,7 +3512,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           activeFocus: [],
           notes: [],
         },
-        recentSessions: [],
+        recentSessions: ADE_DB_SNAPSHOT?.ctoState?.recentSessions ?? [],
       }),
       ensureSession: resolvedArg({
         id: "mock-cto-session",
@@ -2930,12 +3765,28 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onExit: noop,
     },
     diff: {
-      getChanges: resolvedArg({ files: [] }),
-      getFile: resolvedArg({ hunks: [] }),
+      getChanges: resolvedArg({ unstaged: [], staged: [] }),
+      getFile: resolvedArg({
+        path: "",
+        mode: "unstaged" as const,
+        original: { exists: false, text: "" },
+        modified: { exists: false, text: "" },
+      }),
     },
     files: {
       writeTextAtomic: resolvedArg(undefined),
-      listWorkspaces: resolved([]),
+      listWorkspaces: resolved(
+        MOCK_LANES.map((lane) => ({
+          id: `lane:${lane.id}`,
+          kind: "lane",
+          laneId: lane.id,
+          name: lane.name,
+          rootPath: lane.worktreePath ?? MOCK_PROJECT.rootPath,
+          isReadOnlyByDefault: false,
+          mobileReadOnly: true,
+          updatedAt: lane.createdAt ?? now,
+        })),
+      ),
       listTree: resolvedArg([]),
       readFile: resolvedArg({ content: "" }),
       writeText: resolvedArg(undefined),
@@ -3104,13 +3955,18 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onStatusChanged: noop,
     },
     prs: {
-      createFromLane: resolvedArg(NORMAL_PRS[0]),
-      linkToLane: resolvedArg(NORMAL_PRS[0]),
-      getForLane: resolvedArg(null),
+      createFromLane: resolvedArg(
+        USE_ADE_DB_SNAPSHOT ? null : NORMAL_PRS[0] ?? null,
+      ),
+      linkToLane: resolvedArg(
+        USE_ADE_DB_SNAPSHOT ? null : NORMAL_PRS[0] ?? null,
+      ),
+      getForLane: async (laneId: string) =>
+        ALL_PRS.find((pr: any) => pr.laneId === laneId) ?? null,
       listAll: resolved(ALL_PRS),
       refresh: resolved(ALL_PRS),
       getStatus: async (prId: string) =>
-        MOCK_STATUS_BY_PR[prId] ?? {
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.status ?? MOCK_STATUS_BY_PR[prId] ?? {
           prId,
           state: "open",
           checksStatus: "passing",
@@ -3119,9 +3975,12 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           mergeConflicts: false,
           behindBaseBy: 0,
         },
-      getChecks: async (prId: string) => MOCK_CHECKS_BY_PR[prId] ?? [],
-      getComments: async (prId: string) => MOCK_COMMENTS_BY_PR[prId] ?? [],
-      getReviews: async (prId: string) => MOCK_REVIEWS_BY_PR[prId] ?? [],
+      getChecks: async (prId: string) =>
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.checks ?? MOCK_CHECKS_BY_PR[prId] ?? [],
+      getComments: async (prId: string) =>
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.comments ?? MOCK_COMMENTS_BY_PR[prId] ?? [],
+      getReviews: async (prId: string) =>
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.reviews ?? MOCK_REVIEWS_BY_PR[prId] ?? [],
       getReviewThreads: resolvedArg([]),
       updateDescription: resolvedArg(undefined),
       delete: resolvedArg({ deleted: true }),
@@ -3138,7 +3997,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       commitIntegration: resolvedArg({
         groupId: "group-int-mock",
         integrationLaneId: "lane-search",
-        pr: INTEGRATION_PRS[0],
+        pr: USE_ADE_DB_SNAPSHOT ? null : INTEGRATION_PRS[0] ?? null,
         mergeResults: [],
       }),
       landStackEnhanced: resolvedArg([]),
@@ -3285,18 +4144,20 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       aiResolutionStop: resolvedArg(undefined),
       onAiResolutionEvent: noop,
       onEvent: noop,
-      getDetail: resolvedArg({
-        prId: "",
-        body: null,
-        labels: [],
-        assignees: [],
-        requestedReviewers: [],
-        author: { login: "", avatarUrl: null },
-        isDraft: false,
-        milestone: null,
-        linkedIssues: [],
-      }),
-      getFiles: resolvedArg([]),
+      getDetail: async (prId: string) =>
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.detail ?? {
+          prId,
+          body: null,
+          labels: [],
+          assignees: [],
+          requestedReviewers: [],
+          author: { login: "", avatarUrl: null },
+          isDraft: false,
+          milestone: null,
+          linkedIssues: [],
+        },
+      getFiles: async (prId: string) =>
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.files ?? [],
       getActionRuns: resolvedArg([]),
       getActivity: resolvedArg([]),
       addComment: resolvedArg({
@@ -3341,7 +4202,11 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         mergeReadiness: "ready",
       }),
       listProposals: resolved([]),
-      dismissIntegrationCleanup: resolvedArg(MOCK_INTEGRATION_WORKFLOWS[1]),
+      dismissIntegrationCleanup: resolvedArg(
+        USE_ADE_DB_SNAPSHOT
+          ? undefined
+          : BUILTIN_MOCK_INTEGRATION_WORKFLOWS[1] ?? undefined,
+      ),
       cleanupIntegrationWorkflow: resolvedArg({
         proposalId: "workflow-int-active",
         archivedLaneIds: ["lane-search"],
@@ -3369,8 +4234,23 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onEvent: noop,
     },
     history: {
-      listOperations: resolved([]),
-      exportOperations: resolvedArg({ operations: [] }),
+      listOperations: async (args: any = {}) => {
+        let rows = ADE_DB_OPERATIONS;
+        if (typeof args?.laneId === "string" && args.laneId.trim()) {
+          rows = rows.filter((operation) => operation.laneId === args.laneId.trim());
+        }
+        if (typeof args?.kind === "string" && args.kind.trim()) {
+          rows = rows.filter((operation) => operation.kind === args.kind.trim());
+        }
+        if (typeof args?.status === "string" && args.status !== "all") {
+          rows = rows.filter((operation) => operation.status === args.status);
+        }
+        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : rows.length;
+        return rows.slice(0, limit);
+      },
+      exportOperations: async (args: any = {}) => ({
+        operations: await (window as any).ade.history.listOperations(args),
+      }),
     },
     layout: {
       get: resolvedArg(null),
@@ -3385,8 +4265,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       set: resolvedArg2(undefined),
     },
     processes: {
-      listDefinitions: resolved([]),
-      listRuntime: resolvedArg([]),
+      listDefinitions: resolved(ADE_DB_PROCESS_DEFINITIONS),
+      listRuntime: async (laneId: string) =>
+        ADE_DB_PROCESS_RUNTIME.filter((runtime) => runtime.laneId === laneId),
       start: resolvedArg({}),
       stop: resolvedArg({}),
       restart: resolvedArg({}),
@@ -3408,14 +4289,16 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onEvent: noop,
     },
     projectConfig: {
-      get: resolved({ effective: { providerMode: "guest" }, overrides: {} }),
-      validate: resolvedArg({ valid: true }),
-      save: resolvedArg({
-        effective: { providerMode: "guest" },
-        overrides: {},
-      }),
-      diffAgainstDisk: resolved({ changed: false }),
-      confirmTrust: resolved({ trusted: true }),
+      get: resolved(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
+      validate: resolvedArg({ ok: true, issues: [] as any[] }),
+      save: resolvedArg(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
+      diffAgainstDisk: resolved({ changed: false } as any),
+      confirmTrust: resolved({
+        sharedHash: "mock",
+        localHash: "mock",
+        approvedSharedHash: null,
+        requiresSharedTrust: false,
+      } as any),
     },
     adeCli: {
       getStatus: resolved({
@@ -3529,4 +4412,4 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,
   };
-}
+} // window

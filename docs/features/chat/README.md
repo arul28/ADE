@@ -44,8 +44,16 @@ machinery layered on top.
   and plan approvals from every provider collapse into
   `PendingInputRequest`. Renderer derives them via
   `derivePendingInputRequests()`.
-- **Steer queue.** Follow-up user messages during an active turn are queued
-  (cap 10) with per-entry edit/cancel; delivery happens on turn boundaries.
+- **Steer queue.** Follow-up user messages during an active turn are
+  queued (cap 10) with per-entry edit/cancel/dispatch. Default delivery
+  happens on turn boundaries; for Claude V2 sessions the user can also
+  **send-now** (inline-dispatch the queued message into the active
+  turn — the SDK appends it with `shouldQuery: false` and the model
+  picks it up at the next thinking step) or **send & interrupt**
+  (abort the current turn and run the queued message as the next
+  turn). Inline dispatches are reversible until the model reads them
+  via `cancelAsyncMessage(uuid)`. The pending-steer queue is persisted
+  with chat state so undelivered messages survive restart.
 - **Identity sessions.** Sessions carrying `identityKey` (`"cto"` or
   `"agent:<id>"`) are filtered out of the Work tab list and rendered by
   dedicated surfaces (CTO tab, worker detail). See [Agent Routing and
@@ -153,7 +161,9 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.handoff` | invoke | End current session and create a new one with summarized context. |
 | `ade.agentChat.send` | invoke | Dispatch a user message + attachments into an active session. |
 | `ade.agentChat.steer` | invoke | Send a follow-up message mid-turn; queued when appropriate. |
-| `ade.agentChat.cancelSteer` / `ade.agentChat.editSteer` | invoke | Queue management. |
+| `ade.agentChat.cancelSteer` / `ade.agentChat.editSteer` | invoke | Queue management for queued steers. |
+| `ade.agentChat.dispatchSteer` | invoke | Claude-only: deliver a queued steer immediately as `mode: "inline"` (folded into the active turn via SDK `shouldQuery: false` send) or `mode: "interrupt"` (interrupt the active turn so the steer runs next). Throws on Codex/OpenCode/Cursor. |
+| `ade.agentChat.cancelDispatchedSteer` | invoke | Claude-only: rescinds an inline-dispatched message before the model reads it (calls SDK `cancelAsyncMessage(uuid)`). No-op if the message has already been consumed. |
 | `ade.agentChat.interrupt` | invoke | Provider-specific interruption of the in-flight turn. |
 | `ade.agentChat.approve` | invoke | Legacy approval channel (pre-pending-input). |
 | `ade.agentChat.respondToInput` | invoke | Unified pending-input answer channel. |
@@ -184,6 +194,24 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 - **Steer delivery vs. turn completion.** `deliverNextQueuedSteer()` is
   invoked on every turn-end code path (success, failure, interrupt,
   Claude SDK error). Missing any path can strand a queued steer.
+- **Pending steer persistence.** The Claude runtime's `pendingSteers`
+  array is mirrored into `PersistedChatState.pendingSteers` on every
+  state flush and re-hydrated through `hydratePersistedPendingSteers`
+  when the runtime is reattached. Attachment paths are re-resolved
+  through `resolvePathWithinRoot` on hydration so the lane's worktree
+  path (or project root for absolute paths) is the security boundary,
+  not whatever the value was when the steer was queued. The cap is
+  shared with the live queue (`MAX_PENDING_STEERS`), so a corrupt
+  persisted record can't grow it beyond the in-memory budget.
+- **Inline-dispatched steer tracking.** Each Claude `ClaudeRuntime`
+  tracks `dispatchedInlineSteers: Map<steerId, uuid>`. The UUID is
+  generated client-side and passed to the SDK as the message id; the
+  cancel path uses it to call `query.cancelAsyncMessage(uuid)`. The
+  map is cleared on read by the model (the `user_message` event
+  emitted with `deliveryState: "inline"` marks it as committed UI-side,
+  but the cancellable window is bounded by the SDK; once the model
+  reads the message the cancel is a no-op). The map is intentionally
+  not persisted — restart drops the cancellable window.
 - **Pending input derivation.** The renderer's `derivePendingInputRequests`
   in `pendingInput.ts` must handle: (a) legacy `askUser` tool calls, (b)
   Claude `AskUserQuestion` SDK events, (c) Codex `permissions` requests,

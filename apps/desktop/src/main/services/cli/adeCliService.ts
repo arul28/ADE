@@ -5,7 +5,6 @@ import type { AdeCliInstallResult, AdeCliStatus } from "../../../shared/types/ad
 import type { Logger } from "../logging/logger";
 import { spawnAsync } from "../shared/utils";
 import {
-  getPathEnvKey as findPathEnvKey,
   getPathEnvValue,
   setPathEnvValue,
 } from "../ai/cliExecutableResolver";
@@ -398,6 +397,9 @@ function resolveCliPaths(args: CreateAdeCliServiceArgs): ResolvedCliPaths {
 }
 
 function homeDir(env: NodeJS.ProcessEnv = process.env): string {
+  if (process.platform === "win32") {
+    return env.USERPROFILE?.trim() || env.HOME?.trim() || os.homedir();
+  }
   return env.HOME?.trim() || os.homedir();
 }
 
@@ -569,7 +571,9 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
       const status = await getStatus();
       return {
         ok: true,
-        message: profileResult
+        message: process.platform === "win32"
+          ? `Installed ade for Terminal access and added ${targetDir} to the user PATH if it was missing. Open a new terminal, then run: ade doctor.`
+          : profileResult
           ? profileResult.modified
             ? `Installed ade for Terminal access and added ${targetDir} to ${profileResult.profilePath}. Open a new terminal or source that file.`
             : `Installed ade for Terminal access. PATH entry already present in ${profileResult.profilePath}; open a new terminal or source that file.`

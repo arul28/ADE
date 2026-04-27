@@ -644,7 +644,7 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
       if deliveryState == "queued" {
         if queue[steerId] == nil { order.append(steerId) }
         queue[steerId] = WorkPendingSteerModel(id: steerId, text: text, turnId: turnId, timestamp: envelope.timestamp)
-      } else if deliveryState == "delivered" || deliveryState == "failed" {
+      } else if deliveryState == "delivered" || deliveryState == "inline" || deliveryState == "failed" {
         queue.removeValue(forKey: steerId)
         resolved.insert(steerId)
       }

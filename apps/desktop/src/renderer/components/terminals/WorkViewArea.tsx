@@ -1,5 +1,23 @@
 import { useMemo, useCallback, useEffect, useRef, useState } from "react";
-import { CaretDown, CaretRight, Check, Clipboard, Columns, GitBranch, GridFour, List, Play, Plus, Rows, X } from "@phosphor-icons/react";
+import { AnimatePresence, motion } from "motion/react";
+import {
+  CaretDown,
+  CaretRight,
+  Chats,
+  Check,
+  Clipboard,
+  Code,
+  Columns,
+  GitBranch,
+  GridFour,
+  List,
+  Play,
+  Plus,
+  Rows,
+  SidebarSimple,
+  Terminal,
+  X,
+} from "@phosphor-icons/react";
 import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
@@ -14,6 +32,7 @@ import { PaneTilingLayout, type PaneConfig } from "../ui/PaneTilingLayout";
 import { cn } from "../ui/cn";
 import { resolveTrackedCliResumeCommand } from "./cliLaunch";
 import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
+import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -85,7 +104,7 @@ function SessionSurface({
     <div
       className="flex h-full w-full items-center justify-center px-6"
       style={{
-        background: "radial-gradient(circle at top, color-mix(in srgb, var(--color-accent-glow-strong) 30%, transparent) 0%, transparent 40%), var(--color-card)",
+        background: "radial-gradient(circle at top, color-mix(in srgb, var(--color-fg) 5%, transparent) 0%, transparent 42%), var(--color-card)",
       }}
     >
       <div className="ade-liquid-glass-menu flex w-full max-w-md flex-col gap-4 rounded-lg px-5 py-5">
@@ -194,11 +213,63 @@ function ResumeCommandBlock({ command }: { command: string }) {
   );
 }
 
-const MODE_OPTIONS: Array<{ kind: WorkDraftKind; label: string; description: string }> = [
-  { kind: "chat", label: "Chat", description: "Compose a new ADE chat in this lane." },
-  { kind: "cli", label: "CLI", description: "Start a tracked Claude Code or Codex CLI session." },
-  { kind: "shell", label: "Shell", description: "Open a plain terminal shell in this lane's worktree." },
+const MODE_OPTIONS: Array<{
+  kind: WorkDraftKind;
+  label: string;
+  description: string;
+  Icon: typeof Chats;
+}> = [
+  { kind: "chat", label: "Chat", description: "Compose a new ADE chat in this lane.", Icon: Chats },
+  { kind: "cli", label: "CLI", description: "Start a tracked Claude Code or Codex CLI session.", Icon: Code },
+  { kind: "shell", label: "Shell", description: "Open a plain terminal shell in this lane's worktree.", Icon: Terminal },
 ];
+
+type SessionsPaneExpandAffordanceProps = {
+  show: boolean;
+  onExpand: () => void;
+  listCount: number;
+  runningCount: number;
+  listLoading: boolean;
+};
+
+function SessionsPaneExpandAffordance({
+  show,
+  onExpand,
+  listCount,
+  runningCount,
+  listLoading,
+}: SessionsPaneExpandAffordanceProps) {
+  if (!show) return null;
+  let countHint: string;
+  if (listLoading) {
+    countHint = "Loading session list…";
+  } else if (listCount > 0) {
+    countHint = `${listCount} in list${runningCount > 0 ? `, ${runningCount} running` : ""}`;
+  } else {
+    countHint = "Session list is empty.";
+  }
+  return (
+    <SmartTooltip
+      content={{
+        label: "Show sessions",
+        description: `Expand the sessions sidebar. ${countHint}`,
+      }}
+    >
+      <button
+        type="button"
+        className="ade-shell-control inline-flex shrink-0 items-center gap-1 px-1.5 py-1 text-[11px] font-medium"
+        data-variant="ghost"
+        data-tour="work.focusToolbar"
+        onClick={onExpand}
+      >
+        <SidebarSimple size={13} weight="regular" />
+        {!listLoading && listCount > 0 ? (
+          <span className="min-w-[1ch] text-[10px] tabular-nums text-muted-fg/50">{listCount}</span>
+        ) : null}
+      </button>
+    </SmartTooltip>
+  );
+}
 
 function ModeSwitcherPills({
   draftKind,
@@ -208,9 +279,10 @@ function ModeSwitcherPills({
   onShowDraftKind: (kind: WorkDraftKind) => void;
 }) {
   return (
-    <div className="ade-liquid-glass-pill inline-flex items-center rounded-full p-0.5">
+    <div className="ade-liquid-glass-pill inline-flex items-center gap-0.5 rounded-full p-1">
       {MODE_OPTIONS.map((opt) => {
         const active = draftKind === opt.kind;
+        const Icon = opt.Icon;
         return (
           <SmartTooltip
             key={opt.kind}
@@ -222,7 +294,10 @@ function ModeSwitcherPills({
           >
             <button
               type="button"
-              className={`rounded-full px-3 py-1 text-[11px] font-medium transition-all${active ? " ade-work-tab-active" : ""}`}
+              className={cn(
+                "inline-flex min-h-[36px] items-center gap-2 rounded-full px-3.5 py-2 text-[12px] font-medium transition-all",
+                active && "ade-work-tab-active",
+              )}
               style={{
                 background: active ? undefined : "transparent",
                 color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
@@ -231,6 +306,7 @@ function ModeSwitcherPills({
               }}
               onClick={() => onShowDraftKind(opt.kind)}
             >
+              <Icon size={15} weight="regular" className="shrink-0 opacity-80" />
               {opt.label}
             </button>
           </SmartTooltip>
@@ -260,6 +336,11 @@ export function WorkViewArea({
   onToggleTabGroupCollapsed,
   closingPtyIds,
   onContextMenu,
+  sessionsPaneCollapsed = false,
+  onExpandSessionsPane,
+  sessionsPaneListCount = 0,
+  sessionsPaneRunningCount = 0,
+  sessionsListLoading = false,
 }: {
   gridLayoutId: string;
   lanes: LaneSummary[];
@@ -288,12 +369,31 @@ export function WorkViewArea({
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onResumeSession?: (session: TerminalSessionSummary) => void;
+  /** When the work sessions list pane is collapsed, show expand control in the work header. */
+  sessionsPaneCollapsed?: boolean;
+  onExpandSessionsPane?: () => void;
+  sessionsPaneListCount?: number;
+  sessionsPaneRunningCount?: number;
+  sessionsListLoading?: boolean;
 }) {
+  const expandSessionsProps: SessionsPaneExpandAffordanceProps = {
+    show: Boolean(sessionsPaneCollapsed && onExpandSessionsPane),
+    onExpand: onExpandSessionsPane ?? (() => {}),
+    listCount: sessionsPaneListCount,
+    runningCount: sessionsPaneRunningCount,
+    listLoading: sessionsListLoading,
+  };
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
+
+  const laneColorById = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const lane of lanes) map.set(lane.id, lane.color);
+    return map;
+  }, [lanes]);
 
   const tabVisibleSessions = useMemo(
     () => (tabVisibleSessionIds ?? visibleSessions.map((session) => session.id))
@@ -335,10 +435,13 @@ export function WorkViewArea({
       const dot = sessionStatusDot(session);
       const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
       const isActive = activeItemId === session.id;
+      const rawLaneColor = laneColorById.get(session.laneId) ?? null;
+      const laneAccentColor = rawLaneColor?.trim() ? rawLaneColor.trim() : null;
       return [session.id, {
         title: truncateSessionLabel(primarySessionLabel(session)),
         meta: session.laneName,
         minimizable: false,
+        laneAccentColor,
         className: cn("h-full ade-work-glass-tile", isActive && "ade-work-glass-tile-active"),
         bodyClassName: "overflow-hidden",
         headerActions: (
@@ -382,7 +485,7 @@ export function WorkViewArea({
         ),
       } satisfies PaneConfig];
     }),
-  ), [activeItemId, closingPtyIds, handleContextMenu, onCloseItem, onOpenChatSession, onResumeSession, onSelectItem, visibleSessions]);
+  ), [activeItemId, closingPtyIds, handleContextMenu, laneColorById, onCloseItem, onOpenChatSession, onResumeSession, onSelectItem, visibleSessions]);
   const resolvedTabGroups = tabGroups ?? [];
   const hasGroupedTabs = resolvedTabGroups.length > 0;
   const toggleTabGroupCollapsed = onToggleTabGroupCollapsed ?? (() => {});
@@ -390,7 +493,8 @@ export function WorkViewArea({
   if (viewMode === "grid") {
     return (
       <div className="flex h-full flex-col">
-        <div className="ade-work-glass-header flex items-center gap-3 px-3 py-1.5">
+        <div className="ade-work-glass-header flex w-max max-w-full min-w-0 items-center gap-3 self-start px-3 py-1.5">
+          <SessionsPaneExpandAffordance {...expandSessionsProps} />
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           <span className="text-[11px] font-medium text-muted-fg">Grid</span>
           <span className="ade-liquid-glass-pill inline-flex items-center px-1.5 text-[10px] text-muted-fg/60 rounded">
@@ -403,7 +507,7 @@ export function WorkViewArea({
 
         {visibleSessions.length === 0 ? (
           <div className="flex h-full flex-col">
-            <div className="flex shrink-0 items-center justify-center py-2">
+            <div className="flex shrink-0 items-center justify-center py-3">
               <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
             </div>
             <div className="min-h-0 flex-1">
@@ -421,7 +525,7 @@ export function WorkViewArea({
             layoutId={gridLayoutId}
             tree={gridTree}
             panes={tilingPanes}
-            className="flex-1 min-h-0 px-2 pb-2"
+            className="ade-work-grid-tiling flex-1 min-h-0 px-2 pb-2"
           />
         )}
       </div>
@@ -465,7 +569,7 @@ export function WorkViewArea({
 
       {!activeSession ? (
         <div className="absolute inset-0 flex flex-col">
-          <div className="flex shrink-0 items-center justify-center py-2">
+          <div className="flex shrink-0 items-center justify-center py-3">
             <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
           </div>
           <div className="min-h-0 flex-1">
@@ -485,16 +589,15 @@ export function WorkViewArea({
     return (
       <div className="flex h-full flex-col">
         <div
-          className="ade-work-glass-header flex items-center gap-0 px-0.5"
+          className="ade-work-glass-header flex min-h-10 w-max max-w-full min-w-0 items-center gap-0 self-start px-1.5 py-1.5"
           style={{
-            height: 32,
-            minHeight: 32,
-            maxHeight: 32,
+            minHeight: 40,
+            maxHeight: 44,
           }}
         >
+          <SessionsPaneExpandAffordance {...expandSessionsProps} />
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
-          <div className="mx-1" style={{ width: 1, height: 14, background: "var(--work-pane-border)" }} />
-          <div className="flex-1 flex items-center gap-0 overflow-x-auto scrollbar-none min-w-0">
+          <div className="flex min-h-0 min-w-0 max-w-full items-center gap-0 overflow-y-hidden overflow-x-auto scrollbar-none">
             {visibleSessions.map((session) => {
               const isActive = activeSession?.id === session.id;
               const dot = sessionStatusDot(session);
@@ -514,14 +617,17 @@ export function WorkViewArea({
                     className="group/tab inline-flex shrink-0 items-center gap-1.5 transition-colors"
                     style={{
                       padding: "0 8px",
-                      height: 32,
+                      minHeight: 36,
+                      height: 36,
                       fontSize: 11,
                       fontWeight: isActive ? 500 : 400,
                       background: "transparent",
                       color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
                       cursor: "pointer",
                       border: "none",
-                      borderBottom: isActive ? "2px solid var(--color-accent)" : "2px solid transparent",
+                      borderBottom: isActive
+                        ? "2px solid color-mix(in srgb, var(--color-fg) 42%, transparent)"
+                        : "2px solid transparent",
                       borderRadius: "0",
                       opacity: isActive ? 1 : 0.65,
                     }}
@@ -593,125 +699,166 @@ export function WorkViewArea({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="ade-work-glass-header flex items-start gap-1.5 px-1 py-1">
+      <div
+        className="ade-work-glass-header flex min-h-10 w-max max-w-full min-w-0 items-center gap-1.5 self-start px-2 py-1.5"
+        style={{ minHeight: 40, maxHeight: 44 }}
+      >
+        <SessionsPaneExpandAffordance {...expandSessionsProps} />
         <div className="shrink-0">
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
         </div>
-        <div className="mx-1 mt-1" style={{ width: 1, height: 14, background: "var(--work-pane-border)" }} />
-        <div className="min-w-0 flex-1 overflow-x-auto scrollbar-none">
-          <div className="flex items-stretch gap-1.5">
+        <div className="min-w-0 max-w-full self-stretch overflow-y-hidden overflow-x-auto scrollbar-none">
+          <div className="flex h-full min-w-0 max-w-full items-center gap-1.5">
             {resolvedTabGroups.map((group) => {
               const hasActive = group.sessionIds.includes(activeSession?.id ?? "");
+              const groupTint = group.kind === "lane" && group.laneColor
+                ? laneSurfaceTint(group.laneColor, "default")
+                : null;
               return (
                 <div
                   key={group.id}
-                  className={`ade-work-glass-group${hasActive ? " ade-work-glass-group-active" : ""} inline-flex shrink-0 flex-col overflow-hidden ${group.collapsed ? "rounded-full" : "rounded-xl"}`}
+                  className={cn(
+                    "ade-work-glass-group",
+                    hasActive && "ade-work-glass-group-active",
+                    "flex h-full min-h-8 max-w-full items-stretch overflow-hidden",
+                    group.collapsed
+                      ? "inline-flex w-auto shrink-0 grow-0 rounded-full"
+                      : "inline-flex min-w-0 shrink-0 rounded-[13px]",
+                  )}
                 >
-                  <SmartTooltip
-                    content={{
-                      label: group.collapsed ? `Expand ${group.label}` : `Collapse ${group.label}`,
-                      description: "Show or hide the work tabs in this group.",
-                      effect: `${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"} in this group.`,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      aria-expanded={!group.collapsed}
-                      aria-controls={`tab-group-${group.id}`}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-left text-[11px] font-medium transition-colors"
-                      style={{
-                        color: hasActive ? "var(--color-fg)" : "var(--color-muted-fg)",
-                        cursor: "pointer",
+                  <div className="flex h-full min-w-0 max-w-full flex-row items-stretch">
+                    <SmartTooltip
+                      content={{
+                        label: group.collapsed ? `Expand ${group.label}` : `Collapse ${group.label}`,
+                        description: "Show or hide the work tabs in this group.",
+                        effect: `${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"} in this group.`,
                       }}
-                      onClick={() => toggleTabGroupCollapsed(group.id)}
                     >
-                      {group.kind === "lane" ? <GitBranch size={10} className="shrink-0 text-muted-fg/60" /> : null}
-                      <span className="max-w-[130px] truncate">{group.label}</span>
-                      <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] text-muted-fg/40">
-                        {group.sessions.length}
-                      </span>
-                      {group.collapsed ? (
-                        <CaretRight size={10} className="shrink-0 text-muted-fg/35" />
-                      ) : (
-                        <CaretDown size={10} className="shrink-0 text-muted-fg/35" />
-                      )}
-                    </button>
-                  </SmartTooltip>
-                  {!group.collapsed ? (
-                    <div id={`tab-group-${group.id}`} className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto scrollbar-none border-t border-white/[0.04] px-0.5 py-0.5">
-                      {group.sessions.map((session) => {
-                        const isActive = activeSession?.id === session.id;
-                        const dot = sessionStatusDot(session);
-                        const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-                        const primary = primarySessionLabel(session);
-                        return (
-                          <SmartTooltip
-                            key={session.id}
-                            content={{
-                              label: truncateSessionLabel(primary, 28),
-                              description: `Switch to this ${formatToolTypeLabel(session.toolType)} work tab.`,
-                              effect: dot.label,
-                            }}
-                          >
-                            <button
-                              type="button"
-                              className={`group/tab inline-flex shrink-0 items-center gap-1.5 transition-all${isActive ? " ade-work-tab-active" : ""}`}
-                              style={{
-                                padding: "0 8px",
-                                height: 28,
-                                fontSize: 11,
-                                fontWeight: isActive ? 500 : 400,
-                                background: isActive ? undefined : "transparent",
-                                color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
-                                cursor: "pointer",
-                                border: "none",
-                                borderRadius: 6,
-                                opacity: isActive ? 1 : 0.7,
+                      <button
+                        type="button"
+                        aria-expanded={!group.collapsed}
+                        aria-controls={`tab-group-${group.id}`}
+                        className="inline-flex shrink-0 items-center gap-1.5 px-2.5 text-left text-[11px] font-medium transition-colors"
+                        style={{
+                          minHeight: 32,
+                          color: hasActive ? "var(--color-fg)" : "var(--color-muted-fg)",
+                          cursor: "pointer",
+                          border: "none",
+                          ...(groupTint?.text
+                            ? {
+                              background: groupTint.background,
+                              boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${groupTint.text} 16%, transparent)`,
+                            }
+                            : { background: "transparent" }),
+                          borderRadius: group.collapsed ? 9999 : "12px 0 0 12px",
+                        }}
+                        onClick={() => toggleTabGroupCollapsed(group.id)}
+                      >
+                        {group.kind === "lane" ? (
+                          <GitBranch
+                            size={10}
+                            className="shrink-0"
+                            style={groupTint?.text ? { color: groupTint.text, opacity: 0.9 } : { color: "var(--color-muted-fg)", opacity: 0.6 }}
+                            weight="regular"
+                          />
+                        ) : null}
+                        <span className="max-w-[130px] truncate">{group.label}</span>
+                        <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] text-muted-fg/40">
+                          {group.sessions.length}
+                        </span>
+                        {group.collapsed ? (
+                          <CaretRight size={10} className="shrink-0 text-muted-fg/35" />
+                        ) : (
+                          <CaretDown size={10} className="shrink-0 text-muted-fg/35" />
+                        )}
+                      </button>
+                    </SmartTooltip>
+                    {!group.collapsed ? (
+                      <div
+                        id={`tab-group-${group.id}`}
+                        className="flex min-h-8 min-w-0 items-center gap-0.5 overflow-y-hidden overflow-x-auto py-0.5 pr-0.5 pl-0.5 scrollbar-none"
+                        role="tablist"
+                      >
+                        {group.sessions.map((session) => {
+                          const isActive = activeSession?.id === session.id;
+                          const dot = sessionStatusDot(session);
+                          const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
+                          const primary = primarySessionLabel(session);
+                          return (
+                            <SmartTooltip
+                              key={session.id}
+                              content={{
+                                label: truncateSessionLabel(primary, 28),
+                                description: `Switch to this ${formatToolTypeLabel(session.toolType)} work tab.`,
+                                effect: dot.label,
                               }}
-                              onClick={() => onSelectItem(session.id)}
-                              onContextMenu={(e) => handleContextMenu(session, e)}
                             >
-                              <ToolLogo toolType={session.toolType} size={10} />
-                              <span className="max-w-[120px] truncate">
-                                {truncateSessionLabel(primary, 20)}
-                              </span>
-                              <span
-                                title={dot.label}
-                                className={`${dot.cls} h-1.5 w-1.5 shrink-0${dot.spinning ? " animate-spin" : ""}`}
-                              />
-                              <span
-                                role="button"
-                                tabIndex={0}
-                                title={isBusy ? "Closing..." : "Close tab"}
-                                className="inline-flex items-center justify-center opacity-0 transition-opacity group-hover/tab:opacity-100"
+                              <button
+                                type="button"
+                                className={cn(
+                                  "group/tab inline-flex shrink-0 items-center gap-1.5 transition-all",
+                                  isActive && "ade-work-tab-active",
+                                )}
                                 style={{
-                                  width: 14,
-                                  height: 14,
-                                  cursor: isBusy ? "default" : "pointer",
-                                  color: "var(--color-muted-fg)",
+                                  padding: "0 8px",
+                                  minHeight: 32,
+                                  height: 32,
+                                  fontSize: 11,
+                                  fontWeight: isActive ? 500 : 400,
+                                  background: isActive ? undefined : "transparent",
+                                  color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
+                                  cursor: "pointer",
+                                  border: "none",
+                                  borderRadius: 6,
+                                  opacity: isActive ? 1 : 0.7,
                                 }}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (isBusy) return;
-                                  onCloseItem(session.id);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
+                                onClick={() => onSelectItem(session.id)}
+                                onContextMenu={(e) => handleContextMenu(session, e)}
+                                role="tab"
+                                aria-selected={isActive}
+                              >
+                                <ToolLogo toolType={session.toolType} size={10} />
+                                <span className="max-w-[120px] truncate">
+                                  {truncateSessionLabel(primary, 20)}
+                                </span>
+                                <span
+                                  title={dot.label}
+                                  className={`${dot.cls} h-1.5 w-1.5 shrink-0${dot.spinning ? " animate-spin" : ""}`}
+                                />
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  title={isBusy ? "Closing..." : "Close tab"}
+                                  className="inline-flex items-center justify-center opacity-0 transition-opacity group-hover/tab:opacity-100"
+                                  style={{
+                                    width: 14,
+                                    height: 14,
+                                    cursor: isBusy ? "default" : "pointer",
+                                    color: "var(--color-muted-fg)",
+                                  }}
+                                  onClick={(e) => {
                                     e.stopPropagation();
                                     if (isBusy) return;
                                     onCloseItem(session.id);
-                                  }
-                                }}
-                              >
-                                <X size={8} />
-                              </span>
-                            </button>
-                          </SmartTooltip>
-                        );
-                      })}
-                    </div>
-                  ) : null}
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (isBusy) return;
+                                      onCloseItem(session.id);
+                                    }
+                                  }}
+                                >
+                                  <X size={8} />
+                                </span>
+                              </button>
+                            </SmartTooltip>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               );
             })}
@@ -720,9 +867,8 @@ export function WorkViewArea({
                 type="button"
                 className="ade-work-new-chat-btn inline-flex shrink-0 items-center justify-center"
                 style={{
-                  width: 22,
-                  height: 22,
-                  marginTop: 3,
+                  width: 24,
+                  height: 24,
                   cursor: "pointer",
                 }}
                 onClick={() => onShowDraftKind("chat")}
@@ -780,16 +926,18 @@ function ArrangeMenu({
   }, [open]);
 
   return (
-    <div ref={containerRef} className="relative">
+    <div
+      ref={containerRef}
+      className="flex max-w-full min-w-0 shrink-0 items-center gap-1"
+    >
       <SmartTooltip content={{ label: "Arrange grid layout", description: "Pick a preset shape for the grid: Auto, Rows, or Columns." }}>
         <button
           type="button"
           onClick={() => setOpen((prev) => !prev)}
           aria-haspopup="menu"
           aria-expanded={open}
-          className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full px-2 text-[10px] font-medium transition-all"
+          className="ade-liquid-glass-pill inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-[10px] font-medium transition-all"
           style={{
-            height: 20,
             color: "var(--color-muted-fg)",
             border: "none",
             cursor: "pointer",
@@ -801,47 +949,52 @@ function ArrangeMenu({
           <CaretDown size={9} />
         </button>
       </SmartTooltip>
-      {open ? (
-        <div
-          role="menu"
-          className="ade-liquid-glass-pill absolute left-0 z-50 mt-1 flex flex-col rounded-md py-1"
-          style={{
-            top: "100%",
-            minWidth: 140,
-          }}
-        >
-          {TILING_PRESET_OPTIONS.map((opt) => {
-            const isActive = opt.preset === preset;
-            return (
-              <button
-                key={opt.preset}
-                type="button"
-                role="menuitemradio"
-                aria-checked={isActive}
-                onClick={() => {
-                  onSelect(opt.preset);
-                  setOpen(false);
-                }}
-                className="inline-flex items-center gap-2 px-2 py-1 text-[11px] transition-colors"
-                style={{
-                  background: "transparent",
-                  color: isActive ? "var(--color-accent)" : "var(--color-fg)",
-                  border: "none",
-                  cursor: "pointer",
-                  textAlign: "left",
-                }}
-                title={opt.description}
-              >
-                <span className="inline-flex w-4 justify-center">{opt.icon}</span>
-                <span className="flex-1">{opt.label}</span>
-                <span className="inline-flex w-4 justify-center">
-                  {isActive ? <Check size={11} /> : null}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+      <AnimatePresence>
+        {open ? (
+          <motion.div
+            key="arrange-menu"
+            role="menu"
+            initial={{ clipPath: "inset(0 100% 0 0)", opacity: 0.88 }}
+            animate={{ clipPath: "inset(0 0% 0 0)", opacity: 1 }}
+            exit={{ clipPath: "inset(0 100% 0 0)", opacity: 0.88 }}
+            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+            className="ade-liquid-glass-pill z-50 flex min-w-0 max-w-[min(100vw-24px,32rem)] flex-none flex-row flex-nowrap items-stretch divide-x divide-white/10 overflow-hidden rounded-md py-0.5"
+          >
+            <div className="flex min-w-0 flex-row flex-nowrap items-stretch overflow-x-auto scrollbar-none">
+              {TILING_PRESET_OPTIONS.map((opt) => {
+                const isActive = opt.preset === preset;
+                return (
+                  <button
+                    key={opt.preset}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={isActive}
+                    onClick={() => {
+                      onSelect(opt.preset);
+                      setOpen(false);
+                    }}
+                    className="inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 text-[11px] transition-colors"
+                    style={{
+                      background: "transparent",
+                      color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
+                      border: "none",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                    title={opt.description}
+                  >
+                    <span className="inline-flex shrink-0 items-center justify-center">{opt.icon}</span>
+                    <span className="shrink-0">{opt.label}</span>
+                    <span className="inline-flex w-3 shrink-0 items-center justify-center">
+                      {isActive ? <Check size={11} /> : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
@@ -875,7 +1028,7 @@ function ViewModeToggle({
               style={{
                 height: 20,
                 background: active ? undefined : "transparent",
-                color: active ? "var(--color-accent)" : "var(--color-muted-fg)",
+                color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
                 border: "none",
                 cursor: "pointer",
               }}

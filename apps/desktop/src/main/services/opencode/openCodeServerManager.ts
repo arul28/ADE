@@ -7,7 +7,11 @@ import path from "node:path";
 import type { Config as OpenCodeConfig } from "@opencode-ai/sdk";
 import type { Logger } from "../logging/logger";
 import { stableStringify } from "../shared/utils";
-import { processOutputToString, quoteWindowsCmdArg, resolveWindowsCmdInvocation } from "../shared/processExecution";
+import {
+  processOutputToString,
+  quoteWindowsCmdArg,
+  resolveWindowsCmdLineInvocation,
+} from "../shared/processExecution";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 
 export type OpenCodeServerLeaseKind = "shared" | "dedicated";
@@ -452,13 +456,21 @@ function stopChildProcess(proc: ChildProcess): void {
   proc.kill();
 }
 
+// `--port` may appear in a recorded command line either bare (`--port=N` or
+// `--port N`) or wrapped in cmd.exe-style quotes (`"--port=N"` / `"--port" "N"`)
+// because the Windows launch path quotes every token through
+// {@link quoteWindowsCmdArg}. Allow leading/trailing `"` as a token boundary
+// alongside whitespace so PID discovery still matches managed servers spawned
+// via the Windows wrapper.
 function commandHasPort(command: string, port: number): boolean {
   const escapedPort = String(port).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:^|\\s)--port(?:=|\\s+)${escapedPort}(?:\\s|$)`).test(command);
+  return new RegExp(
+    `(?:^|[\\s"])--port(?:=|\\s+|"\\s+")${escapedPort}(?:[\\s"]|$)`,
+  ).test(command);
 }
 
 function parseManagedOpenCodePort(command: string): number | null {
-  const match = command.match(/(?:^|\s)--port(?:=|\s+)(\d+)(?:\s|$)/);
+  const match = command.match(/(?:^|[\s"])--port(?:=|\s+|"\s+")(\d+)(?:[\s"]|$)/);
   if (!match) return null;
   const port = Number(match[1]);
   return Number.isInteger(port) && port > 0 ? port : null;
@@ -778,19 +790,21 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
   ensureOpenCodeIsolationDirs(xdgPaths);
   const env = buildIsolatedOpenCodeEnv(args.config, xdgPaths);
   if (process.platform === "win32") {
-    const invocation = resolveWindowsCmdInvocation(
+    const serveCmdLine = [
       executable,
-      ["serve", "--hostname=127.0.0.1", `--port=${args.port}`],
-      env,
-    );
+      "serve",
+      "--hostname=127.0.0.1",
+      `--port=${args.port}`,
+    ].map(quoteWindowsCmdArg).join(" ");
     const cmdLine =
       `set ${quoteWindowsCmdArg(`${ADE_OPENCODE_MANAGED_ENV}=1`)}`
       + `&&set ${quoteWindowsCmdArg("OPENCODE_DISABLE_PROJECT_CONFIG=1")}`
       + `&&set ${quoteWindowsCmdArg(`${ADE_OPENCODE_OWNER_PID_ENV}=${process.pid}`)}`
-      + `&&${invocation.args[3] ?? ""}`;
+      + `&&${serveCmdLine}`;
+    const invocation = resolveWindowsCmdLineInvocation(cmdLine, env);
     return {
       executable: invocation.command,
-      args: ["/d", "/s", "/c", cmdLine],
+      args: invocation.args,
       env,
       useShell: false,
       xdgPaths,

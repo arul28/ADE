@@ -6980,6 +6980,278 @@ describe("createAgentChatService", () => {
       expect(deliveredWithUpdatedText).toBeUndefined();
     });
 
+    it("dispatchSteer mode:'inline' sends with shouldQuery:false and clears the queue", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let interruptedTurnClosed = false;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-session-1", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Working..." }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          while (!interruptedTurnClosed) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          return;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      const mockSession = {
+        send,
+        stream,
+        close: vi.fn(() => { interruptedTurnClosed = true; }),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      };
+      vi.mocked(unstable_v2_createSession).mockReturnValue(mockSession as any);
+      vi.mocked(unstable_v2_resumeSession).mockReturnValue(mockSession as any);
+
+      const { service } = createService({ onEvent: (e: AgentChatEventEnvelope) => events.push(e) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Do work", timeoutMs: 15_000 });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      await service.steer({ sessionId: session.id, text: "fold this in" });
+      const queued = events.find((e) =>
+        e.event.type === "user_message"
+        && (e.event as any).deliveryState === "queued"
+        && (e.event as any).text === "fold this in",
+      );
+      expect(queued).toBeDefined();
+      const steerId = (queued!.event as any).steerId as string;
+
+      // Dispatch inline — should call session.send with shouldQuery:false
+      const result = await service.dispatchSteer({ sessionId: session.id, steerId, mode: "inline" });
+      expect(result.dispatchedAt).not.toBeNull();
+
+      // The 2nd send call (after the initial turn's send) is the inline dispatch
+      const inlineSendCall = send.mock.calls.find((c: any[]) => {
+        const arg = c[0];
+        return typeof arg === "object" && arg && (arg as any).shouldQuery === false;
+      });
+      expect(inlineSendCall).toBeDefined();
+      const inlinePayload = inlineSendCall![0] as any;
+      expect(inlinePayload.shouldQuery).toBe(false);
+      expect(inlinePayload.message?.content).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: "text", text: expect.stringContaining("fold this in") })]),
+      );
+
+      // user_message with deliveryState:"inline" should have been emitted
+      const inlineEvent = events.find((e) =>
+        e.event.type === "user_message"
+        && (e.event as any).steerId === steerId
+        && (e.event as any).deliveryState === "inline",
+      );
+      expect(inlineEvent).toBeDefined();
+
+      // Cleanup
+      await service.interrupt({ sessionId: session.id });
+      await activeTurn;
+    });
+
+    it("dispatchSteer mode:'interrupt' moves the steer to head, sets interrupted, and calls query.interrupt", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const queryInterrupt = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let interruptedTurnClosed = false;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-session-1", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Working..." }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          while (!interruptedTurnClosed) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          return;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      const mockSession = {
+        send,
+        stream,
+        close: vi.fn(() => { interruptedTurnClosed = true; }),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+        query: { interrupt: queryInterrupt },
+      };
+      vi.mocked(unstable_v2_createSession).mockReturnValue(mockSession as any);
+      vi.mocked(unstable_v2_resumeSession).mockReturnValue(mockSession as any);
+
+      const { service } = createService({ onEvent: (e: AgentChatEventEnvelope) => events.push(e) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Do work", timeoutMs: 15_000 });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      // Queue two steers — the second one will be the dispatch target
+      await service.steer({ sessionId: session.id, text: "first queued" });
+      await service.steer({ sessionId: session.id, text: "interrupt with me" });
+
+      const target = events.find((e) =>
+        e.event.type === "user_message"
+        && (e.event as any).deliveryState === "queued"
+        && (e.event as any).text === "interrupt with me",
+      );
+      expect(target).toBeDefined();
+      const steerId = (target!.event as any).steerId as string;
+
+      const result = await service.dispatchSteer({ sessionId: session.id, steerId, mode: "interrupt" });
+      expect(result.dispatchedAt).not.toBeNull();
+
+      // The SDK's query.interrupt should have been invoked
+      expect(queryInterrupt).toHaveBeenCalledTimes(1);
+
+      // Simulate the SDK responding to the interrupt by letting the mock stream exit.
+      // (service.interrupt() would short-circuit here because dispatchSteer already
+      // set runtime.interrupted = true.)
+      interruptedTurnClosed = true;
+      await activeTurn.catch(() => {});
+    });
+
+    it("dispatchSteer no-ops when the steerId is not in the queue", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-session-1", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      const mockSession = {
+        send, stream, close: vi.fn(), sessionId: "sdk-session-1", setPermissionMode,
+      };
+      vi.mocked(unstable_v2_createSession).mockReturnValue(mockSession as any);
+      vi.mocked(unstable_v2_resumeSession).mockReturnValue(mockSession as any);
+
+      const { service } = createService({ onEvent: () => {} });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      const result = await service.dispatchSteer({
+        sessionId: session.id,
+        steerId: "this-steer-id-does-not-exist",
+        mode: "inline",
+      });
+      expect(result.dispatchedAt).toBeNull();
+    });
+
+    it("dispatchSteer rejects on Codex sessions", async () => {
+      const { service } = createService({ onEvent: () => {} });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5-codex" });
+
+      await expect(
+        service.dispatchSteer({ sessionId: session.id, steerId: "any", mode: "inline" }),
+      ).rejects.toThrow(/not supported on Codex/i);
+    });
+
+    it("cancelDispatchedSteer calls cancelAsyncMessage with the inline-dispatched UUID", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const cancelAsyncMessage = vi.fn().mockResolvedValue({ cancelled: true });
+      let streamCall = 0;
+      let interruptedTurnClosed = false;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-session-1", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Working..." }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          while (!interruptedTurnClosed) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          return;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      const mockSession = {
+        send,
+        stream,
+        close: vi.fn(() => { interruptedTurnClosed = true; }),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+        query: { cancelAsyncMessage },
+      };
+      vi.mocked(unstable_v2_createSession).mockReturnValue(mockSession as any);
+      vi.mocked(unstable_v2_resumeSession).mockReturnValue(mockSession as any);
+
+      const { service } = createService({ onEvent: (e: AgentChatEventEnvelope) => events.push(e) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Do work", timeoutMs: 15_000 });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      await service.steer({ sessionId: session.id, text: "fold this in" });
+      const queued = events.find((e) =>
+        e.event.type === "user_message"
+        && (e.event as any).deliveryState === "queued"
+        && (e.event as any).text === "fold this in",
+      );
+      const steerId = (queued!.event as any).steerId as string;
+
+      await service.dispatchSteer({ sessionId: session.id, steerId, mode: "inline" });
+
+      // Capture the UUID we sent on the SDK message
+      const inlineSendCall = send.mock.calls.find((c: any[]) => {
+        const arg = c[0];
+        return typeof arg === "object" && arg && (arg as any).shouldQuery === false;
+      });
+      const sentUuid = (inlineSendCall![0] as any).uuid as string;
+      expect(typeof sentUuid).toBe("string");
+      expect(sentUuid.length).toBeGreaterThan(0);
+
+      const cancelResult = await service.cancelDispatchedSteer({ sessionId: session.id, steerId });
+      expect(cancelResult.cancelled).toBe(true);
+      expect(cancelAsyncMessage).toHaveBeenCalledWith(sentUuid);
+
+      const notice = events.find((e) =>
+        e.event.type === "system_notice"
+        && (e.event as any).steerId === steerId
+        && /Cancelled inline-dispatched/i.test((e.event as any).message),
+      );
+      expect(notice).toBeDefined();
+
+      // Cleanup
+      await service.interrupt({ sessionId: session.id });
+      await activeTurn;
+    });
+
+    it("cancelDispatchedSteer returns cancelled:false when steerId not tracked", async () => {
+      const { service } = createService({ onEvent: () => {} });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      const result = await service.cancelDispatchedSteer({ sessionId: session.id, steerId: "never-dispatched" });
+      expect(result.cancelled).toBe(false);
+    });
+
     it("delivers queued OpenCode steers with attachments after the active turn settles", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const firstTurnControl: { release?: () => void } = {};

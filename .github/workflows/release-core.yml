@@ -161,6 +161,8 @@ jobs:
         env:
           ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
+          CSC_LINK: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) || '' }}
+          CSC_KEY_PASSWORD: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD) || '' }}
         run: cd apps/desktop && npm run dist:win
 
       - name: Upload validated Windows artifacts to workflow run

@@ -336,7 +336,7 @@ private struct WorkNewChatComposerBar: View {
 
       HStack(alignment: .center, spacing: 8) {
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(alignment: .center, spacing: 6) {
+        HStack(alignment: .center, spacing: 10) {
         Button {
           onOpenModelPicker()
         } label: {
@@ -366,11 +366,10 @@ private struct WorkNewChatComposerBar: View {
           }
           .padding(.horizontal, 9)
           .padding(.vertical, 6)
-          .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule(style: .continuous))
-          .glassEffect()
+          .background(Color.clear, in: Capsule(style: .continuous))
           .overlay(
             Capsule(style: .continuous)
-              .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+              .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
           )
         }
         .buttonStyle(.plain)
@@ -401,11 +400,10 @@ private struct WorkNewChatComposerBar: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
-            .background(runtimeTint.opacity(0.14), in: Capsule(style: .continuous))
-            .glassEffect()
+            .background(runtimeTint.opacity(0.06), in: Capsule(style: .continuous))
             .overlay(
               Capsule(style: .continuous)
-                .stroke(runtimeTint.opacity(0.38), lineWidth: 0.6)
+                .stroke(runtimeTint.opacity(0.22), lineWidth: 0.5)
             )
           }
           .menuStyle(.borderlessButton)

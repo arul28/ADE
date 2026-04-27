@@ -28,7 +28,8 @@ export function ManageLaneDialog({
   laneActionKind,
   onAdoptAttached,
   onArchive,
-  onDelete
+  onDelete,
+  onAppearanceChanged
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -51,6 +52,7 @@ export function ManageLaneDialog({
   onAdoptAttached: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  onAppearanceChanged?: () => void | Promise<void>;
 }) {
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
@@ -145,7 +147,7 @@ export function ManageLaneDialog({
 
           {/* Appearance — single lane only */}
           {!isBatch && lanes[0] ? (
-            <AppearanceSection lane={lanes[0]} allLanes={allLanes} disabled={laneActionBusy} />
+            <AppearanceSection lane={lanes[0]} allLanes={allLanes} disabled={laneActionBusy} onChanged={onAppearanceChanged} />
           ) : null}
 
           {/* Archive */}
@@ -285,10 +287,12 @@ function AppearanceSection({
   lane,
   allLanes,
   disabled,
+  onChanged,
 }: {
   lane: LaneSummary;
   allLanes: LaneSummary[];
   disabled: boolean;
+  onChanged?: () => void | Promise<void>;
 }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -300,6 +304,7 @@ function AppearanceSection({
     setBusy(true);
     try {
       await window.ade.lanes.updateAppearance({ laneId: lane.id, color: next });
+      await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set color");
     } finally {

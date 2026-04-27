@@ -1,18 +1,44 @@
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CaretUpDown, MagnifyingGlass, Check } from "@phosphor-icons/react";
-import type { LaneSummary } from "../../../shared/types";
-import { COLORS } from "../lanes/laneDesignTokens";
+import { CaretUpDown, Check, GitBranch, MagnifyingGlass } from "@phosphor-icons/react";
+import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
+import { COLORS, laneSurfaceTint } from "../lanes/laneDesignTokens";
+
+/** `LaneSummary` is assignable; callers may also pass a minimal `{ id, name, color? }` without `branchRef`. */
+export type LaneComboboxLane = {
+  id: string;
+  name: string;
+  color?: string | null;
+  branchRef?: string | null;
+};
+
+type LaneListItem = {
+  id: string;
+  name: string;
+  color: string | null;
+  /** Short display branch (e.g. from refs/heads/foo); `null` for the "all" row. */
+  branchLabel: string | null;
+};
+
+function resolveBranchLabel(ref: string | null | undefined): string | null {
+  if (!ref) return null;
+  return branchNameFromRef(ref) || null;
+}
 
 type LaneComboboxProps = {
-  lanes: LaneSummary[];
+  lanes: LaneComboboxLane[];
   value: string;
   onChange: (laneId: string) => void;
   showAllOption?: boolean;
   allLabel?: string;
   placeholder?: string;
   compact?: boolean;
+  /**
+   * Rounded-full trigger; matches chat empty-state lane control styling.
+   */
+  variant?: "default" | "pill";
+  "aria-label"?: string;
 };
 
 export function LaneCombobox({
@@ -23,6 +49,8 @@ export function LaneCombobox({
   allLabel = "All lanes",
   placeholder = "Select lane...",
   compact = false,
+  variant = "default",
+  "aria-label": ariaLabel = "Select lane",
 }: LaneComboboxProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -37,17 +65,30 @@ export function LaneCombobox({
     [lanes, value],
   );
 
+  const selectedBranchLabel = useMemo(() => {
+    if (value === "all" || !selectedLane) return null;
+    return resolveBranchLabel(selectedLane.branchRef);
+  }, [value, selectedLane]);
+
   const items = useMemo(() => {
-    const base: Array<{ id: string; name: string; color: string | null }> = [];
+    const base: LaneListItem[] = [];
     if (showAllOption) {
-      base.push({ id: "all", name: allLabel, color: null });
+      base.push({ id: "all", name: allLabel, color: null, branchLabel: null });
     }
     for (const lane of lanes) {
-      base.push({ id: lane.id, name: lane.name, color: lane.color ?? null });
+      base.push({
+        id: lane.id,
+        name: lane.name,
+        color: lane.color ?? null,
+        branchLabel: resolveBranchLabel(lane.branchRef),
+      });
     }
-    if (!search.trim()) return base;
     const q = search.trim().toLowerCase();
-    return base.filter((item) => item.name.toLowerCase().includes(q));
+    if (!q) return base;
+    return base.filter((item) =>
+      item.name.toLowerCase().includes(q)
+      || (item.branchLabel?.toLowerCase().includes(q) ?? false),
+    );
   }, [lanes, showAllOption, allLabel, search]);
 
   useEffect(() => {
@@ -136,7 +177,7 @@ export function LaneCombobox({
     const openAbove = spaceBelow < 200 && rect.top > 200;
     setPopoverStyle({
       left: rect.left,
-      width: Math.max(rect.width, 220),
+      width: Math.max(rect.width, 260),
       ...(openAbove
         ? { bottom: window.innerHeight - rect.top + 4 }
         : { top: rect.bottom + 4 }),
@@ -154,7 +195,78 @@ export function LaneCombobox({
   }, [open, updatePosition]);
 
   const displayLabel = value === "all" ? allLabel : (selectedLane?.name ?? placeholder);
-  const displayColor = value === "all" ? null : (selectedLane?.color ?? COLORS.accent);
+  const customLaneColor = selectedLane?.color?.trim() ? selectedLane.color : null;
+  const displayColor =
+    value === "all" || !selectedLane
+      ? null
+      : (customLaneColor ?? COLORS.accent);
+  const pillSurface = variant === "pill" && value !== "all" && selectedLane && customLaneColor
+    ? laneSurfaceTint(customLaneColor, "default")
+    : null;
+  const defaultVariantSurface = variant === "default" && value !== "all" && customLaneColor
+    ? laneSurfaceTint(customLaneColor, "soft")
+    : null;
+
+  const triggerStyle: React.CSSProperties =
+    variant === "pill"
+      ? {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          minHeight: selectedBranchLabel ? 40 : 31,
+          padding: selectedBranchLabel
+            ? "5px 10px 5px 14px"
+            : "6px 10px 6px 14px",
+          borderRadius: 9999,
+          border: pillSurface?.text ? pillSurface.border : "1px solid rgba(255,255,255,0.08)",
+          background: pillSurface?.text
+            ? pillSurface.background
+            : "rgba(255,255,255,0.04)",
+          boxShadow: pillSurface?.text
+            ? `inset 0 0 0 1px color-mix(in srgb, ${pillSurface.text} 10%, transparent)`
+            : undefined,
+          color: pillSurface?.text ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.7)",
+          fontSize: 11,
+          fontWeight: 500,
+          cursor: "pointer",
+          minWidth: 0,
+          maxWidth: 320,
+          transition: "border-color 100ms ease, background 100ms ease, box-shadow 100ms ease",
+        }
+      : {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          ...(
+            selectedBranchLabel
+              ? {
+                  height: "auto" as const,
+                  minHeight: compact ? 32 : 40,
+                  padding: compact ? "3px 6px" : "4px 8px",
+                }
+              : {
+                  height: compact ? 24 : 28,
+                  padding: compact ? "0 6px" : "0 8px",
+                }
+          ),
+          borderRadius: 6,
+          border: defaultVariantSurface?.text
+            ? defaultVariantSurface.border
+            : "1px solid var(--work-pane-border)",
+          background: defaultVariantSurface?.text
+            ? defaultVariantSurface.background
+            : "rgba(255,255,255,0.02)",
+          boxShadow: defaultVariantSurface?.text
+            ? `inset 0 0 0 1px color-mix(in srgb, ${defaultVariantSurface.text} 8%, transparent)`
+            : undefined,
+          color: "var(--color-fg)",
+          fontSize: 11,
+          fontWeight: 400,
+          cursor: "pointer",
+          minWidth: 0,
+          maxWidth: 200,
+          transition: "border-color 100ms ease, background 100ms ease, box-shadow 100ms ease",
+        };
 
   return (
     <>
@@ -162,34 +274,69 @@ export function LaneCombobox({
         ref={triggerRef}
         type="button"
         className="ade-lane-trigger"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
         onClick={() => setOpen(!open)}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          height: compact ? 24 : 28,
-          padding: compact ? "0 6px" : "0 8px",
-          borderRadius: 6,
-          border: "1px solid var(--work-pane-border)",
-          background: "rgba(255,255,255,0.02)",
-          color: "var(--color-fg)",
-          fontSize: 11,
-          fontWeight: 400,
-          cursor: "pointer",
-          minWidth: 0,
-          maxWidth: 200,
-          transition: "border-color 100ms ease, background 100ms ease",
-        }}
+        style={triggerStyle}
       >
         {displayColor ? (
           <span
             className="ade-lane-popover-dot"
-            style={{ background: displayColor }}
+            style={{ background: displayColor, flexShrink: 0 }}
           />
         ) : null}
-        <span className="truncate" style={{ flex: 1, minWidth: 0 }}>
-          {displayLabel}
-        </span>
+        {selectedBranchLabel ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
+              gap: 2,
+              minWidth: 0,
+              flex: 1,
+              lineHeight: 1.2,
+            }}
+          >
+            <span className="truncate" style={{ width: "100%" }}>
+              {displayLabel}
+            </span>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                minWidth: 0,
+                width: "100%",
+              }}
+            >
+              <GitBranch
+                size={9}
+                weight="regular"
+                style={{
+                  color: "var(--color-muted-fg)",
+                  opacity: 0.55,
+                  flexShrink: 0,
+                }}
+                aria-hidden
+              />
+              <span
+                className="truncate"
+                style={{
+                  fontSize: 10,
+                  color: "var(--color-muted-fg)",
+                  opacity: 0.92,
+                }}
+              >
+                {selectedBranchLabel}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <span className="truncate" style={{ flex: 1, minWidth: 0 }}>
+            {displayLabel}
+          </span>
+        )}
         <CaretUpDown
           size={10}
           weight="bold"
@@ -243,30 +390,25 @@ export function LaneCombobox({
                   items.map((item, idx) => {
                     const isSelected = item.id === value;
                     const isHighlighted = idx === highlightedIndex;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className="ade-lane-popover-item"
-                        data-selected={isSelected ? "true" : undefined}
-                        data-highlighted={isHighlighted ? "true" : undefined}
-                        onClick={() => selectItem(item.id)}
-                        onMouseEnter={() => setHighlightedIndex(idx)}
+                    const dot = item.color ? (
+                      <span className="ade-lane-popover-dot" style={{ background: item.color }} />
+                    ) : (
+                      <span
+                        className="ade-lane-popover-dot"
+                        style={{ background: "var(--color-muted-fg)", opacity: 0.3 }}
+                      />
+                    );
+                    const titleRow = (
+                      <div
+                        style={{
+                          display: "flex",
+                          width: "100%",
+                          alignItems: "center",
+                          gap: 8,
+                          minWidth: 0,
+                        }}
                       >
-                        {item.color ? (
-                          <span
-                            className="ade-lane-popover-dot"
-                            style={{ background: item.color }}
-                          />
-                        ) : (
-                          <span
-                            className="ade-lane-popover-dot"
-                            style={{
-                              background: "var(--color-muted-fg)",
-                              opacity: 0.3,
-                            }}
-                          />
-                        )}
+                        {dot}
                         <span className="truncate" style={{ flex: 1, minWidth: 0 }}>
                           {item.name}
                         </span>
@@ -280,6 +422,64 @@ export function LaneCombobox({
                             }}
                           />
                         ) : null}
+                      </div>
+                    );
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="ade-lane-popover-item"
+                        data-selected={isSelected ? "true" : undefined}
+                        data-highlighted={isHighlighted ? "true" : undefined}
+                        onClick={() => selectItem(item.id)}
+                        onMouseEnter={() => setHighlightedIndex(idx)}
+                        style={
+                          item.branchLabel
+                            ? {
+                                flexDirection: "column",
+                                alignItems: "stretch",
+                                gap: 0,
+                                paddingTop: 5,
+                                paddingBottom: 5,
+                              }
+                            : undefined
+                        }
+                      >
+                        {item.branchLabel ? (
+                          <>
+                            {titleRow}
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 4,
+                                marginLeft: 14,
+                                marginTop: 3,
+                                minWidth: 0,
+                              }}
+                            >
+                              <GitBranch
+                                size={10}
+                                weight="regular"
+                                style={{ color: "var(--color-muted-fg)", opacity: 0.55, flexShrink: 0 }}
+                                aria-hidden
+                              />
+                              <span
+                                className="truncate"
+                                style={{
+                                  fontSize: 10,
+                                  lineHeight: 1.2,
+                                  color: "var(--color-muted-fg)",
+                                  opacity: 0.92,
+                                }}
+                              >
+                                {item.branchLabel}
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          titleRow
+                        )}
                       </button>
                     );
                   })

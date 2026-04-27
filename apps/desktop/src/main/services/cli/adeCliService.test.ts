@@ -7,6 +7,8 @@ import { createAdeCliService } from "./adeCliService";
 const tmpRoots: string[] = [];
 const originalPlatform = process.platform;
 const originalLocalAppData = process.env.LOCALAPPDATA;
+const originalUserProfile = process.env.USERPROFILE;
+const originalHome = process.env.HOME;
 
 function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", {
@@ -41,6 +43,10 @@ afterEach(() => {
   setPlatform(originalPlatform);
   if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
   else process.env.LOCALAPPDATA = originalLocalAppData;
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = originalUserProfile;
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
   for (const root of tmpRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -111,6 +117,36 @@ describe("createAdeCliService", () => {
     expect(status.terminalInstalled).toBe(true);
     expect(status.terminalCommandPath?.toLowerCase()).toBe(packagedCommandPath.toLowerCase());
     expect(status.installTargetPath.endsWith(path.join("ADE", "bin", "ade.cmd"))).toBe(true);
+  });
+
+  it("prefers USERPROFILE over Git Bash HOME for Windows install targets", async () => {
+    setPlatform("win32");
+    const root = makeTempRoot();
+    delete process.env.LOCALAPPDATA;
+    process.env.USERPROFILE = "C:\\Users\\ade";
+    process.env.HOME = "/c/Users/other";
+    const resourcesPath = path.join(root, "resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    writeExecutable(path.join(packagedBinDir, "ade.cmd"), "@echo off\r\nexit /b 0\r\n");
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.cmd"), "@echo off\r\nexit /b 0\r\n");
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.exe"),
+      env: {
+        USERPROFILE: "C:\\Users\\ade",
+        HOME: "/c/Users/other",
+        Path: "C:\\Windows\\System32",
+      },
+      logger: logger() as any,
+    });
+
+    const status = await service.getStatus();
+    expect(status.installTargetPath).toBe(path.join("C:\\Users\\ade", "AppData", "Local", "ADE", "bin", "ade.cmd"));
+    expect(status.installTargetPath).not.toContain("/c/Users/other");
   });
 
   it("reports Terminal install status from the original host PATH after agent PATH is applied", async () => {

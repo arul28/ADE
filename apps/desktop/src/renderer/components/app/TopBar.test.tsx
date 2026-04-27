@@ -121,6 +121,8 @@ describe("TopBar", () => {
         forgetRecent: vi.fn(async () => []),
         reorderRecent: vi.fn(async () => undefined),
         resolveIcon: vi.fn(async () => ({ dataUrl: null, sourcePath: null, mimeType: null })),
+        chooseIcon: vi.fn(async () => null),
+        removeIcon: vi.fn(async () => ({ dataUrl: null, sourcePath: null, mimeType: null })),
       },
       sync: {
         getStatus: vi.fn(async () => makeSyncSnapshot()),

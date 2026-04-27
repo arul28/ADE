@@ -281,6 +281,10 @@ import type {
   AgentChatSteerArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatDispatchSteerArgs,
+  AgentChatDispatchSteerResult,
+  AgentChatCancelDispatchedSteerArgs,
+  AgentChatCancelDispatchedSteerResult,
   AgentChatTurnFileDiff,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
@@ -647,6 +651,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.projectGetDetail, { rootPath }),
     resolveIcon: async (rootPath: string): Promise<ProjectIcon> =>
       ipcRenderer.invoke(IPC.projectResolveIcon, { rootPath }),
+    chooseIcon: async (rootPath: string): Promise<ProjectIcon | null> =>
+      ipcRenderer.invoke(IPC.projectChooseIcon, { rootPath }),
+    removeIcon: async (rootPath: string): Promise<ProjectIcon> =>
+      ipcRenderer.invoke(IPC.projectRemoveIcon, { rootPath }),
     getDroppedPath: (file: File): string => {
       try {
         return webUtils.getPathForFile(file);
@@ -1641,6 +1649,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatCancelSteer, args),
     editSteer: async (args: AgentChatEditSteerArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatEditSteer, args),
+    dispatchSteer: async (args: AgentChatDispatchSteerArgs): Promise<AgentChatDispatchSteerResult> =>
+      ipcRenderer.invoke(IPC.agentChatDispatchSteer, args),
+    cancelDispatchedSteer: async (args: AgentChatCancelDispatchedSteerArgs): Promise<AgentChatCancelDispatchedSteerResult> =>
+      ipcRenderer.invoke(IPC.agentChatCancelDispatchedSteer, args),
     interrupt: async (args: AgentChatInterruptArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatInterrupt, args),
     resume: async (args: AgentChatResumeArgs): Promise<AgentChatSession> =>

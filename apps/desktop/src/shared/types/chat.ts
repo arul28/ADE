@@ -132,7 +132,7 @@ export type AgentChatEvent =
       attachments?: AgentChatFileRef[];
       turnId?: string;
       steerId?: string;
-      deliveryState?: "queued" | "delivered" | "failed";
+      deliveryState?: "queued" | "delivered" | "inline" | "failed";
       processed?: boolean;
     }
   | {
@@ -613,6 +613,20 @@ export type AgentChatCreateArgs = {
 export type AgentChatHandoffArgs = {
   sourceSessionId: string;
   targetModelId: ModelId;
+  /**
+   * When set (including `null` for "no extra reasoning"), combined with the target
+   * model to pick a valid reasoning tier. When omitted, inherits from the source
+   * session the same way as a legacy handoff.
+   */
+  reasoningEffort?: string | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  permissionMode?: AgentChatPermissionMode;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
 };
 
 export type AgentChatHandoffResult = {
@@ -692,6 +706,27 @@ export type AgentChatEditSteerArgs = {
   sessionId: string;
   steerId: string;
   text: string;
+};
+
+export type AgentChatDispatchSteerMode = "inline" | "interrupt";
+
+export type AgentChatDispatchSteerArgs = {
+  sessionId: string;
+  steerId: string;
+  mode: AgentChatDispatchSteerMode;
+};
+
+export type AgentChatDispatchSteerResult = {
+  dispatchedAt: number | null;
+};
+
+export type AgentChatCancelDispatchedSteerArgs = {
+  sessionId: string;
+  steerId: string;
+};
+
+export type AgentChatCancelDispatchedSteerResult = {
+  cancelled: boolean;
 };
 
 export type AgentChatInterruptArgs = {

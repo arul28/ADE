@@ -24,6 +24,8 @@ extension WorkChatSessionView {
       WorkFileChangeCardView(card: fileChangeCard)
     case .toolGroup(let group):
       timelineToolGroup(group)
+    case .changedFiles(let group):
+      timelineChangedFiles(group)
     case .artifact(let artifact):
       timelineArtifact(artifact)
     case .turnSeparator(let separator):
@@ -89,16 +91,20 @@ extension WorkChatSessionView {
 
   @ViewBuilder
   func timelineToolGroup(_ group: WorkToolGroupModel) -> some View {
-    WorkToolGroupCardView(
+    WorkToolCallsPanelView(
+      group: group,
+      isExpanded: expandedToolCardIds.contains(group.id),
+      onToggle: { toggleToolCard(group.id) }
+    )
+  }
+
+  @ViewBuilder
+  func timelineChangedFiles(_ group: WorkChangedFilesGroupModel) -> some View {
+    WorkChangedFilesPanelView(
       group: group,
       isExpanded: expandedToolCardIds.contains(group.id),
       onToggle: { toggleToolCard(group.id) },
-      onOpenFile: { path in
-        Task { await onOpenFile(path) }
-      },
-      onOpenPr: { prNumber in
-        Task { await onOpenPr(prNumber) }
-      }
+      onUndo: nil
     )
   }
 

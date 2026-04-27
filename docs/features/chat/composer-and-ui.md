@@ -144,10 +144,20 @@ and a footer that contains the composer.
   toggles off for quiet, mid-conversation states.
 - **Pending steers.** When steers are queued during an active turn, the
   composer renders a pending-steers section above the input area with
-  per-message edit and cancel controls. Each `PendingSteerItem`
-  displays text with inline edit/cancel. Editing opens an inline
-  textarea; saving calls `ade.agentChat.editSteer`; cancelling calls
-  `ade.agentChat.cancelSteer`.
+  per-message controls. Each `PendingSteerItem` displays a "Sends after
+  turn" badge plus the message text. Hover-revealed actions per
+  entry: edit (inline textarea → `ade.agentChat.editSteer`), cancel
+  (`ade.agentChat.cancelSteer`), and — for Claude V2 sessions only —
+  **send now** (`ArrowBendDownRight`) and **send & interrupt**
+  (`Lightning`). **Send now** dispatches the queued message into the
+  active turn via `ade.agentChat.dispatchSteer({ mode: "inline" })`;
+  the user message then appears in-transcript with
+  `deliveryState: "inline"` and the model picks it up at its next
+  thinking step. **Send & interrupt** calls
+  `dispatchSteer({ mode: "interrupt" })`, which interrupts the current
+  turn so the queued message runs as the next turn. Both buttons are
+  hidden for non-Claude providers (Codex, OpenCode, Cursor) which only
+  support post-turn delivery.
 - **Question answering.** When a question-type pending input is active,
   pressing Enter submits the draft text as the answer via
   `onApproval("accept", answer)` rather than sending a new message.

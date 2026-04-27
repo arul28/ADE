@@ -454,6 +454,19 @@ describe("AgentChatComposer", () => {
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("hides native permission controls until a model is selected", () => {
+    const props = buildComposerProps({
+      modelId: "",
+      availableModelIds: ["opencode/openai/gpt-5.4"],
+      sessionProvider: "opencode",
+    });
+    const view = render(<AgentChatComposer {...props} />);
+    expect(screen.queryByRole("combobox", { name: "Permissions" })).toBeNull();
+
+    view.rerender(<AgentChatComposer {...props} modelId="opencode/openai/gpt-5.4" />);
+    expect(screen.getByRole("combobox", { name: "Permissions" })).toBeTruthy();
+  });
+
   it("shows inline proof toggle and wires callback", () => {
     const onToggleProof = vi.fn();
     renderComposer({

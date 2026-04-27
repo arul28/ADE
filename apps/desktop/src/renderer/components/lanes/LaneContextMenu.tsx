@@ -66,6 +66,7 @@ export function LaneContextMenu({
   onCloseOtherSplits,
   onSelectAll,
   onBatchManage,
+  onAppearanceChanged,
 }: {
   laneContextMenu: { laneId: string; x: number; y: number };
   lanesById: Map<string, LaneSummary>;
@@ -79,6 +80,7 @@ export function LaneContextMenu({
   onCloseOtherSplits: (keepLaneId: string) => void;
   onSelectAll: () => void;
   onBatchManage: (laneIds: string[]) => void;
+  onAppearanceChanged?: () => void | Promise<void>;
 }) {
   const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
   const isInSplit = visibleLaneIds.includes(laneContextMenu.laneId);
@@ -194,7 +196,7 @@ export function LaneContextMenu({
         <>
           <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
           <div style={menuHeaderStyle}>Color</div>
-          <ColorSwatchRow ctxLane={ctxLane} lanesById={lanesById} onClose={onClose} />
+          <ColorSwatchRow ctxLane={ctxLane} lanesById={lanesById} onChanged={onAppearanceChanged} />
         </>
       ) : null}
 
@@ -275,23 +277,27 @@ export function LaneContextMenu({
 function ColorSwatchRow({
   ctxLane,
   lanesById,
-  onClose,
+  onChanged,
 }: {
   ctxLane: LaneSummary;
   lanesById: Map<string, LaneSummary>;
-  onClose: () => void;
+  onChanged?: () => void | Promise<void>;
 }) {
   const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
   const used = React.useMemo(() => colorsInUse(Array.from(lanesById.values()), ctxLane.id), [lanesById, ctxLane.id]);
   const currentLower = ctxLane.color?.toLowerCase() ?? null;
 
   const apply = async (next: string | null) => {
     setError(null);
+    setBusy(true);
     try {
       await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next });
-      onClose();
+      await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set color");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -306,7 +312,7 @@ function ColorSwatchRow({
               key={entry.hex}
               type="button"
               title={isTaken ? `${entry.name} — in use` : entry.name}
-              disabled={isTaken}
+              disabled={isTaken || busy}
               aria-label={entry.name}
               aria-pressed={isSelected}
               onClick={() => apply(entry.hex)}

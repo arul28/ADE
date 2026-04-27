@@ -10,6 +10,9 @@
     "predev": "node ./scripts/clear-vite-cache.cjs && node ./scripts/normalize-runtime-binaries.cjs",
     "prebuild": "node ./scripts/normalize-runtime-binaries.cjs && npm run ade:build",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
+    "predev:vite": "node ./scripts/export-browser-mock-ade-snapshot.mjs --optional",
+    "dev:vite": "vite --port 5173 --strictPort",
+    "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
     "dist:win": "npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
@@ -42,7 +45,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.17.1",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.49",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.119",
     "@floating-ui/react": "^0.27.19",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
@@ -198,6 +201,12 @@
         }
       ],
       "icon": "build/icon.ico",
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+      },
       "artifactName": "${productName}-${version}-win-${arch}.${ext}"
     },
     "mac": {

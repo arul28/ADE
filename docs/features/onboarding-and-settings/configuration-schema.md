@@ -27,6 +27,7 @@ trust metadata.
 ```ts
 type ProjectConfigFile = {
   version?: number;
+  project?: ProjectIdentityConfig;
   processes?: ConfigProcessDefinition[];
   processGroups?: ConfigProcessGroupDefinition[];
   stackButtons?: ConfigStackButtonDefinition[];
@@ -44,7 +45,22 @@ type ProjectConfigFile = {
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
 };
+
+type ProjectIdentityConfig = {
+  /**
+   * Project-root-relative path to the icon shown in ADE project
+   * tabs/catalogs. `null` explicitly disables automatic icon detection
+   * for the project; when omitted, ADE auto-detects.
+   */
+  iconPath?: string | null;
+};
 ```
+
+`project.iconPath` is the user-overridable input to
+`projectIconResolver`. Validation rejects paths outside the project
+root or with unsupported extensions (must be one of `.ico`, `.jpeg`,
+`.jpg`, `.png`, `.svg`, `.webp`). The TopBar tab icon picker
+(`window.ade.project.chooseIcon` / `removeIcon`) writes this field.
 
 The lenient `Config*` variants allow every field to be optional so
 `ade.yaml` and `local.yaml` can be partial. `projectConfigService`

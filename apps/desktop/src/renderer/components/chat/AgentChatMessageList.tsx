@@ -27,8 +27,6 @@ import {
   CopySimple,
   Brain,
 } from "@phosphor-icons/react";
-import { useLottie } from "lottie-react";
-import brainThinkingAnimation from "../../assets/brain-thinking.json";
 import type {
   AgentChatApprovalDecision,
   AgentChatEvent,
@@ -170,6 +168,14 @@ function hasNoticeDetail(detail: string | AgentChatNoticeDetail | undefined): bo
   );
 }
 
+function isNoticeMessageRedundantWithDetail(message: string, detail: string | AgentChatNoticeDetail): boolean {
+  const m = message.trim();
+  if (!m) return true;
+  if (typeof detail === "string") return m === detail.trim();
+  if (detail.summary?.trim() === m) return true;
+  return false;
+}
+
 function renderNoticeDetail(detail: string | AgentChatNoticeDetail): React.ReactNode {
   if (typeof detail === "string") {
     return <div className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg/60">{detail}</div>;
@@ -297,10 +303,12 @@ function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_
       className: "ade-chat-status-pill border-red-500/25 text-red-300",
     };
   }
-  if (event.deliveryState === "queued") {
+  // Queued user_messages render in the staging area only, not in the chat
+  // thread, so we never need a "queued" delivery chip in the bubble itself.
+  if (event.deliveryState === "inline") {
     return {
-      label: "queued",
-      className: "ade-chat-status-pill border-violet-500/25 text-violet-300",
+      label: "during turn",
+      className: "ade-chat-status-pill border-violet-500/15 text-violet-300/70",
     };
   }
   if (event.processed) {
@@ -833,17 +841,6 @@ const ACTIVITY_LABELS: Record<string, string> = {
   tool_calling: "Calling tool"
 };
 
-function BrainLottie({ loop, size = 24 }: { loop: boolean; size?: number }) {
-  const { View } = useLottie({
-    animationData: brainThinkingAnimation,
-    loop,
-    autoplay: true,
-    style: { width: size, height: size, display: "inline-block" },
-    rendererSettings: { preserveAspectRatio: "xMidYMid slice" },
-  });
-  return <>{View}</>;
-}
-
 function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string }) {
   return (
     <span className="inline-flex items-center gap-1.5" aria-hidden="true">
@@ -858,41 +855,99 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
   );
 }
 
-
-function ActivityIndicator({ activity, detail, animate = true }: { activity: string; detail?: string; animate?: boolean }) {
-  const label = ACTIVITY_LABELS[activity] ?? activity;
-  const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
-  const thinking = activity === "thinking";
-  const activeTextClass = thinking ? "text-violet-200/78" : "text-emerald-200/80";
-  const activeDotClass = thinking ? "bg-violet-400/70" : "bg-emerald-400/80";
-  const activePingClass = thinking ? "bg-violet-400/12" : "bg-emerald-400/10";
-
+/** Three dots: animated while reasoning streams; larger static dots when the turn is done (stay visible on dark chat bg). */
+function ReasoningStateDots({ animated }: { animated: boolean }) {
   return (
-    <div className={cn(
-      "flex items-center gap-2.5 py-1.5 font-sans text-[12px]",
-      animate ? activeTextClass : "text-fg/35",
-    )}>
-      <span className="relative flex items-center justify-center">
-        {animate ? (
-          thinking ? (
-            <span className="inline-flex items-center gap-2">
-              <span className="relative inline-flex h-7 w-7 items-center justify-center">
-                <span className={cn("absolute h-6 w-6 animate-ping rounded-full", activePingClass)} style={{ animationDuration: '2s' }} />
-                <BrainLottie loop size={28} />
-              </span>
-              <ThinkingDots toneClass={activeDotClass} />
+    <span className="inline-flex select-none items-center gap-[3px] pl-0.5" aria-hidden="true">
+      {[0, 1, 2].map((index) => (
+        <span
+          key={index}
+          className={cn(
+            "inline-block flex-shrink-0 translate-y-px rounded-full",
+            animated ? "h-[3px] w-[3px] bg-violet-300/72 ade-thinking-pulse" : "h-[4px] w-[4px] bg-fg/50",
+          )}
+          style={animated ? { animationDelay: `${index * 0.18}s` } : undefined}
+        />
+      ))}
+    </span>
+  );
+}
+
+function formatActivityText(activity: string, detail?: string): string {
+  const label = ACTIVITY_LABELS[activity] ?? activity;
+  return detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}…`;
+}
+
+function MinimalThought({ text, isLive }: { text: string; isLive: boolean }) {
+  const [open, setOpen] = useState(false);
+  const trimmed = text.trim();
+  const preview = summarizeInlineText(trimmed, 96);
+  const Caret = open ? CaretDown : CaretRight;
+  return (
+    <div className="font-sans text-[11px]">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex max-w-full items-center gap-1.5 py-0.5 text-left transition-colors"
+      >
+        <Caret size={9} weight="bold" className="shrink-0 text-violet-400/45" />
+        {isLive ? (
+          <>
+            <Brain size={12} weight="duotone" className="shrink-0 text-violet-300/75" />
+            <span className="inline-flex items-center font-medium text-violet-200/75">
+              Thinking
+              <ReasoningStateDots animated />
             </span>
-          ) : (
-            <>
-              <span className={cn("absolute h-5 w-5 animate-ping rounded-full", activePingClass)} style={{ animationDuration: '2s' }} />
-              <ThinkingDots toneClass={activeDotClass} />
-            </>
-          )
+            {preview ? (
+              <span className="min-w-0 truncate text-fg/40">{preview}</span>
+            ) : null}
+          </>
         ) : (
-          <span className="h-1.5 w-1.5 rounded-full bg-fg/25" />
+          <span className="inline-flex items-center font-medium text-fg/55">
+            Thought
+            <ReasoningStateDots animated={false} />
+          </span>
         )}
-      </span>
-      <span className="truncate font-medium">{displayText}</span>
+      </button>
+      {open ? (
+        <div className="mt-1.5 pl-4 text-fg/55 text-[12px] leading-relaxed">
+          <MarkdownBlock markdown={trimmed.length ? text : "…"} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MinimalMemoryNotice({
+  message,
+  detail,
+}: {
+  message: string;
+  detail: string | AgentChatNoticeDetail;
+}) {
+  const [open, setOpen] = useState(false);
+  const Caret = open ? CaretDown : CaretRight;
+  return (
+    <div className="font-sans text-[11px]">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex max-w-full items-center gap-1.5 py-0.5 text-left transition-colors hover:text-fg/80"
+      >
+        <Caret size={9} weight="bold" className="shrink-0 text-violet-400/45" />
+        <MagnifyingGlass size={12} weight="duotone" className="shrink-0 text-fg/40" />
+        <span className="font-medium text-fg/45">Memory</span>
+      </button>
+      {open ? (
+        <div className="mt-1.5 space-y-2 pl-4 text-[12px] leading-relaxed text-fg/55">
+          {message.trim() && !isNoticeMessageRedundantWithDetail(message, detail) ? (
+            <div className="text-fg/50">{message}</div>
+          ) : null}
+          {renderNoticeDetail(detail)}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1623,30 +1678,11 @@ function renderEvent(
   /* ── User message ── */
   if (event.type === "user_message") {
     const deliveryChip = describeUserDeliveryState(event);
-    if (event.deliveryState === "queued" && !event.turnId) {
-      return (
-        <div className="flex justify-end">
-          <div
-            className={cn(GLASS_CARD_CLASS, "max-w-[88%] border-l-2 border-l-violet-400/40 px-4 py-3")}
-            style={SURFACE_INLINE_CARD_STYLE}
-          >
-            <div className="mb-1.5 flex items-center gap-2">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400/60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-violet-400" />
-              </span>
-              <span className="font-sans text-[10px] font-medium text-violet-200/80">
-                Queued — will be delivered after this turn
-              </span>
-              <span className="ml-auto font-sans text-[10px] text-fg/40">{formatTime(envelope.timestamp)}</span>
-            </div>
-            <div className="whitespace-pre-wrap break-words text-[12px] leading-[1.7] text-fg/80">{event.text}</div>
-            {event.attachments?.length ? (
-              <ChatAttachmentTray attachments={event.attachments} mode={options?.surfaceMode ?? "standard"} className="mt-1 px-0 py-0" />
-            ) : null}
-          </div>
-        </div>
-      );
+    // Queued steers live in the composer's staging area only — never in the
+    // chat thread. They graduate to a normal user bubble (with deliveryState
+    // "delivered" or "inline") once the model actually consumes them.
+    if (event.deliveryState === "queued" && event.steerId) {
+      return null;
     }
     return (
       <motion.div
@@ -2125,6 +2161,10 @@ function renderEvent(
     const NoticeIcon = style.icon;
     const hasDetail = hasNoticeDetail(event.detail);
 
+    if (hasDetail && event.noticeKind === "memory" && event.detail) {
+      return <MinimalMemoryNotice message={event.message} detail={event.detail} />;
+    }
+
     if (hasDetail) {
       return (
         <CollapsibleCard
@@ -2159,43 +2199,15 @@ function renderEvent(
 
   /* ── Reasoning ── */
   if (event.type === "reasoning") {
-    const reasoningText = event.text.trim();
     const isLive = Boolean(options?.turnActive);
-    const reasoningPreview = summarizeInlineText(reasoningText, 108);
-
-
     return (
       <motion.div
-        className="w-fit max-w-full"
+        className="w-fit max-w-[70ch]"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.12, ease: "easeOut" }}
       >
-        <CollapsibleCard
-          defaultOpen={false}
-          summary={
-            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-sans text-[11px] text-fg/52">
-              <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center">
-                <BrainLottie loop={isLive} size={32} />
-              </span>
-              {isLive ? (
-                <span className="flex min-w-0 items-center gap-2 text-violet-200/70">
-                  <ThinkingDots toneClass="bg-violet-400/60" />
-                  <span className="min-w-0 truncate font-medium">
-                    {reasoningPreview.length ? reasoningPreview : "Thinking..."}
-                  </span>
-                </span>
-              ) : (
-                <span className="font-medium text-fg/55">Thought</span>
-              )}
-            </div>
-          }
-          className="ade-chat-thinking-glass w-fit max-w-[70ch]"
-        >
-          <div className="text-fg/55 text-[12px] leading-relaxed">
-            <MarkdownBlock markdown={reasoningText.length ? event.text : "Thinking..."} />
-          </div>
-        </CollapsibleCard>
+        <MinimalThought text={event.text} isLive={isLive} />
       </motion.div>
     );
   }
@@ -2473,7 +2485,17 @@ function renderEvent(
 
   /* ── Activity ── */
   if (event.type === "activity") {
-    return <ActivityIndicator activity={event.activity} detail={event.detail} animate={Boolean(options?.turnActive) && !options?.sessionEnded} />;
+    const animate = Boolean(options?.turnActive) && !options?.sessionEnded;
+    return (
+      <span
+        className={cn(
+          "font-sans text-[12px] italic",
+          animate ? "ade-shimmer-text" : "text-fg/35",
+        )}
+      >
+        {formatActivityText(event.activity, event.detail)}
+      </span>
+    );
   }
 
   /* ── Status ── */
@@ -2664,6 +2686,8 @@ type TurnSummary = {
   backgroundAgentCount: number;
   activeBackgroundAgentCount: number;
   turnModel: { label: string; modelId?: string; model?: string } | null;
+  durationMs: number | null;
+  ended: boolean;
 };
 
 function deriveTurnSummary(
@@ -2678,12 +2702,24 @@ function deriveTurnSummary(
 
   let latestTodoUpdate: Extract<AgentChatEvent, { type: "todo_update" }> | null = null;
   let latestPlan: Extract<AgentChatEvent, { type: "plan" }> | null = null;
+  let turnStartedAt: number | null = null;
+  let turnEndedAt: number | null = null;
+  let ended = false;
   const files = new Map<string, TurnSummaryFile>();
   const subagents = new Map<string, { background: boolean; status: ChatSubagentSnapshot["status"] }>();
 
   for (const envelope of events) {
     const event = envelope.event;
     if (getEventTurnId(event) !== latestTurnId) continue;
+
+    const ts = Date.parse(envelope.timestamp);
+    if (Number.isFinite(ts)) {
+      if (turnStartedAt === null || ts < turnStartedAt) turnStartedAt = ts;
+      if (turnEndedAt === null || ts > turnEndedAt) turnEndedAt = ts;
+    }
+    if (event.type === "done" || (event.type === "status" && event.turnStatus !== "started")) {
+      ended = true;
+    }
 
     if (event.type === "todo_update") {
       latestTodoUpdate = event;
@@ -2757,10 +2793,17 @@ function deriveTurnSummary(
     return null;
   }
 
+  const durationMs =
+    turnStartedAt !== null && turnEndedAt !== null && turnEndedAt > turnStartedAt
+      ? turnEndedAt - turnStartedAt
+      : null;
+
   return {
     turnId: latestTurnId,
     tasks,
     files: changedFiles,
+    durationMs,
+    ended,
     totalAdditions,
     totalDeletions,
     backgroundAgentCount,
@@ -2769,160 +2812,42 @@ function deriveTurnSummary(
   };
 }
 
-function TurnSummaryCard({
-  summary,
-  onReviewChanges,
-}: {
-  summary: TurnSummary;
-  onReviewChanges?: () => void;
-}) {
+function formatTurnDuration(durationMs: number): string {
+  if (durationMs < 1000) return `${Math.max(1, Math.round(durationMs))}ms`;
+  const seconds = durationMs / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = Math.round(seconds - minutes * 60);
+  return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+}
+
+function TurnDivider({ summary }: { summary: TurnSummary }) {
+  if (!summary.ended) return null;
   const completedCount = summary.tasks.filter((task) => task.status === "completed").length;
   const totalCount = summary.tasks.length;
-  const filesLabel = summary.files.length
-    ? `${summary.files.length} file${summary.files.length === 1 ? "" : "s"}`
+  const taskLine = totalCount ? `${completedCount}/${totalCount} tasks complete` : null;
+  const agentLine = summary.backgroundAgentCount
+    ? `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"}${
+        summary.activeBackgroundAgentCount > 0 ? ` · ${summary.activeBackgroundAgentCount} still running` : " finished"
+      }`
     : null;
-  const agentsLabel = summary.backgroundAgentCount
-    ? `${summary.backgroundAgentCount} agent${summary.backgroundAgentCount === 1 ? "" : "s"}`
-    : null;
-  const taskLabel = totalCount ? `${completedCount}/${totalCount} complete` : null;
-  const hasDetails = summary.tasks.length > 0 || summary.files.length > 0 || summary.backgroundAgentCount > 0;
-
-  const summaryHeader = (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px] text-fg/46">
-      <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-fg/44">
-        <ListChecks size={10} weight="bold" className="text-fg/44" />
-        Turn recap
-      </span>
-      {taskLabel ? (
-        <span className="font-medium text-fg/74">{taskLabel}</span>
-      ) : null}
-      {filesLabel ? (
-        <span className="text-fg/56">
-          {filesLabel}
-          {summary.totalAdditions > 0 ? <span className="ml-1.5 text-emerald-300/70">+{summary.totalAdditions}</span> : null}
-          {summary.totalDeletions > 0 ? <span className="ml-1 text-red-300/70">-{summary.totalDeletions}</span> : null}
-        </span>
-      ) : null}
-      {agentsLabel ? (
-        <span className="text-fg/56">
-          {agentsLabel}
-          {summary.activeBackgroundAgentCount > 0 ? <span className="ml-1.5 text-sky-300/60">{summary.activeBackgroundAgentCount} active</span> : null}
-        </span>
-      ) : null}
-      {summary.turnModel?.label ? (
-        <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-fg/42">
-          <ModelGlyph modelId={summary.turnModel.modelId} model={summary.turnModel.model} size={10} className="text-fg/32" />
-          <span>{summary.turnModel.label}</span>
-        </span>
-      ) : null}
-    </div>
-  );
-
-  const details = hasDetails ? (
-    <div className="space-y-3 pb-0.5">
-      {summary.tasks.length > 0 ? (
-        <div className="space-y-1.5">
-          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Tasks</div>
-          <div className="space-y-1.5">
-            {summary.tasks.map((task) => (
-              <div
-                key={task.id}
-                className="flex items-start gap-2 rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2"
-              >
-                <div className="mt-0.5 flex-shrink-0">
-                  <PlanStepIcon status={task.status} />
-                </div>
-                <div
-                  className={cn(
-                    "min-w-0 flex-1 text-[12px] leading-5",
-                    task.status === "completed" ? "text-fg/45 line-through decoration-fg/15" : "text-fg/78",
-                  )}
-                >
-                  {task.description}
-                </div>
-                <span
-                  className={cn(
-                    "inline-flex shrink-0 items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]",
-                    todoItemStatusClass(task.status),
-                  )}
-                >
-                  {task.status.replace("_", " ")}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-      {summary.files.length > 0 ? (
-        <div className="space-y-1.5">
-          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Files</div>
-          <div className="space-y-1.5">
-            {summary.files.map((file) => {
-              const basename = basenamePathLabel(file.path);
-              const dirname = dirnamePathLabel(file.path);
-              return (
-                <div
-                  key={`${file.path}:${file.kind}`}
-                  className="flex items-start gap-2 rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2"
-                >
-                  <div className="mt-0.5 flex-shrink-0">
-                    <FileCode size={12} weight="regular" className="text-fg/38" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-5 text-fg/78">
-                      <span className="font-medium">{formatFileAction(file.kind)}</span>
-                      <span>{basename}</span>
-                      {file.additions > 0 ? <span className="text-emerald-300/70">+{file.additions}</span> : null}
-                      {file.deletions > 0 || file.kind === "delete" ? <span className="text-red-300/70">-{file.deletions}</span> : null}
-                    </div>
-                    {dirname ? (
-                      <div className="truncate font-mono text-[10px] text-fg/34">
-                        {dirname}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-      {summary.backgroundAgentCount > 0 ? (
-        <div className="rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2">
-          <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Agents</div>
-          <div className="flex flex-wrap items-center gap-2 text-[12px] text-fg/72">
-            <Robot size={12} weight="regular" className="text-fg/38" />
-            <span>
-              {summary.activeBackgroundAgentCount === summary.backgroundAgentCount
-                ? `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"} running`
-                : summary.activeBackgroundAgentCount > 0
-                  ? `${summary.activeBackgroundAgentCount} of ${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"} still running`
-                  : `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"} completed`}
-            </span>
-          </div>
-        </div>
-      ) : null}
-      {onReviewChanges && summary.files.length > 0 ? (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-fg/70 transition-colors hover:bg-white/[0.05] hover:text-fg/88"
-            onClick={onReviewChanges}
-          >
-            Review changes
-          </button>
-        </div>
-      ) : null}
-    </div>
-  ) : null;
-
+  const label = summary.durationMs !== null
+    ? `Response · Worked for ${formatTurnDuration(summary.durationMs)}`
+    : "Response";
   return (
-    <InlineDisclosureRow
-      summary={summaryHeader}
-      className="rounded-xl border border-white/[0.05] bg-[#0f1116]/66 px-1 py-0.5"
-    >
-      {details}
-    </InlineDisclosureRow>
+    <div className="my-4 flex flex-col items-center gap-1">
+      <div className="flex w-full items-center gap-3">
+        <span className="h-px flex-1 bg-white/[0.05]" />
+        <span className="font-sans text-[11px] text-fg/35">{label}</span>
+        <span className="h-px flex-1 bg-white/[0.05]" />
+      </div>
+      {(taskLine || agentLine) ? (
+        <div className="flex flex-col items-center gap-0.5 font-sans text-[11px] text-fg/40">
+          {taskLine ? <span>· {taskLine}</span> : null}
+          {agentLine ? <span>· {agentLine}</span> : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -2977,6 +2902,7 @@ type EventRowProps = {
   isLatestWorkLog?: boolean;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
+  onReviewChanges?: () => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   resolvedInputStates?: Map<string, PendingInputResolution>;
@@ -2997,6 +2923,7 @@ const EventRow = React.memo(function EventRow({
   isLatestWorkLog,
   onOpenWorkspacePath,
   onNavigateSuggestion,
+  onReviewChanges,
   respondingApprovalIds,
   pendingApprovalIds,
   resolvedInputStates,
@@ -3008,14 +2935,11 @@ const EventRow = React.memo(function EventRow({
       {showTurnDivider ? (
         <div className="my-3 flex items-center gap-4">
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
-          <span className="ade-liquid-glass-pill inline-flex items-center gap-2.5 rounded-full px-3.5 py-1.5 font-sans text-[10px] text-fg/42">
+          <span
+            className="ade-liquid-glass-pill inline-flex items-center rounded-full px-3.5 py-1.5 font-sans text-[10px] text-fg/42"
+            title={turnModel?.label ?? undefined}
+          >
             <span className="text-fg/35">{turnDividerLabel ?? "Turn"}</span>
-            {turnModel?.label ? (
-              <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 text-[9px] text-fg/42">
-                <ModelGlyph modelId={turnModel.modelId} model={turnModel.model} size={10} className="text-fg/36" />
-                <span>{turnModel.label}</span>
-              </span>
-            ) : null}
           </span>
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
         </div>
@@ -3027,6 +2951,7 @@ const EventRow = React.memo(function EventRow({
               entries={envelope.event.entries}
               summary={envelope.event.summary}
               onNavigateSuggestion={onNavigateSuggestion}
+              onUndoChanges={onReviewChanges}
               animate={workLogAnimate}
             />
           </div>
@@ -3574,6 +3499,7 @@ export function AgentChatMessageList({
           isLatestWorkLog={isLatestWorkLog}
           onOpenWorkspacePath={openWorkspacePath}
           onNavigateSuggestion={handleNavigateSuggestion}
+          onReviewChanges={handleReviewChanges}
           respondingApprovalIds={respondingApprovalIds}
           pendingApprovalIds={pendingApprovalIds}
           resolvedInputStates={resolvedInputStates}
@@ -3598,13 +3524,14 @@ export function AgentChatMessageList({
         isLatestWorkLog={isLatestWorkLog}
         onOpenWorkspacePath={openWorkspacePath}
         onNavigateSuggestion={handleNavigateSuggestion}
+        onReviewChanges={handleReviewChanges}
         respondingApprovalIds={respondingApprovalIds}
         pendingApprovalIds={pendingApprovalIds}
         resolvedInputStates={resolvedInputStates}
         sessionId={sessionId}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId, sessionEnded]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId, sessionEnded]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -3627,31 +3554,20 @@ export function AgentChatMessageList({
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
-      <div className="ade-liquid-glass relative overflow-hidden rounded-xl px-4 py-3">
-        <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
-          <div
-            className="absolute inset-0"
-            style={{
-              background: "linear-gradient(90deg, transparent, rgba(167,139,250,0.04), transparent)",
-              animation: "ade-streaming-shimmer 2.5s ease-in-out infinite",
-            }}
-          />
-        </div>
-        {latestActivity ? (
-          <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
-        ) : (
-          <div className="flex items-center gap-2.5 py-0.5 font-sans text-[12px] text-violet-200/70">
-            <ThinkingDots toneClass="bg-violet-400/70" />
-            <span className="font-medium">Working...</span>
-          </div>
-        )}
-      </div>
+      {latestActivity ? (
+        <span className="ade-shimmer-text font-sans text-[12px] italic">
+          {formatActivityText(latestActivity.activity, latestActivity.detail)}
+        </span>
+      ) : (
+        <span className="flex items-center gap-2 font-sans text-[12px] text-fg/35">
+          <ThinkingDots toneClass="bg-fg/35" />
+          <span>Working…</span>
+        </span>
+      )}
     </motion.div>
   ) : null;
 
-  const turnSummaryCard = turnSummary ? (
-    <TurnSummaryCard summary={turnSummary} onReviewChanges={turnSummary.files.length > 0 ? handleReviewChanges : undefined} />
-  ) : null;
+  const turnDivider = turnSummary ? <TurnDivider summary={turnSummary} /> : null;
 
   // Jump-to-latest pill is only meaningful during an active turn — if nothing
   // is streaming there's no "latest" to catch up to.
@@ -3682,14 +3598,14 @@ export function AgentChatMessageList({
                 <div style={{ height: bottomSpacerHeight }} aria-hidden />
               </div>
               {streamingIndicator}
-              {turnSummaryCard}
+              {turnDivider}
             </div>
           ) : (
             /* ── Non-virtualized path: render all rows (small conversation) ── */
             <div className="space-y-3">
               {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
               {streamingIndicator}
-              {turnSummaryCard}
+              {turnDivider}
             </div>
           )}
         </div>

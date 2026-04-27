@@ -13,6 +13,7 @@ import { COLORS } from "../lanes/laneDesignTokens";
 import { buildTrackedCliLaunchCommand, type CliProvider } from "./cliLaunch";
 import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { cn } from "../ui/cn";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
@@ -186,7 +187,7 @@ export function WorkStartSurface({
     return (
       <div className="flex h-full min-h-0 flex-col items-center justify-center gap-6 overflow-hidden px-6 py-6" style={{ background: "var(--color-bg)" }}>
         <LogoGlow size="sm" />
-        <div className="flex w-full max-w-sm flex-col items-center">
+        <div className="flex w-full max-w-md flex-col items-center">
           <GlassCard>
           {/* Lane */}
           <div className="flex items-center gap-2">
@@ -195,20 +196,26 @@ export function WorkStartSurface({
           </div>
 
           {/* Provider toggle */}
-          <div className="flex items-center gap-1">
+          <div className="flex w-full min-w-0 items-stretch gap-3">
             {([
               { id: "claude" as const, label: "Claude Code", Logo: ClaudeLogo },
               { id: "codex" as const, label: "Codex CLI", Logo: CodexLogo },
             ] as const).map((opt) => {
               const active = cliProvider === opt.id;
               return (
-                <SmartTooltip key={opt.id} content={{ label: opt.label, description: `Use ${opt.label} as the CLI provider for this session.` }}>
+                <SmartTooltip
+                  key={opt.id}
+                  content={{ label: opt.label, description: `Use ${opt.label} as the CLI provider for this session.` }}
+                  wrapperClassName="min-w-0 flex-1"
+                  wrapperStyle={{ display: "flex", minWidth: 0 }}
+                >
                   <button
                     type="button"
-                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-md py-2 transition-colors"
+                    className={cn(
+                      "inline-flex h-full min-h-[2.5rem] w-full min-w-0 items-center justify-center gap-2 rounded-md px-3.5 py-2.5 text-[11px] leading-none transition-colors whitespace-nowrap",
+                      active ? "font-medium" : "font-normal",
+                    )}
                     style={{
-                      fontSize: 11,
-                      fontWeight: active ? 500 : 400,
                       border: active ? "1px solid var(--color-accent-muted)" : "1px solid transparent",
                       background: active ? "var(--color-accent-muted)" : "transparent",
                       color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
@@ -272,7 +279,7 @@ export function WorkStartSurface({
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center gap-6 overflow-hidden px-6 py-6" style={{ background: "var(--color-bg)" }}>
       <LogoGlow size="sm" />
-      <div className="flex w-full max-w-sm flex-col items-center">
+      <div className="flex w-full max-w-md flex-col items-center">
         <GlassCard>
         {/* Lane */}
         <div className="flex items-center gap-2">
@@ -350,7 +357,7 @@ function LogoGlow({ size }: { size: "lg" | "sm" }) {
 
 function GlassCard({ children }: { children: React.ReactNode }) {
   return (
-    <div className="ade-liquid-glass ade-liquid-glass-strong flex w-full max-w-sm flex-col gap-4 rounded-xl p-5">
+    <div className="ade-liquid-glass ade-liquid-glass-strong flex w-full max-w-md flex-col gap-4 rounded-xl p-5">
       {children}
     </div>
   );

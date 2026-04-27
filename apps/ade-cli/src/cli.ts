@@ -2441,7 +2441,9 @@ function checkPathReadiness(): ReadinessCheck {
     message: onPath ? "ade is available on PATH." : "ade is not available on PATH.",
     nextAction: onPath
       ? undefined
-      : "Run npm link in apps/ade-cli or the packaged install-path.sh script.",
+      : process.platform === "win32"
+        ? "Install ade from ADE desktop General settings or run the packaged install-path.cmd script."
+        : "Run npm link in apps/ade-cli or the packaged install-path.sh script.",
     details: {
       currentCliPath: current || null,
       pathAde: whichPath,

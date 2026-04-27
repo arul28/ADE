@@ -4,8 +4,7 @@ import AVKit
 
 struct WorkTurnUsageSummaryBanner: View {
   let summary: WorkUsageSummary
-  /// Retained for call-site compatibility; the inline model chip was removed
-  /// so model labels only appear in the turn separator and composer pickers.
+  /// Retained for call-site compatibility. Model is shown in usage and composer, not the turn line.
   /// Kept as optional params in case future rows need provider context.
   var provider: String? = nil
   var modelLabel: String? = nil
@@ -133,7 +132,7 @@ struct WorkComposerChipStrip: View {
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 6) {
+      HStack(spacing: 10) {
         if let chatSummary {
           accessPill(summary: chatSummary)
           modelPill(summary: chatSummary)
@@ -141,7 +140,7 @@ struct WorkComposerChipStrip: View {
         }
 
         if queuedSteerCount > 0 {
-          statusChip(icon: "paperplane.circle.fill", label: "\(queuedSteerCount) queued", tint: ADEColor.accent)
+          statusChip(icon: "paperplane.circle.fill", label: "\(queuedSteerCount) staged", tint: ADEColor.accent)
         }
         if pendingInputCount > 0 {
           statusChip(icon: "hand.raised.circle.fill", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
@@ -201,10 +200,10 @@ struct WorkComposerChipStrip: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
-        .background(ADEColor.raisedBackground.opacity(0.78), in: Capsule(style: .continuous))
+        .background(Color.clear, in: Capsule(style: .continuous))
         .overlay(
           Capsule(style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+            .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
         )
       }
       .menuStyle(.borderlessButton)
@@ -248,10 +247,10 @@ struct WorkComposerChipStrip: View {
       }
       .padding(.horizontal, 9)
       .padding(.vertical, 6)
-      .background(ADEColor.raisedBackground.opacity(0.78), in: Capsule(style: .continuous))
+      .background(Color.clear, in: Capsule(style: .continuous))
       .overlay(
         Capsule(style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
       )
     }
     .buttonStyle(.plain)
@@ -308,10 +307,10 @@ struct WorkComposerChipStrip: View {
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 6)
-    .background(dotColor.opacity(0.12), in: Capsule(style: .continuous))
+    .background(dotColor.opacity(0.06), in: Capsule(style: .continuous))
     .overlay(
       Capsule(style: .continuous)
-        .stroke(dotColor.opacity(0.35), lineWidth: 0.6)
+        .stroke(dotColor.opacity(0.22), lineWidth: 0.5)
     )
   }
 
@@ -382,6 +381,8 @@ struct WorkQueuedSteerStrip: View {
   let isLive: Bool
   let onCancel: @MainActor (String) async -> Void
   let onSaveEdit: @MainActor (String, String) async -> Void
+  let onDispatchInline: (@MainActor (String) async -> Void)?
+  let onDispatchInterrupt: (@MainActor (String) async -> Void)?
 
   // Collapsed by default: with long turns users can have 3-5 queued items
   // and the composer area is the most vertical-space-constrained region
@@ -418,7 +419,13 @@ struct WorkQueuedSteerStrip: View {
                 cancelHapticToken &+= 1
                 await onCancel(steer.id)
               },
-              onSave: { text in await onSaveEdit(steer.id, text) }
+              onSave: { text in await onSaveEdit(steer.id, text) },
+              onDispatchInline: onDispatchInline.map { dispatch in
+                { await dispatch(steer.id) }
+              },
+              onDispatchInterrupt: onDispatchInterrupt.map { dispatch in
+                { await dispatch(steer.id) }
+              }
             )
           }
         }
@@ -447,7 +454,7 @@ struct WorkQueuedSteerStrip: View {
         Image(systemName: "paperplane.circle")
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.accent)
-        Text(steers.count == 1 ? "1 queued" : "\(steers.count) queued")
+        Text(steers.count == 1 ? "1 staged" : "\(steers.count) staged")
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textSecondary)
         if !isExpanded && !anyEditing, let preview = steers.first?.text {
@@ -468,8 +475,8 @@ struct WorkQueuedSteerStrip: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel(steers.count == 1 ? "1 queued message" : "\(steers.count) queued messages")
-    .accessibilityHint(isExpanded || anyEditing ? "Collapse queued messages" : "Expand to edit or cancel queued messages")
+    .accessibilityLabel(steers.count == 1 ? "1 staged message" : "\(steers.count) staged messages")
+    .accessibilityHint(isExpanded || anyEditing ? "Collapse staged messages" : "Expand to send now, interrupt, edit, or cancel staged messages")
     .disabled(anyEditing)
   }
 }
@@ -484,6 +491,8 @@ struct WorkQueuedSteerRow: View {
   let onCancelEdit: () -> Void
   let onCancel: @MainActor () async -> Void
   let onSave: @MainActor (String) async -> Void
+  let onDispatchInline: (@MainActor () async -> Void)?
+  let onDispatchInterrupt: (@MainActor () async -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -514,10 +523,11 @@ struct WorkQueuedSteerRow: View {
           .disabled(busy || !isLive || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
       } else {
-        // "Queued" ribbon mirrors the desktop PendingSteerItem treatment so
-        // users see at a glance that this item hasn't been sent yet.
+        // Disposition ribbon mirrors the desktop staging-card treatment so
+        // users see at a glance what will happen with this message and that
+        // it hasn't been sent yet.
         HStack(spacing: 6) {
-          Text("Queued")
+          Text("Sends after turn")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.accent)
             .padding(.horizontal, 7)
@@ -540,6 +550,36 @@ struct WorkQueuedSteerRow: View {
 
         HStack(spacing: 8) {
           Spacer(minLength: 0)
+          if let onDispatchInline {
+            Button {
+              Task { await onDispatchInline() }
+            } label: {
+              Label("Send now", systemImage: "arrow.turn.down.right")
+                .labelStyle(.titleAndIcon)
+                .font(.caption2.weight(.semibold))
+            }
+            .buttonStyle(.glass)
+            .tint(ADEColor.accent)
+            .controlSize(.mini)
+            .disabled(busy || !isLive)
+            .accessibilityHint("Fold this message into the active turn")
+          }
+
+          if let onDispatchInterrupt {
+            Button {
+              Task { await onDispatchInterrupt() }
+            } label: {
+              Label("Interrupt", systemImage: "bolt.fill")
+                .labelStyle(.titleAndIcon)
+                .font(.caption2.weight(.semibold))
+            }
+            .buttonStyle(.glass)
+            .tint(ADEColor.warning)
+            .controlSize(.mini)
+            .disabled(busy || !isLive)
+            .accessibilityHint("Stop the current turn and run this instead")
+          }
+
           Button {
             onBeginEdit()
           } label: {
@@ -574,7 +614,7 @@ struct WorkQueuedSteerRow: View {
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Queued message: \(steer.text)")
+    .accessibilityLabel("Staged message (sends after turn): \(steer.text)")
   }
 }
 

@@ -81,6 +81,30 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  func dispatchSteerInline(_ steerId: String) async {
+    do {
+      try await syncService.dispatchChatSteer(sessionId: sessionId, steerId: steerId, mode: "inline")
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func dispatchSteerInterrupt(_ steerId: String) async {
+    do {
+      try await syncService.dispatchChatSteer(sessionId: sessionId, steerId: steerId, mode: "interrupt")
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
   func selectModel(_ modelId: String) async {
     do {
       _ = try await syncService.updateChatSession(sessionId: sessionId, modelId: modelId)

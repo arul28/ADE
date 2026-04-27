@@ -13,7 +13,7 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
-import { resolveProjectIcon } from "../projects/projectIconResolver";
+import { removeProjectIconOverride, resolveProjectIcon, setProjectIconOverride } from "../projects/projectIconResolver";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -217,6 +217,10 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatDispatchSteerArgs,
+  AgentChatDispatchSteerResult,
+  AgentChatCancelDispatchedSteerArgs,
+  AgentChatCancelDispatchedSteerResult,
   AgentChatOpenCodePermissionMode,
   AgentChatUpdateSessionArgs,
   AgentChatSlashCommand,
@@ -2326,6 +2330,60 @@ export function registerIpc({
     },
   );
 
+  ipcMain.handle(
+    IPC.projectChooseIcon,
+    async (event, args: { rootPath: string }): Promise<ProjectIcon | null> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) return null;
+      let validatedRoot: string;
+      try {
+        validatedRoot = resolveAllowedProjectRoot(rootPath);
+      } catch {
+        return null;
+      }
+
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const options: Electron.OpenDialogOptions = {
+        title: "Choose project icon",
+        defaultPath: validatedRoot,
+        properties: ["openFile"],
+        filters: [
+          { name: "Images", extensions: ["ico", "jpeg", "jpg", "png", "svg", "webp"] },
+        ],
+      };
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (result.canceled || result.filePaths.length === 0) return null;
+
+      const selectedPath = result.filePaths[0];
+      if (!selectedPath) return null;
+      try {
+        return setProjectIconOverride(validatedRoot, selectedPath);
+      } catch (error) {
+        // setProjectIconOverride throws when the picked file is outside the
+        // project root or has an unsupported extension. Surface the message
+        // so the renderer can display a meaningful error instead of a
+        // silently rejected promise.
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to set project icon: ${message}`);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.projectRemoveIcon,
+    async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) return { dataUrl: null, sourcePath: null, mimeType: null };
+      let validatedRoot: string;
+      try {
+        validatedRoot = resolveAllowedProjectRoot(rootPath);
+      } catch {
+        return { dataUrl: null, sourcePath: null, mimeType: null };
+      }
+      return removeProjectIconOverride(validatedRoot);
+    },
+  );
+
   ipcMain.handle(IPC.projectOpenAdeFolder, async (): Promise<void> => {
     const ctx = getCtx();
     await shell.openPath(ctx.adeDir);
@@ -4287,6 +4345,39 @@ export function registerIpc({
     return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), text: record.text };
   };
 
+  const parseAgentChatDispatchSteerArgs = (
+    value: unknown,
+  ): AgentChatDispatchSteerArgs => {
+    const record = requireRecord(value, "Agent chat dispatch steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat dispatch steer sessionId must be a non-empty string");
+    }
+    if (typeof record.steerId !== "string" || !record.steerId.trim()) {
+      throw new Error("Agent chat dispatch steer steerId must be a non-empty string");
+    }
+    if (record.mode !== "inline" && record.mode !== "interrupt") {
+      throw new Error("Agent chat dispatch steer mode must be 'inline' or 'interrupt'");
+    }
+    return {
+      sessionId: record.sessionId.trim(),
+      steerId: record.steerId.trim(),
+      mode: record.mode,
+    };
+  };
+
+  const parseAgentChatCancelDispatchedSteerArgs = (
+    value: unknown,
+  ): AgentChatCancelDispatchedSteerArgs => {
+    const record = requireRecord(value, "Agent chat cancel dispatched steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat cancel dispatched steer sessionId must be a non-empty string");
+    }
+    if (typeof record.steerId !== "string" || !record.steerId.trim()) {
+      throw new Error("Agent chat cancel dispatched steer steerId must be a non-empty string");
+    }
+    return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim() };
+  };
+
   const parseAgentChatSuggestLaneNameArgs = (value: unknown): AgentChatSuggestLaneNameArgs => {
     const record = requireRecord(value, "Agent chat suggest lane name request");
     if (typeof record.prompt !== "string" || !record.prompt.trim()) {
@@ -4656,6 +4747,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatEditSteer, async (_event, arg: unknown): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.editSteer(parseAgentChatEditSteerArgs(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatDispatchSteer, async (_event, arg: unknown): Promise<AgentChatDispatchSteerResult> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.dispatchSteer(parseAgentChatDispatchSteerArgs(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatCancelDispatchedSteer, async (_event, arg: unknown): Promise<AgentChatCancelDispatchedSteerResult> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.cancelDispatchedSteer(parseAgentChatCancelDispatchedSteerArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {
