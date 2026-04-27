@@ -1524,16 +1524,24 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("lanes.rebaseAbort", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseAbort(parseRunIdArgs(payload, "lanes.rebaseAbort")));
   register("lanes.listRebaseSuggestions", { viewerAllowed: true }, async () => args.rebaseSuggestionService?.listSuggestions() ?? []);
   register("lanes.dismissRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.rebaseSuggestionService) return { ok: true };
-    await args.rebaseSuggestionService.dismiss({ laneId: requireString(payload.laneId, "lanes.dismissRebaseSuggestion requires laneId.") });
+    const laneId = requireString(payload.laneId, "lanes.dismissRebaseSuggestion requires laneId.");
+    args.conflictService?.dismissRebase(laneId);
+    if (args.rebaseSuggestionService) {
+      await args.rebaseSuggestionService.dismiss({ laneId });
+    }
     return { ok: true };
   });
   register("lanes.deferRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.rebaseSuggestionService) return { ok: true };
-    await args.rebaseSuggestionService.defer({
-      laneId: requireString(payload.laneId, "lanes.deferRebaseSuggestion requires laneId."),
-      minutes: asOptionalNumber(payload.minutes) ?? 60,
-    });
+    const laneId = requireString(payload.laneId, "lanes.deferRebaseSuggestion requires laneId.");
+    const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(asOptionalNumber(payload.minutes) ?? 60)));
+    const until = new Date(Date.now() + minutes * 60_000).toISOString();
+    args.conflictService?.deferRebase(laneId, until);
+    if (args.rebaseSuggestionService) {
+      await args.rebaseSuggestionService.defer({
+        laneId,
+        minutes,
+      });
+    }
     return { ok: true };
   });
   register("lanes.listAutoRebaseStatuses", { viewerAllowed: true }, async () => args.autoRebaseService?.listStatuses() ?? []);

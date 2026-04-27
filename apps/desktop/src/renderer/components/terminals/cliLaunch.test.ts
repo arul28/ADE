@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildTrackedCliLaunchCommand,
   buildTrackedCliResumeCommand,
   buildTrackedCliStartupCommand,
   defaultTrackedCliStartupCommand,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
 } from "./cliLaunch";
+import { ADE_CLI_AGENT_GUIDANCE, ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../../shared/types";
 
 describe("withCodexNoAltScreen", () => {
@@ -50,65 +52,98 @@ describe("defaultTrackedCliStartupCommand", () => {
 describe("buildTrackedCliStartupCommand", () => {
   describe("claude provider", () => {
     it("adds --dangerously-skip-permissions for full-auto", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "full-auto" }),
-      ).toBe("claude --dangerously-skip-permissions");
+      const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "full-auto" });
+      expect(command).toContain("claude --append-system-prompt");
+      expect(command).toContain("only normal reason to skip ADE CLI");
+      expect(command).toContain("--dangerously-skip-permissions");
     });
 
     it("adds --permission-mode acceptEdits for edit", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "edit" }),
-      ).toBe("claude --permission-mode acceptEdits");
+      const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "edit" });
+      expect(command).toContain("--append-system-prompt");
+      expect(command).toContain("--permission-mode acceptEdits");
     });
 
     it("adds --permission-mode default for default", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "default" }),
-      ).toBe("claude --permission-mode default");
+      const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "default" });
+      expect(command).toContain("--append-system-prompt");
+      expect(command).toContain("--permission-mode default");
     });
 
     it("adds --permission-mode plan for plan (else branch)", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "plan" }),
-      ).toBe("claude --permission-mode plan");
+      const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "plan" });
+      expect(command).toContain("--append-system-prompt");
+      expect(command).toContain("--permission-mode plan");
     });
 
     it("adds --permission-mode plan for config-toml (falls through to else)", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "config-toml" }),
-      ).toBe("claude --permission-mode plan");
+      const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "config-toml" });
+      expect(command).toContain("--append-system-prompt");
+      expect(command).toContain("--permission-mode plan");
+    });
+
+    it("uses Claude's system-prompt hook for ADE guidance", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "claude",
+        permissionMode: "default",
+        sessionId: "00000000-0000-0000-0000-000000000001",
+      });
+      expect(launch.command).toBe("claude");
+      expect(launch.args).toEqual(expect.arrayContaining([
+        "--session-id",
+        "00000000-0000-0000-0000-000000000001",
+        "--append-system-prompt",
+        ADE_CLI_AGENT_GUIDANCE,
+        "--permission-mode",
+        "default",
+      ]));
+      expect(launch.startupCommand).toContain("--append-system-prompt");
+      expect(launch.startupCommand).toContain(ADE_CLI_AGENT_GUIDANCE.split("\n")[0]!);
+      expect(launch.startupCommand).toContain("clean up old, stale, or finished processes");
     });
   });
 
   describe("codex provider", () => {
     it("adds the dangerous bypass flag for full-auto", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "full-auto" }),
-      ).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox");
+      const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "full-auto" });
+      expect(command).toContain("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox");
+      expect(command).toContain("only normal reason to skip ADE CLI");
     });
 
     it("adds Codex's auto preset for default", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" }),
-      ).toBe("codex --no-alt-screen --full-auto");
+      const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" });
+      expect(command).toContain("codex --no-alt-screen --full-auto");
+      expect(command).toContain("only normal reason to skip ADE CLI");
     });
 
     it("passes no extra flags for config-toml", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "config-toml" }),
-      ).toBe("codex --no-alt-screen");
+      const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "config-toml" });
+      expect(command).toContain("codex --no-alt-screen");
+      expect(command).not.toContain("--full-auto");
+      expect(command).toContain("only normal reason to skip ADE CLI");
     });
 
     it("adds untrusted approval and workspace-write sandbox for edit", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "edit" }),
-      ).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted");
+      const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "edit" });
+      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted");
+      expect(command).toContain("only normal reason to skip ADE CLI");
     });
 
     it("adds on-request approval and read-only sandbox for plan", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "plan" }),
-      ).toBe("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request");
+      const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "plan" });
+      expect(command).toContain("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request");
+      expect(command).toContain("only normal reason to skip ADE CLI");
+    });
+
+    it("seeds Codex with ADE guidance as the initial prompt", () => {
+      const launch = buildTrackedCliLaunchCommand({ provider: "codex", permissionMode: "default" });
+      expect(launch.command).toBe("codex");
+      expect(launch.args[0]).toBe("--no-alt-screen");
+      expect(launch.args.at(-1)).toContain("ADE session guidance");
+      expect(ADE_CLI_INLINE_GUIDANCE).toContain("default control plane");
+      expect(launch.args.at(-1)).toContain("default control plane");
+      expect(launch.args.at(-1)).toContain("clean up old, stale, or finished processes");
+      expect(launch.startupCommand).toContain("ADE session guidance");
     });
   });
 

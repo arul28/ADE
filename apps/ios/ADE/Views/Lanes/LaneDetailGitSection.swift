@@ -6,43 +6,9 @@ extension LaneDetailScreen {
   var gitSections: some View {
     if let detail {
       VStack(spacing: 14) {
-        gitStatusBanner(detail: detail)
-
         if let conflictState = detail.conflictState, conflictState.inProgress {
           conflictSection(conflictState: conflictState)
         }
-
-        if detail.lane.status.dirty || !(detail.diffChanges?.staged.isEmpty ?? true) {
-          commitCTAButton(detail: detail)
-        }
-
-        if let diffChanges = detail.diffChanges, !diffChanges.unstaged.isEmpty {
-          unstagedSection(changes: diffChanges.unstaged)
-        }
-
-        if let diffChanges = detail.diffChanges, !diffChanges.staged.isEmpty {
-          stagedSection(changes: diffChanges.staged)
-        }
-
-        NavigationLink {
-          LaneSyncDetailScreen(
-            laneName: detail.lane.name,
-            branchRef: detail.lane.branchRef,
-            syncStatus: detail.syncStatus,
-            canRunLiveActions: canRunLiveActions,
-            onFetch: { Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } } },
-            onPullMerge: { Task { await performAction("pull merge") { try await syncService.pullGit(laneId: laneId) } } },
-            onPullRebase: { Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } } },
-            onPush: { Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } } }
-          )
-        } label: {
-          summaryRow(
-            symbol: "arrow.triangle.2.circlepath",
-            title: "Sync",
-            detail: detail.syncStatus.map(syncSummary) ?? "No sync status yet"
-          )
-        }
-        .buttonStyle(.plain)
 
         NavigationLink {
           LaneStashesScreen(
@@ -119,9 +85,47 @@ extension LaneDetailScreen {
         }
         .buttonStyle(.plain)
 
-        actionsCard
+        advancedRow(detail: detail)
       }
     }
+  }
+
+  // MARK: - Advanced entry
+
+  @ViewBuilder
+  func advancedRow(detail: LaneDetailPayload) -> some View {
+    NavigationLink {
+      LaneAdvancedScreen(
+        snapshot: currentSnapshot,
+        canRunLiveActions: canRunLiveActions,
+        disabledSubtitle: liveActionDisabledSubtitle,
+        laneId: laneId,
+        branchRef: detail.lane.branchRef,
+        laneType: detail.lane.laneType,
+        missionId: detail.lane.missionId,
+        laneRole: detail.lane.laneRole,
+        onOpenManageSheet: { managePresented = true },
+        onSwitchBranch: { showBranchPicker = true },
+        onStash: {
+          Task {
+            await performAction("stash") {
+              try await syncService.stashPush(laneId: laneId, message: "", includeUntracked: true)
+            }
+          }
+        },
+        onRebaseLane: { requestGitConfirmation(.rebaseLane) },
+        onRebaseDescendants: { requestGitConfirmation(.rebaseDescendants) },
+        onRebaseAndPush: { requestGitConfirmation(.rebaseAndPush) },
+        onForcePush: { requestGitConfirmation(.forcePush) }
+      )
+    } label: {
+      summaryRow(
+        symbol: "slider.horizontal.3",
+        title: "Advanced",
+        detail: "Settings, branch tools, rebase & push"
+      )
+    }
+    .buttonStyle(.plain)
   }
 
   // MARK: - Rebase banner
@@ -154,26 +158,28 @@ extension LaneDetailScreen {
     Button {
       showCommitSheet = true
     } label: {
-      HStack(spacing: 8) {
+      HStack(spacing: 10) {
         Image(systemName: amendCommit ? "arrow.counterclockwise" : "square.and.pencil")
-          .font(.system(size: 14, weight: .semibold))
+          .font(.system(size: 15, weight: .semibold))
         Text(amendCommit ? "Amend last commit" : commitCTALabel(stagedCount: stagedCount, unstagedCount: unstagedCount))
           .font(.subheadline.weight(.semibold))
-        Spacer()
+        Spacer(minLength: 8)
         Image(systemName: "chevron.up")
-          .font(.system(size: 11, weight: .bold))
-          .opacity(0.7)
+          .font(.system(size: 12, weight: .bold))
+          .opacity(0.85)
       }
       .foregroundStyle(ADEColor.textPrimary)
-      .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
-      .background(ADEColor.accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .frame(maxWidth: .infinity)
+      .padding(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
+      .background(ADEColor.accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
           .stroke(ADEColor.accent.opacity(0.45), lineWidth: 0.6)
       )
     }
     .buttonStyle(.plain)
     .disabled(!canRunLiveActions)
+    .accessibilityHint("Opens the review and commit drawer.")
   }
 
   private func commitCTALabel(stagedCount: Int, unstagedCount: Int) -> String {
@@ -184,43 +190,6 @@ extension LaneDetailScreen {
       return "Review & commit \(unstagedCount) change\(unstagedCount == 1 ? "" : "s")"
     }
     return "Commit changes"
-  }
-
-  // MARK: - Actions card
-
-  @ViewBuilder
-  var actionsCard: some View {
-    if detail != nil {
-      LaneActionsCard(
-        canRunLiveActions: canRunLiveActions,
-        disabledSubtitle: liveActionDisabledSubtitle,
-        onRebaseLane: {
-          requestGitConfirmation(.rebaseLane)
-        },
-        onRebaseDescendants: {
-          requestGitConfirmation(.rebaseDescendants)
-        },
-        onRebaseAndPush: {
-          requestGitConfirmation(.rebaseAndPush)
-        },
-        onForcePush: {
-          requestGitConfirmation(.forcePush)
-        },
-        onStash: {
-          Task {
-            await performAction("stash") {
-              try await syncService.stashPush(laneId: laneId, message: "", includeUntracked: true)
-            }
-          }
-        },
-        laneId: laneId,
-        branchRef: detail?.lane.branchRef,
-        laneType: detail?.lane.laneType,
-        missionId: detail?.lane.missionId,
-        laneRole: detail?.lane.laneRole,
-        onRefresh: { await loadDetail(refreshRemote: true) }
-      )
-    }
   }
 
   // MARK: - Summary row
@@ -251,17 +220,15 @@ extension LaneDetailScreen {
     .adeGlassCard(cornerRadius: 14, padding: 0)
   }
 
-  // MARK: - Status banner
+  // MARK: - Status banner (inline chips, no glass card — sits inside header)
 
   @ViewBuilder
   func gitStatusBanner(detail: LaneDetailPayload) -> some View {
     let unstaged = detail.diffChanges?.unstaged.count ?? 0
     let staged = detail.diffChanges?.staged.count ?? 0
     let stashCount = detail.stashes.count
-    let ahead = detail.lane.status.ahead
-    let behind = detail.lane.status.behind
 
-    if unstaged > 0 || staged > 0 || stashCount > 0 || ahead > 0 || behind > 0 {
+    if unstaged > 0 || staged > 0 || stashCount > 0 {
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
           if unstaged > 0 {
@@ -273,16 +240,8 @@ extension LaneDetailScreen {
           if stashCount > 0 {
             LaneMicroChip(icon: "tray.2", text: "\(stashCount) stash\(stashCount == 1 ? "" : "es")", tint: ADEColor.textMuted)
           }
-          if ahead > 0 {
-            LaneMicroChip(icon: "arrow.up", text: "\(ahead) ahead", tint: ADEColor.success)
-          }
-          if behind > 0 {
-            LaneMicroChip(icon: "arrow.down", text: "\(behind) behind", tint: ADEColor.warning)
-          }
         }
-        .padding(4)
       }
-      .adeGlassCard(cornerRadius: 12, padding: 10)
     }
   }
 
@@ -362,112 +321,6 @@ extension LaneDetailScreen {
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(ADEColor.danger.opacity(0.3), lineWidth: 1)
-    )
-  }
-
-  // MARK: - Unstaged files
-
-  @ViewBuilder
-  func unstagedSection(changes: [FileChange]) -> some View {
-    LaneFileTreeSection(
-      title: "Unstaged files",
-      subtitle: "\(changes.count) file\(changes.count == 1 ? "" : "s")",
-      changes: changes,
-      allowsLiveActions: canRunLiveActions,
-      allowsDiffInspection: true,
-      bulkActionTitle: changes.count > 1 ? "Stage all" : nil,
-      bulkActionSymbol: "plus.circle.fill",
-      bulkActionTint: ADEColor.accent,
-      primaryActionTitle: "Stage",
-      primaryActionSymbol: "plus.circle.fill",
-      primaryActionTint: ADEColor.accent,
-      secondaryActionTitle: "Discard",
-      secondaryActionSymbol: "trash",
-      secondaryActionTint: ADEColor.danger,
-      extraBulkActions: [
-        LaneFileTreeBulkAction(title: "Discard unstaged", symbol: "trash", tint: ADEColor.danger, isDestructive: true) {
-          pendingFileConfirmation = .discardAllUnstaged(changes)
-        }
-      ],
-      onBulkAction: {
-        Task {
-          await performAction("stage all") {
-            try await syncService.stageAll(laneId: laneId, paths: changes.map(\.path))
-          }
-        }
-      },
-      onDiff: { file in
-        selectedDiffRequest = LaneDiffRequest(
-          laneId: laneId,
-          path: file.path,
-          mode: "unstaged",
-          compareRef: nil,
-          compareTo: nil,
-          title: (file.path as NSString).lastPathComponent
-        )
-      },
-      onPrimaryAction: { file in
-        Task { await performAction("stage file") { try await syncService.stageFile(laneId: laneId, path: file.path) } }
-      },
-      onSecondaryAction: { file in
-        pendingFileConfirmation = .discardUnstaged(file)
-      },
-      onOpenFiles: { file in
-        Task { await openFiles(path: file.path) }
-      }
-    )
-  }
-
-  // MARK: - Staged files
-
-  @ViewBuilder
-  func stagedSection(changes: [FileChange]) -> some View {
-    LaneFileTreeSection(
-      title: "Staged files",
-      subtitle: "\(changes.count) file\(changes.count == 1 ? "" : "s")",
-      changes: changes,
-      allowsLiveActions: canRunLiveActions,
-      allowsDiffInspection: true,
-      bulkActionTitle: changes.count > 1 ? "Unstage all" : nil,
-      bulkActionSymbol: "minus.circle",
-      bulkActionTint: ADEColor.warning,
-      primaryActionTitle: "Unstage",
-      primaryActionSymbol: "minus.circle",
-      primaryActionTint: ADEColor.warning,
-      secondaryActionTitle: "Discard",
-      secondaryActionSymbol: "trash",
-      secondaryActionTint: ADEColor.danger,
-      extraBulkActions: [
-        LaneFileTreeBulkAction(title: "Discard staged", symbol: "trash", tint: ADEColor.danger, isDestructive: true) {
-          pendingFileConfirmation = .restoreAllStaged(changes)
-        }
-      ],
-      onBulkAction: {
-        Task {
-          await performAction("unstage all") {
-            try await syncService.unstageAll(laneId: laneId, paths: changes.map(\.path))
-          }
-        }
-      },
-      onDiff: { file in
-        selectedDiffRequest = LaneDiffRequest(
-          laneId: laneId,
-          path: file.path,
-          mode: "staged",
-          compareRef: nil,
-          compareTo: nil,
-          title: (file.path as NSString).lastPathComponent
-        )
-      },
-      onPrimaryAction: { file in
-        Task { await performAction("unstage file") { try await syncService.unstageFile(laneId: laneId, path: file.path) } }
-      },
-      onSecondaryAction: { file in
-        pendingFileConfirmation = .restoreStaged(file)
-      },
-      onOpenFiles: { file in
-        Task { await openFiles(path: file.path) }
-      }
     )
   }
 

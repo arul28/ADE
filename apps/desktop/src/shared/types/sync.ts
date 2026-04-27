@@ -224,6 +224,7 @@ export type SyncMobileProjectSummary = {
   rootPath: string | null;
   defaultBaseRef: string | null;
   lastOpenedAt: string | null;
+  iconDataUrl?: string | null;
   laneCount: number;
   isAvailable: boolean;
   isCached: boolean;

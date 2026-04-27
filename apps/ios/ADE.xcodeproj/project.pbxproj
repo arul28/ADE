@@ -134,6 +134,7 @@
 		B10000000000000000000101 /* LaneDetailRebaseBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000101 /* LaneDetailRebaseBanner.swift */; };
 		B10000000000000000000102 /* LaneCommitSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000102 /* LaneCommitSheet.swift */; };
 		B10000000000000000000103 /* LaneActionsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000103 /* LaneActionsCard.swift */; };
+		B10000000000000000000150 /* LaneAdvancedScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000150 /* LaneAdvancedScreen.swift */; };
 		B10000000000000000000104 /* LaneSyncDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000104 /* LaneSyncDetailScreen.swift */; };
 		B10000000000000000000105 /* LaneStashesScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000105 /* LaneStashesScreen.swift */; };
 		B10000000000000000000106 /* LaneCommitHistoryScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000106 /* LaneCommitHistoryScreen.swift */; };
@@ -346,6 +347,7 @@
 		A10000000000000000000101 /* LaneDetailRebaseBanner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailRebaseBanner.swift; path = ADE/Views/Lanes/LaneDetailRebaseBanner.swift; sourceTree = "<group>"; };
 		A10000000000000000000102 /* LaneCommitSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneCommitSheet.swift; path = ADE/Views/Lanes/LaneCommitSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000103 /* LaneActionsCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneActionsCard.swift; path = ADE/Views/Lanes/LaneActionsCard.swift; sourceTree = "<group>"; };
+		A10000000000000000000150 /* LaneAdvancedScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneAdvancedScreen.swift; path = ADE/Views/Lanes/LaneAdvancedScreen.swift; sourceTree = "<group>"; };
 		A10000000000000000000104 /* LaneSyncDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneSyncDetailScreen.swift; path = ADE/Views/Lanes/LaneSyncDetailScreen.swift; sourceTree = "<group>"; };
 		A10000000000000000000105 /* LaneStashesScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneStashesScreen.swift; path = ADE/Views/Lanes/LaneStashesScreen.swift; sourceTree = "<group>"; };
 		A10000000000000000000106 /* LaneCommitHistoryScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneCommitHistoryScreen.swift; path = ADE/Views/Lanes/LaneCommitHistoryScreen.swift; sourceTree = "<group>"; };
@@ -472,6 +474,7 @@
 				A10000000000000000000101 /* LaneDetailRebaseBanner.swift */,
 				A10000000000000000000102 /* LaneCommitSheet.swift */,
 				A10000000000000000000103 /* LaneActionsCard.swift */,
+				A10000000000000000000150 /* LaneAdvancedScreen.swift */,
 				A10000000000000000000104 /* LaneSyncDetailScreen.swift */,
 				A10000000000000000000105 /* LaneStashesScreen.swift */,
 				A10000000000000000000106 /* LaneCommitHistoryScreen.swift */,
@@ -1030,6 +1033,7 @@
 				B10000000000000000000101 /* LaneDetailRebaseBanner.swift in Sources */,
 				B10000000000000000000102 /* LaneCommitSheet.swift in Sources */,
 				B10000000000000000000103 /* LaneActionsCard.swift in Sources */,
+				B10000000000000000000150 /* LaneAdvancedScreen.swift in Sources */,
 				B10000000000000000000104 /* LaneSyncDetailScreen.swift in Sources */,
 				B10000000000000000000105 /* LaneStashesScreen.swift in Sources */,
 				B10000000000000000000106 /* LaneCommitHistoryScreen.swift in Sources */,

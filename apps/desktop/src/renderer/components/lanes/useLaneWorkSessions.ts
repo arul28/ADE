@@ -5,7 +5,7 @@ import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessio
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
-import { defaultTrackedCliStartupCommand } from "../terminals/cliLaunch";
+import { buildTrackedCliLaunchCommand } from "../terminals/cliLaunch";
 
 const EMPTY_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
@@ -442,13 +442,13 @@ export function useLaneWorkSessions(laneId: string | null) {
       tracked?: boolean;
       title?: string;
       startupCommand?: string;
+      command?: string;
+      args?: string[];
     }) => {
       const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" } as const;
-      const commandMap = {
-        claude: defaultTrackedCliStartupCommand("claude"),
-        codex: defaultTrackedCliStartupCommand("codex"),
-        shell: "",
-      } as const;
+      const defaultLaunch = args.profile === "shell"
+        ? null
+        : buildTrackedCliLaunchCommand({ provider: args.profile, permissionMode: "default" });
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,
@@ -456,7 +456,9 @@ export function useLaneWorkSessions(laneId: string | null) {
         title: args.title ?? titleMap[args.profile],
         tracked: args.tracked ?? true,
         toolType: args.profile,
-        startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
+        startupCommand: args.startupCommand ?? defaultLaunch?.startupCommand ?? undefined,
+        command: args.command ?? defaultLaunch?.command,
+        args: args.args ?? defaultLaunch?.args,
       });
       selectLane(args.laneId);
       // Invalidate all cache entries so other views (e.g. Work tab) pick up

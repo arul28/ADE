@@ -5,6 +5,7 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  ProjectIcon,
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
   AttachLaneArgs,
@@ -608,6 +609,8 @@ declare global {
         revealPath: (path: string) => Promise<void>;
         openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
+        getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
+        writeClipboardImage: (path: string) => Promise<void>;
         openPathInEditor: (args: {
           rootPath: string;
           relativePath?: string;
@@ -628,6 +631,7 @@ declare global {
           args?: ProjectBrowseInput,
         ) => Promise<ProjectBrowseResult>;
         getDetail: (rootPath: string) => Promise<ProjectDetail>;
+        resolveIcon: (rootPath: string) => Promise<ProjectIcon>;
         getDroppedPath: (file: File) => string;
         openAdeFolder: () => Promise<void>;
         clearLocalData: (

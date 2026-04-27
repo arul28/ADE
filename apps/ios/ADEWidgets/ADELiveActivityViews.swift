@@ -149,8 +149,10 @@ struct WorkspaceCompactTrailing: View {
                     .minimumScaleFactor(0.85)
                     .frame(maxWidth: 96, alignment: .trailing)
             } else if state.sessions.count == 1, let s = state.sessions.first {
-                // Single active session — show the chat title compactly.
-                Text(s.title.isEmpty ? s.providerSlug : s.title)
+                // Single active session — show the model id (or provider slug
+                // fallback). Title would truncate to nothing useful in this
+                // 96pt slot.
+                Text(s.modelId?.isEmpty == false ? s.modelId! : s.providerSlug.lowercased())
                     .font(.system(size: 12, weight: .semibold))
                     .kerning(-0.2)
                     .foregroundStyle(Color(red: 0xF0/255, green: 0xF0/255, blue: 0xF2/255))
@@ -414,11 +416,13 @@ struct WorkspaceExpandedCenter: View {
     }
 
     private func focusedSubtitle(_ focused: ADESessionAttributes.ContentState.ActiveSession) -> String {
-        let provider = focused.providerSlug.lowercased()
+        let label = focused.modelId?.trimmingCharacters(in: .whitespaces).isEmpty == false
+            ? focused.modelId!
+            : focused.providerSlug.lowercased()
         if let preview = focused.preview, !preview.isEmpty {
-            return "\(provider) · \(preview)"
+            return "\(label) · \(preview)"
         }
-        return "\(provider) · working…"
+        return "\(label) · working…"
     }
 }
 
@@ -601,11 +605,13 @@ private struct LockRosterRow: View {
     }
 
     private var subtitleText: String {
-        let providerName = session.providerSlug.lowercased()
+        let modelLabel = session.modelId?.trimmingCharacters(in: .whitespaces).isEmpty == false
+            ? session.modelId!
+            : session.providerSlug.lowercased()
         if let preview = session.preview, !preview.isEmpty {
-            return "\(providerName) · \(preview)"
+            return "\(modelLabel) · \(preview)"
         }
-        return "\(providerName) · working…"
+        return "\(modelLabel) · working…"
     }
 
     private var accessibilityLabel: String {
@@ -742,7 +748,9 @@ private struct ExpandedRosterStrip: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(session.providerSlug.lowercased())
+                    Text(session.modelId?.isEmpty == false
+                         ? session.modelId!
+                         : session.providerSlug.lowercased())
                         .font(.system(size: 10.5, weight: .medium).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -769,11 +777,13 @@ private struct FocusedCardBottom: View {
     }
 
     private var subtitle: String {
-        let provider = session.providerSlug.lowercased()
+        let label = session.modelId?.trimmingCharacters(in: .whitespaces).isEmpty == false
+            ? session.modelId!
+            : session.providerSlug.lowercased()
         if let preview = session.preview, !preview.isEmpty {
-            return "\(provider) · \(preview)"
+            return "\(label) · \(preview)"
         }
-        return "\(provider) · working…"
+        return "\(label) · working…"
     }
 }
 

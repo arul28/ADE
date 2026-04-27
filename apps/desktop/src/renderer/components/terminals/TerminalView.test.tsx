@@ -147,6 +147,7 @@ import {
   disposeTerminalRuntimesForProjectChange,
   getTerminalRuntimeSnapshot,
 } from "./TerminalView";
+import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 
 function installWindowAde() {
   (window as any).ade = {
@@ -693,5 +694,41 @@ describe("TerminalView", () => {
     });
 
     expect(terminal?.write).toHaveBeenCalledWith("buffered while hidden\n");
+  });
+
+  it("redraws and force-fits a visible terminal when the Work surface is revealed", async () => {
+    render(<TerminalView ptyId="pty-revealed" sessionId="session-revealed" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      clearTextureAtlas: ReturnType<typeof vi.fn>;
+      refresh: ReturnType<typeof vi.fn>;
+      focus: ReturnType<typeof vi.fn>;
+      scrollToBottom: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const resizeSpy = (window as any).ade.pty.resize as ReturnType<typeof vi.fn>;
+    expect(terminal).toBeTruthy();
+
+    terminal?.clearTextureAtlas.mockClear();
+    terminal?.refresh.mockClear();
+    terminal?.focus.mockClear();
+    terminal?.scrollToBottom.mockClear();
+    resizeSpy.mockClear();
+    mockState.nextFitDims = { cols: 132, rows: 42 };
+
+    window.dispatchEvent(new Event(WORK_SURFACE_REVEALED_EVENT));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2);
+    });
+
+    expect(terminal?.clearTextureAtlas).toHaveBeenCalled();
+    expect(terminal?.refresh).toHaveBeenCalled();
+    expect(terminal?.focus).toHaveBeenCalled();
+    expect(terminal?.scrollToBottom).toHaveBeenCalled();
+    expect(resizeSpy).toHaveBeenLastCalledWith({
+      ptyId: "pty-revealed",
+      cols: 132,
+      rows: 42,
+    });
   });
 });

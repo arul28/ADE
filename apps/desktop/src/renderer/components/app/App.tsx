@@ -59,6 +59,7 @@ const CtoPage = React.lazy(() =>
 
 import { useAppStore } from "../../state/appStore";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
+import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 
 const StartupSplashScreen = (
   <div className="flex h-full w-full flex-col items-center justify-center relative overflow-hidden" style={{ background: "var(--color-bg)" }}>
@@ -190,6 +191,31 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const project = useAppStore((s) => s.project);
+  const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (!active) return;
+    const raf = window.requestAnimationFrame(() => {
+      dispatchWorkSurfaceRevealed();
+    });
+    const settleTimer = window.setTimeout(() => {
+      dispatchWorkSurfaceRevealed();
+    }, 120);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(settleTimer);
+    };
+  }, [active]);
+
+  React.useEffect(() => {
+    const node = workSurfaceRef.current;
+    if (!node) return;
+    if (active) {
+      node.removeAttribute("inert");
+    } else {
+      node.setAttribute("inert", "");
+    }
+  }, [active]);
 
   if (!projectHydrated) {
     return active ? GuardLoadingFallback : null;
@@ -202,8 +228,18 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
 
   return (
     <div
+      ref={workSurfaceRef}
       className="h-full min-h-0 w-full"
-      hidden={!active}
+      aria-hidden={!active}
+      style={!active
+        ? {
+          position: "absolute",
+          inset: 0,
+          zIndex: -1,
+          opacity: 0,
+          pointerEvents: "none",
+        }
+        : undefined}
     >
       <PageErrorBoundary>
         <React.Suspense fallback={LazyFallback}>

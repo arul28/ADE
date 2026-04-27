@@ -50,6 +50,7 @@ import {
   upsertProjectRow,
 } from "./services/projects/projectService";
 import { inspectRecentProject, type RecentProjectInspection } from "./services/projects/recentProjectSummary";
+import { resolveProjectIcon } from "./services/projects/projectIconResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
@@ -955,6 +956,10 @@ app.whenReady().then(async () => {
     });
     if (activeProjectRoot) {
       projectLastActivatedAt.set(activeProjectRoot, Date.now());
+      const activeCtx = projectContexts.get(activeProjectRoot);
+      if (activeCtx) {
+        persistRecentProject(activeCtx.project, { recordLastProject: false });
+      }
       try {
         adeArtifactAllowedDir =
           resolveAdeLayout(activeProjectRoot).artifactsDir;
@@ -3938,6 +3943,7 @@ app.whenReady().then(async () => {
       rootPath: ctx.project.rootPath,
       defaultBaseRef: ctx.project.baseRef,
       lastOpenedAt: recent?.summary.lastOpenedAt ?? null,
+      iconDataUrl: mobileProjectIconDataUrl(ctx.project.rootPath),
       laneCount,
       isAvailable: fs.existsSync(ctx.project.rootPath),
       isCached: false,
@@ -3953,11 +3959,28 @@ app.whenReady().then(async () => {
       rootPath: recent.summary.rootPath,
       defaultBaseRef: recent.defaultBaseRef,
       lastOpenedAt: recent.summary.lastOpenedAt,
+      iconDataUrl: mobileProjectIconDataUrl(recent.summary.rootPath),
       laneCount: recent.summary.laneCount ?? 0,
       isAvailable: recent.summary.exists,
       isCached: false,
       isOpen: false,
     };
+  }
+
+  function mobileProjectIconDataUrl(projectRoot: string): string | null {
+    try {
+      const icon = resolveProjectIcon(projectRoot);
+      if (!icon.sourcePath) return null;
+
+      const image = nativeImage.createFromPath(icon.sourcePath);
+      if (!image.isEmpty()) {
+        return image.resize({ width: 64, height: 64, quality: "best" }).toDataURL();
+      }
+
+      return icon.mimeType === "image/png" ? icon.dataUrl : null;
+    } catch {
+      return null;
+    }
   }
 
   async function listMobileSyncProjects(): Promise<{ projects: SyncMobileProjectSummary[] }> {
@@ -3971,9 +3994,11 @@ app.whenReady().then(async () => {
       byRoot.set(normalizeProjectRoot(recent.summary.rootPath), mobileProjectSummaryForRecent(recent));
     }
     const contextSummaries = await Promise.all(
-      [...projectContexts.entries()].map(async ([root, ctx]) =>
-        [root, await mobileProjectSummaryForContext(ctx, recentByRoot.get(root) ?? null)] as const
-      ),
+      [...projectContexts.entries()]
+        .filter(([root]) => recentByRoot.has(root))
+        .map(async ([root, ctx]) =>
+          [root, await mobileProjectSummaryForContext(ctx, recentByRoot.get(root) ?? null)] as const
+        ),
     );
     for (const [root, summary] of contextSummaries) {
       byRoot.set(root, summary);

@@ -121,18 +121,20 @@ describe("App Work route keep-alive", () => {
       expect(workLifecycle.mounts).toBe(1);
     });
     expect(workLifecycle.unmounts).toBe(0);
-    expect(workPage.closest("[hidden]")).toBeNull();
+    expect(workPage.closest("[aria-hidden='true']")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Open files" }));
     await screen.findByTestId("files-page");
 
-    expect(screen.getByTestId("work-page").closest("[hidden]")).not.toBeNull();
+    const parkedWorkSurface = screen.getByTestId("work-page").closest("[aria-hidden='true']");
+    expect(parkedWorkSurface).not.toBeNull();
+    expect(parkedWorkSurface?.hasAttribute("hidden")).toBe(false);
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Open work" }));
     await waitFor(() => {
-      expect(screen.getByTestId("work-page").closest("[hidden]")).toBeNull();
+      expect(screen.getByTestId("work-page").closest("[aria-hidden='true']")).toBeNull();
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);

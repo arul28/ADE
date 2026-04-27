@@ -10,7 +10,7 @@ import { AgentChatPane } from "../chat/AgentChatPane";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { LaneCombobox } from "./LaneCombobox";
 import { COLORS } from "../lanes/laneDesignTokens";
-import { buildTrackedCliStartupCommand, type CliProvider } from "./cliLaunch";
+import { buildTrackedCliLaunchCommand, type CliProvider } from "./cliLaunch";
 import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
@@ -23,6 +23,8 @@ type WorkStartSurfaceProps = {
     profile: "claude" | "codex" | "shell";
     title?: string;
     startupCommand?: string;
+    command?: string;
+    args?: string[];
     tracked?: boolean;
   }) => Promise<unknown>;
 };
@@ -103,15 +105,18 @@ export function WorkStartSurface({
     try {
       // Generate a session ID upfront for Claude so resume always works
       const sessionId = cliProvider === "claude" ? crypto.randomUUID() : undefined;
+      const launch = buildTrackedCliLaunchCommand({
+        provider: cliProvider,
+        permissionMode: cliPermissionMode,
+        sessionId,
+      });
       await onLaunchPtySession({
         laneId: selectedLaneId,
         profile: cliProvider,
         title: cliProvider === "claude" ? "Claude CLI" : "Codex CLI",
-        startupCommand: buildTrackedCliStartupCommand({
-          provider: cliProvider,
-          permissionMode: cliPermissionMode,
-          sessionId,
-        }),
+        startupCommand: launch.startupCommand,
+        command: launch.command,
+        args: launch.args,
       });
     } finally {
       setLaunchBusy(false);

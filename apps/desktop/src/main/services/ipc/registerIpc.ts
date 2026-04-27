@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from "electron";
 import { createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -13,6 +13,7 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
+import { resolveProjectIcon } from "../projects/projectIconResolver";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -258,6 +259,7 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  ProjectIcon,
   ProjectInfo,
   RecentProjectSummary,
   PtyCreateArgs,
@@ -1890,6 +1892,50 @@ export function registerIpc({
     return path.resolve(path.isAbsolute(inputPath) ? inputPath : path.join(projectRoot, inputPath));
   };
 
+  const resolveAllowedRendererPath = (rawPath: string): string => {
+    const raw = typeof rawPath === "string" ? rawPath.trim() : "";
+    if (!raw) throw new Error("Missing path.");
+    const ctx = getCtx();
+    const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
+    const allowedDirs = getAllowedDirs(getCtx);
+    const allowed = allowedDirs.some((dir) => {
+      try {
+        resolvePathWithinRoot(dir, normalized);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (!allowed) {
+      throw new Error("Path is outside allowed directories.");
+    }
+    return normalized;
+  };
+
+  const inferImageMimeType = (filePath: string): string => {
+    const ext = path.extname(filePath).toLowerCase();
+    switch (ext) {
+      case ".jpg":
+      case ".jpeg":
+        return "image/jpeg";
+      case ".gif":
+        return "image/gif";
+      case ".webp":
+        return "image/webp";
+      case ".bmp":
+        return "image/bmp";
+      case ".svg":
+        return "image/svg+xml";
+      case ".ico":
+        return "image/x-icon";
+      case ".tif":
+      case ".tiff":
+        return "image/tiff";
+      default:
+        return "image/png";
+    }
+  };
+
   ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
@@ -1938,6 +1984,31 @@ export function registerIpc({
   ipcMain.handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
     const text = typeof arg?.text === "string" ? arg.text : "";
     clipboard.writeText(text);
+  });
+
+  ipcMain.handle(IPC.appGetImageDataUrl, async (_event, arg: { path: string }): Promise<{ dataUrl: string }> => {
+    const filePath = resolveAllowedRendererPath(arg?.path);
+    const stat = fs.statSync(filePath);
+    const MAX_PREVIEW_BYTES = 10 * 1024 * 1024;
+    if (!stat.isFile()) {
+      throw new Error("Path is not a file.");
+    }
+    if (stat.size > MAX_PREVIEW_BYTES) {
+      throw new Error("Image preview must be 10 MB or smaller.");
+    }
+    const data = fs.readFileSync(filePath);
+    return {
+      dataUrl: `data:${inferImageMimeType(filePath)};base64,${data.toString("base64")}`,
+    };
+  });
+
+  ipcMain.handle(IPC.appWriteClipboardImage, async (_event, arg: { path: string }): Promise<void> => {
+    const filePath = resolveAllowedRendererPath(arg?.path);
+    const image = nativeImage.createFromPath(filePath);
+    if (image.isEmpty()) {
+      throw new Error("Unable to read image.");
+    }
+    clipboard.writeImage(image);
   });
 
   ipcMain.handle(
@@ -2144,6 +2215,15 @@ export function registerIpc({
       if (!rootPath) throw new Error("rootPath is required");
       return getProjectDetail(rootPath, { globalStatePath });
     }
+  );
+
+  ipcMain.handle(
+    IPC.projectResolveIcon,
+    async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) return { dataUrl: null, sourcePath: null, mimeType: null };
+      return resolveProjectIcon(rootPath);
+    },
   );
 
   ipcMain.handle(IPC.projectOpenAdeFolder, async (): Promise<void> => {

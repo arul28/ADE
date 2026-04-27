@@ -49,7 +49,6 @@ struct WorkRootSessionPresentation: Equatable {
   let displaySessions: [TerminalSessionSummary]
   let displaySessionIds: Set<String>
   let liveChatSessions: [TerminalSessionSummary]
-  let activitySessions: [TerminalSessionSummary]
   let sessionGroups: [WorkSessionGroup]
   let globalNeedsInputCount: Int
   let globalLiveSessionCount: Int
@@ -61,7 +60,6 @@ struct WorkRootSessionPresentation: Equatable {
     displaySessions: [],
     displaySessionIds: [],
     liveChatSessions: [],
-    activitySessions: [],
     sessionGroups: [],
     globalNeedsInputCount: 0,
     globalLiveSessionCount: 0,
@@ -128,11 +126,6 @@ func buildWorkRootSessionPresentation(
     }
   }
 
-  let activitySessions = workActivitySourceSessions(
-    displaySessions,
-    chatSummaries: chatSummaries,
-    archivedSessionIds: archivedSessionIds
-  )
   let sessionGroups = workSessionGroups(
     organization: organization,
     sessions: displaySessions,
@@ -146,7 +139,6 @@ func buildWorkRootSessionPresentation(
     displaySessions: displaySessions,
     displaySessionIds: Set(displaySessions.map(\.id)),
     liveChatSessions: liveChatSessions,
-    activitySessions: activitySessions,
     sessionGroups: sessionGroups,
     globalNeedsInputCount: globalNeedsInputCount,
     globalLiveSessionCount: globalLiveSessionCount,

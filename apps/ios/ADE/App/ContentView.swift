@@ -126,21 +126,29 @@ private struct ProjectHomeView: View {
     syncService.activeProject ?? syncService.projects.first
   }
 
-  private var connectionLabel: String {
+  private var attachedComputerLabel: String {
+    let trimmedHost = syncService.hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let host = (trimmedHost?.isEmpty == false) ? trimmedHost! : nil
     switch syncService.connectionState {
-    case .connected: return "Connected"
-    case .syncing: return "Syncing"
-    case .connecting: return "Connecting"
-    case .error: return "Connection error"
-    case .disconnected: return "Connect to computer"
+    case .connected, .syncing:
+      if let host { return "Attached to \(host)" }
+      return "Attached to computer"
+    case .connecting:
+      if let host { return "Connecting to \(host)…" }
+      return "Connecting…"
+    case .error:
+      if let host { return "Cannot reach \(host)" }
+      return "Connection error"
+    case .disconnected:
+      return "No computer attached"
     }
   }
 
-  private var connectionTint: Color {
+  private var attachedComputerTint: Color {
     switch syncService.connectionState {
     case .connected: return ADEColor.success
     case .syncing, .connecting: return ADEColor.warning
-    case .error, .disconnected: return ADEColor.danger
+    case .error, .disconnected: return ADEColor.textMuted
     }
   }
 
@@ -151,6 +159,7 @@ private struct ProjectHomeView: View {
         ScrollView {
           VStack(spacing: 30) {
             welcomeHero
+            attachedComputerBanner
             openProjectButton
             projectSection
           }
@@ -162,13 +171,9 @@ private struct ProjectHomeView: View {
         }
         .scrollIndicators(.hidden)
       }
-      .navigationTitle("ADE")
+      .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          connectionButton
-        }
-      }
+      .toolbar(.hidden, for: .navigationBar)
     }
   }
 
@@ -193,20 +198,47 @@ private struct ProjectHomeView: View {
   }
 
   private var welcomeHero: some View {
-    ZStack {
-      Text("ADE")
-        .font(.system(size: 78, weight: .heavy, design: .rounded))
-        .foregroundStyle(ADEColor.purpleAccent.opacity(0.58))
-        .offset(x: 9, y: 10)
-      Text("ADE")
-        .font(.system(size: 78, weight: .heavy, design: .rounded))
-        .foregroundStyle(ADEColor.textPrimary)
-        .shadow(color: ADEColor.purpleAccent.opacity(0.80), radius: 28, x: 0, y: 0)
-        .shadow(color: ADEColor.purpleAccent.opacity(0.55), radius: 2, x: 7, y: 8)
+    Image("BrandMark")
+      .resizable()
+      .renderingMode(.original)
+      .interpolation(.high)
+      .aspectRatio(contentMode: .fit)
+      .frame(maxWidth: 280)
+      .frame(height: 142)
+      .frame(maxWidth: .infinity)
+      .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24, x: 0, y: 0)
+      .accessibilityLabel("ADE")
+  }
+
+  private var attachedComputerBanner: some View {
+    Button {
+      syncService.settingsPresented = true
+    } label: {
+      HStack(spacing: 10) {
+        Circle()
+          .fill(attachedComputerTint)
+          .frame(width: 8, height: 8)
+        Image(systemName: "desktopcomputer")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        Text(attachedComputerLabel)
+          .font(.system(.footnote, design: .rounded).weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 10)
+      .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
+      .overlay(
+        Capsule().stroke(ADEColor.border.opacity(0.80), lineWidth: 1)
+      )
     }
-    .frame(height: 142)
-    .frame(maxWidth: .infinity)
-    .accessibilityLabel("ADE")
+    .buttonStyle(.plain)
+    .accessibilityLabel(attachedComputerLabel)
+    .accessibilityHint("Opens computer connection settings.")
   }
 
   private var openProjectButton: some View {
@@ -232,38 +264,9 @@ private struct ProjectHomeView: View {
     .accessibilityHint(primaryProject == nil ? "Opens computer connection settings." : "Opens the most recent project.")
   }
 
-  private var connectionButton: some View {
-    Button {
-      syncService.settingsPresented = true
-    } label: {
-      ZStack(alignment: .topTrailing) {
-        Image(systemName: "desktopcomputer")
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(connectionTint)
-          .frame(width: 36, height: 36)
-          .background(ADEColor.raisedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .stroke(ADEColor.border, lineWidth: 1)
-          )
-        Circle()
-          .fill(connectionTint)
-          .frame(width: 8, height: 8)
-          .overlay(
-            Circle()
-              .stroke(ADEColor.pageBackground, lineWidth: 2)
-          )
-          .offset(x: 1, y: -1)
-      }
-      .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-    .accessibilityLabel("Computer connection: \(connectionLabel)")
-    .accessibilityHint("Opens computer connection settings.")
-  }
-
   private var projectSection: some View {
     VStack(spacing: 14) {
-      Text("RECENT PROJECTS")
+      Text("DESKTOP TABS")
         .font(.system(.caption, design: .rounded).weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
         .tracking(0.8)
@@ -292,12 +295,12 @@ private struct ProjectHomeView: View {
       syncService.settingsPresented = true
     } label: {
       HStack(spacing: 12) {
-        ProjectHomeIcon(isActive: false)
+        ProjectHomeIcon(iconDataUrl: nil, isActive: false)
         VStack(alignment: .leading, spacing: 4) {
-          Text("Connect ADE desktop")
+          Text(emptyProjectsTitle)
             .font(.system(.subheadline, design: .rounded).weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text(syncService.hostName ?? "No recent projects yet")
+          Text(emptyProjectsSubtitle)
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
@@ -317,9 +320,27 @@ private struct ProjectHomeView: View {
     }
     .buttonStyle(.plain)
   }
+
+  private var emptyProjectsTitle: String {
+    switch syncService.connectionState {
+    case .connected, .syncing: return "No projects on desktop"
+    case .connecting: return "Connecting to desktop"
+    case .error, .disconnected: return "Connect ADE desktop"
+    }
+  }
+
+  private var emptyProjectsSubtitle: String {
+    switch syncService.connectionState {
+    case .connected, .syncing:
+      return "Open a project on \(syncService.hostName ?? "your computer")"
+    case .connecting, .error, .disconnected:
+      return syncService.hostName ?? "Pair a computer to see your tabs"
+    }
+  }
 }
 
 private struct ProjectHomeIcon: View {
+  let iconDataUrl: String?
   let isActive: Bool
 
   var body: some View {
@@ -327,11 +348,37 @@ private struct ProjectHomeIcon: View {
       RoundedRectangle(cornerRadius: 7, style: .continuous)
         .fill(isActive ? ADEColor.accent.opacity(0.16) : ADEColor.recessedBackground)
         .frame(width: 38, height: 38)
-      Image(systemName: "folder")
-        .font(.system(size: 16, weight: .semibold))
-        .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textSecondary)
+      if let image = projectHomeIconImage(from: iconDataUrl) {
+        Image(uiImage: image)
+          .resizable()
+          .interpolation(.high)
+          .aspectRatio(contentMode: .fit)
+          .frame(width: 24, height: 24)
+          .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+      } else {
+        Image(systemName: "folder")
+          .font(.system(size: 16, weight: .semibold))
+          .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textSecondary)
+      }
     }
   }
+}
+
+private let projectHomeIconImageCache = NSCache<NSString, UIImage>()
+
+private func projectHomeIconImage(from dataUrl: String?) -> UIImage? {
+  guard let dataUrl, !dataUrl.isEmpty else { return nil }
+  let cacheKey = dataUrl as NSString
+  if let cached = projectHomeIconImageCache.object(forKey: cacheKey) {
+    return cached
+  }
+  guard let commaIndex = dataUrl.firstIndex(of: ",") else { return nil }
+  let base64 = String(dataUrl[dataUrl.index(after: commaIndex)...])
+  guard let data = Data(base64Encoded: base64),
+        let image = UIImage(data: data)
+  else { return nil }
+  projectHomeIconImageCache.setObject(image, forKey: cacheKey)
+  return image
 }
 
 private struct ProjectHomeRow: View {
@@ -344,7 +391,7 @@ private struct ProjectHomeRow: View {
   var body: some View {
     Button(action: action) {
       HStack(alignment: .center, spacing: 12) {
-        ProjectHomeIcon(isActive: isActive)
+        ProjectHomeIcon(iconDataUrl: project.iconDataUrl, isActive: isActive)
 
         VStack(alignment: .leading, spacing: 4) {
           Text(project.displayName)
@@ -367,23 +414,14 @@ private struct ProjectHomeRow: View {
             .controlSize(.small)
         } else {
           VStack(alignment: .trailing, spacing: 6) {
-            if project.isOpen == false {
-              Text("Closed")
-                .font(.system(.caption2, design: .rounded).weight(.semibold))
-                .foregroundStyle(ADEColor.textMuted)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(ADEColor.textMuted.opacity(0.14), in: Capsule())
-            } else {
-              Text("\(project.laneCount) lane\(project.laneCount == 1 ? "" : "s")")
-                .font(.system(.caption2, design: .rounded).weight(.semibold))
-                .foregroundStyle(ADEColor.accent)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(ADEColor.accent.opacity(0.16), in: Capsule())
-            }
+            Text("\(project.laneCount) lane\(project.laneCount == 1 ? "" : "s")")
+              .font(.system(.caption2, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.accent)
+              .padding(.horizontal, 8)
+              .padding(.vertical, 4)
+              .background(ADEColor.accent.opacity(0.16), in: Capsule())
             if let lastOpened = projectHomeRelativeTimestamp(project.lastOpenedAt) {
-              Text(lastOpened)
+              Text("Last opened \(lastOpened)")
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(ADEColor.textMuted)
             }

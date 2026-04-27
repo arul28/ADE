@@ -111,6 +111,12 @@ export type RecentProjectSummary = {
   laneCount?: number;
 };
 
+export type ProjectIcon = {
+  dataUrl: string | null;
+  sourcePath: string | null;
+  mimeType: string | null;
+};
+
 export type ProviderMode = "guest" | "subscription";
 
 /** Universal model identifier, e.g. "anthropic/claude-sonnet-4-6" or "openai/gpt-5.3-codex" */

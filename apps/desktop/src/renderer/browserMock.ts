@@ -1657,6 +1657,8 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       openExternal: resolvedArg(undefined),
       revealPath: resolvedArg(undefined),
       writeClipboardText: resolvedArg(undefined),
+      getImageDataUrl: resolvedArg({ dataUrl: "" }),
+      writeClipboardImage: resolvedArg(undefined),
       openPathInEditor: resolvedArg(undefined),
     },
     project: {

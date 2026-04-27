@@ -15,7 +15,8 @@ struct LaneDetailScreen: View {
   @State private(set) var busyAction: String?
   @State var selectedDiffRequest: LaneDiffRequest?
   @State private var showStackGraph = false
-  @State private var managePresented = false
+  @State var managePresented = false
+  @State var showBranchPicker = false
   @State private var lanePullRequests: [PullRequestListItem] = []
   @State var commitMessage = ""
   @State var amendCommit = false
@@ -28,7 +29,6 @@ struct LaneDetailScreen: View {
   @State var commitDiffFiles: [String] = []
   @State var commitDiffSha = ""
   @State var commitDiffSubject = ""
-  @State private var commitMessageGenerationToken = UUID()
   @State var cachedCommitDiffFilesBySha: [String: [String]] = [:]
   @State var pendingGitConfirmation: LaneGitConfirmation?
   @State private var lastLaneDetailLocalReload = Date.distantPast
@@ -171,25 +171,14 @@ struct LaneDetailScreen: View {
         stagedCount: detail?.diffChanges?.staged.count ?? 0,
         unstagedCount: detail?.diffChanges?.unstaged.count ?? 0,
         canRunLiveActions: canRunLiveActions,
+        stagedFiles: detail?.diffChanges?.staged ?? [],
+        unstagedFiles: detail?.diffChanges?.unstaged ?? [],
         onGenerateMessage: {
-          let requestToken = UUID()
           let shouldAmend = amendCommit
-          commitMessageGenerationToken = requestToken
-          Task { @MainActor in
-            do {
-              let msg = try await syncService.generateCommitMessage(laneId: laneId, amend: shouldAmend)
-              guard commitMessageGenerationToken == requestToken, showCommitSheet else { return }
-              commitMessage = msg
-            } catch {
-              guard commitMessageGenerationToken == requestToken, showCommitSheet else { return }
-              ADEHaptics.error()
-              errorMessage = error.localizedDescription
-            }
-          }
+          return try await syncService.generateCommitMessage(laneId: laneId, amend: shouldAmend)
         },
         onCommit: {
           Task {
-            commitMessageGenerationToken = UUID()
             await performAction("commit") {
               try await syncService.commitLane(laneId: laneId, message: commitMessage, amend: amendCommit)
             }
@@ -201,14 +190,66 @@ struct LaneDetailScreen: View {
           }
         },
         onDismiss: {
-          commitMessageGenerationToken = UUID()
           showCommitSheet = false
+        },
+        onStageFile: { file in
+          Task { await performAction("stage file") { try await syncService.stageFile(laneId: laneId, path: file.path) } }
+        },
+        onUnstageFile: { file in
+          Task { await performAction("unstage file") { try await syncService.unstageFile(laneId: laneId, path: file.path) } }
+        },
+        onDiscardFile: { file in
+          pendingFileConfirmation = .discardUnstaged(file)
+        },
+        onRestoreStaged: { file in
+          pendingFileConfirmation = .restoreStaged(file)
+        },
+        onStageAll: {
+          let paths = (detail?.diffChanges?.unstaged ?? []).map(\.path)
+          guard !paths.isEmpty else { return }
+          Task { await performAction("stage all") { try await syncService.stageAll(laneId: laneId, paths: paths) } }
+        },
+        onUnstageAll: {
+          let paths = (detail?.diffChanges?.staged ?? []).map(\.path)
+          guard !paths.isEmpty else { return }
+          Task { await performAction("unstage all") { try await syncService.unstageAll(laneId: laneId, paths: paths) } }
+        },
+        onDiscardAllUnstaged: {
+          let files = detail?.diffChanges?.unstaged ?? []
+          guard !files.isEmpty else { return }
+          pendingFileConfirmation = .discardAllUnstaged(files)
+        },
+        onRestoreAllStaged: {
+          let files = detail?.diffChanges?.staged ?? []
+          guard !files.isEmpty else { return }
+          pendingFileConfirmation = .restoreAllStaged(files)
+        },
+        onOpenDiff: { file, isStaged in
+          selectedDiffRequest = LaneDiffRequest(
+            laneId: laneId,
+            path: file.path,
+            mode: isStaged ? "staged" : "unstaged",
+            compareRef: nil,
+            compareTo: nil,
+            title: (file.path as NSString).lastPathComponent
+          )
+        },
+        onOpenFiles: { file in
+          Task { await openFiles(path: file.path) }
         }
       )
       .presentationDetents([.medium, .large])
     }
+    .sheet(isPresented: $showBranchPicker) {
+      if let detail {
+        LaneBranchPickerSheet(
+          laneId: laneId,
+          branchRef: detail.lane.branchRef,
+          onComplete: { await loadDetail(refreshRemote: true) }
+        )
+      }
+    }
     .onDisappear {
-      commitMessageGenerationToken = UUID()
       syncService.releaseLaneOpen(laneId: laneId)
     }
   }
@@ -221,10 +262,32 @@ struct LaneDetailScreen: View {
       linkedPullRequests: lanePullRequests,
       transitionNamespace: transitionNamespace,
       transitionLaneId: laneId,
-      canManage: canRunLiveActions,
-      onManageTapped: { managePresented = true },
+      canRunLiveActions: canRunLiveActions,
       onStackTapped: { showStackGraph = true },
-      onOpenLinkedPullRequest: { pr in openPullRequest(pr) }
+      onOpenLinkedPullRequest: { pr in openPullRequest(pr) },
+      onPush: {
+        Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
+      },
+      onPull: {
+        Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
+      },
+      onFetch: {
+        Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } }
+      },
+      footer: {
+        if let detail {
+          VStack(spacing: 10) {
+            Rectangle()
+              .fill(ADEColor.border.opacity(0.18))
+              .frame(height: 0.5)
+              .padding(.top, 2)
+            gitStatusBanner(detail: detail)
+            if detail.lane.status.dirty || !(detail.diffChanges?.staged.isEmpty ?? true) {
+              commitCTAButton(detail: detail)
+            }
+          }
+        }
+      }
     )
   }
 

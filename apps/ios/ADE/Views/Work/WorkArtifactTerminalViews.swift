@@ -126,17 +126,22 @@ struct WorkArtifactView: View {
 /// streams output into a monospaced buffer, and offers a one-shot input bar
 /// that forwards typed lines back to the host as `terminal_input`.
 ///
-/// Future work (tracked in PTY foundation): swap the plain `Text` renderer
-/// for a real terminal emulator (SwiftTerm) so we can render ANSI colours,
-/// cursor movement, and alt-screen apps (vim, htop, fzf). Today we strip
-/// the most common SGR/CSI sequences so the buffer reads cleanly.
+/// Future work (tracked in PTY foundation): swap this replay-backed SwiftUI
+/// view for a real terminal emulator (SwiftTerm) so we can render alt-screen
+/// apps (vim, htop, fzf). Today we replay the common cursor/erase sequences
+/// and preserve SGR colours/bold so agent CLIs stay readable on iPhone.
 struct WorkTerminalSessionView: View {
   @EnvironmentObject var syncService: SyncService
   let session: TerminalSessionSummary
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
 
-  @State private var pendingCommand = ""
+  /// Termius-style char-by-char input: as the user types, each new character
+  /// is forwarded to the live PTY and the field is immediately cleared so the
+  /// PTY's own echo (rendered in the scrollback) is the only source of truth.
+  /// We never buffer a command on-device — `↵` and the keyboard return both
+  /// just send `\r` to the shell.
+  @State private var inputBuffer = ""
   @FocusState private var inputFocused: Bool
   @State private var sendingFeedback = 0
   @State private var lastSentTerminalSize: TerminalViewportSize?
@@ -149,12 +154,10 @@ struct WorkTerminalSessionView: View {
     workTerminalDisplay(raw: rawBuffer, fallback: nil)
   }
 
-  /// Best-effort ANSI/CSI strip so the plain `Text` renderer doesn't leak
-  /// raw escape sequences. Removes CSI (`ESC [ ...`), OSC (`ESC ] ... BEL`
-  /// or `ESC ] ... ESC \`), and bare cursor/reset escapes. Real emulators
-  /// will replace this once SwiftTerm lands.
-  private var renderedText: String {
-    workTerminalStripAnsi(terminalDisplay.text)
+  private var renderedText: AttributedString {
+    terminalDisplay.attributedText.characters.isEmpty
+      ? workTerminalPlainAttributedString("  ")
+      : terminalDisplay.attributedText
   }
 
   private var canSendInput: Bool {
@@ -163,54 +166,34 @@ struct WorkTerminalSessionView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      VStack(alignment: .leading, spacing: 10) {
-        WorkSessionHeader(
-          session: session,
-          chatSummary: nil,
-          transitionNamespace: transitionNamespace,
-          onOpenLane: onOpenLane
-        )
-
-        if terminalDisplay.truncated {
-          ADENoticeCard(
-            title: "Showing recent output",
-            message: "Older terminal output is hidden on iPhone so this session stays responsive.",
-            icon: "text.line.last.and.arrowtriangle.forward",
-            tint: ADEColor.accent,
-            actionTitle: nil,
-            action: nil
-          )
-        }
-      }
-      .padding(.horizontal, 16)
-      .padding(.top, 10)
-      .padding(.bottom, 8)
-      .background(.ultraThinMaterial)
+      laneStrip
 
       GeometryReader { proxy in
         ScrollView([.horizontal, .vertical]) {
-          Text(renderedText.isEmpty ? "  " : renderedText)
-            .font(.system(size: 12, weight: .regular, design: .monospaced))
-            .foregroundStyle(ADEColor.textPrimary)
+          Text(renderedText)
             .textSelection(.enabled)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .fixedSize(horizontal: true, vertical: false)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .background(ADEColor.recessedBackground.opacity(0.96))
+        .background(Color.black)
         .scrollIndicators(.visible)
-        .onAppear {
-          sendTerminalResize(for: proxy.size)
+        .overlay(alignment: .topTrailing) {
+          if terminalDisplay.truncated {
+            Image(systemName: "text.line.last.and.arrowtriangle.forward")
+              .font(.system(size: 10, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .padding(6)
+              .accessibilityLabel("Older output truncated for performance")
+          }
         }
-        .onChange(of: proxy.size) { _, newSize in
-          sendTerminalResize(for: newSize)
-        }
-        .onChange(of: syncService.connectionState) { _, _ in
-          sendTerminalResize(for: proxy.size)
-        }
+        .onAppear { sendTerminalResize(for: proxy.size) }
+        .onChange(of: proxy.size) { _, newSize in sendTerminalResize(for: newSize) }
+        .onChange(of: syncService.connectionState) { _, _ in sendTerminalResize(for: proxy.size) }
       }
 
+      terminalKeyBar
       terminalInputBar
     }
     .adeScreenBackground()
@@ -221,87 +204,151 @@ struct WorkTerminalSessionView: View {
     }
   }
 
-  /// Bottom input bar. Sends the typed text plus a newline so shells run it
-  /// as a command. `^C` button sends raw 0x03 to interrupt the foreground
-  /// process. Not a full keyboard yet — the long-term plan is to host a
-  /// SwiftTerm view that captures every keystroke directly.
+  /// Slim, transparent context strip — no material backplate, no padding bloat.
+  /// Keeps the lane + relative time visible without stealing rows from the
+  /// terminal scrollback.
+  private var laneStrip: some View {
+    HStack(spacing: 8) {
+      WorkSessionHeader(
+        session: session,
+        chatSummary: nil,
+        transitionNamespace: transitionNamespace,
+        onOpenLane: onOpenLane
+      )
+    }
+    .padding(.horizontal, 12)
+    .padding(.top, 4)
+    .padding(.bottom, 6)
+  }
+
+  /// Termius-style modifier/key strip. Horizontal scroll so we can grow it
+  /// without crowding the input row. Tapping any chip sends the matching
+  /// raw bytes through the existing terminal input channel.
+  private var terminalKeyBar: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 6) {
+        keyChip("Esc", send: "\u{1B}")
+        keyChip("Tab", send: "\t")
+        keyChip("↑", send: "\u{1B}[A")
+        keyChip("↓", send: "\u{1B}[B")
+        keyChip("←", send: "\u{1B}[D")
+        keyChip("→", send: "\u{1B}[C")
+        keyChip("^C", send: "\u{03}", tint: ADEColor.danger)
+        keyChip("^D", send: "\u{04}")
+        keyChip("^Z", send: "\u{1A}")
+        keyChip("^L", send: "\u{0C}")
+        keyChip("^R", send: "\u{12}")
+        keyChip("^U", send: "\u{15}")
+        keyChip("^A", send: "\u{01}")
+        keyChip("^E", send: "\u{05}")
+        keyChip("^K", send: "\u{0B}")
+        keyChip("|", send: "|")
+        keyChip("~", send: "~")
+        keyChip("/", send: "/")
+        keyChip("-", send: "-")
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+    }
+    .background(ADEColor.recessedBackground.opacity(0.85))
+    .overlay(alignment: .top) {
+      Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5)
+    }
+    .disabled(!canSendInput)
+    .opacity(canSendInput ? 1 : 0.4)
+  }
+
+  @ViewBuilder
+  private func keyChip(_ label: String, send data: String, tint: Color? = nil) -> some View {
+    Button {
+      syncService.sendTerminalInput(sessionId: session.id, data: data)
+      sendingFeedback &+= 1
+    } label: {
+      Text(label)
+        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+        .foregroundStyle(tint ?? ADEColor.textPrimary)
+        .frame(minWidth: 32, minHeight: 28)
+        .padding(.horizontal, 8)
+        .background(
+          (tint ?? ADEColor.textPrimary).opacity(tint == nil ? 0.06 : 0.12),
+          in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .stroke((tint ?? ADEColor.border).opacity(0.28), lineWidth: 0.6)
+        )
+    }
+    .buttonStyle(.plain)
+  }
+
+  /// Slim composer. Each typed character streams straight to the PTY and we
+  /// then clear the field so it acts as a keyboard mount, not a buffer. The
+  /// `↵` button (and keyboard Return) explicitly send `\r` so the remote
+  /// shell submits — works for plain shells AND for TUI prompts that read
+  /// input character-by-character.
   private var terminalInputBar: some View {
     HStack(spacing: 8) {
-      Button {
-        // Send Ctrl-C (0x03) so users can interrupt a runaway process from
-        // the phone without having to switch back to the desktop.
-        syncService.sendTerminalInput(sessionId: session.id, data: "\u{03}")
-        sendingFeedback &+= 1
-      } label: {
-        Text("^C")
-          .font(.system(size: 11, weight: .bold, design: .monospaced))
-          .foregroundStyle(ADEColor.danger)
-          .frame(width: 36, height: 32)
-      }
-      .buttonStyle(.plain)
-      .background(ADEColor.danger.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 8))
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .stroke(ADEColor.danger.opacity(0.32), lineWidth: 0.6)
-      )
-      .accessibilityLabel("Send Ctrl-C")
-      .disabled(!canSendInput)
-
-      TextField("Send command…", text: $pendingCommand)
+      TextField("Type to send keystrokes", text: $inputBuffer)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
-        .submitLabel(.send)
+        .submitLabel(.return)
         .focused($inputFocused)
         .font(.system(size: 13, design: .monospaced))
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 7)
         .frame(minHeight: 32)
         .frame(maxWidth: .infinity)
-        .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .glassEffect(in: .rect(cornerRadius: 10))
+        .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
+          RoundedRectangle(cornerRadius: 9, style: .continuous)
             .stroke(ADEColor.glassBorder, lineWidth: 0.5)
         )
-        .onSubmit { submitCommand() }
+        .onChange(of: inputBuffer) { _, newValue in
+          guard !newValue.isEmpty, canSendInput else {
+            if !newValue.isEmpty { inputBuffer = "" }
+            return
+          }
+          syncService.sendTerminalInput(sessionId: session.id, data: newValue)
+          inputBuffer = ""
+        }
+        .onSubmit { submitReturn() }
         .disabled(!canSendInput)
 
-      Button(action: submitCommand) {
-        Image(systemName: "paperplane.fill")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(canSendInput && !pendingCommand.isEmpty ? ADEColor.accent : ADEColor.textMuted)
-          .frame(width: 32, height: 32)
+      Button(action: submitReturn) {
+        Image(systemName: "return")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(canSendInput ? ADEColor.accent : ADEColor.textMuted)
+          .frame(width: 36, height: 32)
       }
       .buttonStyle(.plain)
       .background(
-        (canSendInput && !pendingCommand.isEmpty ? ADEColor.accent.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5)),
-        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        (canSendInput ? ADEColor.accent.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5)),
+        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
       )
-      .glassEffect(in: .rect(cornerRadius: 10))
       .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
           .stroke(ADEColor.glassBorder, lineWidth: 0.5)
       )
-      .accessibilityLabel("Send command")
-      .disabled(!canSendInput || pendingCommand.isEmpty)
+      .accessibilityLabel("Send Return")
+      .disabled(!canSendInput)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
     .background(.ultraThinMaterial)
     .overlay(alignment: .top) {
-      Rectangle()
-        .fill(ADEColor.glassBorder)
-        .frame(height: 0.5)
+      Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5)
     }
   }
 
-  private func submitCommand() {
-    let trimmed = pendingCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, canSendInput else { return }
-    syncService.sendTerminalInput(sessionId: session.id, data: trimmed + "\r")
-    pendingCommand = ""
+  private func submitReturn() {
+    guard canSendInput else { return }
+    if !inputBuffer.isEmpty {
+      syncService.sendTerminalInput(sessionId: session.id, data: inputBuffer)
+      inputBuffer = ""
+    }
+    syncService.sendTerminalInput(sessionId: session.id, data: "\r")
     sendingFeedback &+= 1
+    inputFocused = true
   }
 
   private func sendTerminalResize(for size: CGSize) {
@@ -325,33 +372,6 @@ private struct TerminalViewportSize: Equatable {
     cols = max(20, min(240, Int(floor(contentWidth / 7.2))))
     rows = max(4, min(80, Int(floor(contentHeight / 15.0))))
   }
-}
-
-/// Strip the ANSI escape sequences most commonly emitted by interactive
-/// CLIs (colours, cursor moves, OSC titles, simple alt-screen toggles) so a
-/// plain `Text` renderer reads cleanly. This is intentionally narrow: a
-/// real terminal emulator (SwiftTerm) is the right home for full handling.
-func workTerminalStripAnsi(_ input: String) -> String {
-  guard !input.isEmpty else { return input }
-  // CSI: ESC [ ... letter
-  var output = input.replacingOccurrences(
-    of: "\u{1B}\\[[0-?]*[ -/]*[@-~]",
-    with: "",
-    options: .regularExpression
-  )
-  // OSC: ESC ] ... BEL  or  ESC ] ... ESC \
-  output = output.replacingOccurrences(
-    of: "\u{1B}\\][^\u{07}]*?(?:\u{07}|\u{1B}\\\\)",
-    with: "",
-    options: .regularExpression
-  )
-  // Bare single-char escapes (cursor save/restore etc.)
-  output = output.replacingOccurrences(
-    of: "\u{1B}[=>78cDEHMNOP\\\\]",
-    with: "",
-    options: .regularExpression
-  )
-  return output
 }
 
 struct WorkFullscreenImageView: View {

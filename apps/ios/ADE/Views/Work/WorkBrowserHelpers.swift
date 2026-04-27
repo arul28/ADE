@@ -83,18 +83,6 @@ func workFilteredSessions(
     .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
 }
 
-func workActivitySourceSessions(
-  _ displaySessions: [TerminalSessionSummary],
-  chatSummaries: [String: AgentChatSessionSummary],
-  archivedSessionIds: Set<String>
-) -> [TerminalSessionSummary] {
-  displaySessions.filter { session in
-    !archivedSessionIds.contains(session.id)
-      && isChatSession(session)
-      && normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]) != "ended"
-  }
-}
-
 func workRunningBannerLiveCounts(_ liveSessions: [TerminalSessionSummary]) -> (chat: Int, terminal: Int) {
   let chatCount = liveSessions.filter(isChatSession).count
   return (chat: chatCount, terminal: max(0, liveSessions.count - chatCount))

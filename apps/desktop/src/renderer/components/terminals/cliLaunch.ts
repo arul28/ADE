@@ -3,8 +3,15 @@ import type {
   TerminalResumeMetadata,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { ADE_CLI_AGENT_GUIDANCE, ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { commandArrayToLine } from "../../lib/shell";
 
 export type CliProvider = "claude" | "codex";
+export type TrackedCliLaunchCommand = {
+  command: CliProvider;
+  args: string[];
+  startupCommand: string;
+};
 
 export function withCodexNoAltScreen(command: string): string {
   const trimmed = command.trim();
@@ -19,41 +26,68 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   return provider === "codex" ? withCodexNoAltScreen("codex") : "claude";
 }
 
+function workTabCodexPreamblePrompt(): string {
+  return [
+    "ADE session guidance. Treat this as operating guidance for the CLI session, keep it in mind for future user messages, and wait for the user's next instruction before taking action.",
+    "",
+    ADE_CLI_INLINE_GUIDANCE,
+  ].join("\n");
+}
+
 export function buildTrackedCliStartupCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
 }): string {
+  return buildTrackedCliLaunchCommand(args).startupCommand;
+}
+
+export function buildTrackedCliLaunchCommand(args: {
+  provider: CliProvider;
+  permissionMode: AgentChatPermissionMode;
+  /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
+  sessionId?: string;
+}): TrackedCliLaunchCommand {
   if (args.provider === "claude") {
-    const parts = ["claude"];
+    const commandArgs: string[] = [];
     // Inject --session-id so we know the Claude session ID upfront for resume
     if (args.sessionId) {
-      parts.push("--session-id", args.sessionId);
+      commandArgs.push("--session-id", args.sessionId);
     }
+    commandArgs.push("--append-system-prompt", ADE_CLI_AGENT_GUIDANCE);
     if (args.permissionMode === "full-auto") {
-      parts.push("--dangerously-skip-permissions");
+      commandArgs.push("--dangerously-skip-permissions");
     } else if (args.permissionMode === "edit") {
-      parts.push("--permission-mode", "acceptEdits");
+      commandArgs.push("--permission-mode", "acceptEdits");
     } else if (args.permissionMode === "default") {
-      parts.push("--permission-mode", "default");
+      commandArgs.push("--permission-mode", "default");
     } else {
-      parts.push("--permission-mode", "plan");
+      commandArgs.push("--permission-mode", "plan");
     }
-    return parts.join(" ");
+    return {
+      command: "claude",
+      args: commandArgs,
+      startupCommand: commandArrayToLine(["claude", ...commandArgs]),
+    };
   }
 
-  const parts = [withCodexNoAltScreen("codex")];
+  const commandArgs: string[] = ["--no-alt-screen"];
   if (args.permissionMode === "full-auto") {
-    parts.push("--dangerously-bypass-approvals-and-sandbox");
+    commandArgs.push("--dangerously-bypass-approvals-and-sandbox");
   } else if (args.permissionMode === "default") {
-    parts.push("--full-auto");
+    commandArgs.push("--full-auto");
   } else if (args.permissionMode !== "config-toml") {
     const approvalPolicy = args.permissionMode === "edit" ? "untrusted" : "on-request";
     const sandboxMode = args.permissionMode === "edit" ? "workspace-write" : "read-only";
-    parts.push("--sandbox", sandboxMode, "--ask-for-approval", approvalPolicy);
+    commandArgs.push("--sandbox", sandboxMode, "--ask-for-approval", approvalPolicy);
   }
-  return parts.join(" ");
+  commandArgs.push(workTabCodexPreamblePrompt());
+  return {
+    command: "codex",
+    args: commandArgs,
+    startupCommand: commandArrayToLine(["codex", ...commandArgs]),
+  };
 }
 
 function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | null | undefined): string[] {

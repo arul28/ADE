@@ -40,12 +40,6 @@ struct WorkRootScreen: View {
   @State var sessionPresentation = WorkRootSessionPresentation.empty
   @State var sessionPresentationRebuildTask: Task<Void, Never>?
   @State var sessionPresentationRebuildGeneration = 0
-  /// Memoizes parsed transcripts for the Activity feed keyed by session id + cheap buffer fingerprint,
-  /// so `localStateRevision` bumps during CRDT sync do not re-parse every terminal buffer in `body`.
-  @State var activityTranscriptCache: [String: WorkActivityTranscriptCacheEntry] = [:]
-  @State var activityFeedEntries: [WorkAgentActivity] = []
-  @State var activityFeedRebuildTask: Task<Void, Never>?
-  @State var activityFeedRebuildGeneration = 0
   @State var errorMessage: String?
   @State var path = NavigationPath()
   @State var searchText = ""
@@ -116,10 +110,6 @@ struct WorkRootScreen: View {
     sessionPresentation.liveChatSessions
   }
 
-  var activitySessions: [TerminalSessionSummary] {
-    sessionPresentation.activitySessions
-  }
-
   var hasActiveFilters: Bool {
     selectedStatus != .all
       || selectedLaneId != "all"
@@ -181,10 +171,6 @@ struct WorkRootScreen: View {
     sessionPresentation.sessionGroups
   }
 
-  var activityFeed: [WorkAgentActivity] {
-    activityFeedEntries
-  }
-
   var isWorkRootActive: Bool {
     isTabActive && path.isEmpty
   }
@@ -205,23 +191,6 @@ struct WorkRootScreen: View {
 
   var workProjectionReloadKey: Int? {
     isWorkRootActive ? syncService.localStateRevision : nil
-  }
-
-  /// Composite fingerprint that changes only when the Activity feed actually needs to rebuild.
-  /// Built from the activity session ids, their streamed transcript counts, and a cheap buffer
-  /// fingerprint so typical `localStateRevision` bumps do not trigger a rebuild.
-  var activityFeedFingerprint: String {
-    guard isWorkRootActive else { return "paused" }
-    var parts: [String] = []
-    parts.reserveCapacity(activitySessions.count)
-    for session in activitySessions {
-      let streamedCount = transcriptCache[session.id]?.count ?? -1
-      let buffer = syncService.terminalBuffers[session.id] ?? ""
-      let bufferFingerprint = workActivityBufferFingerprint(buffer)
-      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-      parts.append("\(session.id):\(streamedCount):\(bufferFingerprint):\(status)")
-    }
-    return parts.joined(separator: "|")
   }
 
   var body: some View {
@@ -271,26 +240,6 @@ struct WorkRootScreen: View {
           .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
-
-          if !activityFeed.isEmpty {
-            Section {
-              ForEach(Array(activityFeed.enumerated()), id: \.element.id) { index, activity in
-                WorkActivityRow(activity: activity, animatesPulse: index == 0)
-                  .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                  .listRowBackground(Color.clear)
-                  .listRowSeparator(.hidden)
-              }
-            } header: {
-              Text("Activity")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ADEColor.textMuted)
-                .textCase(.uppercase)
-                .tracking(0.6)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 4)
-                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 0, trailing: 0))
-            }
-          }
 
           if let errorMessage,
             workStatus.phase == .ready,
@@ -506,13 +455,6 @@ struct WorkRootScreen: View {
       .task(id: pollingKey) {
         await pollRunningChats()
       }
-      .task(id: activityFeedFingerprint) {
-        guard isWorkRootActive else {
-          cancelActivityFeedRebuild()
-          return
-        }
-        rebuildActivityFeed()
-      }
       .navigationDestination(for: WorkSessionRoute.self) { route in
         let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
           ? (ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil)
@@ -539,6 +481,7 @@ struct WorkRootScreen: View {
             let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)
             optimisticSessions[sessionId] = makeOptimisticSession(for: summary)
             chatSummaries[sessionId] = summary
+            syncService.cacheChatSummary(summary)
             selectedStatus = .all
             selectedLaneId = summary.laneId
             selectedSessionTransitionId = nil

@@ -7,6 +7,7 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  ProjectIcon,
 } from "../shared/types";
 import type {
   BatchAssessmentResult,
@@ -619,6 +620,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.appOpenPath, { path }),
     writeClipboardText: async (text: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
+    getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
+      ipcRenderer.invoke(IPC.appGetImageDataUrl, { path }),
+    writeClipboardImage: async (path: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.appWriteClipboardImage, { path }),
     openPathInEditor: async (args: {
       rootPath: string;
       relativePath?: string;
@@ -640,6 +645,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.projectBrowseDirectories, args),
     getDetail: async (rootPath: string): Promise<ProjectDetail> =>
       ipcRenderer.invoke(IPC.projectGetDetail, { rootPath }),
+    resolveIcon: async (rootPath: string): Promise<ProjectIcon> =>
+      ipcRenderer.invoke(IPC.projectResolveIcon, { rootPath }),
     getDroppedPath: (file: File): string => {
       try {
         return webUtils.getPathForFile(file);

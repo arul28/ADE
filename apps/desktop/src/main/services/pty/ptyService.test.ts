@@ -447,6 +447,38 @@ describe("ptyService", () => {
       expect(mockPty.write).not.toHaveBeenCalled();
     });
 
+    it("falls back to typing startupCommand in a shell when direct command spawn fails", async () => {
+      const { service, mockPty, loadPty } = createHarness();
+      const spawn = vi.fn((command: string) => {
+        if (command === "codex") throw new Error("ENOENT");
+        return mockPty;
+      });
+      loadPty.mockImplementationOnce(() => ({ spawn: spawn as any }));
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+        args: ["--no-alt-screen", "ADE session guidance"],
+        startupCommand: "codex --no-alt-screen \"ADE session guidance\"",
+      });
+
+      expect(spawn).toHaveBeenCalledWith(
+        "codex",
+        ["--no-alt-screen", "ADE session guidance"],
+        expect.any(Object),
+      );
+      expect(spawn).toHaveBeenCalledWith(
+        expect.stringMatching(/(?:zsh|bash|sh|powershell|cmd)(?:\.exe)?$/),
+        expect.any(Array),
+        expect.any(Object),
+      );
+      expect(mockPty.write).toHaveBeenCalledWith("codex --no-alt-screen \"ADE session guidance\"\r");
+    });
+
     it("wraps direct Windows command shims through cmd.exe", async () => {
       setPlatform("win32");
       const harness = createHarness();
@@ -1157,8 +1189,8 @@ describe("ptyService", () => {
         const homedir = os.homedir();
         const sessionsBase = path.join(homedir, ".codex", "sessions");
         const dirPath = path.join(sessionsBase, "2026", "04", "15");
-        const filePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-storage.jsonl");
-        const startedAt = "2026-04-15T21:30:00.000Z";
+        const filePath = path.join(dirPath, "rollout-2026-04-15T22-00-01-thread-storage.jsonl");
+        const startedAt = "2026-04-15T22:00:01.000Z";
         const oversizedFirstLine = JSON.stringify({
           timestamp: startedAt,
           type: "session_meta",
@@ -1496,7 +1528,7 @@ describe("ptyService", () => {
   });
 
   describe("ensureResumeTargets", () => {
-    it("calls sessionService.setResumeCommand for each session whose Codex JSONL matches", async () => {
+    it("does not assign Codex storage targets during passive session-list hydration", async () => {
       vi.useFakeTimers();
       try {
         const fakeNow = new Date("2026-04-15T22:00:00.000Z");
@@ -1539,7 +1571,64 @@ describe("ptyService", () => {
         // allow any microtasks to settle
         await vi.advanceTimersByTimeAsync(0);
 
-        expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-1", "codex resume thread-abc");
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith("session-1", "codex resume thread-abc");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("captures a fresh Codex storage target for a new launch without choosing older same-cwd sessions", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+
+        const homedir = os.homedir();
+        const sessionsBase = path.join(homedir, ".codex", "sessions");
+        const dirPath = path.join(sessionsBase, "2026", "04", "15");
+        const stalePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-stale.jsonl");
+        const freshPath = path.join(dirPath, "rollout-2026-04-15T22-00-01-thread-fresh.jsonl");
+        const staleFirstLine = JSON.stringify({
+          timestamp: "2026-04-15T21:30:00.000Z",
+          type: "session_meta",
+          payload: {
+            id: "thread-stale",
+            timestamp: "2026-04-15T21:30:00.000Z",
+            cwd: "/tmp/test-worktree",
+          },
+        });
+        const freshFirstLine = JSON.stringify({
+          timestamp: "2026-04-15T22:00:01.000Z",
+          type: "session_meta",
+          payload: {
+            id: "thread-fresh",
+            timestamp: "2026-04-15T22:00:01.000Z",
+            cwd: "/tmp/test-worktree",
+          },
+        });
+
+        mocks.existsSyncResults.set(sessionsBase, true);
+        mocks.existsSyncResults.set(dirPath, true);
+        mocks.dirEntries.set(dirPath, [path.basename(stalePath), path.basename(freshPath)]);
+        mocks.fileContents.set(stalePath, `${staleFirstLine}\n`);
+        mocks.fileContents.set(freshPath, `${freshFirstLine}\n{"timestamp":"2026-04-15T22:00:01.500Z","type":"event_msg","payload":{"type":"user_message","message":"ADE session guidance"}}\n`);
+        mocks.fileStats.set(stalePath, { size: staleFirstLine.length, mtimeMs: fakeNow.getTime() - 30 * 60_000, isDirectory: false });
+        mocks.fileStats.set(freshPath, { size: freshFirstLine.length, mtimeMs: fakeNow.getTime() + 1_000, isDirectory: false });
+
+        const { service, sessionService } = createHarness();
+        const created = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          startupCommand: "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox",
+        });
+
+        await vi.advanceTimersByTimeAsync(1_500);
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(created.sessionId, "codex resume thread-fresh");
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(created.sessionId, "codex resume thread-stale");
       } finally {
         vi.useRealTimers();
       }

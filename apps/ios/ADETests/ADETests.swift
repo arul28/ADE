@@ -2,6 +2,16 @@ import XCTest
 import SQLite3
 @testable import ADE
 
+/// Default `lastActivityAt`/`startedAt` for fixture sessions. Returns "now"
+/// in ISO 8601 so the >7-day staleness guard in
+/// `normalizedWorkChatSessionStatus` doesn't reclassify default fixtures as
+/// "ended".
+private func recentIso8601Fixture() -> String {
+  let f = ISO8601DateFormatter()
+  f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return f.string(from: Date())
+}
+
 final class ADETests: XCTestCase {
   func testTerminalDisplayReplaysCarriageReturnProgressUpdates() {
     let output = sanitizeTerminalOutputForDisplay("Downloading 10%\rDownloading 80%\rDownloading 100%\nDone")
@@ -25,6 +35,17 @@ final class ADETests: XCTestCase {
     let output = sanitizeTerminalOutputForDisplay("\u{001B}[31merr\u{001B}[0mor\u{0008}k")
 
     XCTAssertEqual(output, "errok")
+  }
+
+  func testTerminalDisplayPreservesAnsiRunsForRendering() {
+    let display = workTerminalDisplay(
+      raw: "\u{001B}[31mError\u{001B}[0m plain \u{001B}[32;1mOK\u{001B}[0m",
+      fallback: nil
+    )
+
+    XCTAssertEqual(display.text, "Error plain OK")
+    XCTAssertEqual(String(display.attributedText.characters), "Error plain OK")
+    XCTAssertGreaterThan(Array(display.attributedText.runs).count, 1)
   }
 
   func testTerminalDisplayPreservesIndentedOutput() {
@@ -347,6 +368,41 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncAutomaticReconnectDoesNotTreatGenericTailnetShortcutAsEverySavedHost() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let profile = HostConnectionProfile(
+      hostIdentity: "host-1",
+      hostName: "Mac Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone-1",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "host-1",
+      lastSuccessfulAddress: "192.168.1.8",
+      savedAddressCandidates: ["192.168.1.8", "100.75.20.63"],
+      discoveredLanAddresses: ["192.168.1.8"],
+      tailscaleAddress: "100.75.20.63"
+    )
+    service.applyDiscoveredHostsForTesting([
+      DiscoveredSyncHost(
+        id: "tailnet-ade-sync:8787",
+        serviceName: "ADE Tailnet ade-sync",
+        hostName: "ade-sync",
+        hostIdentity: nil,
+        port: 8787,
+        addresses: [],
+        tailscaleAddress: "ade-sync",
+        lastResolvedAt: "2026-04-23T00:00:01.000Z"
+      ),
+    ])
+
+    XCTAssertEqual(
+      service.automaticReconnectAddressesForTesting(profile),
+      ["100.75.20.63"]
+    )
+  }
+
+  @MainActor
   func testSyncPlaintextWebSocketAllowlistIncludesTrustedTailscaleRoutesOnly() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
@@ -448,6 +504,20 @@ final class ADETests: XCTestCase {
       userInfo: [NSLocalizedDescriptionKey: "Authentication failed.", "ADEErrorCode": "auth_failed"]
     )
     XCTAssertEqual(SyncUserFacingError.message(for: authError), "This phone is no longer paired with the host. Pair again from Settings.")
+
+    let ambiguousTailnetAuthError = NSError(
+      domain: "ADE",
+      code: 3,
+      userInfo: [
+        NSLocalizedDescriptionKey: "Authentication failed.",
+        "ADEErrorCode": "auth_failed",
+        "ADEAmbiguousRouteAuthFailure": true,
+      ]
+    )
+    XCTAssertEqual(
+      SyncUserFacingError.message(for: ambiguousTailnetAuthError),
+      "Reached an ADE host over Tailnet, but it did not match this saved computer. ADE kept the pairing and will keep trying other routes."
+    )
 
     let invalidHelloError = NSError(
       domain: "ADE",
@@ -3641,25 +3711,12 @@ final class ADETests: XCTestCase {
 
     let transcript = parseWorkChatTranscript(raw)
     let toolCards = buildWorkToolCards(from: transcript)
-    let activeAgents = deriveWorkAgentActivities(
-      from: transcript,
-      session: WorkAgentActivityContext(
-        sessionId: "chat-1",
-        title: "Claude chat",
-        laneName: "feature/work",
-        status: "running",
-        startedAt: "2026-03-25T00:00:00.000Z"
-      )
-    )
 
     XCTAssertEqual(transcript.count, 6)
     XCTAssertEqual(toolCards.count, 1)
     XCTAssertEqual(toolCards.first?.toolName, "functions.Read")
     XCTAssertEqual(toolCards.first?.status, .completed)
     XCTAssertTrue(toolCards.first?.resultText?.contains("ADE") == true)
-    XCTAssertEqual(activeAgents.count, 1)
-    XCTAssertEqual(activeAgents.first?.agentName, "Docs helper")
-    XCTAssertEqual(activeAgents.first?.toolName, "functions.Read")
   }
 
   func testWorkChatTranscriptUsesMessageIdToSplitAssistantMessages() {
@@ -4785,68 +4842,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(resolved, "apps/ios/ADE/Helpers/WorkView.swift")
   }
 
-  func testWorkActivitySourceSessionsReuseFilteredWorkCollection() {
-    let lane1Chat = makeTerminalSessionSummary(
-      id: "chat-1",
-      laneId: "lane-1",
-      laneName: "feature/work",
-      toolType: "codex-chat",
-      title: "Fix Work root"
-    )
-    let lane2Chat = makeTerminalSessionSummary(
-      id: "chat-2",
-      laneId: "lane-2",
-      laneName: "release",
-      toolType: "claude-chat",
-      title: "Deploy release"
-    )
-    let lane2Terminal = makeTerminalSessionSummary(
-      id: "terminal-1",
-      laneId: "lane-2",
-      laneName: "release",
-      toolType: "shell",
-      runtimeState: "idle",
-      title: "Deploy logs",
-      lastOutputPreview: "Tail the deploy terminal output"
-    )
-
-    let chatSummaries = [
-      "chat-1": makeAgentChatSessionSummary(
-        sessionId: "chat-1",
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-        title: "Fix Work root",
-        status: "active"
-      ),
-      "chat-2": makeAgentChatSessionSummary(
-        sessionId: "chat-2",
-        laneId: "lane-2",
-        provider: "claude",
-        model: "sonnet",
-        title: "Deploy release",
-        status: "active"
-      ),
-    ]
-
-    let filtered = workFilteredSessions(
-      [lane1Chat, lane2Terminal, lane2Chat],
-      chatSummaries: chatSummaries,
-      archivedSessionIds: [],
-      selectedStatus: .running,
-      selectedLaneId: "lane-2",
-      searchText: "deploy"
-    )
-    let activitySessions = workActivitySourceSessions(
-      filtered,
-      chatSummaries: chatSummaries,
-      archivedSessionIds: []
-    )
-
-    XCTAssertEqual(filtered.map(\.id), ["chat-2", "terminal-1"])
-    XCTAssertEqual(activitySessions.map(\.id), ["chat-2"])
-  }
-
   func testWorkRunningBannerCopyDescribesMixedLiveSessions() {
     XCTAssertEqual(
       workRunningBannerTitle(liveChatCount: 1, liveTerminalCount: 1, attentionCount: 1),
@@ -5222,31 +5217,6 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.appendingPathComponent("ade-ios-local.sqlite.phase6-backup").path))
   }
 
-  func testWorkActivityBufferFingerprintStaysStableForIdenticalBuffers() {
-    let bufferA = "hello\nworld\nrunning tool"
-    let bufferB = "hello\nworld\nrunning tool"
-    XCTAssertEqual(workActivityBufferFingerprint(bufferA), workActivityBufferFingerprint(bufferB))
-  }
-
-  func testWorkActivityBufferFingerprintChangesWhenBufferGrowsOrChanges() {
-    let base = "hello world"
-    let appended = base + " more content appended at the tail"
-    let replaced = "HELLO world"
-
-    XCTAssertNotEqual(workActivityBufferFingerprint(base), workActivityBufferFingerprint(appended))
-    XCTAssertNotEqual(workActivityBufferFingerprint(base), workActivityBufferFingerprint(replaced))
-    XCTAssertEqual(workActivityBufferFingerprint(""), "0:")
-  }
-
-  func testWorkActivityBufferFingerprintDistinguishesLongBuffersWithDifferentTails() {
-    let head = String(repeating: "a", count: 1024)
-    let bufferA = head + "tail-alpha"
-    let bufferB = head + "tail-omega"
-    // Lengths match, so only the fingerprint's tail-window distinguishes them.
-    XCTAssertEqual(bufferA.count, bufferB.count)
-    XCTAssertNotEqual(workActivityBufferFingerprint(bufferA), workActivityBufferFingerprint(bufferB))
-  }
-
   func testFilesDiffHasChangesDetectsTextAndExistenceEdits() {
     let empty = DiffSide(exists: false, text: "")
     let same = FileDiff(
@@ -5336,33 +5306,6 @@ final class ADETests: XCTestCase {
       workSessionPreviewText("WWoorrkkiinngg..."),
       "Working..."
     )
-  }
-
-  func testBuildWorkActivityFeedReusesCachedTerminalTranscript() {
-    let session = makeTerminalSessionSummary(toolType: "codex-chat", title: "Main chat")
-    let raw = """
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","description":"Parsed helper"}}
-    """
-    let cachedTranscript = [
-      WorkChatEnvelope(
-        sessionId: "chat-1",
-        timestamp: "2026-03-25T00:00:01.000Z",
-        sequence: 1,
-        event: .subagentStarted(taskId: "task-1", description: "Cached helper", background: false, turnId: nil)
-      )
-    ]
-    let fingerprint = workActivityBufferFingerprint(raw)
-
-    let result = buildWorkActivityFeed(
-      sources: [session],
-      transcriptCache: [:],
-      terminalBuffers: ["chat-1": raw],
-      existingCache: ["chat-1": WorkActivityTranscriptCacheEntry(fingerprint: fingerprint, transcript: cachedTranscript)],
-      chatSummaries: [:]
-    )
-
-    XCTAssertEqual(result.activities.first?.agentName, "Cached helper")
-    XCTAssertEqual(result.cache["chat-1"]?.fingerprint, fingerprint)
   }
 
   // MARK: - Mobile PR snapshot (prs sync contracts)
@@ -6278,7 +6221,7 @@ final class ADETests: XCTestCase {
     title: String? = nil,
     status: String,
     awaitingInput: Bool? = nil,
-    lastActivityAt: String = "2026-03-25T00:00:00.000Z"
+    lastActivityAt: String = recentIso8601Fixture()
   ) -> AgentChatSessionSummary {
     AgentChatSessionSummary(
       sessionId: sessionId,
@@ -6330,7 +6273,7 @@ final class ADETests: XCTestCase {
     status: String = "running",
     title: String = "Codex chat",
     lastOutputPreview: String? = nil,
-    startedAt: String = "2026-03-25T00:00:00.000Z"
+    startedAt: String = recentIso8601Fixture()
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
       id: id,

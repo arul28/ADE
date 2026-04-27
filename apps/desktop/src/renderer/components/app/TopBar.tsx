@@ -11,13 +11,14 @@ import {
   getStoredZoomLevel,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
-import type { ProcessRuntime, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
+import type { ProcessRuntime, ProjectIcon, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
 import { HelpMenu } from "../onboarding/HelpMenu";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
+const projectIconCache = new Map<string, ProjectIcon>();
 const PHONE_SYNC_FOCUSABLE_SELECTOR = [
   "a[href]",
   "button:not([disabled])",
@@ -61,6 +62,76 @@ function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
     default:
       return "Phone sync offline";
   }
+}
+
+function ProjectTabIcon({
+  rootPath,
+  isCurrent,
+  animate,
+  disabled,
+}: {
+  rootPath: string;
+  isCurrent: boolean;
+  animate: boolean;
+  disabled: boolean;
+}) {
+  const [icon, setIcon] = useState<ProjectIcon | null>(() =>
+    disabled ? null : projectIconCache.get(rootPath) ?? null
+  );
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+    const cached = projectIconCache.get(rootPath);
+    if (cached) {
+      setIcon(cached);
+      return;
+    }
+    if (disabled) {
+      setIcon(null);
+      return;
+    }
+
+    let cancelled = false;
+    window.ade.project.resolveIcon(rootPath).then((nextIcon) => {
+      if (cancelled) return;
+      projectIconCache.set(rootPath, nextIcon);
+      setIcon(nextIcon);
+    }).catch(() => {
+      if (!cancelled) setIcon(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [disabled, rootPath]);
+
+  const fallback = (
+    <Folder
+      size={12}
+      weight="regular"
+      className={cn(
+        "shrink-0 transition-opacity duration-150",
+        isCurrent ? "opacity-90" : "opacity-70",
+        animate && "animate-pulse",
+      )}
+    />
+  );
+
+  if (!icon?.dataUrl || failed) return fallback;
+
+  return (
+    <img
+      src={icon.dataUrl}
+      alt=""
+      className={cn(
+        "h-3 w-3 shrink-0 rounded-[2px] object-contain transition-opacity duration-150",
+        isCurrent ? "opacity-95" : "opacity-75",
+        animate && "animate-pulse",
+      )}
+      draggable={false}
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 export function TopBar() {
@@ -437,14 +508,11 @@ export function TopBar() {
                   }}
                   title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
                 >
-                  <Folder
-                    size={12}
-                    weight="regular"
-                    className={cn(
-                      "shrink-0 transition-opacity duration-150",
-                      isCurrent ? "opacity-90" : "opacity-70",
-                      (isSwitchTarget || isClosingTarget) && "animate-pulse"
-                    )}
+                  <ProjectTabIcon
+                    rootPath={rp.rootPath}
+                    isCurrent={isCurrent}
+                    animate={isSwitchTarget || isClosingTarget}
+                    disabled={isMissing}
                   />
                   {isSwitchTarget || isClosingTarget ? (
                     <CircleNotch size={11} weight="bold" className="shrink-0 animate-spin opacity-80" />

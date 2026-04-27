@@ -19,6 +19,9 @@ public struct ADESessionAttributes: ActivityAttributes {
         public struct ActiveSession: Codable, Hashable, Identifiable {
             public var id: String
             public var providerSlug: String
+            /// Specific model id ("claude-sonnet-4-6"). Rendered in subtitle
+            /// instead of the generic provider slug when present.
+            public var modelId: String?
             public var title: String
             /// Drives the coloured dot + progress feel on the roster row.
             public var isAwaitingInput: Bool
@@ -30,6 +33,7 @@ public struct ADESessionAttributes: ActivityAttributes {
             public init(
                 id: String,
                 providerSlug: String,
+                modelId: String? = nil,
                 title: String,
                 isAwaitingInput: Bool,
                 isFailed: Bool,
@@ -39,12 +43,31 @@ public struct ADESessionAttributes: ActivityAttributes {
             ) {
                 self.id = id
                 self.providerSlug = providerSlug
+                self.modelId = modelId
                 self.title = title
                 self.isAwaitingInput = isAwaitingInput
                 self.isFailed = isFailed
                 self.startedAt = startedAt
                 self.progress = progress
                 self.preview = preview
+            }
+
+            // Custom Decodable so older payloads (pre-modelId) still decode.
+            private enum CodingKeys: String, CodingKey {
+                case id, providerSlug, modelId, title, isAwaitingInput,
+                     isFailed, startedAt, progress, preview
+            }
+            public init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                self.id = try c.decode(String.self, forKey: .id)
+                self.providerSlug = try c.decode(String.self, forKey: .providerSlug)
+                self.modelId = try c.decodeIfPresent(String.self, forKey: .modelId)
+                self.title = try c.decode(String.self, forKey: .title)
+                self.isAwaitingInput = try c.decode(Bool.self, forKey: .isAwaitingInput)
+                self.isFailed = try c.decode(Bool.self, forKey: .isFailed)
+                self.startedAt = try c.decode(Date.self, forKey: .startedAt)
+                self.progress = try c.decodeIfPresent(Double.self, forKey: .progress)
+                self.preview = try c.decodeIfPresent(String.self, forKey: .preview)
             }
         }
 

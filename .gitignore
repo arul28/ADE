@@ -45,6 +45,7 @@ release-stable/
 # Xcode user data & derived data
 xcuserdata/
 *.xcuserstate
+/.derived-data/
 apps/ios/.dry-run-derived-data/
 apps/ios/build/
 ios-signing/
