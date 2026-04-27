@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { ProjectIcon } from "../../../shared/types";
+import { resolvePathWithinRoot } from "../shared/utils";
 
 const ICON_MAX_BYTES = 1024 * 1024;
 
@@ -58,17 +59,21 @@ function isLocalIconHref(href: string): boolean {
     && !href.startsWith("#");
 }
 
-function isPathWithinProject(projectRoot: string, candidatePath: string): boolean {
-  const relative = path.relative(path.resolve(projectRoot), path.resolve(candidatePath));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
 function findExistingFile(projectRoot: string, candidates: readonly string[]): string | null {
   for (const candidate of candidates) {
-    if (!isPathWithinProject(projectRoot, candidate)) continue;
+    // resolvePathWithinRoot follows symlinks via fs.realpath, so a `public ->
+    // /etc` symlink in the checked-out repo can't trick us into stat'ing or
+    // reading outside the project root. Treat any failure (escape, missing
+    // file, ENOENT, etc.) as "no icon" and keep probing.
+    let resolved: string;
     try {
-      const stat = fs.statSync(candidate);
-      if (stat.isFile()) return candidate;
+      resolved = resolvePathWithinRoot(projectRoot, candidate, { allowMissing: false });
+    } catch {
+      continue;
+    }
+    try {
+      const stat = fs.statSync(resolved);
+      if (stat.isFile()) return resolved;
     } catch {
       // Keep probing other candidates.
     }
@@ -87,7 +92,15 @@ export function resolveProjectIconPath(projectRoot: string): string | null {
   if (directMatch) return directMatch;
 
   for (const sourceFile of ICON_SOURCE_FILES) {
-    const sourcePath = path.join(root, sourceFile);
+    // Resolve through the real filesystem so a symlinked source file (e.g.
+    // `index.html -> ../outside.html`) can't trick us into reading outside
+    // the project root.
+    let sourcePath: string;
+    try {
+      sourcePath = resolvePathWithinRoot(root, sourceFile, { allowMissing: false });
+    } catch {
+      continue;
+    }
     let source: string;
     try {
       source = fs.readFileSync(sourcePath, "utf8");
@@ -123,15 +136,22 @@ export function resolveProjectIcon(projectRoot: string): ProjectIcon {
   const mimeType = mimeTypeForIconPath(iconPath);
   if (!mimeType) return { dataUrl: null, sourcePath: null, mimeType: null };
 
-  const stat = fs.statSync(iconPath);
-  if (stat.size > ICON_MAX_BYTES) {
-    return { dataUrl: null, sourcePath: iconPath, mimeType };
+  // resolveProjectIconPath already returned a realpath inside the project
+  // root, but defensively swallow any read/stat failure (e.g. a race that
+  // unlinks the icon between resolve and read) and return "no icon" rather
+  // than crashing.
+  try {
+    const stat = fs.statSync(iconPath);
+    if (stat.size > ICON_MAX_BYTES) {
+      return { dataUrl: null, sourcePath: iconPath, mimeType };
+    }
+    const data = fs.readFileSync(iconPath);
+    return {
+      dataUrl: `data:${mimeType};base64,${data.toString("base64")}`,
+      sourcePath: iconPath,
+      mimeType,
+    };
+  } catch {
+    return { dataUrl: null, sourcePath: null, mimeType: null };
   }
-
-  const data = fs.readFileSync(iconPath);
-  return {
-    dataUrl: `data:${mimeType};base64,${data.toString("base64")}`,
-    sourcePath: iconPath,
-    mimeType,
-  };
 }

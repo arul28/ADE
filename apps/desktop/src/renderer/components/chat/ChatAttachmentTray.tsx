@@ -296,7 +296,7 @@ export function ChatAttachmentTray({
               <button
                 type="button"
                 className="rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
-                title={`Remove ${attachment.path}`}
+                title={`Remove ${attachmentName(attachment.path)}`}
                 aria-label={`Remove ${attachmentName(attachment.path)}`}
                 onClick={() => onRemove(attachment.path)}
               >

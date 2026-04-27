@@ -6,7 +6,10 @@ import { describe, expect, it } from "vitest";
 import { resolveProjectIcon, resolveProjectIconPath } from "./projectIconResolver";
 
 function makeProjectRoot(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-icon-"));
+  // Resolve through realpath so the assertions still hold on platforms
+  // (macOS) where the system tmpdir is itself a symlink (e.g. `/var` ->
+  // `/private/var`). The resolver returns canonical realpaths for callers.
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-icon-")));
 }
 
 function writeFile(root: string, relativePath: string, contents: string | Buffer): string {
@@ -36,6 +39,17 @@ describe("projectIconResolver", () => {
     const root = makeProjectRoot();
     writeFile(path.dirname(root), "outside.svg", "<svg>outside</svg>");
     writeFile(root, "index.html", '<link rel="icon" href="../outside.svg">');
+
+    expect(resolveProjectIconPath(root)).toBeNull();
+  });
+
+  it("does not follow a symlinked icon directory outside the project root", () => {
+    const root = makeProjectRoot();
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-outside-")));
+    fs.writeFileSync(path.join(outside, "favicon.svg"), "<svg>outside</svg>");
+    // Symlink `<root>/public` -> `<outside>` so any `public/<icon>` candidate
+    // would escape the project root if resolved lexically.
+    fs.symlinkSync(outside, path.join(root, "public"));
 
     expect(resolveProjectIconPath(root)).toBeNull();
   });

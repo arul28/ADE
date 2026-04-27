@@ -215,13 +215,17 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
 
   React.useEffect(() => {
     const node = workSurfaceRef.current;
+    // The `<div ref={workSurfaceRef}>` below is gated by the `projectHydrated`
+    // / `hasActiveProject` / `showWelcome` early returns, so on a cold `/work`
+    // boot the ref is null on the first run when `active` flips true. Re-run
+    // once those guards settle so the inert state lands on the real node.
     if (!node) return;
     if (active) {
       node.removeAttribute("inert");
     } else {
       node.setAttribute("inert", "");
     }
-  }, [active]);
+  }, [active, projectHydrated, hasActiveProject, showWelcome]);
 
   if (!projectHydrated) {
     return active ? GuardLoadingFallback : null;

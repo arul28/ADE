@@ -1919,28 +1919,73 @@ export function registerIpc({
     return resolved;
   };
 
-  const inferImageMimeType = (filePath: string): string => {
-    const ext = path.extname(filePath).toLowerCase();
-    switch (ext) {
-      case ".jpg":
-      case ".jpeg":
-        return "image/jpeg";
-      case ".gif":
-        return "image/gif";
-      case ".webp":
-        return "image/webp";
-      case ".bmp":
-        return "image/bmp";
-      case ".svg":
-        return "image/svg+xml";
-      case ".ico":
-        return "image/x-icon";
-      case ".tif":
-      case ".tiff":
-        return "image/tiff";
-      default:
-        return "image/png";
+  /**
+   * Sniff the first bytes of a buffer for known image magic numbers and
+   * return the corresponding MIME type. Returns null if the buffer doesn't
+   * match any supported image format.
+   *
+   * We deliberately do NOT trust the file extension here — extension-only
+   * inference would let a renderer hand us any allow-listed file (text,
+   * binary, etc.) and get it back as a base64 `image/png` data URL.
+   */
+  const sniffImageMimeType = (buffer: Buffer): string | null => {
+    if (buffer.length >= 8
+      && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47
+      && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) {
+      return "image/png";
     }
+    if (buffer.length >= 3
+      && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+      return "image/jpeg";
+    }
+    if (buffer.length >= 6
+      && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38
+      && (buffer[4] === 0x37 || buffer[4] === 0x39) && buffer[5] === 0x61) {
+      return "image/gif";
+    }
+    if (buffer.length >= 12
+      && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
+      && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+      return "image/webp";
+    }
+    if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
+      return "image/bmp";
+    }
+    // SVG/XML: scan a small prefix as text so leading whitespace, BOM, or an
+    // <?xml ... ?> declaration before <svg ...> are tolerated.
+    const head = buffer.slice(0, Math.min(buffer.length, 1024)).toString("utf8");
+    const stripped = head.replace(/^﻿/, "").trimStart();
+    if (/^<\?xml\b/i.test(stripped) && /<svg\b/i.test(head)) {
+      return "image/svg+xml";
+    }
+    if (/^<svg\b/i.test(stripped)) {
+      return "image/svg+xml";
+    }
+    return null;
+  };
+
+  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+  /**
+   * Read an allow-listed image file from disk after a stat-based size check,
+   * sniff its bytes for a known image magic, and return both the bytes and
+   * the sniffed MIME type. Throws if the file is too large, isn't a regular
+   * file, or doesn't look like a supported image.
+   */
+  const readImageFileAndSniffMime = async (filePath: string): Promise<{ data: Buffer; mimeType: string }> => {
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) {
+      throw new Error("Path is not a file.");
+    }
+    if (stat.size > MAX_IMAGE_BYTES) {
+      throw new Error("Image must be 10 MB or smaller.");
+    }
+    const data = await fs.promises.readFile(filePath);
+    const mimeType = sniffImageMimeType(data);
+    if (!mimeType) {
+      throw new Error("Path is not an image.");
+    }
+    return { data, mimeType };
   };
 
   ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
@@ -1997,23 +2042,22 @@ export function registerIpc({
     const filePath = resolveAllowedRendererPath(arg?.path);
     // Use async fs APIs and a size pre-check so a 10 MB image read never
     // blocks the main process event loop (input dispatch, IPC, window
-    // animations all share that loop).
-    const stat = await fs.promises.stat(filePath);
-    const MAX_PREVIEW_BYTES = 10 * 1024 * 1024;
-    if (!stat.isFile()) {
-      throw new Error("Path is not a file.");
-    }
-    if (stat.size > MAX_PREVIEW_BYTES) {
-      throw new Error("Image preview must be 10 MB or smaller.");
-    }
-    const data = await fs.promises.readFile(filePath);
+    // animations all share that loop). The MIME type is derived from the
+    // file's *bytes*, not its extension, so a renderer can't smuggle
+    // arbitrary text/binary back as a base64 `image/png` data URL.
+    const { data, mimeType } = await readImageFileAndSniffMime(filePath);
     return {
-      dataUrl: `data:${inferImageMimeType(filePath)};base64,${data.toString("base64")}`,
+      dataUrl: `data:${mimeType};base64,${data.toString("base64")}`,
     };
   });
 
   ipcMain.handle(IPC.appWriteClipboardImage, async (_event, arg: { path: string }): Promise<void> => {
     const filePath = resolveAllowedRendererPath(arg?.path);
+    // Apply the same size + magic-byte preflight as `appGetImageDataUrl` so
+    // we can't hand `nativeImage.createFromPath` a giant or non-image file
+    // (which would otherwise silently produce an empty image, or worse,
+    // attempt a sync read of a 100 MB binary on the main process).
+    await readImageFileAndSniffMime(filePath);
     const image = nativeImage.createFromPath(filePath);
     if (image.isEmpty()) {
       throw new Error("Unable to read image.");
