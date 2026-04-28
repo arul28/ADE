@@ -89,8 +89,9 @@ export async function acquireDroidAcpConnection(args: {
     return { pooled: existing.pooled, generation: existing.generation };
   }
 
-  // Existing entry is stale — clean it up before creating a new one
+  // Existing entry is stale — clean its terminal timers and remove before creating a new one.
   if (existing) {
+    clearDroidTerminalTimers(existing.pooled);
     droidPools.delete(args.poolKey);
   }
 
@@ -123,10 +124,16 @@ export async function acquireDroidAcpConnection(args: {
   }
 
   const pooled = await init;
+  // Pending-init waiters might race with the inner ACP pool being torn down
+  // between the awaited init and this branch. Verify the entry still matches
+  // the generation we awaited before attaching a ref.
   if (!initOwner) {
+    const liveEntry = droidPools.get(args.poolKey);
+    if (!liveEntry || !hasActiveAcpCliPoolEntry(innerKey) || liveEntry.pooled !== pooled) {
+      return acquireDroidAcpConnection(args);
+    }
     await acquireAcpCliConnection(acpOptions);
-    const entry = droidPools.get(args.poolKey);
-    if (entry) entry.ref += 1;
+    liveEntry.ref += 1;
   }
   const entry = droidPools.get(args.poolKey);
   return { pooled, generation: entry?.generation ?? 0 };

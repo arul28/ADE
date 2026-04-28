@@ -85,6 +85,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   cursor: "Cursor",
+  factory: "Factory Droid",
   google: "Google",
   deepseek: "DeepSeek",
   mistral: "Mistral",
@@ -103,6 +104,7 @@ export const PROVIDER_BADGE_COLORS: Record<string, string> = {
   anthropic: "#D97706",
   openai: "#10A37F",
   cursor: "#A78BFA",
+  factory: "#6B7280",
   google: "#F59E0B",
   deepseek: "#3B82F6",
   mistral: "#F97316",
@@ -130,6 +132,7 @@ export const PROVIDER_ORDER: string[] = [
   "ollama",
   "lmstudio",
   "cursor",
+  "factory",
 ];
 
 const PROVIDER_GROUP_ORDER: Record<ProviderGroupKey, number> = {

@@ -9775,6 +9775,17 @@ describe("createAgentChatService", () => {
       sessionId: "droid-acp-session-1",
       modelId: "custom:claude-sonnet-4-6-thinking-32000",
     });
+    // The model switch must complete before the first prompt() call so the
+    // agent never receives the prompt under the wrong model.
+    const setModelOrder = setSessionModel.mock.invocationCallOrder[0];
+    const firstPromptOrder = (
+      mockState.droidPromptCalls.length > 0
+        ? (vi.mocked(acquireDroidAcpConnection).mock.results[0]?.value as any)?.pooled?.connection?.prompt?.mock?.invocationCallOrder?.[0]
+        : undefined
+    );
+    expect(setModelOrder).toBeDefined();
+    expect(firstPromptOrder).toBeDefined();
+    expect(setModelOrder).toBeLessThan(firstPromptOrder!);
     expect(updated?.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
     expect(updated?.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
     expect(doneEvent.event.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
@@ -9875,6 +9886,10 @@ describe("createAgentChatService", () => {
       sessionId: "droid-acp-session-1",
       modelId: "custom:Claude-Sonnet-4.6-(High)-1",
     });
+    // The untranslated help id ("custom:claude-sonnet-4-6-thinking-32000")
+    // must never be sent to ACP — only the translated ACP-recognized id.
+    const sentModelIds = setSessionModel.mock.calls.map((call) => (call[0] as { modelId: string }).modelId);
+    expect(sentModelIds).not.toContain("custom:claude-sonnet-4-6-thinking-32000");
     expect(updated?.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
     expect(updated?.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
     expect(doneEvent.event.model).toBe("custom:claude-sonnet-4-6-thinking-32000");

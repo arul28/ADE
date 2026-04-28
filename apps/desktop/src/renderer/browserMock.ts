@@ -368,6 +368,8 @@ function isMockChatToolType(toolType: unknown): boolean {
         || normalized === "claude-chat"
         || normalized === "opencode-chat"
         || normalized === "cursor"
+        || normalized === "droid"
+        || normalized.startsWith("droid")
         || normalized.endsWith("-chat")
       ),
   );

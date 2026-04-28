@@ -107,6 +107,9 @@ export async function acquireAcpCliConnection(options: AcpCliPoolOptions): Promi
         };
 
         try {
+          if (initEpoch !== poolEpoch) {
+            throw new Error("acpCliPool shutdown before spawn");
+          }
           proc = spawn(options.spawn.command, options.spawn.args, {
             stdio: ["pipe", "pipe", "pipe"],
             env: options.spawn.env ?? { ...process.env },

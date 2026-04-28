@@ -222,6 +222,16 @@ describe("authDetector", () => {
   it("treats droid exec list-tools as a valid authenticated probe", async () => {
     tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-droid-auth-"));
     process.env.HOME = tempHomeDir;
+    // Create a fake droid binary in a known bin dir so resolveDroidExecutable
+    // (which uses fs.statSync against real paths) finds it without falling
+    // through to the real CI PATH.
+    const droidBinDir = path.join(tempHomeDir, ".local", "bin");
+    fs.mkdirSync(droidBinDir, { recursive: true });
+    const fakeDroidPath = path.join(droidBinDir, "droid");
+    fs.writeFileSync(fakeDroidPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // Strip PATH so resolveExecutableFromKnownLocations skips real binaries
+    // on the CI runner and uses the temp home's known dirs.
+    process.env.PATH = "";
 
     spawnMock.mockImplementation((command: string, args: string[] = []) => {
       if (args[0] === "--version") {
@@ -229,7 +239,7 @@ describe("authDetector", () => {
         return fakeError();
       }
       if (command === "which") {
-        if (args[0] === "droid") return fakeChild({ status: 0, stdout: "/usr/local/bin/droid\n" });
+        if (args[0] === "droid") return fakeChild({ status: 0, stdout: `${fakeDroidPath}\n` });
         return fakeChild({ status: 1 });
       }
       if ((command === "droid" || command.endsWith("/droid")) && args[0] === "exec" && args[1] === "--list-tools") {
@@ -250,7 +260,7 @@ describe("authDetector", () => {
     expect(droid).toEqual({
       cli: "droid",
       installed: true,
-      path: "/Users/admin/.local/bin/droid",
+      path: fakeDroidPath,
       authenticated: true,
       verified: true,
     });

@@ -3823,7 +3823,10 @@ export function createOrchestratorService({
   };
 
   const defaultAdapterFor = (kind: OrchestratorExecutorKind): OrchestratorExecutorAdapter | null => {
-    if (!["claude", "codex", "cursor", "droid", "opencode"].includes(kind)) return null;
+    // The generic adapter below only knows how to launch claude/codex CLIs.
+    // Droid uses its own adapter registered elsewhere — falling back here would
+    // silently spawn a Claude worker for a Droid step.
+    if (!["claude", "codex", "cursor", "opencode"].includes(kind)) return null;
     return {
       kind,
       requiresLaneId: true,

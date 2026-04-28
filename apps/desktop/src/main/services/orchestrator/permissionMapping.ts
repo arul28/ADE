@@ -114,6 +114,7 @@ export function normalizeMissionPermissions(config: MissionPermissionConfig | un
     const asProvider = oldCliModeToProvider(cliMode);
     result.claude = asProvider;
     result.codex = asProvider;
+    result.droid = asProvider;
     if (config.cli.sandboxPermissions === "read-only" || config.cli.sandboxPermissions === "workspace-write" || config.cli.sandboxPermissions === "danger-full-access") {
       result.codexSandbox = config.cli.sandboxPermissions;
     }
@@ -189,6 +190,7 @@ export function mergeMissionPermissionConfig(
     const providerMode = oldCliModeToProvider(overrideCliMode);
     providerOverrides.claude = providerMode;
     providerOverrides.codex = providerMode;
+    providerOverrides.droid = providerMode;
   }
   const overrideInProcessMode = VALID_IN_PROCESS_MODES.has(override.inProcess?.mode ?? "") ? override.inProcess?.mode : undefined;
   if (overrideInProcessMode) {

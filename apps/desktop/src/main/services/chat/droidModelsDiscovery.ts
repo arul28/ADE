@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import {
@@ -44,6 +44,7 @@ export type DroidExecHelpModelRow = {
 };
 
 let cached: { at: number; models: DroidExecHelpModelRow[] } | null = null;
+let inflight: Promise<DroidExecHelpModelRow[]> | null = null;
 const TTL_MS = 120_000;
 
 export function parseDroidExecHelpModels(stdout: string): DroidExecHelpModelRow[] {
@@ -94,7 +95,17 @@ async function listDroidModelsFromCli(droidPath: string): Promise<DroidExecHelpM
   if (cached && now - cached.at < TTL_MS) {
     return cached.models;
   }
+  if (inflight) {
+    return inflight;
+  }
+  inflight = listDroidModelsFromCliInner(droidPath).finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
 
+async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExecHelpModelRow[]> {
+  const now = Date.now();
   try {
     const helpResult = await spawnAsync(droidPath, ["exec", "--help"], { timeout: 8_000, maxOutputBytes: 64_000 });
     if (helpResult.status === 0) {
@@ -175,6 +186,7 @@ async function listDroidModelsFromCli(droidPath: string): Promise<DroidExecHelpM
 
 export function clearDroidCliModelsCache(): void {
   cached = null;
+  inflight = null;
 }
 
 /**
@@ -185,10 +197,10 @@ export function clearDroidCliModelsCache(): void {
  * human-readable display name, and a `custom:` prefixed ID that the CLI
  * uses internally.
  */
-function readFactoryConfigCustomModels(): DroidExecHelpModelRow[] {
+async function readFactoryConfigCustomModels(): Promise<DroidExecHelpModelRow[]> {
   try {
     const configPath = join(homedir(), ".factory", "config.json");
-    const raw = readFileSync(configPath, "utf-8");
+    const raw = await readFile(configPath, "utf-8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const customModels = parsed.custom_models;
     if (!Array.isArray(customModels)) return [];
@@ -217,7 +229,7 @@ export async function discoverDroidCliModelDescriptors(droidPath: string): Promi
 
   // Merge custom models from ~/.factory/config.json so vibeproxy-injected
   // models appear even when the CLI help output doesn't list them.
-  const customRows = readFactoryConfigCustomModels();
+  const customRows = await readFactoryConfigCustomModels();
 
   const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];

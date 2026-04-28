@@ -162,8 +162,11 @@ export function UsageGuardrailsSection({
     }),
     [providerConnections]
   );
+  // The empty-quota warning is gated on Claude/Codex windows being absent.
+  // Cursor and Droid don't expose quota windows, so an authenticated Droid- or
+  // Cursor-only user would otherwise always see this warning.
   const showEmptyQuotaWarning =
-    (cliAuth.claude?.authAvailable || cliAuth.codex?.authAvailable || cliAuth.cursor?.authAvailable || cliAuth.droid?.authAvailable) &&
+    (cliAuth.claude?.authAvailable || cliAuth.codex?.authAvailable) &&
     claudeWindows.length === 0 &&
     codexWindows.length === 0 &&
     (snapshot?.errors.length ?? 0) === 0;

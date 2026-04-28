@@ -3371,15 +3371,26 @@ export function createAgentChatService(args: {
         entry.seenModes.clear();
       }
 
-      // The replay chunk contains text from previous turns. If the chunk's
-      // text is found in the accumulated history, it's a replay — drop it.
-      if (entry.historyText.length > 0 && entry.historyText.includes(chunkText)) {
+      // Replay chunks are full multi-line agent_message_chunks containing text
+      // from previous turns. Restrict the substring check to chunks long enough
+      // that an accidental match against a tiny streaming delta (e.g. " yes")
+      // is implausible.
+      const REPLAY_MIN_LEN = 32;
+      if (
+        chunkText.length >= REPLAY_MIN_LEN
+        && entry.historyText.length > 0
+        && entry.historyText.includes(chunkText)
+      ) {
         return true;
       }
 
       // Also catch the case where this chunk replays the current turn's
       // own streamed text (the original dedup scenario).
-      if (entry.currentTurnText.length > 0 && entry.currentTurnText.includes(chunkText)) {
+      if (
+        chunkText.length >= REPLAY_MIN_LEN
+        && entry.currentTurnText.length > 0
+        && entry.currentTurnText.includes(chunkText)
+      ) {
         return true;
       }
 

@@ -191,12 +191,14 @@ export function spawnAsync(
       const timeoutMs = opts?.timeout ?? 5_000;
       let timeoutHandle: NodeJS.Timeout | null = null;
       let hardResolveHandle: NodeJS.Timeout | null = null;
+      let killEscalationHandle: NodeJS.Timeout | null = null;
       let settled = false;
       const settle = (status: number | null): void => {
         if (settled) return;
         settled = true;
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (hardResolveHandle) clearTimeout(hardResolveHandle);
+        if (killEscalationHandle) clearTimeout(killEscalationHandle);
         destroyChildProcessStreams(child);
         resolve({ status, stdout, stderr });
       };
@@ -210,7 +212,9 @@ export function spawnAsync(
       child.once("close", (code) => settle(code));
       timeoutHandle = setTimeout(() => {
         if (settled) return;
-        terminateChildProcessTree(child, null, 1_500);
+        // Retain the SIGKILL escalation timer so we can clear it if the
+        // SIGTERM induces a clean exit before the kill window elapses.
+        killEscalationHandle = terminateChildProcessTree(child, null, 1_500);
         hardResolveHandle = setTimeout(() => settle(null), 5_000);
       }, timeoutMs);
     } catch {

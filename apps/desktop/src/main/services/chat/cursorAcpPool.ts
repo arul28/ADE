@@ -106,8 +106,9 @@ export async function acquireCursorAcpConnection(args: {
     return { pooled: existing.pooled, generation: existing.generation };
   }
 
-  // Existing entry is stale — clean it up before creating a new one
+  // Existing entry is stale — clean its terminal timers and remove before creating a new one.
   if (existing) {
+    clearCursorTerminalTimers(existing.pooled);
     cursorPools.delete(args.poolKey);
   }
 
@@ -140,10 +141,17 @@ export async function acquireCursorAcpConnection(args: {
   }
 
   const pooled = await init;
+  // Pending-init waiters might race with the inner ACP pool being torn down
+  // (process exit) between the awaited init and this branch. Re-check the
+  // outer entry is still alive before attaching the ref.
   if (!initOwner) {
+    const liveEntry = cursorPools.get(args.poolKey);
+    if (!liveEntry || !hasActiveAcpCliPoolEntry(innerKey) || liveEntry.pooled !== pooled) {
+      // Stale waiter: retry the full acquire to spawn a fresh entry.
+      return acquireCursorAcpConnection(args);
+    }
     await acquireAcpCliConnection(acpOptions);
-    const entry = cursorPools.get(args.poolKey);
-    if (entry) entry.ref += 1;
+    liveEntry.ref += 1;
   }
   const entry = cursorPools.get(args.poolKey);
   return { pooled, generation: entry?.generation ?? 0 };

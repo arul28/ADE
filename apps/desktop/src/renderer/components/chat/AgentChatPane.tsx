@@ -424,6 +424,16 @@ function droidPermissionModeToLegacyPermissionMode(mode: AgentChatDroidPermissio
   return "full-auto";
 }
 
+function legacyPermissionModeToDroidPermissionMode(
+  mode: AgentChatPermissionMode | undefined,
+): AgentChatDroidPermissionMode | undefined {
+  if (mode === "plan") return "read-only";
+  if (mode === "edit") return "auto-low";
+  if (mode === "default") return "auto-medium";
+  if (mode === "full-auto") return "auto-high";
+  return undefined;
+}
+
 /**
  * Build a fallback CursorModeSnapshot when the Cursor ACP provider hasn't
  * reported its own snapshot yet.
@@ -1607,7 +1617,11 @@ export function AgentChatPane({
     setCodexSandbox(session.codexSandbox ?? initialNativeControls.codexSandbox);
     setCodexConfigSource(session.codexConfigSource ?? initialNativeControls.codexConfigSource);
     setOpenCodePermissionMode(session.opencodePermissionMode ?? initialNativeControls.opencodePermissionMode);
-    setDroidPermissionMode(session.droidPermissionMode ?? initialNativeControls.droidPermissionMode);
+    setDroidPermissionMode(
+      session.droidPermissionMode
+        ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
+        ?? initialNativeControls.droidPermissionMode,
+    );
     setCursorModeId(session.cursorModeId ?? session.cursorModeSnapshot?.currentModeId ?? initialNativeControls.cursorModeId);
     setCursorConfigValues(
       Object.fromEntries(

@@ -382,11 +382,6 @@ async function inspectDroidCliPresence(command: string): Promise<{
   for (const args of probes) {
     try {
       const result = await spawnAsync(command, args, { timeout: 8_000 });
-      const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
-      if (result.status === 0 && combined.length > 0) {
-        sawVersionOk = true;
-        break;
-      }
       if (result.status === 0) {
         sawVersionOk = true;
         break;
@@ -1038,21 +1033,29 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
         };
       }
       if (cli === "droid") {
-        const resolved = resolveDroidExecutable({ env: process.env });
-        if (resolved.source === "fallback-command") {
-          return {
-            cli,
-            installed: false,
-            path: null,
-            authenticated: false,
-            verified: false,
-          };
+        // Prefer the path we already proved via commandPath() above; only fall
+        // back to resolveDroidExecutable() when commandPath() failed.
+        let droidPath: string;
+        if (path) {
+          droidPath = path;
+        } else {
+          const resolved = resolveDroidExecutable({ env: process.env });
+          if (resolved.source === "fallback-command") {
+            return {
+              cli,
+              installed: false,
+              path: null,
+              authenticated: false,
+              verified: false,
+            };
+          }
+          droidPath = resolved.path;
         }
-        const auth = await inspectDroidCliPresence(resolved.path);
+        const auth = await inspectDroidCliPresence(droidPath);
         return {
           cli,
           installed: auth.installed,
-          path: resolved.path,
+          path: droidPath,
           authenticated: auth.authenticated,
           verified: auth.verified,
         };

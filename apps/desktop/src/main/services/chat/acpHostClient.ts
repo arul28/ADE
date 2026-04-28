@@ -279,6 +279,17 @@ export function createAcpHostClient(
         } catch {
           // ignore
         }
+        // Escalate to SIGKILL if the child has not exited within the grace window.
+        const escalation = setTimeout(() => {
+          if (!t.exited) {
+            try {
+              signalChildProcessTree(t.proc, "SIGKILL");
+            } catch {
+              // ignore
+            }
+          }
+        }, 1_500);
+        t.proc.once("close", () => clearTimeout(escalation));
       }
     },
 

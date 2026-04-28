@@ -813,7 +813,8 @@ export function createAiIntegrationService(args: {
         && entry.cli === "droid"
         && entry.authenticated !== false,
     );
-    if (hasDroidCliAuth) {
+    const hasDroidApiKey = Boolean(process.env.FACTORY_API_KEY?.trim());
+    if (hasDroidCliAuth || hasDroidApiKey) {
       try {
         const { path: droidPath } = resolveDroidExecutable({ auth });
         const droidModels = await discoverDroidCliModelDescriptors(droidPath);
