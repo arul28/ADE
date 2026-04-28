@@ -2,6 +2,9 @@
 // Auth Detector — discovers available authentication methods
 // ---------------------------------------------------------------------------
 
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { homedir } from "node:os";
 import { spawnAsync } from "../shared/utils";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -11,8 +14,9 @@ import {
 import { getLocalProviderDefaultEndpoint, type LocalProviderFamily } from "../../../shared/modelRegistry";
 import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
+import { resolveDroidExecutable } from "./droidExecutable";
 
-type CliName = "claude" | "codex" | "cursor";
+type CliName = "claude" | "codex" | "cursor" | "droid";
 
 type ApiKeySource = "config" | "env" | "store";
 
@@ -38,7 +42,7 @@ export type CliAuthStatus = {
 export type DetectedAuth =
   | {
       type: "cli-subscription";
-      cli: CliName;
+      cli: "claude" | "codex" | "cursor" | "droid";
       path: string;
       authenticated: boolean;
       verified: boolean;
@@ -72,10 +76,12 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
     ["status", "--json"],
     ["status"],
   ],
+  droid: [["--version"], ["-V"], ["version"]],
 };
 
 function cliSpawnCommand(cli: CliName): string {
-  return cli === "cursor" ? "agent" : cli;
+  if (cli === "cursor") return "agent";
+  return cli;
 }
 
 const AUTH_INDICATORS = [
@@ -364,6 +370,88 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
   }
 
   return { authenticated: false, verified: false, paidPlan: false };
+}
+
+async function inspectDroidCliPresence(command: string): Promise<{
+  installed: boolean;
+  authenticated: boolean;
+  verified: boolean;
+}> {
+  const probes = CLI_AUTH_PROBES.droid ?? [];
+  let sawVersionOk = false;
+  for (const args of probes) {
+    try {
+      const result = await spawnAsync(command, args, { timeout: 8_000 });
+      if (result.status === 0) {
+        sawVersionOk = true;
+        break;
+      }
+    } catch {
+      // try next probe
+    }
+  }
+  if (!sawVersionOk) {
+    return { installed: false, authenticated: false, verified: false };
+  }
+
+  if (process.env.FACTORY_API_KEY?.trim()) {
+    return { installed: true, authenticated: true, verified: true };
+  }
+
+  const settingsPath = path.join(homedir(), ".factory", "settings.json");
+  try {
+    const raw = await readFile(settingsPath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const tokenLike =
+      typeof parsed.accessToken === "string" && parsed.accessToken.trim().length > 0
+        ? parsed.accessToken
+        : typeof parsed.token === "string" && parsed.token.trim().length > 0
+          ? parsed.token
+          : null;
+    if (tokenLike) {
+      return { installed: true, authenticated: true, verified: true };
+    }
+  } catch {
+    // missing or unreadable settings — not authenticated via file
+  }
+
+  try {
+    const result = await spawnAsync(command, ["exec", "--list-tools"], { timeout: 12_000 });
+    const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+    const normalized = combined.toLowerCase();
+    if (hasPattern(normalized, STRONG_UNAUTH_INDICATORS)) {
+      return { installed: true, authenticated: false, verified: true };
+    }
+    if (result.status === 0) {
+      return { installed: true, authenticated: true, verified: true };
+    }
+    if (hasPattern(normalized, AUTH_INDICATORS)) {
+      return { installed: true, authenticated: true, verified: true };
+    }
+  } catch {
+    // Current Droid releases may not support this probe or it may time out; fall back.
+  }
+
+  const authProbes: string[][] = [
+    ["account", "status"],
+    ["whoami"],
+  ];
+  for (const args of authProbes) {
+    try {
+      const result = await spawnAsync(command, args, { timeout: 12_000 });
+      const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+      if (hasPattern(combined, STRONG_UNAUTH_INDICATORS)) {
+        return { installed: true, authenticated: false, verified: true };
+      }
+      if (hasPattern(combined, AUTH_INDICATORS)) {
+        return { installed: true, authenticated: true, verified: true };
+      }
+    } catch {
+      // try next probe
+    }
+  }
+
+  return { installed: true, authenticated: false, verified: false };
 }
 
 const ENV_KEY_MAP: Record<string, string> = {
@@ -915,7 +1003,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
     await refreshProcessPathFromShell();
   }
 
-  const cliChecks: CliName[] = ["claude", "codex", "cursor"];
+  const cliChecks: CliName[] = ["claude", "codex", "cursor", "droid"];
 
   // Probe all CLIs in parallel
   const statuses = await Promise.all(
@@ -944,6 +1032,34 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
           paidPlan: auth.paidPlan,
         };
       }
+      if (cli === "droid") {
+        // Prefer the path we already proved via commandPath() above; only fall
+        // back to resolveDroidExecutable() when commandPath() failed.
+        let droidPath: string;
+        if (path) {
+          droidPath = path;
+        } else {
+          const resolved = resolveDroidExecutable({ env: process.env });
+          if (resolved.source === "fallback-command") {
+            return {
+              cli,
+              installed: false,
+              path: null,
+              authenticated: false,
+              verified: false,
+            };
+          }
+          droidPath = resolved.path;
+        }
+        const auth = await inspectDroidCliPresence(droidPath);
+        return {
+          cli,
+          installed: auth.installed,
+          path: droidPath,
+          authenticated: auth.authenticated,
+          verified: auth.verified,
+        };
+      }
       const auth = await inspectCliAuthentication(cli, cmd);
       return {
         cli,
@@ -968,7 +1084,7 @@ export async function detectAllAuth(
   // 1. CLI subscriptions (connected and authenticated)
   const cliStatuses = await detectCliAuthStatuses(options);
   for (const cli of cliStatuses) {
-    if (cli.cli !== "claude" && cli.cli !== "codex" && cli.cli !== "cursor") continue;
+    if (cli.cli !== "claude" && cli.cli !== "codex" && cli.cli !== "cursor" && cli.cli !== "droid") continue;
     if (!cli.installed) continue;
     if (!cli.authenticated && cli.verified) continue;
     results.push({
@@ -994,6 +1110,23 @@ export async function detectAllAuth(
         verified: true,
         paidPlan: true,
       });
+    }
+  }
+
+  const factoryKey = process.env.FACTORY_API_KEY?.trim();
+  if (factoryKey) {
+    const hasDroidCli = results.some((r) => r.type === "cli-subscription" && r.cli === "droid");
+    if (!hasDroidCli) {
+      const resolved = resolveDroidExecutable({ env: process.env, auth: results });
+      if (resolved.source !== "fallback-command") {
+        results.push({
+          type: "cli-subscription",
+          cli: "droid",
+          path: resolved.path,
+          authenticated: true,
+          verified: true,
+        });
+      }
     }
   }
 

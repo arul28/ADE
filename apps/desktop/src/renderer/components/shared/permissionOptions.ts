@@ -167,6 +167,48 @@ export function getPermissionOptions(opts: {
     ];
   }
 
+  // Factory Droid CLI
+  if (opts.isCliWrapped && opts.family === "factory") {
+    return [
+      {
+        value: "plan",
+        label: "Read-only",
+        shortDesc: "Droid without autonomy",
+        detail: "Launches Droid without --auto. Best for inspection, planning, and low-risk review work.",
+        allows: ["File reads", "Code search", "Plan generation"],
+        gates: ["File writes", "Shell commands"],
+        safety: "safe",
+      },
+      {
+        value: "edit",
+        label: "Auto low",
+        shortDesc: "Droid with --auto low",
+        detail: "Allows safe file edits and non-destructive operations while keeping Droid on its lower-risk autonomy tier.",
+        allows: ["File reads", "File writes in project scope"],
+        gates: ["Higher-risk operations per Droid policy"],
+        safety: "semi-auto",
+      },
+      {
+        value: "default",
+        label: "Auto medium",
+        shortDesc: "Droid with --auto medium",
+        detail: "Allows local development operations such as package installs, builds, tests, and local git commands.",
+        allows: ["Project file edits", "Builds and tests", "Local development commands"],
+        gates: ["Production changes", "sudo", "git push", "Sensitive operations"],
+        safety: "semi-auto",
+      },
+      {
+        value: "full-auto",
+        label: "Auto high",
+        shortDesc: "Droid with --auto high",
+        detail: "Highest normal Droid autonomy tier for broad automation. This does not use --skip-permissions-unsafe.",
+        allows: ["Broader tool and command access per Droid policy"],
+        warning: "\u26a0 Review Droid permissions and Factory docs before enabling.",
+        safety: "danger",
+      },
+    ];
+  }
+
   // API and local models
   return [
     {
@@ -257,26 +299,31 @@ export function safetyColors(safety: SafetyLevel) {
 
 /**
  * Map a ProviderFamily string to the permission-family key used by
- * MissionProviderPermissions ("claude" | "codex" | "opencode").
+ * MissionProviderPermissions ("claude" | "codex" | "cursor" | "droid" | "opencode").
  *
  * Only CLI-wrapped anthropic → "claude" and CLI-wrapped openai → "codex".
  * All API / local models (even anthropic-api or openai-api) use "opencode".
  */
-export function familyToPermissionKey(family: string, isCliWrapped: boolean): "claude" | "codex" | "opencode" | "cursor" {
+export function familyToPermissionKey(
+  family: string,
+  isCliWrapped: boolean,
+): "claude" | "codex" | "cursor" | "droid" | "opencode" {
   if (isCliWrapped) {
     if (family === "anthropic") return "claude";
     if (family === "openai") return "codex";
     if (family === "cursor") return "cursor";
+    if (family === "factory") return "droid";
   }
   return "opencode";
 }
 
 /** Human-readable label for a permission family key */
-export function permissionFamilyLabel(key: "claude" | "codex" | "cursor" | "opencode"): string {
+export function permissionFamilyLabel(key: "claude" | "codex" | "cursor" | "droid" | "opencode"): string {
   switch (key) {
     case "claude": return "Claude Code workers";
     case "codex": return "Codex workers";
     case "cursor": return "Cursor workers";
+    case "droid": return "Droid workers";
     case "opencode": return "OpenCode workers";
   }
 }

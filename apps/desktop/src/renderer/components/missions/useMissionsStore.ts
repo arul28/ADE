@@ -479,6 +479,7 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
       providers: {
         claude: readString(localProviders.claude, effectiveProviders.claude, "full-auto") as import("../../../shared/types").AgentChatPermissionMode,
         codex: readString(localProviders.codex, effectiveProviders.codex, "default") as import("../../../shared/types").AgentChatPermissionMode,
+        droid: readString(localProviders.droid, effectiveProviders.droid, "full-auto") as import("../../../shared/types").AgentChatPermissionMode,
         opencode: readString(localProviders.opencode, effectiveProviders.opencode, "full-auto") as import("../../../shared/types").AgentChatPermissionMode,
         codexSandbox: readString(localProviders.codexSandbox, effectiveProviders.codexSandbox, "workspace-write") as "read-only" | "workspace-write" | "danger-full-access",
       },

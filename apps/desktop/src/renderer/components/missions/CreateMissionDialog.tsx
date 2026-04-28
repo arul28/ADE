@@ -128,7 +128,7 @@ export async function prewarmCreateMissionDialogCache(): Promise<void> {
   if (shouldRefreshAiStatus) {
     tasks.push(
       window.ade.ai.getStatus().then((status) => {
-        const ids = deriveConfiguredModelIds(status, { includeCursor: true });
+        const ids = deriveConfiguredModelIds(status, { includeCursor: true, includeDroid: true });
         createMissionDialogCache.aiStatus = {
           detectedAuth: status.detectedAuth ?? [],
           availableModelIds: ids,
@@ -180,6 +180,7 @@ function createDefaultPermissionConfig(defaults: CreateMissionDefaults | null | 
     providers: {
       claude: "full-auto",
       codex: "default",
+      droid: "full-auto",
       opencode: "full-auto",
       codexSandbox: "workspace-write",
     },
@@ -502,7 +503,7 @@ function CreateMissionDialogInner({
       if (cancelled) return;
       void window.ade.ai.getStatus().then((status) => {
         if (cancelled) return;
-        const ids = deriveConfiguredModelIds(status, { includeCursor: true });
+        const ids = deriveConfiguredModelIds(status, { includeCursor: true, includeDroid: true });
         const cachedStatus: CreateMissionDialogAiStatusCache = {
           detectedAuth: status.detectedAuth ?? [],
           availableModelIds: ids,
@@ -548,7 +549,7 @@ function CreateMissionDialogInner({
   }, [draft.phaseOverride, disabledPhases]);
 
   const selectedBudgetFamilies = useMemo(() => {
-    const subscriptionProviders = new Set<"claude" | "codex" | "cursor">();
+    const subscriptionProviders = new Set<"claude" | "codex" | "cursor" | "droid">();
     let hasApiModels = false;
     const inspectModel = (rawModelId: string | null | undefined): void => {
       const modelId = String(rawModelId ?? "").trim();
@@ -568,6 +569,10 @@ function CreateMissionDialogInner({
       }
       if (descriptor.isCliWrapped && descriptor.family === "cursor") {
         subscriptionProviders.add("cursor");
+        return;
+      }
+      if (descriptor.isCliWrapped && descriptor.family === "factory") {
+        subscriptionProviders.add("droid");
         return;
       }
       if (descriptor.authTypes.includes("api-key") || descriptor.authTypes.includes("openrouter")) {
@@ -712,7 +717,7 @@ function CreateMissionDialogInner({
     for (const auth of aiDetectedAuth) {
       if (!auth.authenticated) continue;
       if (auth.type === "cli-subscription" && auth.cli) {
-        const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", cursor: "cursor" };
+        const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai", cursor: "cursor", droid: "factory" };
         if (familyMap[auth.cli]) subProviders.push(familyMap[auth.cli]!);
       }
       if (auth.type === "api-key" && auth.provider) {

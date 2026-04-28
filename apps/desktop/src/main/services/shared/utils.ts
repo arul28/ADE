@@ -5,11 +5,11 @@
  * Import from here instead of re-declaring locally.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { resolveCliSpawnInvocation, terminateProcessTree } from "./processExecution";
+import { resolveCliSpawnInvocation } from "./processExecution";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -76,6 +76,101 @@ export function firstLine(text: string): string {
   return text.split(/\r?\n/)[0]?.trim() ?? "";
 }
 
+type KillableChildProcess = Pick<ChildProcess, "pid" | "kill" | "stdin" | "stdout" | "stderr">;
+
+function isValidPid(pid: number | null | undefined): pid is number {
+  return typeof pid === "number" && Number.isInteger(pid) && pid > 0;
+}
+
+export function destroyChildProcessStreams(child: Pick<KillableChildProcess, "stdin" | "stdout" | "stderr"> | null | undefined): void {
+  if (!child) return;
+  try {
+    child.stdin?.destroy();
+  } catch {
+    // ignore
+  }
+  try {
+    child.stdout?.destroy();
+  } catch {
+    // ignore
+  }
+  try {
+    child.stderr?.destroy();
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Signal a process tree instead of just the direct child.
+ *
+ * On Unix-like systems, the child is spawned into its own process group and we
+ * signal the entire group. On Windows, `taskkill /T` is the closest equivalent.
+ */
+export function signalChildProcessTree(child: KillableChildProcess, signal: NodeJS.Signals): boolean {
+  const pid = child.pid ?? null;
+
+  if (process.platform === "win32") {
+    if (isValidPid(pid)) {
+      const taskkillArgs = ["/PID", String(pid), "/T"];
+      if (signal === "SIGKILL") {
+        taskkillArgs.push("/F");
+      }
+      try {
+        const result = spawnSync("taskkill", taskkillArgs, { stdio: "ignore" });
+        if (result.status === 0) return true;
+      } catch {
+        // fall through to direct child signaling
+      }
+    }
+    try {
+      return child.kill(signal);
+    } catch {
+      return false;
+    }
+  }
+
+  if (isValidPid(pid)) {
+    try {
+      process.kill(-pid, signal);
+      return true;
+    } catch {
+      // fall through to direct child signaling
+    }
+  }
+
+  try {
+    if (child.kill(signal)) return true;
+  } catch {
+    // fall through to PID signaling below
+  }
+
+  if (isValidPid(pid)) {
+    try {
+      process.kill(pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+export function terminateChildProcessTree(
+  child: KillableChildProcess,
+  previousKillTimer: NodeJS.Timeout | null = null,
+  killAfterMs = 1_500,
+): NodeJS.Timeout {
+  if (previousKillTimer) {
+    clearTimeout(previousKillTimer);
+  }
+  signalChildProcessTree(child, "SIGTERM");
+  return setTimeout(() => {
+    signalChildProcessTree(child, "SIGKILL");
+  }, killAfterMs);
+}
+
 /** Spawn a child process and collect stdout/stderr with a timeout. */
 export function spawnAsync(
   command: string,
@@ -87,28 +182,41 @@ export function spawnAsync(
       const invocation = resolveCliSpawnInvocation(command, args);
       const child = spawn(invocation.command, invocation.args, {
         stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
-      const timeout = setTimeout(() => {
-        terminateProcessTree(child);
-      }, opts?.timeout ?? 5_000);
       let stdout = "";
       let stderr = "";
       const limit = opts?.maxOutputBytes ?? 10_000;
+      const timeoutMs = opts?.timeout ?? 5_000;
+      let timeoutHandle: NodeJS.Timeout | null = null;
+      let hardResolveHandle: NodeJS.Timeout | null = null;
+      let killEscalationHandle: NodeJS.Timeout | null = null;
+      let settled = false;
+      const settle = (status: number | null): void => {
+        if (settled) return;
+        settled = true;
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (hardResolveHandle) clearTimeout(hardResolveHandle);
+        if (killEscalationHandle) clearTimeout(killEscalationHandle);
+        destroyChildProcessStreams(child);
+        resolve({ status, stdout, stderr });
+      };
       child.stdout?.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8").slice(0, Math.max(0, limit - stdout.length));
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         stderr += chunk.toString("utf8").slice(0, Math.max(0, limit - stderr.length));
       });
-      child.on("error", () => {
-        clearTimeout(timeout);
-        resolve({ status: null, stdout, stderr });
-      });
-      child.on("close", (code) => {
-        clearTimeout(timeout);
-        resolve({ status: code, stdout, stderr });
-      });
+      child.once("error", () => settle(null));
+      child.once("close", (code) => settle(code));
+      timeoutHandle = setTimeout(() => {
+        if (settled) return;
+        // Retain the SIGKILL escalation timer so we can clear it if the
+        // SIGTERM induces a clean exit before the kill window elapses.
+        killEscalationHandle = terminateChildProcessTree(child, null, 1_500);
+        hardResolveHandle = setTimeout(() => settle(null), 5_000);
+      }, timeoutMs);
     } catch {
       resolve({ status: null, stdout: "", stderr: "" });
     }

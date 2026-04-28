@@ -79,6 +79,12 @@ describe("getPermissionOptions", () => {
     expect(options.map((o) => o.value)).toEqual(["default", "plan", "full-auto", "config-toml"]);
   });
 
+  it("returns Droid autonomy options for CLI-wrapped factory", () => {
+    const options = getPermissionOptions({ family: "factory", isCliWrapped: true });
+    expect(options).toHaveLength(4);
+    expect(options.map((o) => o.value)).toEqual(["plan", "edit", "default", "full-auto"]);
+  });
+
   it("returns API/local options for CLI-wrapped codex family (family normalization only applies to guarded mode)", () => {
     // 'codex' as a family string does not match the openai CLI branch (which checks opts.family === "openai")
     const options = getPermissionOptions({ family: "codex", isCliWrapped: true });
@@ -155,6 +161,10 @@ describe("familyToPermissionKey", () => {
     expect(familyToPermissionKey("openai", true)).toBe("codex");
   });
 
+  it("maps CLI-wrapped factory models to 'droid'", () => {
+    expect(familyToPermissionKey("factory", true)).toBe("droid");
+  });
+
   it("maps everything else to 'opencode'", () => {
     expect(familyToPermissionKey("anthropic", false)).toBe("opencode");
     expect(familyToPermissionKey("openai", false)).toBe("opencode");
@@ -167,6 +177,7 @@ describe("permissionFamilyLabel", () => {
   it("returns human-readable labels for all keys", () => {
     expect(permissionFamilyLabel("claude")).toBe("Claude Code workers");
     expect(permissionFamilyLabel("codex")).toBe("Codex workers");
+    expect(permissionFamilyLabel("droid")).toBe("Droid workers");
     expect(permissionFamilyLabel("opencode")).toBe("OpenCode workers");
   });
 });

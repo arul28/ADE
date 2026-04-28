@@ -9,6 +9,7 @@ import {
   type AgentChatClaudePermissionMode,
   type AgentChatCursorConfigOption,
   type AgentChatCursorModeSnapshot,
+  type AgentChatDroidPermissionMode,
   type AgentChatCodexApprovalPolicy,
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
@@ -62,6 +63,7 @@ export type ParallelComposerControlSlot = {
   codexSandbox: AgentChatCodexSandbox;
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
+  droidPermissionMode: AgentChatDroidPermissionMode;
   cursorModeSnapshot: AgentChatCursorModeSnapshot | null;
   onInteractionModeChange: (mode: AgentChatInteractionMode) => void;
   onClaudeModeChange: (mode: AgentChatClaudePermissionMode) => void;
@@ -75,6 +77,7 @@ export type ParallelComposerControlSlot = {
   onCodexSandboxChange: (sandbox: AgentChatCodexSandbox) => void;
   onCodexConfigSourceChange: (source: AgentChatCodexConfigSource) => void;
   onOpenCodePermissionModeChange: (mode: AgentChatOpenCodePermissionMode) => void;
+  onDroidPermissionModeChange: (mode: AgentChatDroidPermissionMode) => void;
   onCursorModeChange: (modeId: string) => void;
   onCursorConfigChange: (configId: string, value: string | boolean) => void;
 };
@@ -193,6 +196,13 @@ const OPENCODE_PERMISSION_OPTIONS: Array<{ value: AgentChatOpenCodePermissionMod
   { value: "plan", label: "Plan" },
   { value: "edit", label: "Edit" },
   { value: "full-auto", label: "Full auto" },
+];
+
+const DROID_PERMISSION_OPTIONS: Array<{ value: AgentChatDroidPermissionMode; label: string; detail: string }> = [
+  { value: "read-only", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode for analysis and planning." },
+  { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations." },
+  { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs." },
+  { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces." },
 ];
 
 function cursorModeLabel(modeId: string): string {
@@ -382,6 +392,7 @@ export function AgentChatComposer({
   codexSandbox,
   codexConfigSource,
   opencodePermissionMode,
+  droidPermissionMode,
   cursorModeSnapshot,
   executionMode,
   computerUseSnapshot,
@@ -411,6 +422,7 @@ export function AgentChatComposer({
   onCodexSandboxChange,
   onCodexConfigSourceChange,
   onOpenCodePermissionModeChange,
+  onDroidPermissionModeChange,
   onCursorModeChange,
   onCursorConfigChange,
   onToggleProof,
@@ -464,6 +476,7 @@ export function AgentChatComposer({
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
@@ -497,6 +510,7 @@ export function AgentChatComposer({
   onCodexSandboxChange?: (sandbox: AgentChatCodexSandbox) => void;
   onCodexConfigSourceChange?: (source: AgentChatCodexConfigSource) => void;
   onOpenCodePermissionModeChange?: (mode: AgentChatOpenCodePermissionMode) => void;
+  onDroidPermissionModeChange?: (mode: AgentChatDroidPermissionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
   onCursorConfigChange?: (configId: string, value: string | boolean) => void;
   onComputerUsePolicyChange?: (policy: unknown) => void;
@@ -700,6 +714,7 @@ export function AgentChatComposer({
   const csUse = slot?.codexSandbox ?? codexSandbox;
   const ccsUse = slot?.codexConfigSource ?? codexConfigSource;
   const opmUse = slot?.opencodePermissionMode ?? opencodePermissionMode;
+  const dpmUse = slot?.droidPermissionMode ?? droidPermissionMode ?? "auto-low";
   const cmsUse = slot?.cursorModeSnapshot ?? cursorModeSnapshot;
 
   const claudeSelectionMode = cpmUse === "plan" || im === "plan"
@@ -1131,6 +1146,37 @@ export function AgentChatComposer({
       );
     }
 
+    if (sp === "droid") {
+      return (
+        <label
+          className={cn(
+            "flex h-8 min-h-8 items-center gap-2 rounded-md px-2",
+            plainComposerToolbarChrome
+              ? "border border-transparent bg-transparent"
+              : "border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5",
+          )}
+        >
+          <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">Autonomy</span>
+          <select
+            value={dpmUse}
+            disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
+            onChange={(event) => {
+              const v = event.target.value as AgentChatDroidPermissionMode;
+              if (parallelControlSlot) parallelControlSlot.onDroidPermissionModeChange(v);
+              else onDroidPermissionModeChange?.(v);
+            }}
+            className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
+          >
+            {DROID_PERMISSION_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value} title={option.detail}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      );
+    }
+
     const cursorModeOption = resolveCursorModeOption(cmsUse);
     const cursorExtraOptions = (cmsUse?.configOptions ?? []).filter((option) => {
       if (option.id === cmsUse?.modelConfigId) return false;
@@ -1301,8 +1347,10 @@ export function AgentChatComposer({
     onInteractionModeChange,
     onCursorConfigChange,
     onCursorModeChange,
+    onDroidPermissionModeChange,
     onOpenCodePermissionModeChange,
     cmsUse,
+    dpmUse,
     sp,
     opmUse,
     parallelControlSlot,

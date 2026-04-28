@@ -1627,7 +1627,7 @@ export function updateWorkerStateFromEventCtx(
                       properties: {
                         title: { type: "string" },
                         instructions: { type: "string" },
-                        executorKind: { type: "string", enum: ["claude", "codex", "cursor", "opencode", "manual"] }
+                        executorKind: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "manual"] }
                       }
                     },
                     downstreamGuidance: { type: "string" }
@@ -1702,7 +1702,7 @@ export function updateWorkerStateFromEventCtx(
                         dependencyStepKeys: [],
                         executorKind: (
                           typeof ws.executorKind === "string"
-                          && ["claude", "codex", "cursor", "opencode", "manual"].includes(ws.executorKind)
+                          && ["claude", "codex", "cursor", "droid", "opencode", "manual"].includes(ws.executorKind)
                             ? ws.executorKind
                             : "opencode"
                         ) as OrchestratorExecutorKind,

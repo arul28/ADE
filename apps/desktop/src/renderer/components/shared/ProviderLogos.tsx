@@ -14,9 +14,14 @@ import {
   OpenRouter,
   XAI,
 } from "@lobehub/icons";
-import { parseDynamicCursorModelRef, type ProviderFamily } from "../../../shared/modelRegistry";
+import {
+  parseDynamicCursorModelRef,
+  parseDynamicDroidModelRef,
+  type ProviderFamily,
+} from "../../../shared/modelRegistry";
 import { lobeProviderIconSrc } from "../../lib/lobeProviderIconSrc";
 import { cn } from "../ui/cn";
+import droidMarkSrc from "../../assets/provider-logos/droid.svg";
 
 type LogoProps = { size?: number; className?: string };
 
@@ -61,6 +66,10 @@ function LobeStaticMark({ src, size, className }: { src: string; size: number; c
   );
 }
 
+export function DroidLogo({ size = 16, className }: LogoProps) {
+  return <LobeStaticMark src={droidMarkSrc} size={size} className={cn("rounded-full", className)} />;
+}
+
 function CursorSubscriptionModelMark({ providerModelId, size, className }: { providerModelId: string; size: number; className?: string }) {
   const s = providerModelId.trim().toLowerCase();
   const c = lobeMarkClass(className);
@@ -92,6 +101,35 @@ function resolveCursorProviderModelId(modelId: string | undefined, providerModel
   return parsed?.providerModelId?.trim() ?? "";
 }
 
+function resolveDroidProviderModelId(modelId: string | undefined, providerModelId: string | undefined): string {
+  const fromField = (providerModelId ?? "").trim();
+  if (fromField.length) return fromField;
+  const parsed = modelId ? parseDynamicDroidModelRef(modelId) : null;
+  return parsed?.providerModelId?.trim() ?? "";
+}
+
+function DroidModelMark({ providerModelId, size, className }: { providerModelId: string; size: number; className?: string }) {
+  const raw = providerModelId.trim();
+  const normalized = raw.toLowerCase().startsWith("custom:")
+    ? raw.slice("custom:".length)
+    : raw;
+  const s = normalized.toLowerCase();
+  const c = lobeMarkClass(className);
+  if (/claude|sonnet|opus|haiku/.test(s)) {
+    return <Claude.Avatar size={size} className={c} />;
+  }
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) {
+    return <OpenAI size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
+  }
+  if (/gemini/.test(s)) {
+    return <Gemini.Color size={size} className={c} />;
+  }
+  if (/kimi/.test(s)) {
+    return <Kimi.Color size={size} className={c} />;
+  }
+  return <DroidLogo size={size} className={className} />;
+}
+
 /**
  * Provider / nav marks — company (or router) branding.
  * @see https://lobehub.com/icons/skill.md
@@ -114,6 +152,9 @@ export function ProviderLogo({
       return <OpenAI size={size} className={c} />;
     case "cursor":
       return <Cursor.Avatar size={size} className={c} />;
+    case "factory":
+    case "droid":
+      return <DroidLogo size={size} className={className} />;
     case "opencode":
       return <OpenCode.Avatar size={size} className={c} />;
     case "xai":
@@ -160,6 +201,14 @@ export function ModelRowLogo({
       return <Cursor.Avatar size={size} className={c} />;
     }
     return <CursorSubscriptionModelMark providerModelId={providerModel} size={size} className={className} />;
+  }
+
+  if (fam === "factory" || cli === "droid") {
+    const providerModel = resolveDroidProviderModelId(modelId, providerModelId);
+    if (!providerModel.length) {
+      return <DroidLogo size={size} className={className} />;
+    }
+    return <DroidModelMark providerModelId={providerModel} size={size} className={className} />;
   }
 
   if (fam === "anthropic" || cli === "claude") {

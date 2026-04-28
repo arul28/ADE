@@ -314,7 +314,7 @@ function cleanupStaleWorkerRuntimeFiles(projectRoot: string): void {
 const VALID_PERMISSION_MODES = new Set<string>(["default", "plan", "edit", "full-auto", "config-toml"]);
 
 function resolveManagedPermissionMode(args: {
-  provider: "claude" | "codex" | "opencode" | "cursor";
+  provider: "claude" | "codex" | "opencode" | "cursor" | "droid";
   descriptor?: ModelDescriptor;
   permissionConfig: LegacyPermissionConfig | undefined;
   readOnlyExecution: boolean;
@@ -322,8 +322,12 @@ function resolveManagedPermissionMode(args: {
   if (args.readOnlyExecution) return "plan";
   const providers = args.permissionConfig?._providers;
   const candidate =
-    args.provider === "cursor"
-      ? ((providers?.cursor ?? providers?.opencode) as string | undefined)
+    args.provider === "cursor" || args.provider === "droid"
+      ? ((
+          args.provider === "droid"
+            ? (providers?.droid ?? providers?.cursor ?? providers?.opencode)
+            : (providers?.cursor ?? providers?.opencode)
+        ) as string | undefined)
       : (providers?.[args.provider] as string | undefined);
   const normalizedCandidate = typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
     ? candidate as AgentChatPermissionMode
@@ -336,9 +340,9 @@ function resolveManagedPermissionMode(args: {
 }
 
 function mapPermissionModeToNativeFields(
-  provider: "claude" | "codex" | "opencode" | "cursor",
+  provider: "claude" | "codex" | "opencode" | "cursor" | "droid",
   mode: AgentChatPermissionMode | undefined,
-): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode">> {
+): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode">> {
   if (!mode) return {};
   // "config-toml" means the worker should inherit permissions from the
   // provider/repo config (e.g. a .toml settings file). Don't rewrite it
@@ -360,6 +364,12 @@ function mapPermissionModeToNativeFields(
     if (mode === "default") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" };
     return { codexApprovalPolicy: "on-request", codexSandbox: "read-only" };
   }
+  if (provider === "droid") {
+    if (mode === "full-auto") return { droidPermissionMode: "auto-high" };
+    if (mode === "default") return { droidPermissionMode: "auto-medium" };
+    if (mode === "edit") return { droidPermissionMode: "auto-low" };
+    return { droidPermissionMode: "read-only" };
+  }
   const umap: Record<string, import("../../../shared/types").AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",
     "edit": "edit",
@@ -369,10 +379,10 @@ function mapPermissionModeToNativeFields(
 }
 
 function resolveManagedExecutionMode(args: {
-  provider: "claude" | "codex" | "opencode" | "cursor";
+  provider: "claude" | "codex" | "opencode" | "cursor" | "droid";
   teamRuntime?: TeamRuntimeConfig;
 }): AgentChatExecutionMode {
-  if (args.provider === "cursor") {
+  if (args.provider === "cursor" || args.provider === "droid") {
     return "focused";
   }
   if (args.provider === "claude") {

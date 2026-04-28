@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  createDynamicDroidCliModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   getLocalModelIdTail,
+  parseDynamicDroidModelRef,
   parseDynamicOpenCodeModelRef,
   parseLocalProviderFromModelId,
   resolveModelDescriptor,
@@ -32,7 +34,7 @@ import {
   type ProviderGroupKey,
 } from "./providerModelSelectorGrouping";
 
-const GROUP_KEYS: ProviderGroupKey[] = ["claude", "codex", "cursor", "opencode"];
+const GROUP_KEYS: ProviderGroupKey[] = ["claude", "codex", "cursor", "droid", "opencode"];
 
 function catalogGroupTabIcon(key: ProviderGroupKey, size = 15) {
   const c = "shrink-0 inline-flex [&_svg]:max-h-none [&_svg]:max-w-none opacity-90";
@@ -43,6 +45,8 @@ function catalogGroupTabIcon(key: ProviderGroupKey, size = 15) {
       return <Codex.Avatar size={size} className={cn("opacity-95", c)} />;
     case "cursor":
       return <Cursor.Avatar size={size} className={c} />;
+    case "droid":
+      return <ProviderLogo family="factory" size={size} className="opacity-90" />;
     case "opencode":
       return <OpenCode.Avatar size={size} className={c} />;
     default:
@@ -115,6 +119,10 @@ export function createUnknownModelPlaceholder(modelId: string): ModelDescriptor 
       cliCommand: "cursor",
       isCliWrapped: true,
     };
+  }
+  const droidCli = parseDynamicDroidModelRef(modelId);
+  if (droidCli) {
+    return createDynamicDroidCliModelDescriptor(droidCli.providerModelId);
   }
   const localProvider = parseLocalProviderFromModelId(modelId);
   if (localProvider) {
@@ -552,6 +560,11 @@ export function ModelCatalogPanel({
                   Unknown
                 </span>
               ) : null}
+              {model.customProxy ? (
+                <span className="inline-flex shrink-0 items-center rounded-full border border-sky-400/20 bg-sky-500/[0.08] px-1.5 py-0.5 font-sans text-[8px] font-semibold uppercase tracking-[0.14em] text-sky-300/70">
+                  Proxy
+                </span>
+              ) : null}
             </div>
             <div className={cn("truncate text-[11px]", isAvailable ? "text-fg/50" : "text-muted-fg/35 italic")}>
               {modelAvailabilityLabel(model, isAvailable)}
@@ -634,7 +647,7 @@ export function ModelCatalogPanel({
         <div key={groupBlock.key} className="border-b border-white/[0.04] last:border-b-0">
           <div className="sticky top-0 z-[1] border-b border-white/[0.06] px-4 py-2.5 backdrop-blur-md" style={{ background: "rgba(19,17,34,0.85)" }}>
             <div className="flex items-center gap-2 font-sans text-[10px] font-bold uppercase tracking-[0.2em] text-fg/55">
-              <ProviderLogo family={groupBlock.key === "claude" ? "anthropic" : groupBlock.key === "codex" ? "openai" : groupBlock.key} size={14} />
+              <ProviderLogo family={groupBlock.key === "claude" ? "anthropic" : groupBlock.key === "codex" ? "openai" : groupBlock.key === "droid" ? "factory" : groupBlock.key} size={14} />
               {groupBlock.label}
             </div>
           </div>

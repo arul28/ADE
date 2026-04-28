@@ -11,6 +11,7 @@ import {
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
   type AgentChatCursorConfigValue,
+  type AgentChatDroidPermissionMode,
   type AgentChatExecutionMode,
   type AgentChatEventEnvelope,
   type AgentChatFileRef,
@@ -209,6 +210,24 @@ function getExecutionModeOptions(model: ModelDescriptor | null | undefined): Exe
       },
     ];
   }
+  if (model.family === "factory") {
+    return [
+      {
+        value: "focused",
+        label: "Focused",
+        summary: "Single thread",
+        helper: "Keep the turn in one Droid session unless the task clearly benefits from delegation.",
+        accent: "#A1A1AA",
+      },
+      {
+        value: "parallel",
+        label: "Parallel",
+        summary: "Droid delegates",
+        helper: "Tell Droid to use available delegation or mission-style tools for independent subtasks, then reconcile the result.",
+        accent: "#10B981",
+      },
+    ];
+  }
   return [];
 }
 
@@ -261,6 +280,7 @@ type NativeControlState = {
   codexSandbox: AgentChatCodexSandbox;
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
+  droidPermissionMode: AgentChatDroidPermissionMode;
   cursorModeId: string | null;
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
 };
@@ -280,6 +300,7 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
       codexSandbox: "danger-full-access",
       codexConfigSource: "flags",
       opencodePermissionMode: "full-auto",
+      droidPermissionMode: "auto-high",
       cursorModeId: "agent",
       cursorConfigValues: {},
     };
@@ -291,12 +312,13 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
     codexSandbox: "workspace-write",
     codexConfigSource: "flags",
     opencodePermissionMode: "edit",
+    droidPermissionMode: "auto-low",
     cursorModeId: "agent",
     cursorConfigValues: {},
   };
 }
 
-type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "opencode";
+type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "droid" | "opencode";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
   return desc ? resolveProviderGroupForModel(desc) : "opencode";
@@ -304,7 +326,9 @@ function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): C
 
 function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registryModelId: string): string {
   if (!desc?.isCliWrapped) return registryModelId;
-  if (desc.family === "cursor" || desc.family === "openai") return desc.providerModelId || registryModelId;
+  if (desc.family === "cursor" || desc.family === "openai" || desc.family === "factory") {
+    return desc.providerModelId || registryModelId;
+  }
   return desc.shortId ?? registryModelId;
 }
 
@@ -329,11 +353,11 @@ function cloneParallelSlotFromComposer(args: {
 }
 
 function summarizeNativeControls(
-  provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "opencode" | "cursor",
+  provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "opencode" | "cursor" | "droid",
   controls: NativeControlState,
 ): Pick<
   AgentChatSessionSummary,
-  "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "permissionMode" | "cursorModeId"
+  "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "permissionMode" | "cursorModeId"
 > {
   if (provider === "claude") {
     let permissionMode: AgentChatSessionSummary["permissionMode"];
@@ -381,10 +405,33 @@ function summarizeNativeControls(
       ...(controls.cursorModeId != null ? { cursorModeId: controls.cursorModeId } : {}),
     };
   }
+  if (provider === "droid") {
+    return {
+      droidPermissionMode: controls.droidPermissionMode,
+      permissionMode: droidPermissionModeToLegacyPermissionMode(controls.droidPermissionMode),
+    };
+  }
   return {
     opencodePermissionMode: controls.opencodePermissionMode,
     permissionMode: controls.opencodePermissionMode,
   };
+}
+
+function droidPermissionModeToLegacyPermissionMode(mode: AgentChatDroidPermissionMode): AgentChatPermissionMode {
+  if (mode === "read-only") return "plan";
+  if (mode === "auto-low") return "edit";
+  if (mode === "auto-medium") return "default";
+  return "full-auto";
+}
+
+function legacyPermissionModeToDroidPermissionMode(
+  mode: AgentChatPermissionMode | undefined,
+): AgentChatDroidPermissionMode | undefined {
+  if (mode === "plan") return "read-only";
+  if (mode === "edit") return "auto-low";
+  if (mode === "default") return "auto-medium";
+  if (mode === "full-auto") return "auto-high";
+  return undefined;
 }
 
 /**
@@ -465,6 +512,13 @@ const HANDOFF_OPENCODE_MODES: Array<{ value: AgentChatOpenCodePermissionMode; la
   { value: "plan", label: "Plan" },
   { value: "edit", label: "Edit" },
   { value: "full-auto", label: "Full auto" },
+];
+
+const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: string }> = [
+  { value: "read-only", label: "Read-only" },
+  { value: "auto-low", label: "Auto low" },
+  { value: "auto-medium", label: "Auto medium" },
+  { value: "auto-high", label: "Auto high" },
 ];
 
 const handoffSelectCls = cn(
@@ -557,11 +611,13 @@ function resolveAssistantLabel(
   sessionProvider: string | null | undefined,
 ): string {
   if (model?.family === "cursor" || model?.cliCommand === "cursor") return "Cursor";
+  if (model?.family === "factory" || model?.cliCommand === "droid") return "Droid";
   if (model?.family === "anthropic" || model?.cliCommand === "claude") return "Claude";
   if (model?.family === "openai" || model?.cliCommand === "codex") return "Codex";
   if (sessionProvider === "claude") return "Claude";
   if (sessionProvider === "codex") return "Codex";
   if (sessionProvider === "cursor") return "Cursor";
+  if (sessionProvider === "droid") return "Droid";
   return "Assistant";
 }
 
@@ -666,13 +722,19 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
-function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor", value: string | null | undefined): string | null {
+function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor" | "droid", value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
   if (provider === "cursor") {
     const fullId = normalized.startsWith("cursor/") ? normalized : `cursor/${normalized}`;
     const dynamic = getModelById(fullId) ?? resolveModelDescriptorForProvider(normalized.replace(/^cursor\//, ""), "cursor");
     if (dynamic && dynamic.family === "cursor" && dynamic.isCliWrapped) return dynamic.id;
+    return null;
+  }
+  if (provider === "droid") {
+    const fullId = normalized.startsWith("droid/") ? normalized : `droid/${normalized}`;
+    const dynamic = getModelById(fullId) ?? resolveModelDescriptorForProvider(normalized.replace(/^droid\//, ""), "droid");
+    if (dynamic && dynamic.family === "factory" && dynamic.isCliWrapped) return dynamic.id;
     return null;
   }
   const family = provider === "codex" ? "openai" : "anthropic";
@@ -694,6 +756,7 @@ function chatToolTypeForProvider(provider: string | null | undefined): TerminalT
     case "codex": return "codex-chat";
     case "claude": return "claude-chat";
     case "cursor": return "cursor";
+    case "droid": return "droid-chat";
     default: return "opencode-chat";
   }
 }
@@ -1009,6 +1072,7 @@ export function AgentChatPane({
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
   const [codexConfigSource, setCodexConfigSource] = useState<AgentChatCodexConfigSource>(initialNativeControls.codexConfigSource);
   const [opencodePermissionMode, setOpenCodePermissionMode] = useState<AgentChatOpenCodePermissionMode>(initialNativeControls.opencodePermissionMode);
+  const [droidPermissionMode, setDroidPermissionMode] = useState<AgentChatDroidPermissionMode>(initialNativeControls.droidPermissionMode);
   const prevModelDescRef = useRef<ModelDescriptor | null | undefined>(undefined);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(initialNativeControls.cursorConfigValues);
@@ -1017,6 +1081,7 @@ export function AgentChatPane({
     claude: AiProviderConnectionStatus | null;
     codex: AiProviderConnectionStatus | null;
     cursor: AiProviderConnectionStatus | null;
+    droid: AiProviderConnectionStatus | null;
   } | null>(null);
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
@@ -1055,6 +1120,9 @@ export function AgentChatPane({
   );
   const [handoffOpenCodePermissionMode, setHandoffOpenCodePermissionMode] = useState<AgentChatOpenCodePermissionMode>(
     initialNativeControls.opencodePermissionMode,
+  );
+  const [handoffDroidPermissionMode, setHandoffDroidPermissionMode] = useState<AgentChatDroidPermissionMode>(
+    initialNativeControls.droidPermissionMode,
   );
   const [handoffCursorModeId, setHandoffCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [handoffCursorConfigValues, setHandoffCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(
@@ -1273,6 +1341,8 @@ export function AgentChatPane({
       ? (providerConnections?.codex ?? null)
       : selectedSession?.provider === "cursor"
         ? (providerConnections?.cursor ?? null)
+        : selectedSession?.provider === "droid"
+          ? (providerConnections?.droid ?? null)
         : null;
   const pendingApprovalIds = useMemo(() => {
     const ids = new Set<string>();
@@ -1361,16 +1431,24 @@ export function AgentChatPane({
     selectedSessionId
     && activeProviderConnection
     && !activeProviderConnection.runtimeAvailable
-    && (activeProviderConnection.blocker || activeProviderConnection.provider === "cursor"),
+    && (
+      activeProviderConnection.blocker
+      || activeProviderConnection.provider === "cursor"
+      || activeProviderConnection.provider === "droid"
+    ),
   );
   const cliRuntimeTitle = activeProviderConnection?.provider === "claude"
     ? "Claude runtime"
     : activeProviderConnection?.provider === "cursor"
       ? "Cursor runtime"
+      : activeProviderConnection?.provider === "droid"
+        ? "Droid runtime"
       : "Codex runtime";
   const cliRuntimeBody = activeProviderConnection?.blocker
-    ?? (activeProviderConnection?.provider === "cursor"
-      ? "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."
+    ?? (activeProviderConnection?.provider === "droid"
+      ? "Droid is not available. Install the Factory CLI, ensure `droid` is on PATH, and configure Factory authentication."
+      : activeProviderConnection?.provider === "cursor"
+        ? "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."
       : null);
 
   const mergedRuntimeBanner = useMemo(() => {
@@ -1483,6 +1561,7 @@ export function AgentChatPane({
       codexSandbox: row.codexSandbox,
       codexConfigSource: row.codexConfigSource,
       opencodePermissionMode: row.opencodePermissionMode,
+      droidPermissionMode: row.droidPermissionMode,
       cursorModeSnapshot: parallelSlotCursorSnapshot,
       onInteractionModeChange: (mode) => patchParallelSlot(idx, { interactionMode: mode }),
       onClaudeModeChange: (mode) => patchParallelSlot(idx, {
@@ -1499,6 +1578,7 @@ export function AgentChatPane({
       onCodexSandboxChange: (sandbox) => patchParallelSlot(idx, { codexSandbox: sandbox }),
       onCodexConfigSourceChange: (source) => patchParallelSlot(idx, { codexConfigSource: source }),
       onOpenCodePermissionModeChange: (mode) => patchParallelSlot(idx, { opencodePermissionMode: mode }),
+      onDroidPermissionModeChange: (mode) => patchParallelSlot(idx, { droidPermissionMode: mode }),
       onCursorModeChange: (modeId) => patchParallelSlot(idx, { cursorModeId: modeId }),
       onCursorConfigChange: (configId, value) => patchParallelSlot(idx, {
         cursorConfigValues: { ...row.cursorConfigValues, [configId]: value },
@@ -1520,6 +1600,7 @@ export function AgentChatPane({
       setCodexSandbox(initialNativeControls.codexSandbox);
       setCodexConfigSource(initialNativeControls.codexConfigSource);
       setOpenCodePermissionMode(initialNativeControls.opencodePermissionMode);
+      setDroidPermissionMode(initialNativeControls.droidPermissionMode);
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
       return;
@@ -1536,6 +1617,11 @@ export function AgentChatPane({
     setCodexSandbox(session.codexSandbox ?? initialNativeControls.codexSandbox);
     setCodexConfigSource(session.codexConfigSource ?? initialNativeControls.codexConfigSource);
     setOpenCodePermissionMode(session.opencodePermissionMode ?? initialNativeControls.opencodePermissionMode);
+    setDroidPermissionMode(
+      session.droidPermissionMode
+        ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
+        ?? initialNativeControls.droidPermissionMode,
+    );
     setCursorModeId(session.cursorModeId ?? session.cursorModeSnapshot?.currentModeId ?? initialNativeControls.cursorModeId);
     setCursorConfigValues(
       Object.fromEntries(
@@ -1613,6 +1699,7 @@ export function AgentChatPane({
     codexSandbox: handoffCodexSandbox,
     codexConfigSource: handoffCodexConfigSource,
     opencodePermissionMode: handoffOpenCodePermissionMode,
+    droidPermissionMode: handoffDroidPermissionMode,
     cursorModeId: handoffCursorModeId,
     cursorConfigValues: handoffCursorConfigValues,
   }), [
@@ -1622,6 +1709,7 @@ export function AgentChatPane({
     handoffCodexSandbox,
     handoffCodexConfigSource,
     handoffOpenCodePermissionMode,
+    handoffDroidPermissionMode,
     handoffCursorModeId,
     handoffCursorConfigValues,
   ]);
@@ -1664,8 +1752,9 @@ export function AgentChatPane({
         claude: status.providerConnections?.claude ?? null,
         codex: status.providerConnections?.codex ?? null,
         cursor: status.providerConnections?.cursor ?? null,
+        droid: status.providerConnections?.droid ?? null,
       });
-      const available = deriveConfiguredModelIds(status);
+      const available = deriveConfiguredModelIds(status, { includeDroid: true });
       setAvailableModelIds(available);
       return available;
     } catch {
@@ -1675,10 +1764,11 @@ export function AgentChatPane({
     }
 
     try {
-      const [codexModels, claudeModels, cursorModels, openCodeModels] = await Promise.all([
+      const [codexModels, claudeModels, cursorModels, droidModels, openCodeModels] = await Promise.all([
         getAgentChatModelsCached({ projectRoot, provider: "codex" }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "claude" }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "cursor" }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot, provider: "droid" }).catch(() => []),
         getAgentChatModelsCached({
           projectRoot,
           provider: "opencode",
@@ -1697,6 +1787,10 @@ export function AgentChatPane({
       }
       for (const model of cursorModels) {
         const resolved = resolveCliRegistryModelId("cursor", model.id);
+        if (resolved) available.add(resolved);
+      }
+      for (const model of droidModels) {
+        const resolved = resolveCliRegistryModelId("droid", model.id);
         if (resolved) available.add(resolved);
       }
       for (const model of openCodeModels) {
@@ -2110,6 +2204,7 @@ export function AgentChatPane({
     selectedSession?.codexSandbox,
     selectedSession?.codexConfigSource,
     selectedSession?.opencodePermissionMode,
+    selectedSession?.droidPermissionMode,
     selectedSession?.permissionMode,
     selectedSession?.cursorModeId,
     selectedSession?.cursorModeSnapshot?.currentModeId,
@@ -2244,6 +2339,7 @@ export function AgentChatPane({
       setHandoffCodexSandbox(codexSandbox);
       setHandoffCodexConfigSource(codexConfigSource);
       setHandoffOpenCodePermissionMode(opencodePermissionMode);
+      setHandoffDroidPermissionMode(droidPermissionMode);
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
     }
@@ -2603,6 +2699,7 @@ export function AgentChatPane({
     codexSandbox,
     codexConfigSource,
     opencodePermissionMode,
+    droidPermissionMode,
     cursorModeId,
     cursorConfigValues,
   }), [
@@ -2612,6 +2709,7 @@ export function AgentChatPane({
     codexSandbox,
     codexConfigSource,
     opencodePermissionMode,
+    droidPermissionMode,
     cursorModeId,
     cursorConfigValues,
   ]);
@@ -2768,6 +2866,7 @@ export function AgentChatPane({
         codexSandbox: handoffCodexSandbox,
         codexConfigSource: handoffCodexConfigSource,
         opencodePermissionMode: handoffOpenCodePermissionMode,
+        droidPermissionMode: handoffDroidPermissionMode,
         ...(resolvedHandoffPermissionMode != null ? { permissionMode: resolvedHandoffPermissionMode } : {}),
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
@@ -2789,6 +2888,7 @@ export function AgentChatPane({
     handoffCodexSandbox,
     handoffCursorConfigValues,
     handoffCursorModeId,
+    handoffDroidPermissionMode,
     handoffModelId,
     handoffNativePermissionMode,
     handoffOpenCodePermissionMode,
@@ -3343,6 +3443,7 @@ export function AgentChatPane({
     setCodexSandbox(nextControls.codexSandbox);
     setCodexConfigSource(nextControls.codexConfigSource);
     setOpenCodePermissionMode(nextControls.opencodePermissionMode);
+    setDroidPermissionMode(nextControls.droidPermissionMode);
     setCursorModeId(nextControls.cursorModeId);
     setCursorConfigValues(nextControls.cursorConfigValues);
 
@@ -3383,6 +3484,7 @@ export function AgentChatPane({
           codexSandbox: updatedSession.codexSandbox,
           codexConfigSource: updatedSession.codexConfigSource,
           opencodePermissionMode: updatedSession.opencodePermissionMode,
+          droidPermissionMode: updatedSession.droidPermissionMode,
           cursorModeId: updatedSession.cursorModeId,
           cursorModeSnapshot: updatedSession.cursorModeSnapshot,
         });
@@ -3632,6 +3734,20 @@ export function AgentChatPane({
                           ))}
                         </select>
                       ) : null}
+                      {handoffTargetProvider === "droid" ? (
+                        <select
+                          value={handoffDroidPermissionMode}
+                          onChange={(e) => setHandoffDroidPermissionMode(e.target.value as AgentChatDroidPermissionMode)}
+                          className={handoffSelectCls}
+                          aria-label="Droid autonomy mode for handoff"
+                        >
+                          {HANDOFF_DROID_MODES.map((m) => (
+                            <option key={m.value} value={m.value}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
                       {handoffTargetProvider === "cursor" ? (
                         <select
                           value={handoffCursorModeId?.trim() || "agent"}
@@ -3841,6 +3957,7 @@ export function AgentChatPane({
             codexSandbox={codexSandbox}
             codexConfigSource={codexConfigSource}
             opencodePermissionMode={opencodePermissionMode}
+            droidPermissionMode={droidPermissionMode}
             cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
             computerUseSnapshot={computerUseSnapshot}
@@ -3860,6 +3977,7 @@ export function AgentChatPane({
             onCodexSandboxChange={(value) => { void updateNativeControls({ codexSandbox: value }); }}
             onCodexConfigSourceChange={(value) => { void updateNativeControls({ codexConfigSource: value }); }}
             onOpenCodePermissionModeChange={(value) => { void updateNativeControls({ opencodePermissionMode: value }); }}
+            onDroidPermissionModeChange={(value) => { void updateNativeControls({ droidPermissionMode: value }); }}
             onCursorModeChange={(value) => { void updateNativeControls({ cursorModeId: value }); }}
             onCursorConfigChange={(configId, value) => {
               void updateNativeControls({
@@ -3926,6 +4044,7 @@ export function AgentChatPane({
                   codexSandbox: updatedSession.codexSandbox,
                   codexConfigSource: updatedSession.codexConfigSource,
                   opencodePermissionMode: updatedSession.opencodePermissionMode,
+                  droidPermissionMode: updatedSession.droidPermissionMode,
                   cursorModeId: updatedSession.cursorModeId,
                   cursorModeSnapshot: updatedSession.cursorModeSnapshot,
                 });

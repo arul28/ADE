@@ -73,13 +73,13 @@ import { createAiIntegrationService } from "./aiIntegrationService";
 type ServiceFactoryOptions = {
   aiConfig?: Record<string, unknown>;
   dailyUsageCount?: number;
-  availability?: { claude: boolean; codex: boolean; cursor?: boolean };
+  availability?: { claude: boolean; codex: boolean; cursor?: boolean; droid?: boolean };
   providerMode?: "guest" | "subscription";
 };
 
 type DbRunCall = { sql: string; params: unknown[] };
 
-function makeProviderConnections(availability: { claude: boolean; codex: boolean; cursor: boolean }) {
+function makeProviderConnections(availability: { claude: boolean; codex: boolean; cursor: boolean; droid: boolean }) {
   const checkedAt = "2025-01-01T00:00:00.000Z";
   return {
     claude: {
@@ -110,6 +110,16 @@ function makeProviderConnections(availability: { claude: boolean; codex: boolean
       sources: [],
       path: availability.cursor ? "/usr/local/bin/agent" : null,
       blocker: availability.cursor ? null : "Cursor unavailable",
+      lastCheckedAt: checkedAt,
+    },
+    droid: {
+      provider: "droid",
+      authAvailable: availability.droid,
+      runtimeDetected: availability.droid,
+      runtimeAvailable: availability.droid,
+      sources: [],
+      path: availability.droid ? "/usr/local/bin/droid" : null,
+      blocker: availability.droid ? null : "Droid unavailable",
       lastCheckedAt: checkedAt,
     },
   };
@@ -153,6 +163,7 @@ function makeService(options: ServiceFactoryOptions = {}) {
     claude: true,
     codex: true,
     cursor: false,
+    droid: false,
     ...(options.availability ?? {}),
   };
   const statuses = [
@@ -177,6 +188,13 @@ function makeService(options: ServiceFactoryOptions = {}) {
       authenticated: availability.cursor,
       verified: true,
     },
+    {
+      cli: "droid",
+      installed: availability.droid,
+      path: availability.droid ? "/usr/local/bin/droid" : null,
+      authenticated: availability.droid,
+      verified: true,
+    },
   ];
   mockState.getCachedCliAuthStatuses.mockReturnValue(statuses);
   mockState.detectAllAuth.mockResolvedValue([
@@ -188,6 +206,9 @@ function makeService(options: ServiceFactoryOptions = {}) {
       : []),
     ...(availability.cursor
       ? [{ type: "cli-subscription", cli: "cursor", path: "/usr/local/bin/agent", authenticated: true, verified: true }]
+      : []),
+    ...(availability.droid
+      ? [{ type: "cli-subscription", cli: "droid", path: "/usr/local/bin/droid", authenticated: true, verified: true }]
       : []),
   ]);
   mockState.buildProviderConnections.mockResolvedValue(makeProviderConnections(availability));

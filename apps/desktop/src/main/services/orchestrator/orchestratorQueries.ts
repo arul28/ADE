@@ -286,6 +286,7 @@ export function normalizeExecutorKind(value: string): OrchestratorExecutorKind {
     value === "claude"
     || value === "codex"
     || value === "cursor"
+    || value === "droid"
     || value === "opencode"
     || value === "shell"
     || value === "manual"

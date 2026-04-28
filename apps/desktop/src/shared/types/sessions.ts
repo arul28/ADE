@@ -24,6 +24,7 @@ export type TerminalToolType =
   | "claude-chat"
   | "opencode-chat"
   | "cursor"
+  | "droid-chat"
   | "aider"
   | "continue"
   | "other";

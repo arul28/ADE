@@ -1,0 +1,243 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import {
+  createDynamicDroidCliModelDescriptor,
+  sortDroidCliDescriptorsForPicker,
+  type ModelDescriptor,
+} from "../../../shared/modelRegistry";
+import { spawnAsync } from "../shared/utils";
+
+/** Default catalog when `droid` does not expose a machine-readable model list. */
+export const DROID_DEFAULT_MODEL_IDS: string[] = [
+  "claude-opus-4-6",
+  "claude-opus-4-6-fast",
+  "claude-opus-4-5-20251101",
+  "claude-sonnet-4-5-20250929",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5-20251001",
+  "gpt-5.1-codex",
+  "gpt-5.1-codex-max",
+  "gpt-5.1",
+  "gpt-5.2",
+  "gpt-5.2-codex",
+  "gpt-5.3-codex",
+  "gpt-5.3-codex-fast",
+  "gpt-5.4",
+  "gpt-5.4-fast",
+  "gpt-5.4-mini",
+  "gemini-3-pro-preview",
+  "gemini-3.1-pro-preview",
+  "gemini-3-flash-preview",
+  "glm-4.7",
+  "glm-5",
+  "glm-5.1",
+  "kimi-k2.5",
+  "minimax-m2.5",
+];
+
+export type DroidExecHelpModelRow = {
+  id: string;
+  displayName: string;
+  /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
+  customProxy?: boolean;
+};
+
+let cached: { at: number; models: DroidExecHelpModelRow[] } | null = null;
+let inflight: Promise<DroidExecHelpModelRow[]> | null = null;
+const TTL_MS = 120_000;
+
+export function parseDroidExecHelpModels(stdout: string): DroidExecHelpModelRow[] {
+  const lines = stdout.split(/\r?\n/);
+  const rows: DroidExecHelpModelRow[] = [];
+  const seen = new Set<string>();
+  let inModelSection = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^(Available Models|Custom Models):$/i.test(trimmed)) {
+      inModelSection = true;
+      continue;
+    }
+    if (!inModelSection) continue;
+    if (!trimmed.length) continue;
+    if (
+      /^(Model details|Authentication|Examples|Autonomy Levels|Mission Mode|Session Flags|Tool Controls):$/i.test(trimmed)
+      || /^[-A-Z][\w -]+:$/i.test(trimmed)
+    ) {
+      break;
+    }
+    const match = line.match(/^\s{2,}([a-z0-9][\w.:()+-]*)\s{2,}(.+?)\s*$/i);
+    if (!match) continue;
+    const id = match[1].trim();
+    const displayName = match[2].trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    rows.push({ id, displayName });
+  }
+
+  return rows;
+}
+
+export function parseDroidExecHelpModelIds(stdout: string): string[] {
+  return parseDroidExecHelpModels(stdout).map((row) => row.id);
+}
+
+/**
+ * Best-effort: ask the Droid CLI for models (flags vary by version).
+ */
+export async function listDroidModelIdsFromCli(droidPath: string): Promise<string[]> {
+  return (await listDroidModelsFromCli(droidPath)).map((row) => row.id);
+}
+
+async function listDroidModelsFromCli(droidPath: string): Promise<DroidExecHelpModelRow[]> {
+  const now = Date.now();
+  if (cached && now - cached.at < TTL_MS) {
+    return cached.models;
+  }
+  if (inflight) {
+    return inflight;
+  }
+  inflight = listDroidModelsFromCliInner(droidPath).finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+
+async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExecHelpModelRow[]> {
+  const now = Date.now();
+  try {
+    const helpResult = await spawnAsync(droidPath, ["exec", "--help"], { timeout: 8_000, maxOutputBytes: 64_000 });
+    if (helpResult.status === 0) {
+      const rows = parseDroidExecHelpModels(helpResult.stdout ?? "");
+      if (rows.length) {
+        cached = { at: now, models: rows };
+        return rows;
+      }
+    }
+  } catch {
+    // Fall through to legacy probes below.
+  }
+
+  const probes: string[][] = [
+    ["models", "--json"],
+    ["model", "list", "--json"],
+    ["models"],
+  ];
+
+  for (const args of probes) {
+    try {
+      const result = await spawnAsync(droidPath, args, { timeout: 2_500 });
+      if (result.status !== 0) continue;
+      const stdout = (result.stdout ?? "").trim();
+      if (!stdout) continue;
+
+      try {
+        const parsed = JSON.parse(stdout) as unknown;
+        if (Array.isArray(parsed)) {
+          const rows: DroidExecHelpModelRow[] = [];
+          for (const row of parsed) {
+            if (typeof row === "string" && row.trim()) {
+              const id = row.trim();
+              rows.push({ id, displayName: id });
+              continue;
+            }
+            if (row && typeof row === "object") {
+              const r = row as Record<string, unknown>;
+              const id = typeof r.id === "string" ? r.id.trim() : typeof r.model === "string" ? r.model.trim() : "";
+              const displayName = typeof r.name === "string" && r.name.trim().length ? r.name.trim() : id;
+              if (id) rows.push({ id, displayName });
+            }
+          }
+          if (rows.length) {
+            cached = { at: now, models: rows };
+            return rows;
+          }
+        }
+      } catch {
+        // not JSON
+      }
+
+      const lines = stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !/^usage:/i.test(l) && !/^options:/i.test(l));
+      const bare: DroidExecHelpModelRow[] = [];
+      const seen = new Set<string>();
+      for (const line of lines) {
+        const m = line.match(/^([a-z0-9][\w.-]*)$/i);
+        if (m && !seen.has(m[1])) {
+          seen.add(m[1]);
+          bare.push({ id: m[1], displayName: m[1] });
+        }
+      }
+      if (bare.length >= 3) {
+        cached = { at: now, models: bare };
+        return bare;
+      }
+    } catch {
+      // try next probe
+    }
+  }
+
+  cached = { at: now, models: [] };
+  return [];
+}
+
+export function clearDroidCliModelsCache(): void {
+  cached = null;
+  inflight = null;
+}
+
+/**
+ * Read custom models from `~/.factory/config.json`.
+ *
+ * Vibeproxy (and other tools) inject custom models into the Droid CLI by
+ * writing entries to this file.  Each entry carries the raw model ID, a
+ * human-readable display name, and a `custom:` prefixed ID that the CLI
+ * uses internally.
+ */
+async function readFactoryConfigCustomModels(): Promise<DroidExecHelpModelRow[]> {
+  try {
+    const configPath = join(homedir(), ".factory", "config.json");
+    const raw = await readFile(configPath, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const customModels = parsed.custom_models;
+    if (!Array.isArray(customModels)) return [];
+    const rows: DroidExecHelpModelRow[] = [];
+    for (const entry of customModels) {
+      if (!entry || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      const model = typeof e.model === "string" ? e.model.trim() : "";
+      const displayName = typeof e.model_display_name === "string" ? e.model_display_name.trim() : "";
+      if (!model) continue;
+      // The droid CLI wraps custom models with a "custom:" prefix.
+      const id = `custom:${model}`;
+      rows.push({ id, displayName: displayName || id, customProxy: true });
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
+export async function discoverDroidCliModelDescriptors(droidPath: string): Promise<ModelDescriptor[]> {
+  const fromCli = await listDroidModelsFromCli(droidPath);
+  const baseRows: DroidExecHelpModelRow[] = fromCli.length
+    ? fromCli
+    : DROID_DEFAULT_MODEL_IDS.map((id) => ({ id, displayName: id }));
+
+  // Merge custom models from ~/.factory/config.json so vibeproxy-injected
+  // models appear even when the CLI help output doesn't list them.
+  const customRows = await readFactoryConfigCustomModels();
+
+  const seen = new Set<string>();
+  const descriptors: ModelDescriptor[] = [];
+  for (const row of [...baseRows, ...customRows]) {
+    const trimmed = String(row.id ?? "").trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName, { customProxy: row.customProxy }));
+  }
+  return sortDroidCliDescriptorsForPicker(descriptors);
+}
