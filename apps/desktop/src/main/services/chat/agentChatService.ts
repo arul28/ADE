@@ -2833,7 +2833,9 @@ function cursorAcpSessionRequest<T extends Record<string, unknown>>(request: T):
 }
 
 type AcpSessionLifecycleConnection = ClientSideConnection & {
+  closeSession?: (params: CloseSessionRequest) => Promise<CloseSessionResponse | void>;
   unstable_closeSession?: (params: CloseSessionRequest) => Promise<CloseSessionResponse | void>;
+  resumeSession?: (params: ResumeSessionRequest) => Promise<ResumeSessionResponse>;
   unstable_resumeSession?: (params: ResumeSessionRequest) => Promise<ResumeSessionResponse>;
 };
 
