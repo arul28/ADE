@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { COLORS } from "../lanes/laneDesignTokens";
 import { buildGraphPrOverlay } from "./graphPrData";
 import { getPrEdgeColor } from "../prs/shared/prVisuals";
 
@@ -186,10 +187,10 @@ describe("buildGraphPrOverlay", () => {
 
 describe("getPrEdgeColor", () => {
   it("prioritizes requested graph colors by PR workflow state", () => {
-    expect(getPrEdgeColor({ state: "draft", checksStatus: "none", reviewStatus: "none" })).toBe("#A78BFA");
-    expect(getPrEdgeColor({ state: "open", checksStatus: "pending", reviewStatus: "approved", ciRunning: true })).toBe("#3B82F6");
-    expect(getPrEdgeColor({ state: "open", checksStatus: "failing", reviewStatus: "changes_requested" })).toBe("#EF4444");
-    expect(getPrEdgeColor({ state: "merged", checksStatus: "passing", reviewStatus: "approved" })).toBe("#22C55E");
-    expect(getPrEdgeColor({ state: "open", checksStatus: "none", reviewStatus: "requested" })).toBe("#F59E0B");
+    expect(getPrEdgeColor({ state: "draft", checksStatus: "none", reviewStatus: "none" })).toBe(COLORS.accent);
+    expect(getPrEdgeColor({ state: "open", checksStatus: "pending", reviewStatus: "approved", ciRunning: true })).toBe(COLORS.info);
+    expect(getPrEdgeColor({ state: "open", checksStatus: "failing", reviewStatus: "changes_requested" })).toBe(COLORS.danger);
+    expect(getPrEdgeColor({ state: "merged", checksStatus: "passing", reviewStatus: "approved" })).toBe(COLORS.success);
+    expect(getPrEdgeColor({ state: "open", checksStatus: "none", reviewStatus: "requested" })).toBe(COLORS.warning);
   });
 });

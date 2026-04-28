@@ -24,7 +24,6 @@ export function PrLaneCleanupBanner({
   const [error, setError] = React.useState<string | null>(null);
   const [deleteMode, setDeleteMode] = React.useState<"worktree" | "local_branch" | "remote_branch">("local_branch");
   const [remoteName, setRemoteName] = React.useState("origin");
-  const [forceDelete, setForceDelete] = React.useState(false);
   const [confirmText, setConfirmText] = React.useState("");
 
   if (!pr || !lane) return null;
@@ -34,9 +33,7 @@ export function PrLaneCleanupBanner({
   const prHeadBranch = branchNameFromRef(pr.headBranch);
   const laneBranch = branchNameFromRef(lane.branchRef);
   const isPrimaryBranchMismatch = lane.laneType === "primary" && prHeadBranch && prHeadBranch !== laneBranch;
-  const deletePhrase = `delete ${lane.name}`;
   const cleanupPhrase = `delete ${prHeadBranch}`;
-  const confirmMatch = confirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
   const branchConfirmMatch = confirmText.trim().toLowerCase() === cleanupPhrase.toLowerCase();
   const isDisabled = busy || actionBusy;
 
@@ -51,30 +48,6 @@ export function PrLaneCleanupBanner({
     try {
       await window.ade.lanes.archive({ laneId: lane.id });
       setDone("Lane archived successfully");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!confirmMatch) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await window.ade.lanes.delete({
-        laneId: lane.id,
-        deleteBranch: deleteMode !== "worktree",
-        deleteRemoteBranch: deleteMode === "remote_branch",
-        remoteName: remoteName.trim() || "origin",
-        force: forceDelete,
-      });
-      setDone(
-        deleteMode === "remote_branch" ? "Lane deleted with local + remote branches"
-        : deleteMode === "local_branch" ? "Lane deleted with local branch"
-        : "Lane worktree removed",
-      );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -114,7 +87,7 @@ export function PrLaneCleanupBanner({
   // the confirmation form even after a successful delete.
   if (done) {
     return (
-      <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `${COLORS.success}30`, background: `${COLORS.success}08` }}>
+      <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: "color-mix(in srgb, var(--color-success) 30%, transparent)", background: "color-mix(in srgb, var(--color-success) 8%, transparent)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: shellPadding }}>
           <CheckCircle size={14} weight="fill" style={{ color: COLORS.success }} />
           <span style={{ fontFamily: SANS_FONT, fontSize: titleSize, color: COLORS.success }}>{done}</span>
@@ -125,8 +98,8 @@ export function PrLaneCleanupBanner({
 
   if (isPrimaryBranchMismatch) {
     return (
-      <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `${COLORS.warning}30` }}>
-        <div style={{ padding: shellPadding, borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.warning}08`, display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: "color-mix(in srgb, var(--color-warning) 30%, transparent)" }}>
+        <div style={{ padding: shellPadding, borderBottom: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-warning) 8%, transparent)", display: "flex", alignItems: "center", gap: 8 }}>
           <Warning size={14} weight="fill" style={{ color: COLORS.warning }} />
           <span style={{ fontFamily: SANS_FONT, fontSize: titleSize, fontWeight: 600, color: COLORS.textPrimary }}>
             PR is linked to Primary, but its branch is separate
@@ -155,8 +128,8 @@ export function PrLaneCleanupBanner({
                   padding: "8px 10px",
                   fontSize: textSize,
                   fontFamily: SANS_FONT,
-                  background: deleteMode === opt.value ? `${COLORS.danger}14` : "rgba(255,255,255,0.03)",
-                  border: `1px solid ${deleteMode === opt.value ? `${COLORS.danger}40` : COLORS.border}`,
+                  background: deleteMode === opt.value ? "color-mix(in srgb, var(--color-error) 14%, transparent)" : "rgba(255,255,255,0.03)",
+                  border: `1px solid ${deleteMode === opt.value ? "color-mix(in srgb, var(--color-error) 40%, transparent)" : COLORS.border}`,
                   borderRadius: 6,
                   cursor: "pointer",
                   textAlign: "left",
@@ -182,7 +155,7 @@ export function PrLaneCleanupBanner({
             value={confirmText}
             onChange={(e) => setConfirmText(e.target.value)}
             placeholder={`Type "${cleanupPhrase}" to confirm`}
-            style={{ height: 32, padding: "0 10px", borderRadius: 6, border: `1px solid ${branchConfirmMatch ? `${COLORS.danger}60` : COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 11 }}
+            style={{ height: 32, padding: "0 10px", borderRadius: 6, border: `1px solid ${branchConfirmMatch ? "color-mix(in srgb, var(--color-error) 60%, transparent)" : COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 11 }}
           />
           {error ? <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: textSize }}>{error}</div> : null}
           <button type="button" disabled={isDisabled || !branchConfirmMatch || !pr.id} onClick={() => void handleBranchCleanup()} style={dangerButton({ height: compact ? 30 : 32, padding: "0 16px", opacity: isDisabled || !branchConfirmMatch || !pr.id ? 0.45 : 1 })}>
@@ -196,11 +169,11 @@ export function PrLaneCleanupBanner({
   if (lane.laneType === "primary") return null;
 
   return (
-    <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: pr.state === "merged" ? `${COLORS.success}25` : COLORS.border }}>
+    <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: pr.state === "merged" ? "color-mix(in srgb, var(--color-success) 25%, transparent)" : COLORS.border }}>
       <div style={{
         padding: shellPadding,
         borderBottom: `1px solid ${COLORS.border}`,
-        background: pr.state === "merged" ? `${COLORS.success}06` : "transparent",
+        background: pr.state === "merged" ? "color-mix(in srgb, var(--color-success) 6%, transparent)" : "transparent",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
@@ -233,125 +206,37 @@ export function PrLaneCleanupBanner({
           <span>Type: <span style={{ color: COLORS.textPrimary }}>{lane.laneType}</span></span>
         </div>
 
-        <div style={{ display: "flex", alignItems: compact ? "flex-start" : "center", justifyContent: "space-between", gap: 12, padding: compact ? "10px 12px" : "10px 14px", background: `${COLORS.accent}06`, border: `1px solid ${COLORS.accent}18`, borderRadius: 8, flexDirection: compact ? "column" : "row" }}>
+        <div style={{ display: "flex", alignItems: compact ? "flex-start" : "center", justifyContent: "space-between", gap: 12, padding: compact ? "10px 12px" : "10px 14px", background: "color-mix(in srgb, var(--color-accent) 6%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 18%, transparent)", borderRadius: 8, flexDirection: compact ? "column" : "row" }}>
           <div>
             <div style={{ fontFamily: SANS_FONT, fontSize: titleSize, fontWeight: 600, color: COLORS.textPrimary }}>Archive</div>
             <div style={{ fontFamily: SANS_FONT, fontSize: textSize, color: COLORS.textMuted, marginTop: 2 }}>
               Hide from ADE without deleting worktree or branches
             </div>
           </div>
-          <button type="button" disabled={isDisabled} onClick={() => void handleArchive()} style={outlineButton({ height: compact ? 30 : 32, padding: "0 16px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}>
+          <button type="button" disabled={isDisabled} onClick={() => void handleArchive()} style={outlineButton({ height: compact ? 30 : 32, padding: "0 16px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)" })}>
             <Archive size={13} /> Archive
           </button>
         </div>
 
-        <div style={{ padding: compact ? "12px" : "14px", background: `${COLORS.danger}06`, border: `1px solid ${COLORS.danger}18`, borderRadius: 8 }}>
-          <div style={{ fontFamily: SANS_FONT, fontSize: titleSize, fontWeight: 600, color: COLORS.danger, marginBottom: 10 }}>
-            {isAttached ? "Detach / Delete" : "Delete Lane"}
-          </div>
-
-          {lane.status?.dirty ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", marginBottom: 10, background: `${COLORS.warning}0A`, border: `1px solid ${COLORS.warning}20`, borderRadius: 6, fontSize: textSize, color: COLORS.warning, fontFamily: SANS_FONT }}>
-              <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />
-              This lane has uncommitted changes.
+        <div style={{ display: "flex", alignItems: compact ? "flex-start" : "center", justifyContent: "space-between", gap: 12, padding: compact ? "10px 12px" : "10px 14px", background: "color-mix(in srgb, var(--color-error) 6%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 18%, transparent)", borderRadius: 8, flexDirection: compact ? "column" : "row" }}>
+          <div>
+            <div style={{ fontFamily: SANS_FONT, fontSize: titleSize, fontWeight: 600, color: COLORS.danger }}>
+              {isAttached ? "Detach / Delete" : "Delete Lane"}
             </div>
-          ) : null}
-
-          <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr" : "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
-            {([
-              { value: "worktree" as const, label: isAttached ? "Detach only" : "Worktree only" },
-              { value: "local_branch" as const, label: isAttached ? "Detach + local branch" : "+ local branch" },
-              { value: "remote_branch" as const, label: isAttached ? "Detach + local + remote" : "+ local + remote" },
-            ]).map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setDeleteMode(opt.value)}
-                style={{
-                  padding: "8px 10px",
-                  fontSize: textSize,
-                  fontFamily: SANS_FONT,
-                  background: deleteMode === opt.value ? `${COLORS.danger}14` : "rgba(255,255,255,0.03)",
-                  border: `1px solid ${deleteMode === opt.value ? `${COLORS.danger}40` : COLORS.border}`,
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  textAlign: "left",
-                  color: deleteMode === opt.value ? COLORS.danger : COLORS.textSecondary,
-                  fontWeight: deleteMode === opt.value ? 600 : 400,
-                  transition: "all 100ms ease",
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-
-          {deleteMode === "remote_branch" ? (
-            <div style={{ marginBottom: 10 }}>
-              <label style={{ display: "block", fontSize: textSize, color: COLORS.textMuted, fontFamily: SANS_FONT, marginBottom: 4 }}>Remote name</label>
-              <input
-                value={remoteName}
-                onChange={(e) => setRemoteName(e.target.value)}
-                placeholder="origin"
-                style={{
-                  width: "100%",
-                  height: 30,
-                  padding: "0 10px",
-                  fontSize: 12,
-                  fontFamily: MONO_FONT,
-                  background: "rgba(255,255,255,0.03)",
-                  border: `1px solid ${COLORS.border}`,
-                  borderRadius: 6,
-                  color: COLORS.textPrimary,
-                  outline: "none",
-                }}
-              />
+            <div style={{ fontFamily: SANS_FONT, fontSize: textSize, color: COLORS.textMuted, marginTop: 2 }}>
+              Open the lane manager for a pre-flight check, scope picker, and live progress.
             </div>
-          ) : null}
-
-          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: textSize, color: COLORS.textSecondary, fontFamily: SANS_FONT, cursor: "pointer" }}>
-            <input type="checkbox" checked={forceDelete} onChange={(e) => setForceDelete(e.target.checked)} />
-            Force delete (skip safety checks)
-          </label>
-
-          <div style={{ marginBottom: 10 }}>
-            <label style={{ display: "block", fontSize: textSize, color: COLORS.textMuted, fontFamily: SANS_FONT, marginBottom: 4 }}>
-              Type <span style={{ fontWeight: 600, color: COLORS.danger }}>{deletePhrase}</span> to confirm
-            </label>
-            <input
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              style={{
-                width: "100%",
-                height: 30,
-                padding: "0 10px",
-                fontSize: 12,
-                fontFamily: MONO_FONT,
-                background: "rgba(255,255,255,0.03)",
-                border: `1px solid ${confirmMatch ? `${COLORS.danger}60` : COLORS.border}`,
-                borderRadius: 6,
-                color: COLORS.textPrimary,
-                outline: "none",
-              }}
-            />
           </div>
-
-          {error ? (
-            <div style={{ marginBottom: 10, padding: "8px 10px", background: `${COLORS.danger}0A`, border: `1px solid ${COLORS.danger}20`, borderRadius: 6, fontSize: textSize, color: COLORS.danger, fontFamily: SANS_FONT }}>
-              {error}
-            </div>
-          ) : null}
-
           <button
             type="button"
-            disabled={isDisabled || !confirmMatch}
-            onClick={() => void handleDelete()}
+            disabled={isDisabled}
+            onClick={() => onNavigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single&action=manage`)}
             style={{
-              ...primaryButton({ height: 32, padding: "0 20px", opacity: (isDisabled || !confirmMatch) ? 0.4 : 1 }),
+              ...primaryButton({ height: compact ? 30 : 32, padding: "0 16px", opacity: isDisabled ? 0.45 : 1 }),
               background: COLORS.danger,
             }}
           >
-            <Trash size={13} /> {busy ? "Deleting..." : "Delete Lane"}
+            <Trash size={13} /> Manage lane…
           </button>
         </div>
       </div>

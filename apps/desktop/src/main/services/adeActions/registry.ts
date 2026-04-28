@@ -340,7 +340,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
   computer_use_artifacts: ["ingest", "listArtifacts"],
-  ios_simulator: ["getStatus", "listDevices", "launch", "screenshot", "getInspectorSnapshot", "inspectPoint", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "selectPoint"],
+  ios_simulator: ["getStatus", "listDevices", "listLaunchTargets", "launch", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
   automations: [
     "list",
     "get",

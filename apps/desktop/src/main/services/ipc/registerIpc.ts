@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell } from "electron";
 import { createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -254,6 +254,7 @@ import type {
   ProcessActionArgs,
   ProcessDefinition,
   ProcessRuntime,
+  ProcessGroupArgs,
   ProcessStackArgs,
   ProjectConfigCandidate,
   ProjectConfigDiff,
@@ -1686,6 +1687,35 @@ export function registerIpc({
     __adeOriginalHandle?: typeof ipcMain.handle;
   };
 
+  const ipcInvokeTimeoutMs = (channel: string): number => {
+    switch (channel) {
+      case IPC.iosSimulatorLaunch:
+        return 10 * 60_000;
+      case IPC.iosSimulatorListLaunchTargets:
+      case IPC.iosSimulatorGetScreenSnapshot:
+      case IPC.iosSimulatorInspectPoint:
+      case IPC.iosSimulatorSelectPoint:
+      case IPC.iosSimulatorGetPreviewCapability:
+      case IPC.iosSimulatorListPreviewTargets:
+      case IPC.iosSimulatorRenderPreview:
+        return 2 * 60_000;
+      case IPC.iosSimulatorOpenPreviewWorkspace:
+      case IPC.iosSimulatorScreenshot:
+      case IPC.iosSimulatorStartStream:
+      case IPC.iosSimulatorStopStream:
+      case IPC.iosSimulatorShutdown:
+      case IPC.iosSimulatorGetStreamStatus:
+      case IPC.iosSimulatorListWindowSources:
+      case IPC.iosSimulatorTap:
+      case IPC.iosSimulatorTypeText:
+      case IPC.iosSimulatorDrag:
+      case IPC.iosSimulatorSwipe:
+        return 60_000;
+      default:
+        return 30_000;
+    }
+  };
+
   const tracedIpcMain = ipcMain as TracedIpcMain;
   if (traceIpcInvokes && !tracedIpcMain.__adeTraceWrapped) {
     const originalHandle = tracedIpcMain.handle.bind(ipcMain);
@@ -1709,21 +1739,18 @@ export function registerIpc({
           })(),
           args: summarizeIpcValue(args),
         });
-        const IPC_TIMEOUT_MS = 30_000;
+        const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel);
+        let timeoutHandle: NodeJS.Timeout | null = null;
         try {
-          const result = await (
-            IPC_TIMEOUT_MS == null
-              ? listener(event, ...args)
-              : Promise.race([
-                  listener(event, ...args),
-                  new Promise<never>((_, reject) =>
-                    setTimeout(
-                      () => reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`)),
-                      IPC_TIMEOUT_MS
-                    )
-                  ),
-                ])
-          );
+          const result = await Promise.race([
+            listener(event, ...args),
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(
+                () => reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`)),
+                IPC_TIMEOUT_MS,
+              );
+            }),
+          ]);
           logger.info("ipc.invoke.done", {
             callId,
             channel,
@@ -1741,6 +1768,8 @@ export function registerIpc({
             err: getErrorMessage(error),
           });
           throw error;
+        } finally {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
         }
       })) as typeof ipcMain.handle;
     tracedIpcMain.__adeTraceWrapped = true;
@@ -1754,12 +1783,12 @@ export function registerIpc({
     return ctx;
   };
 
-  const ensureIosSimulator = (): AppContext & { iosSimulatorService: NonNullable<AppContext["iosSimulatorService"]> } => {
-    const ctx = getCtx();
-    if (!ctx.iosSimulatorService) {
+  const ensureIosSimulator = (): NonNullable<AppContext["iosSimulatorService"]> => {
+    const service = getCtx().iosSimulatorService;
+    if (!service) {
       throw new Error("iOS Simulator service is not available.");
     }
-    return { ...ctx, iosSimulatorService: ctx.iosSimulatorService };
+    return service;
   };
 
   const resolveComputerUseOwnerSnapshotArgs = async (
@@ -3970,18 +3999,23 @@ export function registerIpc({
           return null;
         })
       : null;
-    await ctx.laneService.delete(arg);
+    const teardownEnv = ctx.laneEnvironmentService && envContext?.envInitConfig
+      ? async () => {
+          await ctx.laneEnvironmentService!.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
+        }
+      : undefined;
+    await ctx.laneService.delete(arg, { teardownEnv });
     ctx.portAllocationService?.release(arg.laneId);
-    if (ctx.laneEnvironmentService && envContext?.envInitConfig) {
-      try {
-        await ctx.laneEnvironmentService.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
-      } catch (error) {
-        ctx.logger.warn("lane_env_cleanup.post_delete_failed", {
-          laneId: envContext.lane.id,
-          error: getErrorMessage(error)
-        });
-      }
-    }
+  });
+
+  ipcMain.handle(IPC.lanesDeleteCancel, async (_event, arg: { laneId: string }) => {
+    const ctx = getCtx();
+    return ctx.laneService.cancelDelete(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesGetDeleteRisk, async (_event, arg: { laneId: string }) => {
+    const ctx = getCtx();
+    return await ctx.laneService.getDeleteRisk(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {
@@ -4998,65 +5032,71 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.iosSimulatorGetStatus, async () => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.getStatus();
+  ipcMain.handle(IPC.iosSimulatorGetStatus, async () => ensureIosSimulator().getStatus());
+
+  ipcMain.handle(IPC.iosSimulatorListDevices, async () => ensureIosSimulator().listDevices());
+
+  ipcMain.handle(IPC.iosSimulatorListLaunchTargets, async (_event, arg = {}) =>
+    ensureIosSimulator().listLaunchTargets(arg));
+
+  ipcMain.handle(IPC.iosSimulatorLaunch, async (_event, arg = {}) => ensureIosSimulator().launch(arg));
+
+  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => ensureIosSimulator().shutdown(arg));
+
+  ipcMain.handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => ensureIosSimulator().screenshot(arg));
+
+  ipcMain.handle(IPC.iosSimulatorGetScreenSnapshot, async (_event, arg = {}) =>
+    ensureIosSimulator().getScreenSnapshot(arg));
+
+  ipcMain.handle(IPC.iosSimulatorGetInspectorSnapshot, async (_event, arg = {}) =>
+    ensureIosSimulator().getInspectorSnapshot(arg));
+
+  ipcMain.handle(IPC.iosSimulatorInspectPoint, async (_event, arg) => ensureIosSimulator().inspectPoint(arg));
+
+  ipcMain.handle(IPC.iosSimulatorGetPreviewCapability, async (_event, arg = {}) =>
+    ensureIosSimulator().getPreviewCapability(arg));
+
+  ipcMain.handle(IPC.iosSimulatorListPreviewTargets, async (_event, arg = {}) =>
+    ensureIosSimulator().listPreviewTargets(arg));
+
+  ipcMain.handle(IPC.iosSimulatorRenderPreview, async (_event, arg) => ensureIosSimulator().renderPreview(arg));
+
+  ipcMain.handle(IPC.iosSimulatorOpenPreviewWorkspace, async (_event, arg = {}) =>
+    ensureIosSimulator().openPreviewWorkspace(arg));
+
+  ipcMain.handle(IPC.iosSimulatorStartStream, async (_event, arg = {}) => ensureIosSimulator().startStream(arg));
+
+  ipcMain.handle(IPC.iosSimulatorStopStream, async () => ensureIosSimulator().stopStream());
+
+  ipcMain.handle(IPC.iosSimulatorGetStreamStatus, async () => ensureIosSimulator().getStreamStatus());
+
+  ipcMain.handle(IPC.iosSimulatorListWindowSources, async () => {
+    const status = await ensureIosSimulator().getStatus();
+    if (!status.supported) return [];
+    const simulatorWindowName = /simulator|iphone|ipad|ios/i;
+    const sources = await desktopCapturer.getSources({
+      types: ["window"],
+      thumbnailSize: { width: 320, height: 320 },
+    });
+    return sources
+      .filter((source) => simulatorWindowName.test(source.name))
+      .map((source) => ({
+        id: source.id,
+        name: source.name,
+        thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   });
 
-  ipcMain.handle(IPC.iosSimulatorListDevices, async () => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.listDevices();
-  });
+  ipcMain.handle(IPC.iosSimulatorTap, async (_event, arg) => ensureIosSimulator().tap(arg));
 
-  ipcMain.handle(IPC.iosSimulatorLaunch, async (_event, arg = {}) => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.launch(arg);
-  });
+  ipcMain.handle(IPC.iosSimulatorTypeText, async (_event, arg) => ensureIosSimulator().typeText(arg));
 
-  ipcMain.handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.screenshot(arg);
-  });
+  ipcMain.handle(IPC.iosSimulatorDrag, async (_event, arg) => ensureIosSimulator().drag(arg));
 
-  ipcMain.handle(IPC.iosSimulatorGetInspectorSnapshot, async (_event, arg = {}) => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.getInspectorSnapshot(arg);
-  });
+  ipcMain.handle(IPC.iosSimulatorSwipe, async (_event, arg) => ensureIosSimulator().swipe(arg));
 
-  ipcMain.handle(IPC.iosSimulatorInspectPoint, async (_event, arg) => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.inspectPoint(arg);
-  });
-
-  ipcMain.handle(IPC.iosSimulatorStartStream, async (_event, arg = {}) => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.startStream(arg);
-  });
-
-  ipcMain.handle(IPC.iosSimulatorStopStream, async () => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.stopStream();
-  });
-
-  ipcMain.handle(IPC.iosSimulatorGetStreamStatus, async () => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.getStreamStatus();
-  });
-
-  ipcMain.handle(IPC.iosSimulatorTap, async (_event, arg) => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.tap(arg);
-  });
-
-  ipcMain.handle(IPC.iosSimulatorTypeText, async (_event, arg) => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.typeText(arg);
-  });
-
-  ipcMain.handle(IPC.iosSimulatorSelectPoint, async (_event, arg) => {
-    const ctx = ensureIosSimulator();
-    return ctx.iosSimulatorService.selectPoint(arg);
-  });
+  ipcMain.handle(IPC.iosSimulatorSelectPoint, async (_event, arg) => ensureIosSimulator().selectPoint(arg));
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {
     const ctx = getCtx();
@@ -6414,6 +6454,21 @@ export function registerIpc({
   ipcMain.handle(IPC.processesRestartStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.processService.restartStack(arg);
+  });
+
+  ipcMain.handle(IPC.processesStartGroup, async (_event, arg: ProcessGroupArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.processService.startGroup(arg);
+  });
+
+  ipcMain.handle(IPC.processesStopGroup, async (_event, arg: ProcessGroupArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.processService.stopGroup(arg);
+  });
+
+  ipcMain.handle(IPC.processesRestartGroup, async (_event, arg: ProcessGroupArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.processService.restartGroup(arg);
   });
 
   ipcMain.handle(IPC.processesStartAll, async (_event, arg: { laneId: string }): Promise<void> => {

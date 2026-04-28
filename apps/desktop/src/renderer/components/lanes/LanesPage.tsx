@@ -13,7 +13,6 @@ import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, 
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
-import { LaneDiffPane } from "./LaneDiffPane";
 import { LaneWorkPane } from "./LaneWorkPane";
 import { QuickRunMenu } from "../run/QuickRunMenu";
 import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
@@ -193,6 +192,8 @@ function laneTilingLayoutIds(laneId: string): string[] {
     `lanes:tiling:v6:wf:${laneId}`,
     `lanes:tiling:v7:${laneId}`,
     `lanes:tiling:v7:wf:${laneId}`,
+    `lanes:tiling:v8:${laneId}`,
+    `lanes:tiling:v8:wf:${laneId}`,
   ];
 }
 
@@ -203,7 +204,6 @@ export function LanesPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const selectLane = useAppStore((s) => s.selectLane);
-  const selectRunLane = useAppStore((s) => s.selectRunLane);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
@@ -308,6 +308,8 @@ export function LanesPage() {
 
   const [addLaneDropdownOpen, setAddLaneDropdownOpen] = useState(false);
   const addLaneDropdownRef = useRef<HTMLDivElement>(null);
+  const [stackGraphHeaderOpen, setStackGraphHeaderOpen] = useState(false);
+  const stackGraphHeaderRef = useRef<HTMLDivElement>(null);
 
   const { layout: laneColumnLayout, saveLayout: saveLaneColumnLayout } = useDockLayout("lanes:columns:v1", {});
 
@@ -559,6 +561,7 @@ export function LanesPage() {
   }, [branchDropdownOpen, branchLane?.id]);
   useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
   useClickOutside(addLaneDropdownRef, () => setAddLaneDropdownOpen(false), addLaneDropdownOpen);
+  useClickOutside(stackGraphHeaderRef, () => setStackGraphHeaderOpen(false), stackGraphHeaderOpen);
 
   const refreshAutoRebaseEnabled = useCallback(async () => {
     try {
@@ -1440,6 +1443,10 @@ export function LanesPage() {
     });
   }, []);
 
+  const handleClearLanePaneDetailSelection = useCallback((laneId: string) => {
+    setLanePaneDetails((prev) => ({ ...prev, [laneId]: EMPTY_LANE_PANE_DETAIL }));
+  }, []);
+
   /* ---- Create/Attach lane submit handlers ---- */
 
   const resetCreateDialogState = useCallback(() => {
@@ -1515,6 +1522,28 @@ export function LanesPage() {
       prepareCreateDialog();
     }
   }, [urlLaneDeeplinks.action]);
+
+  // ?action=manage&laneId=X opens ManageLaneDialog for that lane. Used by other
+  // pages (graph, PR cleanup) to route through the canonical delete surface.
+  useEffect(() => {
+    if (urlLaneDeeplinks.action !== "manage") return;
+    const targetId = urlLaneDeeplinks.laneId;
+    if (!targetId) return;
+    const lane = lanesById.get(targetId);
+    if (!lane || lane.laneType === "primary") return;
+    setManagedLaneIds([targetId]);
+    setLaneActionError(null);
+    setDeleteForce(false);
+    setDeleteMode("worktree");
+    setDeleteRemoteName("origin");
+    setDeleteConfirmText("");
+    setManageOpen(true);
+    // Scrub the action param so refreshes don't re-open.
+    const next = new URLSearchParams(location.search);
+    next.delete("action");
+    navigate(`${location.pathname}?${next.toString()}`, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlLaneDeeplinks.action, urlLaneDeeplinks.laneId, lanesById]);
 
   useEffect(() => {
     if (!urlLaneDeeplinks.laneIdsRaw) return;
@@ -1711,6 +1740,7 @@ export function LanesPage() {
 
   const handleCreateDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
     setAddLaneDropdownOpen(false);
+    setStackGraphHeaderOpen(false);
     prepareCreateDialog();
     const name = typeof props?.name === "string" ? props.name.trim() : "";
     if (name) setCreateLaneName(name);
@@ -1746,24 +1776,6 @@ export function LanesPage() {
   const getPaneConfigs = useCallback((laneId: string | null) => {
     const laneDetail = laneId ? lanePaneDetails[laneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
     return {
-      "stack": {
-        title: "Stack",
-        icon: Stack,
-        bodyClassName: "overflow-hidden",
-        dataTour: "lanes.stackPane",
-        headerActions: <HelpChip termId="stack" />,
-        children: (
-          <DeferredLanePane cacheKey={`stack:${laneId ?? "none"}`} label="stack">
-            <LaneStackPane
-              lanes={stackGraphLanes}
-              selectedLaneId={laneId}
-              onSelect={(id) => handleLaneSelect(id, { extend: false })}
-              runtimeByLaneId={laneRuntimeById}
-              integrationSourcesByLaneId={integrationSourcesByLaneId}
-            />
-          </DeferredLanePane>
-        )
-      },
       "git-actions": {
         title: "Git Actions",
         icon: FileCode,
@@ -1803,25 +1815,11 @@ export function LanesPage() {
               onResolveRebaseConflict={openRebaseConflictResolver}
               selectedPath={laneDetail.selectedFilePath}
               selectedMode={laneDetail.selectedFileMode}
+              selectedCommit={laneDetail.selectedCommit ?? null}
               selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
               onSelectFile={(path, mode) => { if (laneId) handleSelectFile(laneId, path, mode); }}
               onSelectCommit={(commit) => { if (laneId) handleSelectCommit(laneId, commit); }}
-            />
-          </DeferredLanePane>
-        )
-      },
-      "diff-viewer": {
-        title: "Diff",
-        icon: FileCode,
-        bodyClassName: "overflow-hidden",
-        dataTour: "lanes.diffPane",
-        children: (
-          <DeferredLanePane cacheKey={`diff:${laneId ?? "none"}`} label="diff">
-            <LaneDiffPane
-              laneId={laneId}
-              selectedPath={laneDetail.selectedFilePath}
-              selectedFileMode={laneDetail.selectedFileMode}
-              selectedCommit={laneDetail.selectedCommit}
+              onClearDiffSelection={laneId ? () => handleClearLanePaneDetailSelection(laneId) : undefined}
             />
           </DeferredLanePane>
         )
@@ -1831,7 +1829,7 @@ export function LanesPage() {
         icon: Terminal as any,
         bodyClassName: "overflow-hidden",
         dataTour: "lanes.workPane",
-        headerActions: <HelpChip termId="worker" />,
+        hideHeaderWhenExpanded: true,
         children: (
           <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
             <LaneWorkPane laneId={laneId} />
@@ -1839,7 +1837,18 @@ export function LanesPage() {
         )
       },
     };
-  }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit, expandedGitActionsLaneId, autoRebaseEnabled, openAutoRebaseSettings, runRebaseFlow, openRebaseDetails, openRebaseConflictResolver, laneRuntimeById, integrationSourcesByLaneId]);
+  }, [
+    lanePaneDetails,
+    expandedGitActionsLaneId,
+    autoRebaseEnabled,
+    openAutoRebaseSettings,
+    runRebaseFlow,
+    openRebaseDetails,
+    openRebaseConflictResolver,
+    handleSelectFile,
+    handleSelectCommit,
+    handleClearLanePaneDetailSelection,
+  ]);
 
   /* ---- Render ---- */
 
@@ -1880,6 +1889,7 @@ export function LanesPage() {
                 }}
                 onClick={() => {
                   if (!canSwitchBranchLane) return;
+                  setStackGraphHeaderOpen(false);
                   setBranchDropdownOpen((prev) => !prev);
                 }}
                 disabled={branchCheckoutBusy || !canSwitchBranchLane}
@@ -2018,7 +2028,7 @@ export function LanesPage() {
                   </button>
                 )}
                 {pendingBranchSwitch ? (
-                  <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.warning}12` }}>
+                  <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-warning) 12%, transparent)" }}>
                     <div style={{ fontSize: 12, color: COLORS.textPrimary, fontWeight: 600 }}>This lane has active work.</div>
                     <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>Terminals and processes stay attached to this lane and will keep running on the new branch's worktree.</div>
                     <div style={{ marginTop: 6, display: "grid", gap: 2 }}>
@@ -2037,7 +2047,7 @@ export function LanesPage() {
                         style={{
                           fontSize: 11, padding: "4px 8px", height: 26,
                           border: `1px solid ${COLORS.warning}`, borderRadius: 6,
-                          background: `${COLORS.warning}25`, color: COLORS.warning,
+                          background: "color-mix(in srgb, var(--color-warning) 25%, transparent)", color: COLORS.warning,
                           fontFamily: SANS_FONT, fontWeight: 600, cursor: "pointer",
                         }}
                         onClick={async () => {
@@ -2139,7 +2149,7 @@ export function LanesPage() {
           </div>
         ) : null}
         {branchCheckoutError && branchLane && !branchDropdownOpen ? (
-          <div className="inline-flex items-center gap-2 shrink-0" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, borderRadius: 8, padding: "4px 8px", fontSize: 12, color: COLORS.danger }}>
+          <div className="inline-flex items-center gap-2 shrink-0" style={{ border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 15%, transparent)", borderRadius: 8, padding: "4px 8px", fontSize: 12, color: COLORS.danger }}>
             <span>{branchCheckoutError}</span>
             <button
               type="button"
@@ -2230,7 +2240,10 @@ export function LanesPage() {
               data-tour="lanes.newLane"
               style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })}
               disabled={!canCreateLane}
-              onClick={() => setAddLaneDropdownOpen((prev) => !prev)}
+              onClick={() => {
+                setStackGraphHeaderOpen(false);
+                setAddLaneDropdownOpen((prev) => !prev);
+              }}
             >
               <Plus size={12} /> NEW LANE
             </button>
@@ -2275,10 +2288,84 @@ export function LanesPage() {
           ) : null}
         </div>
 
+        {filteredLanes.length > 0 ? (
+          <div className="relative shrink-0" ref={stackGraphHeaderRef}>
+            <SmartTooltip
+              content={{
+                label: "Stack graph",
+                description: "Parent/child lane relationships and ahead/behind — same view as the Stack tile.",
+              }}
+            >
+              <button
+                type="button"
+                data-tour="lanes.stackGraphHeader"
+                aria-expanded={stackGraphHeaderOpen}
+                className="inline-flex items-center gap-1.5 shrink-0"
+                style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  letterSpacing: "0.8px",
+                  textTransform: "uppercase",
+                  color: stackGraphHeaderOpen ? COLORS.accent : COLORS.textMuted,
+                  background: stackGraphHeaderOpen ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                  border: `1px solid ${stackGraphHeaderOpen ? COLORS.accent : COLORS.outlineBorder}`,
+                  borderRadius: 6,
+                  padding: "0 10px",
+                  height: 28,
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  setAddLaneDropdownOpen(false);
+                  setBranchDropdownOpen(false);
+                  setStackGraphHeaderOpen((prev) => !prev);
+                }}
+                onMouseEnter={(e) => {
+                  if (stackGraphHeaderOpen) return;
+                  e.currentTarget.style.borderColor = COLORS.accent;
+                  e.currentTarget.style.color = COLORS.accent;
+                }}
+                onMouseLeave={(e) => {
+                  if (stackGraphHeaderOpen) return;
+                  e.currentTarget.style.borderColor = COLORS.outlineBorder;
+                  e.currentTarget.style.color = COLORS.textMuted;
+                }}
+              >
+                <Stack size={12} weight="bold" />
+                Stack graph
+                <CaretDown size={10} style={{ opacity: 0.65 }} />
+              </button>
+            </SmartTooltip>
+            {stackGraphHeaderOpen ? (
+              <div
+                className="absolute left-0 top-full z-[200] mt-2 flex flex-col overflow-hidden rounded-xl shadow-float"
+                style={{
+                  width: 400,
+                  maxWidth: "min(400px, calc(100vw - 48px))",
+                  height: "min(520px, 70vh)",
+                  background: COLORS.cardBgSolid,
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                }}
+              >
+                <LaneStackPane
+                  lanes={stackGraphLanes}
+                  selectedLaneId={selectedLaneId}
+                  onSelect={(id) => {
+                    handleLaneSelect(id, { extend: false });
+                    setStackGraphHeaderOpen(false);
+                  }}
+                  runtimeByLaneId={laneRuntimeById}
+                  integrationSourcesByLaneId={integrationSourcesByLaneId}
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {shouldShowAdoptHint && selectedAttachedLane ? (
           <div
             className="shrink-0 flex items-center gap-2 rounded-lg border px-2 py-1"
-            style={{ borderColor: `${COLORS.info}55`, background: `${COLORS.info}15` }}
+            style={{ borderColor: "color-mix(in srgb, var(--color-info) 55%, transparent)", background: "color-mix(in srgb, var(--color-info) 15%, transparent)" }}
           >
             <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same.", docUrl: docs.lanesCreating }}>
               <button
@@ -2500,7 +2587,7 @@ export function LanesPage() {
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,
                   fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
-                  color: COLORS.warning, background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}30`,
+                  color: COLORS.warning, background: "color-mix(in srgb, var(--color-warning) 18%, transparent)", border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
                 }} title={`Behind ${rebaseSuggestion.baseLabel?.trim() || "base"} by ${rebaseSuggestion.behindCount} commit(s)`}>
                   ↑{rebaseSuggestion.behindCount}
                 </span>
@@ -2555,7 +2642,7 @@ export function LanesPage() {
                   className="shrink-0 transition-opacity"
                   style={{
                     display: "inline-flex", width: 16, height: 16, alignItems: "center", justifyContent: "center",
-                    background: isPinned ? `${COLORS.warning}25` : "transparent",
+                    background: isPinned ? "color-mix(in srgb, var(--color-warning) 25%, transparent)" : "transparent",
                     color: isPinned ? COLORS.warning : COLORS.textDim,
                     border: "none", cursor: "pointer",
                     opacity: isPinned ? 1 : 0,
@@ -2750,7 +2837,7 @@ export function LanesPage() {
           }}
           onManage={openManageDialog}
           onOpenRun={(laneId) => {
-            selectRunLane(laneId);
+            selectLane(laneId);
             void navigate("/project");
           }}
           selectLane={selectLane}
@@ -2895,7 +2982,7 @@ export function LanesPage() {
               </div>
             ) : null}
             {adoptError ? (
-              <div style={{ marginTop: 10, padding: "8px 10px", background: `${COLORS.danger}12`, border: `1px solid ${COLORS.danger}40`, borderRadius: 8, color: "#FCA5A5", fontSize: 12 }}>
+              <div style={{ marginTop: 10, padding: "8px 10px", background: "color-mix(in srgb, var(--color-error) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 40%, transparent)", borderRadius: 8, color: "#FCA5A5", fontSize: 12 }}>
                 {adoptError}
               </div>
             ) : null}

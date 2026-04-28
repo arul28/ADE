@@ -86,8 +86,8 @@ const descriptionStyle: CSSProperties = {
 };
 
 const errorBoxStyle: CSSProperties = {
-  background: `${COLORS.danger}12`,
-  border: `1px solid ${COLORS.danger}30`,
+  background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
   padding: "8px 12px",
   fontSize: 11,
   fontFamily: MONO_FONT,
@@ -240,9 +240,9 @@ function CopyButton({ text }: { text: string }) {
               ? COLORS.success
               : COLORS.textSecondary,
           borderColor: copyError
-            ? `${COLORS.danger}40`
+            ? "color-mix(in srgb, var(--color-error) 40%, transparent)"
             : copied
-              ? `${COLORS.success}40`
+              ? "color-mix(in srgb, var(--color-success) 40%, transparent)"
               : COLORS.outlineBorder,
         })}
         title={`Copy: ${text}`}
@@ -631,7 +631,7 @@ export function ProxyAndPreviewSection() {
           type="button"
           style={
             proxyRunning
-              ? outlineButton({ color: COLORS.danger, borderColor: `${COLORS.danger}40` })
+              ? outlineButton({ color: COLORS.danger, borderColor: "color-mix(in srgb, var(--color-error) 40%, transparent)" })
               : primaryButton()
           }
           disabled={proxyBusy}
@@ -823,8 +823,8 @@ export function ProxyAndPreviewSection() {
             {uriInfo.instructions && (
               <div
                 style={{
-                  background: `${COLORS.info}08`,
-                  border: `1px solid ${COLORS.info}20`,
+                  background: "color-mix(in srgb, var(--color-info) 8%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--color-info) 20%, transparent)",
                   padding: "10px 14px",
                   fontSize: 11,
                   fontFamily: MONO_FONT,
@@ -1014,7 +1014,7 @@ export function ProxyAndPreviewSection() {
                               : COLORS.outlineBorder,
                           background:
                             routingMode === mode
-                              ? `${COLORS.accent}12`
+                              ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
                               : "transparent",
                         }),
                         fontSize: 10,

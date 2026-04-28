@@ -49,23 +49,22 @@ function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
 
 describe("laneUtils tiling defaults", () => {
   it("makes git actions the largest default pane", () => {
-    expect(LANES_TILING_TREE.children[0]?.defaultSize).toBe(15);
-    expect(LANES_TILING_TREE.children[1]?.defaultSize).toBe(30);
-    expect(LANES_TILING_TREE.children[2]?.defaultSize).toBe(55);
+    expect(LANES_TILING_TREE.children[0]?.defaultSize).toBe(38);
+    expect(LANES_TILING_TREE.children[1]?.defaultSize).toBe(62);
   });
 
   it("raises the git actions minimum share", () => {
-    expect(LANES_TILING_TREE.children[2]?.minSize).toBe(28);
+    expect(LANES_TILING_TREE.children[1]?.minSize).toBe(28);
   });
 
   it("bumps the persisted tiling layout version", () => {
-    expect(LANES_TILING_LAYOUT_VERSION).toBe("v6");
+    expect(LANES_TILING_LAYOUT_VERSION).toBe("v8");
   });
 
   it("work-focus layout emphasizes the work pane", () => {
-    expect(LANES_TILING_WORK_FOCUS_TREE.children[1]?.defaultSize).toBeGreaterThan(40);
-    expect(LANES_TILING_WORK_FOCUS_TREE.children[2]?.defaultSize).toBeLessThan(
-      (LANES_TILING_TREE.children[2]?.defaultSize ?? 0),
+    expect(LANES_TILING_WORK_FOCUS_TREE.children[0]?.defaultSize).toBeGreaterThan(40);
+    expect(LANES_TILING_WORK_FOCUS_TREE.children[1]?.defaultSize).toBeLessThan(
+      (LANES_TILING_TREE.children[1]?.defaultSize ?? 0),
     );
   });
 

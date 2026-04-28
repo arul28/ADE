@@ -232,7 +232,6 @@ function resetChatTestStore() {
     laneSnapshots: [],
     lanes: [],
     selectedLaneId: null,
-    runLaneId: null,
     focusedSessionId: null,
     laneInspectorTabs: {},
     workViewByProject: {},
@@ -460,6 +459,31 @@ describe("AgentChatPane submit recovery", () => {
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
 
     resolveSend();
+  });
+
+  it("keeps the optimistic sent bubble visible when send resolves before the chat event arrives", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { send } = installAdeMocks({
+      sessions: [session],
+    });
+
+    renderPane(session);
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Open the simulator screen in preview." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Open the simulator screen in preview.",
+      }));
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Open the simulator screen in preview.")).toBeTruthy();
+    });
   });
 
   it("keeps the draft cleared after steer succeeds even if session refresh fails", async () => {

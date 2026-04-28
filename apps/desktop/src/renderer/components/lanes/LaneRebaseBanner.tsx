@@ -22,7 +22,7 @@ export function LaneRebaseBanner({
   return (
     <>
       {visibleRebaseSuggestions.length > 0 ? (
-        <div style={{ background: `${COLORS.warning}08`, borderBottom: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
+        <div style={{ background: "color-mix(in srgb, var(--color-warning) 8%, transparent)", borderBottom: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span style={LABEL_STYLE}>REBASE SUGGESTED</span>
             <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>
@@ -81,13 +81,13 @@ export function LaneRebaseBanner({
       ) : null}
 
       {rebaseSuggestionError ? (
-        <div style={{ background: `${COLORS.danger}15`, borderBottom: `1px solid ${COLORS.danger}30`, padding: "8px 12px", fontSize: 12, color: COLORS.danger }}>
+        <div style={{ background: "color-mix(in srgb, var(--color-error) 15%, transparent)", borderBottom: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", padding: "8px 12px", fontSize: 12, color: COLORS.danger }}>
           {rebaseSuggestionError}
         </div>
       ) : null}
 
       {visibleAutoRebaseNeedsAttention.length > 0 ? (
-        <div style={{ background: `${COLORS.warning}08`, borderBottom: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
+        <div style={{ background: "color-mix(in srgb, var(--color-warning) 8%, transparent)", borderBottom: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span style={LABEL_STYLE}>AUTO-REBASE NEEDS ATTENTION</span>
             <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>

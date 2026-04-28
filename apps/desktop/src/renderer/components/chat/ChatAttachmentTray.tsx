@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { Copy, File, Image, X } from "@phosphor-icons/react";
 import type { AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -208,7 +209,7 @@ function ImageLightbox({
     }
   };
 
-  return (
+  return createPortal(
     <div
       ref={containerRef}
       className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-8"
@@ -236,7 +237,8 @@ function ImageLightbox({
           onClick={(event) => event.stopPropagation()}
         />
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

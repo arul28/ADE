@@ -1,11 +1,11 @@
 import React from "react";
-import { DotsThreeVertical, Play, Stop } from "@phosphor-icons/react";
+import { DotsThreeVertical, Play, Plus, X } from "@phosphor-icons/react";
 import type { LaneSummary, ProcessDefinition, ProcessGroupDefinition, ProcessRuntime } from "../../../shared/types";
-import { COLORS, MONO_FONT, inlineBadge, processStatusColor } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, inlineBadge, outlineButton, processStatusColor } from "../lanes/laneDesignTokens";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { commandArrayToLine } from "../../lib/shell";
 import { formatDurationMs } from "../../lib/format";
-import { formatProcessStatus, isActiveProcessStatus } from "./processUtils";
+import { formatEndedAt, formatProcessStatus, isActiveProcessStatus } from "./processUtils";
 
 type CommandCardProps = {
   definition: ProcessDefinition;
@@ -15,9 +15,10 @@ type CommandCardProps = {
   runtimes: ProcessRuntime[];
   onSelectLane: (processId: string, laneId: string) => void;
   onRun: (processId: string) => void;
-  onStop: (processId: string) => void;
   onEdit: (processId: string) => void;
   onDelete: (processId: string) => void;
+  onAddToGroup?: (processId: string, groupId: string) => void;
+  onKillRuntime?: (runtime: ProcessRuntime) => void;
 };
 
 function sortRuntimes(runtimes: ProcessRuntime[]): ProcessRuntime[] {
@@ -38,9 +39,10 @@ export function CommandCard({
   runtimes,
   onSelectLane,
   onRun,
-  onStop,
   onEdit,
   onDelete,
+  onAddToGroup,
+  onKillRuntime,
 }: CommandCardProps) {
   const hasLanes = lanes.length > 0;
   const laneId = selectedLaneId && lanes.some((item) => item.id === selectedLaneId)
@@ -54,12 +56,18 @@ export function CommandCard({
   const status = latestRuntime?.status ?? "stopped";
   const statusText = latestRuntime ? formatProcessStatus(latestRuntime) : "stopped";
   const commandPreview = commandArrayToLine(definition.command);
-  const portList = Array.from(new Set(activeRuntimes.flatMap((runtime) => runtime.ports ?? []))).sort((a, b) => a - b);
   const groupLabels = groups.filter((group) => (definition.groupIds ?? []).includes(group.id));
+  const availableGroups = React.useMemo(
+    () => groups.filter((group) => !(definition.groupIds ?? []).includes(group.id)),
+    [groups, definition.groupIds],
+  );
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
+  const [groupPickerOpen, setGroupPickerOpen] = React.useState(false);
+  const groupPickerRef = React.useRef<HTMLDivElement>(null);
 
   useClickOutside(menuRef, () => setMenuOpen(false), menuOpen);
+  useClickOutside(groupPickerRef, () => setGroupPickerOpen(false), groupPickerOpen);
 
   return (
     <div
@@ -125,8 +133,9 @@ export function CommandCard({
                 top: "100%",
                 right: 0,
                 zIndex: 50,
-                background: COLORS.cardBg,
+                background: COLORS.cardBgSolid,
                 border: `1px solid ${COLORS.border}`,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
                 minWidth: 140,
                 padding: "4px 0",
               }}
@@ -164,8 +173,18 @@ export function CommandCard({
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 8, alignItems: "center" }}>
-        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, textTransform: "uppercase" }}>Lane</span>
+      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 6, alignItems: "center" }}>
+        <span
+          style={{
+            fontFamily: MONO_FONT,
+            fontSize: 10,
+            color: COLORS.textDim,
+            textTransform: "uppercase",
+            whiteSpace: "nowrap",
+          }}
+        >
+          Lane
+        </span>
         <select
           value={hasLanes ? laneId : "__none__"}
           disabled={!hasLanes}
@@ -201,6 +220,7 @@ export function CommandCard({
         style={{
           fontFamily: MONO_FONT,
           fontSize: 11,
+          fontWeight: 700,
           color: COLORS.textMuted,
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -211,19 +231,7 @@ export function CommandCard({
         {commandPreview}
       </div>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        <span
-          style={{
-            fontFamily: MONO_FONT,
-            fontSize: 10,
-            color: COLORS.textSecondary,
-            background: COLORS.recessedBg,
-            border: `1px solid ${COLORS.outlineBorder}`,
-            padding: "2px 6px",
-          }}
-        >
-          {lane?.name ?? "No lane"}
-        </span>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
         {groupLabels.map((group) => (
           <span
             key={group.id}
@@ -239,33 +247,76 @@ export function CommandCard({
             {group.name}
           </span>
         ))}
-      </div>
-
-      {portList.length > 0 ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          {portList.map((port) => (
+        {onAddToGroup && groups.length > 0 ? (
+          <div ref={groupPickerRef} style={{ position: "relative" }}>
             <button
-              key={port}
               type="button"
-              onClick={() => {
-                void window.ade.app.openExternal(`http://localhost:${port}`);
-              }}
+              title={availableGroups.length === 0 ? "Already in every group" : "Add to another group"}
+              disabled={availableGroups.length === 0}
+              onClick={() => availableGroups.length > 0 && setGroupPickerOpen((open) => !open)}
               style={{
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                color: COLORS.accent,
-                cursor: "pointer",
-                background: "transparent",
-                border: "none",
-                borderBottom: `1px dashed ${COLORS.accent}40`,
-                padding: 0,
+                ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }),
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                opacity: availableGroups.length === 0 ? 0.45 : 1,
+                cursor: availableGroups.length === 0 ? "default" : "pointer",
               }}
             >
-              :{port}
+              <Plus size={11} weight="bold" />
+              Add to group
             </button>
-          ))}
-        </div>
-      ) : null}
+            {groupPickerOpen && availableGroups.length > 0 ? (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  marginTop: 4,
+                  zIndex: 50,
+                  minWidth: 160,
+                  padding: "4px 0",
+                  background: COLORS.cardBgSolid,
+                  border: `1px solid ${COLORS.border}`,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                }}
+              >
+                {availableGroups.map((group) => (
+                  <button
+                    key={group.id}
+                    type="button"
+                    onClick={() => {
+                      onAddToGroup(definition.id, group.id);
+                      setGroupPickerOpen(false);
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      padding: "7px 12px",
+                      fontFamily: MONO_FONT,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: COLORS.textSecondary,
+                      cursor: "pointer",
+                    }}
+                    onMouseEnter={(event) => {
+                      event.currentTarget.style.background = COLORS.hoverBg;
+                    }}
+                    onMouseLeave={(event) => {
+                      event.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    {group.name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <button
@@ -293,47 +344,85 @@ export function CommandCard({
           <Play size={12} weight="fill" />
           Run
         </button>
+      </div>
 
-        {activeCount > 0 ? (
-          <button
-            type="button"
-            onClick={() => onStop(definition.id)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 4,
-              height: 28,
-              padding: "0 10px",
-              fontSize: 10,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              color: COLORS.danger,
-              background: `${COLORS.danger}18`,
-              border: `1px solid ${COLORS.danger}30`,
-              borderRadius: 0,
-              cursor: "pointer",
-            }}
-          >
-            <Stop size={12} weight="fill" />
-            Stop all
-          </button>
-        ) : null}
-
-        {latestRuntime?.uptimeMs && latestRuntime.uptimeMs > 0 ? (
+      <div
+        data-tour="run.commandRuntime"
+        style={{
+          paddingTop: 10,
+          marginTop: 2,
+          borderTop: `1px solid ${COLORS.border}`,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, rowGap: 6 }}>
           <span
             style={{
               fontFamily: MONO_FONT,
-              fontSize: 10,
+              fontSize: 9,
+              fontWeight: 700,
               color: COLORS.textDim,
-              marginLeft: "auto",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
             }}
           >
-            {formatDurationMs(latestRuntime.uptimeMs)}
+            Runtime
           </span>
-        ) : null}
+          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textSecondary }}>
+            {lane?.name ?? "—"}
+          </span>
+        </div>
+
+        {latestRuntime ? (
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, rowGap: 6 }}>
+            <span style={inlineBadge(processStatusColor(latestRuntime.status), { fontSize: 9, padding: "1px 6px" })}>
+              {formatProcessStatus(latestRuntime)}
+            </span>
+            <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+              Uptime{" "}
+              {isActiveProcessStatus(latestRuntime.status) && latestRuntime.uptimeMs != null && latestRuntime.uptimeMs > 0
+                ? formatDurationMs(latestRuntime.uptimeMs)
+                : "—"}
+            </span>
+            <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+              Ended{" "}
+              {isActiveProcessStatus(latestRuntime.status)
+                ? "—"
+                : formatEndedAt(latestRuntime.lastEndedAt ?? latestRuntime.endedAt)}
+            </span>
+            {onKillRuntime && activeRuntimes.length > 0 ? (
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                {activeRuntimes.map((runtime) => (
+                  <button
+                    key={runtime.runId}
+                    type="button"
+                    onClick={() => onKillRuntime(runtime)}
+                    title="Force stop this run"
+                    aria-label={`Force stop run ${runtime.runId}`}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      background: "color-mix(in srgb, var(--color-error) 14%, transparent)",
+                      border: "1px solid color-mix(in srgb, var(--color-error) 35%, transparent)",
+                      color: COLORS.danger,
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <X size={14} weight="bold" />
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>No runs on this lane yet.</div>
+        )}
       </div>
     </div>
   );

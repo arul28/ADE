@@ -3,7 +3,8 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { editor as monacoEditor } from "monaco-editor";
 import type { FileChangeEvent, FileTreeNode } from "../../../shared/types";
 import { FilesPage } from "./FilesPage";
 import { useAppStore } from "../../state/appStore";
@@ -153,7 +154,6 @@ function resetStore() {
     projectHydrated: true,
     showWelcome: false,
     selectedLaneId: null,
-    runLaneId: null,
     focusedSessionId: null,
     lanes: [],
     laneInspectorTabs: {},
@@ -169,11 +169,17 @@ function resetStore() {
   });
 }
 
+function LanesNavCapture() {
+  const loc = useLocation();
+  return <div data-testid="lanes-nav">{`${loc.pathname}${loc.search}`}</div>;
+}
+
 function renderFilesPage(initialState?: Record<string, unknown>) {
   return render(
     <MemoryRouter initialEntries={[{ pathname: "/files", state: initialState }]}>
       <Routes>
         <Route path="/files" element={<FilesPage />} />
+        <Route path="/lanes" element={<LanesNavCapture />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -219,6 +225,7 @@ describe("FilesPage", () => {
             kind: "primary",
             laneId: null,
             name: "ADE",
+            branchRef: "refs/heads/main",
             rootPath: projectRoot,
             isReadOnlyByDefault: false,
           },
@@ -520,6 +527,7 @@ describe("FilesPage", () => {
         kind: "primary",
         laneId: null,
         name: "ADE",
+        branchRef: "refs/heads/main",
         rootPath: "C:\\Repo",
         isReadOnlyByDefault: false,
       },
@@ -580,6 +588,42 @@ describe("FilesPage", () => {
     });
   });
 
+  it("toggles editor theme from main Files header and persists", async () => {
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+      preferPrimaryWorkspace: true,
+    });
+
+    await waitForEditorText("value = 1");
+
+    const toggle = screen.getByTestId("files-editor-theme-toggle");
+    expect(toggle.getAttribute("aria-label")).toBe("Switch editor to light theme");
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("ade.files.editorTheme")).toBe("light");
+    });
+    expect(vi.mocked(monacoEditor.setTheme).mock.calls.at(-1)?.[0]).toBe("vs");
+    await waitFor(() => {
+      expect(screen.getByTestId("files-editor-theme-toggle").getAttribute("aria-label")).toBe(
+        "Switch editor to dark theme",
+      );
+    });
+
+    fireEvent.click(screen.getByTestId("files-editor-theme-toggle"));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("ade.files.editorTheme")).toBe("dark");
+    });
+    expect(vi.mocked(monacoEditor.setTheme).mock.calls.at(-1)?.[0]).toBe("vs-dark");
+    await waitFor(() => {
+      expect(screen.getByTestId("files-editor-theme-toggle").getAttribute("aria-label")).toBe(
+        "Switch editor to light theme",
+      );
+    });
+  });
+
   it("opens the active file in the system default app", async () => {
     renderFilesPage({
       openFilePath: "src/index.ts",
@@ -595,6 +639,81 @@ describe("FilesPage", () => {
       rootPath: projectRoot,
       relativePath: "src/index.ts",
       target: "default",
+    });
+  });
+
+  it("View lane opens /lanes with no query for primary workspace", async () => {
+    renderFilesPage({ preferPrimaryWorkspace: true });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /view lane/i })).toBeTruthy();
+    });
+    expect(screen.getAllByRole("button", { name: /view lane/i })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /view lane/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("lanes-nav").textContent).toBe("/lanes");
+    });
+  });
+
+  it("View lane opens Lanes focused on the selected lane workspace", async () => {
+    const laneId = "lane-wt-abc";
+    vi.mocked(window.ade.files.listWorkspaces).mockResolvedValue([
+      {
+        id: "primary",
+        kind: "primary",
+        laneId: null,
+        name: "ADE",
+        branchRef: "refs/heads/main",
+        rootPath: projectRoot,
+        isReadOnlyByDefault: false,
+      },
+      {
+        id: "lane-ws",
+        kind: "worktree",
+        laneId,
+        name: "feature",
+        branchRef: "refs/heads/feat/x",
+        rootPath: `${projectRoot}/.ade/worktrees/feature`,
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderFilesPage({ preferPrimaryWorkspace: true });
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox")).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "lane-ws" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /view lane/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("lanes-nav").textContent).toBe(
+        `/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`,
+      );
+    });
+  });
+
+  it("workspace selector shows branch in option labels", async () => {
+    vi.mocked(window.ade.files.listWorkspaces).mockResolvedValue([
+      {
+        id: "primary",
+        kind: "primary",
+        laneId: "lane-p",
+        name: "ADE",
+        branchRef: "refs/heads/develop",
+        rootPath: projectRoot,
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderFilesPage({ preferPrimaryWorkspace: true });
+
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: /ADE · develop \(primary\)/ })).toBeTruthy();
     });
   });
 });

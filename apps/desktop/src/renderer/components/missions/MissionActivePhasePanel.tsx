@@ -73,7 +73,7 @@ function PhaseStepper({
                 style={{
                   height: 1,
                   minWidth: 16,
-                  background: isDone ? `${COLORS.success}50` : COLORS.border,
+                  background: isDone ? "color-mix(in srgb, var(--color-success) 50%, transparent)" : COLORS.border,
                 }}
               />
             )}
@@ -130,7 +130,7 @@ export function MissionActivePhasePanel({
         <div
           className={compact ? "flex items-start gap-2 px-2.5 py-1.5" : "flex items-start gap-2 px-3 py-2"}
           style={{
-            background: `${COLORS.warning}08`,
+            background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
             borderLeft: `3px solid ${COLORS.warning}`,
           }}
         >

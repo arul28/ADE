@@ -164,7 +164,7 @@ describe("TopBar", () => {
 
     fireEvent.click(screen.getByTitle("Connect a phone to this computer"));
 
-    expect(screen.getByText("Phone sync")).toBeTruthy();
+    expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
     expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
     expect(screen.getByTitle("Connect a phone to this computer").getAttribute("aria-expanded")).toBe("true");
 

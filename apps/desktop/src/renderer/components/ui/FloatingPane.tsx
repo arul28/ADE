@@ -1,8 +1,26 @@
-import React from "react";
+import React, { createContext, useContext, useMemo } from "react";
 import { CaretDown, CaretRight, DotsSixVertical } from "@phosphor-icons/react";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { cn } from "./cn";
 import type { DropEdge } from "./paneTreeOps";
+
+export type FloatingPaneEmbeddedChrome = {
+  /** HTML5 drag attributes for a host row (e.g. work glass header) when the pane header is hidden. */
+  dragHandleProps: {
+    draggable: boolean;
+    onDragStart: (e: React.DragEvent) => void;
+    onDragEnd: (e: React.DragEvent) => void;
+  } | null;
+  onMinimizeToggle: () => void;
+  minimized: boolean;
+  minimizable: boolean;
+};
+
+const FloatingPaneEmbeddedChromeContext = createContext<FloatingPaneEmbeddedChrome | null>(null);
+
+export function useFloatingPaneEmbeddedChrome(): FloatingPaneEmbeddedChrome | null {
+  return useContext(FloatingPaneEmbeddedChromeContext);
+}
 
 /* ---- Drop zone overlay position mapping ---- */
 
@@ -42,6 +60,7 @@ export function FloatingPane({
   onPaneMouseDown,
   onPaneContextMenu,
   minimizeBehavior = "css",
+  hideHeaderWhenExpanded = false,
   className,
   bodyClassName,
   dataTour,
@@ -68,6 +87,12 @@ export function FloatingPane({
   onPaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
   onPaneContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
   minimizeBehavior?: "css" | "native";
+  /**
+   * When true, the full title row is omitted while the pane is expanded; host UIs (e.g. WorkViewArea)
+   * should render minimize + drag via `useFloatingPaneEmbeddedChrome`. A compact bar is still shown
+   * when minimized so the pane can be expanded again.
+   */
+  hideHeaderWhenExpanded?: boolean;
   className?: string;
   bodyClassName?: string;
   dataTour?: string;
@@ -110,6 +135,21 @@ export function FloatingPane({
     ? ({ "--lane-accent": laneAccent } as React.CSSProperties)
     : undefined;
 
+  const showDefaultHeader = !hideHeaderWhenExpanded;
+  const showMinimizedRestoreStrip = hideHeaderWhenExpanded && minimized && usesCssMinimize;
+
+  const embeddedChrome = useMemo((): FloatingPaneEmbeddedChrome | null => {
+    if (!hideHeaderWhenExpanded || minimized) return null;
+    return {
+      dragHandleProps: isDraggable
+        ? { draggable: true, onDragStart: handleDragStart, onDragEnd: handleDragEnd }
+        : null,
+      onMinimizeToggle: () => onMinimizeToggle?.(),
+      minimized: false,
+      minimizable,
+    };
+  }, [hideHeaderWhenExpanded, minimized, isDraggable, minimizable, handleDragStart, handleDragEnd, onMinimizeToggle]);
+
   return (
     <div
       data-pane-id={id}
@@ -129,57 +169,92 @@ export function FloatingPane({
       onMouseDown={onPaneMouseDown}
       onContextMenu={onPaneContextMenu}
     >
-      <div
-        className={cn("ade-floating-pane-header", minimized && "ade-floating-pane-header-minimized")}
-        draggable={isDraggable}
-        onDragStart={isDraggable ? handleDragStart : undefined}
-        onDragEnd={isDraggable ? handleDragEnd : undefined}
-      >
-        <div className="flex items-center gap-1 min-w-0">
-          {isDraggable ? (
-            <DotsSixVertical size={10} weight="regular" className="text-muted-fg/30 shrink-0 cursor-grab" />
-          ) : null}
-          {minimizable ? (
-            <button
-              type="button"
-              className={cn(
-                "flex h-4 w-4 items-center justify-center transition-colors",
-                minimized
-                  ? "text-accent"
-                  : "text-muted-fg/50 hover:text-fg"
-              )}
-              onClick={(event) => {
-                event.stopPropagation();
-                onMinimizeToggle?.();
-              }}
-              onMouseDown={(event) => event.stopPropagation()}
-              title={minimized ? "Expand pane" : "Minimize pane"}
-            >
-              {minimized ? (
-                <CaretRight size={12} weight="regular" />
-              ) : (
-                <CaretDown size={12} weight="regular" />
-              )}
-            </button>
-          ) : null}
-          {Icon ? (
-            <Icon size={minimized ? 14 : 12} weight="regular" className={cn(
-              "shrink-0",
-              minimized ? "text-fg/70" : "text-muted-fg/50"
-            )} />
-          ) : null}
-          <span className={cn("ade-pane-title truncate")}>{title}</span>
-          {meta && !minimized ? <span className="font-mono text-[9px] text-muted-fg/40 truncate">{meta}</span> : null}
-        </div>
-        {headerActions ? (
-          <div className={cn("flex items-center gap-0.5 shrink-0 ml-1", minimized && "opacity-60")}>
-            {headerActions}
+      {showDefaultHeader ? (
+        <div
+          className={cn("ade-floating-pane-header", minimized && "ade-floating-pane-header-minimized")}
+          draggable={isDraggable}
+          onDragStart={isDraggable ? handleDragStart : undefined}
+          onDragEnd={isDraggable ? handleDragEnd : undefined}
+        >
+          <div className="flex items-center gap-1 min-w-0">
+            {isDraggable ? (
+              <DotsSixVertical size={10} weight="regular" className="text-muted-fg/30 shrink-0 cursor-grab" />
+            ) : null}
+            {minimizable ? (
+              <button
+                type="button"
+                className={cn(
+                  "flex h-4 w-4 items-center justify-center transition-colors",
+                  minimized
+                    ? "text-accent"
+                    : "text-muted-fg/50 hover:text-fg"
+                )}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onMinimizeToggle?.();
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+                title={minimized ? "Expand pane" : "Minimize pane"}
+                aria-label={minimized ? "Expand pane" : "Minimize pane"}
+              >
+                {minimized ? (
+                  <CaretRight size={12} weight="regular" />
+                ) : (
+                  <CaretDown size={12} weight="regular" />
+                )}
+              </button>
+            ) : null}
+            {Icon ? (
+              <Icon size={minimized ? 14 : 12} weight="regular" className={cn(
+                "shrink-0",
+                minimized ? "text-fg/70" : "text-muted-fg/50"
+              )} />
+            ) : null}
+            <span className={cn("ade-pane-title truncate")}>{title}</span>
+            {meta && !minimized ? <span className="font-mono text-[9px] text-muted-fg/40 truncate">{meta}</span> : null}
           </div>
-        ) : null}
-      </div>
-      <div className={cn("flex-1 min-h-0 overflow-auto", hideBody && "hidden", bodyClassName)}>
-        {children}
-      </div>
+          {headerActions ? (
+            <div className={cn("flex items-center gap-0.5 shrink-0 ml-1", minimized && "opacity-60")}>
+              {headerActions}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {showMinimizedRestoreStrip ? (
+        <div
+          className={cn("ade-floating-pane-header", "ade-floating-pane-header-minimized", "ade-floating-pane-header--restore-only")}
+          draggable={isDraggable}
+          onDragStart={isDraggable ? handleDragStart : undefined}
+          onDragEnd={isDraggable ? handleDragEnd : undefined}
+        >
+          <div className="flex min-h-0 items-center gap-1 min-w-0">
+            {isDraggable ? (
+              <DotsSixVertical size={10} weight="regular" className="text-muted-fg/30 shrink-0 cursor-grab" />
+            ) : null}
+            {minimizable ? (
+              <button
+                type="button"
+                className="flex h-4 w-4 items-center justify-center text-accent transition-colors"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onMinimizeToggle?.();
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+                title="Expand pane"
+                aria-label="Expand pane"
+              >
+                <CaretRight size={12} weight="regular" />
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      <FloatingPaneEmbeddedChromeContext.Provider value={embeddedChrome}>
+        <div className={cn("flex-1 min-h-0 overflow-auto", hideBody && "hidden", bodyClassName)}>
+          {children}
+        </div>
+      </FloatingPaneEmbeddedChromeContext.Provider>
       {/* Drop zone overlay */}
       {dropZoneStyle ? (
         <div className="ade-drop-zone-overlay" style={dropZoneStyle} />

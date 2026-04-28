@@ -115,9 +115,11 @@ bridge.
   `orchestrator`, `agent`, `external`, `evaluator`.
 - **Action surface** — first-class command families cover lanes, git,
   diffs, files, PRs, path-to-merge, runs, shells, chats, agents, CTO,
-  Linear, tests, proof, memory, settings, and a generic
-  `ade actions run <domain.action>` escape hatch for every registered
-  ADE service action.
+  Linear, tests, proof, memory, settings, the iOS Simulator (`ade
+  ios-sim` / `ade ios` / `ade simulator` — see
+  [features/ios-simulator/README.md](./features/ios-simulator/README.md)),
+  and a generic `ade actions run <domain.action>` escape hatch for
+  every registered ADE service action.
 - **Proof subcommands** — `ade proof capture` (alias of `screenshot`),
   `ade proof attach <path>`, `ade proof record`, `ade proof launch`,
   `ade proof interact`, `ade proof list/status/environment/ingest`.
@@ -342,6 +344,8 @@ ade.app.*                    # app lifecycle, clipboard text and image (writeCli
 ade.project.*                # project open/close/switch/state, in-app directory browser (browseDirectories, getDetail), favicon resolver (resolveIcon)
 ade.onboarding.*
 ade.lanes.*                  # lane list/create/delete/stack/template/env/port/proxy/rebase
+                             # delete pipeline: ade.lanes.delete + ade.lanes.delete.cancel
+                             # + ade.lanes.delete.risk preflight + ade.lanes.delete.event push
 ade.files.*                  # file tree, read, write, search, watch
 ade.pty.*                    # PTY spawn/write/kill, data/exit events
 ade.git.*                    # stage/commit/push/sync/revert/cherry-pick/stash
@@ -354,13 +358,15 @@ ade.cto.*                    # identity, core memory, agent roster, Linear
 ade.sessions.*               # terminal session CRUD
 ade.agentChat.*              # agent chat sessions, model inventory, parallel launch state
 ade.automations.*
-ade.processes.* / ade.tests.*
+ade.processes.* / ade.tests.* # processes also expose group bulk ops:
+                             # ade.processes.startGroup / stopGroup / restartGroup
 ade.config.*                 # project config get/save/trust
 ade.keybindings.*
 ade.sync.*                   # device registry, PIN pairing (getPin/setPin/clearPin), QR payload, lane presence announce (setActiveLanePresence), host transfer
 ade.usage.*                  # token/cost accounting
 ade.layout.* / ade.graph.*
 ade.computerUse.*
+ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: getStatus/launch/shutdown/screenshot/getScreenSnapshot/getInspectorSnapshot/inspectPoint/getPreviewCapability/listPreviewTargets/renderPreview/openPreviewWorkspace/startStream/stopStream/tap/typeText/drag/swipe/selectPoint, plus the ade.iosSimulator.event push channel
 ade.updates.*
 ```
 
@@ -420,6 +426,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `git/` | `git.ts`, `gitOperationsService.ts`, `gitConflictState.ts` | Low-level git runner, high-level lane-scoped ops, conflict state queries. |
 | `github/` | `githubService.ts` | GitHub REST/GraphQL access; PR CRUD; checks; reviewers. |
 | `history/` | `operationService.ts` | Operation audit records (one row per mutation). |
+| `ios/` | `iosSimulatorService.ts` | macOS-only iOS Simulator backend: tool readiness probes, simctl device + app discovery, build/install/launch with progress events, screenshot + ADEInspector + accessibility hit-test, three streaming backends (Simulator-window capture, idb MJPEG, simctl screenshot poll), tap/drag/swipe/type via idb, and single-owner chat session locking. See [features/ios-simulator/README.md](./features/ios-simulator/README.md). |
 | `ipc/` | `registerIpc.ts` | Single registration point for all IPC handlers. |
 | `jobs/` | `jobEngine.ts` | Event-driven background scheduler for lane refresh + conflict prediction. Coalesced, debounced. |
 | `keybindings/` | `keybindingsService.ts` | User keybindings read/write. |

@@ -286,8 +286,39 @@ lookup entirely. Lazy hydration over `sessions.list` therefore relies
 only on transcript regex matches, which keeps the list-render hot path
 off the disk and prevents one renderer's idle list refresh from
 adopting another lane's Codex rollout. Live Codex sessions still get
-their resume target through the polling path, which uses the strict
-`requiredText: "ADE session guidance"` gate.
+their resume target through the live capture path, which uses the
+strict `requiredText: "ADE session guidance"` gate.
+
+### Live Codex session-id capture
+
+`scheduleCodexSessionIdCaptureBestEffort(sessionId, cwd, startedAt)`
+runs once per Codex PTY launch. It is the only handle on the session's
+UUID since codex has no pre-assigned-id flag (unlike Claude's
+`--session-id`). Two strategies run together:
+
+- **`fs.watch` on the day directory.** A fresh codex run almost always
+  writes its rollout JSONL within ~1 s. The service watches today's
+  `~/.codex/sessions/YYYY/MM/DD/` (and tomorrow's, to handle UTC
+  rollover near midnight); each `add`/`change` event triggers a
+  200 ms-debounced parse pass against any new candidate file matching
+  the cwd / startedAt / required-text gates above.
+- **Staggered fallback poll.** `CODEX_FALLBACK_POLL_DELAYS_MS =
+  [500, 2_000, 5_000, 12_000, 30_000]` schedules five timers that
+  scan the same directory tree even when `fs.watch` is unavailable
+  or unreliable (network mounts, some Linux file systems, the test
+  harness). The whole capture aborts after
+  `CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS = 60_000`.
+
+When a UUID is captured, the service writes the row's
+`resumeMetadata.targetId` and **registers a stable thread name in
+codex's index**: it appends `{ id, thread_name, updated_at }` to
+`~/.codex/session_index.jsonl` with a derived `ade-<sessionId>`
+name. This is codex's public on-disk format for `SetThreadName`, so
+once the line lands, `codex resume ade-<id>` resolves through the
+index regardless of where the rollout file ends up on disk. We
+control the `ade-*` namespace so it never collides with user-chosen
+names. The append is well under PIPE_BUF and safe vs. concurrent
+codex writers.
 
 ### Dispose and orphan disposal
 
@@ -407,6 +438,24 @@ related calls.
 - `stopStack` reverses the order.
 - `startAll` / `stopAll` delegate to `runStartSet` / `runStopSet` with
   `startOrder: "dependency"`.
+
+### Process groups
+
+`processService.startGroup` / `stopGroup` / `restartGroup` accept
+`ProcessGroupArgs = { groupId, laneByProcessId }`. `groupProcessIds`
+resolves the group id against `effective.processGroups` (throws on
+unknown group) and returns every process whose `groupIds[]` includes
+the id; `runStartGroupParallel` and `runStopGroupParallel` then drive
+the lifecycle. Group runs are intentionally **parallel** — definition
+order only affects fork order inside `Promise.all`. Per-process
+`dependsOn` is **not** topologically sorted across mixed lanes,
+because each member can run on its own lane (the Run page picks the
+lane per `CommandCard`). Groups exist to bundle commands for one-tap
+start/stop in the Run page; if you need strict dependency
+sequencing for a bundle, model it as a single-lane stack instead.
+`restartGroup` calls `stopGroup` first and awaits the corresponding
+`waitForEntriesStopped` for every targeted active entry before
+issuing the parallel restart.
 
 ### Lane overlay integration
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
+import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -20,6 +20,7 @@ import {
   type AgentChatSlashCommand,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
+  type IosElementContextItem,
   type PendingInputRequest,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -54,6 +55,37 @@ type SlashCommandEntry = {
   source: "sdk" | "local";
 };
 
+function iosMetadataRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function iosMetadataArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.map(iosMetadataRecord).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
+}
+
+function iosContextDisplayLabel(item: IosElementContextItem): string {
+  const metadata = item.metadata ?? {};
+  for (const value of [metadata.label, metadata.value, item.componentId, metadata.role, metadata.elementType]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "iOS element";
+}
+
+function iosContextSourceDescription(item: IosElementContextItem): string {
+  if (item.sourceFile) {
+    return `${item.sourceFile.split("/").pop()}${item.sourceLine ? `:${item.sourceLine}` : ""}`;
+  }
+  const confidence = typeof item.metadata.sourceConfidence === "string" ? item.metadata.sourceConfidence : null;
+  const candidates = iosMetadataArray(item.metadata.sourceCandidates ?? item.metadata.sourceMatches);
+  if (confidence === "candidate" || candidates.length) return `${candidates.length || "Candidate"} source ${candidates.length === 1 ? "guess" : "guesses"}`;
+  return typeof item.metadata.screenElementSource === "string" ? item.metadata.screenElementSource : "No source match";
+}
+
+function iosFrameLabel(item: IosElementContextItem): string | null {
+  if (!item.frame) return null;
+  return `x ${Math.round(item.frame.x)}, y ${Math.round(item.frame.y)}, w ${Math.round(item.frame.width)}, h ${Math.round(item.frame.height)}`;
+}
+
 /** When set, permission/runtime controls bind to this slot (parallel model row configuration). */
 export type ParallelComposerControlSlot = {
   sessionProvider: string;
@@ -81,6 +113,25 @@ export type ParallelComposerControlSlot = {
   onCursorModeChange: (modeId: string) => void;
   onCursorConfigChange: (configId: string, value: string | boolean) => void;
 };
+
+function pendingHeaderLabel(kind: PendingInputRequest["kind"], questionCount: number): string {
+  if (kind === "approval" || kind === "permissions") return "Approval";
+  if (questionCount > 1) return `${questionCount} Questions`;
+  return "Input needed";
+}
+
+function iosSourceResolutionLabel(resolution: string): string {
+  switch (resolution) {
+    case "ade-inspector":
+      return "Source from ADEInspector";
+    case "swift-exact-search":
+      return "Exact Swift source match";
+    case "swift-candidate-search":
+      return "Ranked Swift source candidates";
+    default:
+      return "No source match";
+  }
+}
 
 /** Local-only commands that are always available regardless of provider. */
 const LOCAL_SLASH_COMMANDS: SlashCommandEntry[] = [
@@ -286,21 +337,21 @@ function PendingSteerItem({
                 cancelEdit();
               }
             }}
-            className="w-full resize-none rounded border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-[12px] leading-[1.5] text-fg/82 outline-none focus:border-[var(--chat-accent)]/30"
+            className="w-full resize-none rounded border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/82 outline-none focus:border-[var(--chat-accent)]/30"
             rows={1}
           />
           <div className="mt-1 flex gap-1">
             <button
               type="button"
               onClick={commitEdit}
-              className="inline-flex h-5 items-center gap-0.5 rounded border border-[var(--chat-accent)]/20 bg-[var(--chat-accent)]/8 px-1.5 text-[9px] font-medium text-[var(--chat-accent)] hover:bg-[var(--chat-accent)]/14"
+              className="inline-flex h-5 items-center gap-0.5 rounded border border-[var(--chat-accent)]/20 bg-[var(--chat-accent)]/8 px-1.5 text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-[var(--chat-accent)] hover:bg-[var(--chat-accent)]/14"
             >
               <Check size={9} weight="bold" /> Save
             </button>
             <button
               type="button"
               onClick={cancelEdit}
-              className="inline-flex h-5 items-center rounded border border-white/[0.06] px-1.5 text-[9px] text-fg/40 hover:text-fg/60"
+              className="inline-flex h-5 items-center rounded border border-white/[0.06] px-1.5 text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 hover:text-fg/60"
             >
               Cancel
             </button>
@@ -308,10 +359,10 @@ function PendingSteerItem({
         </div>
       ) : (
         <div className="flex-1 min-w-0">
-          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
+          <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
             Sends after turn
           </div>
-          <div className="truncate text-[12px] leading-[1.5] text-fg/62">
+          <div className="truncate text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/62">
             {steer.text}
           </div>
         </div>
@@ -396,8 +447,7 @@ export function AgentChatComposer({
   cursorModeSnapshot,
   executionMode,
   computerUseSnapshot,
-  proofOpen = false,
-  proofArtifactCount = 0,
+  iosElementContextItems = [],
   executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
@@ -425,7 +475,7 @@ export function AgentChatComposer({
   onDroidPermissionModeChange,
   onCursorModeChange,
   onCursorConfigChange,
-  onToggleProof,
+  onRemoveIosElementContext,
   onClearEvents,
   promptSuggestion,
   chatHasMessages = false,
@@ -480,8 +530,7 @@ export function AgentChatComposer({
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
-  proofOpen?: boolean;
-  proofArtifactCount?: number;
+  iosElementContextItems?: IosElementContextItem[];
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
@@ -514,7 +563,7 @@ export function AgentChatComposer({
   onCursorModeChange?: (modeId: string) => void;
   onCursorConfigChange?: (configId: string, value: string | boolean) => void;
   onComputerUsePolicyChange?: (policy: unknown) => void;
-  onToggleProof?: () => void;
+  onRemoveIosElementContext?: (id: string) => void;
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
   chatHasMessages?: boolean;
@@ -548,6 +597,7 @@ export function AgentChatComposer({
   const [attachmentResults, setAttachmentResults] = useState<AgentChatFileRef[]>([]);
   const [attachmentCursor, setAttachmentCursor] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
 
   const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
   const [hoveredCodexPreset, setHoveredCodexPreset] = useState<Exclude<CodexPermissionPreset, "custom"> | null>(null);
@@ -564,13 +614,20 @@ export function AgentChatComposer({
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const richEditorRef = useRef<HTMLDivElement | null>(null);
+  const richSelectionRef = useRef<Range | null>(null);
+  const richInitializedRef = useRef(false);
+  const lastSerializedDraftRef = useRef<string>("");
+  const lastPlainSelectionRef = useRef<number | null>(null);
   const fileAddInProgressRef = useRef(false);
+  const useRichIosComposer = iosElementContextItems.length > 0;
   const canAttach = !parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS;
   const attachBlockedReason = parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
     ? `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`
     : null;
 
   const resizeTextarea = useCallback(() => {
+    if (useRichIosComposer) return;
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "0px";
@@ -578,12 +635,16 @@ export function AgentChatComposer({
     const next = Math.min(Math.max(el.scrollHeight, 28), maxH);
     el.style.height = `${next}px`;
     el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
-  }, [layoutVariant, composerMaxHeightPx]);
+  }, [layoutVariant, composerMaxHeightPx, useRichIosComposer]);
   useEffect(() => {
     resizeTextarea();
     if (!shouldAutofocus) return;
+    if (useRichIosComposer) {
+      richEditorRef.current?.focus({ preventScroll: true });
+      return;
+    }
     textareaRef.current?.focus({ preventScroll: true });
-  }, [resizeTextarea, shouldAutofocus]);
+  }, [resizeTextarea, shouldAutofocus, useRichIosComposer]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
@@ -697,13 +758,197 @@ export function AgentChatComposer({
     }
   };
 
+  const captureRichSelection = useCallback(() => {
+    const editor = richEditorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection || !selection.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) return;
+    richSelectionRef.current = range.cloneRange();
+  }, []);
+
+  const serializeRichEditor = useCallback((): string => {
+    const editor = richEditorRef.current;
+    if (!editor) return draft;
+    const parts: string[] = [];
+    const visit = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parts.push(node.textContent ?? "");
+        return;
+      }
+      if (!(node instanceof HTMLElement)) return;
+      if (node.dataset.iosContextId) {
+        parts.push(" ");
+        return;
+      }
+      if (node.tagName === "BR") {
+        parts.push("\n");
+        return;
+      }
+      node.childNodes.forEach(visit);
+      if (node.tagName === "DIV" || node.tagName === "P") parts.push("\n");
+    };
+    editor.childNodes.forEach(visit);
+    return parts
+      .join("")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/[ \t]+\n/g, "\n");
+  }, [draft]);
+
+  const syncRichDraft = useCallback(() => {
+    if (!useRichIosComposer) return;
+    const editor = richEditorRef.current;
+    if (!editor) return;
+    onDraftChange(serializeRichEditor());
+    captureRichSelection();
+  }, [captureRichSelection, onDraftChange, serializeRichEditor, useRichIosComposer]);
+
+  const getRichCursorTextOffset = useCallback((): number => {
+    const editor = richEditorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection || !selection.rangeCount) return serializeRichEditor().length;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer)) return serializeRichEditor().length;
+    let offset = 0;
+    let found = false;
+    const visit = (node: Node) => {
+      if (found) return;
+      if (node === range.startContainer) {
+        offset += range.startOffset;
+        found = true;
+        return;
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += node.textContent?.length ?? 0;
+        return;
+      }
+      if (node instanceof HTMLElement && node.dataset.iosContextId) return;
+      node.childNodes.forEach(visit);
+    };
+    editor.childNodes.forEach(visit);
+    return offset;
+  }, [serializeRichEditor]);
+
+  const setRichEditorText = useCallback((text: string) => {
+    const editor = richEditorRef.current;
+    if (!editor) return;
+    editor.textContent = text;
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    richSelectionRef.current = range.cloneRange();
+  }, []);
+
+  const insertTextIntoRichEditor = useCallback((text: string) => {
+    const editor = richEditorRef.current;
+    if (!editor) return;
+    editor.focus({ preventScroll: true });
+    const selection = window.getSelection();
+    const range = richSelectionRef.current?.cloneRange();
+    if (range && editor.contains(range.commonAncestorContainer)) {
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    document.execCommand("insertText", false, text);
+    syncRichDraft();
+  }, [syncRichDraft]);
+
+  const insertNodeAtTextOffset = useCallback((editor: HTMLElement, node: Node, offset: number) => {
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+    let remaining = Math.max(0, offset);
+    while (current) {
+      const length = current.textContent?.length ?? 0;
+      if (remaining <= length) {
+        const range = document.createRange();
+        range.setStart(current, remaining);
+        range.collapse(true);
+        range.insertNode(node);
+        return;
+      }
+      remaining -= length;
+      current = walker.nextNode();
+    }
+    editor.appendChild(node);
+  }, []);
+
+  const createIosContextChipNode = useCallback((item: IosElementContextItem): HTMLElement => {
+    const chip = document.createElement("span");
+    chip.contentEditable = "false";
+    chip.dataset.iosContextId = item.id;
+    chip.className = "mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline";
+    chip.title = item.sourceFile ? `${iosContextDisplayLabel(item)} - ${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}` : iosContextDisplayLabel(item);
+
+    const label = document.createElement("span");
+    label.className = "max-w-[150px] truncate";
+    label.textContent = iosContextDisplayLabel(item);
+    chip.appendChild(label);
+
+    const source = document.createElement("span");
+    source.className = "max-w-[90px] truncate text-cyan-100/45";
+    source.textContent = iosContextSourceDescription(item);
+    chip.appendChild(source);
+
+    const remove = document.createElement("span");
+    remove.className = "rounded px-0.5 text-cyan-100/45";
+    remove.textContent = "x";
+    remove.dataset.iosRemove = "true";
+    chip.appendChild(remove);
+    return chip;
+  }, []);
+
+  useLayoutEffect(() => {
+    const editor = richEditorRef.current;
+    if (!useRichIosComposer || !editor) {
+      richInitializedRef.current = false;
+      return;
+    }
+    if (!richInitializedRef.current) {
+      editor.textContent = draft;
+      richInitializedRef.current = true;
+    }
+    const currentIds = new Set(iosElementContextItems.map((item) => item.id));
+    editor.querySelectorAll<HTMLElement>("[data-ios-context-id]").forEach((node) => {
+      const id = node.dataset.iosContextId;
+      if (!id || !currentIds.has(id)) node.remove();
+    });
+    const existingIds = new Set(Array.from(editor.querySelectorAll<HTMLElement>("[data-ios-context-id]")).map((node) => node.dataset.iosContextId).filter(Boolean));
+    for (const item of iosElementContextItems) {
+      if (existingIds.has(item.id)) continue;
+      const chip = createIosContextChipNode(item);
+      const before = document.createTextNode(" ");
+      const after = document.createTextNode(" ");
+      const fragment = document.createDocumentFragment();
+      fragment.append(before, chip, after);
+      const savedRange = richSelectionRef.current;
+      if (savedRange && editor.contains(savedRange.commonAncestorContainer)) {
+        const range = savedRange.cloneRange();
+        range.deleteContents();
+        range.insertNode(fragment);
+        range.setStartAfter(after);
+        range.collapse(true);
+        richSelectionRef.current = range.cloneRange();
+      } else {
+        insertNodeAtTextOffset(editor, fragment, lastPlainSelectionRef.current ?? draft.length);
+      }
+      existingIds.add(item.id);
+    }
+    const next = serializeRichEditor();
+    if (next === lastSerializedDraftRef.current) return;
+    lastSerializedDraftRef.current = next;
+    onDraftChange(next);
+  }, [createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, useRichIosComposer]);
+
   const handleSlashSelect = useCallback((cmd: SlashCommandEntry) => {
     // Local-only commands handled client-side
     if (cmd.command === "/clear" && cmd.source === "local" && onClearEvents) { onClearEvents(); onDraftChange(""); return; }
     // SDK and all other commands: set as draft text to be sent to the agent
     const suffix = cmd.argumentHint ? ` ${cmd.argumentHint}` : "";
-    onDraftChange(`${cmd.command}${suffix} `);
-  }, [onClearEvents, onDraftChange]);
+    const next = `${cmd.command}${suffix} `;
+    if (useRichIosComposer) setRichEditorText(next);
+    onDraftChange(next);
+  }, [onClearEvents, onDraftChange, setRichEditorText, useRichIosComposer]);
 
   const nativeControlsDisabled = permissionModeLocked;
   const slot = parallelControlSlot;
@@ -731,29 +976,41 @@ export function AgentChatComposer({
     [],
   );
   const applyCodexPreset = useCallback((preset: Exclude<CodexPermissionPreset, "custom">) => {
-    const next = preset === "default"
-      ? {
-          codexApprovalPolicy: "on-request" as const,
-          codexSandbox: "workspace-write" as const,
-          codexConfigSource: "flags" as const,
-        }
-      : preset === "plan"
-      ? {
-          codexApprovalPolicy: "on-request" as const,
-          codexSandbox: "read-only" as const,
-          codexConfigSource: "flags" as const,
-        }
-      : preset === "config-toml"
-        ? {
-            codexApprovalPolicy: codexApprovalPolicy ?? "on-request",
-            codexSandbox: codexSandbox ?? "workspace-write",
-            codexConfigSource: "config-toml" as const,
-          }
-        : {
-            codexApprovalPolicy: "never" as const,
-            codexSandbox: "danger-full-access" as const,
-            codexConfigSource: "flags" as const,
-          };
+    let next: {
+      codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+      codexSandbox: AgentChatCodexSandbox;
+      codexConfigSource: AgentChatCodexConfigSource;
+    };
+    switch (preset) {
+      case "default":
+        next = {
+          codexApprovalPolicy: "on-request",
+          codexSandbox: "workspace-write",
+          codexConfigSource: "flags",
+        };
+        break;
+      case "plan":
+        next = {
+          codexApprovalPolicy: "on-request",
+          codexSandbox: "read-only",
+          codexConfigSource: "flags",
+        };
+        break;
+      case "config-toml":
+        next = {
+          codexApprovalPolicy: codexApprovalPolicy ?? "on-request",
+          codexSandbox: codexSandbox ?? "workspace-write",
+          codexConfigSource: "config-toml",
+        };
+        break;
+      default:
+        next = {
+          codexApprovalPolicy: "never",
+          codexSandbox: "danger-full-access",
+          codexConfigSource: "flags",
+        };
+        break;
+    }
 
     if (parallelControlSlot) {
       parallelControlSlot.onCodexPresetChange(next);
@@ -775,12 +1032,6 @@ export function AgentChatComposer({
     onCodexSandboxChange,
     parallelControlSlot,
   ]);
-  const claudeControlDetail = useMemo(() => {
-    if (sp !== "claude") return null;
-    const option = CLAUDE_MODE_OPTIONS.find((item) => item.value === (hoveredClaudeMode ?? claudeSelectionMode));
-    return option?.detail ?? null;
-  }, [claudeSelectionMode, hoveredClaudeMode, sp]);
-
   useEffect(() => {
     if (!codexPresetPickerOpen) return;
     const handleClick = (event: MouseEvent) => {
@@ -846,16 +1097,6 @@ export function AgentChatComposer({
     }[csUse ?? "workspace-write"];
     return `Custom Codex mode: ${ccsUse === "flags" ? "ADE flags" : "config.toml"} - ${approvalLabel} - ${sandboxLabel}`;
   }, [capUse, ccsUse, codexPreset, csUse, sp]);
-  const codexControlDetail = useMemo(() => {
-    if (sp !== "codex") return null;
-    if (hoveredCodexPreset) {
-      return codexPresetOptions.find((option) => option.value === hoveredCodexPreset)?.detail ?? null;
-    }
-    if (codexPreset === "custom") {
-      return codexCustomSummary;
-    }
-    return codexPresetOptions.find((option) => option.value === codexPreset)?.detail ?? null;
-  }, [codexCustomSummary, codexPreset, codexPresetOptions, hoveredCodexPreset, sp]);
   const nativeControlPanel = useMemo(() => {
     if (hideNativeControls) {
       return null;
@@ -868,55 +1109,6 @@ export function AgentChatComposer({
       return null;
     }
     const plainComposerToolbarChrome = !parallelChatMode;
-
-    const renderButtonGroup = <T extends string,>(
-      label: string,
-      value: T | undefined,
-      options: Array<{ value: T; label: string; detail: string; safety?: "safe" | "semi-auto" | "danger" }>,
-      onChange: ((value: T) => void) | undefined,
-      disabled = false,
-      onHoverChange?: (value: T | null) => void,
-    ) => (
-      <div className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
-        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{label}</span>
-        <div className="flex items-center gap-px rounded-md border border-white/[0.06] bg-[#14141b] p-0.5">
-          {options.map((option) => {
-            const active = value === option.value;
-            const colors = option.safety ? safetyColors(option.safety) : null;
-            return (
-              <SmartTooltip
-                key={option.value}
-                content={{
-                  label: option.label,
-                  description: option.detail,
-                  effect: active ? "Currently selected." : undefined,
-                }}
-              >
-                <button
-                  type="button"
-                  className={cn(
-                    "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
-                    active
-                      ? (colors ? `${colors.activeBg} text-fg/80` : "bg-white/[0.08] text-fg/80")
-                      : "text-muted-fg/35 hover:text-muted-fg/60",
-                    disabled ? "cursor-not-allowed opacity-50" : "",
-                  )}
-                  disabled={disabled || !onChange}
-                  onClick={() => onChange?.(option.value)}
-                  onMouseEnter={() => onHoverChange?.(option.value)}
-                  onMouseLeave={() => onHoverChange?.(null)}
-                  onFocus={() => onHoverChange?.(option.value)}
-                  onBlur={() => onHoverChange?.(null)}
-                  aria-pressed={active}
-                >
-                  {option.label}
-                </button>
-              </SmartTooltip>
-            );
-          })}
-        </div>
-      </div>
-    );
 
     if (sp === "claude") {
       const selectedOption =
@@ -959,7 +1151,7 @@ export function AgentChatComposer({
                 setClaudeModePickerOpen((open) => !open);
               }}
               className={cn(
-                "inline-flex h-8 min-h-8 items-center gap-2 rounded-md font-sans text-[11px] transition-colors",
+                "inline-flex h-8 min-h-8 items-center gap-2 rounded-md font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
                 plainComposerToolbarChrome
                   ? cn(
                       "border border-transparent bg-transparent px-2",
@@ -977,7 +1169,7 @@ export function AgentChatComposer({
               title={selectedOption.detail}
             >
               <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", selectedTone.dot)} aria-hidden />
-              <span className="font-sans text-[11px] leading-none">{selectedOption.label}</span>
+              <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-none">{selectedOption.label}</span>
               <CaretDown size={10} weight="bold" className="opacity-70" />
             </button>
             {claudeModePickerOpen && claudeModePickerRef.current ? createPortal(
@@ -994,7 +1186,7 @@ export function AgentChatComposer({
                       bottom: window.innerHeight - rect.top + 8,
                     }}
                   >
-                    <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
+                    <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
                       Mode
                     </div>
                     <ul className="py-1">
@@ -1017,7 +1209,7 @@ export function AgentChatComposer({
                               onFocus={() => setHoveredClaudeMode(option.value)}
                               onBlur={() => setHoveredClaudeMode(null)}
                               className={cn(
-                                "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[11px] transition-colors",
+                                "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
                                 active ? cn(tone.activeBg, tone.activeText) : "text-fg/72",
                                 tone.hoverBg,
                               )}
@@ -1060,7 +1252,7 @@ export function AgentChatComposer({
               setCodexPresetPickerOpen((open) => !open);
             }}
             className={cn(
-              "inline-flex h-8 min-h-8 items-center gap-2 rounded-md font-sans text-[11px] transition-colors",
+              "inline-flex h-8 min-h-8 items-center gap-2 rounded-md font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
               plainComposerToolbarChrome
                 ? cn(
                     "border border-transparent bg-transparent px-2 text-fg/80",
@@ -1074,7 +1266,7 @@ export function AgentChatComposer({
             )}
             title={activePreset?.detail ?? codexCustomSummary ?? "Codex approval preset"}
           >
-            <span className="font-sans text-[11px] leading-none">{presetLabel}</span>
+            <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-none">{presetLabel}</span>
             <CaretDown size={10} weight="bold" className="opacity-70" />
           </button>
           {codexPresetPickerOpen && codexPresetPickerRef.current ? createPortal(
@@ -1091,7 +1283,7 @@ export function AgentChatComposer({
                     bottom: window.innerHeight - rect.top + 8,
                   }}
                 >
-                  <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
+                  <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
                     Preset
                   </div>
                   <ul className="py-1">
@@ -1114,7 +1306,7 @@ export function AgentChatComposer({
                             onFocus={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
                             onBlur={() => setHoveredCodexPreset(null)}
                             className={cn(
-                              "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[11px] transition-colors",
+                              "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
                               active ? `${colors.activeBg} text-fg/88` : "text-fg/72 hover:bg-white/[0.04]",
                             )}
                             title={option.detail}
@@ -1128,7 +1320,7 @@ export function AgentChatComposer({
                     {codexPreset === "custom" ? (
                       <li>
                         <div
-                          className="flex w-full items-center gap-2 px-3 py-1.5 font-sans text-[11px] bg-white/[0.06] text-fg/88"
+                          className="flex w-full items-center gap-2 px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] bg-white/[0.06] text-fg/88"
                           title={codexCustomSummary ?? "Custom Codex approval/sandbox combination"}
                         >
                           <span className="flex-1 truncate leading-none">Custom</span>
@@ -1205,7 +1397,7 @@ export function AgentChatComposer({
                   : "border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5",
               )}
             >
-              <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">Mode</span>
+              <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-muted-fg/45">Mode</span>
               <select
                 value={modeValue}
                 disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
@@ -1213,7 +1405,7 @@ export function AgentChatComposer({
                   if (parallelControlSlot) parallelControlSlot.onCursorModeChange(event.target.value);
                   else onCursorModeChange?.(event.target.value);
                 }}
-                className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
+                className="min-w-0 bg-transparent font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
               >
                 {modeChoices.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -1236,7 +1428,7 @@ export function AgentChatComposer({
                     else onCursorConfigChange?.(option.id, !active);
                   }}
                   className={cn(
-                    "inline-flex h-8 min-h-8 items-center gap-2 rounded-md px-2 font-sans text-[11px] transition-colors",
+                    "inline-flex h-8 min-h-8 items-center gap-2 rounded-md px-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
                     plainComposerToolbarChrome
                       ? cn(
                           "border border-transparent bg-transparent",
@@ -1254,7 +1446,7 @@ export function AgentChatComposer({
                   title={option.description ?? option.name}
                   aria-pressed={active}
                 >
-                  <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/45">
+                  <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.12em] text-muted-fg/45">
                     {active ? "On" : "Off"}
                   </span>
                   <span>{option.name}</span>
@@ -1275,7 +1467,7 @@ export function AgentChatComposer({
                 )}
                 title={option.description ?? option.name}
               >
-                <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">
+                <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-muted-fg/45">
                   {option.name}
                 </span>
                 <select
@@ -1285,7 +1477,7 @@ export function AgentChatComposer({
                     if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, event.target.value);
                     else onCursorConfigChange?.(option.id, event.target.value);
                   }}
-                  className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
+                  className="min-w-0 bg-transparent font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
                 >
                   {choices.map((choice) => (
                     <option key={`${option.id}:${choice.value}`} value={choice.value}>
@@ -1310,7 +1502,7 @@ export function AgentChatComposer({
             : "border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5",
         )}
       >
-        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>
+        <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>
         <select
           value={opmUse}
           disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
@@ -1319,7 +1511,7 @@ export function AgentChatComposer({
             if (parallelControlSlot) parallelControlSlot.onOpenCodePermissionModeChange(v);
             else onOpenCodePermissionModeChange?.(v);
           }}
-          className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
+          className="min-w-0 bg-transparent font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
         >
           {OPENCODE_PERMISSION_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
@@ -1387,8 +1579,8 @@ export function AgentChatComposer({
     return null;
   }, [sessionProvider, modelId]);
 
-  /* ── Keyboard handler for textarea ── */
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  /* ── Keyboard handler for composer input ── */
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
 
     /* Command menu keyboard navigation */
@@ -1435,7 +1627,7 @@ export function AgentChatComposer({
     uploadInputRef.current?.click();
   };
 
-  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = (event: React.ClipboardEvent<HTMLElement>) => {
     if (!canAttach) return;
     const collected: File[] = [];
     if (event.clipboardData.files.length) {
@@ -1481,20 +1673,59 @@ export function AgentChatComposer({
         return;
       }
       // Replace the @query with @filepath
-      const before = draft.slice(0, commandMenuTrigger.cursorIndex);
-      const after = draft.slice(commandMenuTrigger.cursorIndex + commandMenuTrigger.query.length + 1); // +1 for @
-      onDraftChange(`${before}@${item.path} ${after}`);
+      if (useRichIosComposer) {
+        insertTextIntoRichEditor(`@${item.path} `);
+      } else {
+        const before = draft.slice(0, commandMenuTrigger.cursorIndex);
+        const after = draft.slice(commandMenuTrigger.cursorIndex + commandMenuTrigger.query.length + 1); // +1 for @
+        onDraftChange(`${before}@${item.path} ${after}`);
+      }
       onAddAttachment({ path: item.path, type: inferAttachmentType(item.path) });
     } else if (item.type === "command") {
       const selected = effectiveSlashCommands.find((cmd) => cmd.command.replace(/^\//, "") === item.name);
       if (selected) {
         handleSlashSelect(selected);
       } else {
-        onDraftChange(`/${item.name} `);
+        const next = `/${item.name} `;
+        if (useRichIosComposer) setRichEditorText(next);
+        onDraftChange(next);
       }
     }
     setCommandMenuTrigger(null);
-  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, effectiveSlashCommands, handleSlashSelect, onDraftChange, onAddAttachment]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onDraftChange, onAddAttachment, setRichEditorText, useRichIosComposer]);
+
+  const handleRichEditorInput = useCallback(() => {
+    const editor = richEditorRef.current;
+    if (!editor) return;
+    const val = serializeRichEditor();
+    onDraftChange(val);
+    const rect = editor.getBoundingClientRect();
+
+    if (val.startsWith("/") && !val.slice(1).includes("\n")) {
+      const afterSlash = val.slice(1);
+      if (!/\s/.test(afterSlash)) {
+        const query = afterSlash.match(/^[^\s/]*/)?.[0] ?? "";
+        setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
+        setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+        captureRichSelection();
+        return;
+      }
+      setCommandMenuTrigger(null);
+      captureRichSelection();
+      return;
+    }
+
+    const cursorPos = getRichCursorTextOffset();
+    const textBeforeCursor = val.slice(0, cursorPos);
+    const atMatch = textBeforeCursor.match(/@([^\s@]*)$/);
+    if (atMatch) {
+      setCommandMenuTrigger({ type: "at", query: atMatch[1], cursorIndex: cursorPos - atMatch[0].length });
+      setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+    } else {
+      setCommandMenuTrigger(null);
+    }
+    captureRichSelection();
+  }, [captureRichSelection, getRichCursorTextOffset, onDraftChange, serializeRichEditor]);
 
   const submitComposerDraft = useCallback(() => {
     const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
@@ -1514,12 +1745,24 @@ export function AgentChatComposer({
       onSubmit();
       return;
     }
-    if (busy || !modelId || !draft.trim().length) return;
+    if (busy || !modelId || (!draft.trim().length && !iosElementContextItems.length)) return;
     onSubmit();
-  }, [attachments, busy, draft, modelId, onApproval, onDraftChange, onSubmit, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [attachments, busy, draft, iosElementContextItems.length, modelId, onApproval, onDraftChange, onSubmit, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
+  const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
+  const selectedIosCandidates = selectedIosContext
+    ? iosMetadataArray(selectedIosContext.metadata.sourceCandidates ?? selectedIosContext.metadata.sourceMatches).slice(0, 3)
+    : [];
+  const selectedNearbyIosElements = selectedIosContext
+    ? iosMetadataArray(selectedIosContext.metadata.nearbyElements).slice(0, 6)
+    : [];
+  useEffect(() => {
+    if (!selectedIosContextId) return;
+    if (iosElementContextItems.some((item) => item.id === selectedIosContextId)) return;
+    setSelectedIosContextId(null);
+  }, [iosElementContextItems, selectedIosContextId]);
 
   const composerBeamActive = layoutVariant !== "grid-tile" && (turnActive || !chatHasMessages);
   const composerBeamVariant = turnActive ? "ocean" : "colorful";
@@ -1530,7 +1773,8 @@ export function AgentChatComposer({
     parallelChatMode
     && parallelModelSlots.length >= 2
     && (draft.trim().length > 0 || attachments.length > 0);
-  const singleReady = !parallelChatMode && Boolean(modelId) && draft.trim().length > 0;
+  const hasIosElementContext = iosElementContextItems.length > 0;
+  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext);
   const sendEnabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
 
   function sendButtonTitle(): string {
@@ -1540,6 +1784,7 @@ export function AgentChatComposer({
       return "Send to all lanes";
     }
     if (!modelId) return "Select a model first";
+    if (!draft.trim().length && hasIosElementContext) return "Send selected iOS context";
     return "Send";
   }
 
@@ -1580,28 +1825,24 @@ export function AgentChatComposer({
               <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
                 <ChatStatusGlyph status="waiting" size={11} />
               </span>
-              <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200">
-                {pendingInput.kind === "approval" || pendingInput.kind === "permissions"
-                  ? "Approval"
-                  : pendingQuestionCount > 1
-                    ? `${pendingQuestionCount} Questions`
-                    : "Input needed"} · {pendingInput.source}
+              <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest text-amber-200">
+                {pendingHeaderLabel(pendingInput.kind, pendingQuestionCount)} · {pendingInput.source}
               </span>
             </div>
             {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
               <>
-                <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/68">
+                <div className="mb-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
                   {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : "Accept"}</button>
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>Accept all</button>
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : "Accept"}</button>
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>Accept all</button>
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
                 </div>
               </>
             ) : (
               <div className="flex items-center gap-1.5">
-                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
+                <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-amber-200/60">
                   {showPendingInputOptionsHint
                     ? "Answer in the inline question card, or pick an option there."
                     : "Answer in the inline question card, or type below."}
@@ -1609,7 +1850,7 @@ export function AgentChatComposer({
                 <button
                   type="button"
                   disabled={approvalResponding}
-                  className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
+                  className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
                   onClick={() => onApproval("decline")}
                 >
                   Decline
@@ -1620,11 +1861,77 @@ export function AgentChatComposer({
         )
       ) : undefined}
       trays={
-        attachments.length || attachError ? (
+        attachments.length || attachError || selectedIosContext ? (
           <div className="space-y-2 px-1 py-2">
+            {selectedIosContext ? (
+              <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-cyan-300/12 bg-black/20 p-2">
+                <button
+                  type="button"
+                  aria-label="Dismiss preview"
+                  className="absolute right-1.5 top-1.5 rounded p-0.5 text-cyan-100/40 transition-colors hover:text-cyan-50/85"
+                  onClick={() => setSelectedIosContextId(null)}
+                >
+                  <X size={10} weight="bold" />
+                </button>
+                {selectedIosContext.screenshotDataUrl ? (
+                  <img
+                    src={selectedIosContext.screenshotDataUrl}
+                    alt=""
+                    className="h-16 w-16 rounded border border-white/[0.06] object-cover"
+                  />
+                ) : (
+                  <div className="h-16 w-16 rounded border border-white/[0.06] bg-white/[0.03]" />
+                )}
+                <div className="min-w-0 space-y-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70">
+                  <div className="truncate text-cyan-50/85">{iosContextDisplayLabel(selectedIosContext)}</div>
+                  {selectedIosContext.sourceFile ? (
+                    <div className="truncate">{selectedIosContext.sourceFile}{selectedIosContext.sourceLine ? `:${selectedIosContext.sourceLine}` : ""}</div>
+                  ) : (
+                    <div>{iosContextSourceDescription(selectedIosContext)}</div>
+                  )}
+                  {typeof selectedIosContext.metadata.sourceResolution === "string" ? (
+                    <div className="text-cyan-100/45">
+                      {iosSourceResolutionLabel(selectedIosContext.metadata.sourceResolution)}
+                    </div>
+                  ) : null}
+                  {iosFrameLabel(selectedIosContext) ? <div>{iosFrameLabel(selectedIosContext)}</div> : null}
+                  {typeof selectedIosContext.metadata.sourceSnippet === "string" && selectedIosContext.metadata.sourceSnippet.trim().length ? (
+                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-white/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-cyan-50/70">
+                      {selectedIosContext.metadata.sourceSnippet}
+                    </pre>
+                  ) : selectedIosCandidates.length ? (
+                    <div className="space-y-1">
+                      <div className="text-cyan-100/45">Best source candidates</div>
+                      {selectedIosCandidates.map((candidate, index) => (
+                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-1">
+                          <div className="truncate text-cyan-50/70">
+                            {String(candidate.sourceFile ?? "unknown")}{candidate.sourceLine ? `:${String(candidate.sourceLine)}` : ""}
+                          </div>
+                          {candidate.reason ? <div className="truncate text-muted-fg/50">{String(candidate.reason)}</div> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-amber-100/55">No Swift source match for this accessibility element.</div>
+                  )}
+                  {selectedNearbyIosElements.length ? (
+                    <div className="space-y-1">
+                      <div className="text-cyan-100/45">Nearby screen context</div>
+                      <div className="flex flex-wrap gap-1">
+                        {selectedNearbyIosElements.map((element, index) => (
+                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-0.5 text-muted-fg/55">
+                            {String(element.label ?? element.componentId ?? element.role ?? element.elementType ?? "element")}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             {attachError ? (
               <div className="flex items-center gap-1.5 px-3">
-                <span className="text-[10px] text-red-300/75">{attachError}</span>
+                <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-red-300/75">{attachError}</span>
                 <button
                   type="button"
                   aria-label="Dismiss error"
@@ -1665,7 +1972,7 @@ export function AgentChatComposer({
                   value={attachmentQuery}
                   onChange={(e) => setAttachmentQuery(e.target.value)}
                   placeholder="Search files..."
-                  className="h-5 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
+                  className="h-5 flex-1 bg-transparent font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80 outline-none placeholder:text-muted-fg/25"
                   onKeyDown={(event) => {
                     if (event.key === "Escape") { event.preventDefault(); setAttachmentPickerOpen(false); return; }
                     if (event.key === "ArrowDown") {
@@ -1683,9 +1990,9 @@ export function AgentChatComposer({
               </div>
               <div className="max-h-40 overflow-auto py-1">
                 {!attachmentQuery.trim().length ? (
-                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Type to search files...</div>
+                  <div className="px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/25">Type to search files...</div>
                 ) : attachmentBusy ? (
-                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">Searching...</div>
+                  <div className="px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/25">Searching...</div>
                 ) : attachmentResults.length ? (
                   attachmentResults.map((result, index) => (
                     <button
@@ -1693,7 +2000,7 @@ export function AgentChatComposer({
                       type="button"
                       data-active={index === attachmentCursor}
                       className={cn(
-                        "ade-chat-drawer-row mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-lg px-3 py-2.5 text-left font-mono text-[10px]",
+                        "ade-chat-drawer-row mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-lg px-3 py-2.5 text-left font-mono text-[length:calc(var(--chat-font-size)*10/14)]",
                         index === attachmentCursor ? "text-fg/85" : "text-fg/60",
                       )}
                       onMouseEnter={() => setAttachmentCursor(index)}
@@ -1704,7 +2011,7 @@ export function AgentChatComposer({
                     </button>
                   ))
                 ) : (
-                  <div className="px-3 py-2 font-mono text-[10px] text-muted-fg/25">No matching files.</div>
+                  <div className="px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/25">No matching files.</div>
                 )}
               </div>
             </div>
@@ -1717,8 +2024,8 @@ export function AgentChatComposer({
             <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="font-sans text-[12px] font-semibold text-fg/88">Parallel launch</div>
-                  <p className="mt-1 font-sans text-[11px] leading-relaxed text-muted-fg/55">
+                  <div className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/88">Parallel launch</div>
+                  <p className="mt-1 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-muted-fg/55">
                     Configure each model, then send once. Attachments go to every lane (max {PARALLEL_CHAT_MAX_ATTACHMENTS}).
                   </p>
                 </div>
@@ -1726,7 +2033,7 @@ export function AgentChatComposer({
                   <button
                     type="button"
                     disabled={parallelLaunchBusy}
-                    className="shrink-0 rounded-lg border border-white/[0.1] px-2 py-1 font-sans text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
+                    className="shrink-0 rounded-lg border border-white/[0.1] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
                     onClick={() => {
                       onParallelChatModeChange?.(false);
                       onParallelConfiguringIndexChange?.(null);
@@ -1750,17 +2057,17 @@ export function AgentChatComposer({
                           : "border-white/[0.07] bg-white/[0.02]",
                       )}
                     >
-                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-white/[0.06] font-mono text-[10px] font-bold text-muted-fg/50">
+                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-white/[0.06] font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold text-muted-fg/50">
                         {idx + 1}
                       </span>
-                      <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[12px] font-medium text-fg/82">
+                      <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-medium text-fg/82">
                         {(desc?.displayName ?? slotRow.modelId) || "Pick a model"}
                       </span>
                       <SmartTooltip content={{ label: configuring ? "Stop configuring" : "Configure model", description: "Edit the model, reasoning, permissions, and launch mode for this parallel lane." }}>
                         <button
                           type="button"
                           className={cn(
-                            "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
+                            "rounded-md px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
                             configuring
                               ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
                               : "text-muted-fg/55 hover:bg-white/[0.06] hover:text-fg/75",
@@ -1776,7 +2083,7 @@ export function AgentChatComposer({
                           <SmartTooltip content={{ label: "Remove model", description: "Remove this model from the parallel launch set." }}>
                             <button
                               type="button"
-                              className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-sans text-[10px] text-red-400/75 transition-colors hover:bg-red-500/10"
+                              className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-red-400/75 transition-colors hover:bg-red-500/10"
                               disabled={parallelLaunchBusy}
                               onClick={() => onParallelRemoveModel?.(idx)}
                             >
@@ -1793,7 +2100,7 @@ export function AgentChatComposer({
               <SmartTooltip content={{ label: "Add model", description: "Add another model and child lane to this parallel launch." }}>
                 <button
                   type="button"
-                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.12] px-2.5 py-1.5 font-sans text-[11px] font-medium text-muted-fg/65 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04] hover:text-fg/75 disabled:opacity-40"
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.12] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/65 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04] hover:text-fg/75 disabled:opacity-40"
                   disabled={parallelLaunchBusy}
                   onClick={() => onParallelAddModel?.()}
                 >
@@ -1804,7 +2111,7 @@ export function AgentChatComposer({
               {parallelLaunchBusy && parallelLaunchStatus ? (
                 <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
                   <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--chat-accent)]" />
-                  <span className="font-sans text-[11px] text-fg/70">{parallelLaunchStatus}</span>
+                  <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/70">{parallelLaunchStatus}</span>
                 </div>
               ) : null}
             </div>
@@ -1848,7 +2155,7 @@ export function AgentChatComposer({
                       <button
                         type="button"
                         className={cn(
-                          "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                          "rounded-[8px] px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider transition-colors",
                           active ? "bg-white/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
                           parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
                         )}
@@ -1904,7 +2211,7 @@ export function AgentChatComposer({
             >
               <button
                 type="button"
-                className="inline-flex h-8 min-w-8 max-w-full items-center justify-center rounded-lg px-1.5 font-sans text-[11px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
+                className="inline-flex h-8 min-w-8 max-w-full items-center justify-center rounded-lg px-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
                 disabled={!canAttach}
                 onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
                 aria-label="Open attachment picker"
@@ -1933,19 +2240,21 @@ export function AgentChatComposer({
             <SmartTooltip content={{ label: "Commands", description: "Open the slash-command picker for this chat.", shortcut: "/" }}>
               <button
                 type="button"
-                className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg px-1.5 font-sans text-[11px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
+                className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg px-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
                 onClick={() => {
+                  const richEl = richEditorRef.current;
                   const el = textareaRef.current;
-                  const currentDraft = el?.value ?? "";
+                  const currentDraft = useRichIosComposer ? serializeRichEditor() : el?.value ?? "";
                   if (!currentDraft.length) onDraftChange("/");
-                  const rect = el?.getBoundingClientRect();
+                  if (useRichIosComposer && !currentDraft.length) setRichEditorText("/");
+                  const rect = (useRichIosComposer ? richEl : el)?.getBoundingClientRect();
                   setCommandMenuTrigger({
                     type: "slash",
                     query: currentDraft.startsWith("/") ? currentDraft.slice(1).match(/^[^\s/]*/)?.[0] ?? "" : "",
                     cursorIndex: 0,
                   });
                   if (rect) setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
-                  el?.focus();
+                  (useRichIosComposer ? richEl : el)?.focus();
                 }}
                 aria-label="Open command picker"
               >
@@ -1966,7 +2275,7 @@ export function AgentChatComposer({
                   disabled={turnActive || busy}
                   onClick={() => onParallelChatModeChange?.(true)}
                   className={cn(
-                    "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[10px] font-medium transition-colors",
+                    "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
                     "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
                     turnActive || busy ? "cursor-not-allowed opacity-40" : "",
                   )}
@@ -1977,46 +2286,13 @@ export function AgentChatComposer({
               </SmartTooltip>
             ) : null}
 
-            {/* Proof drawer toggle */}
-            {onToggleProof ? (
-              <SmartTooltip
-                content={{
-                  label: proofOpen ? "Close proof drawer" : "Open proof drawer",
-                  description: proofOpen
-                    ? "Hide captured screenshots, videos, browser traces, and proof artifacts."
-                    : "Show captured screenshots, videos, browser traces, and proof artifacts for this chat.",
-                  effect: proofArtifactCount > 0 ? `${proofArtifactCount} artifact${proofArtifactCount === 1 ? "" : "s"} available.` : undefined,
-                }}
-              >
-                <button
-                  type="button"
-                  className={cn(
-                    "relative inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[10px] font-medium transition-colors",
-                    proofOpen
-                      ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-200/80"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-white/[0.10] hover:text-fg/60",
-                  )}
-                  onClick={onToggleProof}
-                  aria-label={proofOpen ? "Close proof drawer" : "Open proof drawer"}
-                  aria-pressed={proofOpen}
-                >
-                  <Cube className="h-3 w-3" size={14} weight={proofOpen ? "fill" : "regular"} />
-                  {proofArtifactCount > 0 ? (
-                    <span className="inline-flex h-3 min-w-3 items-center justify-center rounded-full bg-emerald-500/20 px-0.5 font-mono text-[8px] font-bold text-emerald-200/90">
-                      {proofArtifactCount}
-                    </span>
-                  ) : null}
-                </button>
-              </SmartTooltip>
-            ) : null}
-
             {turnActive ? (
               <>
                 {draft.trim().length > 0 && onClearDraft ? (
                   <SmartTooltip content={{ label: "Clear draft", description: "Clear the unsent text without interrupting the active turn." }}>
                     <button
                       type="button"
-                      className="inline-flex h-6 items-center justify-center rounded-md border border-white/[0.06] px-1.5 font-sans text-[10px] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
+                      className="inline-flex h-6 items-center justify-center rounded-md border border-white/[0.06] px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45 transition-all hover:bg-white/[0.04] hover:text-fg/72"
                       onClick={onClearDraft}
                     >
                       Clear
@@ -2069,7 +2345,7 @@ export function AgentChatComposer({
                   aria-label={parallelChatMode ? "Send to parallel lanes" : "Send message"}
                 >
                   <PaperPlaneTilt className="h-3 w-3" size={12} weight="fill" />
-                  <span className="ml-1 max-w-[8.5rem] truncate font-sans text-[10px] sm:max-w-[11rem]">
+                  <span className="ml-1 max-w-[8.5rem] truncate font-sans text-[length:calc(var(--chat-font-size)*10/14)] sm:max-w-[11rem]">
                     {parallelChatMode ? "Send to lanes" : "Send"}
                   </span>
                 </button>
@@ -2084,10 +2360,10 @@ export function AgentChatComposer({
       {pendingSteers.length > 0 ? (
         <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1.5">
           <div className="flex items-baseline gap-2">
-            <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg/30">
+            <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-fg/30">
               Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
             </span>
-            <span className="font-sans text-[9px] text-fg/30">
+            <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
               Hover to send now, interrupt, edit, or remove.
             </span>
           </div>
@@ -2113,10 +2389,10 @@ export function AgentChatComposer({
         {dragActive ? (
           <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,rgba(5,5,8,0.58))] backdrop-blur-sm">
             <div className="rounded-[var(--chat-radius-card)] border border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)] bg-card/92 px-5 py-4 text-center shadow-[var(--chat-composer-shadow)]">
-              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">
+              <div className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.18em] text-[var(--chat-accent)]">
                 Drop files to attach
               </div>
-              <div className="mt-1 text-[12px] text-fg/74">
+              <div className="mt-1 text-[length:calc(var(--chat-font-size)*12/14)] text-fg/74">
                 {parallelChatMode
                   ? `Up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files, sent to every parallel lane.`
                   : "Images and files will be added to this turn."}
@@ -2132,9 +2408,9 @@ export function AgentChatComposer({
               className="pointer-events-none absolute inset-0 flex items-start px-4 py-2.5"
               aria-hidden="true"
             >
-              <span className="text-[13px] leading-[1.6] text-fg/18 italic">
+              <span className="text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/18 italic">
                 {promptSuggestion}
-                <span className="ml-2 inline-flex items-center rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-mono text-[9px] not-italic text-fg/20">
+                <span className="ml-2 inline-flex items-center rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*9/14)] not-italic text-fg/20">
                   Tab
                 </span>
               </span>
@@ -2154,58 +2430,103 @@ export function AgentChatComposer({
             onSelect={handleCommandMenuSelect}
             onClose={() => setCommandMenuTrigger(null)}
           />
-          <textarea
-            ref={textareaRef}
-            value={draft}
-            onChange={(event) => {
-              const val = event.target.value;
-              onDraftChange(val);
-              const rect = event.target.getBoundingClientRect();
+          {useRichIosComposer ? (
+            <div className="relative">
+              {!draft.trim().length && !iosElementContextItems.length ? (
+                <div className="pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30">
+                  {turnActive ? "Steer the active turn..." : (messagePlaceholder ?? "Type to vibecode...")}
+                </div>
+              ) : null}
+              <div
+                ref={richEditorRef}
+                contentEditable={!parallelLaunchBusy}
+                role="textbox"
+                aria-multiline="true"
+                suppressContentEditableWarning
+                className={cn(
+                  "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
+                  dragActive ? "opacity-30" : "",
+                  parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
+                )}
+                data-chat-layout-variant={layoutVariant}
+                onInput={handleRichEditorInput}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                onKeyUp={captureRichSelection}
+                onMouseUp={captureRichSelection}
+                onBlur={captureRichSelection}
+                onClick={(event) => {
+                  const target = event.target as HTMLElement | null;
+                  const chip = target?.closest?.("[data-ios-context-id]") as HTMLElement | null;
+                  if (!chip?.dataset.iosContextId) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (target?.dataset.iosRemove === "true") {
+                    onRemoveIosElementContext?.(chip.dataset.iosContextId);
+                    return;
+                  }
+                  setSelectedIosContextId((current) => current === chip.dataset.iosContextId ? null : chip.dataset.iosContextId ?? null);
+                }}
+              />
+            </div>
+          ) : (
+            <textarea
+              ref={textareaRef}
+              value={draft}
+              onChange={(event) => {
+                const val = event.target.value;
+                onDraftChange(val);
+                lastPlainSelectionRef.current = event.target.selectionStart ?? val.length;
+                const rect = event.target.getBoundingClientRect();
 
-              if (val.startsWith("/") && !val.slice(1).includes("\n")) {
-                // Once the user types a space after the command name they have
-                // entered the arguments section — keep the menu only while
-                // they're still typing the command name itself, so Enter/Tab
-                // submits the slash command instead of being stolen by the menu.
-                const afterSlash = val.slice(1);
-                if (!/\s/.test(afterSlash)) {
-                  const query = afterSlash.match(/^[^\s/]*/)?.[0] ?? "";
-                  setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
-                  setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                if (val.startsWith("/") && !val.slice(1).includes("\n")) {
+                  // Once the user types a space after the command name they have
+                  // entered the arguments section — keep the menu only while
+                  // they're still typing the command name itself, so Enter/Tab
+                  // submits the slash command instead of being stolen by the menu.
+                  const afterSlash = val.slice(1);
+                  if (!/\s/.test(afterSlash)) {
+                    const query = afterSlash.match(/^[^\s/]*/)?.[0] ?? "";
+                    setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
+                    setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                    return;
+                  }
+                  setCommandMenuTrigger(null);
                   return;
                 }
-                setCommandMenuTrigger(null);
-                return;
-              }
 
-              // Detect @mention trigger
-              const cursorPos = event.target.selectionStart ?? val.length;
-              const textBeforeCursor = val.slice(0, cursorPos);
-              const atMatch = textBeforeCursor.match(/@([^\s@]*)$/);
-              if (atMatch) {
-                setCommandMenuTrigger({ type: "at", query: atMatch[1], cursorIndex: cursorPos - atMatch[0].length });
-                setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
-              } else {
-                setCommandMenuTrigger(null);
-              }
-            }}
-            rows={1}
-            onInput={resizeTextarea}
-            disabled={parallelLaunchBusy}
-            autoComplete="on"
-            autoCorrect="on"
-            autoCapitalize="sentences"
-            spellCheck={true}
-            className={cn(
-              "block w-full resize-none bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
-              dragActive ? "opacity-30" : "",
-              parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
-            )}
-            data-chat-layout-variant={layoutVariant}
-            placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode..."))}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-          />
+                // Detect @mention trigger
+                const cursorPos = event.target.selectionStart ?? val.length;
+                const textBeforeCursor = val.slice(0, cursorPos);
+                const atMatch = textBeforeCursor.match(/@([^\s@]*)$/);
+                if (atMatch) {
+                  setCommandMenuTrigger({ type: "at", query: atMatch[1], cursorIndex: cursorPos - atMatch[0].length });
+                  setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                } else {
+                  setCommandMenuTrigger(null);
+                }
+              }}
+              rows={1}
+              onInput={resizeTextarea}
+              onSelect={(event) => {
+                lastPlainSelectionRef.current = event.currentTarget.selectionStart ?? event.currentTarget.value.length;
+              }}
+              disabled={parallelLaunchBusy}
+              autoComplete="on"
+              autoCorrect="on"
+              autoCapitalize="sentences"
+              spellCheck={true}
+              className={cn(
+                "block w-full resize-none bg-transparent px-4 py-2.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
+                dragActive ? "opacity-30" : "",
+                parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
+              )}
+              data-chat-layout-variant={layoutVariant}
+              placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode..."))}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+            />
+          )}
         </div>
       </div>
       </ChatComposerShell>

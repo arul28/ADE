@@ -273,6 +273,7 @@ export function createFileService({
       kind: scope.kind,
       laneId: scope.laneId,
       name: scope.name,
+      branchRef: scope.branchRef,
       rootPath: scope.rootPath,
       isReadOnlyByDefault: scope.isReadOnlyByDefault,
       mobileReadOnly: true,
@@ -579,6 +580,14 @@ export function createFileService({
 
     stopWatchingBySender(senderId: number): void {
       watcherService.stopAllForSender(senderId);
+    },
+
+    stopAllWatchersForWorkspace(workspaceId: string): number {
+      return watcherService.stopAllForWorkspace(workspaceId);
+    },
+
+    countActiveWatchersForWorkspace(workspaceId: string): number {
+      return watcherService.countActiveForWorkspace(workspaceId);
     },
 
     async quickOpen(args: FilesQuickOpenArgs): Promise<FilesQuickOpenItem[]> {

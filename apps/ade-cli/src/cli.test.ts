@@ -66,6 +66,10 @@ describe("ADE CLI", () => {
         },
       },
     });
+
+    const typed = parseCliArgs(["ios-sim", "type", "--value", "hello", "--text"]);
+    expect(typed.options.text).toBe(true);
+    expect(typed.command).toEqual(["ios-sim", "type", "--value", "hello"]);
   });
 
   it("builds a generic ADE action invocation", () => {
@@ -602,6 +606,40 @@ describe("ADE CLI", () => {
     expect(lanesHelp.kind).toBe("help");
   });
 
+  it("shows focused ios-sim help for subcommand help flags", () => {
+    const renderHelp = buildCliPlan(["ios-sim", "preview-render", "--help"]);
+    expect(renderHelp.kind).toBe("help");
+    if (renderHelp.kind !== "help") return;
+    expect(renderHelp.text).toContain("iOS Simulator: preview-render");
+    expect(renderHelp.text).toContain("--source, --file <p>");
+    expect(renderHelp.text).toContain("--index <n>");
+    expect(renderHelp.text).toContain("final command agents should run");
+
+    const aliasHelp = buildCliPlan(["help", "ios", "snapshot"]);
+    expect(aliasHelp.kind).toBe("help");
+    if (aliasHelp.kind !== "help") return;
+    expect(aliasHelp.text).toContain("iOS Simulator: snapshot");
+    expect(aliasHelp.text).toContain("ADEInspector/accessibility");
+
+    const targetHelp = buildCliPlan(["ios-sim", "launch", "--target", "preview-target", "--help"]);
+    expect(targetHelp.kind).toBe("help");
+    if (targetHelp.kind !== "help") return;
+    expect(targetHelp.text).toContain("iOS Simulator: launch");
+    expect(targetHelp.text).toContain("--target, --target-id <id>");
+
+    const nestedHelp = buildCliPlan(["ios-sim", "help", "select"]);
+    expect(nestedHelp.kind).toBe("help");
+    if (nestedHelp.kind !== "help") return;
+    expect(nestedHelp.text).toContain("iOS Simulator: select");
+    expect(nestedHelp.text).toContain("emits a drawer selection event");
+
+    const typeHelp = buildCliPlan(["ios-sim", "type", "--help"]);
+    expect(typeHelp.kind).toBe("help");
+    if (typeHelp.kind !== "help") return;
+    expect(typeHelp.text).toContain("iOS Simulator: type");
+    expect(typeHelp.text).toContain("--value, --message <v>");
+  });
+
   it("shell-escapes argv tokens after -- when building shell start commands", () => {
     const plan = buildCliPlan(["shell", "start", "--lane", "lane-1", "--", "cat", "file with spaces.txt", "literal&name"]);
     expect(plan.kind).toBe("execute");
@@ -1092,6 +1130,185 @@ describe("ADE CLI", () => {
     expect(plan.steps[0]?.params).toMatchObject({
       arguments: { domain: "automations", action: "list" },
     });
+  });
+
+  it("ios-sim status maps to ios_simulator/getStatus", () => {
+    const plan = buildCliPlan(["ios-sim", "status"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "run_ade_action",
+      arguments: { domain: "ios_simulator", action: "getStatus" },
+    });
+  });
+
+  it("ios-sim devices / list / ls aliases all map to listDevices", () => {
+    for (const sub of ["devices", "list", "ls"]) {
+      const plan = buildCliPlan(["ios-sim", sub]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") continue;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: { domain: "ios_simulator", action: "listDevices" },
+      });
+    }
+  });
+
+  it("ios-sim launch passes mode + build flags through to the action", () => {
+    const plan = buildCliPlan([
+      "ios-sim",
+      "launch",
+      "--device",
+      "AAA-BBB",
+      "--mode",
+      "snapshot",
+      "--no-build",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "launch",
+        args: { deviceUdid: "AAA-BBB", mode: "snapshot", build: false },
+      },
+    });
+  });
+
+  it("ios-sim inspect requires both coordinates and forwards them", () => {
+    expect(() => buildCliPlan(["ios-sim", "inspect"])).toThrow(/--x|--y/);
+    const plan = buildCliPlan(["ios-sim", "inspect", "--x", "120", "--y", "420"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "inspectPoint",
+        args: { x: 120, y: 420 },
+      },
+    });
+  });
+
+  it("ios-sim preview commands map to Xcode preview actions", () => {
+    const status = buildCliPlan(["ios-sim", "preview-status", "--source", "Views/HomeView.swift", "--line", "42"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "getPreviewCapability",
+        args: { sourceFile: "Views/HomeView.swift", sourceLine: 42 },
+      },
+    });
+
+    const list = buildCliPlan(["ios-sim", "previews", "--source", "Views/HomeView.swift"]);
+    expect(list.kind).toBe("execute");
+    if (list.kind !== "execute") return;
+    expect(list.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "listPreviewTargets",
+        args: { sourceFile: "Views/HomeView.swift" },
+      },
+    });
+
+    const open = buildCliPlan(["ios-sim", "preview-open", "--project-root", "/tmp/app"]);
+    expect(open.kind).toBe("execute");
+    if (open.kind !== "execute") return;
+    expect(open.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "openPreviewWorkspace",
+        args: { projectRoot: "/tmp/app" },
+      },
+    });
+  });
+
+  it("ios-sim preview-render requires a source file and forwards render options", () => {
+    expect(() => buildCliPlan(["ios-sim", "preview-render"])).toThrow(/sourceFilePath/);
+
+    const plan = buildCliPlan([
+      "ios-sim",
+      "preview-render",
+      "--source",
+      "Views/HomeView.swift",
+      "--index",
+      "2",
+      "--tab",
+      "tab-1",
+      "--timeout",
+      "30",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "renderPreview",
+        args: {
+          sourceFilePath: "Views/HomeView.swift",
+          previewDefinitionIndexInFile: 2,
+          tabIdentifier: "tab-1",
+          timeoutSec: 30,
+        },
+      },
+    });
+  });
+
+  it("ios-sim shutdown forwards --force to the shutdown action", () => {
+    const plain = buildCliPlan(["ios-sim", "shutdown"]);
+    expect(plain.kind).toBe("execute");
+    if (plain.kind !== "execute") return;
+    expect(plain.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "shutdown" },
+    });
+    expect((plain.steps[0]?.params as any).arguments.args.force ?? false).toBe(false);
+
+    const forced = buildCliPlan(["ios-sim", "shutdown", "--force"]);
+    expect(forced.kind).toBe("execute");
+    if (forced.kind !== "execute") return;
+    expect(forced.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "shutdown",
+        args: { force: true },
+      },
+    });
+  });
+
+  it("ios-sim type accepts clear text payload aliases without shadowing output --text", () => {
+    const withValue = buildCliPlan(["ios-sim", "type", "--value", "hello", "--text"]);
+    expect(withValue.kind).toBe("execute");
+    if (withValue.kind !== "execute") return;
+    expect(withValue.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "typeText",
+        args: { text: "hello" },
+      },
+    });
+
+    const withPositional = buildCliPlan(["ios-sim", "type", "hello world", "--text"]);
+    expect(withPositional.kind).toBe("execute");
+    if (withPositional.kind !== "execute") return;
+    expect(withPositional.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "typeText",
+        args: { text: "hello world" },
+      },
+    });
+  });
+
+  it("`ios` and `simulator` are accepted as aliases for `ios-sim`", () => {
+    for (const alias of ["ios", "simulator"]) {
+      const plan = buildCliPlan([alias, "devices"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") continue;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: { domain: "ios_simulator", action: "listDevices" },
+      });
+    }
   });
 
   it("attaches a rendered lane graph when the plan has the lanes visualizer", () => {

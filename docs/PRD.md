@@ -65,12 +65,13 @@ ADE is the control plane. It does not execute browser automation or computer-use
 - [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, and managed-process services. Multi-run process lifecycle keyed by `runId`, AI-title pipeline, lazy resume-target hydration, stale reconciliation.
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
 - [**Project Home**](./features/project-home/README.md) — Combined welcome + per-lane runtime dashboard. Loads lane-independent metadata vs lane runtime separately.
-- [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 8-tab settings, configuration schema with trust model.
+- [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 9-tab settings, configuration schema with trust model.
 
 ### Integrations
 
 - [**Linear Integration**](./features/linear-integration/README.md) — Webhook + relay + reconciliation. Workflow presets, target types (mission/session/worker/PR), bidirectional sync.
 - [**Computer Use**](./features/computer-use/README.md) — Control plane for Ghost OS, agent-browser, ADE local backends. Canonical artifact model, ownership-linked storage.
+- [**iOS Simulator**](./features/ios-simulator/README.md) — Chat-side macOS-only drawer that builds, launches, mirrors, inspects, and controls a booted iOS Simulator. ADEInspector publishes per-frame SwiftUI element metadata so taps become source-anchored chat context.
 - [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation). Host/controller model. WebSocket envelope. Remote commands.
 
 ---

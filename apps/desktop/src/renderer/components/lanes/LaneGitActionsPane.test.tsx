@@ -12,6 +12,10 @@ vi.mock("./CommitTimeline", () => ({
   CommitTimeline: () => null,
 }));
 
+vi.mock("./LaneDiffPane", () => ({
+  LaneDiffPane: () => <div data-testid="lane-diff-pane-mock" />,
+}));
+
 let mockStoreState: {
   lanes: LaneSummary[];
   refreshLanes: ReturnType<typeof vi.fn>;
@@ -204,6 +208,7 @@ describe("LaneGitActionsPane rescue action", () => {
           onSelectCommit={vi.fn()}
           selectedPath={null}
           selectedMode={null}
+          selectedCommit={null}
           selectedCommitSha={null}
           {...overrides}
         />
@@ -545,6 +550,7 @@ describe("LaneGitActionsPane rescue action", () => {
           onSelectCommit={vi.fn()}
           selectedPath={null}
           selectedMode={null}
+          selectedCommit={null}
           selectedCommitSha={null}
         />
       </MemoryRouter>,
@@ -566,6 +572,7 @@ describe("LaneGitActionsPane rescue action", () => {
           onSelectCommit={vi.fn()}
           selectedPath={null}
           selectedMode={null}
+          selectedCommit={null}
           selectedCommitSha={null}
         />
       </MemoryRouter>,
@@ -586,6 +593,7 @@ describe("LaneGitActionsPane rescue action", () => {
           onSelectCommit={vi.fn()}
           selectedPath={null}
           selectedMode={null}
+          selectedCommit={null}
           selectedCommitSha={null}
         />
       </MemoryRouter>,
@@ -605,6 +613,7 @@ describe("LaneGitActionsPane rescue action", () => {
           onSelectCommit={vi.fn()}
           selectedPath={null}
           selectedMode={null}
+          selectedCommit={null}
           selectedCommitSha={null}
         />
       </MemoryRouter>,

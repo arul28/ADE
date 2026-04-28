@@ -373,7 +373,7 @@ function Tip({ text }: { text: string }) {
     >
       ?
       {show ? (
-        <span style={{ position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", width: 260, padding: "8px 10px", fontSize: 11, fontWeight: 400, fontFamily: SANS_FONT, lineHeight: 1.5, color: COLORS.textPrimary, background: "#1E1B2E", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.5)", zIndex: 100, pointerEvents: "none", textTransform: "none", letterSpacing: "0" }}>
+        <span style={{ position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", width: 260, padding: "8px 10px", fontSize: 11, fontWeight: 400, fontFamily: SANS_FONT, lineHeight: 1.5, color: COLORS.textPrimary, background: "var(--color-surface-raised)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, boxShadow: "var(--shadow-panel)", zIndex: 100, pointerEvents: "none", textTransform: "none", letterSpacing: "0" }}>
           {text}
         </span>
       ) : null}
@@ -1357,7 +1357,7 @@ export function MemoryHealthTab() {
           <button key={t.id} type="button" style={tabStyle(activeTab === t.id)} onClick={() => setActiveTab(t.id)}>
             {t.label}
             {t.id === "browse" && candidates.length > 0 ? (
-              <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: COLORS.warning, background: `${COLORS.warning}20`, padding: "1px 5px", borderRadius: 4 }}>
+              <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: COLORS.warning, background: "color-mix(in srgb, var(--color-warning) 20%, transparent)", padding: "1px 5px", borderRadius: 4 }}>
                 {candidates.length}
               </span>
             ) : null}
@@ -1367,12 +1367,12 @@ export function MemoryHealthTab() {
 
       {/* Error banners */}
       {loadError ? (
-        <div role="alert" style={{ padding: "8px 12px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.warning, background: `${COLORS.warning}12`, border: `1px solid ${COLORS.warning}30` }}>
+        <div role="alert" style={{ padding: "8px 12px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.warning, background: "color-mix(in srgb, var(--color-warning) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)" }}>
           {loadError}
         </div>
       ) : null}
       {actionError ? (
-        <div role="alert" style={{ padding: "8px 12px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger, background: `${COLORS.danger}12`, border: `1px solid ${COLORS.danger}30` }}>
+        <div role="alert" style={{ padding: "8px 12px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)" }}>
           {actionError}
         </div>
       ) : null}

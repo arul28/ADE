@@ -124,12 +124,12 @@ export function ProjectSection() {
       </div>
 
       {notice && (
-        <div style={{ padding: "8px 10px", border: `1px solid ${COLORS.success}30`, background: `${COLORS.success}15`, color: COLORS.success, fontSize: 11 }}>
+        <div style={{ padding: "8px 10px", border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)", background: "color-mix(in srgb, var(--color-success) 15%, transparent)", color: COLORS.success, fontSize: 11 }}>
           {notice}
         </div>
       )}
       {error && (
-        <div style={{ padding: "8px 10px", border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, color: COLORS.danger, fontSize: 11 }}>
+        <div style={{ padding: "8px 10px", border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 15%, transparent)", color: COLORS.danger, fontSize: 11 }}>
           {error}
         </div>
       )}
@@ -139,7 +139,7 @@ export function ProjectSection() {
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
           <span style={badgeStyle(COLORS.accent, COLORS.accentSubtle)}>tracked {grouped.tracked.length}</span>
           <span style={badgeStyle(COLORS.textMuted, COLORS.recessedBg)}>ignored {grouped.ignored.length}</span>
-          <span style={badgeStyle(snapshot.cleanup.changed ? COLORS.warning : COLORS.success, snapshot.cleanup.changed ? `${COLORS.warning}15` : `${COLORS.success}15`)}>
+          <span style={badgeStyle(snapshot.cleanup.changed ? COLORS.warning : COLORS.success, snapshot.cleanup.changed ? "color-mix(in srgb, var(--color-warning) 15%, transparent)" : "color-mix(in srgb, var(--color-success) 15%, transparent)")}>
             {snapshot.cleanup.changed ? `${snapshot.cleanup.actions.length} startup fixes` : "startup clean"}
           </span>
         </div>
@@ -153,7 +153,7 @@ export function ProjectSection() {
               <span style={badgeStyle(entry.kind === "tracked" ? COLORS.accent : COLORS.textMuted, entry.kind === "tracked" ? COLORS.accentSubtle : COLORS.recessedBg)}>
                 {entry.kind}
               </span>
-              <span style={badgeStyle(entry.exists ? COLORS.success : COLORS.warning, entry.exists ? `${COLORS.success}15` : `${COLORS.warning}15`)}>
+              <span style={badgeStyle(entry.exists ? COLORS.success : COLORS.warning, entry.exists ? "color-mix(in srgb, var(--color-success) 15%, transparent)" : "color-mix(in srgb, var(--color-warning) 15%, transparent)")}>
                 {entry.exists ? "present" : "missing"}
               </span>
             </div>
@@ -186,7 +186,7 @@ export function ProjectSection() {
             <div style={{ color: COLORS.textPrimary }}>{snapshot.config.secretPath}</div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
-            <span style={badgeStyle(snapshot.config.trust.requiresSharedTrust ? COLORS.warning : COLORS.success, snapshot.config.trust.requiresSharedTrust ? `${COLORS.warning}15` : `${COLORS.success}15`)}>
+            <span style={badgeStyle(snapshot.config.trust.requiresSharedTrust ? COLORS.warning : COLORS.success, snapshot.config.trust.requiresSharedTrust ? "color-mix(in srgb, var(--color-warning) 15%, transparent)" : "color-mix(in srgb, var(--color-success) 15%, transparent)")}>
               {snapshot.config.trust.requiresSharedTrust ? "shared trust required" : "shared trust current"}
             </span>
             <span style={badgeStyle(COLORS.textMuted, COLORS.recessedBg)}>shared {snapshot.config.trust.sharedHash.slice(0, 8) || "n/a"}</span>
@@ -207,7 +207,7 @@ export function ProjectSection() {
                   <span
                     style={badgeStyle(
                       issue.severity === "error" ? COLORS.danger : issue.severity === "warning" ? COLORS.warning : COLORS.accent,
-                      issue.severity === "error" ? `${COLORS.danger}15` : issue.severity === "warning" ? `${COLORS.warning}15` : COLORS.accentSubtle,
+                      issue.severity === "error" ? "color-mix(in srgb, var(--color-error) 15%, transparent)" : issue.severity === "warning" ? "color-mix(in srgb, var(--color-warning) 15%, transparent)" : COLORS.accentSubtle,
                     )}
                   >
                     {issue.severity}

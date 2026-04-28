@@ -1,9 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AppInfo } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
-import { Info } from "@phosphor-icons/react";
 import {
   COLORS,
   MONO_FONT,
@@ -24,8 +22,6 @@ export function GeneralSection() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [onboardingStatus, setOnboardingStatus] = useState<{ completedAt: string | null; dismissedAt: string | null; freshProject?: boolean } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const providerMode = useAppStore((s) => s.providerMode);
-
   useEffect(() => {
     let cancelled = false;
     window.ade.app
@@ -84,12 +80,12 @@ export function GeneralSection() {
                 textTransform: "uppercase",
                 letterSpacing: "1px",
                 color: setupComplete ? COLORS.success : onboardingStatus?.freshProject ? COLORS.warning : COLORS.textMuted,
-                background: setupComplete ? `${COLORS.success}18` : onboardingStatus?.freshProject ? `${COLORS.warning}18` : `${COLORS.textDim}18`,
+                background: setupComplete ? "color-mix(in srgb, var(--color-success) 18%, transparent)" : onboardingStatus?.freshProject ? "color-mix(in srgb, var(--color-warning) 18%, transparent)" : "color-mix(in srgb, var(--color-muted-fg) 18%, transparent)",
                 border: setupComplete
-                  ? `1px solid ${COLORS.success}30`
+                  ? "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)"
                   : onboardingStatus?.freshProject
-                    ? `1px solid ${COLORS.warning}30`
-                    : `1px solid ${COLORS.textDim}30`,
+                    ? "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)"
+                    : "1px solid color-mix(in srgb, var(--color-muted-fg) 30%, transparent)",
               }}
             >
               {setupComplete ? "Ready" : onboardingStatus?.freshProject ? "Fresh project" : "Available"}
@@ -107,55 +103,6 @@ export function GeneralSection() {
       <section>
         <div style={sectionLabelStyle}>ADE CLI</div>
         <AdeCliSection compact />
-      </section>
-
-      <section>
-        <div style={sectionLabelStyle}>AI MODE</div>
-        <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ ...LABEL_STYLE, marginBottom: 0 }}>CURRENT MODE</div>
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              padding: "2px 8px",
-              fontSize: 10,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              color: providerMode === "subscription" ? COLORS.success : COLORS.textMuted,
-              background: providerMode === "subscription" ? `${COLORS.success}18` : `${COLORS.textDim}18`,
-              border:
-                providerMode === "subscription"
-                  ? `1px solid ${COLORS.success}30`
-                  : `1px solid ${COLORS.textDim}30`,
-            }}
-          >
-            {providerMode}
-          </div>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 8,
-              padding: "10px 12px",
-              background: COLORS.recessedBg,
-              border: `1px solid ${COLORS.border}`,
-            }}
-          >
-            <Info size={15} color={COLORS.textMuted} style={{ flexShrink: 0, marginTop: 1 }} />
-            <span
-              style={{
-                fontSize: 11,
-                lineHeight: 1.5,
-                fontFamily: MONO_FONT,
-                color: COLORS.textMuted,
-              }}
-            >
-              Provider authentication, connection checks, API keys, and worker permissions are managed in the AI tab.
-            </span>
-          </div>
-        </div>
       </section>
 
       <section
@@ -194,8 +141,8 @@ export function GeneralSection() {
             fontFamily: MONO_FONT,
             color: COLORS.textDim,
             padding: "1px 6px",
-            background: `${COLORS.textDim}18`,
-            border: `1px solid ${COLORS.textDim}30`,
+            background: "color-mix(in srgb, var(--color-muted-fg) 18%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-muted-fg) 30%, transparent)",
             borderRadius: 0,
             textTransform: "uppercase",
             letterSpacing: "0.5px",

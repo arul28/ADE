@@ -17,7 +17,9 @@ import {
   FolderPlus,
   FloppyDisk as Save,
   MagnifyingGlass as Search,
+  Moon,
   Sparkle as Sparkles,
+  Sun,
   Terminal as TerminalSquare,
   FileXls as FileSpreadsheet,
   X,
@@ -29,7 +31,8 @@ import type {
   FilesQuickOpenItem,
   FilesSearchTextMatch,
   FilesWorkspace,
-  GitCommitSummary
+  GitCommitSummary,
+  LaneSummary,
 } from "../../../shared/types";
 import { MonacoDiffView, type MonacoDiffHandle } from "../lanes/MonacoDiffView";
 import { useAppStore } from "../../state/appStore";
@@ -389,10 +392,41 @@ function changeStatusColor(changeStatus: FileTreeNode["changeStatus"]): string {
   return COLORS.textDim;
 }
 
+const FILES_WORKSPACE_SELECT_LABEL_MAX_LEN = 52;
+
+function shortBranchLabel(ref: string | null | undefined): string {
+  const t = (ref ?? "").trim();
+  if (!t) return "";
+  return t.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
+}
+
+function resolveWorkspaceBranchShort(ws: FilesWorkspace, lanes: LaneSummary[]): string {
+  const direct = shortBranchLabel(ws.branchRef);
+  if (direct) return direct;
+  if (ws.laneId) {
+    const fromLane = shortBranchLabel(lanes.find((l) => l.id === ws.laneId)?.branchRef);
+    if (fromLane) return fromLane;
+  }
+  if (ws.kind === "primary") {
+    return shortBranchLabel(lanes.find((l) => l.laneType === "primary")?.branchRef) || "main";
+  }
+  return "…";
+}
+
+function formatFilesWorkspaceSelectLabel(ws: FilesWorkspace, lanes: LaneSummary[]): { label: string; title: string } {
+  const branch = resolveWorkspaceBranchShort(ws, lanes);
+  const full = `${ws.name} · ${branch} (${ws.kind})`;
+  if (full.length <= FILES_WORKSPACE_SELECT_LABEL_MAX_LEN) {
+    return { label: full, title: full };
+  }
+  return { label: `${full.slice(0, FILES_WORKSPACE_SELECT_LABEL_MAX_LEN - 1)}…`, title: full };
+}
+
 export function FilesPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const lanes = useAppStore((s) => s.lanes);
   const projectRootPath = useAppStore((s) => s.project?.rootPath ?? "__unknown_project__");
   const sessionKey = filesSessionKey(projectRootPath, selectedLaneId);
   const initialSession = getFilesPageSession(sessionKey);
@@ -501,6 +535,19 @@ export function FilesPage() {
   }, []);
 
   const activeWorkspace = useMemo(() => workspaces.find((ws) => ws.id === workspaceId) ?? null, [workspaces, workspaceId]);
+  const workspaceSelectOptions = useMemo(
+    () =>
+      workspaces.map((ws) => {
+        const formatted = formatFilesWorkspaceSelectLabel(ws, lanes);
+        return { id: ws.id, label: formatted.label, title: formatted.title };
+      }),
+    [workspaces, lanes],
+  );
+  const activeWorkspaceSelectTitle = useMemo(() => {
+    const ws = workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return undefined;
+    return formatFilesWorkspaceSelectLabel(ws, lanes).title;
+  }, [workspaces, workspaceId, lanes]);
   const workspaceComparisonRoot = activeWorkspace?.rootPath ?? null;
   const activeTab = useMemo(
     () => findItemByWorkspacePath(openTabs, activeTabPath, workspaceComparisonRoot) ?? null,
@@ -672,11 +719,6 @@ export function FilesPage() {
     return nodeByComparablePath.get(normalizePathForWorkspaceComparison(selectedNodePath, workspaceComparisonRoot))?.path ?? null;
   }, [nodeByComparablePath, selectedNodePath, workspaceComparisonRoot]);
   const activeContextPath = contextMenu?.nodePath ?? selectedTreeNodePath ?? activeTabPath;
-  const activeContextNodeType = contextMenu?.nodeType ?? (
-    activeContextPath
-      ? nodeByComparablePath.get(normalizePathForWorkspaceComparison(activeContextPath, workspaceComparisonRoot))?.type
-      : undefined
-  );
   const laneWorkspaces = useMemo(() => workspaces.filter((ws) => ws.kind !== "primary"), [workspaces]);
   const suggestedLaneWorkspace = useMemo(() => {
     if (!laneWorkspaces.length) return null;
@@ -1505,8 +1547,11 @@ export function FilesPage() {
     };
   // canEdit intentionally excluded — the updateOptions effect below handles
   // readOnly toggling without destroying and recreating the entire editor.
+  // editorTheme intentionally excluded — toggling light/dark uses monaco.editor.setTheme
+  // in the effect below; including editorTheme here would dispose/recreate the editor on
+  // every theme click and break the instance (race with async loadMonaco).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab?.path, mode, editorHostEl, editorTheme, revealPendingLocation]);
+  }, [activeTab?.path, mode, editorHostEl, revealPendingLocation]);
 
   useEffect(() => {
     const monaco = monacoRef.current;
@@ -1637,7 +1682,7 @@ export function FilesPage() {
                     <span
                       key={`${node.path}:guide:${idx}`}
                       className="absolute inset-y-0"
-                      style={{ left: `${10 + idx * 14 + 5}px`, width: 1, background: `${COLORS.border}80` }}
+                      style={{ left: `${10 + idx * 14 + 5}px`, width: 1, background: "color-mix(in srgb, var(--color-border) 80%, transparent)" }}
                     />
                   ))}
                 </span>
@@ -1680,14 +1725,9 @@ export function FilesPage() {
     </div>
   );
 
-  const breadcrumbs = activeTabPath ? activeTabPath.split("/") : [];
   const conflictHunks = activeTab ? parseConflictHunks(activeTab.content) : [];
   const laneIdForDiff = activeWorkspace?.laneId;
   const hasConflictMarkers = conflictHunks.length > 0;
-  const activeContextNode = activeContextPath
-    ? nodeByComparablePath.get(normalizePathForWorkspaceComparison(activeContextPath, workspaceComparisonRoot)) ?? null
-    : null;
-  const activeContextChangeStatus = activeContextNode?.changeStatus ?? null;
   const editorModeHint =
     mode === "edit"
       ? "Code view: edit the file directly."
@@ -1868,18 +1908,6 @@ export function FilesPage() {
               );
             })}
           </div>
-          <SmartTooltip content={{ label: "Toggle Theme", description: "Switch the editor between light and dark theme." }}>
-            <button
-              type="button"
-              style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 9 }) }}
-              onClick={() => setEditorTheme((prev) => (prev === "dark" ? "light" : "dark"))}
-              title="Toggle editor theme"
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              {editorTheme === "dark" ? "LIGHT" : "DARK"}
-            </button>
-          </SmartTooltip>
           <SmartTooltip content={{ label: "Save", description: "Save the current file to disk.", shortcut: "\u2318S" }}>
             <button
               type="button"
@@ -1955,43 +1983,6 @@ export function FilesPage() {
             })}
           </div>
 
-          {/* Breadcrumb + git actions */}
-          <div className="flex items-center justify-between shrink-0" data-tour="files.breadcrumb" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "4px 12px" }}>
-            <div className="truncate flex items-center gap-1" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-              {breadcrumbs.length ? breadcrumbs.map((part, i) => (
-                <React.Fragment key={i}>
-                  {i > 0 ? <span style={{ color: COLORS.textDim, margin: "0 2px" }}>/</span> : null}
-                  <span style={{ color: i === breadcrumbs.length - 1 ? COLORS.textPrimary : COLORS.textMuted }}>{part}</span>
-                </React.Fragment>
-              )) : <span style={{ color: COLORS.textDim }}>NO FILE SELECTED</span>}
-            </div>
-            <div className="flex items-center gap-2">
-              {activeContextPath && activeContextNodeType === "file" && laneIdForDiff ? (
-                <>
-                  {activeContextChangeStatus ? (
-                    <span style={inlineBadge(changeStatusColor(activeContextChangeStatus), { fontSize: 8 })}>
-                      {activeContextChangeStatus === "A" ? "ADDED" : activeContextChangeStatus === "D" ? "DELETED" : activeContextChangeStatus === "M" ? "MODIFIED" : activeContextChangeStatus}
-                    </span>
-                  ) : null}
-                  <SmartTooltip content={{ label: "Stage", description: "Add this file to the git staging area.", gitCommand: "git add <file>" }}>
-                    <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="git add" onClick={() => stagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.success; e.currentTarget.style.color = COLORS.success; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-                    >STAGE</button>
-                  </SmartTooltip>
-                  <SmartTooltip content={{ label: "Unstage", description: "Remove this file from the staging area.", gitCommand: "git reset HEAD <file>" }}>
-                    <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="git reset" onClick={() => unstagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-                    >UNSTAGE</button>
-                  </SmartTooltip>
-                  <SmartTooltip content={{ label: "Discard", description: "Revert this file to its last committed state.", gitCommand: "git checkout -- <file>", warning: "This cannot be undone" }}>
-                    <button type="button" style={dangerButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="Discard local changes" onClick={() => discardPath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>DISCARD</button>
-                  </SmartTooltip>
-                </>
-              ) : null}
-            </div>
-          </div>
           {/* Mode hint */}
           <div className="flex items-center gap-1 shrink-0" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "3px 12px" }}>
             <span style={{ ...LABEL_STYLE, fontSize: 9, color: COLORS.textDim }}>{editorModeHint.toUpperCase()}</span>
@@ -2124,66 +2115,11 @@ export function FilesPage() {
           </div>
         </div>
       )
-    },
-    terminals: {
-      title: "Terminals",
-      icon: TerminalSquare,
-      meta: laneIdForDiff ? `lane ${activeWorkspace?.name ?? ""}` : "Pick a lane workspace",
-      headerActions: (
-        <SmartTooltip content={{ label: "Open Work Tab", description: "Switch to the Work tab to manage terminal sessions for this lane." }}>
-          <button
-            type="button"
-            style={{
-              ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }),
-              opacity: laneIdForDiff ? 1 : 0.35,
-            }}
-            onClick={() => {
-              if (!laneIdForDiff) return;
-              navigate(`/work?laneId=${encodeURIComponent(laneIdForDiff)}`);
-            }}
-            disabled={!laneIdForDiff}
-            title={laneIdForDiff ? "Open this lane in the dedicated Terminals tab" : "Select a lane workspace to open terminals"}
-            onMouseEnter={(e) => { if (laneIdForDiff) { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; } }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-          >
-            OPEN TAB
-          </button>
-        </SmartTooltip>
-      ),
-      bodyClassName: "h-full overflow-hidden",
-      children: (
-        laneIdForDiff ? (
-          <div
-            className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"
-            style={{ background: COLORS.cardBg, color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 11 }}
-          >
-            <div style={{ maxWidth: 320, lineHeight: 1.6 }}>
-              FILES NO LONGER AUTO-MOUNTS THE EMBEDDED TERMINAL STACK. OPEN THE DEDICATED WORK TAB WHEN YOU ACTUALLY NEED LIVE SESSIONS.
-            </div>
-            <SmartTooltip content={{ label: "Open Work Tab", description: "Switch to the Work tab to manage terminal sessions for this lane." }}>
-              <button
-                type="button"
-                style={primaryButton({ height: 28, padding: "0 12px", fontSize: 9 })}
-                onClick={() => navigate(`/work?laneId=${encodeURIComponent(laneIdForDiff)}`)}
-              >
-                OPEN WORK TAB
-              </button>
-            </SmartTooltip>
-          </div>
-        ) : (
-          <div
-            className="flex h-full items-center justify-center"
-            style={{ background: COLORS.cardBg, color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 11 }}
-          >
-            SELECT A LANE WORKSPACE TO LOAD TERMINALS
-          </div>
-        )
-      )
     }
   }), [
     tree, activeWorkspace, activeTabPath, activeContextDir, openTabs, activeTab,
-    breadcrumbs, mode, canEdit, editorStatus, laneIdForDiff, activeContextPath, activeContextChangeStatus,
-    activeContextNodeType, searchQuery, searchResults, conflictHunks, editorTheme, editorModeHint, hasConflictMarkers,
+    mode, canEdit, editorStatus, laneIdForDiff, activeContextPath,
+    searchQuery, searchResults, conflictHunks, editorTheme, editorModeHint, hasConflictMarkers,
     resolvedConflictKeys, renderTree, createFileAt, createDirectoryAt, saveActive,
     closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate
   ]);
@@ -2197,7 +2133,7 @@ export function FilesPage() {
         style={{
           borderRadius: 16,
           border: `1px solid ${COLORS.border}`,
-          background: `${COLORS.cardBg}f2`,
+          background: "color-mix(in srgb, var(--color-card) 94%, var(--color-bg) 6%)",
           boxShadow: "0 18px 40px rgba(3, 8, 20, 0.18)",
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
@@ -2209,7 +2145,7 @@ export function FilesPage() {
             minHeight: 46,
             padding: "0 14px",
             borderBottom: `1px solid ${COLORS.border}`,
-            background: "linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0))",
+            background: "linear-gradient(180deg, color-mix(in srgb, var(--color-fg) 2%, transparent), transparent)",
           }}
         >
           <div className="flex min-w-0 items-center gap-2">
@@ -2254,22 +2190,54 @@ export function FilesPage() {
         <div className="flex items-center gap-1" data-tour="files.workspaceSelector">
           <select
             value={workspaceId}
+            title={activeWorkspaceSelectTitle}
             onChange={(e) => switchWorkspace(e.target.value)}
             style={{
               height: 32, padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
               color: COLORS.success, background: COLORS.recessedBg, borderRadius: 8,
               border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer", outline: "none",
+              maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
             }}
             onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
             onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
           >
-            {workspaces.map((ws) => (
-              <option key={ws.id} value={ws.id}>
-                {ws.name} ({ws.kind})
+            {workspaceSelectOptions.map((opt) => (
+              <option key={opt.id} value={opt.id} title={opt.title}>
+                {opt.label}
               </option>
             ))}
           </select>
           <HelpChip termId="worktree" side="bottom" />
+          <SmartTooltip
+            content={
+              activeWorkspace?.laneId
+                ? {
+                    label: "View lane",
+                    description: "Open Lanes with this workspace's lane selected in single-lane focus.",
+                  }
+                : {
+                    label: "Lanes",
+                    description: "Open the Lanes tab to browse and manage workspace lanes.",
+                  }
+            }
+          >
+            <button
+              type="button"
+              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
+              onClick={() => {
+                const laneId = activeWorkspace?.laneId;
+                if (laneId) {
+                  navigate(`/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`);
+                } else {
+                  navigate("/lanes");
+                }
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+            >
+              View lane
+            </button>
+          </SmartTooltip>
         </div>
 
         {/* Read-only badge */}
@@ -2296,6 +2264,28 @@ export function FilesPage() {
 
         {/* Spacer */}
         <div style={{ flex: 1, height: 1 }} />
+
+        <SmartTooltip content={{ label: "Toggle Theme", description: "Switch the editor between light and dark theme." }}>
+          <button
+            type="button"
+            data-testid="files-editor-theme-toggle"
+            aria-label={editorTheme === "dark" ? "Switch editor to light theme" : "Switch editor to dark theme"}
+            title={editorTheme === "dark" ? "Switch editor to light theme" : "Switch editor to dark theme"}
+            style={{
+              ...outlineButton({ height: 28, width: 28, padding: 0, fontSize: 9 }),
+              flexShrink: 0,
+            }}
+            onClick={() => setEditorTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+          >
+            {editorTheme === "dark" ? (
+              <Sun size={16} weight="bold" aria-hidden />
+            ) : (
+              <Moon size={16} weight="bold" aria-hidden />
+            )}
+          </button>
+        </SmartTooltip>
 
         {/* Open in external editor */}
         <div className="relative shrink-0" ref={openInMenuRef} data-tour="files.openIn">
@@ -2345,19 +2335,6 @@ export function FilesPage() {
           ) : null}
         </div>
 
-        {/* Nav buttons */}
-        <SmartTooltip content={{ label: "Lanes", description: "Switch to the Lanes tab to manage workspace lanes." }}>
-          <button
-            type="button"
-            style={outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
-            onClick={() => navigate("/lanes")}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-          >
-            LANES
-          </button>
-        </SmartTooltip>
-
         {/* File count stat */}
         <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textMuted, textTransform: "uppercase", whiteSpace: "nowrap" }}>
           {openTabs.length} OPEN
@@ -2368,8 +2345,8 @@ export function FilesPage() {
       {(activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit) || (activeWorkspace?.kind === "primary" && suggestedLaneWorkspace) ? (
         <div className="flex flex-wrap items-center gap-3 shrink-0" style={{
           padding: "6px 24px",
-          borderBottom: `1px solid ${COLORS.warning}30`,
-          background: activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? `${COLORS.warning}15` : `${COLORS.warning}08`,
+          borderBottom: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
+          background: activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? "color-mix(in srgb, var(--color-warning) 15%, transparent)" : "color-mix(in srgb, var(--color-warning) 8%, transparent)",
         }}>
           <AlertTriangle size={14} weight="fill" style={{ color: COLORS.warning, flexShrink: 0 }} />
           {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
@@ -2397,8 +2374,8 @@ export function FilesPage() {
       {error ? (
         <div className="flex items-center gap-2 shrink-0" style={{
           padding: "6px 24px",
-          borderBottom: `1px solid ${COLORS.danger}30`,
-          background: `${COLORS.danger}12`,
+          borderBottom: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
+          background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
         }}>
           <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger }}>{error}</span>
           <button
@@ -2419,12 +2396,9 @@ export function FilesPage() {
           <div className="min-h-0 min-w-0 shrink-0" style={{ width: 320, maxWidth: "28vw" }} data-tour="files.explorerPane">
             {renderPane("explorer")}
           </div>
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-            <div className="min-h-0 min-w-0" style={{ flex: "1 1 0%", minHeight: 0 }} data-tour="files.editorPane">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="min-h-0 min-w-0 flex-1" style={{ minHeight: 0 }} data-tour="files.editorPane">
               {renderPane("editor")}
-            </div>
-            <div className="min-h-0 min-w-0" style={{ flex: "0 0 34%", minHeight: 180 }} data-tour="files.terminalsPane">
-              {renderPane("terminals")}
             </div>
           </div>
         </div>
@@ -2475,7 +2449,7 @@ export function FilesPage() {
           <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => createDirectoryAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>NEW FOLDER</button>
           <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.accent, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => renamePath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>RENAME</button>
           <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
-          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "0.5px", color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => deletePath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = `${COLORS.danger}18`; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>DELETE</button>
+          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "0.5px", color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => deletePath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = "color-mix(in srgb, var(--color-error) 18%, transparent)"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>DELETE</button>
         </div>
       ) : null}
 

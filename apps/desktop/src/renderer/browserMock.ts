@@ -11,11 +11,19 @@
  *   Integration – 2 integration PRs with multi-source merge contexts
  *   Rebase  – 6 rebase needs across all urgency categories
  *
+ * Run tab: `projectConfig` + `processes.*` mirror SQLite + merged `.ade/ade.yaml` / `local.yaml`
+ * when a snapshot is exported; otherwise a built-in multi-command / groups / runtime demo is used.
+ * Work tab: `sessions` come from the snapshot when present; otherwise built-in terminal session rows
+ * (same shape as the export script) so the session list is not empty in Vite-only previews.
+ *
  * Optional: generate `browser-mock-ade-snapshot.generated.json` with
  *   npm run export:browser-mock-ade
  * to mirror the current project’s `.ade/ade.db` snapshot. Exported lanes, PRs,
  * queue/rebase/history/session/process rows replace the built-in demo data so
  * browser-only UI work follows the same local state as the desktop app.
+ * Files tab: snapshot may include `filesTreeByWorkspace` / `filesContentsByWorkspace`
+ * from the export script (disk walk at export time); without them, a small
+ * synthetic tree is used per lane workspace id.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -278,6 +286,220 @@ const BUILTIN_MOCK_LANES: any[] = [
   ),
 ];
 
+/** Work tab preview when the snapshot omits `sessions` (matches export script row shape). */
+const BUILTIN_MOCK_SESSIONS: any[] = [
+  {
+    id: "mock-session-claude-1",
+    laneId: "lane-main",
+    laneName: "main",
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    manuallyNamed: false,
+    goal: "Polish Run and Work browser mocks",
+    toolType: "claude-chat",
+    title: "Claude · Browser preview parity",
+    status: "running",
+    startedAt: oneHourAgo,
+    endedAt: null,
+    archivedAt: null,
+    exitCode: null,
+    transcriptPath: ".ade/transcripts/mock-session-claude-1.chat.jsonl",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: "Planning UI tweaks…",
+    summary: null,
+    runtimeState: "running",
+    resumeCommand: null,
+    resumeMetadata: {
+      provider: "claude",
+      targetKind: "session",
+      targetId: "mock-session-claude-1",
+      launch: {},
+    },
+  },
+  {
+    id: "mock-session-codex-1",
+    laneId: "lane-auth",
+    laneName: "feature/auth-flow",
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    manuallyNamed: false,
+    goal: "Tighten agent chat IPC merge path",
+    toolType: "codex-chat",
+    title: "Codex · IPC merge review",
+    status: "completed",
+    startedAt: yesterday,
+    endedAt: oneHourAgo,
+    archivedAt: null,
+    exitCode: 0,
+    transcriptPath: ".ade/transcripts/mock-session-codex-1.chat.jsonl",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: "Done.",
+    summary: "Reviewed session merge logic.",
+    runtimeState: "exited",
+    resumeCommand: null,
+    resumeMetadata: {
+      provider: "codex",
+      targetKind: "session",
+      targetId: "mock-session-codex-1",
+      launch: {},
+    },
+  },
+  {
+    id: "mock-session-shell-1",
+    laneId: "lane-main",
+    laneName: "main",
+    ptyId: "pty-mock-1",
+    tracked: true,
+    pinned: false,
+    manuallyNamed: false,
+    goal: null,
+    toolType: "shell",
+    title: "npm run typecheck",
+    status: "completed",
+    startedAt: twoDaysAgo,
+    endedAt: yesterday,
+    archivedAt: null,
+    exitCode: 0,
+    transcriptPath: ".ade/transcripts/mock-session-shell-1.log",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: "> tsc --noEmit\n",
+    summary: null,
+    runtimeState: "exited",
+    resumeCommand: null,
+    resumeMetadata: null,
+  },
+];
+
+/** Run tab preview when no `browser-mock-ade-snapshot.generated.json` (or empty processes). */
+const BUILTIN_RUN_PROCESS_GROUPS: any[] = [
+  { id: "grp-frontend", name: "Frontend" },
+  { id: "grp-quality", name: "Quality" },
+];
+
+const BUILTIN_RUN_PROCESS_DEFINITIONS: any[] = [
+  {
+    id: "mock-dev",
+    name: "Vite dev server",
+    command: ["npm", "run", "dev"],
+    cwd: "apps/desktop",
+    env: { NODE_ENV: "development" },
+    groupIds: ["grp-frontend"],
+    autostart: false,
+    restart: "on-failure",
+    gracefulShutdownMs: 8000,
+    dependsOn: [],
+    readiness: { type: "port", port: 5173 },
+  },
+  {
+    id: "mock-test",
+    name: "Unit tests",
+    command: ["npm", "run", "test:unit"],
+    cwd: "apps/desktop",
+    env: {},
+    groupIds: ["grp-quality"],
+    autostart: false,
+    restart: "never",
+    gracefulShutdownMs: 7000,
+    dependsOn: [],
+    readiness: { type: "none" },
+  },
+  {
+    id: "mock-typecheck",
+    name: "Typecheck",
+    command: ["npm", "run", "typecheck"],
+    cwd: "apps/desktop",
+    env: {},
+    groupIds: ["grp-quality"],
+    autostart: false,
+    restart: "never",
+    gracefulShutdownMs: 5000,
+    dependsOn: [],
+    readiness: { type: "none" },
+  },
+  {
+    id: "mock-story",
+    name: "Companion UI",
+    command: ["npm", "run", "dev:vite"],
+    cwd: "apps/desktop",
+    env: {},
+    groupIds: ["grp-frontend"],
+    autostart: false,
+    restart: "never",
+    gracefulShutdownMs: 10000,
+    dependsOn: ["mock-dev"],
+    readiness: { type: "logRegex", pattern: "Local:\\s+http://localhost:[0-9]+" },
+  },
+];
+
+const BUILTIN_RUN_PROCESS_RUNTIME: any[] = (() => {
+  const laneId = "lane-main";
+  const ts = now;
+  return [
+    {
+      runId: `${laneId}:mock-dev`,
+      laneId,
+      processId: "mock-dev",
+      status: "running",
+      readiness: "ready",
+      pid: 92001,
+      sessionId: null,
+      ptyId: null,
+      startedAt: ts,
+      endedAt: null,
+      exitCode: null,
+      lastExitCode: null,
+      lastEndedAt: null,
+      uptimeMs: 890120,
+      ports: [5173],
+      logPath: "/tmp/mock/vite-dev.log",
+      updatedAt: ts,
+    },
+    {
+      runId: `${laneId}:mock-test`,
+      laneId,
+      processId: "mock-test",
+      status: "starting",
+      readiness: "not_ready",
+      pid: null,
+      sessionId: null,
+      ptyId: null,
+      startedAt: ts,
+      endedAt: null,
+      exitCode: null,
+      lastExitCode: null,
+      lastEndedAt: null,
+      uptimeMs: null,
+      ports: [],
+      logPath: null,
+      updatedAt: ts,
+    },
+    {
+      runId: `${laneId}:mock-typecheck`,
+      laneId,
+      processId: "mock-typecheck",
+      status: "exited",
+      readiness: "unknown",
+      pid: null,
+      sessionId: null,
+      ptyId: null,
+      startedAt: new Date(Date.now() - 600000).toISOString(),
+      endedAt: new Date(Date.now() - 580000).toISOString(),
+      exitCode: 0,
+      lastExitCode: 0,
+      lastEndedAt: new Date(Date.now() - 580000).toISOString(),
+      uptimeMs: 20000,
+      ports: [],
+      logPath: null,
+      updatedAt: ts,
+    },
+  ];
+})();
+
 function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
   const childCounts = new Map<string, number>();
   for (const row of laneRows) {
@@ -345,6 +567,8 @@ const ADE_DB_OPERATIONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNA
 const ADE_DB_SESSIONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.sessions)
   ? ADE_DB_SNAPSHOT.sessions
   : [];
+/** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file. */
+const MOCK_SESSIONS: any[] = ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS;
 const ADE_DB_CHAT_TRANSCRIPTS: Record<string, { events?: any[]; path?: string | null }> =
   USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.chatTranscripts && typeof ADE_DB_SNAPSHOT.chatTranscripts === "object"
     ? ADE_DB_SNAPSHOT.chatTranscripts
@@ -355,9 +579,184 @@ const ADE_DB_PROCESS_DEFINITIONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(A
 const ADE_DB_PROCESS_RUNTIME: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processRuntime)
   ? ADE_DB_SNAPSHOT.processRuntime
   : [];
+const ADE_DB_STACK_BUTTONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.stackButtons)
+  ? ADE_DB_SNAPSHOT.stackButtons
+  : [];
+const ADE_DB_PROCESS_GROUPS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processGroups)
+  ? ADE_DB_SNAPSHOT.processGroups
+  : [];
+
+const usingBuiltinRunDemo = !USE_ADE_DB_SNAPSHOT || ADE_DB_PROCESS_DEFINITIONS.length === 0;
+const MOCK_PROCESS_DEFINITIONS: any[] = usingBuiltinRunDemo ? BUILTIN_RUN_PROCESS_DEFINITIONS : ADE_DB_PROCESS_DEFINITIONS;
+const MOCK_PROCESS_RUNTIME: any[] = usingBuiltinRunDemo ? BUILTIN_RUN_PROCESS_RUNTIME : ADE_DB_PROCESS_RUNTIME;
+const MOCK_STACK_BUTTONS: any[] = usingBuiltinRunDemo ? [] : ADE_DB_STACK_BUTTONS;
+const MOCK_PROCESS_GROUPS: any[] = usingBuiltinRunDemo ? BUILTIN_RUN_PROCESS_GROUPS : ADE_DB_PROCESS_GROUPS;
+
 const ADE_DB_AUTOMATIONS = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.automations
   ? ADE_DB_SNAPSHOT.automations
   : null;
+
+function normalizeBrowserMockRelPath(rel: unknown): string {
+  let s = String(rel ?? "").trim().replace(/\\/g, "/");
+  while (s.startsWith("./")) s = s.slice(2);
+  if (s === "." || s === "/") return "";
+  return s.replace(/\/+$/, "");
+}
+
+function languageIdForBrowserMockPath(relPath: string): string {
+  const lower = relPath.toLowerCase();
+  const dot = lower.lastIndexOf(".");
+  const ext = dot >= 0 ? lower.slice(dot) : "";
+  if (ext === ".ts" || ext === ".tsx") return "typescript";
+  if (ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs") return "javascript";
+  if (ext === ".json") return "json";
+  if (ext === ".yml" || ext === ".yaml") return "yaml";
+  if (ext === ".md") return "markdown";
+  if (ext === ".py") return "python";
+  if (ext === ".css") return "css";
+  if (ext === ".html") return "html";
+  if (ext === ".swift") return "swift";
+  return "plaintext";
+}
+
+/** Depth-1 listTree rows keyed by parent path ("" = workspace root), from `export-browser-mock-ade-snapshot.mjs`. */
+const ADE_DB_FILES_TREE_BY_WORKSPACE: Record<string, Record<string, any[]>> =
+  USE_ADE_DB_SNAPSHOT
+  && ADE_DB_SNAPSHOT?.filesTreeByWorkspace
+  && typeof ADE_DB_SNAPSHOT.filesTreeByWorkspace === "object"
+    ? ADE_DB_SNAPSHOT.filesTreeByWorkspace
+    : {};
+
+const ADE_DB_FILES_CONTENTS_BY_WORKSPACE: Record<string, Record<string, any>> =
+  USE_ADE_DB_SNAPSHOT
+  && ADE_DB_SNAPSHOT?.filesContentsByWorkspace
+  && typeof ADE_DB_SNAPSHOT.filesContentsByWorkspace === "object"
+    ? ADE_DB_SNAPSHOT.filesContentsByWorkspace
+    : {};
+
+function makeBuiltinSyntheticFilesTreeIndex(): Record<string, any[]> {
+  return {
+    "": [
+      { name: "apps", path: "apps", type: "directory", changeStatus: null },
+      { name: "docs", path: "docs", type: "directory", changeStatus: null },
+      {
+        name: "AGENTS.md",
+        path: "AGENTS.md",
+        type: "file",
+        changeStatus: null,
+      },
+      {
+        name: "package.json",
+        path: "package.json",
+        type: "file",
+        changeStatus: null,
+      },
+    ],
+    apps: [
+      { name: "desktop", path: "apps/desktop", type: "directory", changeStatus: null },
+      { name: "ade-cli", path: "apps/ade-cli", type: "directory", changeStatus: null },
+    ],
+    "apps/desktop": [
+      {
+        name: "package.json",
+        path: "apps/desktop/package.json",
+        type: "file",
+        changeStatus: null,
+      },
+      { name: "src", path: "apps/desktop/src", type: "directory", changeStatus: null },
+    ],
+    "apps/desktop/src": [
+      {
+        name: "renderer",
+        path: "apps/desktop/src/renderer",
+        type: "directory",
+        changeStatus: null,
+      },
+    ],
+    "apps/desktop/src/renderer": [
+      {
+        name: "browserMock.ts",
+        path: "apps/desktop/src/renderer/browserMock.ts",
+        type: "file",
+        changeStatus: null,
+      },
+    ],
+    docs: [
+      {
+        name: "README.md",
+        path: "docs/README.md",
+        type: "file",
+        changeStatus: null,
+      },
+    ],
+  };
+}
+
+const BUILTIN_FILES_TREE_BY_WORKSPACE: Record<string, Record<string, any[]>> = Object.fromEntries(
+  MOCK_LANES.map((lane) => [String(lane.id), makeBuiltinSyntheticFilesTreeIndex()]),
+);
+
+function getBrowserMockFilesWorkspaces(): any[] {
+  return [...MOCK_LANES]
+    .map((lane) => {
+      const laneType = lane.laneType === "primary" || lane.laneType === "attached" || lane.laneType === "worktree"
+        ? lane.laneType
+        : "worktree";
+      return {
+        id: String(lane.id),
+        kind: laneType,
+        laneId: String(lane.id),
+        name: String(lane.name ?? lane.id),
+        branchRef: typeof lane.branchRef === "string" ? lane.branchRef : undefined,
+        rootPath: String(lane.worktreePath ?? MOCK_PROJECT.rootPath),
+        isReadOnlyByDefault: Boolean(lane.isEditProtected),
+        mobileReadOnly: true,
+      };
+    })
+    .sort((a, b) => {
+      if (a.kind === b.kind) return 0;
+      if (a.kind === "primary") return -1;
+      if (b.kind === "primary") return 1;
+      return 0;
+    });
+}
+
+function getBrowserMockListTreeNodes(workspaceId: string, parentPath: string): any[] {
+  const parentKey = normalizeBrowserMockRelPath(parentPath);
+  const snapTree = ADE_DB_FILES_TREE_BY_WORKSPACE[workspaceId];
+  if (snapTree && Object.prototype.hasOwnProperty.call(snapTree, parentKey)) {
+    const rows = snapTree[parentKey];
+    return Array.isArray(rows) ? rows : [];
+  }
+  const builtin = BUILTIN_FILES_TREE_BY_WORKSPACE[workspaceId];
+  if (builtin && Object.prototype.hasOwnProperty.call(builtin, parentKey)) {
+    const rows = builtin[parentKey];
+    return Array.isArray(rows) ? rows : [];
+  }
+  return [];
+}
+
+function getBrowserMockReadFilePayload(workspaceId: string, relPath: string): any {
+  const normalized = normalizeBrowserMockRelPath(relPath);
+  const fromSnapshot = ADE_DB_FILES_CONTENTS_BY_WORKSPACE[workspaceId]?.[normalized];
+  if (fromSnapshot && typeof fromSnapshot.content === "string") {
+    return {
+      content: fromSnapshot.content,
+      encoding: fromSnapshot.encoding ?? "utf-8",
+      size: Number(fromSnapshot.size ?? fromSnapshot.content.length),
+      languageId: fromSnapshot.languageId ?? languageIdForBrowserMockPath(normalized),
+      isBinary: Boolean(fromSnapshot.isBinary),
+    };
+  }
+  const stub = `// Browser mock (Vite preview)\n// Workspace ${workspaceId}\n// ${normalized || "(root)"}\n// Export with: npm run export:browser-mock-ade\n`;
+  return {
+    content: stub,
+    encoding: "utf-8",
+    size: new TextEncoder().encode(stub).length,
+    languageId: languageIdForBrowserMockPath(normalized),
+    isBinary: false,
+  };
+}
 
 function isMockChatToolType(toolType: unknown): boolean {
   const normalized = String(toolType ?? "").trim().toLowerCase();
@@ -479,7 +878,7 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
 }
 
 function listMockAgentChatSummaries(args: any = {}): any[] {
-  let rows = ADE_DB_SESSIONS
+  let rows = MOCK_SESSIONS
     .map(mockAgentChatSummaryFromSession)
     .filter((session): session is any => Boolean(session));
   if (typeof args?.laneId === "string" && args.laneId.trim()) {
@@ -2087,18 +2486,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   const BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT: any = {
     shared: {
       version: 1,
-      processes: ADE_DB_PROCESS_DEFINITIONS,
-      stackButtons: [],
-      processGroups: [],
+      processes: MOCK_PROCESS_DEFINITIONS,
+      stackButtons: MOCK_STACK_BUTTONS,
+      processGroups: MOCK_PROCESS_GROUPS,
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],
     },
     local: {
       version: 1,
-      processes: ADE_DB_PROCESS_DEFINITIONS,
-      stackButtons: [],
-      processGroups: [],
+      processes: MOCK_PROCESS_DEFINITIONS,
+      stackButtons: MOCK_STACK_BUTTONS,
+      processGroups: MOCK_PROCESS_GROUPS,
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],
@@ -2123,9 +2522,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     effective: {
       version: 1,
-      processes: ADE_DB_PROCESS_DEFINITIONS,
-      stackButtons: [],
-      processGroups: [],
+      processes: MOCK_PROCESS_DEFINITIONS,
+      stackButtons: MOCK_STACK_BUTTONS,
+      processGroups: MOCK_PROCESS_GROUPS,
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],
@@ -3232,6 +3631,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       updateAppearance: resolvedArg(undefined),
       archive: resolvedArg(undefined),
       delete: resolvedArg(undefined),
+      cancelDelete: resolvedArg({ cancelled: false, reason: "no active delete" }),
+      getDeleteRisk: resolvedArg({
+        laneId: "mock",
+        branchRef: null,
+        dirty: false,
+        hasUnpushedCommits: false,
+        unpushedCommitCount: 0,
+        remoteBranchExists: false,
+        runningProcessCount: 0,
+        activePtyCount: 0,
+        activeWatcherCount: 0,
+        envInitialized: false,
+      }),
+      onDeleteEvent: noop,
       getStackChain: resolvedArg([]),
       getChildren: resolvedArg([]),
       rebaseStart: resolvedArg({
@@ -3409,7 +3822,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     sessions: {
       list: async (args: any = {}) => {
-        let rows = ADE_DB_SESSIONS;
+        let rows = MOCK_SESSIONS;
         if (typeof args?.laneId === "string" && args.laneId.trim()) {
           rows = rows.filter((session) => session.laneId === args.laneId.trim());
         }
@@ -3420,7 +3833,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         return rows.slice(0, limit);
       },
       get: async (sessionId: string) =>
-        ADE_DB_SESSIONS.find((session) => session.id === sessionId) ?? null,
+        MOCK_SESSIONS.find((session) => session.id === sessionId) ?? null,
       delete: resolvedArg(undefined),
       updateMeta: resolvedArg(null),
       readTranscriptTail: async (args: any = {}) => {
@@ -3437,7 +3850,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       list: async (args: any = {}) => listMockAgentChatSummaries(args),
       getSummary: async (args: any = {}) => {
         const sessionId = String(args?.sessionId ?? "").trim();
-        const session = ADE_DB_SESSIONS.find((row) => row.id === sessionId);
+        const session = MOCK_SESSIONS.find((row) => row.id === sessionId);
         return mockAgentChatSummaryFromSession(session) ?? null;
       },
       create: resolvedArg({ id: "mock" }),
@@ -3782,20 +4195,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     files: {
       writeTextAtomic: resolvedArg(undefined),
-      listWorkspaces: resolved(
-        MOCK_LANES.map((lane) => ({
-          id: `lane:${lane.id}`,
-          kind: "lane",
-          laneId: lane.id,
-          name: lane.name,
-          rootPath: lane.worktreePath ?? MOCK_PROJECT.rootPath,
-          isReadOnlyByDefault: false,
-          mobileReadOnly: true,
-          updatedAt: lane.createdAt ?? now,
-        })),
-      ),
-      listTree: resolvedArg([]),
-      readFile: resolvedArg({ content: "" }),
+      listWorkspaces: resolved(getBrowserMockFilesWorkspaces()),
+      listTree: async (args: any) => {
+        const workspaceId = String(args?.workspaceId ?? "");
+        const parentPath = normalizeBrowserMockRelPath(args?.parentPath);
+        return getBrowserMockListTreeNodes(workspaceId, parentPath);
+      },
+      readFile: async (args: any) => {
+        const workspaceId = String(args?.workspaceId ?? "");
+        const relPath = String(args?.path ?? "");
+        return getBrowserMockReadFilePayload(workspaceId, relPath);
+      },
       writeText: resolvedArg(undefined),
       createFile: resolvedArg(undefined),
       createDirectory: resolvedArg(undefined),
@@ -3803,7 +4213,31 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       delete: resolvedArg(undefined),
       watchChanges: resolvedArg(undefined),
       stopWatching: resolvedArg(undefined),
-      quickOpen: resolvedArg([]),
+      quickOpen: async (args: any) => {
+        const workspaceId = String(args?.workspaceId ?? "");
+        const q = String(args?.query ?? "").trim().toLowerCase();
+        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 25;
+        const rootNodes = getBrowserMockListTreeNodes(workspaceId, "");
+        const flat: { path: string; score: number }[] = [];
+        const maxCollect = 400;
+        const walk = (nodes: any[], prefixScore: number) => {
+          if (flat.length >= maxCollect) return;
+          for (const node of nodes) {
+            if (!node?.path) continue;
+            const hay = String(node.path).toLowerCase();
+            if (!q || hay.includes(q)) {
+              flat.push({ path: node.path, score: prefixScore + (node.name?.length ?? 0) });
+            }
+            if (node.type === "directory") {
+              const kids = getBrowserMockListTreeNodes(workspaceId, node.path);
+              if (kids.length) walk(kids, prefixScore + 1);
+            }
+            if (flat.length >= maxCollect) return;
+          }
+        };
+        walk(rootNodes, 0);
+        return flat.slice(0, limit);
+      },
       searchText: resolvedArg([]),
       onChange: noop,
     },
@@ -4272,9 +4706,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       set: resolvedArg2(undefined),
     },
     processes: {
-      listDefinitions: resolved(ADE_DB_PROCESS_DEFINITIONS),
+      listDefinitions: resolved(MOCK_PROCESS_DEFINITIONS),
       listRuntime: async (laneId: string) =>
-        ADE_DB_PROCESS_RUNTIME.filter((runtime) => runtime.laneId === laneId),
+        MOCK_PROCESS_RUNTIME.filter((runtime) => runtime.laneId === laneId),
       start: resolvedArg({}),
       stop: resolvedArg({}),
       restart: resolvedArg({}),
@@ -4282,6 +4716,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       startStack: resolvedArg(undefined),
       stopStack: resolvedArg(undefined),
       restartStack: resolvedArg(undefined),
+      startGroup: resolvedArg(undefined),
+      stopGroup: resolvedArg(undefined),
+      restartGroup: resolvedArg(undefined),
       startAll: resolvedArg(undefined),
       stopAll: resolvedArg(undefined),
       getLogTail: resolvedArg(""),

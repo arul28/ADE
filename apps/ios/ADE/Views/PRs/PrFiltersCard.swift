@@ -249,8 +249,8 @@ struct PrsSurfaceToggle: View {
 
   var body: some View {
     HStack(spacing: 4) {
-      segment(for: .github, icon: "chevron.left.forwardslash.chevron.right", count: repoPrCount)
-      segment(for: .workflows, icon: "point.3.filled.connected.trianglepath.dotted", count: workflowCount)
+      segment(for: .github, count: repoPrCount)
+      segment(for: .workflows, count: workflowCount)
     }
     .padding(4)
     .background {
@@ -264,7 +264,7 @@ struct PrsSurfaceToggle: View {
   }
 
   @ViewBuilder
-  private func segment(for surface: PrRootSurface, icon: String, count: Int) -> some View {
+  private func segment(for surface: PrRootSurface, count: Int) -> some View {
     let isActive = selection == surface
     Button {
       withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
@@ -272,8 +272,7 @@ struct PrsSurfaceToggle: View {
       }
     } label: {
       HStack(spacing: 6) {
-        Image(systemName: icon)
-          .font(.system(size: 11, weight: .bold))
+        surfaceIcon(for: surface)
         Text(surface.title)
           .font(.system(size: 13, weight: isActive ? .bold : .semibold))
 
@@ -321,6 +320,21 @@ struct PrsSurfaceToggle: View {
     }
     .buttonStyle(.plain)
     .accessibilityLabel("\(surface.title), \(count) items")
+  }
+
+  @ViewBuilder
+  private func surfaceIcon(for surface: PrRootSurface) -> some View {
+    switch surface {
+    case .github:
+      Image("ProviderGitHub")
+        .renderingMode(.template)
+        .resizable()
+        .scaledToFit()
+        .frame(width: 14, height: 14)
+    case .workflows:
+      Image(systemName: "point.3.filled.connected.trianglepath.dotted")
+        .font(.system(size: 11, weight: .bold))
+    }
   }
 }
 

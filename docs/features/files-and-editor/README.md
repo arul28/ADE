@@ -18,7 +18,10 @@ Main process:
   ~620 lines.
 - `apps/desktop/src/main/services/files/fileWatcherService.ts` —
   chokidar wrapper with per-sender ref counting, debounced events,
-  idle watcher close. ~270 lines.
+  idle watcher close, plus `stopAllForWorkspace(workspaceId)` and
+  `countActiveForWorkspace(workspaceId)` helpers used by the lane
+  delete pipeline to tear down watchers as a discrete teardown step
+  before the worktree is removed. ~290 lines.
 - `apps/desktop/src/main/services/files/fileSearchIndexService.ts` —
   in-memory file-name index keyed per workspace and per
   `includeIgnored` mode, incrementally updated from watcher events.

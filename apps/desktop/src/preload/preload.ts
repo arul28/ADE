@@ -312,6 +312,7 @@ import type {
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
+  ProcessGroupArgs,
   ProcessRuntime,
   ProcessStackArgs,
   ProjectConfigCandidate,
@@ -406,6 +407,8 @@ import type {
   InitLaneEnvArgs,
   GetLaneEnvStatusArgs,
   GetLaneOverlayArgs,
+  LaneDeleteEvent,
+  LaneDeleteRisk,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
   LaneOverlayOverrides,
@@ -596,17 +599,31 @@ import type {
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
   IosSimulatorDevice,
+  IosSimulatorDragArgs,
   IosSimulatorEventPayload,
+  IosSimulatorListPreviewsArgs,
+  IosSimulatorOpenPreviewWorkspaceArgs,
+  IosSimulatorPreviewCapability,
+  IosSimulatorPreviewTarget,
+  IosSimulatorRenderPreviewArgs,
+  IosSimulatorRenderPreviewResult,
+  IosScreenSnapshot,
+  IosScreenSnapshotArgs,
   IosInspectorSnapshot,
   IosSimulatorInspectPointArgs,
   IosSimulatorInspectResult,
   IosSimulatorLaunchArgs,
+  IosSimulatorLaunchTarget,
+  IosSimulatorListLaunchTargetsArgs,
   IosSimulatorScreenshot,
   IosSimulatorSelectResult,
   IosSimulatorSession,
+  IosSimulatorShutdownArgs,
+  IosSimulatorShutdownResult,
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
+  IosSimulatorWindowSource,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -1415,6 +1432,18 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.lanesArchive, args),
     delete: async (args: DeleteLaneArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.lanesDelete, args),
+    cancelDelete: async (args: { laneId: string }): Promise<{ cancelled: boolean; reason?: string }> =>
+      ipcRenderer.invoke(IPC.lanesDeleteCancel, args),
+    getDeleteRisk: async (args: { laneId: string }): Promise<LaneDeleteRisk> =>
+      ipcRenderer.invoke(IPC.lanesGetDeleteRisk, args),
+    onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: LaneDeleteEvent,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.lanesDeleteEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesDeleteEvent, listener);
+    },
     getStackChain: async (laneId: string): Promise<StackChainItem[]> =>
       ipcRenderer.invoke(IPC.lanesGetStackChain, { laneId }),
     getChildren: async (laneId: string): Promise<LaneSummary[]> =>
@@ -1765,25 +1794,46 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.iosSimulatorGetStatus),
     listDevices: async (): Promise<IosSimulatorDevice[]> =>
       ipcRenderer.invoke(IPC.iosSimulatorListDevices),
+    listLaunchTargets: async (args: IosSimulatorListLaunchTargetsArgs = {}): Promise<IosSimulatorLaunchTarget[]> =>
+      ipcRenderer.invoke(IPC.iosSimulatorListLaunchTargets, args),
     launch: async (args: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> =>
       ipcRenderer.invoke(IPC.iosSimulatorLaunch, args),
+    shutdown: async (args: IosSimulatorShutdownArgs = {}): Promise<IosSimulatorShutdownResult> =>
+      ipcRenderer.invoke(IPC.iosSimulatorShutdown, args),
     screenshot: async (args: { deviceUdid?: string | null } = {}): Promise<IosSimulatorScreenshot> =>
       ipcRenderer.invoke(IPC.iosSimulatorScreenshot, args),
+    getScreenSnapshot: async (args: IosScreenSnapshotArgs = {}): Promise<IosScreenSnapshot> =>
+      ipcRenderer.invoke(IPC.iosSimulatorGetScreenSnapshot, args),
     getInspectorSnapshot: async (args: { deviceUdid?: string | null } = {}): Promise<IosInspectorSnapshot | null> =>
       ipcRenderer.invoke(IPC.iosSimulatorGetInspectorSnapshot, args),
     inspectPoint: async (args: IosSimulatorInspectPointArgs): Promise<IosSimulatorInspectResult> =>
       ipcRenderer.invoke(IPC.iosSimulatorInspectPoint, args),
+    getPreviewCapability: async (args: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewCapability> =>
+      ipcRenderer.invoke(IPC.iosSimulatorGetPreviewCapability, args),
+    listPreviewTargets: async (args: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewTarget[]> =>
+      ipcRenderer.invoke(IPC.iosSimulatorListPreviewTargets, args),
+    renderPreview: async (args: IosSimulatorRenderPreviewArgs): Promise<IosSimulatorRenderPreviewResult> =>
+      ipcRenderer.invoke(IPC.iosSimulatorRenderPreview, args),
+    openPreviewWorkspace: async (args: IosSimulatorOpenPreviewWorkspaceArgs = {}): Promise<{ ok: true; path: string }> =>
+      ipcRenderer.invoke(IPC.iosSimulatorOpenPreviewWorkspace, args),
     startStream: async (args: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> =>
       ipcRenderer.invoke(IPC.iosSimulatorStartStream, args),
     stopStream: async (): Promise<IosSimulatorStreamStatus> =>
       ipcRenderer.invoke(IPC.iosSimulatorStopStream),
     getStreamStatus: async (): Promise<IosSimulatorStreamStatus> =>
       ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
-    tap: async (args: { deviceUdid?: string | null; x: number; y: number }): Promise<{ ok: true }> =>
+    listSimulatorWindowSources: async (): Promise<IosSimulatorWindowSource[]> => {
+      return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources);
+    },
+    tap: async (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.iosSimulatorTap, args),
-    typeText: async (args: { deviceUdid?: string | null; text: string }): Promise<{ ok: true }> =>
+    typeText: async (args: { deviceUdid?: string | null; projectRoot?: string | null; text: string }): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.iosSimulatorTypeText, args),
-    selectPoint: async (args: { deviceUdid?: string | null; x: number; y: number }): Promise<IosSimulatorSelectResult> =>
+    drag: async (args: IosSimulatorDragArgs): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.iosSimulatorDrag, args),
+    swipe: async (args: IosSimulatorDragArgs): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.iosSimulatorSwipe, args),
+    selectPoint: async (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }): Promise<IosSimulatorSelectResult> =>
       ipcRenderer.invoke(IPC.iosSimulatorSelectPoint, args),
     onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => {
       const listener = (
@@ -2406,6 +2456,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.processesStopStack, args),
     restartStack: async (args: ProcessStackArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.processesRestartStack, args),
+    startGroup: async (args: ProcessGroupArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.processesStartGroup, args),
+    stopGroup: async (args: ProcessGroupArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.processesStopGroup, args),
+    restartGroup: async (args: ProcessGroupArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.processesRestartGroup, args),
     startAll: async (args: { laneId: string }): Promise<void> =>
       ipcRenderer.invoke(IPC.processesStartAll, args),
     stopAll: async (args: { laneId: string }): Promise<void> =>

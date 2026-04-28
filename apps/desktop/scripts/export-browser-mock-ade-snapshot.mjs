@@ -9,11 +9,12 @@
  *   ADE_PROJECT_ROOT=/path/to/repo node ./scripts/export-browser-mock-ade-snapshot.mjs
  *   node ./scripts/export-browser-mock-ade-snapshot.mjs --optional
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import YAML from "yaml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RENDERER_ROOT = path.resolve(__dirname, "../src/renderer");
@@ -96,6 +97,340 @@ function safeJson(raw, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function normalizeRelExport(rel) {
+  let s = String(rel ?? "").trim().replace(/\\/g, "/");
+  while (s.startsWith("./")) s = s.slice(2);
+  if (s === "." || s === "/") return "";
+  return s.replace(/\/+$/, "");
+}
+
+function languageIdFromPathExport(relPath) {
+  const ext = path.extname(relPath).toLowerCase();
+  if (ext === ".ts" || ext === ".tsx") return "typescript";
+  if (ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs") return "javascript";
+  if (ext === ".json") return "json";
+  if (ext === ".yml" || ext === ".yaml") return "yaml";
+  if (ext === ".md") return "markdown";
+  if (ext === ".py") return "python";
+  if (ext === ".rs") return "rust";
+  if (ext === ".go") return "go";
+  if (ext === ".java") return "java";
+  if (ext === ".c" || ext === ".h" || ext === ".cpp" || ext === ".hpp") return "cpp";
+  if (ext === ".sh") return "shell";
+  if (ext === ".css") return "css";
+  if (ext === ".html") return "html";
+  if (ext === ".swift") return "swift";
+  return "plaintext";
+}
+
+function hasNullByteBuffer(buf) {
+  for (let i = 0; i < buf.length; i += 1) {
+    if (buf[i] === 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Walk each lane worktree on disk (export-time only) and embed shallow listTree-compatible rows
+ * plus optional text file payloads for the Vite browser mock.
+ */
+function buildFilesBrowserSnapshot(lanes) {
+  const MAX_DIRS = 220;
+  const MAX_CONTENT_FILES = 48;
+  const MAX_CONTENT_BYTES = 120_000;
+  const trees = {};
+  const contents = {};
+  let dirsVisited = 0;
+  let contentFiles = 0;
+  let contentBytes = 0;
+
+  const shouldCaptureContent = (relPath, size) => {
+    if (size > 100_000) return false;
+    return /\.(md|txt|json|ya?ml|ts|tsx|mjs|cjs|css|html|swift)$/i.test(relPath);
+  };
+
+  for (const lane of lanes) {
+    const wsId = String(lane.id);
+    const absRoot = path.resolve(String(lane.worktreePath ?? ""));
+    const treeForWs = {};
+    const contentsForWs = {};
+
+    if (!existsSync(absRoot)) {
+      trees[wsId] = treeForWs;
+      contents[wsId] = contentsForWs;
+      continue;
+    }
+    let rootStat;
+    try {
+      rootStat = statSync(absRoot);
+    } catch {
+      trees[wsId] = treeForWs;
+      contents[wsId] = contentsForWs;
+      continue;
+    }
+    if (!rootStat.isDirectory()) {
+      trees[wsId] = treeForWs;
+      contents[wsId] = contentsForWs;
+      continue;
+    }
+
+    const queue = [];
+    const seenDirs = new Set();
+    const enqueue = (relKey) => {
+      const key = normalizeRelExport(relKey);
+      if (seenDirs.has(key)) return;
+      seenDirs.add(key);
+      queue.push(key);
+    };
+    enqueue("");
+
+    while (queue.length && dirsVisited < MAX_DIRS) {
+      const relParent = queue.shift();
+      dirsVisited += 1;
+      const absDir = relParent ? path.join(absRoot, relParent) : absRoot;
+      let entries;
+      try {
+        entries = readdirSync(absDir, { withFileTypes: true });
+      } catch {
+        treeForWs[relParent] = [];
+        continue;
+      }
+      entries.sort((a, b) => {
+        if (a.isDirectory() && !b.isDirectory()) return -1;
+        if (!a.isDirectory() && b.isDirectory()) return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      const nodes = [];
+      for (const ent of entries) {
+        const name = ent.name;
+        if (name === ".git") continue;
+        if (!relParent && (name === "node_modules" || name === ".ade")) continue;
+
+        const rel = relParent ? `${relParent}/${name}` : name;
+        const normalizedRel = normalizeRelExport(rel);
+
+        if (ent.isDirectory()) {
+          nodes.push({
+            name,
+            path: normalizedRel,
+            type: "directory",
+            changeStatus: null,
+          });
+          enqueue(normalizedRel);
+        } else {
+          nodes.push({
+            name,
+            path: normalizedRel,
+            type: "file",
+            changeStatus: null,
+          });
+          let st;
+          try {
+            st = statSync(path.join(absRoot, normalizedRel));
+          } catch {
+            continue;
+          }
+          if (
+            contentFiles < MAX_CONTENT_FILES
+            && contentBytes < MAX_CONTENT_BYTES
+            && shouldCaptureContent(normalizedRel, st.size)
+            && st.size > 0
+          ) {
+            try {
+              const buf = readFileSync(path.join(absRoot, normalizedRel));
+              if (hasNullByteBuffer(buf)) continue;
+              const text = buf.toString("utf8");
+              if (text.length > 100_000) continue;
+              contentsForWs[normalizedRel] = {
+                content: text,
+                encoding: "utf-8",
+                size: st.size,
+                languageId: languageIdFromPathExport(normalizedRel),
+                isBinary: false,
+              };
+              contentFiles += 1;
+              contentBytes += text.length;
+            } catch {
+              // ignore unreadable files
+            }
+          }
+        }
+      }
+      treeForWs[relParent] = nodes;
+    }
+
+    trees[wsId] = treeForWs;
+    contents[wsId] = contentsForWs;
+  }
+
+  return { filesTreeByWorkspace: trees, filesContentsByWorkspace: contents };
+}
+
+function mergeById(base, over, mergeFn) {
+  const map = new Map(base.map((item) => [String(item.id), item]));
+  for (const item of over) {
+    if (!item?.id) continue;
+    const id = String(item.id);
+    const existing = map.get(id);
+    map.set(id, existing ? mergeFn(existing, item) : item);
+  }
+  return [...map.values()];
+}
+
+/** Mirrors shared/local ade.yaml merge for processes, stacks, and groups (subset). */
+function mergeYamlConfigLayers(sharedRaw, localRaw) {
+  const empty = { processes: [], processGroups: [], stackButtons: [] };
+  const shared = sharedRaw && typeof sharedRaw === "object" ? sharedRaw : empty;
+  const local = localRaw && typeof localRaw === "object" ? localRaw : empty;
+  return {
+    processes: mergeById(shared.processes ?? [], local.processes ?? [], (base, over) => ({
+      ...base,
+      ...over,
+      ...(base.env || over.env ? { env: { ...(base.env ?? {}), ...(over.env ?? {}) } } : {}),
+      ...(over.groupIds != null ? { groupIds: over.groupIds } : base.groupIds != null ? { groupIds: base.groupIds } : {}),
+      ...(over.readiness != null ? { readiness: over.readiness } : base.readiness != null ? { readiness: base.readiness } : {}),
+      ...(over.dependsOn != null ? { dependsOn: over.dependsOn } : base.dependsOn != null ? { dependsOn: base.dependsOn } : {}),
+    })),
+    processGroups: mergeById(shared.processGroups ?? [], local.processGroups ?? [], (base, over) => ({ ...base, ...over })),
+    stackButtons: mergeById(shared.stackButtons ?? [], local.stackButtons ?? [], (base, over) => ({
+      ...base,
+      ...over,
+      ...(over.processIds != null ? { processIds: over.processIds } : base.processIds != null ? { processIds: base.processIds } : {}),
+    })),
+  };
+}
+
+function readAdeYamlConfigs(projectRoot) {
+  const sharedPath = path.join(projectRoot, ".ade", "ade.yaml");
+  const localPath = path.join(projectRoot, ".ade", "local.yaml");
+  let shared = null;
+  let local = null;
+  try {
+    if (existsSync(sharedPath)) {
+      shared = YAML.parse(readFileSync(sharedPath, "utf8"));
+    }
+  } catch (error) {
+    console.warn(`[export-browser-mock-ade] Could not parse ${sharedPath}: ${error?.message ?? error}`);
+  }
+  try {
+    if (existsSync(localPath)) {
+      local = YAML.parse(readFileSync(localPath, "utf8"));
+    }
+  } catch (error) {
+    console.warn(`[export-browser-mock-ade] Could not parse ${localPath}: ${error?.message ?? error}`);
+  }
+  return mergeYamlConfigLayers(shared, local);
+}
+
+function normalizeReadinessExport(value) {
+  if (!value || typeof value !== "object") return { type: "none" };
+  const t = value.type === "port" || value.type === "logRegex" ? value.type : "none";
+  if (t === "port") {
+    const port = Number(value.port);
+    return Number.isInteger(port) && port > 0 ? { type: "port", port } : { type: "none" };
+  }
+  if (t === "logRegex") {
+    const pattern = String(value.pattern ?? "").trim();
+    return pattern ? { type: "logRegex", pattern } : { type: "none" };
+  }
+  return { type: "none" };
+}
+
+function overlayYamlOntoDbProcesses(dbDefs, yamlProcessesById) {
+  return dbDefs.map((def) => {
+    const y = yamlProcessesById.get(def.id);
+    if (!y) return def;
+    const groupIds = Array.isArray(y.groupIds)
+      ? y.groupIds.map((id) => String(id).trim()).filter(Boolean)
+      : def.groupIds;
+    const readiness = y.readiness != null ? normalizeReadinessExport(y.readiness) : def.readiness;
+    return {
+      ...def,
+      groupIds,
+      readiness,
+    };
+  });
+}
+
+/** Ensures Run tab browser mock has groups (and keeps stackButtons only when present on disk) when the DB is sparse. */
+function finalizeRunTabSnapshot(processDefinitions, stackButtons, processGroups) {
+  let defs = [...processDefinitions];
+  const stacks = [...stackButtons];
+  let groups = [...processGroups];
+  const ids = defs.map((p) => p.id).filter(Boolean);
+
+  if (groups.length === 0 && ids.length > 0) {
+    groups = [
+      { id: "grp-automation", name: "Automation" },
+      { id: "grp-local-dev", name: "Local dev" },
+    ];
+    defs = defs.map((p, idx) => ({
+      ...p,
+      groupIds:
+        p.groupIds?.length > 0
+          ? p.groupIds
+          : [idx % 2 === 0 ? "grp-automation" : "grp-local-dev"],
+    }));
+  }
+
+  return { processDefinitions: defs, stackButtons: stacks, processGroups: groups };
+}
+
+function ensureDemoProcessRuntime(processRuntime, lanes, processDefinitions) {
+  if (processRuntime.length > 0 || processDefinitions.length === 0) return processRuntime;
+  const laneId = lanes.find((l) => l.laneType === "primary")?.id ?? lanes[0]?.id;
+  if (!laneId) return processRuntime;
+  const ts = new Date().toISOString();
+  const p0 = processDefinitions[0];
+  const rows = [
+    {
+      runId: `${laneId}:${p0.id}`,
+      laneId,
+      processId: p0.id,
+      status: "running",
+      readiness: "ready",
+      pid: 48192,
+      sessionId: null,
+      ptyId: null,
+      startedAt: ts,
+      endedAt: null,
+      exitCode: null,
+      lastExitCode: null,
+      lastEndedAt: null,
+      uptimeMs: 125000,
+      ports: [5173],
+      logPath: null,
+      updatedAt: ts,
+    },
+  ];
+  if (processDefinitions.length > 1) {
+    const p1 = processDefinitions[1];
+    const ended = new Date(Date.now() - 1800000).toISOString();
+    const started = new Date(Date.now() - 3600000).toISOString();
+    rows.push({
+      runId: `${laneId}:${p1.id}`,
+      laneId,
+      processId: p1.id,
+      status: "exited",
+      readiness: "unknown",
+      pid: null,
+      sessionId: null,
+      ptyId: null,
+      startedAt: started,
+      endedAt: ended,
+      exitCode: 0,
+      lastExitCode: 0,
+      lastEndedAt: ended,
+      uptimeMs: null,
+      ports: [],
+      logPath: null,
+      updatedAt: ts,
+    });
+  }
+  return rows;
 }
 
 function isChatToolType(toolType) {
@@ -676,11 +1011,13 @@ function buildSessions(projectId) {
     `
       select ts.*, l.name as lane_name
       from terminal_sessions ts
-      left join lanes l on l.id = ts.lane_id
+      inner join lanes l on l.id = ts.lane_id
       where ts.archived_at is null
+        and l.project_id = ?
       order by coalesce(ts.last_output_at, ts.ended_at, ts.started_at) desc
       limit 200
     `,
+    [projectId],
   ).map((row) => ({
     id: row.id,
     laneId: row.lane_id,
@@ -995,8 +1332,24 @@ const githubSnapshot = buildGithubSnapshot({ prs, lanes, mergeContexts, integrat
 const missions = buildMissionSummaries(projectId);
 const operations = buildOperations(projectId);
 const sessions = buildSessions(projectId);
-const processDefinitions = buildProcessDefinitions(projectId);
-const processRuntime = buildProcessRuntime(projectId);
+let processDefinitions = buildProcessDefinitions(projectId);
+let processRuntime = buildProcessRuntime(projectId);
+
+const yamlMerged = readAdeYamlConfigs(projectRoot);
+const yamlProcessById = new Map(
+  (yamlMerged.processes ?? []).filter((p) => p?.id).map((p) => [String(p.id), p]),
+);
+processDefinitions = overlayYamlOntoDbProcesses(processDefinitions, yamlProcessById);
+const finalizedRun = finalizeRunTabSnapshot(
+  processDefinitions,
+  yamlMerged.stackButtons ?? [],
+  yamlMerged.processGroups ?? [],
+);
+processDefinitions = finalizedRun.processDefinitions;
+const stackButtons = finalizedRun.stackButtons;
+const processGroups = finalizedRun.processGroups;
+processRuntime = ensureDemoProcessRuntime(processRuntime, lanes, processDefinitions);
+
 const automations = buildAutomations(projectId);
 const missionDashboard = buildMissionDashboard(missions);
 const missionFullViews = buildMissionFullViews({ projectId, missions });
@@ -1006,6 +1359,17 @@ const ctoState = getCtoState(projectId);
 db.close();
 
 const chatTranscripts = await buildChatTranscripts(sessions);
+
+const { filesTreeByWorkspace, filesContentsByWorkspace } = buildFilesBrowserSnapshot(lanes);
+const filesTreeWorkspaceCount = Object.keys(filesTreeByWorkspace).length;
+const filesTreeDirKeys = Object.values(filesTreeByWorkspace).reduce(
+  (acc, m) => acc + Object.keys(m).length,
+  0,
+);
+const filesContentEntryCount = Object.values(filesContentsByWorkspace).reduce(
+  (acc, m) => acc + Object.keys(m).length,
+  0,
+);
 
 const snapshot = {
   version: 2,
@@ -1035,15 +1399,20 @@ const snapshot = {
   chatTranscripts,
   processDefinitions,
   processRuntime,
+  stackButtons,
+  processGroups,
   usageSnapshot,
   ctoState,
   automations,
+  filesTreeByWorkspace,
+  filesContentsByWorkspace,
   stripInlineDemo: true,
 };
 
 await fs.writeFile(OUT_FILE, JSON.stringify(snapshot, null, 2) + "\n", "utf8");
 console.log(
   `[export-browser-mock-ade] Wrote browser snapshot for ${projectRow.displayName} → ${OUT_FILE}\n` +
-    `  lanes=${lanes.length} prs=${prs.length} prSnapshots=${prSnapshots.length} operations=${operations.length} sessions=${sessions.length} chatTranscripts=${Object.keys(chatTranscripts).length} processes=${processDefinitions.length}/${processRuntime.length} missions=${missions.length}\n` +
+    `  lanes=${lanes.length} prs=${prs.length} prSnapshots=${prSnapshots.length} operations=${operations.length} sessions=${sessions.length} chatTranscripts=${Object.keys(chatTranscripts).length} processes=${processDefinitions.length}/${processRuntime.length} stacks=${stackButtons.length} groups=${processGroups.length} missions=${missions.length}\n` +
+    `  filesWorkspaces=${lanes.length} filesTreeWorkspaces=${filesTreeWorkspaceCount} filesTreeDirs=${filesTreeDirKeys} filesWithEmbeddedText=${filesContentEntryCount}\n` +
     "Restart Vite or refresh the browser to pick up the updated data.",
 );

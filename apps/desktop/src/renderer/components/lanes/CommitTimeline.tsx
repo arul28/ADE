@@ -223,7 +223,7 @@ export function CommitTimeline({
                         width: 10, height: 10, borderRadius: "50%",
                         border: `2px solid ${dotColor}`,
                         background: dotBg,
-                        boxShadow: isSelected ? `0 0 0 2px ${COLORS.accent}60` : "none",
+                        boxShadow: isSelected ? `0 0 0 2px color-mix(in srgb, var(--color-accent) 60%, transparent)` : "none",
                       }}
                     />
                     {isMerge ? (

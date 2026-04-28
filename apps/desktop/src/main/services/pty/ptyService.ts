@@ -873,44 +873,168 @@ export function createPtyService({
     });
   };
 
-  const CODEX_LIVE_CAPTURE_DELAYS_MS = [1_500, 3_500, 8_000, 20_000];
+  // Polling is the fallback when fs.watch is unavailable or misses the create/write events.
+  // Cadence is intentionally aggressive at the start (codex usually writes session_meta within
+  // ~1 s) and falls off so a slow startup doesn't keep timers alive forever.
+  const CODEX_FALLBACK_POLL_DELAYS_MS = [500, 2_000, 5_000, 12_000, 30_000];
+  const CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS = 60_000;
+  const CODEX_WATCH_DEBOUNCE_MS = 200;
+
+  /**
+   * Stable thread name we register against the freshly-discovered codex UUID. From this point
+   * forward, `codex resume ade-<id>` resolves through `~/.codex/session_index.jsonl` regardless
+   * of where the rollout file ends up on disk. We control this name space (`ade-*`) so it never
+   * collides with user-chosen names.
+   */
+  const buildCodexAdeName = (sessionId: string): string => {
+    const stripped = sessionId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24);
+    return `ade-${stripped || "session"}`;
+  };
+
+  /**
+   * Append `{id, thread_name, updated_at}` to ~/.codex/session_index.jsonl so codex's resume
+   * picker can find the session by our chosen name. Codex normally writes this file from its
+   * `SetThreadName` op, but the format is a public on-disk contract — appending one line with
+   * an atomic write is well under PIPE_BUF and safe vs. concurrent codex writers. Returns true
+   * on successful write.
+   */
+  const registerCodexThreadNameInIndex = (uuid: string, threadName: string): boolean => {
+    if (typeof (fs as { appendFileSync?: unknown }).appendFileSync !== "function") return false;
+    try {
+      const indexPath = path.join(os.homedir(), ".codex", "session_index.jsonl");
+      const line = JSON.stringify({
+        id: uuid,
+        thread_name: threadName,
+        updated_at: new Date().toISOString(),
+      }) + "\n";
+      fs.appendFileSync(indexPath, line, { encoding: "utf8" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   // Codex CLI has no pre-assigned session ID flag (unlike Claude's --session-id), so the
-  // rollout JSONL is the only handle on the session's UUID. Polling once it exists lets resume
-  // survive app crashes, orphaned PTYs, or long-lived sessions that outlast the transcript-scan
-  // window on dispose.
+  // rollout JSONL is the only handle on the session's UUID. We watch the day directory for the
+  // file's appearance, then claim a stable `ade-<id>` thread name so future resumes don't
+  // depend on filesystem heuristics. A staggered poll covers environments where fs.watch is
+  // missing/unreliable (network mounts, Linux on some FSes, the test harness).
   const scheduleCodexSessionIdCaptureBestEffort = (
     sessionId: string,
     cwd: string,
     startedAt: string,
   ): void => {
-    const poll = (attempt: number): void => {
-      const timer = setTimeout(() => {
+    const startedAtMs = Date.parse(startedAt);
+    const startedAtFinite = Number.isFinite(startedAtMs) ? startedAtMs : null;
+    const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
+    let captured = false;
+    const watchers: Array<{ close: () => void }> = [];
+    const timers = new Set<NodeJS.Timeout>();
+    let watchDebounceTimer: NodeJS.Timeout | null = null;
+
+    const trackTimer = (t: NodeJS.Timeout): NodeJS.Timeout => {
+      timers.add(t);
+      t.unref?.();
+      return t;
+    };
+
+    const cleanup = (): void => {
+      captured = true;
+      for (const w of watchers) {
+        try { w.close(); } catch { /* ignore */ }
+      }
+      watchers.length = 0;
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
+      if (watchDebounceTimer) {
+        clearTimeout(watchDebounceTimer);
+        watchDebounceTimer = null;
+      }
+    };
+
+    const tryResolve = (source: "initial" | "watch" | "poll", attempt: number): boolean => {
+      if (captured) return true;
+      const session = sessionService.get(sessionId);
+      if (!session) {
+        cleanup();
+        return true;
+      }
+      if (session.resumeMetadata?.targetId?.trim()) {
+        cleanup();
+        return true;
+      }
+      const codexUuid = resolveCodexSessionIdFromStorage({
+        cwd,
+        startedAt,
+        maxStartDeltaMs: 5 * 60_000,
+        ...(startedAtFinite !== null ? { notBeforeMs: startedAtFinite - 1_000 } : {}),
+        requiredText: "ADE session guidance",
+      });
+      if (!codexUuid) return false;
+
+      captured = true;
+      const adeName = buildCodexAdeName(sessionId);
+      const indexed = registerCodexThreadNameInIndex(codexUuid, adeName);
+      const resumeCmd = indexed ? `codex resume ${adeName}` : `codex resume ${codexUuid}`;
+      sessionService.setResumeCommand(sessionId, resumeCmd);
+      logger.info("pty.codex_session_id_captured_live", {
+        sessionId,
+        codexSessionId: codexUuid,
+        adeName: indexed ? adeName : null,
+        source,
+        attempt,
+      });
+      cleanup();
+      return true;
+    };
+
+    if (tryResolve("initial", 0)) return;
+
+    if (typeof (fs as { watch?: unknown }).watch === "function") {
+      const now = new Date();
+      for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
+        const d = new Date(now.getTime() + dayOffset * 86_400_000);
+        const dirPath = path.join(
+          sessionsBase,
+          String(d.getFullYear()),
+          String(d.getMonth() + 1).padStart(2, "0"),
+          String(d.getDate()).padStart(2, "0"),
+        );
         try {
-          const session = sessionService.get(sessionId);
-          if (!session) return;
-          if (session.resumeMetadata?.targetId?.trim()) return;
-          const startedAtMs = Date.parse(startedAt);
-          const codexSessionId = resolveCodexSessionIdFromStorage({
-            cwd,
-            startedAt,
-            maxStartDeltaMs: 2 * 60_000,
-            ...(Number.isFinite(startedAtMs) ? { notBeforeMs: startedAtMs - 1_000 } : {}),
-            requiredText: "ADE session guidance",
+          try { fs.mkdirSync(dirPath, { recursive: true }); } catch { /* ignore */ }
+          const watcher = fs.watch(dirPath, { persistent: false }, (_event, filename) => {
+            if (captured) return;
+            if (typeof filename === "string" && filename && !filename.endsWith(".jsonl")) return;
+            if (watchDebounceTimer) return;
+            watchDebounceTimer = setTimeout(() => {
+              watchDebounceTimer = null;
+              if (!captured) tryResolve("watch", 0);
+            }, CODEX_WATCH_DEBOUNCE_MS);
+            watchDebounceTimer.unref?.();
           });
-          if (codexSessionId) {
-            sessionService.setResumeCommand(sessionId, `codex resume ${codexSessionId}`);
-            logger.info("pty.codex_session_id_captured_live", { sessionId, codexSessionId, attempt });
-            return;
-          }
-          if (attempt + 1 < CODEX_LIVE_CAPTURE_DELAYS_MS.length) poll(attempt + 1);
+          watcher.unref?.();
+          watchers.push(watcher);
+        } catch (err) {
+          logger.warn("pty.codex_session_id_watch_failed", { sessionId, dirPath, err: String(err) });
+        }
+      }
+    }
+
+    for (let i = 0; i < CODEX_FALLBACK_POLL_DELAYS_MS.length; i++) {
+      const attempt = i;
+      trackTimer(setTimeout(() => {
+        try {
+          if (captured) return;
+          tryResolve("poll", attempt);
         } catch (err) {
           logger.warn("pty.codex_session_id_capture_failed", { sessionId, attempt, err: String(err) });
         }
-      }, CODEX_LIVE_CAPTURE_DELAYS_MS[attempt]);
-      timer.unref?.();
-    };
-    poll(0);
+      }, CODEX_FALLBACK_POLL_DELAYS_MS[i]));
+    }
+
+    trackTimer(setTimeout(() => {
+      cleanup();
+    }, CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS));
   };
 
   const closeEntry = (ptyId: string, exitCode: number | null) => {
@@ -1706,6 +1830,29 @@ export function createPtyService({
           // ignore
         }
       }
+    },
+
+    disposeForLane(laneId: string): number {
+      let disposed = 0;
+      for (const [ptyId, entry] of [...ptys.entries()]) {
+        if (entry.laneId !== laneId) continue;
+        try {
+          this.dispose({ ptyId });
+          disposed += 1;
+        } catch {
+          // ignore individual failures; teardown should never block
+        }
+      }
+      return disposed;
+    },
+
+    countActiveForLane(laneId: string): number {
+      let count = 0;
+      for (const entry of ptys.values()) {
+        if (entry.laneId !== laneId) continue;
+        if (!entry.disposed) count += 1;
+      }
+      return count;
     },
 
     onData(listener: PtyDataListener): () => void {

@@ -6,7 +6,9 @@ private enum WorkPreviewData {
   // The lane mirrors the local .ade database in this worktree. This checkout
   // does not currently have saved chat sessions, so the chat transcript below
   // is representative data attached to that real lane.
-  static let timestamp = "2026-04-16T16:40:25.007Z"
+  static let timestamp = iso(minutesAgo: 13)
+  static let threeHoursAgo = iso(minutesAgo: 180)
+  static let twoDaysAgo = iso(minutesAgo: 60 * 48)
   static let syncService = SyncService()
 
   static let lane = LaneSummary(
@@ -101,6 +103,107 @@ private enum WorkPreviewData {
     resumeMetadata: nil,
     chatIdleSinceAt: nil
   )
+
+  static let iosSimLane = LaneSummary(
+    id: "lane-ios-sim-editor",
+    name: "ios sim editor",
+    description: "Simulator and preview workflow lane",
+    laneType: "worktree",
+    baseRef: "main",
+    branchRef: "ios-sim-editor-b0e2801b",
+    worktreePath: "/Users/admin/Projects/ADE/.ade/worktrees/ios-sim-editor-b0e2801b",
+    attachedRootPath: nil,
+    parentLaneId: lane.id,
+    childCount: 0,
+    stackDepth: 1,
+    parentStatus: lane.status,
+    isEditProtected: false,
+    status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+    color: "purple",
+    icon: .bolt,
+    tags: ["ios", "preview"],
+    folder: nil,
+    createdAt: twoDaysAgo,
+    archivedAt: nil,
+    devicesOpen: [
+      DeviceMarker(deviceId: "ios", displayName: "iPhone", platform: "ios")
+    ]
+  )
+
+  static let rootLanes = [lane, iosSimLane]
+
+  static let bumpBuildSummary = chatSummaryFixture(
+    sessionId: "preview-bump-build",
+    lane: lane,
+    title: "Bump mobile build and publish iOS TestFlight",
+    goal: "Create a fresh mobile build, upload it, and distribute it to beta testers.",
+    status: "active",
+    startedAt: timestamp,
+    lastActivityAt: timestamp,
+    preview: "Archiving ADE and waiting for App Store Connect processing."
+  )
+
+  static let automationSummary = chatSummaryFixture(
+    sessionId: "preview-automation-github",
+    lane: lane,
+    title: "Automations GitHub Issue Workflow",
+    goal: "Repair the GitHub issue automation flow.",
+    status: "ended",
+    startedAt: twoDaysAgo,
+    endedAt: twoDaysAgo,
+    lastActivityAt: twoDaysAgo,
+    preview: "Session closed: Failed to authenticate. API Error: 401 {...",
+    summary: "Session closed: Failed to authenticate. API Error: 401 {..."
+  )
+
+  static let rootSessions: [TerminalSessionSummary] = [
+    sessionFixture(
+      id: bumpBuildSummary.sessionId,
+      lane: lane,
+      title: bumpBuildSummary.title ?? "Bump mobile build and publish iOS TestFlight",
+      toolType: "claude-chat",
+      status: "running",
+      runtimeState: "active",
+      startedAt: timestamp,
+      preview: bumpBuildSummary.lastOutputPreview,
+      summary: bumpBuildSummary.summary
+    ),
+    sessionFixture(
+      id: "preview-shell-session",
+      lane: lane,
+      title: "ADE shell session",
+      toolType: "shell",
+      status: "ended",
+      runtimeState: "exited",
+      startedAt: threeHoursAgo,
+      endedAt: threeHoursAgo,
+      preview: "The user is asking me to rewrite a terminal session summary.",
+      summary: "The user is asking me to rewrite a terminal session summary."
+    ),
+    sessionFixture(
+      id: automationSummary.sessionId,
+      lane: lane,
+      title: automationSummary.title ?? "Automations GitHub Issue Workflow",
+      toolType: "claude-chat",
+      status: "ended",
+      runtimeState: "exited",
+      startedAt: twoDaysAgo,
+      endedAt: twoDaysAgo,
+      preview: automationSummary.lastOutputPreview,
+      summary: automationSummary.summary
+    ),
+    sessionFixture(id: "preview-ios-sim-1", lane: iosSimLane, title: "iOS sim editor", startedAt: timestamp),
+    sessionFixture(id: "preview-ios-sim-2", lane: iosSimLane, title: "Simulator inspector polish", startedAt: threeHoursAgo),
+    sessionFixture(id: "preview-ios-sim-3", lane: iosSimLane, title: "Preview target wiring", startedAt: twoDaysAgo),
+    sessionFixture(id: "preview-ios-sim-4", lane: iosSimLane, title: "Files tab navigation", startedAt: twoDaysAgo),
+    sessionFixture(id: "preview-ios-sim-5", lane: iosSimLane, title: "GitHub logo asset", startedAt: twoDaysAgo),
+    sessionFixture(id: "preview-ios-sim-6", lane: iosSimLane, title: "Socket controls", startedAt: twoDaysAgo),
+  ]
+
+  static let rootChatSummaries: [String: AgentChatSessionSummary] = [
+    bumpBuildSummary.sessionId: bumpBuildSummary,
+    automationSummary.sessionId: automationSummary,
+  ]
 
   static let transcript: [WorkChatEnvelope] = [
     envelope(
@@ -199,13 +302,115 @@ private enum WorkPreviewData {
   static func envelope(sequence: Int, event: WorkChatEvent) -> WorkChatEnvelope {
     WorkChatEnvelope(sessionId: chatSummary.sessionId, timestamp: timestamp, sequence: sequence, event: event)
   }
+
+  static func iso(minutesAgo: Int) -> String {
+    let date = Date().addingTimeInterval(TimeInterval(-minutesAgo * 60))
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: date)
+  }
+
+  static func chatSummaryFixture(
+    sessionId: String,
+    lane: LaneSummary,
+    title: String,
+    goal: String,
+    status: String,
+    startedAt: String,
+    endedAt: String? = nil,
+    lastActivityAt: String,
+    preview: String,
+    summary: String? = nil
+  ) -> AgentChatSessionSummary {
+    AgentChatSessionSummary(
+      sessionId: sessionId,
+      laneId: lane.id,
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "claude-sonnet-4-6",
+      sessionProfile: nil,
+      title: title,
+      goal: goal,
+      reasoningEffort: nil,
+      executionMode: nil,
+      permissionMode: "edit",
+      interactionMode: "default",
+      claudePermissionMode: "default",
+      codexApprovalPolicy: nil,
+      codexSandbox: nil,
+      codexConfigSource: nil,
+      opencodePermissionMode: nil,
+      cursorModeSnapshot: nil,
+      cursorModeId: nil,
+      cursorConfigValues: nil,
+      identityKey: nil,
+      surface: "mobile",
+      automationId: nil,
+      automationRunId: nil,
+      capabilityMode: nil,
+      computerUse: nil,
+      completion: nil,
+      status: status,
+      idleSinceAt: nil,
+      startedAt: startedAt,
+      endedAt: endedAt,
+      lastActivityAt: lastActivityAt,
+      lastOutputPreview: preview,
+      summary: summary ?? preview,
+      awaitingInput: false,
+      threadId: nil,
+      requestedCwd: lane.worktreePath
+    )
+  }
+
+  static func sessionFixture(
+    id: String,
+    lane: LaneSummary,
+    title: String,
+    toolType: String = "claude-chat",
+    status: String = "ended",
+    runtimeState: String = "exited",
+    startedAt: String,
+    endedAt: String? = nil,
+    preview: String? = nil,
+    summary: String? = nil
+  ) -> TerminalSessionSummary {
+    TerminalSessionSummary(
+      id: id,
+      laneId: lane.id,
+      laneName: lane.name,
+      ptyId: nil,
+      tracked: true,
+      pinned: false,
+      manuallyNamed: true,
+      goal: summary,
+      toolType: toolType,
+      title: title,
+      status: status,
+      startedAt: startedAt,
+      endedAt: endedAt,
+      exitCode: status == "ended" ? 0 : nil,
+      transcriptPath: ".ade/transcripts/chat/\(id).jsonl",
+      headShaStart: "abc1234",
+      headShaEnd: nil,
+      lastOutputPreview: preview,
+      summary: summary,
+      runtimeState: runtimeState,
+      resumeCommand: nil,
+      resumeMetadata: nil,
+      chatIdleSinceAt: status == "ended" ? endedAt : nil
+    )
+  }
 }
 
 #Preview("Work tab root") {
-  NavigationStack {
-    WorkRootScreen(isTabActive: false)
-      .environmentObject(WorkPreviewData.syncService)
-  }
+  WorkRootPreviewHarness()
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Work tab root - light") {
+  WorkRootPreviewHarness()
+    .preferredColorScheme(.light)
 }
 
 #Preview("Work session list") {
@@ -329,6 +534,136 @@ private struct WorkPreviewSessionListScreen: View {
         .padding(20)
       }
       .background(ADEColor.pageBackground)
+    }
+  }
+}
+
+private struct WorkRootPreviewHarness: View {
+  @State private var searchText = ""
+  @State private var selectedLaneId = "all"
+  @State private var selectedStatus: WorkSessionStatusFilter = .all
+  @State private var organization: WorkSessionOrganization = .byLane
+  @State private var filterOpen = false
+  @State private var selectedSessionId: String?
+  @State private var collapsedSectionIds: Set<String> = ["lane:\(WorkPreviewData.iosSimLane.id)"]
+
+  private var presentation: WorkRootSessionPresentation {
+    buildWorkRootSessionPresentation(
+      sessions: WorkPreviewData.rootSessions,
+      optimisticSessions: [:],
+      chatSummaries: WorkPreviewData.rootChatSummaries,
+      archivedSessionIds: [],
+      selectedStatus: selectedStatus,
+      selectedLaneId: selectedLaneId,
+      searchText: searchText,
+      organization: organization,
+      orderedLanes: WorkPreviewData.rootLanes
+    )
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollViewReader { proxy in
+        List {
+          WorkFiltersSection(
+            searchText: $searchText,
+            selectedLaneId: $selectedLaneId,
+            selectedStatus: $selectedStatus,
+            organization: $organization,
+            filterOpen: $filterOpen,
+            lanes: WorkPreviewData.rootLanes,
+            liveCount: presentation.globalLiveSessionCount,
+            needsInputCount: presentation.globalNeedsInputCount,
+            isLive: true,
+            onClear: clearFilters,
+            onNewChat: {}
+          )
+          .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+
+          ForEach(presentation.sessionGroups) { group in
+            WorkSidebarSectionHeader(
+              group: group,
+              collapsed: collapsedSectionIds.contains(group.id),
+              onToggle: { toggleCollapsed(group.id) }
+            )
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
+
+            if !collapsedSectionIds.contains(group.id) {
+              ForEach(group.sessions) { session in
+                WorkSessionListRow(
+                  session: session,
+                  lane: WorkPreviewData.rootLanes.first(where: { $0.id == session.laneId }),
+                  chatSummary: WorkPreviewData.rootChatSummaries[session.id],
+                  isArchived: false,
+                  transitionNamespace: nil,
+                  selectedSessionId: $selectedSessionId,
+                  isSelecting: false,
+                  isChecked: false,
+                  onLongPressSelect: { _ in },
+                  onToggleSelect: { _ in },
+                  onOpen: { selectedSessionId = $0.id },
+                  onArchive: { _ in },
+                  onPin: { _ in },
+                  onRename: { _ in },
+                  onEnd: { _ in },
+                  onDelete: { _ in },
+                  onResume: { _ in },
+                  onCopyId: { _ in },
+                  onGoToLane: { _ in }
+                )
+                .id(session.id)
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+              }
+            }
+          }
+        }
+        .listStyle(.plain)
+        .listSectionSpacing(.compact)
+        .scrollContentBackground(.hidden)
+        .contentMargins(.bottom, 72, for: .scrollContent)
+        .adeScreenBackground()
+        .adeNavigationGlass()
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
+        .safeAreaInset(edge: .top, spacing: 0) {
+          ADERootTopBar(title: "Work") {
+            if presentation.globalLiveSessionCount > 0 {
+              WorkLiveCountPill(
+                liveCount: presentation.globalLiveSessionCount,
+                attentionCount: presentation.globalNeedsInputCount,
+                onTap: {
+                  guard let targetId = presentation.firstGlobalLiveSessionId else { return }
+                  withAnimation(.snappy) {
+                    proxy.scrollTo(targetId, anchor: .top)
+                  }
+                }
+              )
+            }
+          }
+        }
+      }
+    }
+    .environmentObject(WorkPreviewData.syncService)
+  }
+
+  private func clearFilters() {
+    searchText = ""
+    selectedLaneId = "all"
+    selectedStatus = .all
+  }
+
+  private func toggleCollapsed(_ id: String) {
+    if collapsedSectionIds.contains(id) {
+      collapsedSectionIds.remove(id)
+    } else {
+      collapsedSectionIds.insert(id)
     }
   }
 }

@@ -328,6 +328,7 @@ Processes (managed):
 | `ade.processes.stop` / `ade.processes.kill` | returns the targeted `ProcessRuntime`, or `null` when no active run exists for the `(laneId, processId[, runId])` tuple |
 | `ade.processes.restart` | stop active runs, wait for exit (up to 10 s), start a new run |
 | `ade.processes.startStack` / `stopStack` / `restartStack` | stack buttons |
+| `ade.processes.startGroup` / `stopGroup` / `restartGroup` | bulk ops over a `ProcessGroupDefinition`. Caller passes `{ groupId, laneByProcessId }` so each member can run on its own lane (the Run page builds this map from per-card lane selections). Start order is **parallel** — `dependsOn` is intentionally not topologically sorted across mixed lanes. Restart waits for in-flight stops before re-starting. |
 | `ade.processes.startAll` / `stopAll` | bulk ops |
 | `ade.processes.getLogTail` | transcript tail for the focused run (pass `runId` to target a specific invocation) |
 | `ade.processes.event` (event) | `runtime` events carrying a `ProcessRuntime` with `runId`, and `log` events carrying `runId` + `laneId` + `processId` |

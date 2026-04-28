@@ -498,8 +498,8 @@ export function DiagnosticsDashboardSection({
             alignItems: "center",
             gap: 8,
             padding: "8px 12px",
-            background: `${COLORS.warning}12`,
-            border: `1px solid ${COLORS.warning}30`,
+            background: "color-mix(in srgb, var(--color-warning) 12%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
           }}
         >
           <span

@@ -145,7 +145,7 @@ export function MissionComputerUsePanel({
                 className="w-full text-left"
                 style={{
                   border: `1px solid ${selected ? COLORS.accent : COLORS.border}`,
-                  background: selected ? `${COLORS.accent}10` : COLORS.recessedBg,
+                  background: selected ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : COLORS.recessedBg,
                   padding: 10,
                 }}
               >

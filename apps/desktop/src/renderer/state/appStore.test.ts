@@ -52,13 +52,16 @@ function resetStore() {
     laneSnapshots: [],
     lanes: [],
     selectedLaneId: null,
-    runLaneId: null,
     focusedSessionId: null,
     theme: "dark",
     terminalPreferences: { ...DEFAULT_TERMINAL_PREFERENCES },
     codeBlockCopyButtonPosition: "top" as const,
     agentTurnCompletionSound: "off" as const,
     chatFontSizePx: DEFAULT_CHAT_FONT_SIZE_PX,
+    chatUserMinimapEnabled: true,
+    chatTranscriptDensity: "comfortable",
+    chatChromeTint: "colored",
+    chatShellGeometry: "default",
     smartTooltipsEnabled: true,
     onboardingEnabled: true,
     didYouKnowEnabled: true,
@@ -187,6 +190,36 @@ describe("appStore", () => {
       useAppStore.getState().setChatFontSizePx(8);
       expect(useAppStore.getState().chatFontSizePx).toBe(12);
     });
+
+    it("persists chat user minimap toggle", () => {
+      useAppStore.getState().setChatUserMinimapEnabled(false);
+      expect(useAppStore.getState().chatUserMinimapEnabled).toBe(false);
+      const calls = mockLocalStorage.setItem.mock.calls.filter(
+        ([key]) => key === "ade.userPreferences.v1",
+      );
+      const latest = calls[calls.length - 1];
+      expect(latest).toBeTruthy();
+      expect(JSON.parse(latest![1])).toMatchObject({ chatUserMinimapEnabled: false });
+      useAppStore.getState().setChatUserMinimapEnabled(true);
+      expect(useAppStore.getState().chatUserMinimapEnabled).toBe(true);
+    });
+
+    it("persists transcript density and shell geometry prefs", () => {
+      useAppStore.getState().setChatTranscriptDensity("compact");
+      useAppStore.getState().setChatShellGeometry("sharp");
+      expect(useAppStore.getState().chatTranscriptDensity).toBe("compact");
+      expect(useAppStore.getState().chatShellGeometry).toBe("sharp");
+    });
+
+    it("resetThemeAndChatFontDefaults restores theme + font size only", () => {
+      useAppStore.getState().setTheme("light");
+      useAppStore.getState().setChatFontSizePx(20);
+      useAppStore.getState().setChatTranscriptDensity("spacious");
+      useAppStore.getState().resetThemeAndChatFontDefaults();
+      expect(useAppStore.getState().theme).toBe("dark");
+      expect(useAppStore.getState().chatFontSizePx).toBe(DEFAULT_CHAT_FONT_SIZE_PX);
+      expect(useAppStore.getState().chatTranscriptDensity).toBe("spacious");
+    });
   });
 
   // ─────────────────────────────────────────────────────────────
@@ -313,11 +346,6 @@ describe("appStore", () => {
     it("selectLane updates selectedLaneId", () => {
       useAppStore.getState().selectLane("lane-42");
       expect(useAppStore.getState().selectedLaneId).toBe("lane-42");
-    });
-
-    it("selectRunLane updates runLaneId", () => {
-      useAppStore.getState().selectRunLane("lane-99");
-      expect(useAppStore.getState().runLaneId).toBe("lane-99");
     });
 
     it("focusSession updates focusedSessionId", () => {

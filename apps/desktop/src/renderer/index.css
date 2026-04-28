@@ -22,9 +22,33 @@
   --shadow-card-hover: 0 8px 30px -6px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.15);
   --shadow-float: 0 20px 50px -16px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(167, 139, 250, 0.08);
 
-  --chat-radius-shell: 18px;
+  /* Default chat shell — middle ground between soft (pillowy) and sharp (nearly square). */
+  --chat-radius-shell: 19px;
   --chat-radius-card: 16px;
   --chat-radius-pill: 9999px;
+}
+
+/* Chat shell geometry presets (Appearance settings) — keep spreads wide so the UI read is obvious. */
+[data-chat-shell-geometry="soft"] {
+  --chat-radius-shell: 34px;
+  --chat-radius-card: 26px;
+}
+[data-chat-shell-geometry="sharp"] {
+  --chat-radius-shell: 5px;
+  --chat-radius-card: 3px;
+}
+
+/* Transcript / composer typography — --chat-font-size and gaps set from JS */
+[data-chat-appearance-root] {
+  --chat-font-size: 14px;
+  --chat-row-gap: 14px;
+  --chat-timeline-pad-x: 20px;
+  --chat-timeline-pad-top: 20px;
+  --chat-timeline-pad-bottom: 32px;
+  --chat-bubble-user-px: 16px;
+  --chat-bubble-user-py: 10px;
+  --chat-bubble-assistant-px: 20px;
+  --chat-bubble-assistant-py: 16px;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -125,7 +149,8 @@
   --shell-sidebar-item-active-fg: var(--color-accent);
   --shell-sidebar-item-active-bg: rgba(167, 139, 250, 0.1);
   --shell-sidebar-item-active-rail: var(--color-accent);
-  --shell-sidebar-separator: rgba(255, 255, 255, 0.04);
+  /* Dark purple hairline between sidebar groups (TabNav) */
+  --shell-sidebar-separator: color-mix(in srgb, var(--color-accent-deep) 42%, #1e1235 58%);
 
   --shell-project-tab-bg: transparent;
   --shell-project-tab-fg: rgba(255, 255, 255, 0.45);
@@ -203,6 +228,10 @@
   --color-surface-raised: #ffffff;
   --color-surface-recessed: #eae7e2;
   --color-surface-overlay: rgba(255, 255, 255, 0.92);
+  --color-popup-bg: #ffffff;
+  --color-modal-bg: #ffffff;
+  --color-composer-bg: #f5f3f0;
+  --color-glass-card: rgba(255, 255, 255, 0.92);
   --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.06);
   --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.06);
   --shadow-panel: 0 4px 16px -4px rgba(0, 0, 0, 0.08), 0 1px 3px -1px rgba(0, 0, 0, 0.05);
@@ -257,7 +286,7 @@
   --shell-sidebar-item-active-fg: var(--color-accent);
   --shell-sidebar-item-active-bg: color-mix(in srgb, var(--color-accent) 10%, transparent);
   --shell-sidebar-item-active-rail: var(--color-accent);
-  --shell-sidebar-separator: color-mix(in srgb, var(--color-border) 62%, transparent);
+  --shell-sidebar-separator: color-mix(in srgb, #5b21b6 28%, var(--color-border) 72%);
 
   --shell-project-tab-bg: transparent;
   --shell-project-tab-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
@@ -2754,10 +2783,10 @@ button:active, [role="button"]:active {
 .ade-chat-message-card-user {
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%);
-  border-color: color-mix(in srgb, var(--chat-accent) 26%, rgba(255, 255, 255, 0.14));
+  border-color: color-mix(in srgb, var(--chat-accent) var(--chat-user-border-accent-mix, 28%), rgba(255, 255, 255, 0.14));
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.12),
-    0 18px 28px -24px color-mix(in srgb, var(--chat-accent) 34%, transparent),
+    0 18px 28px -24px color-mix(in srgb, var(--chat-accent) var(--chat-user-shadow-accent-mix, 34%), transparent),
     0 10px 26px -22px rgba(0, 0, 0, 0.52);
 }
 
@@ -2803,6 +2832,11 @@ button:active, [role="button"]:active {
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+
+/* Work session tab strip — horizontal scroll uses app-wide thin scrollbars (see ::-webkit-scrollbar). */
+.ade-work-tab-strip-scroll {
+  overscroll-behavior-x: contain;
 }
 
 /* Session tile shell — very subtle so content stays primary */

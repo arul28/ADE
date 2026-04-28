@@ -255,7 +255,7 @@ function RoundIndicator({ current, max }: { current: number; max: number }) {
                 borderRadius: 999,
                 background: dotColor,
                 border: isCurrent ? `1.5px solid ${COLORS.accent}` : "none",
-                boxShadow: isCurrent ? `0 0 6px ${COLORS.accent}50` : "none",
+                boxShadow: isCurrent ? `0 0 6px color-mix(in srgb, var(--color-accent) 50%, transparent)` : "none",
                 transition: "all 0.3s ease",
                 animation: isCurrent ? "convergeDotStep 1.8s ease-in-out infinite" : "none",
               }}
@@ -481,7 +481,7 @@ function IssueRow({
             gap: 4,
             padding: "2px 7px",
             borderRadius: 4,
-            background: `${COLORS.accent}14`,
+            background: "color-mix(in srgb, var(--color-accent) 14%, transparent)",
             color: COLORS.accent,
             fontFamily: MONO_FONT,
             fontSize: 9,
@@ -769,8 +769,8 @@ function WaitingIndicator({
       <div
         style={{
           ...bannerBase,
-          background: `${COLORS.accent}0A`,
-          borderTop: `1px solid ${COLORS.accent}30`,
+          background: "color-mix(in srgb, var(--color-accent) 4%, transparent)",
+          borderTop: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
           color: COLORS.accent,
         }}
       >
@@ -790,7 +790,7 @@ function WaitingIndicator({
               ...stopLink,
               color: COLORS.accent,
               textDecoration: "none",
-              border: `1px solid ${COLORS.accent}30`,
+              border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
               padding: "4px 10px",
               borderRadius: 6,
               fontFamily: SANS_FONT,
@@ -1093,7 +1093,7 @@ export function PrConvergencePanel({
   if (terminalState) {
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%", background: COLORS.pageBg, overflow: "auto", padding: 16, gap: 12 }}>
-        <div style={{ border: `1px solid ${terminalState === "merged" ? `${COLORS.success}35` : COLORS.border}`, background: terminalState === "merged" ? `${COLORS.success}08` : "rgba(255,255,255,0.02)", padding: 16, borderRadius: 10 }}>
+        <div style={{ border: `1px solid ${terminalState === "merged" ? "color-mix(in srgb, var(--color-success) 35%, transparent)" : COLORS.border}`, background: terminalState === "merged" ? "color-mix(in srgb, var(--color-success) 8%, transparent)" : "rgba(255,255,255,0.02)", padding: 16, borderRadius: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <CheckCircle size={18} weight="fill" style={{ color: terminalState === "merged" ? COLORS.success : COLORS.textMuted }} />
             <div>
@@ -1638,8 +1638,8 @@ export function PrConvergencePanel({
               fontSize: 9,
               fontWeight: 700,
               color: COLORS.accent,
-              background: `${COLORS.accent}14`,
-              border: `1px solid ${COLORS.accent}30`,
+              background: "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
               borderRadius: 4,
               padding: "3px 7px",
               textTransform: "uppercase",
@@ -1676,7 +1676,7 @@ export function PrConvergencePanel({
                 padding: "0 12px",
                 borderRadius: 8,
                 color: COLORS.accent,
-                borderColor: `${COLORS.accent}30`,
+                borderColor: "color-mix(in srgb, var(--color-accent) 30%, transparent)",
               })}
             >
               <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>View Session →</span>
@@ -1691,7 +1691,7 @@ export function PrConvergencePanel({
               padding: "0 12px",
               borderRadius: 8,
               color: COLORS.info,
-              borderColor: `${COLORS.info}30`,
+              borderColor: "color-mix(in srgb, var(--color-info) 30%, transparent)",
               opacity: busy ? 0.45 : 1,
             })}
           >

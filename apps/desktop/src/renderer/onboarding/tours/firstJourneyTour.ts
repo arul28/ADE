@@ -639,17 +639,6 @@ const act8Intro: TourStep = {
   docUrl: docs.projectHome,
 };
 
-const act8LaneSelector: TourStep = {
-  id: "act8.laneSelector",
-  target: '[data-tour="run.laneSelector"]',
-  title: "Pick a lane to run",
-  body: "Commands are scoped to a lane's worktree. Switch lanes here — the command list reflects whichever lane is active.",
-  placement: "bottom",
-  requires: LANE_EXISTS_REQUIRES,
-  waitForSelector: '[data-tour="run.laneSelector"]',
-  docUrl: docs.projectHome,
-};
-
 const act8AddCommand: TourStep = {
   id: "act8.addCommand",
   target: '[data-tour="run.addCommand"]',
@@ -667,12 +656,12 @@ const act8AddCommand: TourStep = {
 
 const act8ProcessMonitor: TourStep = {
   id: "act8.processMonitor",
-  target: '[data-tour="run.processMonitor"]',
+  target: '[data-tour="run.commandCards"]',
   title: "Watch what's running",
-  body: "Live process monitor per lane — CPU, memory, uptime. Click to drill into logs.",
+  body: "Each saved command card shows **status**, **lane**, **uptime**, and **when it ended** in the runtime strip at the bottom — plus force-stop while a run is active.",
   placement: "top",
   requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="run.processMonitor"]',
+  waitForSelector: '[data-tour="run.commandCards"]',
   docUrl: docs.projectHome,
 };
 

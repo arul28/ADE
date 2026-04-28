@@ -189,6 +189,30 @@ export function createFileWatcherService() {
     }
   };
 
+  const stopAllForWorkspace = (workspaceId: string): number => {
+    const toRemove: string[] = [];
+    for (const [key, sub] of subscriptions) {
+      if (sub.workspaceId !== workspaceId) continue;
+      clearPendingClose(key);
+      clearPending(key);
+      closeWatcher(sub);
+      toRemove.push(key);
+    }
+    for (const key of toRemove) {
+      subscriptions.delete(key);
+    }
+    return toRemove.length;
+  };
+
+  const countActiveForWorkspace = (workspaceId: string): number => {
+    let count = 0;
+    for (const sub of subscriptions.values()) {
+      if (sub.workspaceId !== workspaceId) continue;
+      if (sub.watcher) count += 1;
+    }
+    return count;
+  };
+
   const emitDebounced = (subKey: string, fileKey: string, emit: () => void) => {
     let queue = pendingBySub.get(subKey);
     if (!queue) {
@@ -248,6 +272,10 @@ export function createFileWatcherService() {
     stop,
 
     stopAllForSender,
+
+    stopAllForWorkspace,
+
+    countActiveForWorkspace,
 
     disposeAll(): void {
       for (const key of pendingCloseBySub.keys()) {

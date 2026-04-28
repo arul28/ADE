@@ -876,6 +876,10 @@ beforeEach(() => {
   // Ensure .ade directories exist
   fs.mkdirSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions"), { recursive: true });
   fs.mkdirSync(path.join(tmpRoot, ".ade", "transcripts", "chat"), { recursive: true });
+  // Pin os.homedir() to tmpRoot so user-scope slash command discovery
+  // (~/.claude/commands, ~/.codex/prompts) doesn't leak the developer's real
+  // home dir into tests.
+  vi.spyOn(os, "homedir").mockReturnValue(tmpRoot);
   mockState.sessions.clear();
   mockState.uuidCounter = 0;
   mockState.codexThreadCounter = 0;

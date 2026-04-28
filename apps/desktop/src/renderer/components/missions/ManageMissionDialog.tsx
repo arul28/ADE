@@ -167,7 +167,7 @@ export function ManageMissionDialog() {
                     : "This mission is currently active. You can pause, resume, or cancel the current run from here."}
                 </div>
               )}
-              {manageMissionError ? <div className="p-3 text-[11px]" style={{ background: `${COLORS.danger}10`, border: `1px solid ${COLORS.danger}35`, color: COLORS.danger }}>{manageMissionError}</div> : null}
+              {manageMissionError ? <div className="p-3 text-[11px]" style={{ background: "color-mix(in srgb, var(--color-error) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 35%, transparent)", color: COLORS.danger }}>{manageMissionError}</div> : null}
             </div>
             <div className="mt-4 flex items-center justify-end gap-2">
               <button type="button" style={outlineButton()} onClick={() => closeDialog(false)} disabled={manageMissionBusy}>CLOSE</button>

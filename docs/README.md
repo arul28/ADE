@@ -28,6 +28,7 @@ new-docs/
     ├── cto/                               # CTO agent: identity, pipeline, workers, Linear
     ├── files-and-editor/                  # watcher, editor, Monaco, search
     ├── history/                           # operations timeline, transcripts, export
+    ├── ios-simulator/                     # chat-side iOS Simulator drawer + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── linear-integration/                # dispatch, sync, workflow presets
     ├── memory/                            # storage, compaction, embeddings

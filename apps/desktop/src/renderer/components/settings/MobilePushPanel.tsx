@@ -415,8 +415,8 @@ export function MobilePushPanel() {
   // ───────────────── Styles ─────────────────
 
   const noticeStyle: CSSProperties = {
-    background: `${COLORS.success}12`,
-    border: `1px solid ${COLORS.success}30`,
+    background: "color-mix(in srgb, var(--color-success) 12%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)",
     padding: "8px 12px",
     fontSize: 11,
     fontFamily: MONO_FONT,
@@ -424,8 +424,8 @@ export function MobilePushPanel() {
     borderRadius: 6,
   };
   const errorStyle: CSSProperties = {
-    background: `${COLORS.danger}12`,
-    border: `1px solid ${COLORS.danger}30`,
+    background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
     padding: "8px 12px",
     fontSize: 11,
     fontFamily: MONO_FONT,
@@ -450,7 +450,7 @@ export function MobilePushPanel() {
     padding: "18px 14px",
     border: `1.5px dashed ${dragging ? COLORS.accent : COLORS.border}`,
     borderRadius: 10,
-    background: dragging ? `${COLORS.accent}12` : COLORS.recessedBg,
+    background: dragging ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : COLORS.recessedBg,
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
@@ -494,7 +494,7 @@ export function MobilePushPanel() {
       {/* Header card — status + quick-config */}
       <div
         style={cardStyle({
-          borderColor: isConfigured ? `${COLORS.success}30` : status.keyStored ? `${COLORS.warning}30` : undefined,
+          borderColor: isConfigured ? "color-mix(in srgb, var(--color-success) 30%, transparent)" : status.keyStored ? "color-mix(in srgb, var(--color-warning) 30%, transparent)" : undefined,
         })}
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>

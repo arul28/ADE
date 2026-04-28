@@ -4,6 +4,7 @@ struct ADEInspectablePayload: Equatable {
   let componentId: String
   let file: String
   let line: Int
+  let key: String?
   let metadata: [String: String]
 }
 
@@ -84,7 +85,8 @@ private func adeInspectorElementId(payload: ADEInspectablePayload) -> String {
     .sorted { $0.key < $1.key }
     .map { "\($0.key)=\($0.value)" }
     .joined(separator: "&")
-  return "\(payload.componentId)|\(payload.file)|\(payload.line)|\(metadata)"
+  let keySegment = payload.key.map { "|key=\($0)" } ?? ""
+  return "\(payload.componentId)|\(payload.file)|\(payload.line)\(keySegment)|\(metadata)"
 }
 
 private struct ADEInspectorSnapshotEmitter: View {
@@ -93,11 +95,17 @@ private struct ADEInspectorSnapshotEmitter: View {
   let items: [ADEInspectableAnchor]
   let proxy: GeometryProxy
 
+  private static let minPointArea: CGFloat = 16
+  private static let minPointEdge: CGFloat = 4
+
   private var snapshot: ADEInspectorSnapshot {
     let scale = Double(displayScale)
+    let screenBounds = CGRect(origin: .zero, size: proxy.size)
     let elements = items.compactMap { item -> ADEInspectorElementSnapshot? in
       let frame = proxy[item.bounds]
-      guard frame.width > 0, frame.height > 0 else { return nil }
+      guard frame.width >= Self.minPointEdge, frame.height >= Self.minPointEdge else { return nil }
+      guard frame.width * frame.height >= Self.minPointArea else { return nil }
+      guard screenBounds.intersects(frame) else { return nil }
       let pointFrame = ADEInspectorFrameSnapshot(
         x: Double(frame.minX),
         y: Double(frame.minY),
@@ -195,19 +203,27 @@ private struct ADEInspectableModifier: ViewModifier {
 extension View {
   func adeInspectable(
     _ componentId: String,
+    key: String? = nil,
     file: String = #fileID,
     line: Int = #line,
     metadata: [String: String] = [:]
   ) -> some View {
 #if DEBUG
-    modifier(ADEInspectableModifier(payload: ADEInspectablePayload(
+    let resolvedMetadata: [String: String] = {
+      guard let key, metadata["key"] == nil else { return metadata }
+      var merged = metadata
+      merged["key"] = key
+      return merged
+    }()
+    return modifier(ADEInspectableModifier(payload: ADEInspectablePayload(
       componentId: componentId,
       file: file,
       line: line,
-      metadata: metadata
+      key: key,
+      metadata: resolvedMetadata
     )))
 #else
-    self
+    return self
 #endif
   }
 

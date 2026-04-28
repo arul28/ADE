@@ -21,7 +21,7 @@ registry / ADE CLI integration that all three share.
 | `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker adapter configs: Claude-local, Codex-local, OpenClaw webhook, raw process. |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only tools (spawnChat, mission control, worker management, Linear dispatch). |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools (Claude Code, Codex, Cursor, Aider, Continue) on PATH. |
-| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. |
+| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family — see [iOS Simulator feature](../ios-simulator/README.md). |
 | `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC: registers actions, handles JSON-RPC, applies session-identity-based filtering. |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. Owns the install-target path resolution and the optional shell-rc PATH append. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance for finding and using `ade` (env var fallback chain + "try `ade doctor` before declaring blocked"). |

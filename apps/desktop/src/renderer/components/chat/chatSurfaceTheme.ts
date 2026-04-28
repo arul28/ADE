@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import type { ChatChromeTint } from "../../state/appStore";
 import type { ChatSurfaceChipTone, ChatSurfaceMode } from "../../../shared/types";
 
 export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
@@ -72,16 +73,25 @@ export function resolveChatSurfaceAccent(mode: ChatSurfaceMode, accentColor?: st
   return trimmed?.length ? normalizeHex(trimmed) : CHAT_SURFACE_ACCENTS[mode];
 }
 
-export function chatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | null): CSSProperties {
-  const accent = resolveChatSurfaceAccent(mode, accentColor);
+/** Gray zinc accent — no per-runtime provider tint in chrome or bubbles. */
+const NEUTRAL_CHROME_ACCENT = "#52525b";
+
+function buildAccentPalette(accent: string, m: number): CSSProperties {
+  const a = (alpha: number) => Math.min(1, alpha * m);
+  return {
+    ["--chat-accent-soft" as string]: colorToRgba(accent, a(0.14)),
+    ["--chat-accent-faint" as string]: colorToRgba(accent, a(0.08)),
+    ["--chat-accent-glow" as string]: colorToRgba(accent, a(0.28)),
+    ["--chat-liquid-highlight" as string]: colorToRgba(accent, a(0.18)),
+    ["--chat-liquid-sheen" as string]: colorToRgba(accent, a(0.12)),
+    ["--chat-liquid-shadow" as string]: colorToRgba(accent, a(0.16)),
+  };
+}
+
+function sharedSurfaceTokens(accent: string, m: number): CSSProperties {
   return {
     ["--chat-accent" as string]: accent,
-    ["--chat-accent-soft" as string]: colorToRgba(accent, 0.14),
-    ["--chat-accent-faint" as string]: colorToRgba(accent, 0.08),
-    ["--chat-accent-glow" as string]: colorToRgba(accent, 0.28),
-    ["--chat-liquid-highlight" as string]: colorToRgba(accent, 0.18),
-    ["--chat-liquid-sheen" as string]: colorToRgba(accent, 0.12),
-    ["--chat-liquid-shadow" as string]: colorToRgba(accent, 0.16),
+    ...buildAccentPalette(accent, m),
     ["--chat-surface-bg" as string]: "color-mix(in srgb, var(--color-card) 80%, var(--color-bg) 20%)",
     ["--chat-surface-raised" as string]: "color-mix(in srgb, var(--color-card) 88%, var(--color-bg) 12%)",
     ["--chat-panel-bg" as string]: "color-mix(in srgb, var(--color-surface-raised) 78%, var(--color-card) 22%)",
@@ -97,6 +107,42 @@ export function chatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | nu
     ["--chat-notice-bg" as string]: "color-mix(in srgb, var(--color-surface-recessed) 84%, var(--color-card) 16%)",
     ["--chat-notice-border" as string]: "color-mix(in srgb, var(--color-border) 78%, transparent)",
   };
+}
+
+/** Provider-colored chrome (default) — former “standard” lane accent strength. */
+function coloredChatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | null): CSSProperties {
+  const accent = resolveChatSurfaceAccent(mode, accentColor);
+  const m = 1;
+  return {
+    ["--chat-lane-rail-width" as string]: "3px",
+    ["--chat-lane-rail-opacity" as string]: "0.52",
+    ["--chat-user-border-accent-mix" as string]: "28%",
+    ["--chat-user-shadow-accent-mix" as string]: "34%",
+    ...sharedSurfaceTokens(accent, m),
+  };
+}
+
+/** Monochrome chat — no side rail, gray accent token, reduced glow (Slack-style base). */
+function neutralChatSurfaceVars(): CSSProperties {
+  const accent = NEUTRAL_CHROME_ACCENT;
+  const m = 0.85;
+  return {
+    ["--chat-lane-rail-width" as string]: "0px",
+    ["--chat-lane-rail-opacity" as string]: "0",
+    ["--chat-user-border-accent-mix" as string]: "20%",
+    ["--chat-user-shadow-accent-mix" as string]: "24%",
+    ...sharedSurfaceTokens(accent, m),
+  };
+}
+
+export function chatSurfaceVars(
+  mode: ChatSurfaceMode,
+  accentColor?: string | null,
+  options?: { chromeTint?: ChatChromeTint },
+): CSSProperties {
+  const tint = options?.chromeTint ?? "colored";
+  if (tint === "neutral") return neutralChatSurfaceVars();
+  return coloredChatSurfaceVars(mode, accentColor);
 }
 
 export function chatChipToneClass(tone: ChatSurfaceChipTone = "accent"): string {

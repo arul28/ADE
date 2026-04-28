@@ -2324,3 +2324,158 @@ describe("laneService updateAppearance color uniqueness", () => {
     expect(child?.icon).toBe("star");
   });
 });
+
+describe("laneService delete teardown + cancellation + streaming", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  function makeFakeServices() {
+    const calls: string[] = [];
+    const processService = {
+      listRuntime: vi.fn(() => [
+        { status: "running", processId: "vite", laneId: "lane-target", runId: "r1" } as any,
+      ]),
+      stopAll: vi.fn(async () => {
+        calls.push("stop_processes");
+      }),
+    };
+    const ptyService = {
+      countActiveForLane: vi.fn(() => 2),
+      disposeForLane: vi.fn(() => {
+        calls.push("stop_ptys");
+        return 2;
+      }),
+    };
+    const fileWatcherService = {
+      countActiveForWorkspace: vi.fn(() => 1),
+      stopAllForWorkspace: vi.fn(() => {
+        calls.push("stop_watchers");
+        return 1;
+      }),
+    };
+    const autoRebaseService = {
+      cancelForLane: vi.fn(() => {
+        calls.push("cancel_auto_rebase");
+      }),
+    };
+    const rebaseSuggestionService = {
+      dismiss: vi.fn(async () => {
+        // already counted by cancel_auto_rebase step; do not duplicate
+      }),
+    };
+    return { calls, processService, ptyService, fileWatcherService, autoRebaseService, rebaseSuggestionService };
+  }
+
+  async function setupWithLane(opts: { teardown: ReturnType<typeof makeFakeServices>; events: any[]; createWorktree?: boolean }) {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-delete-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = "proj-delete";
+    await seedProjectAndStack(db, { projectId, repoRoot });
+    // Materialize the lane-child worktree dir so the delete flow exercises git_worktree_remove.
+    const childPath = path.join(repoRoot, "child");
+    if (opts.createWorktree !== false) fs.mkdirSync(childPath, { recursive: true });
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId,
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+      onDeleteEvent: (event) => opts.events.push(event),
+      teardownDeps: {
+        processService: opts.teardown.processService,
+        ptyService: opts.teardown.ptyService,
+        fileWatcherService: opts.teardown.fileWatcherService,
+        autoRebaseService: opts.teardown.autoRebaseService,
+        rebaseSuggestionService: opts.teardown.rebaseSuggestionService,
+      },
+    });
+    // First call (lane-child) has no children rows after the seed; we delete lane-child.
+    return { db, service, repoRoot };
+  }
+
+  it("runs teardown steps before git_worktree_remove and broadcasts per-step progress", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service } = await setupWithLane({ teardown: fake, events });
+    // git status: clean. git_worktree_remove: succeeds. branch ref check: not found (skip branch delete).
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
+      if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" } as any;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "remove") {
+        fake.calls.push("git_worktree_remove");
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    // Teardown happens before the git destructive step.
+    const wtIdx = fake.calls.indexOf("git_worktree_remove");
+    expect(fake.calls.indexOf("stop_processes")).toBeLessThan(wtIdx);
+    expect(fake.calls.indexOf("stop_ptys")).toBeLessThan(wtIdx);
+    expect(fake.calls.indexOf("stop_watchers")).toBeLessThan(wtIdx);
+    expect(fake.calls.indexOf("cancel_auto_rebase")).toBeLessThan(wtIdx);
+
+    // Final event reports overall completion.
+    const last = events[events.length - 1];
+    expect(last.type).toBe("lane-delete");
+    expect(last.progress.overallStatus).toBe("completed");
+    // git_worktree_remove step reached.
+    const wtStep = last.progress.steps.find((s: any) => s.name === "git_worktree_remove");
+    expect(wtStep?.status).toBe("completed");
+  });
+
+  it("honors cancelDelete before git_worktree_remove and skips destructive steps", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    // Make stop_processes slow so cancelDelete races in before the worktree remove.
+    fake.processService.stopAll.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    const { service } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    vi.mocked(runGitOrThrow).mockImplementation(async () => {
+      fake.calls.push("git_worktree_remove");
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+
+    const deletePromise = service.delete({ laneId: "lane-child", deleteBranch: false });
+    // Cancel during the slow stop_processes step.
+    await new Promise((r) => setTimeout(r, 5));
+    const cancelResult = service.cancelDelete("lane-child");
+    expect(cancelResult.cancelled).toBe(true);
+    await deletePromise;
+
+    const last = events[events.length - 1];
+    expect(last.progress.overallStatus).toBe("cancelled");
+    expect(fake.calls).not.toContain("git_worktree_remove");
+  });
+
+  it("getDeleteRisk reports running processes, ptys, watchers, and unpushed commits", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service } = await setupWithLane({ teardown: fake, events });
+    // 3 unpushed commits + remote branch exists.
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
+      if (args[0] === "rev-list") return { exitCode: 0, stdout: "3", stderr: "" } as any;
+      if (args[0] === "ls-remote") return { exitCode: 0, stdout: "abc123\trefs/heads/feature/child", stderr: "" } as any;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+
+    const risk = await service.getDeleteRisk("lane-child");
+    expect(risk.runningProcessCount).toBe(1);
+    expect(risk.activePtyCount).toBe(2);
+    expect(risk.activeWatcherCount).toBe(1);
+    expect(risk.hasUnpushedCommits).toBe(true);
+    expect(risk.unpushedCommitCount).toBe(3);
+    expect(risk.remoteBranchExists).toBe(true);
+  });
+});

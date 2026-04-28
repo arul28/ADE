@@ -173,7 +173,7 @@ export function MissionPromptInput({
                 type="button"
                 className="flex items-center gap-2 w-full px-3 py-1.5 text-left"
                 style={{
-                  background: i === selectedSlashIndex ? `${COLORS.accent}18` : "transparent",
+                  background: i === selectedSlashIndex ? "color-mix(in srgb, var(--color-accent) 18%, transparent)" : "transparent",
                   border: "none",
                   cursor: "pointer",
                 }}
@@ -250,8 +250,8 @@ export function MissionPromptInput({
                 key={i}
                 className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px]"
                 style={{
-                  background: `${COLORS.accent}18`,
-                  border: `1px solid ${COLORS.accent}30`,
+                  background: "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
                   color: COLORS.accent,
                   fontFamily: MONO_FONT,
                 }}

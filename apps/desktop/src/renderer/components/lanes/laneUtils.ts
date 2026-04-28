@@ -136,50 +136,27 @@ export function chipLabel(kind: ConflictChip["kind"]): string {
 
 /* ---- Default tiling layouts ---- */
 
+/** Work + Git only — stack graph lives in the lanes header; file/commit diffs render inside Git Actions. */
 export const LANES_TILING_TREE: PaneSplit = {
   type: "split",
   direction: "horizontal",
   children: [
-    {
-      node: {
-        type: "split",
-        direction: "vertical",
-        children: [
-          { node: { type: "pane", id: "stack" }, defaultSize: 50, minSize: 15 },
-          { node: { type: "pane", id: "diff-viewer" }, defaultSize: 50, minSize: 15 }
-        ]
-      },
-      defaultSize: 15,
-      minSize: 10
-    },
-    { node: { type: "pane", id: "work" }, defaultSize: 30, minSize: 18 },
-    { node: { type: "pane", id: "git-actions" }, defaultSize: 55, minSize: 28 }
+    { node: { type: "pane", id: "work" }, defaultSize: 38, minSize: 22 },
+    { node: { type: "pane", id: "git-actions" }, defaultSize: 62, minSize: 28 }
   ]
 };
 
-/** Emphasize the Work pane after parallel multi-model launches (stack + diff + git smaller). */
+/** Emphasize the Work pane (wider work column, narrower git). */
 export const LANES_TILING_WORK_FOCUS_TREE: PaneSplit = {
   type: "split",
   direction: "horizontal",
   children: [
-    {
-      node: {
-        type: "split",
-        direction: "vertical",
-        children: [
-          { node: { type: "pane", id: "stack" }, defaultSize: 50, minSize: 12 },
-          { node: { type: "pane", id: "diff-viewer" }, defaultSize: 50, minSize: 12 }
-        ]
-      },
-      defaultSize: 12,
-      minSize: 8
-    },
-    { node: { type: "pane", id: "work" }, defaultSize: 58, minSize: 32 },
-    { node: { type: "pane", id: "git-actions" }, defaultSize: 30, minSize: 14 }
+    { node: { type: "pane", id: "work" }, defaultSize: 62, minSize: 35 },
+    { node: { type: "pane", id: "git-actions" }, defaultSize: 38, minSize: 18 }
   ]
 };
 
-export const LANES_TILING_LAYOUT_VERSION = "v6";
+export const LANES_TILING_LAYOUT_VERSION = "v8";
 
 export const GIT_ACTIONS_FULLSCREEN_TREE: PaneSplit = {
   type: "split",

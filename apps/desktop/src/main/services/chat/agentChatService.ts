@@ -125,7 +125,6 @@ import type {
   PendingInputSource,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
-  ThinkingLevel,
   TerminalSessionStatus,
   TerminalToolType,
   CtoCapabilityMode,
@@ -226,7 +225,7 @@ import {
 import { readCursorAcpConfigSnapshot } from "./cursorAcpConfigState";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
-import type { MemoryWriteEvent, TurnMemoryPolicyState } from "../ai/tools/memoryTools";
+import type { TurnMemoryPolicyState } from "../ai/tools/memoryTools";
 
 type JsonRpcEnvelope = {
   jsonrpc?: string;
@@ -1839,19 +1838,6 @@ function fallbackModelForProvider(provider: AgentChatProvider): string {
   if (provider === "cursor") return DEFAULT_CURSOR_MODEL;
   if (provider === "droid") return DEFAULT_DROID_MODEL;
   return DEFAULT_OPENCODE_MODEL_ID;
-}
-
-function readProviderParentItemId(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
-  const claudeMeta = record["claude-code"];
-  if (claudeMeta && typeof claudeMeta === "object") {
-    const parentToolCallId = (claudeMeta as Record<string, unknown>).parentToolCallId;
-    if (typeof parentToolCallId === "string" && parentToolCallId.trim().length) {
-      return parentToolCallId.trim();
-    }
-  }
-  return undefined;
 }
 
 function normalizeClaudeTodoItems(
@@ -3542,31 +3528,6 @@ export function createAgentChatService(args: {
     return { message, detail };
   };
 
-  const buildMemoryWriteNotice = (event: MemoryWriteEvent): {
-    message: string;
-    detail?: string;
-  } => {
-    if (!event.saved) {
-      return {
-        message: `Skipped memory write: ${event.reason ?? "write rejected"}`,
-      };
-    }
-
-    const detail = [
-      `Durability: ${event.durability}`,
-      ...(typeof event.tier === "number" ? [`Tier: ${event.tier}`] : []),
-      ...(event.deduped ? ["Merged with existing memory."] : []),
-      ...(event.mergedIntoId ? [`Merged into: ${event.mergedIntoId}`] : []),
-      ...(event.reason ? [`Reason: ${event.reason}`] : []),
-    ].join("\n");
-
-    const message = event.durability === "candidate"
-      ? "Saved to memory as candidate, not promoted"
-      : "Saved to memory as promoted knowledge";
-
-    return { message, detail };
-  };
-
   const buildAutoMemoryTurnPlan = async (
     managed: ManagedChatSession,
     promptText: string,
@@ -3661,7 +3622,7 @@ export function createAgentChatService(args: {
 
   const claudeToolNeedsApproval = (
     toolName: string,
-    input: Record<string, unknown>,
+    _input: Record<string, unknown>,
     permissionMode: string,
   ): boolean => {
     const normalized = normalizeToolNameForApproval(toolName);
@@ -6110,17 +6071,6 @@ export function createAgentChatService(args: {
     return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
   };
 
-  const applyCompletionReport = (
-    managed: ManagedChatSession,
-    report: AgentChatCompletionReport,
-  ): void => {
-    managed.session.completion = report;
-    if (report.summary.trim().length > 0) {
-      setSessionPreview(managed, report.summary);
-    }
-    persistChatState(managed);
-  };
-
   const appendWorkerActivityToCto = (managed: ManagedChatSession, input: {
     activityType: "chat_turn" | "worker_run";
     summary: string;
@@ -6478,132 +6428,6 @@ export function createAgentChatService(args: {
     }
 
     return normalized;
-  };
-
-  const requestExecutionLaneForIdentitySession = async (
-    managed: ManagedChatSession,
-    args: {
-      requestedLaneId?: string | null;
-      purpose: string;
-      freshLaneName?: string | null;
-      freshLaneDescription?: string | null;
-    },
-  ): Promise<string> => {
-    const explicitLaneId = typeof args.requestedLaneId === "string" ? args.requestedLaneId.trim() : "";
-    if (!usesIdentityContinuity(managed) || managed.session.surface === "automation") {
-      return explicitLaneId || managed.preferredExecutionLaneId || managed.selectedExecutionLaneId || managed.session.laneId;
-    }
-    if (managed.preferredExecutionLaneId) {
-      return managed.preferredExecutionLaneId;
-    }
-
-    const primaryLaneId = await resolvePrimaryIdentityLane();
-    const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
-    const selectedLaneId = explicitLaneId || managed.selectedExecutionLaneId || primaryLaneId;
-    const previousExecutionLaneId = resolveManagedExecutionLaneId(managed);
-    const primaryLane = lanes.find((lane) => lane.id === primaryLaneId) ?? null;
-    const selectedLane = lanes.find((lane) => lane.id === selectedLaneId) ?? null;
-    const itemId = randomUUID();
-    const request: PendingInputRequest = {
-      requestId: itemId,
-      itemId,
-      source: "ade",
-      kind: "structured_question",
-      title: "Choose execution lane",
-      description: `Choose where ADE should launch implementation work for ${args.purpose}.`,
-      questions: [{
-        id: "lane_choice",
-        header: "Execution lane",
-        question: "Where should ADE launch the implementation work?",
-        options: [
-          {
-            label: "Primary",
-            value: "primary",
-            description: primaryLane
-              ? `Keep work on the canonical primary lane (${primaryLane.name}).`
-              : "Keep work on the canonical primary lane.",
-            recommended: true,
-          },
-          {
-            label: "Selected",
-            value: "selected",
-            description: selectedLane && selectedLane.id !== primaryLaneId
-              ? `Use the lane currently selected in the UI (${selectedLane.name}).`
-              : "Use the lane currently selected in the UI. If none is selected, ADE will fall back to primary.",
-          },
-          {
-            label: "Fresh lane",
-            value: "fresh_lane",
-            description: "Create a dedicated implementation lane for this task before launching work.",
-          },
-        ],
-        allowsFreeform: false,
-      }],
-      allowsFreeform: false,
-      blocking: true,
-      canProceedWithoutAnswer: false,
-      providerMetadata: {
-        promptKind: "execution_lane_choice",
-        purpose: args.purpose,
-        selectedLaneId: selectedLaneId || null,
-        primaryLaneId,
-      },
-    };
-
-    const response = await new Promise<{
-      decision?: AgentChatApprovalDecision;
-      answers?: Record<string, string | string[]>;
-      responseText?: string | null;
-    }>((resolve) => {
-      managed.localPendingInputs.set(itemId, { request, resolve });
-      emitPendingInputRequest(managed, request, {
-        kind: "tool_call",
-        description: request.description ?? "Choose where to launch implementation work.",
-        detail: request.providerMetadata as Record<string, unknown>,
-      });
-      persistChatState(managed);
-    });
-
-    const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
-    const selection = normalizedAnswers.lane_choice?.[0] ?? "";
-    if (response.decision === "cancel" || response.decision === "decline" || !selection.length) {
-      emitChatEvent(managed, {
-        type: "tool_result",
-        tool: "choose_execution_lane",
-        result: { success: false, reason: "cancelled" },
-        itemId,
-        status: "failed",
-      });
-      throw new Error("Execution lane selection is required before launching implementation work.");
-    }
-
-    let resolvedLaneId = primaryLaneId;
-    if (selection === "selected") {
-      resolvedLaneId = selectedLaneId || primaryLaneId;
-    } else if (selection === "fresh_lane") {
-      const createdLane = await laneService.create({
-        name: (args.freshLaneName?.trim() || args.purpose).slice(0, 72),
-        description: args.freshLaneDescription?.trim()
-          || `Implementation lane launched from ${managed.session.identityKey === "cto" ? "CTO" : "employee"} chat.`,
-        parentLaneId: primaryLaneId,
-      });
-      resolvedLaneId = createdLane.id;
-    }
-
-    managed.preferredExecutionLaneId = resolvedLaneId;
-    managed.selectedExecutionLaneId = selectedLaneId || managed.selectedExecutionLaneId;
-    if (resolvedLaneId !== previousExecutionLaneId) {
-      await refreshHeadShaStartForManagedExecutionLane(managed);
-    }
-    emitChatEvent(managed, {
-      type: "tool_result",
-      tool: "choose_execution_lane",
-      result: { success: true, selection, laneId: resolvedLaneId },
-      itemId,
-      status: "completed",
-    });
-    persistChatState(managed);
-    return resolvedLaneId;
   };
 
   const setOpenCodeRuntimeBusy = (runtime: OpenCodeRuntime, busy: boolean): void => {
@@ -7300,21 +7124,6 @@ export function createAgentChatService(args: {
 
   // ── Helpers for OpenCode turn logic ──
 
-  const mapReasoningEffortToThinking = (effort: string | null | undefined): ThinkingLevel | null => {
-    if (!effort) return null;
-    const map: Record<string, ThinkingLevel> = {
-      none: "none",
-      minimal: "minimal",
-      low: "low",
-      medium: "medium",
-      high: "high",
-      max: "max",
-      xhigh: "xhigh",
-      extra_high: "max",
-    };
-    return map[effort] ?? null;
-  };
-
   const classifyOpenCodeError = (
     error: unknown,
     providerFamily: string,
@@ -7442,7 +7251,6 @@ export function createAgentChatService(args: {
     let reportedInitModel: string | null = null;
     const reportedUsageModels = new Set<string>();
     const turnStartedAt = Date.now();
-    let shouldDeliverQueuedSteer = false;
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedSyntheticItemIds = new Set<string>();
@@ -8530,7 +8338,6 @@ export function createAgentChatService(args: {
       turnId,
     });
 
-    let assistantText = "";
     let usage: {
       inputTokens?: number | null;
       outputTokens?: number | null;
@@ -8559,13 +8366,6 @@ export function createAgentChatService(args: {
         ? null
         : await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
       const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
-      const turnMemoryPolicyState: TurnMemoryPolicyState | undefined = memoryService && projectId
-        ? {
-            classification: autoMemoryPlan?.classification ?? "none",
-            orientationSatisfied: autoMemoryPlan?.telemetry.searched ?? true,
-            explicitSearchPerformed: false,
-          }
-        : undefined;
       if (autoMemoryNotice) {
         emitChatEvent(managed, {
           type: "system_notice",

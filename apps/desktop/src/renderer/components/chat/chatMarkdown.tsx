@@ -1,4 +1,4 @@
-import React, { type ReactNode } from "react";
+import { type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { HighlightedCode } from "./CodeHighlighter";
 import rehypeRaw from "rehype-raw";
@@ -35,7 +35,7 @@ export const SAFE_PREVIEW_SCHEMA = {
   ],
 };
 
-type Tone = "sky" | "amber";
+type Tone = "sky" | "amber" | "neutral";
 
 type Overrides = Partial<Components>;
 
@@ -51,43 +51,56 @@ function extractPlainText(node: ReactNode): string {
 }
 
 function toneAccents(tone: Tone) {
-  return tone === "amber"
-    ? {
-        headerText: "text-amber-300/80",
-        blockquoteBorder: "border-amber-300/25",
-        hr: "border-amber-300/15",
-      }
-    : {
-        headerText: "text-sky-200/85",
-        blockquoteBorder: "border-sky-300/25",
-        hr: "border-sky-300/15",
-      };
+  if (tone === "amber") {
+    return {
+      headerText: "text-amber-300/80",
+      blockquoteBorder: "border-amber-300/25",
+      hr: "border-amber-300/15",
+      link: "text-amber-200/90 underline underline-offset-2 transition-colors hover:text-amber-100",
+    };
+  }
+  if (tone === "neutral") {
+    return {
+      headerText: "text-zinc-200/95",
+      blockquoteBorder: "border-white/18",
+      hr: "border-white/10",
+      link: "text-zinc-200/90 underline underline-offset-2 transition-colors hover:text-white",
+    };
+  }
+  return {
+    headerText: "text-sky-200/85",
+    blockquoteBorder: "border-sky-300/25",
+    hr: "border-sky-300/15",
+    link: "text-sky-300/90 underline underline-offset-2 transition-colors hover:text-sky-200",
+  };
 }
 
 export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overrides = {}): Components {
   const accent = toneAccents(tone);
   return {
-    p: ({ children }) => <p className="mb-3 whitespace-pre-wrap last:mb-0">{children}</p>,
+    p: ({ children }) => (
+      <p className="mb-3 max-w-full whitespace-pre-wrap break-words last:mb-0">{children}</p>
+    ),
     ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
     ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
     li: ({ children }) => <li>{children}</li>,
     h1: ({ children }) => (
-      <h1 className={`mb-2 mt-3 font-mono text-[12px] font-bold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
+      <h1 className={`mb-2 mt-3 font-mono text-[length:calc(var(--chat-font-size)*12/14)] font-bold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
         {children}
       </h1>
     ),
     h2: ({ children }) => (
-      <h2 className={`mb-2 mt-3 font-mono text-[11px] font-bold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
+      <h2 className={`mb-2 mt-3 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-bold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
         {children}
       </h2>
     ),
     h3: ({ children }) => (
-      <h3 className={`mb-2 mt-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
+      <h3 className={`mb-2 mt-3 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
         {children}
       </h3>
     ),
     h4: ({ children }) => (
-      <h4 className={`mb-2 mt-3 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
+      <h4 className={`mb-2 mt-3 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-semibold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
         {children}
       </h4>
     ),
@@ -104,7 +117,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       }
       return (
         <pre
-          className="mb-3 overflow-auto rounded-sm p-3 font-mono text-[11px] leading-5 last:mb-0"
+          className="mb-3 overflow-auto rounded-sm p-3 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-5 last:mb-0"
           style={{
             background: "var(--chat-block-bg)",
             border: "1px solid var(--chat-block-border)",
@@ -120,7 +133,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       }
       return (
         <code
-          className={className ?? "rounded-sm px-1 py-0.5 font-mono text-[11px]"}
+          className={className ?? "rounded-sm px-1 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)]"}
           style={className ? undefined : { background: "var(--chat-inline-code-bg)" }}
         >
           {children}
@@ -135,19 +148,18 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     strong: ({ children }) => <strong className="font-semibold text-fg">{children}</strong>,
     em: ({ children }) => <em className="italic">{children}</em>,
     a: ({ children, href }) => (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-sky-300/90 underline underline-offset-2 transition-colors hover:text-sky-200"
-      >
+      <a href={href} target="_blank" rel="noopener noreferrer" className={accent.link}>
         {children}
       </a>
     ),
-    table: ({ children }) => <table className="mb-3 w-full border-collapse text-left last:mb-0">{children}</table>,
+    table: ({ children }) => (
+      <div className="mb-3 max-w-full overflow-x-auto last:mb-0">
+        <table className="w-full min-w-0 border-collapse text-left">{children}</table>
+      </div>
+    ),
     th: ({ children }) => (
       <th
-        className="px-2 py-1 font-semibold"
+        className="break-words px-2 py-1 font-semibold"
         style={{ border: "1px solid var(--chat-table-border)" }}
       >
         {children}
@@ -155,7 +167,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     ),
     td: ({ children }) => (
       <td
-        className="px-2 py-1 align-top"
+        className="break-words px-2 py-1 align-top"
         style={{ border: "1px solid var(--chat-table-border)" }}
       >
         {children}

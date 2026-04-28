@@ -100,8 +100,8 @@ const featureChip: React.CSSProperties = {
   fontWeight: 500,
   fontFamily: SANS_FONT,
   color: COLORS.textMuted,
-  background: `${COLORS.accent}08`,
-  border: `1px solid ${COLORS.accent}15`,
+  background: "color-mix(in srgb, var(--color-accent) 8%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--color-accent) 15%, transparent)",
   padding: "2px 8px",
   borderRadius: 12,
 };
@@ -281,7 +281,7 @@ function TemplateCard({
   return (
     <div style={{
       ...cardStyle({ padding: "12px 16px", borderRadius: 12 }),
-      ...(isDefault ? { borderColor: `${COLORS.info}40` } : {}),
+      ...(isDefault ? { borderColor: "color-mix(in srgb, var(--color-info) 40%, transparent)" } : {}),
       transition: "border-color 150ms ease",
     }}>
       <div
@@ -312,7 +312,7 @@ function TemplateCard({
             Edit
           </button>
           <button
-            style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6, color: COLORS.danger, borderColor: `${COLORS.danger}30` })}
+            style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6, color: COLORS.danger, borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)" })}
             onClick={(e) => { e.stopPropagation(); if (confirm(`Delete template "${template.name}"?`)) onDelete(); }}
           >
             Delete
@@ -577,7 +577,7 @@ function TemplateEditor({
                   rows={3}
                 />
                 <div style={{ fontSize: 10, color: COLORS.textDim, marginTop: 4 }}>
-                  One command per line, executed in order. Use <code style={{ fontFamily: MONO_FONT, color: COLORS.accent, fontSize: 10, background: `${COLORS.accent}12`, padding: "1px 4px", borderRadius: 3 }}>$PRIMARY_WORKTREE_PATH</code> to reference the main lane's root.
+                  One command per line, executed in order. Use <code style={{ fontFamily: MONO_FONT, color: COLORS.accent, fontSize: 10, background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", padding: "1px 4px", borderRadius: 3 }}>$PRIMARY_WORKTREE_PATH</code> to reference the main lane's root.
                 </div>
               </div>
 

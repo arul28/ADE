@@ -1215,17 +1215,17 @@ function CreateMissionDialogInner({
                     </div>
                   ) : null}
                   {phaseError ? (
-                    <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger }}>
+                    <div className="px-2 py-1 text-[10px]" style={{ background: "color-mix(in srgb, var(--color-error) 15%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", color: COLORS.danger }}>
                       {phaseError}
                     </div>
                   ) : null}
                   {phaseItemsError ? (
-                    <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger }}>
+                    <div className="px-2 py-1 text-[10px]" style={{ background: "color-mix(in srgb, var(--color-error) 15%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", color: COLORS.danger }}>
                       {phaseItemsError}
                     </div>
                   ) : null}
                   {phaseNotice ? (
-                    <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.success}14`, border: `1px solid ${COLORS.success}30`, color: COLORS.success }}>
+                    <div className="px-2 py-1 text-[10px]" style={{ background: "color-mix(in srgb, var(--color-success) 14%, transparent)", border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)", color: COLORS.success }}>
                       {phaseNotice}
                     </div>
                   ) : null}
@@ -1296,7 +1296,7 @@ function CreateMissionDialogInner({
                     })}
                   </div>
                   {phaseValidationErrors.length > 0 ? (
-                    <div className="space-y-1 px-2 py-1.5" style={{ background: `${COLORS.warning}15`, border: `1px solid ${COLORS.warning}30`, color: COLORS.warning }}>
+                    <div className="space-y-1 px-2 py-1.5" style={{ background: "color-mix(in srgb, var(--color-warning) 15%, transparent)", border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)", color: COLORS.warning }}>
                       {phaseValidationErrors.map((entry) => (
                         <div key={entry} className="text-[10px]" style={{ fontFamily: MONO_FONT }}>
                           {entry}
@@ -1509,8 +1509,8 @@ function CreateMissionDialogInner({
                           className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
                           style={{
                             color: preflightCurrent.canLaunch ? COLORS.success : COLORS.warning,
-                            border: `1px solid ${preflightCurrent.canLaunch ? `${COLORS.success}35` : `${COLORS.warning}35`}`,
-                            background: preflightCurrent.canLaunch ? `${COLORS.success}12` : `${COLORS.warning}12`,
+                            border: `1px solid ${preflightCurrent.canLaunch ? "color-mix(in srgb, var(--color-success) 35%, transparent)" : "color-mix(in srgb, var(--color-warning) 35%, transparent)"}`,
+                            background: preflightCurrent.canLaunch ? "color-mix(in srgb, var(--color-success) 12%, transparent)" : "color-mix(in srgb, var(--color-warning) 12%, transparent)",
                             fontFamily: MONO_FONT,
                           }}
                         >

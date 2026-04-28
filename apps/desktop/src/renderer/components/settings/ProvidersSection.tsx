@@ -519,8 +519,8 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
             fontSize: 11,
             fontFamily: MONO_FONT,
             color: COLORS.success,
-            background: `${COLORS.success}12`,
-            border: `1px solid ${COLORS.success}30`,
+            background: "color-mix(in srgb, var(--color-success) 12%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)",
           }}
         >
           {notice}
@@ -534,8 +534,8 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
             fontSize: 11,
             fontFamily: MONO_FONT,
             color: COLORS.danger,
-            background: `${COLORS.danger}12`,
-            border: `1px solid ${COLORS.danger}30`,
+            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
           }}
         >
           {error}
@@ -549,8 +549,8 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
             fontSize: 11,
             fontFamily: MONO_FONT,
             color: COLORS.warning,
-            background: `${COLORS.warning}12`,
-            border: `1px solid ${COLORS.warning}30`,
+            background: "color-mix(in srgb, var(--color-warning) 12%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
           }}
         >
           {apiKeyStoreWarning}
@@ -602,8 +602,12 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                     fontSize: 10,
                     fontFamily: MONO_FONT,
                     color: p.connected ? (p.accent ?? COLORS.success) : COLORS.textDim,
-                    background: p.connected ? `${p.accent ?? COLORS.success}14` : `${COLORS.textDim}10`,
-                    border: `1px solid ${p.connected ? `${p.accent ?? COLORS.success}30` : COLORS.border}`,
+                    background: p.connected
+                      ? `color-mix(in srgb, ${p.accent ?? "var(--color-success)"} 8%, transparent)`
+                      : "color-mix(in srgb, var(--color-muted-fg) 10%, transparent)",
+                    border: p.connected
+                      ? `1px solid color-mix(in srgb, ${p.accent ?? "var(--color-success)"} 19%, transparent)`
+                      : `1px solid ${COLORS.border}`,
                   }}
                 >
                   <span
@@ -652,7 +656,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
             </div>
             <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
             {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
-            {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
+            {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
           </section>
         );
       })()}
@@ -683,7 +687,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
             </div>
             <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
             {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
-            {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
+            {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
           </section>
         );
       })()}
@@ -714,7 +718,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
             </div>
             <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
             {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
-            {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
+            {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
           </section>
         );
       })()}
@@ -791,8 +795,8 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       {/* ── API Provider Keys ── */}
       <div style={{ position: "relative" }}>
         {status?.opencodeBinaryInstalled === false && (
-          <div style={{ position: "absolute", inset: 0, zIndex: 2, background: `${COLORS.pageBg}CC`, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-            <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.warning, background: COLORS.pageBg, padding: "6px 14px", border: `1px solid ${COLORS.warning}40` }}>
+          <div style={{ position: "absolute", inset: 0, zIndex: 2, background: "color-mix(in srgb, var(--color-bg) 80%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+            <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.warning, background: COLORS.pageBg, padding: "6px 14px", border: "1px solid color-mix(in srgb, var(--color-warning) 40%, transparent)" }}>
               Install OpenCode to use API providers
             </span>
           </div>
@@ -868,11 +872,11 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                   ) : keySource ? (
                     <>
                       {verification?.ok ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.success, background: `${COLORS.success}14`, border: `1px solid ${COLORS.success}30` }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 14%, transparent)", border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)" }}>
                           <CheckCircle size={13} weight="fill" /> Verified
                         </span>
                       ) : verification && !verification.ok ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger, background: `${COLORS.danger}14`, border: `1px solid ${COLORS.danger}30`, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={verification.message}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 14%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={verification.message}>
                           <XCircle size={13} weight="fill" /> Failed
                         </span>
                       ) : (
@@ -957,8 +961,8 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       {/* ── Local Model Servers ── */}
       <div style={{ position: "relative" }}>
         {status?.opencodeBinaryInstalled === false && (
-          <div style={{ position: "absolute", inset: 0, zIndex: 2, background: `${COLORS.pageBg}CC`, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-            <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.warning, background: COLORS.pageBg, padding: "6px 14px", border: `1px solid ${COLORS.warning}40` }}>
+          <div style={{ position: "absolute", inset: 0, zIndex: 2, background: "color-mix(in srgb, var(--color-bg) 80%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+            <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.warning, background: COLORS.pageBg, padding: "6px 14px", border: "1px solid color-mix(in srgb, var(--color-warning) 40%, transparent)" }}>
               Install OpenCode to use local models
             </span>
           </div>
@@ -1033,15 +1037,15 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                 <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.55, overflowWrap: "break-word", wordBreak: "break-word" }}>{message}</div>
 
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", padding: "3px 8px", borderRadius: 999, border: `1px solid ${COLORS.border}`, background: `${COLORS.textDim}10`, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", padding: "3px 8px", borderRadius: 999, border: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-muted-fg) 10%, transparent)", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
                     {draft?.enabled === false ? "Disabled" : "Enabled"}
                   </span>
-                  <span style={{ display: "inline-flex", alignItems: "center", padding: "3px 8px", borderRadius: 999, border: `1px solid ${COLORS.border}`, background: `${COLORS.textDim}10`, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", padding: "3px 8px", borderRadius: 999, border: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-muted-fg) 10%, transparent)", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
                     {draft?.autoDetect === false ? "Manual only" : "Auto-detect fallback"}
                   </span>
                 </div>
 
-                <code style={{ display: "block", width: "100%", boxSizing: "border-box", minWidth: 0, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>
+                <code style={{ display: "block", width: "100%", boxSizing: "border-box", minWidth: 0, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>
                   {draft?.endpoint?.trim() || entry.endpoint}
                 </code>
 
@@ -1049,13 +1053,13 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                   {loadedModels.length > 0 ? (
                     <>
                       {loadedModels.map((modelId) => (
-                        <span key={modelId} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, border: `1px solid ${COLORS.border}`, background: `${COLORS.textDim}10`, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textPrimary }} title={modelId}>
+                        <span key={modelId} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, border: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-muted-fg) 10%, transparent)", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textPrimary }} title={modelId}>
                           <Cpu size={11} />
                           {formatLocalModelLabel(modelId)}
                         </span>
                       ))}
                       {extraModelCount > 0 ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, border: `1px solid ${COLORS.border}`, background: `${COLORS.textDim}10`, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 999, border: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-muted-fg) 10%, transparent)", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
                           +{extraModelCount} more
                         </span>
                       ) : null}

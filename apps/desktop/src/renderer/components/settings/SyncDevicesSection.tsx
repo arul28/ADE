@@ -310,7 +310,7 @@ function StatusBar({ connected, peerCount }: { connected: boolean; peerCount: nu
   const dotColor = connected ? COLORS.accent : COLORS.textMuted;
   let label: string;
   if (!connected) {
-    label = "Offline - waiting for phones";
+    label = "offline - no phones connected";
   } else if (peerCount === 1) {
     label = "Connected";
   } else {
@@ -328,7 +328,7 @@ function StatusBar({ connected, peerCount }: { connected: boolean; peerCount: nu
             height: 10,
             borderRadius: 999,
             background: dotColor,
-            boxShadow: connected ? `0 0 8px ${COLORS.accent}55` : undefined,
+            boxShadow: connected ? `0 0 8px color-mix(in srgb, var(--color-accent) 55%, transparent)` : undefined,
           }}
         />
         <span style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 500 }}>

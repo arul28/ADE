@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProcessRuntime, ProcessRuntimeStatus } from "../../../shared/types";
-import { formatProcessStatus, hasInspectableProcessOutput, isActiveProcessStatus } from "./processUtils";
+import { formatEndedAt, formatProcessStatus, hasInspectableProcessOutput, isActiveProcessStatus } from "./processUtils";
 
 const ALL_STATUSES: ProcessRuntimeStatus[] = [
   "stopped",
@@ -118,5 +118,20 @@ describe("formatProcessStatus", () => {
 
   it("handles exit code 0 for crashed status", () => {
     expect(formatProcessStatus({ status: "crashed", lastExitCode: 0 })).toBe("crashed:0");
+  });
+});
+
+describe("formatEndedAt", () => {
+  it("returns em dash for null", () => {
+    expect(formatEndedAt(null)).toBe("—");
+  });
+
+  it("formats a valid ISO timestamp with a fixed locale", () => {
+    const formatted = formatEndedAt("2026-04-28T15:30:00.000Z", "en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "UTC",
+    });
+    expect(formatted).toMatch(/3:30/);
   });
 });

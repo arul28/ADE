@@ -14,7 +14,7 @@ import {
   upsertRecentProject,
   writeGlobalState,
 } from "./services/state/globalState";
-import { createLaneService } from "./services/lanes/laneService";
+import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
@@ -412,7 +412,8 @@ async function createWindow(args: {
     ? "'self' http://localhost:* http://127.0.0.1:*"
     : "'self' file: app:";
   const cspWsSources = isDevMode ? " ws://localhost:* ws://127.0.0.1:*" : "";
-  const cspImageSources = `${cspSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com`;
+  const cspLocalSources = " http://localhost:* http://127.0.0.1:*";
+  const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com`;
   const cspPolicy = [
     `default-src ${cspSources}`,
     `base-uri 'self'`,
@@ -422,7 +423,7 @@ async function createWindow(args: {
     `script-src ${cspSources} 'unsafe-inline'`,
     `style-src ${cspSources} 'unsafe-inline'`,
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
-    `media-src ade-artifact:`,
+    `media-src ${cspSources}${cspLocalSources} ade-artifact: blob: data:`,
     `font-src ${cspSources} data:`,
     `connect-src ${cspSources}${cspWsSources} https:`,
     `worker-src 'self' blob:`,
@@ -1401,6 +1402,7 @@ app.whenReady().then(async () => {
       }
     };
 
+    const laneTeardownDeps: LaneDeleteTeardownDeps = {};
     const laneService = createLaneService({
       db,
       projectRoot,
@@ -1423,6 +1425,8 @@ app.whenReady().then(async () => {
           });
         }
       },
+      onDeleteEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesDeleteEvent, event),
+      teardownDeps: laneTeardownDeps,
       logger,
     });
     await measureProjectInitStep("lane.ensure_primary", () =>
@@ -1981,6 +1985,26 @@ app.whenReady().then(async () => {
       broadcastEvent: (ev) =>
         emitProjectEvent(projectRoot, IPC.processesEvent, ev),
     });
+
+    // Wire teardown deps for laneService.delete now that the underlying services exist.
+    laneTeardownDeps.processService = {
+      listRuntime: (laneId) => processService.listRuntime(laneId),
+      stopAll: (args) => processService.stopAll(args),
+    };
+    laneTeardownDeps.ptyService = {
+      countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
+      disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
+    };
+    laneTeardownDeps.fileWatcherService = {
+      countActiveForWorkspace: (id) => fileService.countActiveWatchersForWorkspace(id),
+      stopAllForWorkspace: (id) => fileService.stopAllWatchersForWorkspace(id),
+    };
+    laneTeardownDeps.autoRebaseService = {
+      cancelForLane: (laneId) => autoRebaseService?.cancelForLane(laneId),
+    };
+    laneTeardownDeps.rebaseSuggestionService = {
+      dismiss: (args) => rebaseSuggestionService?.dismiss(args) ?? Promise.resolve(),
+    };
 
     const sessionDeltaService = createSessionDeltaService({
       db,

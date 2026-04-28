@@ -420,8 +420,8 @@ export function MissionSettingsDialog({
         </div>
 
         <div className="min-h-0 overflow-y-auto px-5 py-4 space-y-4">
-          {notice ? <div className="px-3 py-2 text-xs" style={{ border: `1px solid ${COLORS.success}30`, background: `${COLORS.success}18`, color: COLORS.success }}>{notice}</div> : null}
-          {error ? <div className="px-3 py-2 text-xs" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}>{error}</div> : null}
+          {notice ? <div className="px-3 py-2 text-xs" style={{ border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)", background: "color-mix(in srgb, var(--color-success) 18%, transparent)", color: COLORS.success }}>{notice}</div> : null}
+          {error ? <div className="px-3 py-2 text-xs" style={{ border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 18%, transparent)", color: COLORS.danger }}>{error}</div> : null}
 
           <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
             <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>MISSION DEFAULTS</div>
@@ -543,12 +543,12 @@ export function MissionSettingsDialog({
             </div>
 
             {phaseNotice ? (
-              <div className="mt-2 px-2 py-1.5 text-[10px]" style={{ border: `1px solid ${COLORS.success}30`, background: `${COLORS.success}15`, color: COLORS.success }}>
+              <div className="mt-2 px-2 py-1.5 text-[10px]" style={{ border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)", background: "color-mix(in srgb, var(--color-success) 15%, transparent)", color: COLORS.success }}>
                 {phaseNotice}
               </div>
             ) : null}
             {phaseError ? (
-              <div className="mt-2 px-2 py-1.5 text-[10px]" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, color: COLORS.danger }}>
+              <div className="mt-2 px-2 py-1.5 text-[10px]" style={{ border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 15%, transparent)", color: COLORS.danger }}>
                 {phaseError}
               </div>
             ) : null}

@@ -108,7 +108,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
       {isWaitingForWorker && (
         <div
           className="mt-2 flex items-center gap-2 px-2 py-1.5 text-[10px]"
-          style={{ background: `${COLORS.warning}12`, border: `1px solid ${COLORS.warning}30`, color: COLORS.warning }}
+          style={{ background: "color-mix(in srgb, var(--color-warning) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)", color: COLORS.warning }}
         >
           <SpinnerGap size={14} weight="regular" className="animate-spin shrink-0" />
           <span>Waiting for worker allocation...</span>
@@ -117,7 +117,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
       {isWorkerInitializing && (
         <div
           className="mt-2 flex items-center gap-2 px-2 py-1.5 text-[10px]"
-          style={{ background: `${COLORS.accent}12`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent }}
+          style={{ background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", color: COLORS.accent }}
         >
           <SpinnerGap size={14} weight="regular" className="animate-spin shrink-0" />
           <span>Initializing execution environment...</span>
@@ -127,7 +127,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
       {isRunning && isHeartbeatStale && (
         <div
           className="mt-2 flex items-center gap-2 px-2 py-1.5 text-[10px]"
-          style={{ background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}40`, color: COLORS.warning }}
+          style={{ background: "color-mix(in srgb, var(--color-warning) 18%, transparent)", border: "1px solid color-mix(in srgb, var(--color-warning) 40%, transparent)", color: COLORS.warning }}
         >
           <Warning size={14} weight="fill" className="shrink-0" />
           <span>Heartbeat stale ({Math.round(hbAge!)}m) — worker may be stuck</span>
@@ -251,7 +251,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
               </span>
             </div>
             {latestAttempt.errorMessage && (
-              <div className="px-1.5 py-1" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}>
+              <div className="px-1.5 py-1" style={{ border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 18%, transparent)", color: COLORS.danger }}>
                 {compactText(latestAttempt.errorMessage, 160)}
               </div>
             )}
@@ -294,7 +294,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
             type="button"
             onClick={() => onInspectPrompt(step.id)}
             className="w-full px-2 py-1.5 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
-            style={{ background: `${COLORS.warning}12`, border: `1px solid ${COLORS.warning}28`, color: COLORS.warning, fontFamily: MONO_FONT }}
+            style={{ background: "color-mix(in srgb, var(--color-warning) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-warning) 28%, transparent)", color: COLORS.warning, fontFamily: MONO_FONT }}
           >
             INSPECT EFFECTIVE PROMPT
           </button>
@@ -311,7 +311,7 @@ export const StepDetailPanel = React.memo(function StepDetailPanel({
               laneId: step.laneId ?? null
             })}
             className="w-full px-2 py-1.5 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
-            style={{ background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent, fontFamily: MONO_FONT }}
+            style={{ background: "color-mix(in srgb, var(--color-accent) 18%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", color: COLORS.accent, fontFamily: MONO_FONT }}
           >
             JUMP TO WORKER CHANNEL
           </button>

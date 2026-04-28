@@ -260,7 +260,7 @@ export const PlanTab = React.memo(function PlanTab({
           {plannerReview.parallelismCap != null ? (
             <div
               className="px-2 py-1 text-[10px] font-semibold"
-              style={{ color: COLORS.accent, border: `1px solid ${COLORS.accent}30`, background: `${COLORS.accent}12`, fontFamily: MONO_FONT }}
+              style={{ color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", fontFamily: MONO_FONT }}
             >
               Parallelism cap {plannerReview.parallelismCap}
             </div>
@@ -390,7 +390,7 @@ export const PlanTab = React.memo(function PlanTab({
                   onClick={() => onStepSelect(step.id)}
                   className="w-full px-3 py-2 text-left transition-colors"
                   style={isSelected
-                    ? { background: `${COLORS.accent}12`, border: `1px solid ${COLORS.accent}30` }
+                    ? { background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)" }
                     : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
                   }
                 >
@@ -403,8 +403,8 @@ export const PlanTab = React.memo(function PlanTab({
                     <span
                       className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]"
                       style={{
-                        background: `${COLORS.accent}16`,
-                        border: `1px solid ${COLORS.accent}33`,
+                        background: "color-mix(in srgb, var(--color-accent) 16%, transparent)",
+                        border: "1px solid color-mix(in srgb, var(--color-accent) 33%, transparent)",
                         color: COLORS.accent,
                         fontFamily: MONO_FONT,
                       }}

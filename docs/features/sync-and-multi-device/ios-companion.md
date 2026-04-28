@@ -11,6 +11,13 @@ the repo's `docs/final-plan/`.
 
 ## Project layout
 
+> The same Xcode project also ships `apps/ios/ADE/Debug/ADEInspectorKit/`,
+> a DEBUG-only SwiftUI inspector that publishes per-frame element
+> metadata (component id, source file/line, accessibility identifier,
+> point/pixel frames) to the running app's data container so the
+> desktop iOS Simulator drawer can convert taps into source-anchored
+> chat context. See [`features/ios-simulator/inspector.md`](../ios-simulator/inspector.md).
+
 ```
 apps/ios/
 ├── ADE.xcodeproj/

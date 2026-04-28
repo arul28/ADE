@@ -99,6 +99,14 @@ struct LaneLaunchTile: View {
     }
     .buttonStyle(ADEScaleButtonStyle())
     .accessibilityLabel("Launch \(title)")
+    .adeInspectable(
+      "Lanes.LaunchTile",
+      metadata: [
+        "label": "Launch \(title)",
+        "title": title,
+        "role": "button"
+      ]
+    )
   }
 }
 
@@ -126,6 +134,17 @@ struct LaneSessionCard: View {
     .adeGlassCard(cornerRadius: 12, padding: 12)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(session.title), \(session.status)")
+    .adeInspectable(
+      "Lanes.SessionCard",
+      metadata: [
+        "label": "\(session.title), \(session.status)",
+        "sessionId": session.id,
+        "laneId": session.laneId,
+        "laneName": session.laneName,
+        "status": session.status,
+        "role": "row"
+      ]
+    )
   }
 }
 
@@ -296,6 +315,16 @@ struct LaneListRow: View, Equatable {
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel(laneRowAccessibilityLabel)
+    .adeInspectable(
+      "Lanes.Row",
+      metadata: [
+        "label": laneRowAccessibilityLabel,
+        "laneId": snapshot.lane.id,
+        "laneName": snapshot.lane.name,
+        "branchRef": snapshot.lane.branchRef,
+        "role": "row"
+      ]
+    )
   }
 
   @ViewBuilder

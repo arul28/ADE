@@ -90,6 +90,17 @@ struct PrRowCard: View {
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "pr-container-\(data.id)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("PR #\(data.prNumber): \(data.title), state \(data.state)")
+    .adeInspectable(
+      "PR.List.Row",
+      metadata: [
+        "label": "PR #\(data.prNumber): \(data.title), state \(data.state)",
+        "prId": data.id,
+        "number": String(data.prNumber),
+        "state": data.state,
+        "title": data.title,
+        "role": "row"
+      ]
+    )
   }
 
   @ViewBuilder

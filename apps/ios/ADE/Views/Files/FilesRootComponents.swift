@@ -283,6 +283,15 @@ struct FilesTreeNodeRow: View {
     .adeMatchedTransitionSource(id: canTransition ? "files-container-\(node.path)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityLabel)
+    .adeInspectable(
+      "Files.Directory.NodeRow",
+      metadata: [
+        "label": accessibilityLabel,
+        "path": node.path,
+        "type": node.type,
+        "role": "row"
+      ]
+    )
   }
 
   private var canTransition: Bool {
@@ -329,6 +338,15 @@ struct FilesResultRow: View {
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "files-container-\(path)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(lastPathComponent(path)), file")
+    .adeInspectable(
+      "Files.QuickOpen.ResultRow",
+      metadata: [
+        "label": "\(lastPathComponent(path)), file",
+        "path": path,
+        "type": "file",
+        "role": "row"
+      ]
+    )
   }
 }
 
@@ -366,6 +384,16 @@ struct FilesSearchResultRow: View {
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "files-container-\(result.path)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(lastPathComponent(result.path)), line \(result.line), \(result.path)")
+    .adeInspectable(
+      "Files.Search.ResultRow",
+      metadata: [
+        "label": "\(lastPathComponent(result.path)), line \(result.line), \(result.path)",
+        "path": result.path,
+        "line": String(result.line),
+        "type": "file",
+        "role": "row"
+      ]
+    )
   }
 }
 

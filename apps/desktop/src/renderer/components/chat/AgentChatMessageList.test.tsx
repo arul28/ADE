@@ -206,6 +206,70 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
+  it("shows attachment and simulator send confirmations for delivered user messages with context", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-04-28T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Selected iOS simulator context:\n1. x\n\nhi",
+          deliveryState: "delivered",
+          attachments: [
+            { path: "/tmp/shot.png", type: "image" },
+            { path: "/tmp/notes.md", type: "file" },
+          ],
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("user-message-send-confirmations")).toBeTruthy();
+    });
+    expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachments analyzed");
+    expect(screen.getByTestId("user-message-simulator-analyzed").textContent).toContain("Attachments from simulator analyzed");
+  });
+
+  it("does not show send confirmations for queued (optimistic) user messages with attachments or sim text", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-04-28T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Selected iOS simulator context:\n1. y\n\ntest",
+          deliveryState: "queued",
+          attachments: [{ path: "/t/a.png", type: "image" }],
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByText(/test$/)).toBeTruthy();
+    });
+    expect(screen.queryByTestId("user-message-send-confirmations")).toBeNull();
+  });
+
+  it("uses the paperclip icon line for file-only attachments when delivered", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-04-28T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "See file",
+          deliveryState: "delivered",
+          attachments: [{ path: "/tmp/doc.txt", type: "file" }],
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("user-message-attachment-analyzed")).toBeTruthy();
+    });
+    expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachment analyzed");
+  });
+
   it("keeps the done summary visible when only the model attribution is available", () => {
     renderMessageList([
       {
