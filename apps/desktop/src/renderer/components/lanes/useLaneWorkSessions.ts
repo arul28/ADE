@@ -5,7 +5,7 @@ import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessio
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
-import { defaultTrackedCliStartupCommand } from "../terminals/cliLaunch";
+import { resolveLaunchFields } from "../terminals/cliLaunch";
 
 const EMPTY_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
@@ -184,8 +184,9 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [laneId]);
 
   useEffect(() => {
-    const unsubscribe = window.ade.pty.onExit(() => {
+    const unsubscribe = window.ade.pty.onExit((event) => {
       if (!laneId) return;
+      if (event.projectRoot && event.projectRoot !== projectRoot) return;
       scheduleBackgroundRefresh(120);
     });
     return () => {
@@ -195,7 +196,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         // ignore
       }
     };
-  }, [laneId, scheduleBackgroundRefresh]);
+  }, [laneId, projectRoot, scheduleBackgroundRefresh]);
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
@@ -260,7 +261,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [laneOpenItemIds, sessionsById]);
 
   const gridLayoutId = useMemo(
-    () => `work:grid:v2:${projectRoot ?? "global"}::${laneId ?? "none"}`,
+    () => `work:grid:tiling:v1:${projectRoot ?? "global"}::${laneId ?? "none"}`,
     [laneId, projectRoot],
   );
 
@@ -441,13 +442,21 @@ export function useLaneWorkSessions(laneId: string | null) {
       tracked?: boolean;
       title?: string;
       startupCommand?: string;
+      command?: string;
+      args?: string[];
     }) => {
       const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" } as const;
-      const commandMap = {
-        claude: defaultTrackedCliStartupCommand("claude"),
-        codex: defaultTrackedCliStartupCommand("codex"),
-        shell: "",
-      } as const;
+      // resolveLaunchFields treats the caller's launch overrides as atomic:
+      // if any of startupCommand/command/args is supplied we don't mix in
+      // defaults from the other fields (which used to override the caller's
+      // intent — e.g. a custom startupCommand silently displaced by default
+      // command/args).
+      const launchFields = resolveLaunchFields({
+        profile: args.profile,
+        ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
+        ...(args.command !== undefined ? { command: args.command } : {}),
+        ...(args.args !== undefined ? { args: args.args } : {}),
+      });
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,
@@ -455,7 +464,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         title: args.title ?? titleMap[args.profile],
         tracked: args.tracked ?? true,
         toolType: args.profile,
-        startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
+        ...launchFields,
       });
       selectLane(args.laneId);
       // Invalidate all cache entries so other views (e.g. Work tab) pick up

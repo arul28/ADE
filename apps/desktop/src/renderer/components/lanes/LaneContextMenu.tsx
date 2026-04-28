@@ -2,6 +2,7 @@ import React from "react";
 import type { LaneSummary } from "../../../shared/types";
 import { revealLabel } from "../../lib/platform";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
+import { LANE_COLOR_PALETTE, colorsInUse } from "./laneColorPalette";
 
 const menuItemStyle: React.CSSProperties = {
   display: "block",
@@ -27,10 +28,21 @@ const menuHeaderStyle: React.CSSProperties = {
   color: COLORS.textDim,
 };
 
-function HoverButton({ style, children, onClick }: { style: React.CSSProperties; children: React.ReactNode; onClick: () => void }) {
+function HoverButton({
+  style,
+  children,
+  onClick,
+  dataTour,
+}: {
+  style: React.CSSProperties;
+  children: React.ReactNode;
+  onClick: () => void;
+  dataTour?: string;
+}) {
   return (
     <button
       role="menuitem"
+      data-tour={dataTour}
       style={style}
       onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
@@ -54,6 +66,7 @@ export function LaneContextMenu({
   onCloseOtherSplits,
   onSelectAll,
   onBatchManage,
+  onAppearanceChanged,
 }: {
   laneContextMenu: { laneId: string; x: number; y: number };
   lanesById: Map<string, LaneSummary>;
@@ -67,6 +80,7 @@ export function LaneContextMenu({
   onCloseOtherSplits: (keepLaneId: string) => void;
   onSelectAll: () => void;
   onBatchManage: (laneIds: string[]) => void;
+  onAppearanceChanged?: () => void | Promise<void>;
 }) {
   const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
   const isInSplit = visibleLaneIds.includes(laneContextMenu.laneId);
@@ -99,19 +113,15 @@ export function LaneContextMenu({
       ref={menuRef}
       role="menu"
       tabIndex={-1}
+      className="ade-liquid-glass-menu"
       style={{
         position: "fixed",
         zIndex: 40,
         minWidth: 200,
         maxHeight: "calc(100vh - 20px)",
         overflowY: "auto",
-        background: COLORS.cardBgSolid,
-        backdropFilter: "blur(20px)",
-        WebkitBackdropFilter: "blur(20px)",
         border: `1px solid ${COLORS.outlineBorder}`,
-        borderRadius: 12,
         padding: "4px 0",
-        boxShadow: "0 8px 32px -8px rgba(0,0,0,0.5)",
         left: laneContextMenu.x,
         top: Math.min(laneContextMenu.y, window.innerHeight - 20),
       }}
@@ -121,6 +131,7 @@ export function LaneContextMenu({
         <>
           <HoverButton
             style={menuItemStyle}
+            dataTour="lanes.manageLane"
             onClick={() => {
               onClose();
               window.ade.app.revealPath(ctxLane.worktreePath).catch(() => {});
@@ -178,6 +189,14 @@ export function LaneContextMenu({
           >
             Open in Run
           </HoverButton>
+        </>
+      ) : null}
+
+      {ctxLane ? (
+        <>
+          <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
+          <div style={menuHeaderStyle}>Color</div>
+          <ColorSwatchRow ctxLane={ctxLane} lanesById={lanesById} onChanged={onAppearanceChanged} />
         </>
       ) : null}
 
@@ -250,6 +269,94 @@ export function LaneContextMenu({
             Manage {deletableVisibleIds.length} Open Lanes...
           </HoverButton>
         </>
+      ) : null}
+    </div>
+  );
+}
+
+function ColorSwatchRow({
+  ctxLane,
+  lanesById,
+  onChanged,
+}: {
+  ctxLane: LaneSummary;
+  lanesById: Map<string, LaneSummary>;
+  onChanged?: () => void | Promise<void>;
+}) {
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const used = React.useMemo(() => colorsInUse(Array.from(lanesById.values()), ctxLane.id), [lanesById, ctxLane.id]);
+  const currentLower = ctxLane.color?.toLowerCase() ?? null;
+
+  const apply = async (next: string | null) => {
+    setError(null);
+    setBusy(true);
+    try {
+      await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next });
+      await onChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set color");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: "4px 12px 8px" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {LANE_COLOR_PALETTE.map((entry) => {
+          const isSelected = currentLower === entry.hex.toLowerCase();
+          const isTaken = !isSelected && used.has(entry.hex.toLowerCase());
+          return (
+            <button
+              key={entry.hex}
+              type="button"
+              title={isTaken ? `${entry.name} — in use` : entry.name}
+              disabled={isTaken || busy}
+              aria-label={entry.name}
+              aria-pressed={isSelected}
+              onClick={() => apply(entry.hex)}
+              style={{
+                width: 18,
+                height: 18,
+                borderRadius: 9999,
+                backgroundColor: entry.hex,
+                opacity: isTaken ? 0.25 : 1,
+                cursor: isTaken ? "not-allowed" : "pointer",
+                outline: isSelected ? `2px solid ${COLORS.textPrimary}` : "none",
+                outlineOffset: 1,
+                boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18)",
+                border: "none",
+                padding: 0,
+              }}
+            />
+          );
+        })}
+        {currentLower ? (
+          <button
+            type="button"
+            title="Clear color"
+            aria-label="Clear color"
+            onClick={() => apply(null)}
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: 9999,
+              backgroundColor: "transparent",
+              cursor: "pointer",
+              border: "1px dashed rgba(255,255,255,0.35)",
+              padding: 0,
+              color: "rgba(255,255,255,0.55)",
+              fontSize: 10,
+              lineHeight: "16px",
+            }}
+          >
+            ✕
+          </button>
+        ) : null}
+      </div>
+      {error ? (
+        <div style={{ marginTop: 6, fontSize: 10, color: "#f87171", fontFamily: MONO_FONT }}>{error}</div>
       ) : null}
     </div>
   );

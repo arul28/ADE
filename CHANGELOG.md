@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **OpenAI responses-based verification** — `authDetector` now verifies OpenAI keys via `POST /v1/responses` with `gpt-5-nano`/`gpt-5-mini` fallback, distinguishing model-availability errors from invalid keys; secondary model-list fallback check for resilience
-- **Scoped OpenCode tool selection** — `buildFallbackToolSelection`, `buildScopedMcpToolSelection`, and `resolveScopedMcpToolSelection` pipeline ensures sessions get exactly the tools matching current MCP server config; `refreshOpenCodeSessionToolSelection` called before every prompt
+- **Scoped OpenCode tool selection** — `buildFallbackToolSelection`, `buildScopedMcpToolSelection`, and `resolveScopedMcpToolSelection` pipeline ensures sessions get exactly the tools matching current ADE CLI config; `refreshOpenCodeSessionToolSelection` called before every prompt
 - **Isolated OpenCode server launches** — `openCodeServerManager` builds XDG-style isolated launch specs via `child_process.spawn`, sanitizes inherited `OPENCODE_*` env, and resolves binary via `resolveOpenCodeBinaryPath`; new test hooks for launch spec verification
-- **MCP schema sanitization** — `sanitizeToolSchema` recursively normalizes tool JSON Schemas (adds missing `items`/`properties`, ensures `required` completeness, recurses through `anyOf`/`oneOf`/`allOf`) to prevent strict-provider rejections
+- **ADE CLI schema sanitization** — `sanitizeToolSchema` recursively normalizes tool JSON Schemas (adds missing `items`/`properties`, ensures `required` completeness, recurses through `anyOf`/`oneOf`/`allOf`) to prevent strict-provider rejections
 - **Provider verification badges** — ProvidersSection shows verification badges, failure state indicators, and auto-refreshes OpenCode inventory on key changes
 
 ### Changed
@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Provider task runner** — unified 306-line task runner dispatching to Claude, Codex, Cursor, and OpenCode paths with timeout enforcement and permission mode mapping (`providerTaskRunner.ts`)
 - **Tool exposure policy** — score-based heuristics for frontend repo discovery tool exposure based on prompt content analysis (`toolExposurePolicy.ts`)
 - **Runtime message types** — provider-agnostic message representation decoupling ADE internals from SDK types (`runtimeMessageTypes.ts`)
-- **CLI MCP config normalization** — normalizes MCP server config between Claude (`type`) and Codex (`transport`) field formats (`cliMcpConfig.ts`)
+- **CLI ADE CLI config normalization** — normalizes ADE CLI config between Claude (`type`) and Codex (`transport`) field formats (`cliMcpConfig.ts`)
 - **Local provider discovery pipeline** — endpoint probing, model inspection, capability inference, harness profile assignment, and TTL-based caching for Ollama and LM Studio
 - **900+ lines of new tool tests** — `globSearch.test.ts` (219 lines), `grepSearch.test.ts` (276 lines), `readFileRange.test.ts` (197 lines), expanded `universalTools.test.ts` (+364 lines)
 - **Compaction engine tests** — 526-line test suite covering transcript persistence, compaction triggering, and token accounting
@@ -97,7 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Multimodal chat** — Claude agent chat now supports image attachments via base64 content blocks, with a new file upload picker and clipboard paste support in the composer
 - **CTO daily logs** — CTO persona gains a Memory Protocol and Decision Framework; daily log utilities (append/read/list) auto-inject recent context into CTO sessions
-- **External MCP auth service** — full OAuth and token-based authentication flows for connecting external MCP servers (795-line service with PKCE support)
+- **ADE CLI auth service** — full OAuth and token-based authentication flows for connecting ADE CLI (795-line service with PKCE support)
 - **Onboarding rewrite** — replaced the 1,373-line `OnboardingPage` with a focused 328-line `ProjectSetupPage`
 - **New settings sections** — Lane Behavior, Lane Templates (expanded), Integrations, Workspace Settings, and AI Settings panels
 - **Context doc preferences** — model, effort, and events settings now persist to the backend via new IPC handlers
@@ -114,7 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Linear OAuth** — bundled public PKCE client-ID fallback so CTO Linear sync works without manual credential setup; fixed OAuth server to listen on port 19836 and force `prompt=consent`
 - **Orchestrator tuning** — lowered dedupe/retention/pruning thresholds, capped `workerProgressChatState`, pruned config cache, reduced session signal retention and health sweep intervals
 - **Main process** — simplified hardware acceleration logic, narrowed default background task flags in dev stability mode
-- **CI** — tightened permissions, removed old inline release job, added MCP server dependency install before desktop typecheck
+- **CI** — tightened permissions, removed old inline release job, added ADE CLI dependency install before desktop typecheck
 - **Homepage & web** — refreshed landing page layout and styles, updated Tailwind config
 
 ### Removed

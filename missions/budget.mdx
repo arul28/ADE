@@ -1,148 +1,100 @@
 ---
-title: "Budget & Permissions"
-description: "Configure budget caps, tool permissions, computer use policies, mission persistence, templates, and troubleshoot common mission issues."
+title: "Budget and permissions"
+description: "Configure budget caps, per-provider permission modes, proof capture, mission persistence, and resolve common mission problems."
 icon: "coins"
 ---
 
-## Budget and Cost Tracking
+## Budget caps
 
-<Tabs>
-  <Tab title="Setting a budget cap">
-    In the mission creation dialog, set a **Budget cap** in either tokens or USD. This is the combined ceiling across all workers.
+Set a **Budget cap** in tokens or USD when you create a mission. This is the combined ceiling across all workers, not a per-worker limit.
 
-    When the mission reaches **80% of the cap**, ADE raises a `budget_limit_reached` intervention to give you time to decide before work stops. You can:
+When the mission reaches **80% of the cap**, ADE raises a `budget_limit_reached` intervention before work stops. You have three choices:
 
-    - **Approve more budget** — increase the cap and continue
-    - **Reduce scope** — cancel remaining workers and accept partial results
-    - **Stop cleanly** — the orchestrator wraps up current work and completes with available results
-  </Tab>
-  <Tab title="Reading the cost breakdown">
-    In the **Plan tab**, the cost panel shows:
+- **Approve more budget** — raise the cap and continue
+- **Reduce scope** — cancel remaining workers, accept partial results
+- **Stop cleanly** — the orchestrator wraps up current work and completes with what is ready
 
-    - Total tokens consumed (input + output) across all workers
-    - Per-worker token breakdown
-    - Estimated USD cost based on the configured model's pricing
-    - Projected total at current burn rate
+The Plan tab's cost panel shows per-worker token consumption, projected total at the current burn rate, and USD estimates using the configured model's pricing.
 
-    The per-worker view lets you spot runaway workers before they consume the whole budget.
-  </Tab>
-  <Tab title="Default limits">
-    If you do not set a budget cap, ADE uses the global default from **Settings → Missions → Default budget cap**. Set this to a sensible value to prevent unexpected costs during planning-heavy missions.
-  </Tab>
-</Tabs>
+If you don't set a cap, ADE applies the default from **Settings → Missions → Default budget cap**.
 
 ---
 
-## Permissions and Tool Configuration
+## Per-provider permission modes
 
-Each mission has a **permission config** that controls what workers can do. The permission config is set during mission creation and can be inherited from the lane's defaults.
+Each provider carries its own permission mode. The mission creation dialog (and the Worker Permissions editor inside it) exposes one row per provider.
 
-<AccordionGroup>
-  <Accordion title="Provider permission modes">
-    Per-provider permission modes control what Claude CLI, Codex CLI, or unified API workers are allowed to do:
+| Provider | Default mode | What that means |
+|---|---|---|
+| Claude | `full-auto` | Standard CLI permissions; agents run without per-step approval |
+| Codex | `default` | Workspace-write sandbox, approval policy on-request |
+| OpenCode | `full-auto` | OpenCode's standard permission preset |
 
-    - `default` — the provider's standard permission set
-    - `strict` — read-only file access, no shell commands
-    - `permissive` — expanded tool access including shell execution
-    - `custom` — explicit allowlist of tool names
+### Codex sandbox is derived, not chosen separately
 
-    You can configure different modes per provider if your mission uses a mix of Claude and Codex workers.
-  </Accordion>
-  <Accordion title="External MCP tools">
-    External MCP server tools are disabled by default for missions. To enable them, select which MCP tool groups are allowed in the **External MCP** section of the mission creation form. Workers will only have access to the tool groups you explicitly permit.
-  </Accordion>
-  <Accordion title="Computer use policy">
-    Computer use in missions is controlled by the ComputerUsePolicy set on the mission:
+The Codex permission mode decides the sandbox:
 
-    - `off` — no computer use for any worker
-    - `auto` — workers can invoke computer use when needed
-    - `on` — computer use always available
-    - `proof` — computer use is available but every action must produce a proof artifact (screenshot or browser trace)
+- `full-auto` → `danger-full-access` (no sandbox)
+- `plan` → `read-only`
+- anything else (including `default` and `edit`) → `workspace-write`
 
-    The `proof` mode is recommended for missions that will be linked to a PR or Linear issue.
-  </Accordion>
-  <Accordion title="Writable paths">
-    By default, workers can only write within their assigned lane's worktree. You can expand this with explicit `writablePaths` entries in the mission permission config — for example, to allow a worker to write shared fixture files outside its primary lane.
-  </Accordion>
-</AccordionGroup>
+There is no separate Codex sandbox dropdown in the Worker Permissions editor anymore — pick the mode and the sandbox follows. Choose `config-toml` if you want Codex to honor its own `~/.codex/config.toml` instead of ADE flags.
+
+See [AI Providers](/configuration/ai-providers) for the full permission option reference shared across Chat and Missions.
 
 ---
 
-## Mission Persistence and Resume
+## Tool palette
 
-Missions persist across app restarts. All mission state — phases, worker logs, artifacts, interventions — is stored in ADE's local SQLite database and the filesystem.
+Workers reach ADE through the `ade` CLI. The mission creation form exposes a tool palette (repo, git, github, linear, memory, mission, tests) that maps to the ADE RPC domains each worker may call. Tools outside the palette are rejected at the CLI boundary for that worker.
 
-**Mission Pack** is the key persistence primitive: a deterministic snapshot of all context required to resume or replay the mission from any phase boundary. It is regenerated automatically at each phase transition.
+## Proof capture
+
+Workers decide when a step deserves proof and call the `ade proof` CLI directly — screenshot, short recording, or ingested browser trace. There is no mission-wide policy chip; proof is per-step and intentional.
+
+Captured proofs link to the mission automatically and land in the **Artifacts** tab. See [Proof Overview](/computer-use/overview) for the capture flow.
+
+## Writable paths
+
+By default, workers can only write inside their assigned lane's worktree. Extend this with explicit `writablePaths` entries in the mission permission config — useful when a worker needs to touch shared fixtures or generated files outside its primary lane.
+
+---
+
+## Persistence and resume
+
+Mission state is durable. Phases, worker logs, artifacts, and interventions live in ADE's local SQLite database and the filesystem, and a **Mission Pack** snapshot is written at every phase boundary.
 
 If ADE crashes mid-mission:
-1. Restart ADE
-2. Open the Missions page — the interrupted mission will be in `in_progress` or `intervention_required` status
-3. ADE reloads from the last Mission Pack checkpoint
-4. Workers that were mid-task are recovered where possible; tasks that cannot be recovered are marked `failed` and queued as interventions
 
----
-
-## Mission Templates and Phase Profiles
-
-For mission types you run frequently, you can save **Phase Profiles** — reusable configurations that define the sequence of phases, approval requirements, and per-phase validator settings.
-
-Built-in profiles include:
-
-| Profile | Phases |
-|---|---|
-| Standard | Planning → Execution → Validation |
-| Lightweight | Planning → Execution (no validation phase) |
-| Rigorous | Planning → Approval → Execution → Validation → Sign-off |
-
-To create a custom profile: open **Settings → Missions → Phase Profiles**, click **New Profile**, and define the phase sequence. Profiles can be imported and exported as JSON for sharing across teams.
+1. Restart the app.
+2. Open Missions — the interrupted run shows `in_progress` or `intervention_required`.
+3. ADE reloads from the last Mission Pack snapshot.
+4. Workers that were mid-task resume where they can. Anything that cannot be recovered is marked failed and queued as an intervention.
 
 ---
 
 ## Troubleshooting
 
 <AccordionGroup>
-  <Accordion title="A worker is stuck (no progress for several minutes)">
-    1. Open the mission's **History tab** and find the last event from the stuck worker.
-    2. Check whether an intervention is open in the **Plan tab** — the worker may be waiting for your response.
-    3. If no intervention is open, open the **Chat tab** and ask the orchestrator for a status update.
-    4. If the worker is genuinely hung, click the worker card in the Plan tab and select **Restart worker**. ADE will attempt to resume from the worker's last checkpoint.
-    5. If restart fails, select **Skip task** to mark the worker's assignment as skipped and allow the mission to continue.
+  <Accordion title="Worker is stuck" icon="clock">
+    Open the Plan tab. If an intervention is open, the worker is waiting for your response. If not, open the Chat tab and ask the orchestrator for a status update. If the worker is genuinely hung, click its card and choose **Restart worker** to resume from the last checkpoint; **Skip task** marks the step skipped and lets the mission continue.
   </Accordion>
-  <Accordion title="Budget exceeded or approaching limit">
-    When a `budget_limit_reached` intervention fires:
-
-    - Review the per-worker cost breakdown in the Plan tab to identify the most expensive workers.
-    - If a worker is consuming disproportionate budget, you can cancel it individually while leaving others running.
-    - Approve additional budget only if the remaining work is clearly scoped and worth the cost.
-    - Consider switching remaining workers to a less expensive model in **Settings → Missions → Default model**.
+  <Accordion title="Budget limit intervention" icon="coins">
+    Open the Plan tab's cost panel to find the most expensive workers. You can cancel one worker individually while leaving others running. Approve more budget only when the remaining work is scoped and worth the cost.
   </Accordion>
-  <Accordion title="Validation phase fails">
-    Validation failures appear as a `failed_step` intervention with a `test_report` artifact attached. To resolve:
-
-    1. Open the artifact to read the test output.
-    2. In the Chat tab, tell the orchestrator what failed and ask it to fix the issue.
-    3. The orchestrator can spawn a new worker scoped to the failing tests.
-    4. Once fixed, approve advancing to complete the validation phase.
-
-    If validation failures are expected (e.g., tests for features not yet implemented), you can dismiss the intervention and mark validation as skipped.
+  <Accordion title="Validation failed" icon="triangle-exclamation">
+    A `failed_step` intervention fires with a test report artifact. Open the artifact, tell the orchestrator what failed in the Chat tab, and let it spawn a follow-up worker scoped to the failing tests. If failures are expected (tests for features not yet built), dismiss the intervention and mark validation skipped.
   </Accordion>
-  <Accordion title="Mission stuck at Approval Gate">
-    The Approval Gate is a hard stop — the mission will remain in `planning` status until you approve, modify, or cancel. If you closed the mission detail view, re-open it from the Missions list. The plan review UI is in the **Plan tab** at the top of the activity feed.
+  <Accordion title="Stuck at approval gate" icon="flag">
+    The approval gate is a hard stop. If you closed the detail view, reopen it from the Missions list — the plan review panel is at the top of the Plan tab's activity feed.
   </Accordion>
-  <Accordion title="Planning Prompt Preview shows unexpected context">
-    If the generated plan does not reflect your intent, edit the planning prompt before approval:
-
-    1. In the plan review UI, click **Edit Planning Prompt**.
-    2. Modify the prompt to clarify scope, constraints, or excluded approaches.
-    3. Click **Re-plan** — the orchestrator will generate a new plan using the updated prompt.
-    4. Repeat until the plan matches your expectations, then approve.
+  <Accordion title="Generated plan misses intent" icon="pencil">
+    Click **Edit Planning Prompt** in the plan review UI, rewrite the prompt to clarify scope or excluded approaches, and click **Re-plan**. Repeat until the plan matches, then approve.
   </Accordion>
-  <Accordion title="Mission fails to start (preflight errors)">
-    Preflight errors appear before the mission enters Planning. Common causes:
-
-    - **Lane unavailable** — the selected lane is in use by another active mission. Wait for it to complete or select a different lane.
-    - **Model unreachable** — the configured AI provider is not authenticated or is rate-limited. Check **Settings → AI Providers**.
-    - **Computer use unavailable** — the mission requires computer-use capabilities that are not configured. Check **Settings → Computer Use**.
-    - **Phase sequence invalid** — the selected phase profile has a configuration error. Open **Settings → Missions → Phase Profiles** to inspect and repair it.
+  <Accordion title="Preflight errors before planning" icon="gauge">
+    Common causes: a selected lane is held by another mission, the configured model is not authenticated or is rate-limited, proof-capture prerequisites are missing on the host, or the phase profile has a config error. Each preflight error states the specific gap; fix it and retry.
+  </Accordion>
+  <Accordion title="Missions tab shows 'Coming soon' in my build" icon="flag-checkered">
+    You are on a packaged (production) build. Mission creation and live runs are paused in production until the orchestration flow is production-ready. Dev and internal builds run Missions end-to-end. See the Missions overview for what the shipping version will do.
   </Accordion>
 </AccordionGroup>

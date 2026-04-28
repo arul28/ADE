@@ -14,7 +14,7 @@ import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { buildOptimisticChatSessionSummary, isChatToolType, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import {
-  defaultTrackedCliStartupCommand,
+  resolveLaunchFields,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
 } from "./cliLaunch";
@@ -37,7 +37,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
 };
 
 type WorkTabGroupKind = "lane" | "status" | "time";
-type WorkTabGroupLane = Pick<LaneSummary, "id" | "name" | "laneType" | "createdAt">;
+type WorkTabGroupLane = Pick<LaneSummary, "id" | "name" | "laneType" | "createdAt" | "color">;
 
 export type WorkTabGroup = {
   id: string;
@@ -46,6 +46,8 @@ export type WorkTabGroup = {
   collapsed: boolean;
   sessionIds: string[];
   sessions: TerminalSessionSummary[];
+  /** From Lanes tab; only set for `kind === "lane"`. */
+  laneColor: string | null;
 };
 
 export type WorkTabGroupModel = {
@@ -142,12 +144,15 @@ export function buildWorkTabGroupModel(args: {
 
     const visibleSessions: TerminalSessionSummary[] = [];
     const finalGroups = groups.map((group) => {
+      const laneId = group.id.startsWith("lane:") ? group.id.slice("lane:".length) : null;
+      const lane = laneId ? args.lanes.find((l) => l.id === laneId) : null;
       const collapsed = collapseSet.has(group.id);
       if (!collapsed) visibleSessions.push(...group.sessions);
       return {
         id: group.id,
         label: group.label,
         kind: group.kind,
+        laneColor: group.kind === "lane" ? (lane?.color ?? null) : null,
         collapsed,
         sessionIds: group.sessions.map((session) => session.id),
         sessions: group.sessions,
@@ -178,6 +183,7 @@ export function buildWorkTabGroupModel(args: {
           id: groupId,
           label: bucket === "today" ? "Today" : bucket === "yesterday" ? "Yesterday" : "Older",
           kind: "time" as const,
+          laneColor: null,
           collapsed,
           sessionIds: sessions.map((session) => session.id),
           sessions,
@@ -213,6 +219,7 @@ export function buildWorkTabGroupModel(args: {
         id: groupId,
         label: getStatusBucketLabel(bucket),
         kind: "status" as const,
+        laneColor: null,
         collapsed,
         sessionIds: sessions.map((session) => session.id),
         sessions,
@@ -278,6 +285,8 @@ export function useWorkSessions() {
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
+  const appliedUrlFilterKeyRef = useRef<string | null>(null);
+  const partiallyAppliedUrlFilterKeyRef = useRef<string | null>(null);
   const hasLoadedOnceRef = useRef(false);
   const projectRootRef = useRef<string | null>(projectRoot);
 
@@ -592,6 +601,8 @@ export function useWorkSessions() {
     hasLoadedOnceRef.current = false;
     hasRunningSessionsRef.current = false;
     appliedQuerySessionIdRef.current = null;
+    appliedUrlFilterKeyRef.current = null;
+    partiallyAppliedUrlFilterKeyRef.current = null;
     if (!projectRoot) return;
     refresh({ showLoading: true, force: true }).catch(() => {});
   }, [projectRoot, refresh]);
@@ -601,16 +612,57 @@ export function useWorkSessions() {
   }, [sessions]);
 
   useEffect(() => {
+    const sessionParam = (searchParams.get("sessionId") ?? "").trim();
     const laneParam = (searchParams.get("laneId") ?? searchParams.get("lane") ?? "").trim();
+    const statusParam = (searchParams.get("status") ?? "").trim();
+    // When a sessionId is requested, only skip the lane/status fallback if
+    // that session actually exists. If it's stale/missing (after the first
+    // load completes) we fall through so the URL's laneId/status hints still
+    // narrow the view instead of dumping the user into an unrelated context.
+    if (sessionParam) {
+      const sessionExists = sessions.some((s) => s.id === sessionParam);
+      if (sessionExists) {
+        appliedUrlFilterKeyRef.current = null;
+        partiallyAppliedUrlFilterKeyRef.current = null;
+        return;
+      }
+      if (!hasLoadedOnceRef.current) return;
+    }
+    // Apply URL-derived filters at most once per URL signature so later
+    // session-list refreshes (which add sessions to our deps) don't stomp
+    // on a user's manually-changed lane/status filters.
+    const urlKey = `${sessionParam}|${laneParam}|${statusParam}`;
+    if (appliedUrlFilterKeyRef.current === urlKey) return;
     const laneExists = laneParam && lanes.some((lane) => lane.id === laneParam);
-    const status = mapUrlStatusFilter(searchParams.get("status") ?? "");
-    if (!laneExists && !status) return;
+    const status = mapUrlStatusFilter(statusParam);
+    if (!laneExists && !status) {
+      appliedUrlFilterKeyRef.current = null;
+      partiallyAppliedUrlFilterKeyRef.current = null;
+      return;
+    }
+    // When the URL specifies a laneId but lanes haven't populated yet (e.g. on
+    // project open/switch the store resets lanes to [] then repopulates async),
+    // we can't tell whether the lane is missing-for-good or just-not-yet-loaded.
+    // In that case, apply any status hint but don't cache the URL signature —
+    // come back once lanes populate so the lane portion can apply too. We only
+    // mark the key applied when the lane portion was definitively applied, or
+    // when lanes are loaded (non-empty) so "not found" is an authoritative
+    // negative signal.
+    const laneDeterminable = !laneParam || laneExists || lanes.length > 0;
+    const wasPartiallyApplied = partiallyAppliedUrlFilterKeyRef.current === urlKey;
+    if (!laneDeterminable && wasPartiallyApplied) return;
+    if (laneDeterminable) {
+      appliedUrlFilterKeyRef.current = urlKey;
+      partiallyAppliedUrlFilterKeyRef.current = null;
+    } else {
+      partiallyAppliedUrlFilterKeyRef.current = urlKey;
+    }
     setProjectViewState((prev) => ({
       ...prev,
       laneFilter: laneExists ? laneParam : prev.laneFilter,
-      statusFilter: status ?? prev.statusFilter,
+      statusFilter: status && !wasPartiallyApplied ? status : prev.statusFilter,
     }));
-  }, [lanes, searchParams, setProjectViewState]);
+  }, [lanes, sessions, searchParams, setProjectViewState]);
 
   // Migrate legacy org modes to supported modes
   useEffect(() => {
@@ -666,7 +718,9 @@ export function useWorkSessions() {
   }, [focusSession, searchParams, selectLane, sessions, setProjectViewState]);
 
   useEffect(() => {
-    const unsubExit = window.ade.pty.onExit(() => {
+    const unsubExit = window.ade.pty.onExit((event) => {
+      const currentProjectRoot = projectRootRef.current;
+      if (event.projectRoot && event.projectRoot !== currentProjectRoot) return;
       scheduleBackgroundRefresh(120);
     });
     const t = setInterval(() => {
@@ -688,6 +742,7 @@ export function useWorkSessions() {
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
       if (document.visibilityState !== "visible") return;
       if (!shouldRefreshSessionListForChatEvent(payload)) return;
+      invalidateSessionListCache();
       scheduleBackgroundRefresh(220);
     });
     return unsubscribe;
@@ -709,6 +764,20 @@ export function useWorkSessions() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const refreshVisibleWork = () => {
+      if (document.visibilityState !== "visible") return;
+      invalidateSessionListCache();
+      scheduleBackgroundRefresh(120);
+    };
+    window.addEventListener("focus", refreshVisibleWork);
+    document.addEventListener("visibilitychange", refreshVisibleWork);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleWork);
+      document.removeEventListener("visibilitychange", refreshVisibleWork);
+    };
+  }, [scheduleBackgroundRefresh]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -777,7 +846,7 @@ export function useWorkSessions() {
   );
 
   const gridLayoutId = useMemo(
-    () => `work:grid:v2:${projectRoot ?? "global"}`,
+    () => `work:grid:tiling:v1:${projectRoot ?? "global"}`,
     [projectRoot],
   );
 
@@ -954,6 +1023,8 @@ export function useWorkSessions() {
       tracked?: boolean;
       title?: string;
       startupCommand?: string;
+      command?: string;
+      args?: string[];
     }) => {
       const toolTypeMap = {
         claude: "claude" as const,
@@ -961,11 +1032,16 @@ export function useWorkSessions() {
         shell: "shell" as const,
       };
       const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
-      const commandMap = {
-        claude: defaultTrackedCliStartupCommand("claude"),
-        codex: defaultTrackedCliStartupCommand("codex"),
-        shell: "",
-      };
+      // resolveLaunchFields preserves caller intent: any caller-supplied
+      // startupCommand/command/args is used as-is, never mixed with defaults
+      // from the other fields. Only when the caller passes none of them do
+      // we substitute the profile's default launch.
+      const launchFields = resolveLaunchFields({
+        profile: args.profile,
+        ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
+        ...(args.command !== undefined ? { command: args.command } : {}),
+        ...(args.args !== undefined ? { args: args.args } : {}),
+      });
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,
@@ -973,7 +1049,7 @@ export function useWorkSessions() {
         title: args.title ?? titleMap[args.profile],
         tracked: args.tracked ?? true,
         toolType: toolTypeMap[args.profile],
-        startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
+        ...launchFields,
       });
       selectLane(args.laneId);
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
@@ -993,6 +1069,10 @@ export function useWorkSessions() {
     },
     [focusSession, openSessionTab, refresh, selectLane],
   );
+
+  const removeSessionFromList = useCallback((sessionId: string) => {
+    setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+  }, []);
 
   return {
     sessions,
@@ -1048,6 +1128,7 @@ export function useWorkSessions() {
 
     refresh,
     upsertOptimisticChatSession,
+    removeSessionFromList,
     closeSession,
     closeAllRunning,
     resumeSession,

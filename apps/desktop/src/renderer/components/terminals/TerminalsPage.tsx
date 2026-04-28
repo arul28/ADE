@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { SidebarSimple } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
@@ -10,6 +10,7 @@ import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/t
 import { isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { formatSessionBundleMarkdown, triggerBrowserDownload } from "../../lib/transcriptExport";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -26,19 +27,71 @@ export function TerminalsPage() {
 
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
-  const [renameError, setRenameError] = useState<string | null>(null);
+  const [sessionActionError, setSessionActionError] = useState<string | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+
+  const selectableSessions = useMemo(
+    () => [...work.runningFiltered, ...work.awaitingInputFiltered, ...work.endedFiltered],
+    [work.awaitingInputFiltered, work.endedFiltered, work.runningFiltered],
+  );
+
+  useEffect(() => {
+    const visibleIds = new Set(selectableSessions.map((session) => session.id));
+    setSelectedSessionIds((prev) => {
+      const next = new Set([...prev].filter((id) => visibleIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [selectableSessions]);
 
   const handleSelectSession = useCallback(
-    (id: string) => {
+    (id: string, event?: React.MouseEvent, visibleSessionIds?: string[]) => {
+      const useRange = event?.shiftKey === true;
+      const useToggle = event?.metaKey === true || event?.ctrlKey === true;
+      const orderedIds = visibleSessionIds?.length ? visibleSessionIds : selectableSessions.map((session) => session.id);
+
+      if (useRange) {
+        const anchorId = selectionAnchorId ?? id;
+        const anchorIndex = orderedIds.indexOf(anchorId);
+        const nextIndex = orderedIds.indexOf(id);
+        if (anchorIndex >= 0 && nextIndex >= 0) {
+          const [start, end] = anchorIndex <= nextIndex ? [anchorIndex, nextIndex] : [nextIndex, anchorIndex];
+          const rangeIds = orderedIds.slice(start, end + 1);
+          setSelectedSessionIds(new Set(rangeIds));
+          setSelectionAnchorId(anchorId);
+          work.setSelectedSessionId(id);
+          return;
+        }
+      }
+
+      if (useToggle) {
+        setSelectedSessionIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+        setSelectionAnchorId(id);
+        work.setSelectedSessionId(id);
+        return;
+      }
+
+      setSelectedSessionIds(new Set());
+      setSelectionAnchorId(id);
       work.setSelectedSessionId(id);
       work.openSessionTab(id);
     },
-    [work],
+    [selectableSessions, selectionAnchorId, work],
   );
 
   const handleInfoClick = useCallback(
     (session: TerminalSessionSummary, e: React.MouseEvent) => {
-      setInfoPopover({ session, x: e.clientX, y: e.clientY });
+      const r = e.currentTarget.getBoundingClientRect();
+      setInfoPopover({
+        session,
+        anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height },
+      });
     },
     [],
   );
@@ -79,6 +132,256 @@ export function TerminalsPage() {
     [work],
   );
 
+  const handleDeleteChat = useCallback(
+    (session: TerminalSessionSummary) => {
+      const label = (session.goal ?? session.title).trim() || "this chat";
+      const confirmed = window.confirm(
+        `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
+      );
+      if (!confirmed) return;
+
+      setSessionActionError(null);
+      setDeletingSessionId(session.id);
+      void window.ade.agentChat.delete({ sessionId: session.id })
+        .then(async () => {
+          invalidateSessionListCache();
+          work.removeSessionFromList(session.id);
+          work.closeTab(session.id);
+          setContextMenu((current) => (current?.session.id === session.id ? null : current));
+          setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+          // Refresh is post-delete housekeeping; a failure here must not be
+          // reported as "Delete failed" because the delete itself succeeded.
+          await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+            console.error("[TerminalsPage] refresh after delete failed", { sessionId: session.id, refreshErr });
+          });
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error("[TerminalsPage] delete chat failed", { sessionId: session.id, err });
+          setSessionActionError(`Delete failed: ${message}`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        })
+        .finally(() => {
+          setDeletingSessionId((current) => (current === session.id ? null : current));
+        });
+    },
+    [work],
+  );
+
+  const handleDeleteSession = useCallback(
+    (session: TerminalSessionSummary) => {
+      const label = (session.goal ?? session.title).trim() || "this session";
+      const confirmed = window.confirm(
+        `Delete "${label}"?\n\nThis permanently removes the saved terminal session from ADE.`,
+      );
+      if (!confirmed) return;
+
+      setSessionActionError(null);
+      setDeletingSessionId(session.id);
+      void window.ade.sessions.delete({ sessionId: session.id })
+        .then(async () => {
+          invalidateSessionListCache();
+          work.removeSessionFromList(session.id);
+          work.closeTab(session.id);
+          setContextMenu((current) => (current?.session.id === session.id ? null : current));
+          setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+          await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+            console.error("[TerminalsPage] refresh after session delete failed", { sessionId: session.id, refreshErr });
+          });
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error("[TerminalsPage] delete session failed", { sessionId: session.id, err });
+          setSessionActionError(`Delete failed: ${message}`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        })
+        .finally(() => {
+          setDeletingSessionId((current) => (current === session.id ? null : current));
+        });
+    },
+    [work],
+  );
+
+  const selectedSessions = useMemo(
+    () => selectableSessions.filter((session) => selectedSessionIds.has(session.id)),
+    [selectableSessions, selectedSessionIds],
+  );
+
+  const handleBulkCloseSelected = useCallback(() => {
+    const running = selectedSessions.filter((session) => session.status === "running");
+    if (!running.length) return;
+    const confirmed = window.confirm(
+      `Close ${running.length} running session${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI, shell, or chat process for each selected running session.`,
+    );
+    if (!confirmed) return;
+
+    setSessionActionError(null);
+    void Promise.allSettled(
+      running.map((session) => {
+        if (isChatToolType(session.toolType)) {
+          return work.closeChatSession(session.id);
+        }
+        if (session.ptyId) {
+          return work.closeSession(session.ptyId, session.id);
+        }
+        return Promise.resolve();
+      }),
+    )
+      .then((results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        if (failed > 0) {
+          setSessionActionError(`Close failed for ${failed} selected session${failed === 1 ? "" : "s"}.`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        }
+        setSelectedSessionIds(new Set());
+        setSelectionAnchorId(null);
+        invalidateSessionListCache();
+        return work.refresh({ showLoading: false, force: true });
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Close failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      });
+  }, [selectedSessions, work]);
+
+  const handleBulkDeleteSelected = useCallback(() => {
+    const ended = selectedSessions.filter((session) => session.status !== "running");
+    if (!ended.length) return;
+    const confirmed = window.confirm(
+      `Delete ${ended.length} ended session${ended.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
+    );
+    if (!confirmed) return;
+
+    setSessionActionError(null);
+    setDeletingSessionId("bulk");
+    void Promise.allSettled(
+      ended.map((session) => (
+        isChatToolType(session.toolType)
+          ? window.ade.agentChat.delete({ sessionId: session.id })
+          : window.ade.sessions.delete({ sessionId: session.id })
+      )),
+    )
+      .then(async (results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        const succeededIds = ended
+          .filter((_, index) => results[index]?.status === "fulfilled")
+          .map((session) => session.id);
+        for (const sessionId of succeededIds) {
+          work.removeSessionFromList(sessionId);
+          work.closeTab(sessionId);
+        }
+        setSelectedSessionIds(new Set());
+        setSelectionAnchorId(null);
+        setContextMenu(null);
+        setInfoPopover(null);
+        invalidateSessionListCache();
+        await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+          console.error("[TerminalsPage] refresh after bulk delete failed", { refreshErr });
+        });
+        if (failed > 0) {
+          setSessionActionError(`Delete failed for ${failed} selected session${failed === 1 ? "" : "s"}.`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        }
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Delete failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      })
+      .finally(() => {
+        setDeletingSessionId((current) => (current === "bulk" ? null : current));
+      });
+  }, [selectedSessions, work]);
+
+  const selectedArchivableChats = useMemo(
+    () => selectedSessions.filter((session) => isChatToolType(session.toolType) && !session.archivedAt),
+    [selectedSessions],
+  );
+  const selectedRestorableChats = useMemo(
+    () => selectedSessions.filter((session) => isChatToolType(session.toolType) && Boolean(session.archivedAt)),
+    [selectedSessions],
+  );
+
+  const handleBulkArchiveSelected = useCallback(() => {
+    const targets = selectedArchivableChats;
+    if (!targets.length) return;
+    const confirmed = window.confirm(
+      `Archive ${targets.length} chat${targets.length === 1 ? "" : "s"}?\n\nArchived chats are hidden from the default view but can be restored later. Terminal sessions in your selection are skipped.`,
+    );
+    if (!confirmed) return;
+    setSessionActionError(null);
+    void Promise.allSettled(
+      targets.map((session) => window.ade.agentChat.archive({ sessionId: session.id })),
+    )
+      .then(async (results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        setSelectedSessionIds(new Set());
+        setSelectionAnchorId(null);
+        invalidateSessionListCache();
+        await work.refresh({ showLoading: false, force: true }).catch((err: unknown) => {
+          console.error("[TerminalsPage] refresh after bulk archive failed", { err });
+        });
+        if (failed > 0) {
+          setSessionActionError(`Archive failed for ${failed} chat${failed === 1 ? "" : "s"}.`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        }
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Archive failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      });
+  }, [selectedArchivableChats, work]);
+
+  const handleBulkRestoreSelected = useCallback(() => {
+    const targets = selectedRestorableChats;
+    if (!targets.length) return;
+    setSessionActionError(null);
+    void Promise.allSettled(
+      targets.map((session) => window.ade.agentChat.unarchive({ sessionId: session.id })),
+    )
+      .then(async (results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        setSelectedSessionIds(new Set());
+        setSelectionAnchorId(null);
+        invalidateSessionListCache();
+        await work.refresh({ showLoading: false, force: true }).catch((err: unknown) => {
+          console.error("[TerminalsPage] refresh after bulk restore failed", { err });
+        });
+        if (failed > 0) {
+          setSessionActionError(`Restore failed for ${failed} chat${failed === 1 ? "" : "s"}.`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        }
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Restore failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      });
+  }, [selectedRestorableChats, work]);
+
+  const handleBulkExportSelected = useCallback(() => {
+    if (!selectedSessions.length) return;
+    setSessionActionError(null);
+    try {
+      const markdown = formatSessionBundleMarkdown(selectedSessions);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      triggerBrowserDownload(`ade-sessions-${stamp}.md`, markdown);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSessionActionError(`Export failed: ${message}`);
+      window.setTimeout(() => setSessionActionError(null), 6000);
+    }
+  }, [selectedSessions]);
+
+  const handleResumeSession = useCallback(
+    (session: TerminalSessionSummary) => {
+      void work.resumeSession(session).catch(() => {});
+    },
+    [work],
+  );
+
   const workViewArea = useMemo(
     () => (
       <WorkViewArea
@@ -100,7 +403,12 @@ export function TerminalsPage() {
         onToggleTabGroupCollapsed={work.toggleWorkTabGroupCollapsed}
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
-        onResumeSession={(s) => work.resumeSession(s).catch(() => {})}
+        onResumeSession={handleResumeSession}
+        sessionsPaneCollapsed={work.workFocusSessionsHidden}
+        onExpandSessionsPane={() => work.setWorkFocusSessionsHidden(false)}
+        sessionsPaneListCount={work.filtered.length}
+        sessionsPaneRunningCount={work.runningSessions.length}
+        sessionsListLoading={work.loading}
       />
     ),
     [
@@ -120,8 +428,13 @@ export function TerminalsPage() {
       work.launchPtySession,
       work.toggleWorkTabGroupCollapsed,
       work.closingPtyIds,
-      work.resumeSession,
+      work.workFocusSessionsHidden,
+      work.setWorkFocusSessionsHidden,
+      work.filtered.length,
+      work.runningSessions.length,
+      work.loading,
       handleOpenChatSession,
+      handleResumeSession,
       handleContextMenu,
     ],
   );
@@ -131,7 +444,7 @@ export function TerminalsPage() {
 
   const sessionsHeaderActions = useMemo(
     () => (
-      <>
+      <span data-tour="work.sessionsHeader" className="inline-flex items-center gap-1.5">
         {runningCount > 0 ? (
           <span
             className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
@@ -151,7 +464,7 @@ export function TerminalsPage() {
         >
           <SidebarSimple size={13} weight="regular" />
         </button>
-      </>
+      </span>
     ),
     [runningCount, setFocusHidden],
   );
@@ -161,7 +474,10 @@ export function TerminalsPage() {
       sessions: {
         title: "Work",
         headerActions: sessionsHeaderActions,
+        // tour anchor: wraps the sessions panel so the Work tour anchors
+        // at the whole pane, not just an inner element.
         children: (
+          <div className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
           <SessionListPane
             lanes={sortedLanes}
             runningFiltered={work.runningFiltered}
@@ -175,10 +491,22 @@ export function TerminalsPage() {
             q={work.q}
             setQ={work.setQ}
             selectedSessionId={work.selectedSessionId}
+            selectedSessionIds={selectedSessionIds}
             draftKind={work.draftKind}
             showingDraft={work.activeItemId == null}
             onShowDraftKind={work.showDraftKind}
             onSelectSession={handleSelectSession}
+            onClearSelection={() => {
+              setSelectedSessionIds(new Set());
+              setSelectionAnchorId(null);
+            }}
+            onBulkClose={handleBulkCloseSelected}
+            onBulkDelete={handleBulkDeleteSelected}
+            onBulkArchive={handleBulkArchiveSelected}
+            onBulkRestore={handleBulkRestoreSelected}
+            onBulkExport={handleBulkExportSelected}
+            archivableCount={selectedArchivableChats.length}
+            restorableCount={selectedRestorableChats.length}
             onResume={(s) => work.resumeSession(s).catch(() => {})}
             resumingSessionId={work.resumingSessionId}
             onInfoClick={handleInfoClick}
@@ -191,19 +519,33 @@ export function TerminalsPage() {
             toggleWorkSectionCollapsed={work.toggleWorkSectionCollapsed}
             sessionsGroupedByLane={work.sessionsGroupedByLane}
           />
+          </div>
         ),
       },
 
       view: {
         title: "",
         bodyClassName: "overflow-hidden",
-        children: workViewArea,
+        // tour anchor: wraps the view area so the Work tour can target it.
+        children: (
+          <div className="h-full min-h-0" data-tour="work.viewArea">
+            {workViewArea}
+          </div>
+        ),
       },
     }),
     [
       work,
       sortedLanes,
       handleSelectSession,
+      selectedSessionIds,
+      handleBulkCloseSelected,
+      handleBulkDeleteSelected,
+      handleBulkArchiveSelected,
+      handleBulkRestoreSelected,
+      handleBulkExportSelected,
+      selectedArchivableChats,
+      selectedRestorableChats,
       handleInfoClick,
       handleContextMenu,
       sessionsHeaderActions,
@@ -213,47 +555,18 @@ export function TerminalsPage() {
 
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)" }}>
-      {renameError ? (
+      {sessionActionError ? (
         <div
           className="shrink-0 border-b border-red-500/25 px-4 py-2 text-[12px] text-red-300/95"
           style={{ background: "rgba(239, 68, 68, 0.08)" }}
           role="status"
         >
-          {renameError}
+          {sessionActionError}
         </div>
       ) : null}
       {work.workFocusSessionsHidden ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div
-            className="flex h-8 shrink-0 items-center gap-2 px-2"
-            style={{
-              borderBottom: "1px solid var(--work-pane-border)",
-              background: "var(--color-bg)",
-            }}
-          >
-            <button
-              type="button"
-              className="ade-shell-control inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium"
-              data-variant="ghost"
-              onClick={() => work.setWorkFocusSessionsHidden(false)}
-            >
-              <SidebarSimple size={13} weight="regular" />
-              Sessions
-            </button>
-            {!work.loading && work.filtered.length > 0 ? (
-              <span className="text-[10px] text-muted-fg/40">{work.filtered.length}</span>
-            ) : null}
-            {work.runningSessions.length > 0 ? (
-              <span
-                className="ml-auto inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
-                style={{ color: "var(--color-success)", background: "rgba(34, 197, 94, 0.08)" }}
-              >
-                <span className="ade-status-dot ade-status-dot-active" style={{ width: 4, height: 4 }} />
-                {work.runningSessions.length} running
-              </span>
-            ) : null}
-          </div>
-          <div className="min-h-0 flex-1 overflow-hidden">{workViewArea}</div>
+        <div className="min-h-0 flex-1 overflow-hidden" data-tour="work.viewArea">
+          {workViewArea}
         </div>
       ) : (
         <PaneTilingLayout
@@ -269,12 +582,15 @@ export function TerminalsPage() {
         onClose={() => setContextMenu(null)}
         onCloseSession={({ ptyId, sessionId }) => work.closeSession(ptyId, sessionId).catch(() => {})}
         onEndChat={(id) => work.closeChatSession(id).catch(() => {})}
-        onResume={(s) => work.resumeSession(s).catch(() => {})}
+        onDeleteChat={handleDeleteChat}
+        onDeleteSession={handleDeleteSession}
+        deletingSessionId={deletingSessionId}
+        onResume={handleResumeSession}
         onCopyResumeCommand={(cmd) => navigator.clipboard.writeText(cmd).catch(() => {})}
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onRename={(session, newTitle) => {
-          setRenameError(null);
+          setSessionActionError(null);
           const renamePromise = isChatToolType(session.toolType)
             ? window.ade.agentChat.updateSession({ sessionId: session.id, title: newTitle, manuallyNamed: true })
             : window.ade.sessions.updateMeta({ sessionId: session.id, title: newTitle, manuallyNamed: true });
@@ -288,8 +604,8 @@ export function TerminalsPage() {
             .catch((err: unknown) => {
               const message = err instanceof Error ? err.message : String(err);
               console.error("[TerminalsPage] rename session failed", { sessionId: session.id, err });
-              setRenameError(`Rename failed: ${message}`);
-              window.setTimeout(() => setRenameError(null), 6000);
+              setSessionActionError(`Rename failed: ${message}`);
+              window.setTimeout(() => setSessionActionError(null), 6000);
             });
         }}
       />
@@ -299,10 +615,13 @@ export function TerminalsPage() {
         onClose={() => setInfoPopover(null)}
         onCloseSession={({ ptyId, sessionId }) => work.closeSession(ptyId, sessionId).catch(() => {})}
         onEndChat={(id) => work.closeChatSession(id).catch(() => {})}
-        onResume={(s) => work.resumeSession(s).catch(() => {})}
+        onDeleteChat={handleDeleteChat}
+        onDeleteSession={handleDeleteSession}
+        onResume={handleResumeSession}
         onGoToLane={handleGoToLane}
         closingPtyIds={work.closingPtyIds}
         closingChatSessionId={work.closingChatSessionId}
+        deletingSessionId={deletingSessionId}
         resumingSessionId={work.resumingSessionId}
       />
     </div>

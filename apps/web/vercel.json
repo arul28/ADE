@@ -1,4 +1,5 @@
 {
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- .",
   "rewrites": [
     {
       "source": "/docs",
@@ -7,6 +8,10 @@
     {
       "source": "/docs/:match*",
       "destination": "https://ade-ac1c6011.mintlify.dev/docs/:match*"
+    },
+    {
+      "source": "/((?!.*\\.).*)",
+      "destination": "/index.html"
     }
   ]
 }

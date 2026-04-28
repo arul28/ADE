@@ -12,7 +12,7 @@ Two related but distinct flows:
 
 The runtime no longer assumes first-run setup must hydrate every
 service. Project open favors a cheap first pass; secondary hydration
-(full lane status, provider modes, context generation) happens after
+(full lane status, provider modes, semantic indexing) happens after
 the app is interactive.
 
 ## Source file map
@@ -20,8 +20,17 @@ the app is interactive.
 Main process:
 
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
-  status, stack detection, suggested config, existing lane detection.
-  ~340 lines.
+  status, stack detection, suggested config, existing lane detection,
+  and tour progress tracking. `OnboardingTourProgress` carries the
+  legacy flat per-tour map (`tours: Record<string, OnboardingTourEntry>`)
+  plus a new variant-aware `tourVariants: Record<string,
+  OnboardingTourEntryV2>` keyed by base tour id with a `full` +
+  `highlights` pair. A separate `tutorial: OnboardingTutorialState`
+  slab tracks the 13-act first-session tutorial
+  (`completedAt`/`dismissedAt`/`silenced`/`inProgress`/`lastActIndex`/
+  `ctxSnapshot`). Glossary terms seen are tracked in
+  `glossaryTermsSeen[]`. Persisted to `kvDb` under
+  `onboarding:tourProgress`.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
   Linear sync resolver. ~2,870 lines, the largest service.
@@ -59,6 +68,69 @@ Renderer — onboarding:
   — dev tool detection (git, gh).
 - `apps/desktop/src/renderer/components/onboarding/EmbeddingsSection.tsx`
   — local embedding model setup.
+- `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
+  — top-level orchestrator: mounts the `TourHost`, auto-fires per-tab
+  tours on route change, renders `DidYouKnow`, and pops the
+  `TutorialPromptCard` when the first-session tutorial is available.
+  `DidYouKnow` suppresses itself whenever `activeTourId` is set in the
+  onboarding store, so a live tour never competes with a "did you know"
+  tooltip. `SmartTooltip` applies the same gate — tooltips silently
+  return a null wrapper while a tour is active so the tour's own
+  spotlight is the only floating UI.
+- `apps/desktop/src/renderer/components/onboarding/TutorialPromptCard.tsx`
+  — Start / Not now / Don't show again gate for the 13-act tutorial.
+- `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
+  — persistent help menu in the top bar: tour replay, glossary, docs
+  links, restart tutorial.
+- `apps/desktop/src/renderer/components/onboarding/tour/TourHost.tsx`,
+  `TourOverlay.tsx`, `TourStep.tsx` — rendered overlay and per-step card.
+  `TourHost` intentionally does not gate on the `onboardingEnabled`
+  preference: the preference hides passive onboarding surfaces
+  (`DidYouKnow`, tour auto-start hooks), but a tour the user explicitly
+  starts from the Help menu must still render even when ambient
+  onboarding is off — otherwise the menu would silently change routes
+  without showing any guidance. `TourOverlay` applies a short
+  (350 ms) grace period after a step mounts before
+  `exitOnOutsideInteraction` takes effect, so the click that launched
+  the current step cannot also dismiss it.
+- `apps/desktop/src/renderer/components/onboarding/fx/*` — motion-FX
+  primitives (`ActIntro`, `AnimatedField`, `Confetti`, `GhostCursor`,
+  `MorphingTree`, `Spotlight`, `StaggeredText`, `TourIllustration`)
+  plus a `useReducedMotion` hook. Used by the tutorial and per-tab tours.
+- `apps/desktop/src/renderer/onboarding/TourController.ts` — imperative
+  driver (advance/skip/complete/dismiss); source of truth for the
+  Zustand `onboardingStore`.
+- `apps/desktop/src/renderer/onboarding/waitForTarget.ts` — polls for a
+  DOM target (ref or `data-onboarding-target`) with a visibility check
+  so tour steps anchor reliably to async-mounted elements.
+- `apps/desktop/src/renderer/onboarding/docsLinks.ts` — typed registry
+  of internal/public doc URLs that tour steps and `HelpMenu` link to.
+- `apps/desktop/src/renderer/onboarding/registry.ts` — tour registry.
+- `apps/desktop/src/renderer/onboarding/tourGuards.ts` — per-step guard
+  predicates (route, selection, and element-presence checks) that decide
+  whether a step can advance, skip, or must pause for the user.
+- `apps/desktop/src/renderer/onboarding/stepBuilders/*.ts` — factories
+  for per-dialog tour steps (`createLaneDialog`, `manageLaneDialog`,
+  `prCreateModal`); kept separate from the per-surface tour files so
+  dialog-scoped steps can be composed from multiple tours.
+- `apps/desktop/src/renderer/onboarding/tours/*.ts` — per-surface tours:
+  `lanesTour`, `laneWorkPaneTour`, `workTour`, `filesTour`,
+  `runTour`, `missionsTour`, `prsTour`, `graphTour`, `historyTour`,
+  `automationsTour`, `ctoTour`, `settingsTour`, plus the first-session
+  `firstJourneyTour`. The first-session tour reuses individual steps
+  from the per-surface tours via a small `tutorialSection(sectionId,
+  steps, requires)` wrapper that namespaces step ids
+  (`<sectionId>.<index>`), forces a `requires` gate, derives
+  `waitForSelector` from `target`, and — for any step that has a
+  `requires` gate without its own `fallbackAfterMs` — injects a
+  default 30 s `Skip` fallback so the tutorial can never get
+  permanently stuck waiting on state that doesn't appear. The acts
+  themselves are intentionally streamlined: act 1 only borrows the
+  base-branch / status-chip / lane-work-pane bits (since the user has
+  just created a lane interactively); acts 2 + 3 inline ctx-aware
+  graph/files steps directly rather than spreading the full sub-tour;
+  the per-act "tab handoff" reminder steps were collapsed into the
+  single act 12 finale.
 - `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
   separate lightweight wizard covering identity, project context, and
   optional Linear (see `apps/desktop/src/renderer/components/cto/`).
@@ -69,24 +141,41 @@ Renderer — settings:
   container with eight top-level sections.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
   — theme, AI mode, task routing, terminal preferences, keybindings
-  link.
+  link, and the embedded `AdeCliSection` (compact form) so the most
+  common terminal-CLI install/repair affordance lives next to the
+  other day-one settings without forcing a tab switch into
+  Integrations.
+- `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
+  — surfaces `ade.cli.getStatus` / `ade.cli.install` / `ade.cli.uninstall`.
+  In compact form (used by `GeneralSection` and the onboarding
+  `DevToolsSection`) it shows the current install path, an
+  Install / Repair button, and a "Add to PATH" hint when the install
+  target isn't on the user's `$PATH`.
 - `apps/desktop/src/renderer/components/settings/WorkspaceSettingsSection.tsx`
   + `ProjectSection.tsx` — project identity, base ref, paths.
-- `apps/desktop/src/renderer/components/settings/ContextSection.tsx`
-  — context docs management and generation preferences.
 - `apps/desktop/src/renderer/components/settings/AiSettingsSection.tsx`
   / `AiFeaturesSection.tsx` — AI provider preferences.
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
   — provider CLIs and models.
 - `apps/desktop/src/renderer/components/settings/IntegrationsSettingsSection.tsx`
-  — GitHub, Linear, computer use integrations.
+  — GitHub, Linear, and computer-use backend readiness. The old
+  dedicated `ComputerUseSection.tsx` was removed; its content folded
+  in here.
 - `apps/desktop/src/renderer/components/settings/MemoryHealthTab.tsx`
   — memory system overview and browser.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
+- `apps/desktop/src/renderer/components/settings/OnboardingSection.tsx`
+  — surfaces the first-session tutorial and per-tab tour progress,
+  plus replay controls.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
-  — multi-device sync management.
+  — multi-device sync management. Surfaces the phone-pairing PIN (set
+  / clear / reveal), the QR payload (v2) with its LAN / Tailscale /
+  loopback address candidates, the bootstrap token for desktop peers,
+  the Tailscale MagicDNS discovery status (`svc:ade-sync` publication
+  via `tailscale serve`), and the per-device connection panel used to
+  forget paired phones.
 - `apps/desktop/src/renderer/components/settings/SettingsUsageSection.tsx`
   and `UsageGuardrailsSection.tsx` — cost and usage.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
@@ -111,7 +200,7 @@ Repository onboarding covers five things:
 2. detect stack signals (node, rust, go, python, docker, make)
 3. suggest config defaults for processes, tests, stacks
 4. optionally import existing git branches as lanes
-5. prepare initial deterministic context state
+5. prepare initial deterministic workspace state
 
 Timing: project open runs a cheap first pass and defers heavy work.
 Current behavior:
@@ -119,8 +208,8 @@ Current behavior:
 - lanes load without expensive per-lane status first
 - keybindings load immediately (they are tiny)
 - provider mode and full lane status warm later
-- context doc generation is no longer gated on "must finish before the
-  app feels usable"
+- expensive background work is no longer gated on "must finish before
+  the app feels usable"
 
 ### CTO first-run setup
 
@@ -144,13 +233,14 @@ is changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `GeneralSection.tsx` | Theme, AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link |
-| Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx`, `ContextSection.tsx` | Project identity, context docs, skill files |
-| AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx`, `ComputerUseSection.tsx` | Provider CLIs, models, AI feature flags |
-| Sync | `SyncDevicesSection.tsx` | Multi-device sync (Phase 6), host-role transfer, peer status |
-| Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx`, `ExternalMcpSection.tsx` | GitHub, Linear, external MCP servers |
+| General | `GeneralSection.tsx` (embeds `AdeCliSection` in compact form) | Theme, AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link, and the `ade` CLI install / status surface |
+| Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx` | Project identity, paths, skill files |
+| AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, AI feature flags |
+| Sync | `SyncDevicesSection.tsx` | Multi-device sync, host-role transfer, peer status, pairing PIN, Tailscale tailnet discovery |
+| Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness. The GitHub section reads `status.connected` (the backend's single "GitHub is usable" gate) to decide between CONNECTED / LIMITED ACCESS / NOT CONNECTED, surfaces a dedicated repo-probe error when a fine-grained token authenticates as a user but cannot access the active repo, and the REFRESH button calls `getStatus({ forceRefresh: true })` so users who fix permissions on github.com see the change immediately. See [`pull-requests/README.md`](../pull-requests/README.md#github-connectivity-model) for the full status-shape and `connected` derivation. |
 | Memory | `MemoryHealthTab.tsx` | Memory health, browser, embedding health |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
+| Onboarding | `OnboardingSection.tsx` | First-session tutorial + per-tab tour progress and replay controls |
 | Usage | `SettingsUsageSection.tsx`, `UsageGuardrailsSection.tsx` | Cost visibility and guardrails |
 
 The Settings page itself (`SettingsPage.tsx`) has a legacy alias
@@ -221,8 +311,6 @@ Onboarding and settings follow a simple rule:
 ## Cross-links
 
 - Run/Project home: [../project-home/README.md](../project-home/README.md)
-- Context docs (consumed by Settings > Workspace > Context):
-  [../context-packs/](../context-packs/)
 - Lane templates used during lane creation: Lanes feature
 - Terminal preferences applied at runtime:
   [../terminals-and-sessions/ui-surfaces.md](../terminals-and-sessions/ui-surfaces.md)

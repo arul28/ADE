@@ -169,8 +169,7 @@
             "expanded": true,
             "pages": [
               "configuration/settings",
-              "configuration/ai-providers",
-              "configuration/mcp-servers"
+              "configuration/ai-providers"
             ]
           },
           {
@@ -189,15 +188,6 @@
               "computer-use/setup",
               "computer-use/proofs",
               "computer-use/config"
-            ]
-          },
-          {
-            "group": "Context Packs",
-            "icon": "cubes",
-            "pages": [
-              "context-packs/overview",
-              "context-packs/structure",
-              "context-packs/freshness"
             ]
           },
           {
@@ -220,6 +210,13 @@
             "icon": "tag",
             "expanded": true,
             "pages": [
+              "changelog/v1.1.6",
+              "changelog/v1.1.5",
+              "changelog/v1.1.4",
+              "changelog/v1.1.3",
+              "changelog/v1.1.2",
+              "changelog/v1.1.0",
+              "changelog/v1.0.19",
               "changelog/v1.0.18",
               "changelog/v1.0.17",
               "changelog/v1.0.16",
@@ -267,7 +264,6 @@
       "claude",
       "chatgpt",
       "perplexity",
-      "mcp",
       "cursor",
       "vscode"
     ]
@@ -283,7 +279,7 @@
         "items": [
           { "label": "Features", "href": "/lanes/overview" },
           { "label": "Download", "href": "https://github.com/arul28/ADE/releases" },
-          { "label": "Changelog", "href": "/changelog/v1.0.18" }
+          { "label": "Changelog", "href": "/changelog/v1.1.0" }
         ]
       },
       {

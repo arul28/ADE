@@ -1,7 +1,9 @@
 import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "./prService";
+import type { AdeDb } from "../state/kvDb";
 import type { PrEventPayload, PrNotificationKind, PrSummary } from "../../../shared/types";
+import type { NotificationEventBus } from "../notifications/notificationEventBus";
 import { nowIso } from "../shared/utils";
 
 function clampMs(value: number, min: number, max: number): number {
@@ -57,7 +59,9 @@ export function createPrPollingService({
   prService,
   projectConfigService,
   onEvent,
-  onPullRequestsChanged
+  onPullRequestsChanged,
+  db,
+  notificationEventBus,
 }: {
   logger: Logger;
   prService: ReturnType<typeof createPrService>;
@@ -74,6 +78,14 @@ export function createPrPollingService({
     }>;
     polledAt: string;
   }) => void | Promise<void>;
+  /** Optional database handle used to persist `last_polled_at` per PR for delta polling. */
+  db?: AdeDb;
+  /**
+   * Optional notification bus. When provided, transition events (checks_failing,
+   * review_requested, changes_requested, merge_ready) are forwarded for mobile
+   * push fan-out in addition to the legacy `onEvent("pr-notification")` path.
+   */
+  notificationEventBus?: NotificationEventBus | null;
 }) {
   const DEFAULT_INTERVAL_MS = 60_000;
   const MIN_INTERVAL_MS = 5_000;
@@ -85,6 +97,27 @@ export function createPrPollingService({
       return clampMs(Math.round(seconds * 1000), MIN_INTERVAL_MS, MAX_INTERVAL_MS);
     }
     return DEFAULT_INTERVAL_MS;
+  };
+
+  const getLastPolledAt = (prId: string): string | null => {
+    if (!db) return null;
+    const row = db.get<{ last_polled_at: string | null }>(
+      "select last_polled_at from pull_requests where id = ? limit 1",
+      [prId],
+    );
+    return row?.last_polled_at ?? null;
+  };
+
+  const setLastPolledAt = (prId: string, iso: string): void => {
+    if (!db) return;
+    try {
+      db.run("update pull_requests set last_polled_at = ? where id = ?", [iso, prId]);
+    } catch (err) {
+      logger.warn("prs.last_polled_at_update_failed", {
+        prId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   };
 
   let stopped = false;
@@ -248,6 +281,23 @@ export function createPrPollingService({
             headBranch: pr.headBranch ?? null,
             baseBranch: pr.baseBranch ?? null
           });
+          // Also forward to the notification bus so the mobile push fan-out
+          // can route this event through APNs / in-app. Any failure here must
+          // not break the legacy event path.
+          try {
+            notificationEventBus?.publishPrEvent({
+              kind,
+              pr,
+              titleOverride: summary.title,
+              messageOverride: summary.message,
+            });
+          } catch (error) {
+            logger.warn("prs.notification_publish_failed", {
+              prId: pr.id,
+              kind,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
 
         lastByPrId.set(pr.id, {
@@ -282,6 +332,12 @@ export function createPrPollingService({
           lastByPrId.delete(prId);
           lastFingerprintByPrId.delete(prId);
         }
+      }
+
+      // Update last_polled_at cursor per PR. Enables delta polling on the next tick:
+      // callers can pass `since=last_polled_at` when fetching review threads / comments.
+      for (const pr of prs) {
+        setLastPolledAt(pr.id, polledAt);
       }
 
       consecutiveFailures = 0;
@@ -321,6 +377,7 @@ export function createPrPollingService({
   return {
     start,
     poke,
+    getLastPolledAt,
     dispose() {
       stopped = true;
       if (timer) clearTimeout(timer);

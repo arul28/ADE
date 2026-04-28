@@ -60,7 +60,6 @@ describe("computerUseArtifactBrokerService", () => {
 
     const ingested = broker.ingest({
       backend: {
-        style: "external_cli",
         name: "agent-browser",
       },
       owners: [{ kind: "lane", id: "lane-1" }],
@@ -75,6 +74,9 @@ describe("computerUseArtifactBrokerService", () => {
     });
 
     const artifactId = ingested.artifacts[0]!.id;
+    const initial = broker.listArtifacts({ artifactId });
+    expect(initial[0]?.reviewState).toBe("accepted");
+    expect(initial[0]?.workflowState).toBe("evidence_only");
 
     const routed = broker.routeArtifact({
       artifactId,
@@ -133,7 +135,6 @@ describe("computerUseArtifactBrokerService", () => {
       expect(() =>
         broker.ingest({
           backend: {
-            style: "external_cli",
             name: "agent-browser",
           },
           inputs: [
@@ -174,7 +175,6 @@ describe("computerUseArtifactBrokerService", () => {
       expect(() =>
         broker.ingest({
           backend: {
-            style: "external_cli",
             name: "agent-browser",
           },
           inputs: [

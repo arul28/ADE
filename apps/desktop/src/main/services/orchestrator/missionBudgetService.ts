@@ -57,11 +57,6 @@ type MissionRow = {
   completed_at: string | null;
 };
 
-type ExternalMcpCostRow = {
-  step_id: string | null;
-  total_cost_cents: number;
-};
-
 type ClaudeProviderUsage = {
   inputTokens: number;
   outputTokens: number;
@@ -884,49 +879,6 @@ export function createMissionBudgetService(args: {
     };
   };
 
-  const readExternalMcpCosts = (args: {
-    missionId: string;
-    runId?: string | null;
-  }): {
-    byStepId: Map<string, number>;
-    unscopedCostUsd: number;
-    totalCostUsd: number;
-  } => {
-    const runId = typeof args.runId === "string" && args.runId.trim().length > 0 ? args.runId.trim() : null;
-    const rows = db.all<ExternalMcpCostRow>(
-      `
-        select
-          step_id,
-          coalesce(sum(cost_cents), 0) as total_cost_cents
-        from external_mcp_usage_events
-        where project_id = ?
-          and mission_id = ?
-          and (? is null or run_id = ?)
-        group by step_id
-      `,
-      [projectId, args.missionId, runId, runId],
-    );
-    const byStepId = new Map<string, number>();
-    let unscopedCostUsd = 0;
-    let totalCostUsd = 0;
-    for (const row of rows) {
-      const costUsd = Math.max(0, Number((Number(row.total_cost_cents ?? 0) / 100).toFixed(6)));
-      if (costUsd <= 0) continue;
-      const stepId = typeof row.step_id === "string" ? row.step_id.trim() : "";
-      totalCostUsd += costUsd;
-      if (stepId.length > 0) {
-        byStepId.set(stepId, costUsd);
-      } else {
-        unscopedCostUsd += costUsd;
-      }
-    }
-    return {
-      byStepId,
-      unscopedCostUsd: Number(unscopedCostUsd.toFixed(6)),
-      totalCostUsd: Number(totalCostUsd.toFixed(6)),
-    };
-  };
-
   const estimateLaunchBudget = async (args: {
     launch: CreateMissionArgs;
     selectedPhases: PhaseCard[];
@@ -1092,12 +1044,6 @@ export function createMissionBudgetService(args: {
       `,
       [missionId, projectId, runIdFilter, runIdFilter],
     );
-    const externalMcpCosts = readExternalMcpCosts({
-      missionId,
-      runId: runRow?.id ?? runIdFilter,
-    });
-    const unmatchedExternalMcpCostByStep = new Map(externalMcpCosts.byStepId);
-
     const phaseConfiguration = missionService.getPhaseConfiguration(missionId);
     const selectedPhases = phaseConfiguration?.selectedPhases ?? [];
     const phaseByKey = new Map(selectedPhases.map((phase) => [phase.phaseKey, phase] as const));
@@ -1211,9 +1157,7 @@ export function createMissionBudgetService(args: {
       const meteredCostUsd = mode === "api-key" || modelBudgetPath.apiMetered
         ? estimateTokenCost(model, inputTokens, outputTokens)
         : 0;
-      const externalStepCostUsd = unmatchedExternalMcpCostByStep.get(row.step_id) ?? 0;
-      unmatchedExternalMcpCostByStep.delete(row.step_id);
-      const usedCostUsd = Number((meteredCostUsd + externalStepCostUsd).toFixed(6));
+      const usedCostUsd = Number(meteredCostUsd.toFixed(6));
 
       if (row.status === "running") activeWorkers += 1;
 
@@ -1270,18 +1214,8 @@ export function createMissionBudgetService(args: {
     let missionUsedTokens = perPhase.reduce((sum, phase) => sum + phase.usedTokens, 0);
     let missionUsedTimeMs = perPhase.reduce((sum, phase) => sum + phase.usedTimeMs, 0);
     let missionUsedCostUsd = perPhase.reduce((sum, phase) => sum + phase.usedCostUsd, 0);
-    if (externalMcpCosts.totalCostUsd > 0) {
-      missionUsedCostUsd = Number((
-        missionUsedCostUsd
-        + externalMcpCosts.unscopedCostUsd
-        + [...unmatchedExternalMcpCostByStep.values()].reduce((sum, value) => sum + value, 0)
-      ).toFixed(6));
-    }
 
     const dataSources = ["ai_usage_log", "orchestrator_attempts"];
-    if (externalMcpCosts.totalCostUsd > 0) {
-      dataSources.push("external_mcp_usage_events");
-    }
 
     const runStart = Date.parse(runRow?.started_at ?? missionRow.started_at ?? missionRow.completed_at ?? nowIso());
     const runEnd = Date.parse(runRow?.completed_at ?? missionRow.completed_at ?? nowIso());

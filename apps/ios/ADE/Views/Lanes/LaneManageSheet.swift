@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Manage lane sheet
-
 struct LaneManageSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -66,21 +64,48 @@ struct LaneManageSheet: View {
     snapshot.lane.laneType != "primary"
   }
 
+  private var canRunLiveActions: Bool {
+    laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: syncService.status(for: .lanes))
+  }
+
+  private var liveActionNoticePresentation: LaneEmptyStatePresentation? {
+    laneLiveActionNotice(
+      connectionState: syncService.connectionState,
+      laneStatus: syncService.status(for: .lanes),
+      hasHostProfile: syncService.activeHostProfile != nil
+    )
+  }
+
   var body: some View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 14) {
+          if !syncService.connectionState.isHostUnreachable,
+            let liveActionNoticePresentation
+          {
+            ADENoticeCard(
+              title: liveActionNoticePresentation.title,
+              message: liveActionNoticePresentation.message,
+              icon: liveActionNoticePresentation.symbol,
+              tint: ADEColor.warning,
+              actionTitle: liveActionNoticePresentation.actionTitle,
+              action: liveActionNoticePresentation.action.map { action in
+                { handleNoticeAction(action) }
+              }
+            )
+          }
+
           if let errorMessage {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
               Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEColor.danger)
               Text(errorMessage)
                 .font(.caption)
                 .foregroundStyle(ADEColor.danger)
-              Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+              Spacer(minLength: 0)
             }
-            .padding(12)
-            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .adeGlassCard(cornerRadius: 12, padding: 12)
           }
 
           GlassSection(title: "Identity") {
@@ -89,13 +114,31 @@ struct LaneManageSheet: View {
               LaneActionButton(title: "Save name", symbol: "checkmark.circle.fill", tint: ADEColor.accent) {
                 Task { await performAction("rename lane") { try await syncService.renameLane(snapshot.lane.id, name: renameText) } }
               }
-              .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || renameText == snapshot.lane.name)
+              .disabled(!canRunLiveActions || renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || renameText == snapshot.lane.name)
             }
           }
 
           GlassSection(title: "Appearance") {
             VStack(alignment: .leading, spacing: 12) {
-              LaneTextField("Color token or hex", text: $colorText).textInputAutocapitalization(.never)
+              VStack(alignment: .leading, spacing: 6) {
+                Text("Color")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(ADEColor.textSecondary)
+                if let name = LaneColorPalette.name(forHex: colorText) {
+                  Text(name)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textMuted)
+                }
+                LaneColorSwatchPicker(
+                  selectedHex: colorText.isEmpty ? nil : colorText,
+                  usedColors: LaneColorPalette.colorsInUse(
+                    amongLanes: allLaneSnapshots.map(\.lane),
+                    excluding: snapshot.lane.id
+                  )
+                ) { next in
+                  colorText = next ?? ""
+                }
+              }
               LaneTextField("Icon (star, flag, bolt, shield, tag)", text: $iconText).textInputAutocapitalization(.never)
               LaneTextField("Tags (comma separated)", text: $tagsText)
               LaneActionButton(title: "Save appearance", symbol: "paintpalette", tint: ADEColor.accent) {
@@ -106,6 +149,7 @@ struct LaneManageSheet: View {
                   }
                 }
               }
+              .disabled(!canRunLiveActions)
             }
           }
 
@@ -127,7 +171,7 @@ struct LaneManageSheet: View {
                     }
                   }
                 }
-                .disabled(selectedParentLaneId == (snapshot.lane.parentLaneId ?? ""))
+                .disabled(!canRunLiveActions || selectedParentLaneId == (snapshot.lane.parentLaneId ?? ""))
               }
             }
           }
@@ -137,11 +181,12 @@ struct LaneManageSheet: View {
               LaneActionButton(title: "Archive lane", symbol: "archivebox", tint: ADEColor.warning) {
                 Task { await performAction("archive lane") { try await syncService.archiveLane(snapshot.lane.id) } }
               }
-              .disabled(!canArchive)
+              .disabled(!canRunLiveActions || !canArchive)
             } else {
               LaneActionButton(title: "Restore lane", symbol: "tray.and.arrow.up", tint: ADEColor.accent) {
                 Task { await performAction("restore lane") { try await syncService.unarchiveLane(snapshot.lane.id) } }
               }
+              .disabled(!canRunLiveActions)
             }
           }
 
@@ -180,8 +225,14 @@ struct LaneManageSheet: View {
                     }
                   }
                 }
+                .disabled(!canRunLiveActions)
               }
             }
+            .overlay(
+              RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(ADEColor.danger.opacity(0.4), lineWidth: 1)
+                .allowsHitTesting(false)
+            )
           }
         }
         .padding(16)
@@ -190,15 +241,20 @@ struct LaneManageSheet: View {
       .adeScreenBackground()
       .overlay {
         if busyAction != nil {
-          VStack(spacing: 10) {
-            ProgressView()
-              .tint(ADEColor.accent)
-            Text(busyAction?.capitalized ?? "Working...")
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.textSecondary)
+          ZStack {
+            ADEColor.pageBackground.opacity(0.55)
+              .ignoresSafeArea()
+            VStack(spacing: 10) {
+              ProgressView()
+                .tint(ADEColor.accent)
+              Text(busyAction?.capitalized ?? "Working...")
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            .adeGlassCard(cornerRadius: 14, padding: 18)
+            .fixedSize()
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .background(.ultraThinMaterial)
         }
       }
       .adeNavigationGlass()
@@ -215,6 +271,11 @@ struct LaneManageSheet: View {
 
   @MainActor
   private func performAction(_ label: String, operation: () async throws -> Void) async {
+    guard canRunLiveActions else {
+      ADEHaptics.warning()
+      errorMessage = "Reconnect to desktop before you \(label)."
+      return
+    }
     do {
       busyAction = label
       errorMessage = nil
@@ -222,8 +283,19 @@ struct LaneManageSheet: View {
       dismiss()
       await onComplete()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busyAction = nil
+  }
+
+  @MainActor
+  private func handleNoticeAction(_ action: LaneConnectionNoticeAction) {
+    switch action {
+    case .openSettings:
+      syncService.settingsPresented = true
+    case .reconnect, .retry:
+      Task { await syncService.reconnectIfPossible(userInitiated: true) }
+    }
   }
 }

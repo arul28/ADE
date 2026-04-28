@@ -1,15 +1,19 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from "electron";
 import { createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Server as NetServer } from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
+import { browseProjectDirectories } from "../projects/projectBrowserService";
+import { getProjectDetail } from "../projects/projectDetailService";
+import { removeProjectIconOverride, resolveProjectIcon, setProjectIconOverride } from "../projects/projectIconResolver";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -38,6 +42,12 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  ReviewLaunchContext,
+  ReviewListRunsArgs,
+  ReviewRun,
+  ReviewRunDetail,
+  ReviewStartRunArgs,
+  AdeActionRegistryEntry,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   ConflictProposal,
@@ -49,6 +59,9 @@ import type {
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
+  LaneBranchSwitchArgs,
+  LaneBranchSwitchPreview,
+  LaneBranchSwitchResult,
   DeleteLaneArgs,
   DockLayout,
   GraphPersistedState,
@@ -142,7 +155,10 @@ import type {
   LandResult,
   LandStackEnhancedArgs,
   LandQueueNextArgs,
+  CleanupPrBranchArgs,
+  CleanupPrBranchResult,
   PrCheck,
+  PrCommit,
   PrComment,
   PrReviewThread,
   PrHealth,
@@ -153,6 +169,11 @@ import type {
   QueueLandingState,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
+  PostPrReviewCommentArgs,
+  SetPrReviewThreadResolvedArgs,
+  ReactToPrCommentArgs,
+  LaunchPrIssueResolutionFromThreadArgs,
+  LaunchPrIssueResolutionFromThreadResult,
   SimulateIntegrationArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -165,20 +186,27 @@ import type {
   ExportHistoryArgs,
   ExportHistoryResult,
   AgentChatApproveArgs,
+  AgentChatArchiveArgs,
   AgentChatClaudePermissionMode,
   AgentChatCreateArgs,
+  AgentChatDeleteArgs,
   AgentChatDisposeArgs,
   AgentChatGetSummaryArgs,
+  AgentChatEventEnvelope,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
+  AgentChatParallelLaunchState,
+  AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSetParallelLaunchStateArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSubagentSnapshot,
@@ -189,6 +217,10 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatDispatchSteerArgs,
+  AgentChatDispatchSteerResult,
+  AgentChatCancelDispatchedSteerArgs,
+  AgentChatCancelDispatchedSteerResult,
   AgentChatOpenCodePermissionMode,
   AgentChatUpdateSessionArgs,
   AgentChatSlashCommand,
@@ -197,12 +229,15 @@ import type {
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
   AgentTool,
+  DeviceMarker,
   KeybindingOverride,
   KeybindingsSnapshot,
   ImportBranchLaneArgs,
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourProgress,
+  OnboardingTourVariant,
   LaneListSnapshot,
   LaneRuntimeSummary,
   LaneSummary,
@@ -211,14 +246,11 @@ import type {
   ListLanesArgs,
   ListMissionsArgs,
   ListSessionsArgs,
+  DeleteSessionArgs,
   ListTestRunsArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
-  ContextGenerateDocsArgs,
-  ContextGenerateDocsResult,
-  ContextOpenDocArgs,
-  ContextStatus,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessRuntime,
@@ -228,6 +260,10 @@ import type {
   ProjectConfigSnapshot,
   ProjectConfigTrust,
   ProjectConfigValidationResult,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+  ProjectDetail,
+  ProjectIcon,
   ProjectInfo,
   RecentProjectSummary,
   PtyCreateArgs,
@@ -335,6 +371,12 @@ import type {
   SyncPeerDeviceType,
   SyncRoleSnapshot,
   SyncTransferReadiness,
+  ApnsBridgeStatus,
+  ApnsBridgeSaveConfigArgs,
+  ApnsBridgeUploadKeyArgs,
+  ApnsBridgeSendTestPushArgs,
+  ApnsBridgeSendTestPushResult,
+  ApnsTestPushKind,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
@@ -450,15 +492,6 @@ import type {
   LinearWorkflowRunDetail,
   LinearWorkflowConfig,
   NormalizedLinearIssue,
-  ExternalConnectionAuthRecord,
-  ExternalConnectionAuthRecordInput,
-  ExternalConnectionAuthStatus,
-  ExternalConnectionOAuthSessionResult,
-  ExternalConnectionOAuthSessionStartResult,
-  ExternalMcpManagedAuthConfig,
-  ExternalMcpServerConfig,
-  ExternalMcpServerSnapshot,
-  ExternalMcpUsageEvent,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -470,7 +503,6 @@ import type {
   ComputerUseArtifactView,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
-  ComputerUseSettingsSnapshot,
   LaneEnvInitConfig,
   LaneOverlayOverrides,
   LaneTemplate,
@@ -479,8 +511,10 @@ import type {
   GenerateRedirectUrisArgs,
   EncodeOAuthStateArgs,
   DecodeOAuthStateArgs,
-  FeedbackSubmitArgs,
+  FeedbackPrepareDraftArgs,
+  FeedbackPreparedDraft,
   FeedbackSubmission,
+  FeedbackSubmitDraftArgs,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -493,7 +527,6 @@ import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
-import type { ContextDocService, ContextRefreshEventName } from "../context/contextDocService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { SessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPtyService } from "../pty/ptyService";
@@ -512,13 +545,11 @@ import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
+import type { createPrSummaryService } from "../prs/prSummaryService";
+import type { createReviewService } from "../review/reviewService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
-import {
-  buildComputerUseOwnerSnapshot,
-  buildComputerUseSettingsSnapshot,
-  collectRequiredComputerUseKindsFromPhases,
-} from "../computerUse/controlPlane";
+import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -527,6 +558,9 @@ import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createAutomationIngressService } from "../automations/automationIngressService";
+import type { createGithubPollingService } from "../automations/githubPollingService";
+import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
+import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { type createMissionService } from "../missions/missionService";
 import type { createMissionPreflightService } from "../missions/missionPreflightService";
 
@@ -559,8 +593,6 @@ import type { createLinearRoutingService } from "../cto/linearRoutingService";
 import type { createLinearIngressService } from "../cto/linearIngressService";
 import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
-import type { createExternalMcpService } from "../externalMcp/externalMcpService";
-import type { createExternalConnectionAuthService } from "../externalMcp/externalConnectionAuthService";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { createSyncHostService } from "../sync/syncHostService";
@@ -568,7 +600,9 @@ import type { createSyncService } from "../sync/syncService";
 import type { createFeedbackReporterService } from "../feedback/feedbackReporterService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
+import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
+import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 export type AppContext = {
@@ -578,10 +612,11 @@ export type AppContext = {
   hasUserSelectedProject: boolean;
   projectId: string;
   adeDir: string;
-  getActiveMcpConnectionCount?: (() => number) | null;
+  getActiveRpcConnectionCount?: (() => number) | null;
   disposeHeadWatcher: () => void;
   keybindingsService: ReturnType<typeof createKeybindingsService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;
+  adeCliService: ReturnType<typeof createAdeCliService>;
   devToolsService: ReturnType<typeof createDevToolsService>;
   onboardingService: ReturnType<typeof createOnboardingService>;
   laneService: ReturnType<typeof createLaneService>;
@@ -608,16 +643,18 @@ export type AppContext = {
   prPollingService: ReturnType<typeof createPrPollingService>;
   queueLandingService: ReturnType<typeof createQueueLandingService>;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
+  prSummaryService: ReturnType<typeof createPrSummaryService>;
+  reviewService: ReturnType<typeof createReviewService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
+  githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   missionService: ReturnType<typeof createMissionService>;
   missionPreflightService: ReturnType<typeof createMissionPreflightService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   missionBudgetService: ReturnType<typeof createMissionBudgetService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
-  contextDocService?: ContextDocService | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
   testService: ReturnType<typeof createTestService>;
@@ -647,15 +684,16 @@ export type AppContext = {
   linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
-  externalConnectionAuthService?: ReturnType<typeof createExternalConnectionAuthService> | null;
-  externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
-  mcpSocketServer?: NetServer;
-  mcpSocketPath?: string;
+  rpcSocketServer?: NetServer;
+  rpcSocketPath?: string;
+  apnsService?: import("../notifications/apnsService").ApnsService | null;
+  apnsKeyStore?: import("../notifications/apnsService").ApnsKeyStore | null;
+  notificationEventBus?: import("../notifications/notificationEventBus").NotificationEventBus | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
 };
@@ -676,26 +714,6 @@ function clampLayout(layout: DockLayout): DockLayout {
     out[k] = Math.max(0, Math.min(100, v));
   }
   return out;
-}
-
-function sanitizeExternalMcpSnapshot(
-  snapshot: ExternalMcpServerSnapshot,
-  rawConfig?: ExternalMcpServerConfig,
-): ExternalMcpServerSnapshot {
-  if (!rawConfig) return snapshot;
-  return {
-    ...snapshot,
-    config: {
-      ...snapshot.config,
-      transport: rawConfig.transport === "stdio" ? "stdio" : "http",
-      ...(rawConfig.command ? { command: rawConfig.command } : {}),
-      ...(rawConfig.args ? { args: rawConfig.args } : {}),
-      ...(rawConfig.env ? { env: rawConfig.env } : {}),
-      ...(rawConfig.cwd ? { cwd: rawConfig.cwd } : {}),
-      ...(rawConfig.url ? { url: rawConfig.url } : {}),
-      ...(rawConfig.headers ? { headers: rawConfig.headers } : {}),
-    },
-  };
 }
 
 function escapeCsvCell(value: string | null | undefined): string {
@@ -762,6 +780,27 @@ function summarizeLaneRuntime(
   };
 }
 
+function buildLanePresenceByLaneId(syncService: ReturnType<typeof createSyncService> | null | undefined): Map<string, DeviceMarker[]> {
+  const hostService = syncService?.getHostService?.() ?? null;
+  const snapshot = hostService?.getLanePresenceSnapshot?.() ?? [];
+  return new Map(snapshot.map((entry) => [entry.laneId, entry.devicesOpen] as const));
+}
+
+function decorateLaneSummaryWithPresence(
+  lane: LaneSummary,
+  devicesOpenByLaneId: Map<string, DeviceMarker[]>,
+): LaneSummary {
+  const devicesOpen = devicesOpenByLaneId.get(lane.id) ?? [];
+  return { ...lane, devicesOpen: devicesOpen.length > 0 ? devicesOpen : undefined };
+}
+
+function decorateLaneSummariesWithPresence(
+  lanes: LaneSummary[],
+  devicesOpenByLaneId: Map<string, DeviceMarker[]>,
+): LaneSummary[] {
+  return lanes.map((lane) => decorateLaneSummaryWithPresence(lane, devicesOpenByLaneId));
+}
+
 async function enrichSessionsForLaneList(
   args: Pick<AppContext, "sessionService" | "ptyService" | "agentChatService">,
 ): Promise<TerminalSessionSummary[]> {
@@ -796,7 +835,9 @@ async function enrichSessionsForLaneList(
 }
 
 async function buildLaneListSnapshots(
-  args: Pick<AppContext, "laneService" | "sessionService" | "ptyService" | "agentChatService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService">,
+  args: Pick<AppContext, "laneService" | "sessionService" | "ptyService" | "agentChatService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService"> & {
+    syncService?: ReturnType<typeof createSyncService> | null;
+  },
   lanes: LaneSummary[],
 ): Promise<LaneListSnapshot[]> {
   const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
@@ -811,9 +852,10 @@ async function buildLaneListSnapshots(
   const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
   const stateByLaneId = new Map(stateSnapshots.map((entry) => [entry.laneId, entry] as const));
   const conflictByLaneId = new Map((batchAssessment?.lanes ?? []).map((entry) => [entry.laneId, entry] as const));
+  const devicesOpenByLaneId = buildLanePresenceByLaneId(args.syncService);
 
   return lanes.map((lane) => ({
-    lane,
+    lane: decorateLaneSummaryWithPresence(lane, devicesOpenByLaneId),
     runtime: summarizeLaneRuntime(lane.id, sessions),
     rebaseSuggestion: rebaseByLaneId.get(lane.id) ?? null,
     autoRebaseStatus: autoRebaseByLaneId.get(lane.id) ?? null,
@@ -1176,15 +1218,16 @@ function getMemoryHealthStats(ctx: AppContext) {
   return stats;
 }
 
-async function resolveFirstAvailableLaneId(
-  ctx: AppContext,
-  requestedLaneId: string | undefined | null
-): Promise<string> {
-  const laneId = typeof requestedLaneId === "string" ? requestedLaneId.trim() : "";
-  if (laneId) return laneId;
+/**
+ * Strict resolver for identity-pinned sessions (CTO + worker agents). Requires
+ * an actual primary lane and never slips a foreign lane through via a
+ * `lanes[0]` fallback — if there is no primary lane the caller must surface
+ * the error rather than silently landing the identity on a non-primary lane.
+ */
+async function resolvePrimaryLaneIdOnly(ctx: AppContext): Promise<string> {
   await ctx.laneService.ensurePrimaryLane().catch(() => {});
   const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
-  return (lanes.find((lane) => lane.laneType === "primary") ?? lanes[0])?.id ?? "";
+  return lanes.find((lane) => lane.laneType === "primary")?.id ?? "";
 }
 
 async function resolveLaneOverlayContext(ctx: AppContext, laneId: string) {
@@ -1353,11 +1396,25 @@ function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial
 
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat"
-    || toolType === "claude-chat"
-    || toolType === "opencode-chat"
-    || toolType === "cursor"
-    || toolType === "droid-chat";
+  if (!toolType) return false;
+  const t = toolType.trim().toLowerCase();
+  return t === "cursor" || t.endsWith("-chat");
+}
+
+function sessionNeedsResumeTargetHydration(session: {
+  tracked: boolean;
+  status: string;
+  toolType: string | null;
+  resumeMetadata?: { targetId?: string | null } | null;
+}): boolean {
+  if (!session.tracked || session.status === "running") return false;
+  if (session.resumeMetadata?.targetId?.trim()) return false;
+  return (
+    session.toolType === "claude"
+    || session.toolType === "codex"
+    || session.toolType === "claude-orchestrated"
+    || session.toolType === "codex-orchestrated"
+  );
 }
 
 function inferPrAiProvider(modelId: string): "codex" | "claude" {
@@ -1406,8 +1463,8 @@ function mapPrAiPermissionModeToNativeFields(
   }
   if (provider === "codex") {
     if (legacy === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" };
-    if (legacy === "edit") return { codexApprovalPolicy: "on-failure", codexSandbox: "workspace-write" };
-    return { codexApprovalPolicy: "untrusted", codexSandbox: "read-only" };
+    if (legacy === "edit") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" };
+    return { codexApprovalPolicy: "on-request", codexSandbox: "read-only" };
   }
   const umap: Record<string, AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",
@@ -1430,8 +1487,8 @@ function deriveAiPermissionModeFromSummary(
   }
   if (summary.provider === "codex") {
     if (summary.codexApprovalPolicy === "never" && summary.codexSandbox === "danger-full-access") return "full_edit";
-    if (summary.codexApprovalPolicy === "on-failure") return "guarded_edit";
-    if (summary.codexApprovalPolicy === "untrusted") return "read_only";
+    if (summary.codexSandbox === "workspace-write") return "guarded_edit";
+    if (summary.codexSandbox === "read-only") return "read_only";
     return null;
   }
   if (summary.opencodePermissionMode === "full-auto") return "full_edit";
@@ -1472,14 +1529,41 @@ function getAllowedDirs(getCtx: () => AppContext): string[] {
   ];
 }
 
+function buildIssueResolutionInstructionsFromThread(arg: LaunchPrIssueResolutionFromThreadArgs): string {
+  const lines: string[] = [
+    `Focus on review thread ${arg.threadId} on PR ${arg.prId}.`,
+  ];
+  if (arg.commentId) {
+    lines.push(`The relevant comment id is ${arg.commentId}.`);
+  }
+  const fileContext = arg.fileContext;
+  if (fileContext?.path) {
+    const lineNumber = fileContext.startLine ?? fileContext.line ?? null;
+    lines.push(
+      lineNumber != null
+        ? `Start by inspecting ${fileContext.path}:${lineNumber}.`
+        : `Start by inspecting ${fileContext.path}.`,
+    );
+  }
+  if (arg.additionalInstructions) {
+    lines.push("");
+    lines.push(arg.additionalInstructions);
+  }
+  return lines.join("\n");
+}
+
 export function registerIpc({
   getCtx,
+  getSyncService,
+  resolveSyncService,
   switchProjectFromDialog,
   closeCurrentProject,
   closeProjectByPath,
   globalStatePath
 }: {
   getCtx: () => AppContext;
+  getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
+  resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
@@ -1488,6 +1572,21 @@ export function registerIpc({
   const watcherCleanupBoundSenders = new Set<number>();
   let linearOAuthService: LinearOAuthService | null = null;
   let linearOAuthServiceAdeDir: string | null = null;
+
+  const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
+    if (getSyncService) return getSyncService() ?? null;
+    return getCtx().syncService ?? null;
+  };
+
+  const requireSyncService = async (): Promise<ReturnType<typeof createSyncService>> => {
+    const service = resolveSyncService
+      ? await resolveSyncService()
+      : getOptionalSyncService();
+    if (!service) {
+      throw new Error("Sync service is not available.");
+    }
+    return service;
+  };
 
   const getLinearOAuthBridge = (ctx: AppContext): LinearOAuthService => {
     if (!ctx.linearCredentialService) {
@@ -1597,7 +1696,7 @@ export function registerIpc({
           })(),
           args: summarizeIpcValue(args),
         });
-        const IPC_TIMEOUT_MS = channel === IPC.contextGenerateDocs ? null : 30_000;
+        const IPC_TIMEOUT_MS = 30_000;
         try {
           const result = await (
             IPC_TIMEOUT_MS == null
@@ -1634,25 +1733,6 @@ export function registerIpc({
     tracedIpcMain.__adeTraceWrapped = true;
   }
 
-  const triggerAutoContextDocs = (
-    ctx: AppContext,
-    args: { event: ContextRefreshEventName; reason: string }
-  ): void => {
-    if (!ctx.contextDocService) return;
-    void ctx.contextDocService
-      .maybeAutoRefreshDocs({
-        event: args.event,
-        reason: args.reason
-      })
-      .catch((error: unknown) => {
-        ctx.logger.debug("ipc.context_docs_auto_refresh_failed", {
-          event: args.event,
-          reason: args.reason,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      });
-  };
-
   const ensureComputerUseBroker = (): AppContext => {
     const ctx = getCtx();
     if (!ctx.computerUseArtifactBrokerService) {
@@ -1662,31 +1742,9 @@ export function registerIpc({
   };
 
   const resolveComputerUseOwnerSnapshotArgs = async (
-    ctx: AppContext,
+    _ctx: AppContext,
     args: ComputerUseOwnerSnapshotArgs,
-  ): Promise<ComputerUseOwnerSnapshotArgs> => {
-    if (args.owner.kind === "mission") {
-      const mission = ctx.missionService.get(args.owner.id);
-      return {
-        ...args,
-        policy: args.policy ?? mission?.computerUse ?? null,
-        requiredKinds: args.requiredKinds?.length
-          ? args.requiredKinds
-          : collectRequiredComputerUseKindsFromPhases(mission?.phaseConfiguration?.selectedPhases ?? []),
-      };
-    }
-
-    if (args.owner.kind === "chat_session") {
-      const sessions = await ctx.agentChatService.listSessions();
-      const session = sessions.find((candidate) => candidate.sessionId === args.owner.id) ?? null;
-      return {
-        ...args,
-        policy: args.policy ?? session?.computerUse ?? null,
-      };
-    }
-
-    return args;
-  };
+  ): Promise<ComputerUseOwnerSnapshotArgs> => args;
 
   type PrAiRuntimeSession = {
     sessionId: string;
@@ -1835,10 +1893,128 @@ export function registerIpc({
     await shell.openExternal(parsed.toString());
   });
 
+  const resolveRendererSuppliedPath = (rawPath: string, projectRoot: string): string => {
+    let inputPath = rawPath;
+    if (/^ade-artifact:\/\/project(?:\/|$)/i.test(inputPath)) {
+      const parsed = new URL(inputPath);
+      inputPath = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+    }
+    if (/^file:\/\//i.test(inputPath)) {
+      try {
+        inputPath = fileURLToPath(inputPath);
+      } catch {
+        inputPath = decodeURIComponent(inputPath.replace(/^file:\/\//i, ""));
+      }
+    }
+    return path.resolve(path.isAbsolute(inputPath) ? inputPath : path.join(projectRoot, inputPath));
+  };
+
+  const resolveAllowedRendererPath = (rawPath: string): string => {
+    const raw = typeof rawPath === "string" ? rawPath.trim() : "";
+    if (!raw) throw new Error("Missing path.");
+    const ctx = getCtx();
+    const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
+    const allowedDirs = getAllowedDirs(getCtx);
+    // resolvePathWithinRoot follows symlinks via fs.realpath while validating
+    // containment, so we both reject symlinks pointing outside the allowlist
+    // *and* return the canonical real path for callers to read from. Returning
+    // the lexical path would still be safe because the check resolved real
+    // paths, but handing back the realpath avoids any TOCTOU-adjacent surprises
+    // and keeps file I/O pinned to the validated target.
+    let resolved: string | null = null;
+    for (const dir of allowedDirs) {
+      try {
+        resolved = resolvePathWithinRoot(dir, normalized);
+        break;
+      } catch {
+        // try next allowed dir
+      }
+    }
+    if (!resolved) {
+      throw new Error("Path is outside allowed directories.");
+    }
+    return resolved;
+  };
+
+  /**
+   * Sniff the first bytes of a buffer for known image magic numbers and
+   * return the corresponding MIME type. Returns null if the buffer doesn't
+   * match any supported image format.
+   *
+   * We deliberately do NOT trust the file extension here — extension-only
+   * inference would let a renderer hand us any allow-listed file (text,
+   * binary, etc.) and get it back as a base64 `image/png` data URL.
+   */
+  const sniffImageMimeType = (buffer: Buffer): string | null => {
+    if (buffer.length >= 8
+      && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47
+      && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) {
+      return "image/png";
+    }
+    if (buffer.length >= 3
+      && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+      return "image/jpeg";
+    }
+    if (buffer.length >= 6
+      && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38
+      && (buffer[4] === 0x37 || buffer[4] === 0x39) && buffer[5] === 0x61) {
+      return "image/gif";
+    }
+    if (buffer.length >= 12
+      && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
+      && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+      return "image/webp";
+    }
+    if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
+      return "image/bmp";
+    }
+    if (buffer.length >= 4
+      && buffer[0] === 0x00 && buffer[1] === 0x00
+      && buffer[2] === 0x01 && buffer[3] === 0x00) {
+      return "image/x-icon";
+    }
+    // SVG/XML: scan a small prefix as text so leading whitespace, BOM, or an
+    // <?xml ... ?> declaration before <svg ...> are tolerated.
+    const head = buffer.slice(0, Math.min(buffer.length, 1024)).toString("utf8");
+    const stripped = head.replace(/^﻿/, "").trimStart();
+    if (/^<\?xml\b/i.test(stripped) && /<svg\b/i.test(head)) {
+      return "image/svg+xml";
+    }
+    if (/^<svg\b/i.test(stripped)) {
+      return "image/svg+xml";
+    }
+    return null;
+  };
+
+  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+  /**
+   * Read an allow-listed image file from disk after a stat-based size check,
+   * sniff its bytes for a known image magic, and return both the bytes and
+   * the sniffed MIME type. Throws if the file is too large, isn't a regular
+   * file, or doesn't look like a supported image.
+   */
+  const readImageFileAndSniffMime = async (filePath: string): Promise<{ data: Buffer; mimeType: string }> => {
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) {
+      throw new Error("Path is not a file.");
+    }
+    if (stat.size > MAX_IMAGE_BYTES) {
+      throw new Error("Image must be 10 MB or smaller.");
+    }
+    const data = await fs.promises.readFile(filePath);
+    const mimeType = sniffImageMimeType(data);
+    if (!mimeType) {
+      throw new Error("Path is not an image.");
+    }
+    return { data, mimeType };
+  };
+
   ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
-    const normalized = path.resolve(raw);
+    const ctx = getCtx();
+    const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
     // Validate the path is within known safe directories only.
     // Reject requests to reveal arbitrary paths (e.g. ~/.ssh, /etc, /System).
     const allowedDirs = getAllowedDirs(getCtx);
@@ -1859,7 +2035,8 @@ export function registerIpc({
   ipcMain.handle(IPC.appOpenPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
-    const normalized = path.resolve(raw);
+    const ctx = getCtx();
+    const normalized = resolveRendererSuppliedPath(raw, ctx.project.rootPath);
     const allowedDirs = getAllowedDirs(getCtx);
     const allowed = allowedDirs.some((dir) => {
       try {
@@ -1883,17 +2060,46 @@ export function registerIpc({
     clipboard.writeText(text);
   });
 
+  ipcMain.handle(IPC.appGetImageDataUrl, async (_event, arg: { path: string }): Promise<{ dataUrl: string }> => {
+    const filePath = resolveAllowedRendererPath(arg?.path);
+    // Use async fs APIs and a size pre-check so a 10 MB image read never
+    // blocks the main process event loop (input dispatch, IPC, window
+    // animations all share that loop). The MIME type is derived from the
+    // file's *bytes*, not its extension, so a renderer can't smuggle
+    // arbitrary text/binary back as a base64 `image/png` data URL.
+    const { data, mimeType } = await readImageFileAndSniffMime(filePath);
+    return {
+      dataUrl: `data:${mimeType};base64,${data.toString("base64")}`,
+    };
+  });
+
+  ipcMain.handle(IPC.appWriteClipboardImage, async (_event, arg: { path: string }): Promise<void> => {
+    const filePath = resolveAllowedRendererPath(arg?.path);
+    // Apply the same size + magic-byte preflight as `appGetImageDataUrl` so
+    // we can't hand `nativeImage.createFromPath` a giant or non-image file
+    // (which would otherwise silently produce an empty image, or worse,
+    // attempt a sync read of a 100 MB binary on the main process). We then
+    // hand the already-read buffer to `nativeImage.createFromBuffer` so the
+    // file isn't read a second time off the main thread.
+    const { data } = await readImageFileAndSniffMime(filePath);
+    const image = nativeImage.createFromBuffer(data);
+    if (image.isEmpty()) {
+      throw new Error("Unable to read image.");
+    }
+    clipboard.writeImage(image);
+  });
+
   ipcMain.handle(
     IPC.appOpenPathInEditor,
     async (
       _event,
-      arg: { rootPath: string; relativePath?: string; target: "finder" | "vscode" | "cursor" | "zed" }
+      arg: { rootPath: string; relativePath?: string; target: "default" | "finder" | "vscode" | "cursor" | "zed" }
     ): Promise<void> => {
       const rootRaw = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       const relRaw = typeof arg?.relativePath === "string" ? arg.relativePath.trim() : "";
       const target = arg?.target;
       if (!rootRaw) throw new Error("Missing root path.");
-      if (target !== "finder" && target !== "vscode" && target !== "cursor" && target !== "zed") {
+      if (target !== "default" && target !== "finder" && target !== "vscode" && target !== "cursor" && target !== "zed") {
         throw new Error("Unsupported editor target.");
       }
       const rootPath = path.resolve(rootRaw);
@@ -1925,26 +2131,55 @@ export function registerIpc({
         throw resolveError;
       }
 
+      if (target === "default") {
+        const errorMessage = await shell.openPath(targetPath);
+        if (errorMessage) {
+          throw new Error(`Failed to open path: ${errorMessage}`);
+        }
+        return;
+      }
+
       if (target === "finder") {
         shell.showItemInFolder(targetPath);
         return;
       }
 
-      const launchDetached = async (command: string, args: string[]): Promise<void> => {
+      const launchDetached = async (
+        command: string,
+        args: string[],
+        options?: { windowsVerbatimArguments?: boolean; resolveOn?: "spawn" | "exit" },
+      ): Promise<void> => {
         await new Promise<void>((resolve, reject) => {
           let settled = false;
+          const resolveOn = options?.resolveOn ?? "spawn";
           try {
-            const child = spawn(command, args, { detached: true, stdio: "ignore" });
+            const child = spawn(command, args, {
+              detached: true,
+              stdio: "ignore",
+              windowsVerbatimArguments: options?.windowsVerbatimArguments,
+            });
             child.once("error", (error) => {
               if (settled) return;
               settled = true;
               reject(error);
             });
             child.once("spawn", () => {
+              if (resolveOn !== "spawn") return;
               if (settled) return;
               settled = true;
               child.unref();
               resolve();
+            });
+            child.once("exit", (code) => {
+              if (resolveOn !== "exit") return;
+              if (settled) return;
+              settled = true;
+              child.unref();
+              if (code === 0) {
+                resolve();
+              } else {
+                reject(new Error(`exit code ${code}`));
+              }
             });
           } catch (error) {
             reject(error);
@@ -1952,11 +2187,16 @@ export function registerIpc({
         });
       };
 
-      const launchAttempts = async (attempts: Array<{ command: string; args: string[] }>): Promise<void> => {
+      const launchAttempts = async (
+        attempts: Array<{ command: string; args: string[]; windowsVerbatimArguments?: boolean; resolveOn?: "spawn" | "exit" }>,
+      ): Promise<void> => {
         let lastError: unknown = null;
         for (const attempt of attempts) {
           try {
-            await launchDetached(attempt.command, attempt.args);
+            await launchDetached(attempt.command, attempt.args, {
+              windowsVerbatimArguments: attempt.windowsVerbatimArguments,
+              resolveOn: attempt.resolveOn,
+            });
             return;
           } catch (error) {
             lastError = error;
@@ -1965,12 +2205,22 @@ export function registerIpc({
         throw lastError instanceof Error ? lastError : new Error("Failed to launch external editor.");
       };
 
-      const attempts: Array<{ command: string; args: string[] }> = [];
+      const attempts: Array<{ command: string; args: string[]; windowsVerbatimArguments?: boolean; resolveOn?: "spawn" | "exit" }> = [];
       const cliCommand = target === "vscode" ? "code" : target === "cursor" ? "cursor" : "zed";
 
       if (process.platform === "darwin") {
         const appName = target === "vscode" ? "Visual Studio Code" : target === "cursor" ? "Cursor" : "Zed";
         attempts.push({ command: "open", args: ["-a", appName, targetPath] });
+      }
+      if (process.platform === "win32") {
+        // `start "" <command> <args>` — empty title is required when the next token is quoted.
+        const windowsShell = process.env.ComSpec?.trim() || "cmd.exe";
+        attempts.push({
+          command: windowsShell,
+          args: ["/d", "/s", "/c", `start "" ${quoteWindowsCmdArg(cliCommand)} ${quoteWindowsCmdArg(targetPath)}`],
+          windowsVerbatimArguments: true,
+          resolveOn: "exit",
+        });
       }
       attempts.push({ command: cliCommand, args: [targetPath] });
 
@@ -2028,6 +2278,123 @@ export function registerIpc({
       if (result.canceled || result.filePaths.length === 0) return null;
       return result.filePaths[0] ?? null;
     }
+  );
+
+  ipcMain.handle(
+    IPC.projectBrowseDirectories,
+    async (_event, args: ProjectBrowseInput = {}): Promise<ProjectBrowseResult> =>
+      browseProjectDirectories(args)
+  );
+
+  ipcMain.handle(
+    IPC.projectGetDetail,
+    async (_event, args: { rootPath: string }): Promise<ProjectDetail> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) throw new Error("rootPath is required");
+      return getProjectDetail(rootPath, { globalStatePath });
+    }
+  );
+
+  // Project-root allowlist for icon resolution. Tab/catalog icons are
+  // resolved for the *current* project root and any *recently opened*
+  // project root — including ones that live outside Downloads/Documents/Temp
+  // (the generic `getAllowedDirs` set). Using `resolveAllowedRendererPath`
+  // here would silently strip icons for any project in `~/code/*` etc.
+  const getAllowedProjectRoots = (): string[] => {
+    const state = readGlobalState(globalStatePath);
+    return Array.from(new Set([
+      getCtx().project.rootPath,
+      ...(state.recentProjects ?? [])
+        .map((entry) => entry.rootPath)
+        .filter((root): root is string => typeof root === "string" && root.trim().length > 0),
+    ]));
+  };
+
+  const resolveAllowedProjectRoot = (rawPath: string): string => {
+    const raw = typeof rawPath === "string" ? rawPath.trim() : "";
+    if (!raw) throw new Error("Missing root path.");
+    const normalized = resolveRendererSuppliedPath(raw, getCtx().project.rootPath);
+    for (const dir of getAllowedProjectRoots()) {
+      try {
+        return resolvePathWithinRoot(dir, normalized);
+      } catch {
+        // try next known project root
+      }
+    }
+    throw new Error("rootPath is outside known project roots.");
+  };
+
+  ipcMain.handle(
+    IPC.projectResolveIcon,
+    async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) return { dataUrl: null, sourcePath: null, mimeType: null };
+      // Validate the renderer-supplied root against the project-root
+      // allowlist (current + recent projects) so a compromised renderer
+      // can't probe arbitrary directories for icons, while still serving
+      // icons for projects that live outside the generic file allowlist.
+      let validatedRoot: string;
+      try {
+        validatedRoot = resolveAllowedProjectRoot(rootPath);
+      } catch {
+        return { dataUrl: null, sourcePath: null, mimeType: null };
+      }
+      return resolveProjectIcon(validatedRoot);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.projectChooseIcon,
+    async (event, args: { rootPath: string }): Promise<ProjectIcon | null> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) return null;
+      let validatedRoot: string;
+      try {
+        validatedRoot = resolveAllowedProjectRoot(rootPath);
+      } catch {
+        return null;
+      }
+
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const options: Electron.OpenDialogOptions = {
+        title: "Choose project icon",
+        defaultPath: validatedRoot,
+        properties: ["openFile"],
+        filters: [
+          { name: "Images", extensions: ["ico", "jpeg", "jpg", "png", "svg", "webp"] },
+        ],
+      };
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (result.canceled || result.filePaths.length === 0) return null;
+
+      const selectedPath = result.filePaths[0];
+      if (!selectedPath) return null;
+      try {
+        return setProjectIconOverride(validatedRoot, selectedPath);
+      } catch (error) {
+        // setProjectIconOverride throws when the picked file is outside the
+        // project root or has an unsupported extension. Surface the message
+        // so the renderer can display a meaningful error instead of a
+        // silently rejected promise.
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to set project icon: ${message}`);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.projectRemoveIcon,
+    async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) return { dataUrl: null, sourcePath: null, mimeType: null };
+      let validatedRoot: string;
+      try {
+        validatedRoot = resolveAllowedProjectRoot(rootPath);
+      } catch {
+        return { dataUrl: null, sourcePath: null, mimeType: null };
+      }
+      return removeProjectIconOverride(validatedRoot);
+    },
   );
 
   ipcMain.handle(IPC.projectOpenAdeFolder, async (): Promise<void> => {
@@ -2219,19 +2586,15 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.syncGetStatus, async (): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.getStatus();
+    return await (await requireSyncService()).getStatus();
+  });
+
+  ipcMain.handle(IPC.syncRefreshDiscovery, async (): Promise<SyncRoleSnapshot> => {
+    return await (await requireSyncService()).refreshDiscovery();
   });
 
   ipcMain.handle(IPC.syncListDevices, async (): Promise<SyncDeviceRuntimeState[]> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.listDevices();
+    return await (await requireSyncService()).listDevices();
   });
 
   ipcMain.handle(
@@ -2240,11 +2603,7 @@ export function registerIpc({
       _event,
       arg: { name?: string; deviceType?: SyncPeerDeviceType },
     ): Promise<SyncDeviceRecord> => {
-      const ctx = getCtx();
-      if (!ctx.syncService) {
-        throw new Error("Sync service is not available.");
-      }
-      return await ctx.syncService.updateLocalDevice({
+      return await (await requireSyncService()).updateLocalDevice({
         name: typeof arg?.name === "string" ? arg.name : undefined,
         deviceType: arg?.deviceType,
       });
@@ -2254,146 +2613,60 @@ export function registerIpc({
   ipcMain.handle(
     IPC.syncConnectToBrain,
     async (_event, arg: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> => {
-      const ctx = getCtx();
-      if (!ctx.syncService) {
-        throw new Error("Sync service is not available.");
-      }
-      return await ctx.syncService.connectToBrain(arg);
+      return await (await requireSyncService()).connectToBrain(arg);
     },
   );
 
   ipcMain.handle(IPC.syncDisconnectFromBrain, async (): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.disconnectFromBrain();
+    return await (await requireSyncService()).disconnectFromBrain();
   });
 
   ipcMain.handle(IPC.syncForgetDevice, async (_event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.forgetDevice(typeof arg?.deviceId === "string" ? arg.deviceId : "");
+    return await (await requireSyncService()).forgetDevice(typeof arg?.deviceId === "string" ? arg.deviceId : "");
   });
 
   ipcMain.handle(IPC.syncGetTransferReadiness, async (): Promise<SyncTransferReadiness> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.getTransferReadiness();
+    return await (await requireSyncService()).getTransferReadiness();
   });
 
   ipcMain.handle(IPC.syncTransferBrainToLocal, async (): Promise<SyncRoleSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.syncService) {
-      throw new Error("Sync service is not available.");
-    }
-    return await ctx.syncService.transferBrainToLocal();
+    return await (await requireSyncService()).transferBrainToLocal();
   });
 
-  ipcMain.handle(IPC.externalMcpListServers, async (): Promise<ExternalMcpServerSnapshot[]> => {
-    const service = getCtx().externalMcpService;
-    if (!service) return [];
-    const rawConfigs = service.getRawConfigs();
-    return service.getSnapshots().map((snapshot) =>
-      sanitizeExternalMcpSnapshot(
-        snapshot,
-        rawConfigs.find((entry) => entry.name === snapshot.config.name),
-      )
-    );
+  ipcMain.handle(IPC.syncGetPin, async (): Promise<{ pin: string | null }> => {
+    return { pin: (await requireSyncService()).getPin() };
   });
-  ipcMain.handle(IPC.externalMcpListConfigs, async (): Promise<ExternalMcpServerConfig[]> =>
-    getCtx().externalMcpService?.getRawConfigs() ?? []
+
+  ipcMain.handle(IPC.syncSetPin, async (_event, pin: string): Promise<SyncRoleSnapshot> => {
+    return await (await requireSyncService()).setPin(typeof pin === "string" ? pin : "");
+  });
+
+  ipcMain.handle(IPC.syncClearPin, async (): Promise<SyncRoleSnapshot> => {
+    return await (await requireSyncService()).clearPin();
+  });
+
+  ipcMain.handle(
+    IPC.syncSetActiveLanePresence,
+    async (_event, arg: { laneIds?: string[] | null }): Promise<void> => {
+      await (await requireSyncService()).setActiveLanePresence(
+        Array.isArray(arg?.laneIds) ? arg.laneIds : [],
+      );
+    },
   );
-  ipcMain.handle(IPC.externalMcpListAuthRecords, async (): Promise<ExternalConnectionAuthRecord[]> =>
-    getCtx().externalConnectionAuthService?.listRecords() ?? []
-  );
-  ipcMain.handle(IPC.externalMcpGetUsageEvents, async (_event, arg: { limit?: number } = {}): Promise<ExternalMcpUsageEvent[]> =>
-    getCtx().externalMcpService?.getUsageEvents(arg.limit ?? 100) ?? []
-  );
-  ipcMain.handle(IPC.externalMcpConnectServer, async (_event, arg: { serverName: string }): Promise<ExternalMcpServerSnapshot> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    const snapshot = await service.connectServer(arg.serverName);
-    return sanitizeExternalMcpSnapshot(
-      snapshot,
-      service.getRawConfigs().find((entry) => entry.name === snapshot.config.name),
-    );
-  });
-  ipcMain.handle(IPC.externalMcpDisconnectServer, async (_event, arg: { serverName: string }): Promise<ExternalMcpServerSnapshot | null> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    const snapshot = await service.disconnectServer(arg.serverName);
-    return snapshot
-      ? sanitizeExternalMcpSnapshot(
-          snapshot,
-          service.getRawConfigs().find((entry) => entry.name === snapshot.config.name),
-        )
-      : null;
-  });
-  ipcMain.handle(IPC.externalMcpTestServer, async (_event, arg: { config: ExternalMcpServerConfig }): Promise<ExternalMcpServerSnapshot> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    return sanitizeExternalMcpSnapshot(await service.testServer(arg.config), arg.config);
-  });
-  ipcMain.handle(IPC.externalMcpSaveServer, async (_event, arg: { config: ExternalMcpServerConfig }): Promise<ExternalMcpServerConfig[]> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    return service.saveServer(arg.config);
-  });
-  ipcMain.handle(IPC.externalMcpRemoveServer, async (_event, arg: { serverName: string }): Promise<ExternalMcpServerConfig[]> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    return service.removeServer(arg.serverName);
-  });
-  ipcMain.handle(IPC.externalMcpSaveAuthRecord, async (_event, arg: { record: ExternalConnectionAuthRecordInput }): Promise<ExternalConnectionAuthRecord> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) throw new Error("External auth service is unavailable.");
-    const record = service.saveRecord(arg.record);
-    getCtx().externalMcpService?.reload?.();
-    return record;
-  });
-  ipcMain.handle(IPC.externalMcpRemoveAuthRecord, async (_event, arg: { authId: string }): Promise<ExternalConnectionAuthRecord[]> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) throw new Error("External auth service is unavailable.");
-    const records = service.removeRecord(arg.authId);
-    getCtx().externalMcpService?.reload?.();
-    return records;
-  });
-  ipcMain.handle(IPC.externalMcpGetAuthStatus, async (_event, arg: { binding?: ExternalMcpManagedAuthConfig | null }): Promise<ExternalConnectionAuthStatus> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) {
-      return {
-        mode: arg.binding?.mode ?? "none",
-        state: arg.binding ? "missing" : "ready",
-        summary: arg.binding ? "External auth service is unavailable." : "No managed auth configured.",
-      };
-    }
-    return service.getStatusForBinding(arg.binding ?? null);
-  });
-  ipcMain.handle(IPC.externalMcpStartOAuthSession, async (_event, arg: { authId: string }): Promise<ExternalConnectionOAuthSessionStartResult> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) throw new Error("External auth service is unavailable.");
-    return service.startOAuthSession(arg.authId);
-  });
-  ipcMain.handle(IPC.externalMcpGetOAuthSession, async (_event, arg: { sessionId: string }): Promise<ExternalConnectionOAuthSessionResult> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) {
-      return {
-        authId: "",
-        status: "expired",
-        error: "External auth service is unavailable.",
-      };
-    }
-    return service.getOAuthSession(arg.sessionId);
-  });
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
     return ctx.agentToolsService.detect();
+  });
+
+  ipcMain.handle(IPC.adeCliGetStatus, async () => {
+    const ctx = getCtx();
+    return ctx.adeCliService.getStatus();
+  });
+
+  ipcMain.handle(IPC.adeCliInstallForUser, async () => {
+    const ctx = getCtx();
+    return ctx.adeCliService.installForUser();
   });
 
   ipcMain.handle(IPC.devToolsDetect, async (_event: unknown, arg?: { force?: boolean }) => {
@@ -2449,6 +2722,202 @@ export function registerIpc({
       return { completedAt: null, dismissedAt: null };
     }
     return ctx.onboardingService.complete();
+  });
+
+  const emptyTourProgress = (): OnboardingTourProgress => ({
+    wizardCompletedAt: null,
+    wizardDismissedAt: null,
+    tours: {},
+    tourVariants: {},
+    tutorial: {
+      completedAt: null,
+      dismissedAt: null,
+      silenced: false,
+      inProgress: false,
+      lastActIndex: 0,
+      ctxSnapshot: {},
+    },
+    glossaryTermsSeen: [],
+  });
+
+  const coerceVariant = (raw: unknown): OnboardingTourVariant =>
+    raw === "highlights" ? "highlights" : "full";
+
+  ipcMain.handle(IPC.onboardingGetTourProgress, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.getTourProgress();
+  });
+
+  ipcMain.handle(IPC.onboardingMarkWizardCompleted, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markWizardCompleted();
+  });
+
+  ipcMain.handle(IPC.onboardingMarkWizardDismissed, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markWizardDismissed();
+  });
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourCompleted,
+    async (_event, arg: { tourId: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourCompleted(arg?.tourId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourDismissed,
+    async (_event, arg: { tourId: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourDismissed(arg?.tourId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingUpdateTourStep,
+    async (_event, arg: { tourId: string; index: number }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      const index = typeof arg?.index === "number" ? arg.index : 0;
+      return ctx.onboardingService.updateTourStep(arg?.tourId ?? "", index);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingMarkGlossaryTermSeen,
+    async (_event, arg: { termId: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markGlossaryTermSeen(arg?.termId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingResetTourProgress,
+    async (_event, arg?: { tourId?: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.resetTourProgress(arg?.tourId);
+    },
+  );
+
+  // Variant-aware tour progress (Round 2) ---------------------------------
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourCompletedVariant,
+    async (
+      _event,
+      arg: { tourId: string; variant: OnboardingTourVariant },
+    ): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourCompleted(
+        arg?.tourId ?? "",
+        coerceVariant(arg?.variant),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourDismissedVariant,
+    async (
+      _event,
+      arg: { tourId: string; variant: OnboardingTourVariant },
+    ): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourDismissed(
+        arg?.tourId ?? "",
+        coerceVariant(arg?.variant),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingUpdateTourStepVariant,
+    async (
+      _event,
+      arg: { tourId: string; variant: OnboardingTourVariant; index: number },
+    ): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      const index = typeof arg?.index === "number" ? arg.index : 0;
+      return ctx.onboardingService.updateTourStep(
+        arg?.tourId ?? "",
+        coerceVariant(arg?.variant),
+        index,
+      );
+    },
+  );
+
+  // Tutorial (Round 2) ----------------------------------------------------
+
+  ipcMain.handle(IPC.onboardingTutorialStart, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markTutorialStarted();
+  });
+
+  ipcMain.handle(
+    IPC.onboardingTutorialDismiss,
+    async (_event, arg?: { permanent?: boolean }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTutorialDismissed(Boolean(arg?.permanent));
+    },
+  );
+
+  ipcMain.handle(IPC.onboardingTutorialComplete, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markTutorialCompleted();
+  });
+
+  ipcMain.handle(
+    IPC.onboardingTutorialUpdateAct,
+    async (
+      _event,
+      arg: { actIndex: number; ctxSnapshot?: Record<string, unknown> },
+    ): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      const actIndex = typeof arg?.actIndex === "number" ? arg.actIndex : 0;
+      const snapshot =
+        arg?.ctxSnapshot && typeof arg.ctxSnapshot === "object" && !Array.isArray(arg.ctxSnapshot)
+          ? arg.ctxSnapshot
+          : undefined;
+      return ctx.onboardingService.updateTutorialAct(actIndex, snapshot);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingTutorialSetSilenced,
+    async (_event, arg: { silenced: boolean }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.setTutorialSilenced(Boolean(arg?.silenced));
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingTutorialClearSessionDismissal,
+    async (): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.clearTutorialSessionDismissal();
+    },
+  );
+
+  ipcMain.handle(IPC.onboardingTutorialShouldPrompt, async (): Promise<boolean> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return false;
+    return ctx.onboardingService.shouldPromptTutorial();
   });
 
   ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
@@ -2520,6 +2989,74 @@ export function registerIpc({
   ipcMain.handle(IPC.automationsSimulate, async (_event, arg: AutomationSimulateRequest): Promise<AutomationSimulateResult> => {
     const ctx = getCtx();
     return ctx.automationPlannerService.simulate(arg);
+  });
+
+  ipcMain.handle(IPC.reviewListLaunchContext, async (): Promise<ReviewLaunchContext> => {
+    const ctx = getCtx();
+    return ctx.reviewService.listLaunchContext();
+  });
+
+  ipcMain.handle(IPC.reviewListRuns, async (_event, arg: ReviewListRunsArgs = {}): Promise<ReviewRun[]> => {
+    const ctx = getCtx();
+    return ctx.reviewService.listRuns(arg);
+  });
+
+  ipcMain.handle(IPC.reviewGetRunDetail, async (_event, arg: { runId: string }): Promise<ReviewRunDetail | null> => {
+    const ctx = getCtx();
+    return ctx.reviewService.getRunDetail({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.reviewStartRun, async (_event, arg: ReviewStartRunArgs): Promise<ReviewRun> => {
+    const ctx = getCtx();
+    return ctx.reviewService.startRun(arg);
+  });
+
+  ipcMain.handle(IPC.reviewRerun, async (_event, arg: { runId: string }): Promise<ReviewRun> => {
+    const ctx = getCtx();
+    return ctx.reviewService.rerun(arg?.runId ?? "");
+  });
+
+  ipcMain.handle(IPC.reviewCancelRun, async (_event, arg: { runId: string }) => {
+    const ctx = getCtx();
+    return ctx.reviewService.cancelRun({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.reviewRecordFeedback, async (_event, arg: import("../../../shared/types").ReviewRecordFeedbackArgs) => {
+    const ctx = getCtx();
+    return ctx.reviewService.recordFeedback(arg);
+  });
+
+  ipcMain.handle(IPC.reviewListSuppressions, async (_event, arg: import("../../../shared/types").ReviewListSuppressionsArgs | undefined) => {
+    const ctx = getCtx();
+    return ctx.reviewService.listSuppressions(arg ?? {});
+  });
+
+  ipcMain.handle(IPC.reviewDeleteSuppression, async (_event, arg: { suppressionId: string }) => {
+    const ctx = getCtx();
+    return ctx.reviewService.deleteSuppression({ suppressionId: arg?.suppressionId ?? "" });
+  });
+
+  ipcMain.handle(IPC.reviewQualityReport, async () => {
+    const ctx = getCtx();
+    return ctx.reviewService.qualityReport();
+  });
+
+  ipcMain.handle(IPC.adeActionsListRegistry, async (): Promise<AdeActionRegistryEntry[]> => {
+    const ctx = getCtx();
+    const services = getAdeActionDomainServices(ctx as unknown as AdeRuntime);
+    const entries: AdeActionRegistryEntry[] = [];
+    for (const domain of Object.keys(ADE_ACTION_ALLOWLIST) as Array<keyof typeof ADE_ACTION_ALLOWLIST>) {
+      const service = services[domain];
+      if (!service) continue;
+      const actionNames = listAllowedAdeActionNames(domain, service as Record<string, unknown>);
+      if (actionNames.length === 0) continue;
+      entries.push({
+        domain,
+        actions: actionNames.map((name) => ({ name })),
+      });
+    }
+    entries.sort((a, b) => a.domain.localeCompare(b.domain));
+    return entries;
   });
 
   ipcMain.handle(IPC.missionsList, async (_event, arg: ListMissionsArgs = {}): Promise<MissionSummary[]> => {
@@ -2664,10 +3201,6 @@ export function registerIpc({
 
       void (async () => {
         try {
-          triggerAutoContextDocs(ctx, {
-            event: "mission_start",
-            reason: `missions_create_autostart:${created.id}`
-          });
           await ctx.aiOrchestratorService.startMissionRun({
             missionId: created.id,
             runMode,
@@ -2796,10 +3329,6 @@ export function registerIpc({
     IPC.orchestratorStartRunFromMission,
     async (_event, arg: StartOrchestratorRunFromMissionArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
       const ctx = getCtx();
-      triggerAutoContextDocs(ctx, {
-        event: "mission_start",
-        reason: `orchestrator_start_run_from_mission:${arg.missionId}`
-      });
       const started = await ctx.aiOrchestratorService.startMissionRun({
         missionId: arg.missionId,
         runMode: arg.runMode,
@@ -2863,7 +3392,6 @@ export function registerIpc({
     }
     const run = ctx.orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === arg.runId);
     if (!run) throw new Error(`Run not found after cancellation: ${arg.runId}`);
-    triggerAutoContextDocs(ctx, { event: "mission_end", reason: `orchestrator_cancel_run:${arg.runId}` });
     return run;
   });
 
@@ -2927,10 +3455,6 @@ export function registerIpc({
     IPC.orchestratorStartMissionRun,
     async (_event, arg: StartMissionRunWithAIArgs): Promise<StartMissionRunWithAIResult> => {
       const ctx = getCtx();
-      triggerAutoContextDocs(ctx, {
-        event: "mission_start",
-        reason: `orchestrator_start_mission_run:${arg.missionId}`
-      });
       return ctx.aiOrchestratorService.startMissionRun(arg);
     }
   );
@@ -2971,9 +3495,7 @@ export function registerIpc({
     IPC.orchestratorFinalizeRun,
     async (_event, arg: FinalizeRunArgs): Promise<FinalizeRunResult> => {
       const ctx = getCtx();
-      const result = ctx.orchestratorService.finalizeRun(arg);
-      triggerAutoContextDocs(ctx, { event: "mission_end", reason: `orchestrator_finalize_run:${arg.runId}` });
-      return result;
+      return ctx.orchestratorService.finalizeRun(arg);
     }
   );
 
@@ -3281,10 +3803,14 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
     const ctx = getCtx();
+    const devicesOpenByLaneId = buildLanePresenceByLaneId(getOptionalSyncService());
     return await withIpcTiming(
       ctx,
       "lanes.list",
-      async () => await ctx.laneService.list(arg),
+      async () => {
+        const lanes = await ctx.laneService.list(arg);
+        return decorateLaneSummariesWithPresence(lanes, devicesOpenByLaneId);
+      },
       {
         includeArchived: Boolean(arg?.includeArchived),
         includeStatus: arg?.includeStatus !== false
@@ -3313,13 +3839,14 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesCreate, async (_event, arg: CreateLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
-    const lane = await ctx.laneService.create({ name: arg.name, description: arg.description, parentLaneId: arg.parentLaneId });
+    const lane = await ctx.laneService.create({
+      name: arg.name,
+      description: arg.description,
+      parentLaneId: arg.parentLaneId,
+      baseBranch: arg.baseBranch,
+    });
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_create:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3328,10 +3855,6 @@ export function registerIpc({
     const lane = await ctx.laneService.createChild(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_create_child:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3340,10 +3863,6 @@ export function registerIpc({
     const lane = await ctx.laneService.createFromUnstaged(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_create_from_unstaged:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3352,11 +3871,17 @@ export function registerIpc({
     const lane = await ctx.laneService.importBranch(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_import_branch:${lane.id}`,
-    });
     return lane;
+  });
+
+  ipcMain.handle(IPC.lanesPreviewBranchSwitch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchPreview> => {
+    const ctx = getCtx();
+    return await ctx.laneService.previewBranchSwitch(arg);
+  });
+
+  ipcMain.handle(IPC.lanesSwitchBranch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchResult> => {
+    const ctx = getCtx();
+    return await ctx.laneService.switchBranch(arg);
   });
 
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
@@ -3364,10 +3889,6 @@ export function registerIpc({
     const lane = await ctx.laneService.attach(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_attach:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3381,10 +3902,6 @@ export function registerIpc({
     const lane = await ctx.laneService.adoptAttached(arg);
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
-    triggerAutoContextDocs(ctx, {
-      event: "lane_create",
-      reason: `lanes_adopt_attached:${lane.id}`,
-    });
     return lane;
   });
 
@@ -3424,7 +3941,13 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
     const ctx = getCtx();
     const envContext = ctx.laneEnvironmentService
-      ? await resolveLaneOverlayContext(ctx, arg.laneId)
+      ? await resolveLaneOverlayContext(ctx, arg.laneId).catch((error: unknown) => {
+          ctx.logger.warn("lane_env_cleanup.pre_delete_context_failed", {
+            laneId: arg.laneId,
+            error: getErrorMessage(error)
+          });
+          return null;
+        })
       : null;
     await ctx.laneService.delete(arg);
     ctx.portAllocationService?.release(arg.laneId);
@@ -3492,6 +4015,12 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.autoRebaseService) return [];
     return await ctx.autoRebaseService.listStatuses();
+  });
+
+  ipcMain.handle(IPC.lanesDismissAutoRebaseStatus, async (_event, arg: { laneId: string }): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.autoRebaseService) return;
+    await ctx.autoRebaseService.dismissStatus({ laneId: arg.laneId });
   });
 
   ipcMain.handle(IPC.lanesOpenFolder, async (_event, arg: { laneId: string }): Promise<void> => {
@@ -3829,6 +4358,125 @@ export function registerIpc({
     return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), text: record.text };
   };
 
+  const parseAgentChatDispatchSteerArgs = (
+    value: unknown,
+  ): AgentChatDispatchSteerArgs => {
+    const record = requireRecord(value, "Agent chat dispatch steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat dispatch steer sessionId must be a non-empty string");
+    }
+    if (typeof record.steerId !== "string" || !record.steerId.trim()) {
+      throw new Error("Agent chat dispatch steer steerId must be a non-empty string");
+    }
+    if (record.mode !== "inline" && record.mode !== "interrupt") {
+      throw new Error("Agent chat dispatch steer mode must be 'inline' or 'interrupt'");
+    }
+    return {
+      sessionId: record.sessionId.trim(),
+      steerId: record.steerId.trim(),
+      mode: record.mode,
+    };
+  };
+
+  const parseAgentChatCancelDispatchedSteerArgs = (
+    value: unknown,
+  ): AgentChatCancelDispatchedSteerArgs => {
+    const record = requireRecord(value, "Agent chat cancel dispatched steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat cancel dispatched steer sessionId must be a non-empty string");
+    }
+    if (typeof record.steerId !== "string" || !record.steerId.trim()) {
+      throw new Error("Agent chat cancel dispatched steer steerId must be a non-empty string");
+    }
+    return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim() };
+  };
+
+  const parseAgentChatSuggestLaneNameArgs = (value: unknown): AgentChatSuggestLaneNameArgs => {
+    const record = requireRecord(value, "Agent chat suggest lane name request");
+    if (typeof record.prompt !== "string" || !record.prompt.trim()) {
+      throw new Error("Agent chat suggest lane name prompt must be a non-empty string");
+    }
+    if (typeof record.modelId !== "string" || !record.modelId.trim()) {
+      throw new Error("Agent chat suggest lane name model ID must be a non-empty string");
+    }
+    if (typeof record.laneId !== "string" || !record.laneId.trim()) {
+      throw new Error("Agent chat suggest lane name lane ID must be a non-empty string");
+    }
+    return {
+      prompt: record.prompt.trim(),
+      modelId: record.modelId.trim(),
+      laneId: record.laneId.trim(),
+    };
+  };
+
+  const parseAgentChatParallelLaunchStateArgs = (value: unknown): AgentChatParallelLaunchStateArgs => {
+    const record = requireRecord(value, "Agent chat parallel launch state request");
+    if (typeof record.projectRoot !== "string" || !record.projectRoot.trim()) {
+      throw new Error("Agent chat parallel launch state project root must be a non-empty string");
+    }
+    if (typeof record.parentLaneId !== "string" || !record.parentLaneId.trim()) {
+      throw new Error("Agent chat parallel launch state parent lane ID must be a non-empty string");
+    }
+    return {
+      projectRoot: record.projectRoot.trim(),
+      parentLaneId: record.parentLaneId.trim(),
+    };
+  };
+
+  const sanitizeParallelLaunchLaneIds = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    return Array.from(new Set(
+      value
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter(Boolean),
+    ));
+  };
+
+  const normalizeAgentChatParallelLaunchState = (
+    value: unknown,
+    parentLaneIdFallback: string,
+  ): AgentChatParallelLaunchState | null => {
+    if (!value || typeof value !== "object") return null;
+    const parsed = value as {
+      parentLaneId?: unknown;
+      createdLaneIds?: unknown;
+      sentLaneIds?: unknown;
+      status?: unknown;
+      updatedAt?: unknown;
+      lastError?: unknown;
+    };
+    const parentLaneId = typeof parsed.parentLaneId === "string" && parsed.parentLaneId.trim().length
+      ? parsed.parentLaneId.trim()
+      : parentLaneIdFallback;
+    const createdLaneIds = sanitizeParallelLaunchLaneIds(parsed.createdLaneIds);
+    if (createdLaneIds.length === 0) return null;
+    const sentLaneIds = sanitizeParallelLaunchLaneIds(parsed.sentLaneIds)
+      .filter((laneId) => createdLaneIds.includes(laneId));
+    const status = parsed.status === "creating_lanes"
+      || parsed.status === "sending"
+      || parsed.status === "completed"
+      || parsed.status === "cleanup_pending"
+      ? parsed.status
+      : sentLaneIds.length >= createdLaneIds.length
+        ? "completed"
+        : "creating_lanes";
+    return {
+      parentLaneId,
+      createdLaneIds,
+      sentLaneIds,
+      status,
+      updatedAt: typeof parsed.updatedAt === "string" && parsed.updatedAt.trim().length
+        ? parsed.updatedAt.trim()
+        : new Date(0).toISOString(),
+      lastError: typeof parsed.lastError === "string" && parsed.lastError.trim().length
+        ? parsed.lastError.trim()
+        : null,
+    };
+  };
+
+  const agentChatParallelLaunchStateKey = (projectRoot: string, parentLaneId: string): string =>
+    `agent-chat-parallel-launch:${projectRoot}:${parentLaneId}`;
+
   ipcMain.handle(IPC.lanesOAuthGetStatus, async () => {
     const ctx = getCtx();
     return ctx.oauthRedirectService?.getStatus() ?? {
@@ -3933,7 +4581,23 @@ export function registerIpc({
       ctx,
       "sessions.list",
       async () => {
-        let sessions = ctx.ptyService.enrichSessions(ctx.sessionService.list(arg));
+        let listedSessions = ctx.sessionService.list(arg);
+        const missingResumeTargetIds = listedSessions
+          .filter(sessionNeedsResumeTargetHydration)
+          .slice(0, 10)
+          .map((session) => session.id);
+        if (missingResumeTargetIds.length > 0) {
+          try {
+            await ctx.ptyService.ensureResumeTargets(missingResumeTargetIds);
+            listedSessions = ctx.sessionService.list(arg);
+          } catch (err) {
+            ctx.logger.warn("sessions.resume_target_hydration_failed", {
+              sessionIds: missingResumeTargetIds,
+              err: String(err),
+            });
+          }
+        }
+        let sessions = ctx.ptyService.enrichSessions(listedSessions);
         const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
         let allChats: AgentChatSessionSummary[] = [];
         try {
@@ -3972,12 +4636,44 @@ export function registerIpc({
 
   ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
     const ctx = getCtx();
-    const session = ctx.sessionService.get(arg.sessionId);
+    let session = ctx.sessionService.get(arg.sessionId);
     if (!session) return null;
+    if (sessionNeedsResumeTargetHydration(session)) {
+      const sessionId = session.id;
+      try {
+        await ctx.ptyService.ensureResumeTargets([sessionId]);
+        const hydratedSession = ctx.sessionService.get(arg.sessionId);
+        if (hydratedSession) session = hydratedSession;
+      } catch (err) {
+        ctx.logger.warn("sessions.resume_target_hydration_failed", {
+          sessionIds: [sessionId],
+          err: String(err),
+        });
+      }
+    }
     return {
       ...session,
       runtimeState: ctx.ptyService.getRuntimeState(session.id, session.status)
     };
+  });
+
+  ipcMain.handle(IPC.sessionsDelete, async (_event, arg: DeleteSessionArgs): Promise<void> => {
+    const ctx = getCtx();
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) {
+      throw new Error("Session id is required.");
+    }
+    const session = ctx.sessionService.get(sessionId);
+    if (!session) {
+      throw new Error(`Session '${sessionId}' was not found.`);
+    }
+    if (isChatToolType(session.toolType)) {
+      throw new Error(`Session '${sessionId}' is an agent chat session. Use the chat delete flow instead.`);
+    }
+    if (session.status === "running" || session.ptyId) {
+      throw new Error("Running terminal sessions must be closed before they can be deleted.");
+    }
+    ctx.sessionService.deleteSession(sessionId);
   });
 
   ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {
@@ -4018,6 +4714,29 @@ export function registerIpc({
     return await ctx.agentChatService.createSession(arg);
   });
 
+  ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.suggestLaneNameFromPrompt(parseAgentChatSuggestLaneNameArgs(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatParallelLaunchStateGet, async (_event, arg: unknown): Promise<AgentChatParallelLaunchState | null> => {
+    const ctx = getCtx();
+    const { projectRoot, parentLaneId } = parseAgentChatParallelLaunchStateArgs(arg);
+    const key = agentChatParallelLaunchStateKey(projectRoot, parentLaneId);
+    return normalizeAgentChatParallelLaunchState(
+      ctx.db.getJson<AgentChatParallelLaunchState | null>(key),
+      parentLaneId,
+    );
+  });
+
+  ipcMain.handle(IPC.agentChatParallelLaunchStateSet, async (_event, arg: AgentChatSetParallelLaunchStateArgs): Promise<void> => {
+    const ctx = getCtx();
+    const { projectRoot, parentLaneId } = parseAgentChatParallelLaunchStateArgs(arg);
+    const key = agentChatParallelLaunchStateKey(projectRoot, parentLaneId);
+    const nextState = normalizeAgentChatParallelLaunchState(arg?.state ?? null, parentLaneId);
+    ctx.db.setJson(key, nextState);
+  });
+
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
     const ctx = getCtx();
     return await ctx.agentChatService.handoffSession(arg);
@@ -4041,6 +4760,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatEditSteer, async (_event, arg: unknown): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.editSteer(parseAgentChatEditSteerArgs(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatDispatchSteer, async (_event, arg: unknown): Promise<AgentChatDispatchSteerResult> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.dispatchSteer(parseAgentChatDispatchSteerArgs(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatCancelDispatchedSteer, async (_event, arg: unknown): Promise<AgentChatCancelDispatchedSteerResult> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.cancelDispatchedSteer(parseAgentChatCancelDispatchedSteerArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {
@@ -4071,6 +4800,21 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatDispose, async (_event, arg: AgentChatDisposeArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.dispose(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatArchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.agentChatService.archiveSession(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatUnarchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.agentChatService.unarchiveSession(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatDelete, async (_event, arg: AgentChatDeleteArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.agentChatService.deleteSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
@@ -4152,12 +4896,22 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.computerUseGetSettings, async (): Promise<ComputerUseSettingsSnapshot> => {
-    const ctx = ensureComputerUseBroker();
-    return buildComputerUseSettingsSnapshot({
-      status: ctx.computerUseArtifactBrokerService.getBackendStatus(),
-      snapshots: ctx.externalMcpService?.getSnapshots() ?? [],
-    });
+  ipcMain.handle(IPC.agentChatGetEventHistory, async (
+    _event,
+    arg: { sessionId?: string; maxEvents?: number },
+  ): Promise<{ sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean }> => {
+    const ctx = getCtx();
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) return { sessionId: "", events: [], truncated: false };
+    // Only forward maxEvents when it is a finite positive number; the service
+    // layer applies its own clamp but guarding here avoids ambiguous NaN/0
+    // inputs from untrusted renderer IPC.
+    const rawMaxEvents = typeof arg?.maxEvents === "number" ? arg.maxEvents : undefined;
+    const maxEvents =
+      rawMaxEvents != null && Number.isFinite(rawMaxEvents) && rawMaxEvents > 0
+        ? rawMaxEvents
+        : undefined;
+    return ctx.agentChatService.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
   });
 
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {
@@ -4171,10 +4925,7 @@ export function registerIpc({
     return buildComputerUseOwnerSnapshot({
       broker: ctx.computerUseArtifactBrokerService,
       owner: resolved.owner,
-      policy: resolved.policy,
-      requiredKinds: resolved.requiredKinds,
       limit: resolved.limit,
-      usageEvents: ctx.externalMcpService?.getUsageEvents(100) ?? [],
     });
   });
 
@@ -4196,14 +4947,7 @@ export function registerIpc({
     // handler in main.ts which validates exclusively against currentArtifactsDir.
     const allowedRoots = [layout.artifactsDir];
 
-    let filePath = arg.uri;
-    if (filePath.startsWith("file://")) {
-      const { fileURLToPath } = await import("node:url");
-      try { filePath = fileURLToPath(filePath); } catch { filePath = decodeURIComponent(filePath.replace(/^file:\/\//i, "")); }
-    }
-    if (!path.isAbsolute(filePath)) {
-      filePath = path.resolve(projectRoot, filePath);
-    }
+    const filePath = resolveRendererSuppliedPath(arg.uri, projectRoot);
     // Canonicalize and verify the resolved path is inside an allowed artifact root.
     const canonical = path.normalize(path.resolve(filePath));
     const inside = allowedRoots.some((root) => {
@@ -4251,12 +4995,6 @@ export function registerIpc({
   ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<void> => {
     const ctx = getCtx();
     ctx.ptyService.dispose(arg);
-    if (arg.sessionId) {
-      triggerAutoContextDocs(ctx, {
-        event: "session_end",
-        reason: `pty_dispose:${arg.sessionId}`,
-      });
-    }
   });
 
   ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
@@ -4399,9 +5137,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.gitCommit, async (_event, arg: GitCommitArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
-    const result = ctx.gitService.commit(arg);
-    triggerAutoContextDocs(ctx, { event: "commit", reason: "git_commit" });
-    return result;
+    return ctx.gitService.commit(arg);
   });
 
   ipcMain.handle(
@@ -4630,66 +5366,84 @@ export function registerIpc({
 
   ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => getCtx().conflictService.suggestResolverTarget(arg));
 
-  ipcMain.handle(IPC.contextGetStatus, async (): Promise<ContextStatus> => {
-    const ctx = getCtx();
-    if (!ctx.contextDocService) {
-      throw new Error("Context doc service is not available.");
+  const broadcastGithubStatus = (status: GitHubStatus): void => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      try {
+        win.webContents.send(IPC.githubStatusChanged, status);
+      } catch {
+        // ignore broadcast failures
+      }
     }
-    return ctx.contextDocService.getStatus();
-  });
+  };
 
-  ipcMain.handle(IPC.contextGenerateDocs, async (_event, arg: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
+  ipcMain.handle(IPC.githubGetStatus, async (_event, arg?: { forceRefresh?: boolean }): Promise<GitHubStatus> => {
     const ctx = getCtx();
-    if (!ctx.contextDocService) {
-      throw new Error("Context doc service is not available.");
-    }
-    return ctx.contextDocService.generateDocs(arg);
-  });
-
-  ipcMain.handle(IPC.contextGetPrefs, async () => {
-    const ctx = getCtx();
-    if (!ctx.contextDocService) throw new Error("Context doc service is not available.");
-    return ctx.contextDocService.getPrefs();
-  });
-
-  ipcMain.handle(IPC.contextSavePrefs, async (_event, arg) => {
-    const ctx = getCtx();
-    if (!ctx.contextDocService) throw new Error("Context doc service is not available.");
-    return ctx.contextDocService.savePrefs(arg);
-  });
-
-  ipcMain.handle(IPC.contextOpenDoc, async (_event, arg: ContextOpenDocArgs): Promise<void> => {
-    const ctx = getCtx();
-    const explicitPath = typeof arg.path === "string" ? arg.path.trim() : "";
-    const target = explicitPath || (arg.docId ? ctx.contextDocService?.getDocPath(arg.docId) ?? "" : "");
-    if (!target) {
-      throw new Error("contextOpenDoc requires docId or path");
-    }
-    await shell.openPath(target);
-  });
-
-  ipcMain.handle(IPC.githubGetStatus, async (): Promise<GitHubStatus> => {
-    const ctx = getCtx();
-    return await ctx.githubService.getStatus();
+    return await ctx.githubService.getStatus({ forceRefresh: Boolean(arg?.forceRefresh) });
   });
 
   ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubStatus> => {
     const ctx = getCtx();
     ctx.githubService.setToken(arg.token);
-    return await ctx.githubService.getStatus();
+    const status = await ctx.githubService.getStatus();
+    broadcastGithubStatus(status);
+    return status;
   });
 
   ipcMain.handle(IPC.githubClearToken, async (): Promise<GitHubStatus> => {
     const ctx = getCtx();
     ctx.githubService.clearToken();
-    return await ctx.githubService.getStatus();
+    const status = await ctx.githubService.getStatus();
+    broadcastGithubStatus(status);
+    return status;
+  });
+
+  const resolveGithubRepoRef = async (
+    githubService: ReturnType<typeof createGithubService>,
+    arg?: { owner?: string; name?: string } | null
+  ): Promise<{ owner: string; name: string }> => {
+    const owner = arg?.owner?.trim();
+    const name = arg?.name?.trim();
+    if (owner && name) return { owner, name };
+    const detected = await githubService.detectRepo();
+    if (!detected) {
+      throw new Error("Unable to detect GitHub repo from git remote 'origin'. Provide owner/name explicitly.");
+    }
+    return detected;
+  };
+
+  ipcMain.handle(IPC.githubListRepoLabels, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoLabels(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListRepoCollaborators, async (_event, arg: { owner?: string; name?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoCollaborators(owner, name);
+  });
+
+  ipcMain.handle(IPC.githubListRepoIssues, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all"; since?: string }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoIssues(owner, name, {
+      state: arg?.state ?? "all",
+      since: arg?.since,
+    });
   });
 
   // ── Feedback Reporter ──────────────────────────────────────────────
-  ipcMain.handle(IPC.feedbackSubmit, async (_event, arg: FeedbackSubmitArgs): Promise<FeedbackSubmission> => {
+  ipcMain.handle(IPC.feedbackPrepareDraft, async (_event, arg: FeedbackPrepareDraftArgs): Promise<FeedbackPreparedDraft> => {
     const ctx = getCtx();
     if (!ctx.feedbackReporterService) throw new Error("Feedback reporter not available");
-    return await ctx.feedbackReporterService.submit(arg);
+    return await ctx.feedbackReporterService.prepareDraft(arg);
+  });
+
+  ipcMain.handle(IPC.feedbackSubmitDraft, async (_event, arg: FeedbackSubmitDraftArgs): Promise<FeedbackSubmission> => {
+    const ctx = getCtx();
+    if (!ctx.feedbackReporterService) throw new Error("Feedback reporter not available");
+    return await ctx.feedbackReporterService.submitPreparedDraft(arg);
   });
 
   ipcMain.handle(IPC.feedbackList, async (): Promise<FeedbackSubmission[]> => {
@@ -4700,22 +5454,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    const created = await ctx.prService.createFromLane(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_create_from_lane:${created.id}`
-    });
-    return created;
+    return await ctx.prService.createFromLane(arg);
   });
 
   ipcMain.handle(IPC.prsLinkToLane, async (_event, arg: LinkPrToLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    const linked = await ctx.prService.linkToLane(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_link_to_lane:${linked.id}`
-    });
-    return linked;
+    return await ctx.prService.linkToLane(arg);
   });
 
   const ensurePrPolling = () => {
@@ -4793,20 +5537,11 @@ export function registerIpc({
   ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.prService.updateDescription(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_update_description:${arg.prId}`
-    });
   });
 
   ipcMain.handle(IPC.prsDelete, async (_event, arg: DeletePrArgs): Promise<DeletePrResult> => {
     const ctx = getCtx();
-    const deleted = await ctx.prService.delete(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_delete:${arg.prId}`
-    });
-    return deleted;
+    return await ctx.prService.delete(arg);
   });
 
   ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
@@ -4816,22 +5551,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
     const ctx = getCtx();
-    const landed = await ctx.prService.land(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_land",
-      reason: `prs_land:${arg.prId}`
-    });
-    return landed;
+    return await ctx.prService.land(arg);
   });
 
   ipcMain.handle(IPC.prsLandStack, async (_event, arg: LandStackArgs): Promise<LandResult[]> => {
     const ctx = getCtx();
-    const landed = await ctx.prService.landStack(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_land",
-      reason: `prs_land_stack:${arg.rootLaneId}`
-    });
-    return landed;
+    return await ctx.prService.landStack(arg);
   });
 
   ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
@@ -4841,22 +5566,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
     const ctx = getCtx();
-    const created = await ctx.prService.createIntegrationPr(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_create_integration:${arg.integrationLaneName}:${arg.baseBranch}`
-    });
-    return created;
+    return await ctx.prService.createIntegrationPr(arg);
   });
 
   ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg: LandStackEnhancedArgs): Promise<LandResult[]> => {
     const ctx = getCtx();
-    const landed = await ctx.prService.landStackEnhanced(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_land",
-      reason: `prs_land_stack_enhanced:${arg.rootLaneId}`
-    });
-    return landed;
+    return await ctx.prService.landStackEnhanced(arg);
   });
 
   ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => getCtx().prService.getConflictAnalysis(arg.prId));
@@ -4871,24 +5586,14 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
     const ctx = getCtx();
-    const created = await ctx.prService.createQueuePrs(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_create_queue:${arg.targetBranch ?? "queue"}`
-    });
-    return created;
+    return await ctx.prService.createQueuePrs(arg);
   });
 
   ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> => getCtx().prService.simulateIntegration(arg));
 
   ipcMain.handle(IPC.prsCommitIntegration, async (_event, arg: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => {
     const ctx = getCtx();
-    const committed = await ctx.prService.commitIntegration(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_commit_integration:${arg.proposalId}:${arg.integrationLaneName}`
-    });
-    return committed;
+    return await ctx.prService.commitIntegration(arg);
   });
 
   ipcMain.handle(IPC.prsListProposals, async (): Promise<IntegrationProposal[]> =>
@@ -4917,34 +5622,19 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => {
     const ctx = getCtx();
-    const landed = await ctx.prService.landQueueNext(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_land",
-      reason: `prs_land_queue_next:${arg.groupId}`
-    });
-    return landed;
+    return await ctx.prService.landQueueNext(arg);
   });
 
   ipcMain.handle(IPC.prsStartQueueAutomation, async (_event, arg) => {
     const ctx = getCtx();
-    const state = await ctx.queueLandingService.startQueue(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_start_queue_automation:${arg.groupId}`,
-    });
-    return state;
+    return await ctx.queueLandingService.startQueue(arg);
   });
 
   ipcMain.handle(IPC.prsPauseQueueAutomation, async (_event, arg) => getCtx().queueLandingService.pauseQueue(arg.queueId));
 
   ipcMain.handle(IPC.prsResumeQueueAutomation, async (_event, arg) => {
     const ctx = getCtx();
-    const state = ctx.queueLandingService.resumeQueue(arg);
-    triggerAutoContextDocs(ctx, {
-      event: "pr_create",
-      reason: `prs_resume_queue_automation:${arg.queueId}`,
-    });
-    return state;
+    return ctx.queueLandingService.resumeQueue(arg);
   });
 
   ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));
@@ -5030,6 +5720,9 @@ export function registerIpc({
     const reasoning = typeof arg?.reasoning === "string" && arg.reasoning.trim().length > 0
       ? arg.reasoning.trim()
       : null;
+    const additionalInstructions = typeof arg?.additionalInstructions === "string" && arg.additionalInstructions.trim().length > 0
+      ? arg.additionalInstructions.trim()
+      : null;
     let runId = "";
 
     if (!model) {
@@ -5086,15 +5779,11 @@ export function registerIpc({
         model,
         reasoningEffort: reasoning,
         permissionMode,
-        originSurface: context.sourceTab === "integration"
-          ? "integration"
-          : context.sourceTab === "rebase"
-            ? "rebase"
-            : context.sourceTab === "queue"
-              ? "manual"
-            : context.sourceTab === "normal"
-              ? "manual"
-              : "manual",
+        additionalInstructions,
+        originSurface:
+          context.sourceTab === "integration" ? "integration"
+          : context.sourceTab === "rebase" ? "rebase"
+          : "manual",
       });
       runId = prep.runId;
       if (prep.status === "blocked") {
@@ -5312,6 +6001,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => getCtx().prService.getDetail(args.prId));
   ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => getCtx().prService.getFiles(args.prId));
+  ipcMain.handle(IPC.prsGetCommits, (_e, args: { prId: string }): Promise<PrCommit[]> => getCtx().prService.getCommits(args.prId));
   ipcMain.handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => getCtx().prService.getActionRuns(args.prId));
   ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => getCtx().prService.getActivity(args.prId));
   ipcMain.handle(IPC.prsAddComment, (_e, args) => getCtx().prService.addComment(args));
@@ -5326,6 +6016,46 @@ export function registerIpc({
   ipcMain.handle(IPC.prsReopen, (_e, args) => getCtx().prService.reopenPr(args));
   ipcMain.handle(IPC.prsRerunChecks, (_e, args) => getCtx().prService.rerunChecks(args));
   ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => getCtx().prService.aiReviewSummary(args));
+
+  // PRs Tab redesign (Timeline + Rails)
+  ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => getCtx().prService.getDeployments(args.prId));
+  ipcMain.handle(IPC.prsGetAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService.getSummary(args.prId));
+  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService.regenerateSummary(args.prId));
+  ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => getCtx().prService.postReviewComment(args));
+  ipcMain.handle(
+    IPC.prsSetReviewThreadResolved,
+    (_e, args: SetPrReviewThreadResolvedArgs) => getCtx().prService.setReviewThreadResolved(args),
+  );
+  ipcMain.handle(IPC.prsReactToComment, (_e, args: ReactToPrCommentArgs) => getCtx().prService.reactToComment(args));
+  ipcMain.handle(
+    IPC.prsLaunchIssueResolutionFromThread,
+    async (_e, arg: LaunchPrIssueResolutionFromThreadArgs): Promise<LaunchPrIssueResolutionFromThreadResult> => {
+      const ctx = getCtx();
+      const additionalInstructions = buildIssueResolutionInstructionsFromThread(arg);
+      if (!arg.modelId) {
+        throw new Error("modelId is required for prsLaunchIssueResolutionFromThread.");
+      }
+      return await launchPrIssueResolutionChat(
+        {
+          prService: ctx.prService,
+          laneService: ctx.laneService,
+          agentChatService: ctx.agentChatService,
+          sessionService: ctx.sessionService,
+          issueInventoryService: ctx.issueInventoryService,
+        },
+        {
+          prId: arg.prId,
+          scope: "comments",
+          modelId: arg.modelId,
+          reasoning: arg.reasoning ?? null,
+          permissionMode: arg.permissionMode,
+          additionalInstructions,
+        },
+      );
+    },
+  );
+  ipcMain.handle(IPC.prsCleanupBranch, (_e, args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> =>
+    getCtx().prService.cleanupBranch(args));
 
   // Issue Inventory (PR convergence loop)
   ipcMain.handle(IPC.prsIssueInventorySync, async (_e, args: { prId: string }): Promise<IssueInventorySnapshot> => {
@@ -5575,7 +6305,7 @@ export function registerIpc({
     return await ctx.processService.start(arg);
   });
 
-  ipcMain.handle(IPC.processesStop, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
+  ipcMain.handle(IPC.processesStop, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime | null> => {
     const ctx = getCtx();
     return await ctx.processService.stop(arg);
   });
@@ -5585,7 +6315,7 @@ export function registerIpc({
     return await ctx.processService.restart(arg);
   });
 
-  ipcMain.handle(IPC.processesKill, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
+  ipcMain.handle(IPC.processesKill, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime | null> => {
     const ctx = getCtx();
     return await ctx.processService.kill(arg);
   });
@@ -5964,15 +6694,16 @@ export function registerIpc({
 
   ipcMain.handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {
     const ctx = getCtx();
-    const laneId = await resolveFirstAvailableLaneId(ctx, arg.laneId);
+    const laneId = await resolvePrimaryLaneIdOnly(ctx);
     if (!laneId) {
-      throw new Error("No active lane is available to host the CTO chat session.");
+      throw new Error("No primary lane is available to host the CTO chat session.");
     }
     return ctx.agentChatService.ensureIdentitySession({
       identityKey: "cto",
       laneId,
       modelId: arg.modelId ?? null,
       reasoningEffort: arg.reasoningEffort ?? null,
+      permissionMode: "full-auto",
     });
   });
 
@@ -6035,13 +6766,14 @@ export function registerIpc({
   ipcMain.handle(IPC.ctoEnsureAgentSession, async (_event, arg: CtoEnsureAgentSessionArgs): Promise<AgentChatSession> => {
     const ctx = getCtx();
     if (!ctx.agentChatService) throw new Error("Agent chat service is not available.");
-    const laneId = await resolveFirstAvailableLaneId(ctx, arg.laneId);
-    if (!laneId) throw new Error("No lane available for agent session.");
+    const laneId = await resolvePrimaryLaneIdOnly(ctx);
+    if (!laneId) throw new Error("No primary lane is available to host the agent chat session.");
     return ctx.agentChatService.ensureIdentitySession({
       identityKey: `agent:${arg.agentId}`,
       laneId,
       modelId: arg.modelId ?? null,
       reasoningEffort: arg.reasoningEffort ?? null,
+      permissionMode: "full-auto",
     });
   });
 
@@ -6445,4 +7177,579 @@ export function registerIpc({
   ipcMain.handle(IPC.updateDismissInstalledNotice, () => {
     getCtx().autoUpdateService?.dismissInstalledNotice();
   });
+
+  // --------------------------------------------------------------------
+  // Mobile Push (APNs) — bridge for the MobilePushPanel settings UI
+  // --------------------------------------------------------------------
+  const readApnsStatus = (): ApnsBridgeStatus => {
+    const ctx = getCtx();
+    const effective = ctx.projectConfigService?.get?.()?.effective;
+    const apnsConfig = effective?.notifications?.apns ?? null;
+    return {
+      enabled: apnsConfig?.enabled === true,
+      configured: ctx.apnsService?.isConfigured?.() === true,
+      keyStored: ctx.apnsKeyStore?.has?.() === true,
+      keyId: apnsConfig?.keyId ?? null,
+      teamId: apnsConfig?.teamId ?? null,
+      bundleId: apnsConfig?.bundleId ?? null,
+      env: apnsConfig?.env === "production" ? "production" : "sandbox",
+    };
+  };
+
+  const saveApnsConfigToProject = (next: ApnsBridgeSaveConfigArgs): void => {
+    const ctx = getCtx();
+    if (!ctx.projectConfigService) return;
+    const snapshot = ctx.projectConfigService.get();
+    const shared = snapshot.shared ?? {};
+    const sharedNotifications =
+      (shared as Record<string, unknown>).notifications &&
+      typeof (shared as Record<string, unknown>).notifications === "object"
+        ? ((shared as Record<string, unknown>).notifications as Record<string, unknown>)
+        : {};
+    ctx.projectConfigService.save({
+      shared: {
+        ...shared,
+        notifications: {
+          ...sharedNotifications,
+          apns: {
+            enabled: next.enabled,
+            keyId: next.keyId,
+            teamId: next.teamId,
+            bundleId: next.bundleId,
+            env: next.env,
+          },
+        },
+      },
+      local: snapshot.local ?? {},
+    });
+  };
+
+  // Re-run ApnsService.configure when we have both a stored key and valid config.
+  const reconfigureApnsIfReady = (): void => {
+    const ctx = getCtx();
+    const effective = ctx.projectConfigService?.get?.()?.effective;
+    const apnsConfig = effective?.notifications?.apns ?? null;
+    if (!ctx.apnsService || !ctx.apnsKeyStore) return;
+    if (!apnsConfig?.enabled) return;
+    if (!apnsConfig.keyId || !apnsConfig.teamId || !apnsConfig.bundleId) return;
+    if (!ctx.apnsKeyStore.has()) return;
+    try {
+      const pem = ctx.apnsKeyStore.load();
+      if (!pem) return;
+      ctx.apnsService.configure({
+        keyP8Pem: pem,
+        keyId: apnsConfig.keyId,
+        teamId: apnsConfig.teamId,
+        bundleId: apnsConfig.bundleId,
+        env: apnsConfig.env === "production" ? "production" : "sandbox",
+      });
+    } catch (error) {
+      // Surface to the caller via status; don't crash the handler.
+      console.warn("apns.reconfigure_failed", error);
+    }
+  };
+
+  ipcMain.handle(IPC.notificationsApnsGetStatus, async (): Promise<ApnsBridgeStatus> => {
+    return readApnsStatus();
+  });
+
+  ipcMain.handle(
+    IPC.notificationsApnsSaveConfig,
+    async (_event, args: ApnsBridgeSaveConfigArgs): Promise<ApnsBridgeStatus> => {
+      const ctx = getCtx();
+      if (!args.enabled) {
+        saveApnsConfigToProject(args);
+        await ctx.apnsService?.reset?.();
+        return readApnsStatus();
+      }
+      // Validate against any stored key before committing the new metadata so
+      // a failed save cannot replace a previously working APNs configuration.
+      if (args.enabled && ctx.apnsService && ctx.apnsKeyStore?.has()) {
+        const pem = ctx.apnsKeyStore.load();
+        if (pem) {
+          try {
+            ctx.apnsService.configure({
+              keyP8Pem: pem,
+              keyId: args.keyId,
+              teamId: args.teamId,
+              bundleId: args.bundleId,
+              env: args.env,
+            });
+          } catch (error) {
+            throw new Error(
+              `APNs configure failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+      } else {
+        await ctx.apnsService?.reset?.();
+      }
+      saveApnsConfigToProject(args);
+      return readApnsStatus();
+    },
+  );
+
+  ipcMain.handle(
+    IPC.notificationsApnsUploadKey,
+    async (_event, args: ApnsBridgeUploadKeyArgs): Promise<ApnsBridgeStatus> => {
+      const ctx = getCtx();
+      if (!ctx.apnsKeyStore) throw new Error("ApnsKeyStore unavailable.");
+      const trimmed = (args.p8Pem ?? "").trim();
+      if (!trimmed) throw new Error("Empty .p8 payload.");
+      // If complete config is already persisted (second upload / rotation),
+      // configure first so an invalid key never replaces a working one on disk.
+      const effective = ctx.projectConfigService?.get?.()?.effective;
+      const apnsConfig = effective?.notifications?.apns ?? null;
+      if (
+        apnsConfig?.enabled &&
+        apnsConfig.keyId &&
+        apnsConfig.teamId &&
+        apnsConfig.bundleId &&
+        ctx.apnsService
+      ) {
+        try {
+          ctx.apnsService.configure({
+            keyP8Pem: trimmed,
+            keyId: apnsConfig.keyId,
+            teamId: apnsConfig.teamId,
+            bundleId: apnsConfig.bundleId,
+            env: apnsConfig.env === "production" ? "production" : "sandbox",
+          });
+        } catch (error) {
+          throw new Error(
+            `APNs configure failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      ctx.apnsKeyStore.save(trimmed);
+      return readApnsStatus();
+    },
+  );
+
+  ipcMain.handle(IPC.notificationsApnsClearKey, async (): Promise<ApnsBridgeStatus> => {
+    const ctx = getCtx();
+    ctx.apnsKeyStore?.clear?.();
+    await ctx.apnsService?.reset?.();
+    return readApnsStatus();
+  });
+
+  ipcMain.handle(
+    IPC.notificationsApnsSendTestPush,
+    async (_event, args: ApnsBridgeSendTestPushArgs): Promise<ApnsBridgeSendTestPushResult> => {
+      const ctx = getCtx();
+      if (!ctx.apnsService || !ctx.apnsService.isConfigured?.()) {
+        return { ok: false, reason: "APNs not configured. Upload a .p8 and save the config." };
+      }
+      const registry = getOptionalSyncService()?.getDeviceRegistryService?.() ?? null;
+      if (!registry) return { ok: false, reason: "Device registry unavailable." };
+      const effective = ctx.projectConfigService?.get?.()?.effective;
+      const apnsConfig = effective?.notifications?.apns ?? null;
+      const configuredBundleId = apnsConfig?.bundleId?.trim() ?? "";
+      const devices = registry
+        .listDevices()
+        .filter((d) => d.platform === "iOS" && d.deviceType === "phone");
+      const kind = args.kind ?? "generic";
+
+      const target = args.deviceId
+        ? devices.find((d) => d.deviceId === args.deviceId) ?? null
+        : devices[0] ?? null;
+      if (!target) return { ok: false, reason: "No paired iOS device in the registry." };
+      const meta = target.metadata ?? {};
+      const deviceBundleId =
+        typeof meta.apnsBundleId === "string" && meta.apnsBundleId.trim().length > 0
+          ? meta.apnsBundleId.trim()
+          : configuredBundleId;
+      if (!deviceBundleId) return { ok: false, reason: "No APNs bundle id found for this device or project." };
+      const deviceEnv =
+        meta.apnsEnv === "production"
+          ? "production"
+          : meta.apnsEnv === "sandbox"
+            ? "sandbox"
+            : apnsConfig?.env === "production"
+              ? "production"
+              : "sandbox";
+
+      // Pick the right (token, topic, pushType, payload) quadruple based on kind.
+      let deviceToken: string | null;
+      let topic: string;
+      let pushType: "alert" | "liveactivity";
+      let payload: Record<string, unknown>;
+
+      if (kind === "la_start") {
+        deviceToken = typeof meta.apnsActivityStartToken === "string" ? meta.apnsActivityStartToken : null;
+        if (!deviceToken) {
+          return {
+            ok: false,
+            reason: "Device has no Live Activity push-to-start token yet (iOS 17.2+ registers this shortly after launch).",
+          };
+        }
+        topic = `${deviceBundleId}.push-type.liveactivity`;
+        pushType = "liveactivity";
+        payload = buildLiveActivityStartPayload();
+      } else if (kind === "la_update_running" || kind === "la_update_attention" || kind === "la_update_multi") {
+        const tokenMap = (meta.apnsActivityUpdateTokens ?? null) as Record<string, string> | null;
+        const tokens = tokenMap ? Object.values(tokenMap).filter((t): t is string => typeof t === "string" && t.length > 0) : [];
+        deviceToken = tokens[0] ?? null;
+        if (!deviceToken) {
+          return {
+            ok: false,
+            reason: "No active Live Activity on device to update. Start one first (or fire 'Live Activity · start').",
+          };
+        }
+        topic = `${deviceBundleId}.push-type.liveactivity`;
+        pushType = "liveactivity";
+        payload = buildLiveActivityUpdatePayload(kind);
+      } else if (kind === "la_end") {
+        const tokenMap = (meta.apnsActivityUpdateTokens ?? null) as Record<string, string> | null;
+        const tokens = tokenMap ? Object.values(tokenMap).filter((t): t is string => typeof t === "string" && t.length > 0) : [];
+        deviceToken = tokens[0] ?? null;
+        if (!deviceToken) {
+          return { ok: false, reason: "No active Live Activity on device to end." };
+        }
+        topic = `${deviceBundleId}.push-type.liveactivity`;
+        pushType = "liveactivity";
+        payload = buildLiveActivityEndPayload();
+      } else {
+        deviceToken = typeof meta.apnsAlertToken === "string" ? meta.apnsAlertToken : null;
+        if (!deviceToken) {
+          return {
+            ok: false,
+            reason:
+              "Device has no APNs alert token yet. Make sure you accepted the notification permission prompt on the iOS app (Settings → Notifications → ADE → Allow).",
+          };
+        }
+        topic = deviceBundleId;
+        pushType = "alert";
+        payload = buildTestPushPayload(kind);
+      }
+
+      try {
+        const result = await ctx.apnsService.send({
+          deviceToken,
+          env: deviceEnv,
+          pushType,
+          topic,
+          priority: 10,
+          payload,
+        });
+        if (result.ok) return { ok: true };
+        return { ok: false, reason: result.reason ?? "APNs rejected the push." };
+      } catch (error) {
+        return {
+          ok: false,
+          reason: error instanceof Error ? error.message : "Unknown send error.",
+        };
+      }
+    },
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Live Activity payload helpers
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Swift Codable default for `Date` is seconds since 2001-01-01 00:00:00 UTC
+ * (NSDate reference date). Convert Unix seconds so the ContentState
+ * decoder on-device parses our dates correctly.
+ */
+const NSDATE_REFERENCE_OFFSET_SECONDS = 978_307_200;
+function toNSDateSeconds(unixSeconds: number): number {
+  return unixSeconds - NSDATE_REFERENCE_OFFSET_SECONDS;
+}
+
+/**
+ * Build a minimal valid `ContentState` matching `ADESessionAttributes.ContentState`
+ * on-device. `variant` selects which UI state to drive the island into.
+ */
+function buildContentState(
+  variant: "running" | "attention" | "multi",
+): Record<string, unknown> {
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const nowRef = toNSDateSeconds(nowUnix);
+
+  const sessionRunning = {
+    id: "test-la-claude",
+    providerSlug: "claude",
+    title: "Push test · Claude",
+    isAwaitingInput: false,
+    isFailed: false,
+    startedAt: nowRef - 60,
+    toolCalls: 4,
+    preview: "Reading src/auth/oauth.ts",
+    progress: 0.32,
+  };
+  const sessionAwaiting = {
+    id: "test-la-claude",
+    providerSlug: "claude",
+    title: "Push test · Claude",
+    isAwaitingInput: true,
+    isFailed: false,
+    startedAt: nowRef - 120,
+    toolCalls: 7,
+    preview: "Approve 3 file writes to continue",
+  };
+  const sessionCodex = {
+    id: "test-la-codex",
+    providerSlug: "codex",
+    title: "tests-fix",
+    isAwaitingInput: false,
+    isFailed: false,
+    startedAt: nowRef - 30,
+    toolCalls: 2,
+  };
+  const sessionCto = {
+    id: "test-la-cto",
+    providerSlug: "cto",
+    title: "daily-review",
+    isAwaitingInput: false,
+    isFailed: false,
+    startedAt: nowRef - 240,
+    toolCalls: 11,
+  };
+
+  if (variant === "attention") {
+    return {
+      sessions: [sessionAwaiting],
+      attention: {
+        kind: "awaitingInput",
+        title: "Claude · Push test",
+        subtitle: "3 file writes need approval",
+        providerSlug: "claude",
+        sessionId: sessionAwaiting.id,
+        itemId: "test-item-1",
+      },
+      failingCheckCount: 0,
+      awaitingReviewCount: 0,
+      mergeReadyCount: 0,
+      generatedAt: nowRef,
+    };
+  }
+  if (variant === "multi") {
+    return {
+      sessions: [sessionRunning, sessionCodex, sessionCto],
+      attention: null,
+      failingCheckCount: 1,
+      awaitingReviewCount: 2,
+      mergeReadyCount: 0,
+      generatedAt: nowRef,
+    };
+  }
+  // variant === "running"
+  return {
+    sessions: [sessionRunning],
+    attention: null,
+    failingCheckCount: 0,
+    awaitingReviewCount: 0,
+    mergeReadyCount: 0,
+    generatedAt: nowRef,
+  };
+}
+
+function buildLiveActivityStartPayload(): Record<string, unknown> {
+  const nowUnix = Math.floor(Date.now() / 1000);
+  return {
+    aps: {
+      timestamp: nowUnix,
+      event: "start",
+      "attributes-type": "ADESessionAttributes",
+      attributes: { workspaceId: "default", workspaceName: "Test Workspace" },
+      "content-state": buildContentState("running"),
+      "stale-date": nowUnix + 300,
+      "relevance-score": 100,
+      alert: {
+        title: "ADE · Live Activity started",
+        body: "Tap to open.",
+      },
+    },
+  };
+}
+
+function buildLiveActivityUpdatePayload(
+  kind: "la_update_running" | "la_update_attention" | "la_update_multi",
+): Record<string, unknown> {
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const variant =
+    kind === "la_update_attention" ? "attention" : kind === "la_update_multi" ? "multi" : "running";
+  return {
+    aps: {
+      timestamp: nowUnix,
+      event: "update",
+      "content-state": buildContentState(variant),
+      "stale-date": nowUnix + 300,
+      "relevance-score": variant === "attention" ? 100 : variant === "multi" ? 60 : 40,
+      alert:
+        variant === "attention"
+          ? {
+              title: "Claude · Push test",
+              body: "Approval needed — tap Approve/Deny in the island.",
+            }
+          : variant === "multi"
+            ? { title: "ADE", body: "3 chats running · 1 CI failing · 2 reviews pending" }
+            : { title: "Claude · Push test", body: "Reading src/auth/oauth.ts" },
+    },
+  };
+}
+
+function buildLiveActivityEndPayload(): Record<string, unknown> {
+  const nowUnix = Math.floor(Date.now() / 1000);
+  return {
+    aps: {
+      timestamp: nowUnix,
+      event: "end",
+      "content-state": buildContentState("running"),
+      "dismissal-date": nowUnix + 30,
+      alert: { title: "ADE", body: "Live Activity ended." },
+    },
+  };
+}
+
+/**
+ * Build a self-contained APNs payload for each test-push category. Each
+ * payload is shaped to exercise the exact code path a real notification
+ * of that kind would go through on iOS: category identifier, mutable-content
+ * for the NotificationServiceExtension, thread-id for grouping,
+ * interruption-level, and any custom metadata the action handlers need
+ * (sessionId, itemId, prId, prNumber).
+ */
+function buildTestPushPayload(kind: ApnsTestPushKind): Record<string, unknown> {
+  switch (kind) {
+    case "awaiting_input":
+      return {
+        aps: {
+          alert: {
+            title: "Claude · ADE mobile",
+            body: "3 file writes need approval before I continue.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "time-sensitive",
+          "relevance-score": 1.0,
+          "thread-id": "chat:test-approval-session:approval",
+          category: "CHAT_AWAITING_INPUT",
+        },
+        providerSlug: "claude",
+        sessionId: "test-approval-session",
+        itemId: "test-item-001",
+        kind: "approval",
+      };
+    case "chat_failed":
+      return {
+        aps: {
+          alert: {
+            title: "Codex · tests-fix",
+            body: "Session failed: rate limit exceeded after 24 tool calls.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.7,
+          "thread-id": "chat:test-failed-session",
+          category: "CHAT_FAILED",
+        },
+        providerSlug: "codex",
+        sessionId: "test-failed-session",
+      };
+    case "chat_turn_completed":
+      return {
+        aps: {
+          alert: {
+            title: "Claude · auth-refactor",
+            body: "Finished replying. 14 file edits, 3 new tests added.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.4,
+          "thread-id": "chat:test-completed-session",
+          category: "CHAT_TURN_COMPLETED",
+        },
+        providerSlug: "claude",
+        sessionId: "test-completed-session",
+      };
+    case "ci_failing":
+      return {
+        aps: {
+          alert: {
+            title: "PR #412 · auth-refactor",
+            body: "3 checks failing: lint, tsc, integration-tests.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.8,
+          "thread-id": "pr:412",
+          category: "PR_CI_FAILING",
+        },
+        prId: "test-pr-412",
+        prNumber: 412,
+      };
+    case "review_requested":
+      return {
+        aps: {
+          alert: {
+            title: "PR #408 · new-widget",
+            body: "alice requested your review.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.7,
+          "thread-id": "pr:408",
+          category: "PR_REVIEW_REQUESTED",
+        },
+        prId: "test-pr-408",
+        prNumber: 408,
+      };
+    case "merge_ready":
+      return {
+        aps: {
+          alert: {
+            title: "PR #401 · refactor-auth",
+            body: "All checks passed and approved. Ready to merge.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.6,
+          "thread-id": "pr:401",
+          category: "PR_MERGE_READY",
+        },
+        prId: "test-pr-401",
+        prNumber: 401,
+      };
+    case "cto_subagent_finished":
+      return {
+        aps: {
+          alert: {
+            title: "CTO · daily-review",
+            body: "Sub-agent 'Lint cleanup' finished (3 PRs opened).",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.5,
+          "thread-id": "cto:test-subagent",
+          category: "CTO_SUBAGENT_FINISHED",
+        },
+        providerSlug: "cto",
+      };
+    case "generic":
+    default:
+      return {
+        aps: {
+          alert: {
+            title: "ADE",
+            body: "Mobile push is working. Tap to open ADE.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.5,
+          category: "SYSTEM_ALERT",
+        },
+        providerSlug: "ade",
+        testPush: true,
+      };
+  }
 }

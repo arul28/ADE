@@ -1,21 +1,24 @@
 ---
 title: "AI Providers"
-description: "Configure Anthropic, OpenAI, OpenRouter, and local models in ADE. Manage API keys, set budget caps, and control which model each agent uses."
+description: "Configure Anthropic, OpenAI, OpenRouter, OpenCode, and local models in ADE. Manage API keys, set budget caps, and control which model each agent uses."
 icon: "microchip"
 ---
 ## Supported Providers
 
-ADE supports four AI provider categories. You can configure any combination — agents can use different providers depending on the task.
+ADE supports multiple AI provider categories, configurable in any combination.
 
 <CardGroup cols={2}>
   <Card title="Anthropic (Claude)" icon="robot">
-    Default and recommended. Models: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`. Best for complex reasoning, long-context tasks, and code review.
+    Default and recommended. Models: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`. Best for complex reasoning, long-context tasks, and code review.
   </Card>
   <Card title="OpenAI" icon="circle">
     Supported via the OpenAI API. Models: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3`. Best for structured output, code completion, and tool use.
   </Card>
   <Card title="OpenRouter" icon="shuffle">
     Route to hundreds of models through a single API key. Useful for cost optimization, model comparison, and accessing open-source models (Llama, Mistral, Gemini).
+  </Card>
+  <Card title="OpenCode" icon="code">
+    OpenCode runs as a local server process and exposes an OpenAI-compatible endpoint. Supports API key, OpenRouter, and fully local model configurations. See [Windsurf / OpenCode](/ai-tools/windsurf) for setup.
   </Card>
   <Card title="Local Models" icon="computer">
     Via Ollama or LM Studio. Point ADE to a local OpenAI-compatible endpoint — no API key required. Best for offline use or privacy-sensitive codebases.
@@ -28,9 +31,10 @@ ADE supports four AI provider categories. You can configure any combination — 
 
 | Provider | Best For | Context Window | Requires API Key |
 |----------|----------|----------------|-----------------|
-| Anthropic Claude | Complex reasoning, long-context, code review | Up to 200K tokens | Yes |
+| Anthropic Claude | Complex reasoning, long-context, code review | Up to 1M tokens | Yes |
 | OpenAI GPT | Structured output, code completion, tool use | Up to 128K tokens | Yes |
 | OpenRouter | Cost optimization, model comparison | Varies by model | Yes |
+| OpenCode | Local server runtime, flexible model backends | Varies by model | Optional |
 | Ollama / LM Studio | Offline, privacy-sensitive work | Varies by model | No |
 
 ---
@@ -46,8 +50,6 @@ Provider configuration lives in three places:
 ---
 
 ## Setting Up Anthropic (Claude)
-
-Anthropic is the default provider. Claude models are the recommended choice for most ADE workflows due to their strong code understanding and large context windows.
 
 <Steps>
   <Step title="Get an API key">
@@ -65,9 +67,9 @@ Anthropic is the default provider. Claude models are the recommended choice for 
     ```yaml
     # .ade/ade.yaml
     ai:
-      defaultModel: "claude-opus-4-6"
+      defaultModel: "claude-opus-4-7"
     ```
-    Available models: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+    Available models: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
   </Step>
   <Step title="Test the connection">
     In Settings → AI Providers → Anthropic, click **Test Connection**. ADE sends a minimal request to the API and reports success or an error with the HTTP status code.
@@ -109,7 +111,7 @@ OpenRouter provides a single API key that routes to hundreds of upstream models.
 # .ade/local.secret.yaml
 openrouter:
   apiKey: "sk-or-..."
-  defaultModel: "anthropic/claude-opus-4-6"   # OpenRouter model identifier
+  defaultModel: "anthropic/claude-opus-4-7"   # OpenRouter model identifier
 ```
 
 <Tabs>
@@ -117,7 +119,7 @@ openrouter:
     ```yaml
     openrouter:
       apiKey: "sk-or-..."
-      defaultModel: "anthropic/claude-opus-4-6"
+      defaultModel: "anthropic/claude-opus-4-7"
     ```
   </Tab>
   <Tab title="OpenAI via OpenRouter">
@@ -137,7 +139,7 @@ openrouter:
 </Tabs>
 
 <Note>
-OpenRouter model identifiers use the format `<provider>/<model-name>`. Find the full list at [openrouter.ai/models](https://openrouter.ai/models). When using OpenRouter, the model string you set in `ade.yaml` should use the OpenRouter format, prefixed with `openrouter:` — for example: `openrouter:anthropic/claude-opus-4-6`.
+OpenRouter model identifiers use the format `<provider>/<model-name>`. Find the full list at [openrouter.ai/models](https://openrouter.ai/models). When using OpenRouter, the model string you set in `ade.yaml` should use the OpenRouter format, prefixed with `openrouter:` — for example: `openrouter:anthropic/claude-opus-4-7`.
 </Note>
 
 ---
@@ -186,7 +188,7 @@ Local models have significantly smaller context windows than cloud models (typic
 
 | Model | Context Window | Best For |
 |-------|---------------|---------|
-| `claude-opus-4-6` | 200K tokens | Complex reasoning, architecture review, long-context analysis |
+| `claude-opus-4-7` | 1M tokens | Complex reasoning, architecture review, long-context analysis |
 | `claude-sonnet-4-6` | 200K tokens | General coding tasks, balanced speed and quality |
 | `claude-haiku-4-5` | 200K tokens | Fast, lightweight tasks; automation runs; high-volume tool calls |
 
@@ -201,6 +203,38 @@ Local models have significantly smaller context windows than cloud models (typic
 
 ---
 
+## Permission modes
+
+Chat and Missions share the same permission picker. Each provider exposes a small set of presets that map directly to provider flags.
+
+### Claude
+
+| Mode | Allows | Gates |
+|---|---|---|
+| `plan` | Read, search, plan | All writes and shell |
+| `edit` | Read, edit inside the worktree | Network and out-of-worktree paths |
+| `full-auto` | Full tool access | Nothing — use only where appropriate |
+| `default` | Standard Claude CLI defaults | Per Claude's CLI config |
+
+### Codex (via the Codex CLI)
+
+Codex presets combine `--approval-policy` and `--sandbox`.
+
+| Mode | Approval policy | Sandbox | Use when |
+|---|---|---|---|
+| `default` | `on-request` | `workspace-write` | You want Codex to edit inside the workspace and ask before touching network or paths outside it. Standard middle ground. |
+| `plan` | `on-request` | `read-only` | You want exploration only — reads and answers, approvals required for anything else. |
+| `full-auto` (Full access) | `never` | `danger-full-access` | You are running inside a stronger external sandbox. Skips every approval prompt. |
+| `config-toml` (Custom) | — | — | ADE passes no `--approval-policy` or `--sandbox`. Codex honors its own config (`~/.codex/config.toml`). |
+
+There is no separate "Guarded edit" preset anymore. The previous Guarded edit preset is replaced by **Default permissions**, which is the same workspace-write sandbox but with the `on-request` approval policy rather than `on-failure`. The Codex sandbox in Missions is derived from the chosen mode — the separate sandbox dropdown has been removed from the Worker Permissions editor.
+
+### OpenCode
+
+OpenCode follows its own internal permission scheme. Set it to `full-auto` for the standard preset; override in OpenCode's config when the project needs a different boundary.
+
+---
+
 ## Model Selection by Context
 
 ADE lets you assign different models to different agent roles. This is the recommended approach for cost efficiency: use Opus for planning and architecture, Sonnet for execution, and Haiku for automation runs.
@@ -211,7 +245,7 @@ ai:
   defaultModel: "claude-sonnet-4-6"      # Fallback for all agents
   routingRules:
     - role: "orchestrator"               # Mission planning agent
-      model: "claude-opus-4-6"
+      model: "claude-opus-4-7"
     - role: "worker"                     # Mission execution agents
       model: "claude-sonnet-4-6"
     - role: "automation"                 # Automation runs (cost-sensitive)
@@ -221,7 +255,7 @@ ai:
 ```
 
 <Tip>
-For solo developers running many automations, routing automation runs to `claude-haiku-4-5` and reserving `claude-opus-4-6` for mission planning can reduce monthly spend by 60–80% with minimal quality impact on routine tasks.
+For solo developers running many automations, routing automation runs to `claude-haiku-4-5` and reserving `claude-opus-4-7` for mission planning can reduce monthly spend by 60–80% with minimal quality impact on routine tasks.
 </Tip>
 
 ---
@@ -287,7 +321,7 @@ API keys are handled according to ADE's trust boundary model:
 - **Storage**: Keys live only in `local.secret.yaml` on disk. ADE reads them into main process memory at startup.
 - **In-memory handling**: Once loaded, keys are held in the main process (Electron main) only. They are never passed to the renderer process.
 - **SQLite**: Keys are never written to ADE's SQLite database. The database stores session metadata, costs, and audit records — not credentials.
-- **Log redaction**: Any key value that appears in log output (e.g., from a misconfigured MCP tool) is automatically redacted and replaced with `***`.
+- **Log redaction**: Any key value that appears in log output is automatically redacted and replaced with `***`.
 - **IPC bridge**: The preload bridge does not expose any IPC channel that returns raw API key values to the renderer.
 
 ---
@@ -320,11 +354,11 @@ API keys are handled according to ADE's trust boundary model:
 ## What's Next
 
 <CardGroup cols={2}>
-  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
-    Connect external MCP servers to give agents tools beyond ADE's built-ins.
-  </Card>
   <Card title="Settings" icon="gear" href="/configuration/settings">
     Configure usage graphs, notification thresholds, and per-agent model overrides.
+  </Card>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Review the trust boundary model and configure per-agent access rules.
   </Card>
   <Card title="Missions" icon="bullseye" href="/missions/overview">
     Learn how model routing rules apply during mission planning and execution phases.

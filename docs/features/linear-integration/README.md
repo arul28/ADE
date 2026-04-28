@@ -9,7 +9,7 @@ terminates.
 
 This document describes the shape of the integration: who participates, which
 services own what, which tables store state, and how the desktop app and the
-headless MCP server run the same pipeline.
+headless ADE CLI run the same pipeline.
 
 ## Who uses it
 
@@ -25,11 +25,11 @@ The integration is used by three distinct consumers:
    `aiOrchestratorService`, links the mission back to the
    `LinearWorkflowRun` row, and waits for mission completion before moving
    on to PR gates or closeout.
-3. **The headless MCP server.** `apps/mcp-server/src/headlessLinearServices.ts`
+3. **The headless ADE CLI.** `apps/ade-cli/src/headlessLinearServices.ts`
    instantiates the full Linear service stack (sync, dispatcher, closeout,
    intake, ingress, routing, outbound, templates) so external callers can
    trigger and resolve Linear runs without the desktop UI running. The
-   MCP server exposes these over JSON-RPC tools such as `listLinearWorkflows`,
+   ADE CLI exposes these over JSON-RPC tools such as `listLinearWorkflows`,
    `resolveLinearRunAction`, `routeLinearIssueToCto`,
    `routeLinearIssueToMission`, and `resolveLinearSyncQueueItem`.
 
@@ -189,9 +189,9 @@ IPC wiring (`apps/desktop/src/main/services/ipc/registerIpc.ts`):
   `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`,
   `ctoGetLinearProjects`, `ctoGetLinearWorkflowCatalog`.
 
-Headless MCP mode:
+Headless ADE CLI mode:
 
-- `apps/mcp-server/src/headlessLinearServices.ts` —
+- `apps/ade-cli/src/headlessLinearServices.ts` —
   `createHeadlessLinearServices()` builds the full service stack
   (`linearClient`, `linearIssueTracker`, `linearTemplateService`,
   `linearWorkflowFileService`, `flowPolicyService`, `linearRoutingService`,
@@ -199,7 +199,7 @@ Headless MCP mode:
   `linearDispatcherService`, `linearSyncService`, `linearIngressService`)
   plus a headless `agentChatService` and `workerHeartbeatService` that
   fail fast when agent execution is requested.
-- `apps/mcp-server/src/mcpServer.ts` registers the Linear JSON-RPC tools
+- `apps/ade-cli/src/adeRpcServer.ts` registers the Linear JSON-RPC tools
   at `listLinearWorkflows`, `getLinearRunStatus`, `resolveLinearRunAction`,
   `cancelLinearRun`, `routeLinearIssueToCto`, `routeLinearIssueToMission`,
   `routeLinearIssueToWorker`, `rerouteLinearRun`,
@@ -266,9 +266,9 @@ once configured, but:
   under references like `linearRelay.accessToken`. Missing/invalid secrets
   disable the relay path and `LinearIngressStatus.relay.status` becomes
   `error`.
-- **Headless MCP worker targets fail fast.** In
+- **Headless ADE CLI worker targets fail fast.** In
   `createHeadlessWorkerHeartbeatService` the wakeup always returns
-  `status: "failed"` with the message *"Headless MCP mode does not
+  `status: "failed"` with the message *"Headless ADE CLI mode does not
   support worker-backed Linear targets yet."* Workflows targeting
   `worker_run` are not a supported headless path; use
   `employee_session`, `mission`, or `pr_resolution` instead.

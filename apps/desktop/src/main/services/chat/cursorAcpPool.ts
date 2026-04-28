@@ -25,7 +25,6 @@ export type CursorAcpLaunchSettings = {
   mode: "plan" | "ask" | null;
   sandbox: "enabled" | "disabled";
   force: boolean;
-  approveMcps: boolean;
 };
 
 let cursorGenCounter = 0;
@@ -65,9 +64,6 @@ export async function acquireCursorAcpConnection(args: {
   }
   if (args.launchSettings.force) {
     spawnArgs.push("--force");
-  }
-  if (args.launchSettings.approveMcps) {
-    spawnArgs.push("--approve-mcps");
   }
   const apiKey = process.env.CURSOR_API_KEY?.trim() || process.env.CURSOR_AUTH_TOKEN?.trim();
   if (apiKey) {

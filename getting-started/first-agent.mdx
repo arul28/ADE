@@ -88,12 +88,6 @@ For your first agent task, use something narrow enough to verify the full loop b
 Add a GET /health endpoint that returns { "status": "ok" } and add one test for it.
 ```
 
-This prompt is effective because it:
-- Creates a small, reviewable change (one route handler + one test)
-- Exercises file creation, code writing, and test generation
-- Gives you a clear way to verify the result (`curl localhost:PORT/health`)
-- Completes in under a minute with most models
-
 Other good first prompts:
 - `"Add a TypeScript type for UserPreferences with name (string), theme (light | dark), and notifications (boolean)."`
 - `"Write a utility function that validates email addresses and add 3 unit tests for it."`
@@ -103,13 +97,13 @@ Other good first prompts:
 
 ## What to expect during your first session
 
-**Context injection**: Before the agent sees your message, ADE prepends the Lane Pack — a structured context block with your project's architecture, the lane's intent, and recent file state. This means the agent already knows what project it is in and what branch it is working on.
+**Context injection**: ADE prepends the Lane Pack before the agent sees your message — so the agent already knows the project structure, lane intent, and recent file state.
 
-**Tool calls**: The agent reads files, writes code, and runs commands using ADE's MCP tools. Each tool call appears as an expandable block in the chat. You do not need to grant per-call permissions in the default configuration.
+**Tool calls**: The agent reads files, writes code, and runs commands via ADE CLI tools. Each call appears as an expandable block in chat. No per-call permissions required in the default config.
 
-**Session recording**: Every message, tool call, and response is captured in the session transcript. You can review it later in the History tab.
+**Session recording**: Every message and tool call is captured in the session transcript, viewable in the History tab.
 
-**Interrupting**: Press **Escape** or click the **Stop** button to interrupt a running agent at any time. The agent reports partial results and you can continue the conversation or start a new session.
+**Interrupting**: Press **Escape** or click **Stop** at any time. The agent reports partial results and the conversation continues.
 
 ---
 

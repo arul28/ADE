@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, GitBranch, Sparkle, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash, ArrowUp, ArrowDown } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
@@ -446,7 +447,7 @@ function LaneWarningPanel({
                   cursor: "pointer",
                 }}
               >
-                Open Rebase Tab
+                Open Rebase/Merge tab
               </button>
               <span style={{ fontSize: 10, color: C.textMuted, fontFamily: MONO_FONT }}>
                 Review rebase status before PR creation{rebaseLaneIds.length > 1 ? ` (${rebaseLaneIds.length} lanes)` : ""}.
@@ -468,8 +469,9 @@ export function CreatePrModal({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated?: () => void;
+  onCreated?: (created: PrSummary[]) => void | Promise<void>;
 }) {
+  const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
@@ -505,6 +507,7 @@ export function CreatePrModal({
   const [integrationTitle, setIntegrationTitle] = React.useState("");
   const [integrationBody, setIntegrationBody] = React.useState("");
   const [integrationDraft, setIntegrationDraft] = React.useState(false);
+  const [integrationMergeIntoLaneId, setIntegrationMergeIntoLaneId] = React.useState("");
   const [proposal, setProposal] = React.useState<IntegrationProposal | null>(null);
   const [simulating, setSimulating] = React.useState(false);
   const [laneSyncStatusById, setLaneSyncStatusById] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
@@ -595,8 +598,9 @@ export function CreatePrModal({
 
   const openRebaseTab = React.useCallback((laneId: string) => {
     onOpenChange(false);
-    window.location.hash = `#/prs?tab=rebase&laneId=${encodeURIComponent(laneId)}`;
-  }, [onOpenChange]);
+    const search = new URLSearchParams({ tab: "workflows", workflow: "rebase", laneId });
+    navigate({ pathname: "/prs", search: `?${search.toString()}` });
+  }, [navigate, onOpenChange]);
 
   // Reset on close
   React.useEffect(() => {
@@ -622,6 +626,7 @@ export function CreatePrModal({
       setDraftError(null);
       setIntegrationSources([]);
       setIntegrationBaseBranch("");
+      setIntegrationMergeIntoLaneId("");
       setIntegrationName("");
       setIntegrationTitle("");
       setIntegrationBody("");
@@ -715,9 +720,15 @@ export function CreatePrModal({
     try {
       const trimmedIntegrationBaseBranch = integrationBaseBranch.trim();
       const baseBranch = trimmedIntegrationBaseBranch || branchNameFromRef(primaryLane?.branchRef ?? "main");
+      const mergeInto = integrationMergeIntoLaneId.trim();
+      if (mergeInto && integrationSources.includes(mergeInto)) {
+        setExecError("Merge-into lane cannot be one of the source lanes.");
+        return;
+      }
       const result = await window.ade.prs.simulateIntegration({
         sourceLaneIds: integrationSources,
         baseBranch,
+        mergeIntoLaneId: mergeInto || null,
       });
       setProposal(result);
       // Auto-generate a name if empty
@@ -752,6 +763,7 @@ export function CreatePrModal({
           })
         });
         setResults([pr]);
+        await onCreated?.([pr]);
         setNumericStep(3);
       } else if (mode === "queue") {
         const trimmedQueueTargetBranch = (queueTargetBranch ?? "").trim();
@@ -769,6 +781,7 @@ export function CreatePrModal({
           setQueueErrors(result.errors);
         }
         setResults(result.prs);
+        await onCreated?.(result.prs);
         setNumericStep(3);
       } else if (mode === "integration") {
         if (!proposal) {
@@ -784,11 +797,16 @@ export function CreatePrModal({
           body: integrationBody,
           draft: integrationDraft,
           integrationLaneName: integrationName || `integration/${Date.now().toString(36)}`,
+          preferredIntegrationLaneId: integrationMergeIntoLaneId.trim() || null,
         });
         lastProgressLabel = "Creating integration lane";
         setIntegrationProgress("Creating integration lane...");
-        await window.ade.prs.createIntegrationLaneForProposal({
-          proposalId: proposal.proposalId,
+        await runWithDirtyWorktreeConfirmation({
+          confirmMessage: "Continue and prepare the integration lane anyway?",
+          run: async (allowDirtyWorktree) => window.ade.prs.createIntegrationLaneForProposal({
+            proposalId: proposal.proposalId,
+            ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {}),
+          }),
         });
         setIntegrationProgress(null);
         // No PR created — proposal saved for later commit from Integration tab
@@ -811,6 +829,19 @@ export function CreatePrModal({
   };
 
   const nonPrimaryLanes = React.useMemo(() => lanes.filter((l) => l.laneType !== "primary"), [lanes]);
+
+  const integrationMergeIntoOptions = React.useMemo(
+    () => [...nonPrimaryLanes].sort((a, b) => a.name.localeCompare(b.name)),
+    [nonPrimaryLanes],
+  );
+
+  React.useEffect(() => {
+    if (!integrationMergeIntoLaneId) return;
+    if (integrationSources.includes(integrationMergeIntoLaneId)) {
+      setIntegrationMergeIntoLaneId("");
+      setProposal(null);
+    }
+  }, [integrationMergeIntoLaneId, integrationSources]);
 
   const toggleQueueLane = (laneId: string) => {
     setQueueLaneIds((prev) =>
@@ -933,6 +964,7 @@ export function CreatePrModal({
           }}
         />
         <Dialog.Content
+          data-tour="prs.createModal"
           style={{
             position: "fixed",
             left: "50%",
@@ -1107,6 +1139,7 @@ export function CreatePrModal({
                           }}
                         />
                         <select
+                          data-tour="prs.createModal.source"
                           value={normalLaneId}
                           onChange={(e) => setNormalLaneId(e.target.value)}
                           style={{
@@ -1154,6 +1187,7 @@ export function CreatePrModal({
                           onChange={(e) => setNormalBaseBranch(e.target.value)}
                           aria-label="Target branch"
                           placeholder="Type or select a branch"
+                          data-tour="prs.createModal.base"
                           style={selectStyle}
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
@@ -1499,6 +1533,37 @@ export function CreatePrModal({
                       />
                     </div>
 
+                    <div>
+                      <span style={labelStyle}>MERGE INTO (OPTIONAL)</span>
+                      <select
+                        aria-label="Merge integration into existing lane"
+                        value={integrationMergeIntoLaneId}
+                        onChange={(e) => {
+                          setIntegrationMergeIntoLaneId(e.target.value);
+                          setProposal(null);
+                        }}
+                        style={selectStyle}
+                        onFocus={(ev) => { ev.currentTarget.style.borderColor = C.accent; }}
+                        onBlur={(ev) => { ev.currentTarget.style.borderColor = C.borderSubtle; }}
+                      >
+                        <option value="">New integration lane</option>
+                        {integrationMergeIntoOptions.map((lane) => (
+                          <option key={lane.id} value={lane.id} disabled={integrationSources.includes(lane.id)}>
+                            {lane.name}{integrationSources.includes(lane.id) ? " (source)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={{
+                        marginTop: 6,
+                        fontSize: 10,
+                        fontFamily: "var(--font-sans)",
+                        color: C.textMuted,
+                        lineHeight: "14px",
+                      }}>
+                        Creates a new integration lane and prepares merge commits there. When an existing lane is selected, simulation includes conflicts against that lane&apos;s current HEAD.
+                      </div>
+                    </div>
+
                     {/* Simulate button */}
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <button
@@ -1749,6 +1814,7 @@ export function CreatePrModal({
                         onChange={(e) => setNormalTitle(e.target.value)}
                         style={inputStyle}
                         placeholder="Auto-generated from lane name"
+                        data-tour="prs.createModal.title"
                         onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                         onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
                       />
@@ -1797,6 +1863,7 @@ export function CreatePrModal({
                         rows={6}
                         style={textareaStyle}
                         placeholder="PR description (markdown)..."
+                        data-tour="prs.createModal.body"
                         onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                         onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
                       />
@@ -2255,6 +2322,7 @@ export function CreatePrModal({
             <div>
               {numericStep === 1 && (
                 <button
+                  data-tour="prs.createModal.next"
                   disabled={!canProceed}
                   onClick={goToStep2}
                   style={{
@@ -2281,6 +2349,7 @@ export function CreatePrModal({
               )}
               {numericStep === 2 && (
                 <button
+                  data-tour="prs.createModal.submit"
                   disabled={busy || !canProceed}
                   onClick={() => void handleCreate()}
                   style={{
@@ -2308,7 +2377,7 @@ export function CreatePrModal({
               {numericStep === 3 && results && (
                 <Dialog.Close asChild>
                   <button
-                    onClick={() => onCreated?.()}
+                    onClick={() => onCreated?.(results)}
                     style={{
                       background: C.accent,
                       border: "none",

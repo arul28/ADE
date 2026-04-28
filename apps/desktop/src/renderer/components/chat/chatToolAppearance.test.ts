@@ -47,8 +47,8 @@ describe("getToolMeta", () => {
     expect(meta.category).toBe("codex");
   });
 
-  it("resolves MCP-style double-underscore tool names by extracting the action", () => {
-    const meta = getToolMeta("mcp__custom__bash");
+  it("resolves dotted tool names by extracting the action", () => {
+    const meta = getToolMeta("custom.bash");
     expect(meta.label).toBe("Shell");
     expect(meta.category).toBe("exec");
   });

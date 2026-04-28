@@ -1,0 +1,126 @@
+---
+title: "v1.1.3"
+description: "Release notes for ADE v1.1.3 — April 23, 2026"
+---
+
+v1.1.3 is a feature-weight release: automations get a ground-up rewrite, the rebase/merge surface moves out of a modal into its own URL-routed tab, Work sessions can now run in parallel across multiple models from a single prompt, Work panes tile instead of pack, and the ADE CLI becomes usable from a fresh `gh auth login` without duplicating credentials. Windows port foundations land alongside — not shipped to users yet, but every cross-platform seam the desktop needs is in place. The iOS app gets a large polish pass across Files, Lanes, PRs, and Work, and moves to TestFlight build 4.
+
+---
+
+## Automations
+
+The automations page is now a proper rules engine. Triggers are modelled as `github.*` / `linear.*` / `schedule.*` / `local-git.*` families; actions can be ADE Actions, agent sessions, or launch-mission runs; and each rule has its own per-rule history panel instead of a shared feed.
+
+- **GitHub polling triggers.** A new `githubPollingService` watches issues, PRs, comments, and reviews on every configured repo. Comment cursors use `created_at#id` for stable ordering, and review cursors use `submitted_at#review.id` — two reviews submitted in the same ISO second no longer race each other off the cursor and get dropped.
+- **ADE Actions registry.** `apps/desktop/src/main/services/adeActions/registry.ts` is the single source of truth for what an automation is allowed to invoke. Domains are exported as `ADE_ACTION_DOMAIN_NAMES`, and `adeRpcServer` derives its `list_ade_actions` / `run_ade_action` enums from that list — we no longer advertise ~25 domains that had no registry backing, and the actually-implemented `automations` and `issue` domains are now visible.
+- **Role-gated CTO methods.** `run_ade_action` refuses CTO-only methods (Linear/GitHub credential set/clear, budget config, feedback drafts, usage start/stop, quit-and-install, flow policy, Linear sync queue ops, Linear ingress relay setup) when the caller is in an agent role. UI-state writes (`layout.set`, `tiling_tree.set`, `graph_state.set`) now reject calls missing the payload key instead of silently persisting `{}`/`null`.
+- **Branch filters on PR events.** `isPrCanonical` covers `github.pr_opened`, `pr_updated`, `pr_closed`, `pr_commented`, and `pr_review_submitted`, so rules with a `branch` filter actually match PR-comment and PR-review-submitted events instead of falling through to an undefined `laneBranch`.
+- **`pr_updated` content gate.** `hasPrContentChange` stops `github.pr_updated` firing on pure discussion changes; the snapshot is also now written *after* the cursor is initialized so the very first poll cannot re-dispatch every existing PR.
+- **Null-safe placeholder expansion.** `resolvePlaceholders` treats `null` the same as `undefined` for whole-match paths — a prompt that is exactly `{{trigger.pr.body}}` with a null body now resolves to an empty string instead of letting the literal template leak into the agent prompt.
+- **`issue_edited` + `issue_labeled` coexist.** Both fire when a label change and a title/body edit land in the same `updated_at` tick.
+- **Settings moved.** Budget, usage, and cost UI moved out of the Automations page and into Settings; the Automations page is now exclusively rules.
+
+---
+
+## Parallel multi-model lanes
+
+Composer gained a multi-slot launcher. Pick N models, type one prompt, and ADE spawns one child lane per slot, starts a session, sends the prompt, and drops you into a Work-focus tiling that shows every lane running side-by-side.
+
+- **AI-suggested lane names.** `suggestLaneNameFromPrompt` runs through the existing prompt runner and falls back to a deterministic slug if the model call fails. No empty names, no model-suffix collisions.
+- **Crash-recovery persistence.** Parallel launch state (creating_lanes → sending → sent) is persisted to `kvDb` as `agent-chat-parallel-launch`; a crash mid-launch is visible on the next start instead of leaving half-created lanes invisible.
+- **Steer fallback on partial-send.** Lanes whose first `agentChat.send` hits an already-active turn retry via `steer`; lanes that already succeeded are preserved across later failures rather than being force-deleted alongside un-sent lanes.
+- **Work-focus layout.** `LanesPage` adds multi-lane deep-link selection (`?laneIds=…&workFocus=1`) and a `WORK_FOCUS_TREE` tiling that only applies once every requested lane has appeared — no flicker, no signature replay.
+- **Integration lane origin tracking.** PRs can now adopt an existing lane as the merge target instead of always creating a new child; `integrationLaneOrigin` + `preferredIntegrationLaneId` distinguish adopted vs ADE-created integration lanes so cleanup/delete treats them correctly. `mergeIntoLaneId` simulates starting from that lane's current HEAD.
+
+---
+
+## Rebase and merge tab
+
+The old rebase/merge modal is gone. It lives in its own URL-routed workflow tab (`?tab=workflows&workflow=rebase`) so you can link directly into it, navigate back/forward through browser history, and keep state across reloads.
+
+- **Memoized initial route read.** `readInitialRouteState` in `PrsProvider` shares a single `window.location` parse across four state initializers, and mirrors the post-effect `resolveRouteRebaseSelection` logic so the initial `selectedRebaseItemId` has the same shape as the value the first effect would compute.
+- **Hash wins over search.** For BrowserRouter mock-mode URLs like `?tab=workflows&workflow=queue#/prs?...&workflow=rebase`, the hash's `workflow` takes precedence.
+- **Lane filters survive late-arriving lanes.** `useWorkSessions` holds off caching `appliedUrlFilterKeyRef` when a `laneId` filter is requested but lanes haven't loaded yet, so a later populated render can still apply it instead of early-returning.
+- **QueueTab → Rebase tab.** `openRebaseTab` actually navigates to the Rebase workflow URL rather than only flipping local state.
+- **Labels normalized.** "Open Rebase/Merge tab" uses sentence case everywhere it appears.
+
+---
+
+## Work pane tiling
+
+The packed Work session grid is replaced with `PaneTilingLayout`, backed by a pure `paneTreeOps` module (reconcile, detect-drop-edge, flatten-single-child, remove-pane, swap, validate). Layouts persist under `work:grid:tiling:v1:` and seed from `workSessionTiling.ts`.
+
+- **Streaming-aware tool groups.** Tool cards that are still streaming inside a group auto-expand (`localExpanded || running`), so mid-stream progress doesn't disappear into a collapsed group hint.
+- **Codex thread state reuse.** Rehydrating Codex effective thread state reuses the existing persisted approval/sandbox normalizers instead of re-implementing them.
+- **Serialized permission-picker updates.** `pendingNativeControlUpdateRef` serializes rapid native-permission toggles so back-to-back updates don't stomp each other's session summaries.
+- Unit coverage: 28 tests for `paneTreeOps`, 8 for `workSessionTiling`.
+
+---
+
+## Identity session policy
+
+Sessions pinned to an identity (`agent:<id>`) now refuse to bind to a foreign lane, and the full-auto permission mode is enforced at both create and update time.
+
+- **Strict primary-lane resolution.** `registerIpc` and `syncRemoteCommandService` use `resolvePrimaryLaneIdOnly` for CTO/agent identity ensure-session flows — no more `lanes[0]` fallback that silently attached an identity session to the first available lane.
+- **Create/update/resume parity.** `createSession` strips every permission/sandbox/interaction-mode field from a pinned-identity payload before native-permission derivation runs. `updateSession` gates those fields behind `!identityPinned` so a stricter native mode can't layer on over IPC. `resumeSession` detects rows whose `laneId` drifted, rewrites them via `sessionService.updateMeta`, and re-hydrates before spinning up the runtime.
+- **`isPrimaryPinnedIdentity`** requires a non-empty trimmed `agent:<id>` suffix; `guardedIdentityPermissionModeForProvider` is module-local.
+- Error strings normalized to "primary lane" across main and renderer copy.
+
+---
+
+## ADE CLI
+
+The CLI is now usable in an environment with only `gh auth login`, and its RPC surface matches the desktop's action registry instead of drifting from it.
+
+- **GitHub token fallback chain.** `ADE_GITHUB_TOKEN → GITHUB_TOKEN → GH_TOKEN → gh auth token`. The headless CLI can't read desktop's Electron `safeStorage`-encrypted token (different bundle identity), so it now reads from `gh auth token` as a last resort. If none returns a token, the existing "missing token" error points at `gh auth login`.
+- **Project root = workspace root by default.** When `--project-root` or `ADE_PROJECT_ROOT` fixes the project root, `workspaceRoot` defaults to that path unless explicitly overridden.
+- **`hasHelpFlag` respects value-carrying flags.** ~120 long-flags that take a value (including `-q` for files/memory search) are treated as value carriers, so `--help` after a pending-value flag is handed to the flag instead of triggering help.
+- **Integration lane provenance.** Only flag an integration lane as "adopted" when `preferred_integration_lane_id === integration_lane_id`; mismatched scratch lanes stay "ade-created" so cleanup/delete can remove them.
+- **PR row handoff cleanup.** `prService.upsertRow` nulls `integration_proposals.linked_pr_id` alongside `pr_group_members` when a PR row moves lanes, so old integration workflows don't silently track the new lane's PR status.
+- **No duplicate guidance.** `promptInspector` dedupes the `ADE_CLI_AGENT_GUIDANCE` block; `agentChatService` skips first-user-message guidance injection for Claude sessions (the system prompt already carries it).
+- **Tighter duplicate-PR matching.** The error-message match is tighter so an unrelated GitHub error is no longer treated as "PR already exists".
+
+---
+
+## Windows port foundations
+
+Not shipped to end users yet — this is the seam work that the Windows build will need.
+
+- **Portable process/CLI launching.** `processExecution` switches to a `cmd.exe` wrapper with safe argument quoting on Windows. `cliExecutableResolver` handles case-insensitive PATH lookups and PATHEXT-aware extensions.
+- **MCP over named pipes.** The named-pipe path is derived from a realpath hash so case-variant paths collapse to one pipe while genuinely distinct directories get distinct pipes.
+- **ADE CLI Windows launch.** The headless runtime augments `PATH` with shell + known CLI directories; the lane runtime env slot is derived from `sha256(laneId)` so it stays stable across lane archival and reordering.
+- **Tailscale CLI resolution.** Default Windows install paths are probed in `resolveTailscaleCliPath`.
+- **PowerShell tokenizer.** Doubled single-quote escapes are handled.
+- **CI.** Vercel preview builds are skipped when `apps/web` is unchanged so the Vercel free tier isn't burned by desktop/CLI PRs.
+
+---
+
+## Project open + stability
+
+- **Deferred background tasks on open.** Project opening no longer blocks on background services starting; they come up lazily behind the first project-open frame.
+- **Pinned per-session terminal runtime.** `TerminalView` pins per-session runtime `projectRoot` / `revision` so a late `projectRoot` null→value transition doesn't flap the cached runtime and force a reconnect.
+
+---
+
+## iOS
+
+Large polish pass across the five root tabs; no marketing-version bump (still 1.1.1), build moves to **4**.
+
+- **Streaming-duplication collapse.** Legitimate `...` ellipses survive: dots are halved only at `runLength >= 4`, so real ellipses in assistant text render correctly.
+- **Live/waiting chip accounting.** `globalLiveSessionCount` excludes awaiting-input sessions, so the "N live" chip no longer overlaps the "N waiting" chip. Run-owned sessions are also excluded from global live/attention counts and scroll targets so the Work root counts match the visible tiles.
+- **Repository PRs header.** The dynamic `owner/repo` section title is restored, with "Repository PRs" as the fallback.
+- **Attention lanes.** Dropped the `prefix(3)` on the review section of `LaneListViewParts` — all attention lanes render, not just the first three.
+- **Pull-merge copy.** `LaneSyncDetailScreen` confirmation copy matches the actual fast-forward-only semantics.
+- **External PR rows are read-only.** `PrRowCard` and `PrsRootScreen` gate the unmapped chip and Link-PR sheet on `scope != "external"` — external rows stay read-only instead of offering actions that can't apply.
+- **Files workspace preserved across jumps.** `FilesRootScreen` suppresses the workspace-reset that previously fired before cross-workspace jumps from `requestedFilesNavigation`.
+- **Residual-overlap scan.** `mergeWorkStreamingText` now carries a note explaining why the residual-overlap branch is hit rarely, so future readers don't treat it as dead code.
+
+---
+
+## Other
+
+- **Better bot coverage in shipLane.** `/shipLane` now requires both CI and all review bots (Greptile, CodeRabbit, Copilot) to be terminal before iterating, with a documented 12-minute wait floor. Less polling noise, fewer premature iterations.
+- **`/release` slash command.** The end-to-end release flow is now a first-class slash command: scope detection, changelog generation, tag + push, workflow polling, iOS TestFlight upload.
+- **`.gitignore`.** `.asc/artifacts/` is anchored with a leading `/` so only the top-level directory matches; trailing slash dropped on `node_modules` so nested matches work under BSD-style ignore parsing.
+- **`release-core.yml`.** Release workflow updates for the new version surface.
+- Tests added for identity session policy (create/update/resume parity, non-identity fallback), `adeRpcServer` dynamic action listing, `automationService` trigger matching, and orphan-lane ordering edge cases.

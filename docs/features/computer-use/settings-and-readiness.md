@@ -7,7 +7,6 @@ The `Settings > Computer Use` panel is the operator's entry point for configurin
 - `apps/desktop/src/main/services/computerUse/controlPlane.ts` — `buildComputerUseSettingsSnapshot`, `buildGhostOsCheck`, `buildCapabilityMatrix`, `selectPreferredBackend`, `summarizePolicy`, `buildComputerUseOwnerSnapshot`.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — `getLocalComputerUseCapabilities`, `getGhostDoctorProcessHealth`, `parseGhostDoctorProcessHealth`.
 - `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — `getBackendStatus`.
-- `apps/desktop/src/main/services/externalMcp/externalMcpService.ts` — tracks registered external MCP servers.
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — IPC surface for `computerUse:*` channels.
 - Renderer Settings surface — `apps/desktop/src/renderer/components/settings/` (look for `ComputerUsePanel.tsx` or similar).
 
@@ -38,8 +37,8 @@ The guidance strings are the single-source-of-truth explainer text. They live in
   - `"needs_setup"` — `ghost status` output indicates setup isn't complete.
   - `"ready"` — `status: ready` matches.
   - `"unknown"` — CLI exists but status output is ambiguous.
-- `adeConfigured: boolean` — whether an external MCP entry with `command === "ghost"` + `args` including `"mcp"` exists.
-- `adeConnected: boolean` — whether any matching MCP snapshot has `state === "connected"`.
+- `adeConfigured: boolean` — whether an ADE CLI entry with `command === "ghost"` + `args` including `"ade-cli"` exists.
+- `adeConnected: boolean` — whether any matching ADE CLI snapshot has `state === "connected"`.
 - `summary: string` — one-line human summary.
 - `details: string[]` — multi-line actionable details.
 - `processHealth: GhostDoctorProcessHealth` — from `getGhostDoctorProcessHealth`:
@@ -49,12 +48,12 @@ The guidance strings are the single-source-of-truth explainer text. They live in
 
 Process health detection shells out to `ghost doctor` (10s timeout) and parses output via `parseGhostDoctorProcessHealth`. Patterns:
 
-- `GHOST_DOCTOR_PROCESS_REGEX` — `/(\d+)\s+ghost MCP process(?:es)?\s+found/i` for explicit counts.
+- `GHOST_DOCTOR_PROCESS_REGEX` — `/(\d+)\s+ghost ADE CLI process(?:es)?\s+found/i` for explicit counts.
 - `[FAIL] Processes:` -> stale (failure signaled).
 - `[ok] Processes:` -> healthy (no explicit count but success signaled).
 - Otherwise -> unknown.
 
-Stale processes indicate leftover `ghost mcp` instances from earlier sessions — operators should stop them and rerun `ghost doctor` before using Ghost OS.
+Stale processes indicate leftover `ghost ade-cli` instances from earlier sessions — operators should stop them and rerun `ghost doctor` before using Ghost OS.
 
 ## Capability matrix
 
@@ -99,7 +98,7 @@ Fields:
 
 The Settings renderer calls `window.ade.computerUse.getSettings()` which runs:
 
-1. `broker.getBackendStatus()` — synthesizes current external backend states from the external MCP registry + capability detection for CLI backends + local fallback capabilities.
+1. `broker.getBackendStatus()` — synthesizes current external backend states from the ADE CLI registry + capability detection for CLI backends + local fallback capabilities.
 2. `buildComputerUseSettingsSnapshot({ status, snapshots })` — wraps the status with guidance and the Ghost OS check.
 3. Returns the snapshot over IPC.
 
@@ -135,10 +134,10 @@ Gaps become preflight warnings. If the gap is not satisfiable externally and loc
 1. UI shows `setupState` — `not_installed`, `needs_setup`, `ready`, or `unknown`.
 2. If not installed: link to the Ghost OS repo + CLI install instructions.
 3. If needs setup: instruction to run `ghost setup` in a terminal.
-4. If ready but not configured in ADE: instruction to add the Ghost OS server in External MCP (`command: "ghost"`, `args: ["mcp"]`).
-5. If ready + configured + not connected: "Reconnect the Ghost OS MCP entry in ADE".
+4. If ready but not configured in ADE: instruction to add the Ghost OS server in ADE CLI (`command: "ghost"`, `args: ["ade-cli"]`).
+5. If ready + configured + not connected: "Reconnect the Ghost OS ADE CLI entry in ADE".
 6. If ready + connected: green state.
-7. If process health is stale: "Stop the stale `ghost mcp` processes, then rerun `ghost doctor`".
+7. If process health is stale: "Stop the stale `ghost ade-cli` processes, then rerun `ghost doctor`".
 
 ### agent-browser (from Settings > Computer Use)
 
@@ -160,13 +159,13 @@ From Settings:
 - Pin a preferred backend.
 - Allow or disallow local fallback.
 - Enable or disable proof retention.
-- Open the external MCP settings to add / configure / reconnect Ghost OS.
+- Open the ADE CLI settings to add / configure / reconnect Ghost OS.
 - Open the broker's artifact review surface.
 
 ## Gotchas
 
 - **Readiness detection is synchronous via spawnSync.** A hung external binary throttles the settings load. Timeouts are 5s for `ghost status`, 10s for `ghost doctor`.
-- **Ghost OS detection needs both CLI presence and MCP configuration.** Installing the CLI without configuring MCP leaves ADE showing `"ready"` without `adeConnected`. The details list surfaces the right next step.
+- **Ghost OS detection needs both CLI presence and ADE CLI configuration.** Installing the CLI without configuring ADE CLI leaves ADE showing `"ready"` without `adeConnected`. The details list surfaces the right next step.
 - **`GHOST_DOCTOR_PROCESS_REGEX` is format-sensitive.** Ghost OS CLI updates that change output wording break detection silently — add tests when updating the regex.
 - **Platform fallback is binary.** macOS fallback is fully supported; non-macOS fallback is fully blocked. There is no "partial" state for Linux/Windows.
 - **Preferred backend is not enforced as a hard constraint.** If the preferred backend becomes unavailable, snapshots fall through to the first available backend. This is by design — proof still gets captured — but the UI should always show the current active backend so operators see the drift.

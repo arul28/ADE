@@ -204,14 +204,6 @@ const COORDINATOR_OBSERVATION_TOOL_NAMES = [
   "stream_events",
 ] as const;
 
-export function buildCoordinatorMcpAllowedTools(serverName = "ade", extraToolNames: readonly string[] = []): string[] {
-  const trimmed = serverName.trim();
-  const resolvedServerName = trimmed.length > 0 ? trimmed : "ade";
-  return [...COORDINATOR_TOOL_NAMES, ...COORDINATOR_OBSERVATION_TOOL_NAMES, ...extraToolNames].map(
-    (toolName) => `mcp__${resolvedServerName}__${toolName}`,
-  );
-}
-
 export type PlannerLaunchFailureCategory =
   | "run_context_bug"
   | "provider_unreachable"
@@ -506,11 +498,6 @@ function resolveTeamRuntimeConfig(graph: OrchestratorRunGraph): TeamRuntimeConfi
     ...normalizeAgentRuntimeFlags(teamRuntime),
     template: teamRuntime.template as TeamRuntimeConfig["template"],
     toolProfiles: teamRuntime.toolProfiles as TeamRuntimeConfig["toolProfiles"],
-    mcpServerAllowlist: Array.isArray(teamRuntime.mcpServerAllowlist)
-      ? (teamRuntime.mcpServerAllowlist as unknown[])
-          .map((entry: unknown) => String(entry ?? "").trim())
-          .filter((entry) => entry.length > 0)
-      : undefined,
     policyOverrides: teamRuntime.policyOverrides as TeamRuntimeConfig["policyOverrides"]
   };
 }
@@ -1211,7 +1198,6 @@ export function createCoordinatorToolSet(deps: {
           role: roleName,
           roleCapabilities: roleDef?.capabilities ?? [],
           toolProfile: toolProfile ?? null,
-          mcpServerAllowlist: teamRuntime?.mcpServerAllowlist ?? [],
           isTask: false,
           convertedFromTaskShell: true,
           ...(args.delegationContract ? { delegationContract: args.delegationContract } : {}),
@@ -1265,7 +1251,6 @@ export function createCoordinatorToolSet(deps: {
             role: roleName,
             roleCapabilities: roleDef?.capabilities ?? [],
             toolProfile: toolProfile ?? null,
-            mcpServerAllowlist: teamRuntime?.mcpServerAllowlist ?? [],
             ...(args.delegationContract ? { delegationContract: args.delegationContract } : {}),
             ...(args.validationContract ? { validationContract: args.validationContract } : {}),
             ...(replacementSourceStep
@@ -4673,10 +4658,9 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
       role: z.string().describe("Role name to update"),
       allowedTools: z.array(z.string()).min(1),
       blockedTools: z.array(z.string()).optional(),
-      mcpServers: z.array(z.string()).optional(),
       notes: z.string().optional(),
     }),
-    execute: async ({ role, allowedTools, blockedTools, mcpServers, notes }) => {
+    execute: async ({ role, allowedTools, blockedTools, notes }) => {
       try {
         const runRow = db.get<{ metadata_json: string | null }>(
           `select metadata_json from orchestrator_runs where id = ? limit 1`,
@@ -4694,9 +4678,6 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
           allowedTools: dedupeKeys(allowedTools),
           ...(Array.isArray(blockedTools) && blockedTools.length > 0
             ? { blockedTools: dedupeKeys(blockedTools) }
-            : {}),
-          ...(Array.isArray(mcpServers) && mcpServers.length > 0
-            ? { mcpServers: dedupeKeys(mcpServers) }
             : {}),
           ...(normalizeText(notes).length > 0 ? { notes: normalizeText(notes) } : {})
         };

@@ -1,122 +1,107 @@
 ---
-title: "Proofs & Artifacts"
-description: "Proof artifact types, how computer use integrates with missions and chat sessions, and the artifact ownership model."
+title: "Proof Workflow"
+description: "How proofs are owned, reviewed, and published. Ownership model, lifecycle states, and review actions."
 icon: "camera"
 ---
 
-## Proof Kinds (Artifact Types)
+## Proof Kinds
 
-When a computer-use backend performs an action, ADE can require it to produce one or more proof artifacts. The required proof kinds are configured per mission or per automation.
+| Kind | Description | Typical capture |
+|---|---|---|
+| `screenshot` | A static image capture — the current screen or a browser viewport at a specific moment | `ade proof screenshot` |
+| `video_recording` | A short screen recording of an agent sequence | `ade proof record --seconds 20` |
+| `browser_trace` | Structured log of browser interactions (DOM events, navigation, network calls) | `ade proof ingest` from external tool |
+| `browser_verification` | Assertion result — did the expected element exist, did the page contain expected text | `ade proof ingest` from external tool |
+| `console_logs` | Browser or application console output captured during a flow | `ade proof ingest` from external tool |
 
-<AccordionGroup>
-  <Accordion title="screenshot — Static Image Capture" icon="camera">
-    A static PNG/JPEG capture of the screen or browser viewport at a specific moment in the automation.
-
-    **Use when:** You need a visual record of the UI state at key steps. Lightweight, low storage cost.
-
-    **Produced by:** Ghost OS, agent-browser, ADE Local
-  </Accordion>
-
-  <Accordion title="video_recording — Full Session Recording" icon="video">
-    A video recording of the entire automation sequence or a time-bounded segment.
-
-    **Use when:** You need to review the full interaction flow, not just snapshots. Best for debugging unexpected behavior.
-
-    **Produced by:** Ghost OS, agent-browser
-  </Accordion>
-
-  <Accordion title="browser_trace — Structured Interaction Log" icon="list-tree">
-    A machine-readable trace of all browser interactions: DOM events, navigation events, form submissions, network calls, and timing data.
-
-    **Use when:** You need structured, queryable proof rather than visual media. Browser traces can be diffed, replayed, and analyzed by downstream agents.
-
-    **Produced by:** Ghost OS, agent-browser
-  </Accordion>
-
-  <Accordion title="browser_verification — Assertion Result" icon="circle-check">
-    An assertion result — did the expected DOM element exist? Did the page contain the expected text? Returns a boolean with the element snapshot if found.
-
-    **Use when:** You need machine-verifiable confirmation of a UI state (e.g., "confirm the success toast appeared", "confirm the form was submitted").
-
-    **Produced by:** Ghost OS, agent-browser
-  </Accordion>
-
-  <Accordion title="console_logs — Browser Console Output" icon="rectangle-terminal">
-    Browser and application console output captured during the automation session. Includes errors, warnings, and application log statements.
-
-    **Use when:** Debugging automation failures, verifying no JavaScript errors occurred, capturing application-specific log output.
-
-    **Produced by:** Ghost OS, agent-browser
-  </Accordion>
-</AccordionGroup>
+Use screenshots for lightweight visual confirmation, recordings for flow review, and the three browser kinds when you already have structured evidence from an automation tool.
 
 ---
 
-## Computer Use in Missions
+## Ownership Model
 
-Missions with computer use proceed through three stages:
-
-### 1. Launch and Preflight
-
-When creating a mission that requires computer use, ADE shows a **readiness check** before the mission starts:
-
-- Is the preferred backend connected?
-- Are the required proof kinds available from the active backend?
-- Are file-system and permission guardrails satisfied?
-
-If the preflight fails, ADE shows which checks failed and why. You can proceed with a degraded backend or cancel and fix the configuration.
-### 2. Mission Run Monitoring
-
-During execution, the **Mission's Artifacts tab** shows a live view:
-
-- Current backend name and status
-- Live thumbnail feed of recent screenshots
-- Running count of each proof kind collected
-- Proof coverage percentage (how many planned steps have associated artifacts)
-
-### 3. Artifact Review and Closeout
-
-After execution (or at any point mid-mission), you review collected artifacts and mark each one:
-
-| Status | Meaning |
-|---|---|
-| `accepted` | Artifact is valid and meets the proof requirement |
-| `needs_more` | The artifact is insufficient — more evidence is required |
-| `dismissed` | Artifact is not relevant and should be excluded |
-| `published` | Artifact is accepted and has been routed to its configured owners |
-
----
-
-## Computer Use in Chat
-
-When a chat session has a `CU On`, `CU Auto`, or `Proof` policy active, the **Computer Use monitoring panel** appears below the chat message input.
-
-The panel shows:
-- Current active backend and its connection status
-- A thumbnail grid of the most recent screenshots from this session
-- Total action count for the session
-- A live feed indicator when the agent is actively running computer use
-You can click any thumbnail to expand it full-screen and inspect the screenshot, or click **View All Artifacts** to open the full artifact manager for the session.
-
----
-
-## Artifact Ownership Model
-
-Every artifact collected by ADE has a canonical record in the local SQLite database. Artifacts can be **owned by multiple entities simultaneously**.
+Every proof is a canonical record in ADE's SQLite database. Proofs can have multiple owners simultaneously — the same screenshot can be linked to a mission, a PR, and a Linear issue.
 
 **Ownership types:**
-- Lane (the lane where the computer use occurred)
-- Mission (if the action occurred during a mission execution)
-- Chat Session (if the action occurred in a chat)
-- Pull Request (if the artifact is linked to an open PR)
-- Linear Issue (if the artifact is published to a Linear issue as an attachment)
+- **Lane** — the lane where the proof was captured
+- **Mission** — the mission the agent was working on, if any
+- **Chat Session** — the chat session the agent was in, if any
+- **Pull Request** — if the proof is linked to an open PR
+- **Linear Issue** — if the proof is published to a Linear issue as an attachment
+- **Orchestrator run / step / attempt** — finer-grained mission subdivisions
+- **Automation run** — when the proof was captured inside an automation
 
-**Publishing an artifact** routes it to selected owners. For example, a screenshot proving that a UI bug is fixed can be published to both the PR and the Linear issue in one action.
+Agents attach owners when they call `ade proof`, and you can add or remove owners later from the proof's detail view.
 
-**Artifact lifecycle:**
+### Lifecycle States
+
+Each proof carries two orthogonal state fields:
+
+**Review state** — your judgment of the proof:
+
+| State | Meaning |
+|---|---|
+| `pending` | No review yet |
+| `accepted` | Valid and meets requirements |
+| `needs_more` | Insufficient — more evidence required |
+| `dismissed` | Not relevant, excluded |
+
+**Workflow state** — where the proof sits in the pipeline:
+
+| State | Meaning |
+|---|---|
+| `evidence_only` | Captured but not yet promoted anywhere |
+| `promoted` | Moved into a mission's artifacts pool |
+| `published` | Routed to an external owner (PR attachment, Linear attachment) |
+| `dismissed` | Removed from the active pool |
+
+A typical proof starts as `pending` / `evidence_only`, moves to `accepted` / `promoted` when you approve it, and finally to `accepted` / `published` when it is attached to a PR or Linear issue.
+
+---
+
+## Reviewing Proofs in Missions
+
+Missions surface proofs in the **Artifacts tab** on the mission detail view. Each row shows the kind, title, source backend, owner, and a thumbnail.
+
+<Steps>
+  <Step title="Open the Artifacts tab">
+    On a mission detail view, switch to the **Artifacts** tab.
+  </Step>
+  <Step title="Click the proof you want to review">
+    A side panel opens with the full media, the capture metadata, and any existing owners.
+  </Step>
+  <Step title="Set the review state">
+    Choose **Accept**, **Needs more**, or **Dismiss**. Your reviewer note is stored alongside the state.
+  </Step>
+  <Step title="Publish to owners (optional)">
+    Select one or more targets — the PR from this mission, a Linear issue, a chat session — and click **Publish**. ADE routes the proof to each target and updates the workflow state to `published`.
+  </Step>
+</Steps>
+
+---
+
+## Reviewing Proofs in Chat
+
+When a chat agent captures a proof during a session, it appears in the session's artifact panel. From there you can:
+
+- Promote the proof to the lane's durable context
+- Attach it to an existing mission's artifact pool
+- Attach it to a PR or Linear issue
+- Dismiss it
+
+Proofs captured in chat keep their link to the chat session, so you can always trace a proof back to the conversation that produced it.
+
+---
+
+## Artifact Lifecycle Summary
 
 ```
-pending  →  accepted  →  published
-         →  needs_more (agent continues collecting)
-         →  dismissed
+capture → pending / evidence_only
+        → accepted / promoted
+        → accepted / published   (attached to PR or Linear)
+        → dismissed              (excluded from the active pool)
 ```
+
+Every state transition is append-only: the original record is never overwritten. The History tab on each mission reflects every review and publish action, giving you a full audit trail.
+</content>
+</invoke>

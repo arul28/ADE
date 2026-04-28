@@ -180,7 +180,7 @@ configuration surface:
 - **Linear identity** -- optional mapping to Linear user ids,
   display names, and aliases so issues assigned to the worker can
   route correctly.
-- **External MCP access** -- per-worker policy for external MCP
+- **ADE CLI access** -- per-worker policy for ADE CLI
   servers.
 
 ### Slug generation
@@ -193,7 +193,7 @@ The slug is used in:
 
 - SQLite `agent_identities.slug` column.
 - Filesystem path `.ade/agents/<slug>/`.
-- MCP tool routing.
+- ADE CLI action routing.
 
 Renaming a worker leaves the slug fixed unless the user explicitly
 updates it; the filesystem directory does not move.
@@ -285,7 +285,7 @@ type CtoSessionLogEntry = {
   endedAt: string | null;
   provider: string;
   modelId: string | null;
-  capabilityMode: "full_mcp" | "fallback";
+  capabilityMode: "full_tooling" | "fallback";
   createdAt: string;
 };
 ```
@@ -390,7 +390,7 @@ setup before enabling the full CTO experience.
   large projects. Claude compaction watermarks may re-fire if the
   reconstruction block alone exceeds the post-compaction budget.
 - **`capabilityMode` is retroactive.** Session logs record the mode
-  in effect when the session *started*. If MCP becomes available
+  in effect when the session *started*. If ADE CLI becomes available
   mid-session, the log still says `fallback`. This is by design but
   can confuse debuggers.
 - **Subordinate activity ordering.** Writes prepend to a capped list;
@@ -404,7 +404,7 @@ setup before enabling the full CTO experience.
 
 - [Agents README](README.md) -- overview of CTO, workers, and chat.
 - [Tool Registration](tool-registration.md) -- how identity flows
-  into MCP-exposed tools.
+  into ADE CLI-exposed tools.
 - [Memory README](../memory/README.md) -- core memory and memory
   briefings.
 - [Chat Agent Routing](../chat/agent-routing.md) -- provider

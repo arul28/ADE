@@ -22,6 +22,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createLaneService } from "../lanes/laneService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 import { nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
 type ActiveRunEntry = {
   laneId: string;
@@ -295,11 +296,17 @@ export function createTestService({
       }
     })();
 
-    const child: ChildProcessByStdio<null, Readable, Readable> = spawn(suite.command[0]!, suite.command.slice(1), {
+    const invocation = resolveCliSpawnInvocation(suite.command[0]!, suite.command.slice(1), {
+      ...process.env,
+      ...suite.env,
+      ...(overlay.env ?? {})
+    });
+    const child: ChildProcessByStdio<null, Readable, Readable> = spawn(invocation.command, invocation.args, {
       cwd,
       env: { ...process.env, ...suite.env, ...(overlay.env ?? {}) },
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
 
     const entry: ActiveRunEntry = {
@@ -354,18 +361,10 @@ export function createTestService({
     if (suite.timeoutMs && suite.timeoutMs > 0) {
       entry.timeoutTimer = setTimeout(() => {
         entry.stopIntent = "timed_out";
-        try {
-          child.kill("SIGTERM");
-        } catch {
-          // ignore
-        }
+        terminateProcessTree(child, "SIGTERM");
         entry.killTimer = setTimeout(() => {
           if (activeRuns.has(runId)) {
-            try {
-              child.kill("SIGKILL");
-            } catch {
-              // ignore
-            }
+            terminateProcessTree(child, "SIGKILL");
           }
         }, 3000);
       }, suite.timeoutMs);
@@ -411,18 +410,10 @@ export function createTestService({
         entry.killTimer = null;
       }
       entry.stopIntent = "canceled";
-      try {
-        entry.child.kill("SIGTERM");
-      } catch {
-        // ignore
-      }
+      terminateProcessTree(entry.child, "SIGTERM");
       entry.killTimer = setTimeout(() => {
         if (!activeRuns.has(arg.runId)) return;
-        try {
-          entry.child.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
+        terminateProcessTree(entry.child, "SIGKILL");
       }, 3000);
     },
 

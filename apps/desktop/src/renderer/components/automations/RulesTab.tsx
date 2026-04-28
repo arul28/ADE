@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise,
+  BookOpen,
   ClockCounterClockwise,
+  PencilSimple,
   Play,
   Plus,
   Trash,
@@ -18,11 +20,13 @@ import type {
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
-import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { formatDate, statusToneAutomation as statusTone } from "../../lib/format";
-import { CARD_STYLE, extractError, INPUT_CLS, INPUT_STYLE } from "./shared";
+import { extractError } from "./shared";
+import { cardCls, inputCls } from "./designTokens";
 import { RuleEditorPanel } from "./components/RuleEditorPanel";
+import { RuleHistoryPanel } from "./RuleHistoryPanel";
+import { CtoInfoChip, EmptyStateHint } from "./EmptyStateHint";
 
 const DEFAULT_MODEL_ID =
   getDefaultModelDescriptor("opencode")?.id
@@ -45,7 +49,7 @@ function createBlankDraft(): AutomationRuleDraft {
     permissionConfig: {
       providers: {
         claude: "full-auto",
-        codex: "full-auto",
+        codex: "default",
         opencode: "full-auto",
         codexSandbox: "workspace-write",
       },
@@ -67,13 +71,50 @@ function createBlankDraft(): AutomationRuleDraft {
 function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
   const builtInActions = rule.execution?.kind === "built-in"
     ? rule.execution.builtIn?.actions ?? []
-    : (rule.legacy?.actions ?? rule.actions ?? []);
+    : [];
   const draftActions = builtInActions.map((action) => {
+    if (action.type === "create-lane") {
+      return {
+        type: action.type,
+        ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
+        ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
+        ...(action.parentLaneId ? { parentLaneId: action.parentLaneId } : {}),
+      } as any;
+    }
     if (action.type === "run-tests") {
       return { type: action.type, suite: action.suiteId ?? "" } as any;
     }
     if (action.type === "run-command") {
       return { type: action.type, command: action.command ?? "", ...(action.cwd ? { cwd: action.cwd } : {}) } as any;
+    }
+    if (action.type === "ade-action") {
+      return {
+        type: action.type,
+        adeAction: action.adeAction
+          ? {
+              domain: action.adeAction.domain ?? "",
+              action: action.adeAction.action ?? "",
+              ...(action.adeAction.args !== undefined ? { args: action.adeAction.args } : {}),
+              ...(action.adeAction.resolvers ? { resolvers: action.adeAction.resolvers } : {}),
+            }
+          : { domain: "", action: "" },
+      } as any;
+    }
+    if (action.type === "agent-session") {
+      return {
+        type: action.type,
+        ...(action.targetLaneId ? { targetLaneId: action.targetLaneId } : {}),
+        ...(action.modelConfig ? { modelConfig: structuredClone(action.modelConfig) } : {}),
+        ...(action.permissionConfig ? { permissionConfig: structuredClone(action.permissionConfig) } : {}),
+        ...(action.prompt ? { prompt: action.prompt } : {}),
+        ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
+      } as any;
+    }
+    if (action.type === "launch-mission") {
+      return {
+        type: action.type,
+        ...(action.sessionTitle ? { missionTitle: action.sessionTitle } : {}),
+      } as any;
     }
     return { type: action.type } as any;
   });
@@ -143,11 +184,18 @@ function RuleListRow({
   onDelete: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       className={cn(
-        "group w-full rounded-xl border px-3 py-3 text-left transition-colors",
+        "group w-full cursor-pointer rounded-xl border px-3 py-3 text-left transition-colors focus:outline-none focus:ring-1 focus:ring-[#7DD3FC]/45",
         selected
           ? "border-[#7DD3FC]/35 bg-[#13263A]"
           : "border-white/[0.08] bg-black/15 hover:border-white/[0.14]",
@@ -164,9 +212,22 @@ function RuleListRow({
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Chip className="text-[9px]">{primaryTriggerLabel(rule)}</Chip>
             <Chip className="text-[9px]">{executionLabel(rule)}</Chip>
+            {rule.lastRunStatus === "failed" ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenHistory();
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-error/30 bg-error/10 px-2 py-0.5 text-[9px] font-medium text-error transition-colors hover:bg-error/20"
+                title="Open history"
+              >
+                Last run: failed {formatDate(rule.lastRunAt, "")}
+              </button>
+            ) : null}
           </div>
-          <div className="mt-2 text-[11px] text-[#94A7BD]">{modeSummary(rule)}</div>
-          <div className="mt-1 text-[11px] text-[#7E8A9A]">
+          <div className="mt-2 text-[11px] text-muted-fg/70">{modeSummary(rule)}</div>
+          <div className="mt-1 text-[11px] text-muted-fg/50">
             Next {formatDate(rule.nextRunAt, "on demand")} · Last {formatDate(rule.lastRunAt, "never")}
           </div>
         </div>
@@ -222,24 +283,24 @@ function RuleListRow({
           </div>
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 
-type RulesTabHistorySelection = {
-  automationId?: string | null;
-  runId?: string | null;
-};
+type DetailView = "editor" | "history";
 
 export function RulesTab({
   pendingDraft,
   onDraftConsumed,
-  onOpenHistory,
+  onOpenTemplates,
+  missionsEnabled,
 }: {
   pendingDraft: AutomationRuleDraft | null;
   onDraftConsumed: () => void;
-  onOpenHistory: (selection: RulesTabHistorySelection) => void;
+  onOpenTemplates: () => void;
+  missionsEnabled: boolean;
 }) {
+  const [detailView, setDetailView] = useState<DetailView>("editor");
   const [rules, setRules] = useState<AutomationRuleSummary[]>([]);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const [suites, setSuites] = useState<TestSuiteDefinition[]>([]);
@@ -255,6 +316,30 @@ export function RulesTab({
   const [error, setError] = useState<string | null>(null);
   const [configTrustRequired, setConfigTrustRequired] = useState(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
+  // Snapshot of the last-saved (or last-loaded-from-rule) draft, used to detect
+  // unsaved edits when the user navigates away from the editor.
+  const savedSnapshotRef = useRef<string | null>(null);
+  const isDirty = useMemo(() => {
+    if (!draft) return false;
+    if (savedSnapshotRef.current == null) return false;
+    return JSON.stringify(draft) !== savedSnapshotRef.current;
+    // savedSnapshotRef is a ref so linter can't track it; draft is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
+
+  const confirmDiscardIfDirty = useCallback((): boolean => {
+    if (!isDirty) return true;
+    const ok = window.confirm("You have unsaved changes. Discard them and continue?");
+    if (ok && savedSnapshotRef.current != null) {
+      try {
+        setDraft(JSON.parse(savedSnapshotRef.current) as AutomationRuleDraft);
+        setIssues([]);
+      } catch {
+        // Snapshot was malformed — leave the draft as-is rather than crashing.
+      }
+    }
+    return ok;
+  }, [isDirty]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -301,6 +386,9 @@ export function RulesTab({
     if (!pendingDraft) return;
     setSelectedRuleId(null);
     setDraft(pendingDraft);
+    // A template-seeded draft counts as a new unsaved rule — null snapshot so
+    // isDirty stays false until the user edits.
+    savedSnapshotRef.current = JSON.stringify(pendingDraft);
     setIssues([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
@@ -311,7 +399,9 @@ export function RulesTab({
     if (selectedRuleId == null) return;
     const selected = rules.find((rule) => rule.id === selectedRuleId);
     if (!selected) return;
-    setDraft(toDraftFromRule(selected));
+    const nextDraft = toDraftFromRule(selected);
+    setDraft(nextDraft);
+    savedSnapshotRef.current = JSON.stringify(nextDraft);
     setIssues([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
@@ -356,7 +446,9 @@ export function RulesTab({
       setRules(saved.rules);
       setSelectedRuleId(saved.rule.id);
       const nextSelected = saved.rules.find((rule) => rule.id === saved.rule.id) ?? null;
-      setDraft(nextSelected ? toDraftFromRule(nextSelected) : createBlankDraft());
+      const nextDraft = nextSelected ? toDraftFromRule(nextSelected) : createBlankDraft();
+      setDraft(nextDraft);
+      savedSnapshotRef.current = JSON.stringify(nextDraft);
       setIssues([]);
     } catch (err) {
       setError(extractError(err));
@@ -389,11 +481,15 @@ export function RulesTab({
   }, [draft]);
 
   const createRule = () => {
+    if (!confirmDiscardIfDirty()) return;
     setSelectedRuleId(null);
-    setDraft(createBlankDraft());
+    const blank = createBlankDraft();
+    setDraft(blank);
+    savedSnapshotRef.current = JSON.stringify(blank);
     setIssues([]);
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
+    setDetailView("editor");
   };
 
   const runRuleNow = useCallback(async (ruleId: string) => {
@@ -444,16 +540,26 @@ export function RulesTab({
             </Button>
           </div>
 
-          <div className="mt-4 flex gap-2">
-            <Button size="sm" variant="primary" onClick={createRule}>
+          <div className="mt-4 flex items-center gap-2">
+            <Button size="sm" variant="primary" data-tour="automations.createTrigger" onClick={createRule}>
               <Plus size={12} weight="regular" />
-              New rule
+              New
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (confirmDiscardIfDirty()) onOpenTemplates();
+              }}
+            >
+              <BookOpen size={12} weight="regular" />
+              Templates
+            </Button>
+            <CtoInfoChip />
           </div>
 
           <input
-            className={cn(INPUT_CLS, "mt-4")}
-            style={INPUT_STYLE}
+            className={cn(inputCls, "mt-4")}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search rules"
@@ -474,10 +580,7 @@ export function RulesTab({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {filteredRules.length === 0 ? (
-            <EmptyState
-              title="No rules yet"
-              description="Create your first automation rule or start from a template."
-            />
+            <EmptyStateHint />
           ) : (
             <div className="space-y-3">
               {filteredRules.map((rule) => (
@@ -485,8 +588,16 @@ export function RulesTab({
                   key={rule.id}
                   rule={rule}
                   selected={rule.id === selectedRuleId}
-                  onSelect={() => setSelectedRuleId(rule.id)}
-                  onOpenHistory={() => onOpenHistory({ automationId: rule.id })}
+                  onSelect={() => {
+                    if (rule.id !== selectedRuleId && !confirmDiscardIfDirty()) return;
+                    setSelectedRuleId(rule.id);
+                    setDetailView("editor");
+                  }}
+                  onOpenHistory={() => {
+                    if (!confirmDiscardIfDirty()) return;
+                    setSelectedRuleId(rule.id);
+                    setDetailView("history");
+                  }}
                   onToggle={(enabled) => {
                     window.ade.automations.toggle({ id: rule.id, enabled }).then(setRules).catch((err) => setError(extractError(err)));
                   }}
@@ -499,44 +610,111 @@ export function RulesTab({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {draft ? (
-          <RuleEditorPanel
-            draft={draft}
-            setDraft={setDraft}
-            lanes={lanes.map((lane) => ({ id: lane.id, name: lane.name }))}
-            suites={suites}
-            issues={issues}
-            requiredConfirmations={requiredConfirmations}
-            acceptedConfirmations={acceptedConfirmations}
-            onToggleConfirmation={(key, checked) => {
-              setAcceptedConfirmations((current) => {
-                const next = new Set(current);
-                if (checked) next.add(key);
-                else next.delete(key);
-                return next;
-              });
-            }}
-            onSave={() => void saveDraft()}
-            onSimulate={() => void simulateDraft()}
-            saving={saving}
-            simulating={simulating}
-          />
-        ) : selectedRule ? null : (
-          <div className="flex h-full items-center justify-center px-6">
-            <div className="max-w-md rounded-2xl p-6 text-center" style={CARD_STYLE}>
-              <div className="text-[17px] font-semibold text-[#F5FAFF]">Create an automation</div>
-              <div className="mt-2 text-sm leading-relaxed text-[#93A4B8]">
-                Start with a schedule or a product event, then tell ADE whether it should run a built-in task, send a prompt to an automation chat thread, or launch a mission.
-              </div>
-              <Button size="sm" variant="primary" className="mt-4" onClick={createRule}>
-                <Plus size={12} weight="regular" />
-                New rule
-              </Button>
-            </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {selectedRule ? (
+          <div
+            className="shrink-0 flex items-center gap-0 border-b border-white/[0.06] bg-white/[0.02] px-3"
+            style={{ minHeight: 36 }}
+          >
+            <DetailTab
+              active={detailView === "editor"}
+              label="Editor"
+              icon={PencilSimple}
+              onClick={() => setDetailView("editor")}
+            />
+            <DetailTab
+              active={detailView === "history"}
+              label="History"
+              icon={ClockCounterClockwise}
+              onClick={() => {
+                if (confirmDiscardIfDirty()) setDetailView("history");
+              }}
+            />
           </div>
-        )}
+        ) : null}
+
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {detailView === "history" && selectedRule ? (
+            <RuleHistoryPanel automationId={selectedRule.id} ruleName={selectedRule.name} />
+          ) : draft ? (
+            <RuleEditorPanel
+              draft={draft}
+              setDraft={setDraft}
+              lanes={lanes.map((lane) => ({ id: lane.id, name: lane.name }))}
+              suites={suites}
+              missionsEnabled={missionsEnabled}
+              issues={issues}
+              requiredConfirmations={requiredConfirmations}
+              acceptedConfirmations={acceptedConfirmations}
+              onToggleConfirmation={(key, checked) => {
+                setAcceptedConfirmations((current) => {
+                  const next = new Set(current);
+                  if (checked) next.add(key);
+                  else next.delete(key);
+                  return next;
+                });
+              }}
+              onSave={() => void saveDraft()}
+              onSimulate={() => void simulateDraft()}
+              saving={saving}
+              simulating={simulating}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center px-6">
+              <div className={cn(cardCls, "max-w-md text-center")}>
+                <div className="text-[17px] font-semibold text-fg">Create an automation</div>
+                <div className="mt-2 text-sm leading-relaxed text-muted-fg/70">
+                  Start with a schedule or a product event, then tell ADE whether it should run a built-in task, send a prompt to an automation chat thread, or launch a mission.
+                </div>
+                <div className="mt-4 flex justify-center gap-2">
+                  <Button size="sm" variant="primary" onClick={createRule}>
+                    <Plus size={12} weight="regular" />
+                    New rule
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (confirmDiscardIfDirty()) onOpenTemplates();
+                    }}
+                  >
+                    <BookOpen size={12} weight="regular" />
+                    Browse templates
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </motion.div>
+  );
+}
+
+function DetailTab({
+  active,
+  label,
+  icon: Icon,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  icon: React.ElementType;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold transition-colors border-b-2",
+        active
+          ? "border-b-[#7DD3FC] text-[#F5FAFF]"
+          : "border-b-transparent text-[#8FA1B8] hover:text-[#F5FAFF]",
+      )}
+    >
+      <Icon size={12} weight={active ? "bold" : "regular"} />
+      {label}
+    </button>
   );
 }

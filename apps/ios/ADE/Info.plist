@@ -15,11 +15,60 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0</string>
+  <string>$(MARKETING_VERSION)</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>CFBundleURLName</key>
+      <string>com.ade.ios.deeplink</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>ade</string>
+      </array>
+    </dict>
+  </array>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <!--
+      ADE sync uses a plaintext WebSocket only after SyncService has accepted
+      the route as loopback, LAN, link-local, or Tailscale. iOS 17+ supports
+      CIDR ATS exceptions, so keep the app-level ATS exception scoped to
+      Tailscale's reserved private address ranges.
+    -->
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>100.64.0.0/10</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+      </dict>
+      <key>fd7a:115c:a1e0::/48</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+      </dict>
+      <key>ade-sync</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+      </dict>
+      <key>ts.net</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+        <key>NSIncludesSubdomains</key>
+        <true/>
+      </dict>
+    </dict>
+  </dict>
   <key>NSBonjourServices</key>
   <array>
     <string>_ade-sync._tcp</string>
@@ -28,17 +77,37 @@
   <string>Scan the ADE host QR code to pair this iPhone with your project host.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Discover ADE hosts on your local network and reconnect without rescanning.</string>
+  <key>NSSupportsLiveActivities</key>
+  <true/>
+  <key>NSSupportsLiveActivitiesFrequentUpdates</key>
+  <true/>
   <key>UIApplicationSceneManifest</key>
   <dict/>
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>remote-notification</string>
+  </array>
   <key>UILaunchScreen</key>
   <dict/>
   <key>UIRequiredDeviceCapabilities</key>
   <array>
     <string>arm64</string>
   </array>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>UISupportedInterfaceOrientations</key>
   <array>
     <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
   </array>
 </dict>
 </plist>

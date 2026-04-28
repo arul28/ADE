@@ -10,9 +10,10 @@ import { AgentChatPane } from "../chat/AgentChatPane";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { LaneCombobox } from "./LaneCombobox";
 import { COLORS } from "../lanes/laneDesignTokens";
-import { buildTrackedCliStartupCommand, type CliProvider } from "./cliLaunch";
+import { buildTrackedCliLaunchCommand, type CliProvider } from "./cliLaunch";
 import { ClaudeLogo, CodexLogo } from "./ToolLogos";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { cn } from "../ui/cn";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
@@ -23,6 +24,8 @@ type WorkStartSurfaceProps = {
     profile: "claude" | "codex" | "shell";
     title?: string;
     startupCommand?: string;
+    command?: string;
+    args?: string[];
     tracked?: boolean;
   }) => Promise<unknown>;
 };
@@ -80,7 +83,7 @@ export function WorkStartSurface({
   );
 
   useEffect(() => {
-    const defaultPermission = cliProvider === "claude" ? "default" : "plan";
+    const defaultPermission = "default";
     if (!cliPermissionOptions.some((option) => option.value === cliPermissionMode)) {
       setCliPermissionMode(defaultPermission);
     }
@@ -103,15 +106,18 @@ export function WorkStartSurface({
     try {
       // Generate a session ID upfront for Claude so resume always works
       const sessionId = cliProvider === "claude" ? crypto.randomUUID() : undefined;
+      const launch = buildTrackedCliLaunchCommand({
+        provider: cliProvider,
+        permissionMode: cliPermissionMode,
+        sessionId,
+      });
       await onLaunchPtySession({
         laneId: selectedLaneId,
         profile: cliProvider,
         title: cliProvider === "claude" ? "Claude CLI" : "Codex CLI",
-        startupCommand: buildTrackedCliStartupCommand({
-          provider: cliProvider,
-          permissionMode: cliPermissionMode,
-          sessionId,
-        }),
+        startupCommand: launch.startupCommand,
+        command: launch.command,
+        args: launch.args,
       });
     } finally {
       setLaunchBusy(false);
@@ -135,7 +141,7 @@ export function WorkStartSurface({
   if (!lanes.length) {
     return (
       <div className="flex h-full items-center justify-center px-6" style={{ background: "var(--color-bg)" }}>
-        <div className="rounded-lg p-5 text-center" style={{ background: "rgba(255,255,255,0.03)" }}>
+        <div className="ade-liquid-glass ade-liquid-glass-menu rounded-lg p-5 text-center">
           <div className="text-[12px] font-medium text-fg">No lanes available</div>
           <div className="mt-1.5 text-[11px] text-muted-fg">
             Create or reopen a lane before starting work.
@@ -149,7 +155,7 @@ export function WorkStartSurface({
   if (draftKind === "chat") {
     return (
       <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
-        <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="mx-auto flex w-full min-h-0 max-w-5xl flex-1 flex-col overflow-hidden">
           {chatDraftReady ? (
             <AgentChatPane
               laneId={selectedLaneId}
@@ -162,8 +168,8 @@ export function WorkStartSurface({
               onLaneChange={setLaneAndSync}
             />
           ) : (
-            <div className="flex h-full items-center justify-center px-6">
-              <div className="rounded-lg px-4 py-3 text-center" style={{ background: "rgba(255,255,255,0.03)" }}>
+            <div className="flex flex-1 items-center justify-center px-6">
+              <div className="ade-liquid-glass ade-liquid-glass-menu rounded-lg px-4 py-3 text-center">
                 <div className="text-[12px] font-medium text-fg">Preparing chat draft</div>
                 <div className="mt-1.5 text-[11px] text-muted-fg">
                   ADE waits briefly before mounting the full chat surface so fast tab switches stay cheap.
@@ -179,9 +185,10 @@ export function WorkStartSurface({
   /* ---- CLI draft ---- */
   if (draftKind === "cli") {
     return (
-      <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
-        <LogoGlow size="lg" />
-        <GlassCard>
+      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-6 overflow-hidden px-6 py-6" style={{ background: "var(--color-bg)" }}>
+        <LogoGlow size="sm" />
+        <div className="flex w-full max-w-md flex-col items-center">
+          <GlassCard>
           {/* Lane */}
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-muted-fg/60 shrink-0">Lane</span>
@@ -189,20 +196,26 @@ export function WorkStartSurface({
           </div>
 
           {/* Provider toggle */}
-          <div className="flex items-center gap-1">
+          <div className="flex w-full min-w-0 items-stretch gap-3">
             {([
               { id: "claude" as const, label: "Claude Code", Logo: ClaudeLogo },
               { id: "codex" as const, label: "Codex CLI", Logo: CodexLogo },
             ] as const).map((opt) => {
               const active = cliProvider === opt.id;
               return (
-                <SmartTooltip key={opt.id} content={{ label: opt.label, description: `Use ${opt.label} as the CLI provider for this session.` }}>
+                <SmartTooltip
+                  key={opt.id}
+                  content={{ label: opt.label, description: `Use ${opt.label} as the CLI provider for this session.` }}
+                  wrapperClassName="min-w-0 flex-1"
+                  wrapperStyle={{ display: "flex", minWidth: 0 }}
+                >
                   <button
                     type="button"
-                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-md py-2 transition-colors"
+                    className={cn(
+                      "inline-flex h-full min-h-[2.5rem] w-full min-w-0 items-center justify-center gap-2 rounded-md px-3.5 py-2.5 text-[11px] leading-none transition-colors whitespace-nowrap",
+                      active ? "font-medium" : "font-normal",
+                    )}
                     style={{
-                      fontSize: 11,
-                      fontWeight: active ? 500 : 400,
                       border: active ? "1px solid var(--color-accent-muted)" : "1px solid transparent",
                       background: active ? "var(--color-accent-muted)" : "transparent",
                       color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
@@ -256,16 +269,18 @@ export function WorkStartSurface({
               <ArrowRight size={12} weight="regular" />
             </button>
           </SmartTooltip>
-        </GlassCard>
+          </GlassCard>
+        </div>
       </div>
     );
   }
 
   /* ---- Shell draft ---- */
   return (
-    <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
-      <LogoGlow size="lg" />
-      <GlassCard>
+    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-6 overflow-hidden px-6 py-6" style={{ background: "var(--color-bg)" }}>
+      <LogoGlow size="sm" />
+      <div className="flex w-full max-w-md flex-col items-center">
+        <GlassCard>
         {/* Lane */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-muted-fg/60 shrink-0">Lane</span>
@@ -273,7 +288,7 @@ export function WorkStartSurface({
         </div>
 
         {/* Description */}
-        <div className="rounded-md px-3 py-2.5" style={{ background: "rgba(255,255,255,0.02)" }}>
+        <div className="ade-chat-recessed rounded-md px-3 py-2.5">
           <div className="flex items-center gap-2">
             <Terminal size={14} weight="regular" className="text-muted-fg/50 shrink-0" />
             <div>
@@ -303,46 +318,46 @@ export function WorkStartSurface({
             <ArrowRight size={12} weight="regular" />
           </button>
         </SmartTooltip>
-      </GlassCard>
+        </GlassCard>
+      </div>
     </div>
   );
 }
 
 const LOGO_SIZES = {
-  lg: { glow: "h-[500px] w-[500px]", blur: "blur(140px)", img: "w-96 h-96" },
-  sm: { glow: "h-[200px] w-[200px]", blur: "blur(80px)", img: "h-[140px] w-[140px]" },
+  lg: { maxImg: 560, glowMultiplier: 1.21, blur: "blur(160px)" },
+  sm: { maxImg: 320, glowMultiplier: 0.875, blur: "blur(90px)" },
 } as const;
 
 function LogoGlow({ size }: { size: "lg" | "sm" }) {
   const s = LOGO_SIZES[size];
   return (
-    <div className="relative mb-6">
-      <div
-        className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 ${s.glow} rounded-full pointer-events-none`}
-        style={{ background: "var(--color-accent)", opacity: 0.08, filter: s.blur }}
-      />
-      <img
-        src="./logo.png"
-        alt="ADE"
-        className={`relative z-10 ${s.img} object-contain`}
-        style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
-      />
+    <div className="relative mb-6 flex w-full justify-center px-4">
+      <div className="relative w-full" style={{ maxWidth: s.maxImg }}>
+        <div
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
+          style={{
+            width: `${s.glowMultiplier * 100}%`,
+            aspectRatio: "1 / 1",
+            background: "var(--color-accent)",
+            opacity: 0.08,
+            filter: s.blur,
+          }}
+        />
+        <img
+          src="./logo.png"
+          alt="ADE"
+          className="relative z-10 block w-full h-auto object-contain"
+          style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
+        />
+      </div>
     </div>
   );
 }
 
 function GlassCard({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      className="flex w-full max-w-sm flex-col gap-4 rounded-lg p-5"
-      style={{
-        backdropFilter: "blur(20px)",
-        WebkitBackdropFilter: "blur(20px)",
-        background: "rgba(30, 30, 40, 0.7)",
-        border: "1px solid rgba(255, 255, 255, 0.08)",
-        boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
-      }}
-    >
+    <div className="ade-liquid-glass ade-liquid-glass-strong flex w-full max-w-md flex-col gap-4 rounded-xl p-5">
       {children}
     </div>
   );

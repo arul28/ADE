@@ -37,6 +37,8 @@ type PrAiResolverPanelProps = {
   startLabel?: string;
   defaultExpanded?: boolean;
   sessionShellClassName?: string;
+  /** Optional notes appended to the generated resolver prompt (e.g. “keep UI from lane A”). */
+  showResolverInstructions?: boolean;
 };
 
 function normalizeReasoning(value: string): string | null {
@@ -91,12 +93,14 @@ export function PrAiResolverPanel({
   startLabel = "Start AI Resolver",
   defaultExpanded = true,
   sessionShellClassName,
+  showResolverInstructions = false,
 }: PrAiResolverPanelProps) {
   const { resolverSessionsByContextKey, upsertResolverSession } = usePrs();
   const [launching, setLaunching] = React.useState(false);
   const [status, setStatus] = React.useState<"idle" | "starting" | "running" | "completed" | "failed" | "cancelled">("idle");
   const [message, setMessage] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState(defaultExpanded);
+  const [resolverInstructions, setResolverInstructions] = React.useState("");
   const terminalStatusRef = React.useRef<PrAiResolverCompletion["status"] | null>(null);
   const contextKey = React.useMemo(() => (context ? buildPrAiResolutionContextKey(context) : null), [context]);
   const activeSession = React.useMemo(
@@ -116,6 +120,10 @@ export function PrAiResolverPanel({
       terminalStatusRef.current = null;
     }
   }, [activeSession]);
+
+  React.useEffect(() => {
+    setResolverInstructions("");
+  }, [contextKey]);
 
   React.useEffect(() => {
     if (!context || !contextKey || activeSession) return;
@@ -173,11 +181,13 @@ export function PrAiResolverPanel({
     setStatus("starting");
     terminalStatusRef.current = null;
     try {
+      const trimmedInstructions = resolverInstructions.trim();
       const result = await window.ade.prs.aiResolutionStart({
         model: displayModelId,
         reasoning: normalizeReasoning(displayReasoning),
         permissionMode: displayPermissionMode,
         context,
+        ...(trimmedInstructions ? { additionalInstructions: trimmedInstructions } : {}),
       });
       if (result.status !== "started") {
         setStatus("failed");
@@ -208,6 +218,7 @@ export function PrAiResolverPanel({
     displayReasoning,
     launching,
     onStarted,
+    resolverInstructions,
     upsertResolverSession,
   ]);
 
@@ -262,6 +273,21 @@ export function PrAiResolverPanel({
 
       {expanded ? (!sessionId ? (
         <div className="space-y-4 px-4 py-4">
+          {showResolverInstructions ? (
+            <div className="space-y-1.5">
+              <label className="block font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50">
+                Resolver instructions (optional)
+              </label>
+              <textarea
+                value={resolverInstructions}
+                onChange={(e) => setResolverInstructions(e.target.value)}
+                placeholder="e.g. Prefer UI from the first lane; keep server logic from the second."
+                rows={3}
+                disabled={launching}
+                className="w-full resize-y border border-border/20 bg-bg/60 px-3 py-2 font-mono text-[11px] leading-relaxed text-fg/85 placeholder:text-fg/35 focus:border-border/40 focus:outline-none"
+              />
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center gap-3">
             <PrResolverLaunchControls
               modelId={displayModelId}

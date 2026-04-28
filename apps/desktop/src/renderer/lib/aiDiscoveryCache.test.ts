@@ -67,4 +67,52 @@ describe("aiDiscoveryCache", () => {
     expect(second).toHaveLength(1);
     expect(modelsMock).toHaveBeenCalledTimes(1);
   });
+
+  it("forwards explicit OpenCode inventory refresh requests", async () => {
+    getStatusMock.mockResolvedValueOnce({
+      mode: "subscription",
+      availableProviders: { claude: true, codex: true, cursor: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+    });
+
+    await getAiStatusCached({
+      projectRoot: "/project/a",
+      refreshOpenCodeInventory: true,
+    });
+
+    expect(getStatusMock).toHaveBeenCalledWith({
+      force: false,
+      refreshOpenCodeInventory: true,
+    });
+  });
+
+  it("does not let a warm generic status cache swallow an explicit OpenCode refresh", async () => {
+    getStatusMock
+      .mockResolvedValueOnce({
+        mode: "subscription",
+        availableProviders: { claude: true, codex: true, cursor: false },
+        models: { claude: [], codex: [], cursor: [] },
+        features: [],
+      })
+      .mockResolvedValueOnce({
+        mode: "subscription",
+        availableProviders: { claude: true, codex: true, cursor: false },
+        models: { claude: [], codex: [], cursor: [] },
+        features: [],
+        opencodeProviders: [{ id: "openai", name: "OpenAI", connected: true, modelCount: 1 }],
+      });
+
+    await getAiStatusCached({ projectRoot: "/project/a" });
+    await getAiStatusCached({
+      projectRoot: "/project/a",
+      refreshOpenCodeInventory: true,
+    });
+
+    expect(getStatusMock).toHaveBeenCalledTimes(2);
+    expect(getStatusMock).toHaveBeenNthCalledWith(2, {
+      force: false,
+      refreshOpenCodeInventory: true,
+    });
+  });
 });

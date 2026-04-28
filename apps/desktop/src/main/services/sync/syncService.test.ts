@@ -17,19 +17,27 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
     getBootstrapToken() {
       return "test-bootstrap-token";
     },
-    getPairingSession() {
-      const expires = new Date(Date.now() + 600_000).toISOString();
-      return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
-    },
     revokePairedDevice() {},
     getPeerStates() {
       return [];
+    },
+    getTailnetDiscoveryStatus() {
+      return {
+        state: "disabled",
+        serviceName: "svc:ade-sync",
+        servicePort: 8787,
+        target: null,
+        updatedAt: null,
+        error: null,
+        stderr: null,
+      };
     },
     getBrainStatusSnapshot() {
       return {};
     },
     handlePtyData() {},
     handlePtyExit() {},
+    setDiscoveryEnabled: vi.fn(),
     async dispose() {},
   })),
 }));
@@ -38,6 +46,8 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
 // Tests only exercise role/transfer/pairing logic, not the sync transport.
 vi.mock("./syncHostService", () => ({
   createSyncHostService: createSyncHostServiceMock,
+  SYNC_TAILNET_DISCOVERY_SERVICE_NAME: "svc:ade-sync",
+  SYNC_TAILNET_DISCOVERY_SERVICE_PORT: 8787,
 }));
 
 function createLogger() {
@@ -107,6 +117,66 @@ afterEach(async () => {
 });
 
 describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
+  it("uses app-level phone pairing state across project roots", async () => {
+    const projectRootA = makeProjectRoot("ade-sync-service-app-state-a-");
+    const projectRootB = makeProjectRoot("ade-sync-service-app-state-b-");
+    const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-app-state-"));
+    fs.mkdirSync(path.join(projectRootA, ".ade", "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-bootstrap-token"), "legacy-token\n", "utf8");
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-pin.json"), JSON.stringify({
+      pin: "123456",
+      updatedAt: "2026-04-24T00:00:00.000Z",
+    }), "utf8");
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-paired-devices.json"), "{}\n", "utf8");
+
+    const dbA = await openKvDb(path.join(projectRootA, ".ade", "ade.db"), createLogger() as any);
+    const dbB = await openKvDb(path.join(projectRootB, ".ade", "ade.db"), createLogger() as any);
+    const baseArgs = {
+      logger: createLogger() as any,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [] } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: true,
+    };
+
+    const serviceA = createSyncService({
+      ...baseArgs,
+      db: dbA,
+      projectRoot: projectRootA,
+      localDeviceIdPath: path.join(appPairingDir, "sync-device-id"),
+    });
+    const serviceB = createSyncService({
+      ...baseArgs,
+      db: dbB,
+      projectRoot: projectRootB,
+      localDeviceIdPath: path.join(appPairingDir, "sync-device-id"),
+    });
+    activeDisposers.push(async () => {
+      await serviceA.dispose();
+      await serviceB.dispose();
+      dbA.close();
+      dbB.close();
+    });
+
+    expect(fs.readFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "utf8").trim()).toBe("legacy-token");
+    expect(fs.existsSync(path.join(appPairingDir, "sync-paired-devices.json"))).toBe(true);
+    expect((await serviceA.getStatus()).bootstrapToken).toBe("legacy-token");
+    expect((await serviceA.getStatus()).pairingPinConfigured).toBe(true);
+    expect((await serviceB.getStatus()).bootstrapToken).toBe("legacy-token");
+    expect((await serviceB.getStatus()).pairingPinConfigured).toBe(true);
+    expect(serviceA.getPin()).toBe("123456");
+    // serviceB sees the same on-disk pin file but only the host that performed
+    // the migration retains the plaintext PIN in memory; serviceB should not.
+    expect(serviceB.getPin()).toBeNull();
+  });
+
   it("reports W3 transfer blockers while keeping paused and idle state survivable", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-blockers-");
     const db = await openKvDb(
@@ -370,6 +440,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
              last_host = ?,
              last_port = ?,
              tailscale_ip = ?,
+             metadata_json = ?,
              updated_at = ?,
              last_seen_at = ?
        where device_id = ?`,
@@ -378,6 +449,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         "192.168.0.20",
         8787,
         "100.100.12.4",
+        JSON.stringify({ tailscaleDnsName: "mac-studio.tail7497a6.ts.net" }),
         now,
         now,
         localDeviceId,
@@ -386,34 +458,56 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     const status = await service.getStatus();
     expect(status.mode === "brain" || status.mode === "standalone").toBe(true);
-    expect(status.pairingSession).toBeTruthy();
     expect(status.pairingConnectInfo).toBeTruthy();
     const addressCandidates =
       status.pairingConnectInfo?.addressCandidates ?? [];
-    const savedCandidateIndex = addressCandidates.findIndex(
-      (entry) => entry.kind === "saved" && entry.host === "192.168.0.20",
+    const loopbackCandidateIndex = addressCandidates.findIndex(
+      (entry) => entry.kind === "loopback" && entry.host === "127.0.0.1",
     );
-    const tailscaleCandidateIndex = addressCandidates.findIndex(
-      (entry) => entry.kind === "tailscale" && entry.host === "100.100.12.4",
-    );
-    expect(savedCandidateIndex).toBeGreaterThanOrEqual(0);
-    expect(tailscaleCandidateIndex).toBeGreaterThan(savedCandidateIndex);
+    expect(addressCandidates.length).toBeGreaterThan(0);
+    expect(loopbackCandidateIndex).toBe(addressCandidates.length - 1);
     expect(
       addressCandidates
-        .slice(0, Math.max(savedCandidateIndex, 0))
-        .every((entry) => entry.kind === "lan"),
+        .slice(0, Math.max(loopbackCandidateIndex, 0))
+        .every((entry) => entry.kind !== "loopback"),
     ).toBe(true);
+    const tailscaleCandidates = addressCandidates.filter(
+      (entry) => entry.kind === "tailscale",
+    );
+    expect(tailscaleCandidates[0]?.host.endsWith(".ts.net")).toBe(true);
+    if (status.localDevice.tailscaleIp) {
+      expect(tailscaleCandidates.map((entry) => entry.host)).toContain(
+        status.localDevice.tailscaleIp,
+      );
+    }
+
+    db.run(
+      `update devices
+         set last_host = ?,
+             updated_at = ?
+       where device_id = ?`,
+      [
+        "192.168.0.8",
+        "2026-03-17T00:05:00.000Z",
+        localDeviceId,
+      ],
+    );
+
+    const refreshedStatus = await service.getStatus();
+    const refreshedCandidates = refreshedStatus.pairingConnectInfo?.addressCandidates ?? [];
+    expect(refreshedCandidates[0]?.kind).toBe("saved");
+    expect(refreshedCandidates[0]?.host).toBe(refreshedStatus.localDevice.lastHost);
 
     const encodedPayload =
       status.pairingConnectInfo?.qrPayloadText.split("payload=")[1] ?? "";
     const parsedPayload = JSON.parse(decodeURIComponent(encodedPayload)) as {
+      version: number;
       hostIdentity: { deviceId: string };
-      pairingCode: string;
-      expiresAt: string;
+      addressCandidates: Array<{ host: string; kind: string }>;
     };
+    expect(parsedPayload.version).toBe(2);
     expect(parsedPayload.hostIdentity.deviceId).toBe(localDeviceId);
-    expect(parsedPayload.pairingCode).toBe(status.pairingSession?.code);
-    expect(parsedPayload.expiresAt).toBe(status.pairingSession?.expiresAt);
+    expect(parsedPayload.addressCandidates.some((c) => c.kind === "loopback" && c.host === "127.0.0.1")).toBe(true);
   }, 30_000);
 
   it("does not start the sync host or expose pairing details when host startup is disabled", async () => {
@@ -468,8 +562,176 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.role).toBe("brain");
     expect(status.mode).toBe("standalone");
     expect(status.bootstrapToken).toBeNull();
-    expect(status.pairingSession).toBeNull();
+    expect(status.pairingPin).toBeNull();
     expect(status.pairingConnectInfo).toBeNull();
+    await expect(service.setPin("123456")).rejects.toThrow(
+      "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+    );
+    expect(service.getPin()).toBeNull();
+  }, 30_000);
+
+  it("starts the sync host when setHostStartupEnabled flips on after init", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-host-toggle-");
+    const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-host-toggle-app-"));
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [] } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: false,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    expect(createSyncHostServiceMock).not.toHaveBeenCalled();
+    expect((await service.getStatus()).bootstrapToken).toBeNull();
+    await expect(service.setPin("123456")).rejects.toThrow(
+      "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+    );
+
+    // The real syncHostService writes a bootstrap token at startup; the mock doesn't,
+    // so simulate it here so we can assert the toggle re-exposes the token via getStatus.
+    fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "toggled-token\n", "utf8");
+
+    await service.setHostStartupEnabled(true);
+
+    await vi.waitFor(() => {
+      expect(createSyncHostServiceMock).toHaveBeenCalled();
+    });
+    const enabledStatus = await service.getStatus();
+    expect(enabledStatus.bootstrapToken).toBe("toggled-token");
+    expect(enabledStatus.pairingConnectInfo).toBeTruthy();
+  }, 30_000);
+
+  it("does not overwrite an existing app-level pairing file when a legacy file is also present", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-no-overwrite-");
+    const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-no-overwrite-app-"));
+
+    fs.mkdirSync(path.join(projectRoot, ".ade", "secrets"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, ".ade", "secrets", "sync-bootstrap-token"),
+      "legacy-token\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(appPairingDir, "sync-bootstrap-token"),
+      "app-token\n",
+      "utf8",
+    );
+
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: { list: async () => [] } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    expect(
+      fs.readFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "utf8").trim(),
+    ).toBe("app-token");
+    expect(
+      fs.readFileSync(
+        path.join(projectRoot, ".ade", "secrets", "sync-bootstrap-token"),
+        "utf8",
+      ).trim(),
+    ).toBe("legacy-token");
+    expect((await service.getStatus()).bootstrapToken).toBe("app-token");
+  }, 30_000);
+
+  it("rejects PIN changes when CRDT sync is unavailable", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-crdt-disabled-");
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+    db.sync.isAvailable = () => false;
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    const status = await service.getStatus();
+
+    expect(status.bootstrapToken).toBeNull();
+    expect(status.pairingPinConfigured).toBe(false);
+    await expect(service.setPin("123456")).rejects.toThrow(
+      "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
+    );
+    await expect(service.clearPin()).rejects.toThrow(
+      "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
+    );
+    expect(service.getPin()).toBeNull();
   }, 30_000);
 
   it("retries the sync host on bind conflicts so another project can still initialize", async () => {
@@ -499,19 +761,27 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         getBootstrapToken() {
           return "test-bootstrap-token";
         },
-        getPairingSession() {
-          const expires = new Date(Date.now() + 600_000).toISOString();
-          return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
-        },
         revokePairedDevice() {},
         getPeerStates() {
           return [];
+        },
+        getTailnetDiscoveryStatus() {
+          return {
+            state: "disabled",
+            serviceName: "svc:ade-sync",
+            servicePort: 8787,
+            target: null,
+            updatedAt: null,
+            error: null,
+            stderr: null,
+          };
         },
         getBrainStatusSnapshot() {
           return {};
         },
         handlePtyData() {},
         handlePtyExit() {},
+        setDiscoveryEnabled: vi.fn(),
         dispose: attemptedPort === 8787 ? disposeFirstAttempt : disposeSecondAttempt,
       };
     }) as any);
@@ -558,4 +828,206 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(disposeFirstAttempt).toHaveBeenCalledTimes(1);
     expect(service.getHostService()?.getPort()).toBe(8788);
   }, 30_000);
+
+  describe("forceHostRole", () => {
+    it("ignores a persisted viewer-style saved draft and reports role 'brain'", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-force-draft-");
+      const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-force-draft-app-"));
+      // Pre-seed a saved draft + bootstrap token on disk so readSavedDraft would
+      // return a non-null draft pointing at a remote brain in the absence of forceHostRole.
+      fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "force-draft-token\n", "utf8");
+      fs.writeFileSync(
+        path.join(appPairingDir, "sync-peer-draft.json"),
+        JSON.stringify({
+          host: "10.0.0.9",
+          port: 8787,
+          authKind: "paired",
+          pairedDeviceId: "remote-brain",
+          lastRemoteDbVersion: 0,
+        }),
+        "utf8",
+      );
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        phonePairingStateDir: appPairingDir,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        missionService: { list: () => [] } as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        processService: { listRuntime: () => [] } as any,
+        hostStartupEnabled: true,
+        forceHostRole: true,
+      } as any);
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      const status = await service.getStatus();
+      expect(status.role).toBe("brain");
+      expect(status.clusterState?.brainDeviceId).toBe(status.localDevice.deviceId);
+    }, 30_000);
+
+    it("reassigns the cluster brainDeviceId to the local device on init", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-force-cluster-");
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+      // Seed a remote-brain cluster row so refreshRoleState must override it.
+      const now = "2026-04-01T00:00:00.000Z";
+      db.run(
+        `insert into devices(
+          device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          "remote-brain",
+          "remote-site",
+          "Remote host",
+          "macOS",
+          "desktop",
+          now,
+          now,
+          now,
+          "10.0.0.9",
+          8787,
+          null,
+          JSON.stringify(["10.0.0.9"]),
+          JSON.stringify({}),
+        ],
+      );
+      db.run(
+        `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+         values (?, ?, ?, ?, ?)`,
+        ["default", "remote-brain", 5, now, "remote-brain"],
+      );
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        missionService: { list: () => [] } as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        processService: { listRuntime: () => [] } as any,
+        forceHostRole: true,
+      } as any);
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      const status = await service.getStatus();
+      expect(status.role).toBe("brain");
+      expect(status.clusterState?.brainDeviceId).toBe(status.localDevice.deviceId);
+      expect(status.clusterState?.brainDeviceId).not.toBe("remote-brain");
+      expect(status.clusterState?.brainEpoch).toBe(6);
+    }, 30_000);
+  });
+
+  describe("setHostDiscoveryEnabled / setHostStartupEnabled", () => {
+    it("setHostDiscoveryEnabled no-ops when called with the unchanged value", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-discovery-noop-");
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        missionService: { list: () => [] } as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        processService: { listRuntime: () => [] } as any,
+      });
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      const hostService = service.getHostService();
+      expect(hostService).not.toBeNull();
+      const setDiscoveryEnabledSpy = (hostService as any).setDiscoveryEnabled as ReturnType<typeof vi.fn>;
+      // Default is enabled; calling with the same value should not invoke the host again.
+      setDiscoveryEnabledSpy.mockClear();
+      service.setHostDiscoveryEnabled(true);
+      service.setHostDiscoveryEnabled(true);
+      expect(setDiscoveryEnabledSpy).not.toHaveBeenCalled();
+      // A change still propagates exactly once.
+      service.setHostDiscoveryEnabled(false);
+      expect(setDiscoveryEnabledSpy).toHaveBeenCalledTimes(1);
+      expect(setDiscoveryEnabledSpy).toHaveBeenCalledWith(false);
+    }, 30_000);
+
+    it("setHostStartupEnabled returns an awaitable promise that resolves after refreshRoleState", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-startup-await-");
+      const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-startup-await-app-"));
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        phonePairingStateDir: appPairingDir,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        missionService: { list: () => [] } as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        processService: { listRuntime: () => [] } as any,
+        hostStartupEnabled: false,
+      } as any);
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      expect(createSyncHostServiceMock).not.toHaveBeenCalled();
+
+      fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "await-token\n", "utf8");
+      const result = service.setHostStartupEnabled(true);
+      expect(typeof (result as any)?.then).toBe("function");
+      await result;
+      expect(createSyncHostServiceMock).toHaveBeenCalled();
+      const enabledStatus = await service.getStatus();
+      expect(enabledStatus.bootstrapToken).toBe("await-token");
+    }, 30_000);
+  });
 });

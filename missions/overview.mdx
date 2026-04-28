@@ -1,107 +1,104 @@
 ---
 title: "Missions Overview"
-description: "Understand what a Mission is, how it progresses through phases, and how the AI meta-reasoner selects the optimal execution strategy."
+description: "Multi-step orchestration for work that is bigger than one chat thread: planning, lane orchestration, human checkpoints, and closeout captured as one run."
 icon: "bullseye"
 ---
 
-## What is a Mission?
+## What a Mission is
 
-A **Mission** is ADE's formal execution unit for complex, multi-step work that goes beyond what a single chat session can reliably handle. Where a chat is conversational and exploratory, a Mission is deliberate and audited: it proceeds through defined phases, requires your explicit approval before work begins, tracks every decision and tool call, and produces a full artifact record at the end.
+A **Mission** is ADE's orchestration layer for work that outgrows a single chat thread. Where Agent Chat is a fast loop in one lane, a Mission turns a bigger goal into phases, delegates execution to workers running in their own lanes, pauses at checkpoints when you or the plan require it, and gathers every log, summary, and artifact into one reviewable record.
 
-Key properties of every Mission:
-
-- **Phased execution** — Planning → Approval Gate → Execution → Validation, with defined entry and exit conditions at each boundary
-- **Multi-worker orchestration** — the mission spawns ephemeral workers that run in parallel, sequentially, or in waves depending on task complexity
-- **Full audit trail** — every tool call, model decision, file change, and worker message is recorded in the mission's History tab
-- **Cost and token tracking** — real-time per-worker and per-mission totals, with configurable budget caps
-- **Mission Pack** — a deterministic context snapshot regenerated at each phase boundary, enabling pause, resume, and replay
+<Note>
+Missions are visible as a tab in every build so teams can plan around them, but **creation and live runs are paused in production builds** until the orchestration flow is production-ready. Dev and internal builds run Missions end-to-end today. The tab shows a "Coming soon" preview in packaged app releases — plan with it now, automate with it when it ships.
+</Note>
 
 <CardGroup cols={2}>
-  <Card title="When to use a Mission" icon="target">
-    Tasks spanning multiple files, teams, or phases — feature implementations, large refactors, test suite builds, or anything requiring coordination across more than one agent.
+  <Card title="Mission planning" icon="compass">
+    Turn a larger goal into phases, worker lanes, checkpoints, and proof requirements before any agent starts typing.
   </Card>
-  <Card title="When to use Chat instead" icon="message">
-    Exploratory work, single-file edits, quick questions, or anything you expect to resolve in a single back-and-forth turn. Chat is faster for focused tasks.
+  <Card title="Lane orchestration" icon="code-branch">
+    Coordinate multi-agent work across isolated lanes, then bring results back with reviewable handoffs.
+  </Card>
+  <Card title="Human checkpoints" icon="hand">
+    Pause when ADE needs operator input, budget approval, or a decision before external side effects happen.
+  </Card>
+  <Card title="Artifacts and closeout" icon="check">
+    Collect logs, summaries, screenshots, and implementation proof into one mission record, attached to the associated lanes and PRs.
   </Card>
 </CardGroup>
 
-<Note>
-  Missions and Chat are complementary. You can escalate from Chat to a Mission mid-session by saying "start a mission for this" — ADE carries the conversation context over automatically.
-</Note>
+---
+
+## When a Mission is the right tool
+
+| Use a Mission when... | Use Chat or an Automation when... |
+|---|---|
+| Work spans several lanes or files that should not step on each other | A single file or targeted change resolves the task |
+| Human approval should gate a destructive or external step | No external side effects, or you will watch the whole run |
+| You need a durable audit of plan, decisions, and proof | A transcript in Chat or History is enough |
+| A plan should be reviewed and edited before agents spend tokens | The prompt fully describes the work |
+
+You can escalate a Chat session into a Mission by asking the agent to "start a mission for this." ADE carries the conversation over as seed context for planning.
 
 ---
 
-## Mission Phases
+## Phases
 
-Every Mission passes through four phases in order. The phase boundary is a hard checkpoint — ADE records a Mission Pack snapshot before advancing.
+Every Mission moves through an ordered sequence. The boundary between phases is a checkpoint — ADE snapshots state before advancing so the mission can be paused, resumed, or replayed.
 
 <Steps>
-  <Step title="Planning Phase">
-    The orchestrator analyzes your mission description and generates a detailed execution plan. This includes a breakdown of sub-tasks, which worker will handle each, estimated token costs, required tool permissions, expected outputs, and the recommended execution strategy (`sequential`, `parallel`, `wave`, or `adaptive`).
-
-    Before planning starts, you can open the **Planning Prompt Preview** to see — and optionally edit — the exact prompt the orchestrator will receive.
-
+  <Step title="Planning">
+    The orchestrator reads the goal, picks a strategy, lays out worker assignments and lane routing, and estimates cost and tool needs. You can open the **Planning Prompt Preview** to inspect — and optionally edit — the exact prompt the planner receives.
   </Step>
-  <Step title="Approval Gate">
-    The completed plan is presented to you for review. This is a **hard stop** — the mission cannot advance without your explicit approval.
-
-    You have three options:
-    - **Approve** — proceed with the plan as generated
-    - **Request modifications** — provide feedback; the orchestrator revises the plan and presents it again
-    - **Cancel** — abort the mission; no workers have run yet
-
-    The plan shows per-worker cost estimates, which lanes will be used, what tools each worker needs, and the expected execution strategy.
+  <Step title="Approval gate">
+    The finished plan is presented before any worker spends tokens. This is a hard stop. Approve, request revisions with feedback, or cancel while nothing has run.
   </Step>
-  <Step title="Execution Phase">
-    Workers execute according to the approved plan. The orchestrator coordinates them using the strategy selected during planning:
-
-    | Strategy | When used |
-    |---|---|
-    | `sequential` | Tasks have strict dependencies; one worker must finish before the next starts |
-    | `parallel-lite` | A small number of independent tasks run simultaneously |
-    | `parallel-first` | Tasks are independent; all workers start at the same time and run concurrently in their own lanes |
-
-    The Plan tab shows a live activity feed with per-worker status, elapsed time, and token consumption. You can chat with the orchestrator in the **Chat tab** at any point without interrupting execution.
+  <Step title="Execution">
+    Workers run according to the approved plan. The Plan tab surfaces worker status, token consumption, and the live decision feed. You can talk to the orchestrator in the Chat tab at any time without interrupting execution.
   </Step>
-  <Step title="Validation Phase">
-    After all workers complete, ADE runs the mission's validation suite: tests, TypeScript type checks, linting, and any custom validators defined in the mission configuration. Validation results are collected as artifacts and surfaced in the Artifacts tab. If validation fails, the mission status transitions to `intervention_required` and you are prompted to decide how to proceed.
+  <Step title="Validation and closeout">
+    The mission's validation set (tests, type checks, custom validators) runs against the result. Validation output is captured as artifacts. Failures surface as interventions rather than silently ending the mission.
   </Step>
 </Steps>
 
 ---
 
-## Execution Strategy Selection
+## Worker strategies
 
-Before the Planning phase begins, ADE's planner analyzes the mission description and selects an execution strategy. The planner considers:
-
-- Task dependency graph (does step B require step A's output?)
-- Number of independent work units
-- Estimated context size per worker
+Before planning starts, the planner picks how workers should run. The goal is to shorten wall-clock time without creating merge pain between workers.
 
 <AccordionGroup>
-  <Accordion title="sequential — one worker at a time">
-    Used for tasks with tight dependencies. Worker 2 only starts after Worker 1 has completed and its output has been verified. Slower overall, but safe when outputs feed inputs.
+  <Accordion title="Sequential">
+    One worker at a time. Output from step N is available as context for step N+1. Used when steps have tight dependencies.
   </Accordion>
-  <Accordion title="parallel-lite — limited parallelism">
-    A small number of independent tasks run simultaneously. The planner sets a `parallelismCap` to limit how many workers execute at once.
+  <Accordion title="Parallel, limited">
+    A small, bounded number of independent workers run at once. The planner sets a cap to avoid rate limits and context overlap.
   </Accordion>
-  <Accordion title="parallel-first — all workers simultaneously">
-    Used for independent tasks. All workers start at the same time and run concurrently in their own lanes. Fastest option when there are no inter-worker dependencies.
+  <Accordion title="Parallel, fan-out">
+    Every independent unit starts at the same time in its own lane. Fastest for work that genuinely factors into independent chunks (for example, adding tests for a batch of functions).
   </Accordion>
 </AccordionGroup>
 
 ---
 
-## Continue Reading
+## Where Missions live
+
+- **Missions tab** — the canonical surface for creating, reviewing, and monitoring missions. Always visible in the sidebar. In packaged builds the tab shows a "Coming soon" preview with the feature summary.
+- **Automations** — an automation rule can select `mission` as its execution surface. In packaged builds the mission option is visible but disabled with a "Coming soon" chip, so teams can see how they would wire mission automations and plan around it.
+- **Chat** — any chat thread can escalate into a mission; conversation history seeds the planner.
+
+---
+
+## Continue reading
 
 <CardGroup cols={3}>
-  <Card title="Creating Missions" icon="plus" href="/missions/creating">
-    Learn how to create missions from the Missions tab, a Lane, the CTO chat, or an existing chat session.
+  <Card title="Creating missions" icon="plus" href="/missions/creating">
+    Start a mission from the Missions tab, a lane, the CTO chat, or an existing chat session.
   </Card>
-  <Card title="Mission Workers" icon="users" href="/missions/workers">
-    Understand ephemeral workers, context compaction, recovery, and approval gates.
+  <Card title="Workers and interventions" icon="users" href="/missions/workers">
+    How workers run, when missions pause for human input, and how failures are classified.
   </Card>
-  <Card title="Budget & Permissions" icon="coins" href="/missions/budget">
-    Configure budget caps, tool permissions, persistence, templates, and troubleshoot common issues.
+  <Card title="Budget and permissions" icon="coins" href="/missions/budget">
+    Budget caps, per-provider permission modes, proof capture, persistence, and troubleshooting.
   </Card>
 </CardGroup>

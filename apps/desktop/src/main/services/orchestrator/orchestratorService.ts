@@ -70,9 +70,14 @@ import {
 import { evaluateRunCompletion, evaluateRunCompletionFromPhases, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import {
   createProviderOrchestratorAdapter,
-  cleanupMcpConfigFile,
+  cleanupWorkerRuntimeFiles,
+  nodeWorkerLaunch,
+  writeWorkerLaunchFile,
+  writeWorkerPromptFile,
 } from "./providerOrchestratorAdapter";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { runGit } from "../git/git";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPtyService } from "../pty/ptyService";
@@ -81,7 +86,6 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "../prs/prService";
 import type { createMemoryService } from "../memory/memoryService";
-import type { createExternalMcpService } from "../externalMcp/externalMcpService";
 import type { AiTaskType } from "../ai/aiIntegrationService";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import type { KnowledgeCaptureService } from "../memory/knowledgeCaptureService";
@@ -91,7 +95,7 @@ import type { ProceduralLearningService } from "../memory/proceduralLearningServ
 import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
 import { getMissionStateDocumentPath } from "./missionStateDoc";
-import { buildFullPrompt, shellEscapeArg, shellInlineDecodedArg } from "./baseOrchestratorAdapter";
+import { buildFullPrompt, shellEscapeArg } from "./baseOrchestratorAdapter";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { classifyWorkerExecutionPath, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import {
@@ -134,7 +138,7 @@ import {
   readDocPaths,
 } from "./stepPolicyResolver";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
-import { normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
+import { mapPermissionToCodex, mergeMissionPermissionConfig, normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
 import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
@@ -173,6 +177,67 @@ type ManagedWorkerLaunch = {
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode | null;
 };
+
+const VALID_PROJECT_PROVIDER_PERMISSION_MODES = new Set<AgentChatPermissionMode>([
+  "default",
+  "plan",
+  "edit",
+  "full-auto",
+  "config-toml",
+]);
+
+function projectPermissionConfigFromRecord(permissions: Record<string, unknown> | null | undefined): MissionPermissionConfig {
+  const projectPerms: MissionPermissionConfig = {};
+  if (!permissions) return projectPerms;
+
+  const cli = asRecord(permissions.cli);
+  if (cli) {
+    projectPerms.cli = {
+      ...(typeof cli.mode === "string" ? { mode: cli.mode as MissionPermissionConfig["cli"] extends { mode?: infer M } ? M : never } : {}),
+      ...(typeof cli.sandboxPermissions === "string" ? { sandboxPermissions: cli.sandboxPermissions as "read-only" | "workspace-write" | "danger-full-access" } : {}),
+      ...(Array.isArray(cli.writablePaths) ? { writablePaths: cli.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
+      ...(Array.isArray(cli.allowedTools) ? { allowedTools: cli.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
+    };
+  }
+
+  const inProc = asRecord(permissions.inProcess);
+  if (inProc) {
+    const mode = typeof inProc.mode === "string" ? inProc.mode : "";
+    if (mode === "plan" || mode === "edit" || mode === "full-auto") {
+      projectPerms.inProcess = { mode };
+    }
+  }
+
+  const providers = asRecord(permissions.providers);
+  if (providers) {
+    const providerPerms: NonNullable<MissionPermissionConfig["providers"]> = {};
+    const maybeMode = (key: "claude" | "codex" | "cursor" | "opencode") => {
+      const value = typeof providers[key] === "string" ? providers[key].trim() : "";
+      if (VALID_PROJECT_PROVIDER_PERMISSION_MODES.has(value as AgentChatPermissionMode)) {
+        providerPerms[key] = value as AgentChatPermissionMode;
+      }
+    };
+    maybeMode("claude");
+    maybeMode("codex");
+    maybeMode("cursor");
+    maybeMode("opencode");
+    const codexSandbox = typeof providers.codexSandbox === "string" ? providers.codexSandbox.trim() : "";
+    if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
+      providerPerms.codexSandbox = codexSandbox;
+    }
+    const writablePaths = Array.isArray(providers.writablePaths)
+      ? providers.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0)
+      : [];
+    if (writablePaths.length) providerPerms.writablePaths = writablePaths;
+    const allowedTools = Array.isArray(providers.allowedTools)
+      ? providers.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0)
+      : [];
+    if (allowedTools.length) providerPerms.allowedTools = allowedTools;
+    if (Object.keys(providerPerms).length) projectPerms.providers = providerPerms;
+  }
+
+  return projectPerms;
+}
 
 export type OrchestratorExecutorStartResult =
   | {
@@ -810,7 +875,6 @@ export function createOrchestratorService({
   episodicSummaryService,
   proceduralLearningService,
   knowledgeCaptureService,
-  externalMcpService,
   onEvent
 }: {
   db: AdeDb;
@@ -828,7 +892,6 @@ export function createOrchestratorService({
   episodicSummaryService?: EpisodicSummaryService | null;
   proceduralLearningService?: ProceduralLearningService | null;
   knowledgeCaptureService?: KnowledgeCaptureService | null;
-  externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
@@ -836,7 +899,6 @@ export function createOrchestratorService({
     projectRoot,
     workspaceRoot: projectRoot,
     agentChatService,
-    externalMcpService,
   });
   for (const kind of ["claude", "codex", "cursor", "opencode"] as const) {
     adapters.set(kind, sharedAdapter);
@@ -3897,7 +3959,8 @@ export function createOrchestratorService({
             };
           }
           const cliCommand = descriptor?.cliCommand === "codex" ? "codex" : "claude";
-          const commandParts: string[] = [cliCommand];
+          const commandArgs: string[] = [];
+          const commandPreviewParts: string[] = [cliCommand];
           const model = modelRef;
           if (model) {
             const effectiveModel = cliCommand === "claude"
@@ -3905,20 +3968,87 @@ export function createOrchestratorService({
               : cliCommand === "codex"
                 ? resolveCodexCliModel(model)
                 : model;
-            commandParts.push("--model", shellEscapeArg(effectiveModel));
+            commandArgs.push("--model", effectiveModel);
+            commandPreviewParts.push("--model", shellEscapeArg(effectiveModel));
           }
           const cliMode = args.permissionConfig?.cli?.mode ?? "full-auto";
           if (cliCommand === "codex") {
-            commandParts.push("--sandbox", readOnlyExecution ? "read-only" : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write");
+            const codexProviderMode = args.permissionConfig?._providers?.codex;
+            const mappedCodex = codexProviderMode === "config-toml" ? null : mapPermissionToCodex(codexProviderMode);
+            if (!readOnlyExecution && codexProviderMode === "config-toml") {
+              // Let Codex read its own repository/user config without forcing flags.
+            } else {
+              const sandboxMode = readOnlyExecution || cliMode === "read-only"
+                ? "read-only"
+                : mappedCodex?.sandbox ?? args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
+              const approvalPolicy = readOnlyExecution || cliMode === "read-only" ? "on-request" : mappedCodex?.approvalPolicy ?? "untrusted";
+              commandArgs.push(
+                "--sandbox",
+                sandboxMode,
+                "--ask-for-approval",
+                approvalPolicy,
+              );
+              commandPreviewParts.push(
+                "--sandbox",
+                shellEscapeArg(sandboxMode),
+                "--ask-for-approval",
+                shellEscapeArg(approvalPolicy),
+              );
+            }
           } else {
             if (!readOnlyExecution && cliMode === "full-auto") {
-              commandParts.push("--dangerously-skip-permissions");
+              commandArgs.push("--dangerously-skip-permissions");
+              commandPreviewParts.push("--dangerously-skip-permissions");
             } else {
-              commandParts.push("--permission-mode", readOnlyExecution || cliMode === "read-only" ? "plan" : "acceptEdits");
+              const claudePermissionMode = readOnlyExecution || cliMode === "read-only" ? "plan" : "acceptEdits";
+              commandArgs.push("--permission-mode", claudePermissionMode);
+              commandPreviewParts.push("--permission-mode", shellEscapeArg(claudePermissionMode));
             }
           }
-          commandParts.push(shellInlineDecodedArg(prompt));
-          const startupCommand = commandParts.join(" ");
+          // ADE_CLI_AGENT_GUIDANCE is injected into the worker's system prompt
+          // via buildFullPrompt in baseOrchestratorAdapter when hasMissionTooling
+          // is true. Do not prepend it again here — that would duplicate the
+          // "## ADE CLI" block for Claude workers.
+          const promptFilePath = writeWorkerPromptFile({
+            projectRoot,
+            attemptId: args.attempt.id,
+            prompt,
+          });
+
+          let launchCommand;
+          if (cliCommand === "codex") {
+            const resolvedCodex = resolveCodexExecutable();
+            commandArgs.push("exec", "-");
+            commandPreviewParts.push("exec", "-");
+            const startupCommand = `exec ${commandPreviewParts.join(" ")} < ${shellEscapeArg(promptFilePath)}`;
+            const launchFilePath = writeWorkerLaunchFile({
+              projectRoot,
+              attemptId: args.attempt.id,
+              command: resolvedCodex.path,
+              commandArgs,
+              promptFilePath,
+            });
+            launchCommand = nodeWorkerLaunch({
+              startupCommand,
+              launchFilePath,
+            });
+          } else {
+            const resolvedClaude = resolveClaudeCodeExecutable();
+            commandArgs.push("-p");
+            commandPreviewParts.push("-p");
+            const startupCommand = `exec ${commandPreviewParts.join(" ")} < ${shellEscapeArg(promptFilePath)}`;
+            const launchFilePath = writeWorkerLaunchFile({
+              projectRoot,
+              attemptId: args.attempt.id,
+              command: resolvedClaude.path,
+              commandArgs,
+              promptFilePath,
+            });
+            launchCommand = nodeWorkerLaunch({
+              startupCommand,
+              launchFilePath,
+            });
+          }
 
           const session = await args.createTrackedSession({
             laneId: args.step.laneId,
@@ -3926,7 +4056,10 @@ export function createOrchestratorService({
             rows: 36,
             title,
             toolType: `${kind}-orchestrated` as TerminalToolType,
-            startupCommand
+            command: launchCommand.command,
+            args: launchCommand.args,
+            env: launchCommand.env,
+            startupCommand: launchCommand.startupCommand,
           });
           return {
             status: "accepted",
@@ -3937,7 +4070,7 @@ export function createOrchestratorService({
               contextFilePath,
               contextDigest: sha256(JSON.stringify(contextManifest)),
               planMode: readOnlyExecution,
-              startupCommandPreview: startupCommand.slice(0, 320),
+              startupCommandPreview: launchCommand.startupCommand.slice(0, 320),
               localFirst: true
             }
           };
@@ -6875,17 +7008,10 @@ export function createOrchestratorService({
           const inProcessPermissionMode: "read-only" | "edit" | "full-auto" = (() => {
             if (readOnlyExecution) return "read-only" as const;
             // Build provider-specific permissions for this mission
-            const projPerms: MissionPermissionConfig = {};
             const aiCfg = asRecord(projectConfigService?.get()?.effective?.ai);
             const perms = asRecord(aiCfg?.permissions);
-            if (perms) {
-              const ip = asRecord(perms.inProcess);
-              if (ip) {
-                const m = typeof ip.mode === "string" ? ip.mode : "";
-                if (m === "plan" || m === "edit" || m === "full-auto") projPerms.inProcess = { mode: m };
-              }
-            }
-            let providers = normalizeMissionPermissions(projPerms);
+            const projPerms = projectPermissionConfigFromRecord(perms);
+            let permissionConfig = projPerms;
             if (run.missionId) {
               try {
                 const mRow = db.get<{ metadata_json: string | null }>(
@@ -6896,12 +7022,12 @@ export function createOrchestratorService({
                   const meta = asRecord(JSON.parse(mRow.metadata_json));
                   const mpc = asRecord(asRecord(meta?.launch)?.permissionConfig) as MissionPermissionConfig | undefined;
                   if (mpc) {
-                    const mp = normalizeMissionPermissions(mpc);
-                    providers = { ...providers, ...mp };
+                    permissionConfig = mergeMissionPermissionConfig(permissionConfig, mpc);
                   }
                 }
               } catch { /* non-critical */ }
             }
+            const providers = normalizeMissionPermissions(permissionConfig);
             return mapPermissionToInProcess(providers.opencode);
           })();
 
@@ -7003,31 +7129,12 @@ export function createOrchestratorService({
         // the same `normalizeMissionPermissions` pipeline.
         const permissionConfig = (() => {
           // 1. Start with project-level permission config (old shape from config file)
-          const projectPerms: MissionPermissionConfig = {};
           const snapshot = projectConfigService?.get();
           const ai = asRecord(snapshot?.effective?.ai);
           const permissions = asRecord(ai?.permissions);
-          if (permissions) {
-            const cli = asRecord(permissions.cli);
-            const inProc = asRecord(permissions.inProcess);
-            if (cli) {
-              projectPerms.cli = {
-                ...(typeof cli.mode === "string" ? { mode: cli.mode as MissionPermissionConfig["cli"] extends { mode?: infer M } ? M : never } : {}),
-                ...(typeof cli.sandboxPermissions === "string" ? { sandboxPermissions: cli.sandboxPermissions as "read-only" | "workspace-write" | "danger-full-access" } : {}),
-                ...(Array.isArray(cli.writablePaths) ? { writablePaths: cli.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
-                ...(Array.isArray(cli.allowedTools) ? { allowedTools: cli.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
-              };
-            }
-            if (inProc) {
-              const mode = typeof inProc.mode === "string" ? inProc.mode : "";
-              if (mode === "plan" || mode === "edit" || mode === "full-auto") {
-                projectPerms.inProcess = { mode };
-              }
-            }
-          }
+          const projectPerms = projectPermissionConfigFromRecord(permissions);
 
-          // Normalize project-level to provider shape
-          let providers = normalizeMissionPermissions(projectPerms);
+          let mergedPerms = projectPerms;
 
           // 2. Layer mission-level overrides if present
           if (run.missionId) {
@@ -7040,17 +7147,15 @@ export function createOrchestratorService({
                 const meta = asRecord(JSON.parse(missionRow.metadata_json));
                 const missionPermConfig = asRecord(asRecord(meta?.launch)?.permissionConfig) as MissionPermissionConfig | undefined;
                 if (missionPermConfig) {
-                  // Re-normalize with mission overrides applied on top.
-                  // normalizeMissionPermissions handles both old (cli/inProcess) and new (providers) shapes.
-                  const missionProviders = normalizeMissionPermissions(missionPermConfig);
-                  // Merge: mission-level overrides take precedence
-                  providers = { ...providers, ...missionProviders };
+                  mergedPerms = mergeMissionPermissionConfig(mergedPerms, missionPermConfig);
                 }
               }
             } catch {
               // Non-critical: fall back to project-level permissions
             }
           }
+
+          const providers = normalizeMissionPermissions(mergedPerms);
 
           // 3. Convert back to legacy shape for adapter compatibility, carrying _providers through
           return providerPermissionsToLegacyConfig(providers);
@@ -7818,7 +7923,7 @@ export function createOrchestratorService({
         state: status === "failed" ? "released" : "released"
       });
 
-      // Clean up temporary MCP config files for this worker.
+      // Clean up temporary worker runtime files for this worker.
       const laneWorktreeRow = step.laneId
         ? db.get<{ worktree_path: string | null }>(
             `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
@@ -7828,7 +7933,7 @@ export function createOrchestratorService({
       const laneWorktreePath = typeof laneWorktreeRow?.worktree_path === "string" && laneWorktreeRow.worktree_path.trim().length > 0
         ? laneWorktreeRow.worktree_path.trim()
         : null;
-      cleanupMcpConfigFile(projectRoot, args.attemptId, laneWorktreePath);
+      cleanupWorkerRuntimeFiles(projectRoot, args.attemptId, laneWorktreePath);
 
       // Sync worker checkpoint file to DB for all completion states
       if (step.laneId) {

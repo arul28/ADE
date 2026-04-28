@@ -1,13 +1,11 @@
 ---
 title: "Agent Chat Overview"
-description: "Conversational AI with real project access — read files, run commands, create PRs, spawn missions, and control computer use, all from a single chat interface."
+description: "Conversational AI with real project access — read files, run commands, create PRs, spawn missions, and capture proof artifacts, all from a single chat interface."
 icon: "comments"
 ---
 ## What is Agent Chat?
 
-**Agent Chat** is ADE's conversational interface for working with AI agents in the context of your actual project. Unlike a generic AI chat, Agent Chat is wired directly into your development environment: the agent can read and write real files, run terminal commands, create branches and PRs, query your project's context pack, and spawn a Mission when the task grows beyond what a single conversation can handle.
-
-Every chat session is recorded with a full transcript, tool call log, and timing data. Sessions are resumable and their artifacts can be promoted into the lane's persistent context.
+**Agent Chat** is ADE's conversational interface for AI agents wired into your development environment. The agent reads and writes real files, runs terminal commands, creates branches and PRs, queries your context pack, and can escalate to a Mission when the task outgrows a single session. Every chat session is recorded with a full transcript, tool call log, and timing data.
 
 ### Supported providers
 
@@ -83,13 +81,19 @@ Chat in ADE is always scoped — it operates within a defined context boundary t
   <Step title="Choose a model (optional)">
     The model selector in the chat header defaults to your configured preferred model. Click it to switch models for this session. ADE remembers your last-used model per lane.
   </Step>
-  <Step title="Set execution mode (optional)">
-    For CLI-wrapped models (Claude, Codex), an **execution mode** selector appears in the header:
+  <Step title="Pick a permission preset (optional)">
+    For CLI-wrapped models, the composer surfaces a permission picker in the header. The presets vary per provider:
 
-    - **Focused** — single-threaded; the agent works through the task in one thread
-    - **Parallel** — the agent can spawn parallel sub-agents for independent parts of the task
+    **Claude** — standard Claude CLI permission modes (plan / edit / full-auto / default), each with its own allowlist.
 
-    Use Parallel mode for tasks the model can naturally decompose (e.g., "add tests for all these functions").
+    **Codex** — four presets map directly to Codex's `--approval-policy` and `--sandbox` flags:
+
+    - **Default permissions** — workspace-write sandbox, approval policy `on-request`. Edits and shell commands in the workspace run without asking; anything outside the workspace prompts for approval.
+    - **Plan mode** — read-only sandbox, approval policy `on-request`. Agent can explore and answer questions; it needs approval to edit or run commands.
+    - **Full access** — `danger-full-access` sandbox, approval policy `never`. No sandbox, no approvals — safe only in an externally sandboxed environment.
+    - **Custom (config.toml)** — no ADE flags are passed. Codex honors `~/.codex/config.toml`.
+
+    There is no "Guarded edit" preset anymore; **Default permissions** is the standard middle ground.
   </Step>
   <Step title="Type your first message">
     The agent receives your message along with the injected context. Tool calls begin immediately if the task requires them.
@@ -104,36 +108,11 @@ Chat in ADE is always scoped — it operates within a defined context boundary t
 
 ---
 
-## Computer Use Policy
-The chat header displays the current **computer-use policy** for the session. This controls whether and how the agent can invoke computer-use capabilities (browser automation, screenshot capture, desktop interaction).
+## Proof Capture
 
-Click the policy chip to change it for the current session.
+Chat agents can leave **intentional evidence** of their work by calling the `ade proof` CLI — screenshots, short recordings, or ingested browser traces. There is no per-session policy chip anymore; the agent decides when a step deserves a proof, runs the CLI, and the captured artifact is linked to the chat session automatically.
 
-<AccordionGroup>
-  <Accordion title="CU Off — computer use disabled">
-    The agent cannot invoke any computer-use tools. Use this for sessions focused purely on code changes where you do not want any visual verification steps.
-  </Accordion>
-  <Accordion title="CU Auto — ADE decides">
-    ADE enables computer use when the agent's task naturally calls for it — e.g., verifying a UI change, testing a web flow, or checking a rendered output. The agent will not use computer use for tasks that can be completed via file and terminal tools alone.
-  </Accordion>
-  <Accordion title="CU On — always available">
-    Computer use tools are always in the agent's tool palette. The agent may invoke them freely. Use this when you are explicitly working on UI-heavy tasks.
-  </Accordion>
-  <Accordion title="Fallback — try without, then use if needed">
-    The agent first attempts to complete the task without computer use. If it cannot (e.g., a required verification only works via a browser), it falls back to computer use automatically.
-  </Accordion>
-  <Accordion title="Proof — require proof artifacts">
-    Computer use is available, but every action must produce a proof artifact (a screenshot or browser trace). All proof artifacts are collected and can be attached to a PR or Linear issue. Recommended when the session will feed into a code review.
-  </Accordion>
-</AccordionGroup>
-
-When computer use is active, a **monitoring panel** expands below the chat. It shows:
-
-- Recent screenshots captured during the session
-- Browser action log (clickable to expand each action)
-- A proof summary for the current session
-
----
+Captured proofs appear in the session artifact panel and can be promoted to the lane's durable context, attached to a mission, or published to a PR or Linear issue. See [Proof Overview](/computer-use/overview) for the full workflow.
 
 ---
 
@@ -170,9 +149,9 @@ Chat sessions can read from and write to ADE's project memory. A **memory guard*
 
 <CardGroup cols={2}>
   <Card title="Chat Capabilities" icon="toolbox" href="/chat/capabilities">
-    What the agent can do — file operations, git, PRs, missions, MCP tools, and more.
+    What the agent can do — file operations, git, PRs, missions, lane and action tools via the `ade` CLI, and more.
   </Card>
   <Card title="Context & Artifacts" icon="database" href="/chat/context">
-    Managing context windows, working with artifacts, MCP tool visibility, chat history, and troubleshooting.
+    Managing context windows, working with artifacts, chat history, and troubleshooting.
   </Card>
 </CardGroup>

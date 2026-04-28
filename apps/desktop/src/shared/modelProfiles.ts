@@ -46,7 +46,7 @@ function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boole
 }
 
 const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
-const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
 
 // CLI-wrapped Anthropic models (claude provider)
 export const CLAUDE_MODELS: ModelEntry[] = MODEL_REGISTRY
@@ -83,6 +83,7 @@ export const CLAUDE_THINKING_LEVELS: ThinkingOption[] = [
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
+  { value: "max", label: "Max" },
 ];
 
 export const CODEX_THINKING_LEVELS: ThinkingOption[] = [
@@ -134,7 +135,7 @@ export const ORCHESTRATOR_CALL_TYPES: CallTypeInfo[] = [
 
 const CLAUDE_SONNET: ModelConfig = { provider: "claude", modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" };
 const CLAUDE_HAIKU: ModelConfig = { provider: "claude", modelId: "anthropic/claude-haiku-4-5", thinkingLevel: "low" };
-const CLAUDE_OPUS: ModelConfig = { provider: "claude", modelId: "anthropic/claude-opus-4-6", thinkingLevel: "high" };
+const CLAUDE_OPUS: ModelConfig = { provider: "claude", modelId: "anthropic/claude-opus-4-7", thinkingLevel: "high" };
 const CODEX_STANDARD: ModelConfig = { provider: "codex", modelId: DEFAULT_CODEX_MODEL_ID, thinkingLevel: "medium" };
 const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "openai/gpt-5.1-codex-mini", thinkingLevel: "low" };
 

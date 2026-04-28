@@ -4,9 +4,10 @@ import { AnimatePresence, motion } from "motion/react";
 import { resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { fadeScale } from "../../lib/motion";
 import { cn } from "../ui/cn";
-import { CaretDown, X } from "@phosphor-icons/react";
+import { X } from "@phosphor-icons/react";
 import { ModelRowLogo } from "./ProviderLogos";
 import { createUnknownModelPlaceholder, ModelCatalogPanel } from "./ModelCatalogPanel";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 type ProviderModelSelectorProps = {
   value: string;
@@ -14,6 +15,7 @@ type ProviderModelSelectorProps = {
   filter?: (model: ModelDescriptor) => boolean;
   availableModelIds?: string[];
   catalogMode?: "all" | "available-only";
+  layoutVariant?: "standard" | "mobile";
   className?: string;
   disabled?: boolean;
   showReasoning?: boolean;
@@ -23,11 +25,19 @@ type ProviderModelSelectorProps = {
   onOpenAiSettings?: () => void;
   /** @deprecated Use `onOpenAiSettings` */
   onConfigureMore?: () => void;
+  /** Tighter, equal-width toolbar row in the chat composer (model + reasoning). */
+  compactToolbar?: boolean;
 };
 
 const selectCls = cn(
   "h-7 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-sans text-[10px] text-fg/70",
   "outline-none transition-colors duration-150 focus:border-violet-400/30",
+);
+
+/** Compact composer row: match native controls — no filled pill around the select. */
+const selectClsCompactPlain = cn(
+  "h-8 min-h-8 w-auto min-w-[5.5rem] max-w-full shrink-0 rounded-md border border-transparent bg-transparent px-2 font-sans text-[10px] text-fg/70",
+  "outline-none transition-colors duration-150 focus-visible:border-violet-400/25 focus-visible:bg-white/[0.04]",
 );
 
 function tierLabel(tier: string): string {
@@ -41,6 +51,7 @@ export function ProviderModelSelector({
   filter,
   availableModelIds,
   catalogMode = "all",
+  layoutVariant = "standard",
   className,
   disabled = false,
   showReasoning,
@@ -48,7 +59,11 @@ export function ProviderModelSelector({
   onReasoningEffortChange,
   onOpenAiSettings,
   onConfigureMore,
+  compactToolbar = false,
 }: ProviderModelSelectorProps) {
+  const mobileLayout = layoutVariant === "mobile";
+  const compactDesktop = compactToolbar && !mobileLayout;
+  const barSelectCls = compactDesktop ? selectClsCompactPlain : selectCls;
   const openSettings = onOpenAiSettings ?? onConfigureMore;
 
   const [open, setOpen] = useState(false);
@@ -59,6 +74,7 @@ export function ProviderModelSelector({
     [value],
   );
   const reasoningTiers = selectedModel?.reasoningTiers ?? [];
+  const showReasoningBlock = Boolean(showReasoning && reasoningTiers.length > 0 && onReasoningEffortChange);
 
   useEffect(() => {
     if (!open) return;
@@ -104,11 +120,23 @@ export function ProviderModelSelector({
             aria-hidden
             onClick={() => setOpen(false)}
           />
-          <div className="pointer-events-none fixed inset-0 z-[80] flex items-start justify-center pt-[12vh]">
+          <div
+            className={cn(
+              "pointer-events-none fixed inset-0 z-[80] flex justify-center",
+              mobileLayout
+                ? "items-end"
+                : "items-center p-3 sm:p-5",
+            )}
+          >
             <motion.div
               key="model-picker-panel"
               data-model-picker-panel="true"
-              className="pointer-events-auto w-full max-w-[720px] px-3"
+              className={cn(
+                "pointer-events-auto w-full",
+                mobileLayout
+                  ? "mt-auto max-w-full px-0 pb-0 pt-20"
+                  : "max-w-2xl md:max-w-3xl",
+              )}
               variants={fadeScale}
               initial="initial"
               animate="animate"
@@ -135,16 +163,28 @@ export function ProviderModelSelector({
                 listboxId="model-selector-listbox"
                 autoFocusSearch
                 headerTrailing={(
-                  <button
-                    type="button"
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-muted-fg/45 transition-all duration-150 hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-fg/70"
-                    onClick={() => setOpen(false)}
-                    aria-label="Close model picker"
-                  >
-                    <X size={13} weight="bold" />
-                  </button>
+                  <SmartTooltip content={{ label: "Close model picker", description: "Close the model catalog without changing the selected model." }}>
+                    <button
+                      type="button"
+                      className={cn(
+                        "inline-flex shrink-0 items-center justify-center border border-white/[0.06] bg-white/[0.03] text-muted-fg/45 transition-all duration-150 hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-fg/70",
+                        mobileLayout
+                          ? "h-9 w-9 rounded-xl"
+                          : "h-9 w-9 rounded-xl sm:h-8 sm:w-8 sm:rounded-lg",
+                      )}
+                      onClick={() => setOpen(false)}
+                      aria-label="Close model picker"
+                    >
+                      <X size={13} weight="bold" />
+                    </button>
+                  </SmartTooltip>
                 )}
-                className="max-h-[min(520px,70vh)]"
+                className={cn(
+                  "max-h-[min(82dvh,48rem)] rounded-t-[26px] border-x-0 border-b-0",
+                  mobileLayout
+                    ? "rounded-b-none"
+                    : "sm:max-h-[min(520px,70vh)] sm:rounded-[18px] sm:border sm:border-violet-400/[0.12]",
+                )}
               />
             </motion.div>
           </div>
@@ -154,25 +194,53 @@ export function ProviderModelSelector({
     document.body,
   );
 
-  return (
-    <div className={cn("flex max-w-full flex-wrap items-center gap-1.5", className)}>
-      <div ref={containerRef} className="relative min-w-0">
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => {
-            if (disabled) return;
-            setOpen((current) => !current);
-          }}
+  const modelTooltipWrap = cn(mobileLayout && "w-full", compactDesktop && "min-w-0 w-auto max-w-full");
+
+  const modelPickerButton = (
+    <SmartTooltip
+      wrapperClassName={modelTooltipWrap || undefined}
+      content={{
+        label: "Select model",
+        description: "Open the model catalog and choose which provider/model this chat will use.",
+        effect: selectedModel ? `Current model: ${selectedModel.displayName}.` : undefined,
+      }}
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          if (disabled) return;
+          setOpen((current) => !current);
+        }}
+        className={cn(
+          "inline-flex min-w-0 items-center gap-1.5 font-sans text-fg/70",
+          compactDesktop ? "justify-start" : "justify-center",
+          compactDesktop
+            ? cn(
+                "h-8 min-h-8 w-auto min-w-0 max-w-[min(100%,22rem)] shrink rounded-md border border-transparent bg-transparent px-2 text-[10px] font-medium",
+                "transition-colors duration-150 hover:bg-white/[0.05]",
+                open && "bg-violet-500/[0.08]",
+                disabled && "cursor-not-allowed opacity-70 hover:bg-transparent",
+              )
+            : cn(
+                "border border-white/[0.06] bg-white/[0.03]",
+                mobileLayout
+                  ? "h-10 w-full rounded-xl px-4 text-[12px]"
+                  : "h-10 w-full rounded-xl px-4 text-[12px] sm:h-9 sm:min-w-[12rem] sm:max-w-[min(100%,22rem)] sm:rounded-lg sm:px-5 sm:text-[12px] md:min-w-[16rem] md:max-w-[24rem] md:px-6 md:text-[13px]",
+                "transition-all duration-150 hover:border-violet-400/15 hover:bg-violet-500/[0.04]",
+                open && "border-violet-400/20 bg-violet-500/[0.06] shadow-[0_0_12px_rgba(167,139,250,0.08)]",
+                disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.06] hover:bg-white/[0.03]",
+              ),
+        )}
+        aria-label="Select model"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+      >
+        <span
           className={cn(
-            "inline-flex h-7 w-auto min-w-[150px] max-w-[14rem] flex-none items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-2.5 font-sans text-[10px] text-fg/70",
-            "transition-all duration-150 hover:border-violet-400/15 hover:bg-violet-500/[0.04]",
-            open && "border-violet-400/20 bg-violet-500/[0.06] shadow-[0_0_12px_rgba(167,139,250,0.08)]",
-            disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.06] hover:bg-white/[0.03]",
+            "inline-flex min-w-0 max-w-full items-center gap-1.5",
+            compactDesktop ? "justify-start" : "justify-center",
           )}
-          aria-label="Select model"
-          aria-haspopup="listbox"
-          aria-expanded={open}
         >
           {selectedModel ? (
             <ModelRowLogo
@@ -180,37 +248,79 @@ export function ProviderModelSelector({
               cliCommand={selectedModel.cliCommand}
               modelId={selectedModel.id}
               providerModelId={selectedModel.providerModelId}
-              size={12}
+              size={mobileLayout ? 14 : compactDesktop ? 12 : 13}
+              className="shrink-0 max-sm:scale-95"
             />
           ) : null}
-          <span className={cn("min-w-0 flex-1 truncate text-left text-[10px] font-medium", !selectedModel && !value && "text-muted-fg/40")}>
-            {selectedModel?.displayName ?? (value || "Select model")}
+          <span
+            className={cn(
+              "min-w-0 truncate font-medium leading-tight",
+              compactDesktop ? "text-left text-[10px]" : "text-center text-[12px] sm:text-[12px] md:text-[13px]",
+              !selectedModel && !value && "text-muted-fg/40",
+            )}
+          >
+            <span className="line-clamp-1">{selectedModel?.displayName ?? (value || "Select model")}</span>
           </span>
-          <CaretDown
-            size={9}
-            weight="bold"
-            className={cn("flex-shrink-0 text-muted-fg/40 transition-transform duration-150", open && "rotate-180")}
-          />
-        </button>
+        </span>
+      </button>
+    </SmartTooltip>
+  );
+
+  const reasoningSelect = showReasoningBlock ? (
+    <SmartTooltip
+      wrapperClassName={modelTooltipWrap || undefined}
+      content={{
+        label: "Reasoning effort",
+        description: "Set how much reasoning budget the selected model should use for this chat.",
+        effect: reasoningEffort ? `Current effort: ${tierLabel(reasoningEffort)}.` : undefined,
+      }}
+    >
+      <select
+        value={reasoningEffort ?? ""}
+        disabled={disabled}
+        onChange={(event) => {
+          if (!onReasoningEffortChange) return;
+          onReasoningEffortChange(event.target.value || null);
+        }}
+        className={cn(
+          barSelectCls,
+          mobileLayout
+            ? "h-10 w-full rounded-xl px-3 text-[11px]"
+            : compactDesktop
+              ? "rounded-md"
+              : "h-10 w-full rounded-xl px-3 text-[11px] sm:h-7 sm:w-auto sm:min-w-[92px] sm:rounded-md sm:px-2 sm:text-[10px]",
+          disabled && "cursor-not-allowed opacity-70",
+        )}
+        aria-label="Reasoning effort"
+      >
+        {reasoningTiers.map((tier) => (
+          <option key={tier} value={tier}>
+            {tierLabel(tier)}
+          </option>
+        ))}
+      </select>
+    </SmartTooltip>
+  ) : null;
+
+  if (compactDesktop) {
+    return (
+      <>
+        <div ref={containerRef} className="relative min-w-0 shrink-0">
+          {modelPickerButton}
+        </div>
+        {reasoningSelect ? <div className="min-w-0 shrink-0">{reasoningSelect}</div> : null}
+        {panel}
+      </>
+    );
+  }
+
+  return (
+    <div className={cn("flex max-w-full flex-wrap items-center gap-1.5", className)}>
+      <div ref={containerRef} className={cn("relative min-w-0", mobileLayout ? "w-full" : "w-full sm:w-auto")}>
+        {modelPickerButton}
       </div>
-
       {panel}
-
-      {showReasoning && reasoningTiers.length > 0 && onReasoningEffortChange ? (
-        <select
-          value={reasoningEffort ?? ""}
-          disabled={disabled}
-          onChange={(event) => onReasoningEffortChange(event.target.value || null)}
-          className={cn(selectCls, "min-w-[92px]", disabled && "cursor-not-allowed opacity-70")}
-          aria-label="Reasoning effort"
-        >
-          {reasoningTiers.map((tier) => (
-            <option key={tier} value={tier}>
-              {tierLabel(tier)}
-            </option>
-          ))}
-        </select>
-      ) : null}
+      {reasoningSelect}
     </div>
   );
 }

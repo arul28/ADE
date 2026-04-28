@@ -57,6 +57,13 @@ Renderer:
 - `apps/desktop/src/renderer/components/app/FloatingFilesWorkspace.tsx`
   — an alternative lightweight floating view used from the Lanes tab
   and side panels.
+- `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
+  root with workspace picker, quick-open and text-search cards, capped
+  visible result lists (first 40) with refine-search copy when more
+  matches exist, and live file-action gating from sync policy.
+- `apps/ios/ADE/Views/Files/FilesDetailScreen.swift` and
+  `FilesRootComponents.swift` — mobile file preview/detail chrome and
+  proof-artifact/file-result rows.
 
 Lane integration:
 
@@ -138,7 +145,7 @@ timer (`IDLE_WATCHER_CLOSE_MS = 15_000`) schedules a soft close.
 
 Events are debounced per file key for 140 ms, so a build tool writing
 hundreds of files gets coalesced. Volatile `.ade/` paths (transcripts,
-the SQLite DB, caches, MCP config files) are filtered out even when
+the SQLite DB, caches, ADE CLI config files) are filtered out even when
 `includeIgnored` is true — see
 [file-watcher-and-trust.md](./file-watcher-and-trust.md) for the full
 list.
@@ -209,8 +216,6 @@ For deeper detail on the watcher + trust boundary, see
 ## Cross-links
 
 - Lane worktrees feed the workspace list: [../lanes/](../lanes/)
-- Files drive context doc freshness (the context doc generator scans
-  the workspace): [../context-packs/](../context-packs/)
 - Processes and tests can monitor the workspace for changes via the
   watcher — see [../terminals-and-sessions/](../terminals-and-sessions/)
   for the transcript and log story.

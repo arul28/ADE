@@ -332,4 +332,56 @@ describe("gitOperationsService cached lane reads", () => {
     expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
     expect(mockGit.runGit).toHaveBeenCalledTimes(1);
   });
+
+  it("parses file history entries for modified and renamed files", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue(
+      [
+        "\u001eabc123\u001fab\u001fArul\u001f2026-04-11T21:00:00.000Z\u001fRename file",
+        "R100\tsrc/old.ts\tsrc/new.ts",
+        "",
+        "\u001edef456\u001fde\u001fArul\u001f2026-04-10T10:00:00.000Z\u001fUpdate file",
+        "M\tsrc/new.ts",
+      ].join("\n"),
+    );
+
+    const { service } = createTestGitOperationsService();
+
+    const history = await service.getFileHistory({ laneId: "lane-1", path: "src/new.ts", limit: 2 });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      [
+        "log",
+        "--follow",
+        "-n2",
+        "--date=iso-strict",
+        "--name-status",
+        "--format=%x1e%H%x1f%h%x1f%an%x1f%aI%x1f%s",
+        "--",
+        "src/new.ts",
+      ],
+      expect.objectContaining({ cwd: "/tmp/ade-lane" }),
+    );
+    expect(history).toEqual([
+      {
+        commitSha: "abc123",
+        shortSha: "ab",
+        authorName: "Arul",
+        authoredAt: "2026-04-11T21:00:00.000Z",
+        subject: "Rename file",
+        path: "src/new.ts",
+        previousPath: "src/old.ts",
+        changeType: "renamed",
+      },
+      {
+        commitSha: "def456",
+        shortSha: "de",
+        authorName: "Arul",
+        authoredAt: "2026-04-10T10:00:00.000Z",
+        subject: "Update file",
+        path: "src/new.ts",
+        previousPath: null,
+        changeType: "modified",
+      },
+    ]);
+  });
 });

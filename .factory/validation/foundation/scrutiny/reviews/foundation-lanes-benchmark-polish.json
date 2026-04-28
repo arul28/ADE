@@ -1,0 +1,28 @@
+{
+  "featureId": "foundation-lanes-benchmark-polish",
+  "reviewedAt": "2026-04-16T10:40:25Z",
+  "commitId": "8cc19f4adb6d736ea60984d30e5e95c53e0da46a",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature substantially improves Lanes polish, cached-state messaging, and live-action gating, but it also regresses the benchmark lane-detail flow by treating diff inspection as a live-only action. That breaks the contract that cached lane detail stays useful while only mutating git actions disable during disconnect/sync states.",
+    "issues": [
+      {
+        "file": "apps/ios/ADE/Views/Lanes/LaneFileTreeComponents.swift",
+        "line": 306,
+        "severity": "blocking",
+        "description": "The new live-action gate now disables the per-file `Diff` button whenever `allowsLiveActions` is false (`LaneFileTreeComponents.swift:306-307`), and recent-commit diff entry is gated the same way via the history `Files` button (`apps/ios/ADE/Views/Lanes/LaneDetailGitSection.swift:415-433`). This feature's scope and validation contract distinguish diff inspection from live-only git mutations: `VAL-LANES-006` requires lane detail to let users inspect file changes and diffs, while `VAL-LANES-008` says only live-only git actions should disable when disconnected or syncing (`/Users/admin/.factory/missions/3d6b3fd2-ee5a-4122-83b2-d6dff0c07f04/validation-contract.md:25-35`). The diff screen itself already only gates editing via `canEditDiff` (`apps/ios/ADE/Views/Lanes/LaneDiffScreen.swift:84-100`), so blocking entry into the diff turns cached lane detail into a dead end during the exact offline/sync states this feature was meant to preserve."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "services",
+      "observation": "Mission guidance still says the foundation hard gate from `.factory/services.yaml` is iOS-only, but the checked-in `test` command still runs the unrelated red desktop suite before the simulator tests. That mismatch remains shared-state debt for future iOS-only workers.",
+      "evidence": "`/Users/admin/.factory/missions/3d6b3fd2-ee5a-4122-83b2-d6dff0c07f04/AGENTS.md:55-56,64-67` says unrelated red desktop failures should not block iOS-only work, while `/Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/.factory/services.yaml:4` still defines `test` as `npm --prefix apps/desktop run test && xcodebuild test ...`."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: cached-state polish and live-action gating landed, but the commit wrongly gates diff inspection behind live connectivity, so disconnected/syncing lane detail no longer preserves the full benchmark triage flow promised by the foundation Lanes contract."
+}

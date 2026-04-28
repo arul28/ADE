@@ -85,6 +85,21 @@ if (typeof Element !== "undefined" && !Element.prototype.scrollTo) {
   Element.prototype.scrollTo = () => {};
 }
 
+// jsdom doesn't implement matchMedia; stub it for components that read
+// `prefers-color-scheme` or `prefers-reduced-motion` (e.g. border-beam).
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+}
+
 // nwsapi (jsdom's CSS selector engine) throws on Tailwind arbitrary-value
 // class names like `rounded-[8px]` because `[` opens an attribute selector.
 // Patch querySelector/querySelectorAll to swallow the SYNTAX_ERR (code 12)

@@ -81,6 +81,8 @@ describe("kvDb mission schema migration", () => {
         "integration_lane_name",
         "status",
         "integration_lane_id",
+        "preferred_integration_lane_id",
+        "merge_into_head_sha",
         "resolution_state_json",
         "pairwise_results_json",
         "lane_summaries_json"

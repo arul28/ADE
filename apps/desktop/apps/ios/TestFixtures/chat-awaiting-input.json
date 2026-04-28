@@ -1,0 +1,18 @@
+{
+  "aps": {
+    "alert": {
+      "title": "Claude · auth-refactor",
+      "body": "Awaiting your approval on 3 file edits."
+    },
+    "sound": "default",
+    "mutable-content": 1,
+    "interruption-level": "time-sensitive",
+    "relevance-score": 1.0,
+    "thread-id": "chat:session-abc:approval",
+    "category": "CHAT_AWAITING_INPUT"
+  },
+  "providerSlug": "claude",
+  "sessionId": "session-abc",
+  "itemId": "item-42",
+  "kind": "approval"
+}

@@ -76,7 +76,7 @@ describe("getPermissionOptions", () => {
   it("returns openai CLI options for CLI-wrapped openai", () => {
     const options = getPermissionOptions({ family: "openai", isCliWrapped: true });
     expect(options).toHaveLength(4);
-    expect(options.map((o) => o.value)).toEqual(["plan", "edit", "full-auto", "config-toml"]);
+    expect(options.map((o) => o.value)).toEqual(["default", "plan", "full-auto", "config-toml"]);
   });
 
   it("returns API/local options for CLI-wrapped codex family (family normalization only applies to guarded mode)", () => {

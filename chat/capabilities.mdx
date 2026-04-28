@@ -1,6 +1,6 @@
 ---
 title: "Chat Capabilities"
-description: "What the chat agent can do — file operations, terminal commands, git, PRs, Linear integration, mission spawning, context pack queries, and external MCP tools."
+description: "What the chat agent can do — file operations, terminal commands, git, PRs, Linear integration, mission spawning, repo inspection, and ADE action tools."
 icon: "toolbox"
 ---
 
@@ -27,14 +27,14 @@ The chat agent has access to a broad tool palette. The exact tools available dep
   <Card title="Mission spawning" icon="target">
     Escalate the current task into a new Mission, carrying over conversation context as the planner's seed.
   </Card>
-  <Card title="Context pack queries" icon="database">
-    Query the lane's pack for architectural context, file maps, open PRs, recent activity, and human work digests.
+  <Card title="Repo inspection" icon="database">
+    Inspect repository docs, source files, file maps, open PRs, recent activity, and human work digests.
   </Card>
   <Card title="Image attachments" icon="image">
     Attach images (JPEG, PNG, GIF, WebP) to any message. Images are sent as inline base64 content blocks so the agent can see screenshots, diagrams, or UI mockups natively.
   </Card>
-  <Card title="External MCP tools" icon="plug">
-    If external MCP servers are configured and permitted for the session, the agent can call their tools. Toggle MCP tool groups in the chat header.
+  <Card title="ADE actions" icon="plug">
+    Agents call ADE's typed actions — lane, git, PR, process, chat, test, proof, and memory tools — through the ADE RPC surface. Toggle tool groups for the session from the chat header.
   </Card>
   <Card title="PR issue resolution" icon="wrench">
     Specialized workflow tools for fixing PR issues: read failing check output, read review comments, apply fixes, and verify the fix resolves the issue. In convergence sessions, the agent receives the full issue inventory with source attribution and severity. Available when a lane has an open PR.
@@ -42,7 +42,7 @@ The chat agent has access to a broad tool palette. The exact tools available dep
 </CardGroup>
 
 <Note>
-  Provider-native tools (built into the model's API, like Claude's native file tool) are tracked separately from ADE-owned tools (served via MCP). The chat header MCP badge shows the count of ADE/external MCP tools; provider-native tools are always available based on the model.
+  Provider-native tools (built into the model's API, like Claude's native file tool) are tracked separately from ADE-owned tools (served through the ADE RPC surface). The chat header tools badge shows the count of ADE actions available to the session; provider-native tools are always available based on the model.
 </Note>
 
 ---
@@ -58,7 +58,7 @@ The most common workflow is: make changes in chat → have the agent create a PR
     Say "create a PR" or "open a pull request." The agent will:
 
     - Read the current branch name and recent commits
-    - Query the lane pack for architectural context
+    - Inspect relevant repo docs and source files for architectural context
     - Generate a PR title and description based on the changes
     - Pre-fill reviewer suggestions if you have GitHub team integration enabled
     - Apply relevant labels based on the branch name and changed files
@@ -69,18 +69,18 @@ The most common workflow is: make changes in chat → have the agent create a PR
 </Steps>
 
 <Tip>
-  If your project has a PR description template, put it in the lane's context pack. The agent will use it automatically when generating PR descriptions.
+  If your project has a PR description template, keep it in the repository. The agent can inspect it when generating PR descriptions.
 </Tip>
 
 ---
 
 ## Spawning a Mission from Chat
 
-When a task is too large for a single chat session, escalate it to a Mission without losing context.
+When a task is too large for a single chat session, escalate to a Mission without losing context.
 
 <Steps>
   <Step title="Recognize the scope">
-    Signs that a task should become a Mission: it requires changes across more than 3–4 unrelated files, it needs parallel workers, it has an explicit validation phase, or you want a formal audit trail.
+    Escalate when the task needs changes across more than 3–4 unrelated files, parallel workers, a validation phase, or a formal audit trail.
   </Step>
   <Step title="Say 'start a mission'">
     Type "start a mission for this" or "this should be a mission." ADE opens the Mission creation dialog, pre-filled with:

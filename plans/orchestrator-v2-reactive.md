@@ -52,7 +52,7 @@ the coordinator thinks, the coordinator acts.
 ```typescript
 // The coordinator IS an agent with tools
 const coordinator = new CoordinatorAgent({
-  model: "claude-opus-4-6", // or configured per mission
+  model: "claude-opus-4-7", // or configured per mission
   systemPrompt: buildCoordinatorPrompt(mission, runState),
   tools: {
     // === Execution Control ===

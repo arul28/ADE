@@ -10,12 +10,21 @@ import {
   useNavigate
 } from "react-router-dom";
 
-// Use BrowserRouter when running in a regular browser (for Figma capture compatibility).
-// The browser mock sets __isBrowserMock when window.ade is stubbed.
-const Router = (window as any).__adeBrowserMock ? BrowserRouter : HashRouter;
+// Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
+// Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
+// the history API is not tied to a normal origin.
+// Relying only on `__adeBrowserMock` breaks when the flag is not set at module-eval
+// time, which can strand Cursor's embedded browser on a single path.
+const Router =
+  typeof window !== "undefined" &&
+  (window.location.protocol === "http:" || window.location.protocol === "https:")
+    ? BrowserRouter
+    : HashRouter;
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
+import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
+import { GlossaryPage } from "../onboarding/GlossaryPage";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 
 const LanesPage = React.lazy(() =>
@@ -30,11 +39,17 @@ const TerminalsPage = React.lazy(() =>
 const PRsPage = React.lazy(() =>
   import("../prs/PRsPage").then((m) => ({ default: m.PRsPage }))
 );
+const ReviewPage = React.lazy(() =>
+  import("../review/ReviewPage").then((m) => ({ default: m.ReviewPage }))
+);
 const HistoryPage = React.lazy(() =>
   import("../history/HistoryPage").then((m) => ({ default: m.HistoryPage }))
 );
 const AutomationsPage = React.lazy(() =>
   import("../automations/AutomationsPage").then((m) => ({ default: m.AutomationsPage }))
+);
+const AutomationsTemplatesPage = React.lazy(() =>
+  import("../automations/AutomationsTemplatesPage").then((m) => ({ default: m.AutomationsTemplatesPage }))
 );
 const SettingsPage = React.lazy(() =>
   import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
@@ -51,6 +66,7 @@ const CtoPage = React.lazy(() =>
 
 import { useAppStore } from "../../state/appStore";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
+import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 
 const StartupSplashScreen = (
   <div className="flex h-full w-full flex-col items-center justify-center relative overflow-hidden" style={{ background: "var(--color-bg)" }}>
@@ -58,7 +74,7 @@ const StartupSplashScreen = (
     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60vw] h-[60vw] max-w-[600px] max-h-[600px] rounded-full opacity-20 blur-[100px] pointer-events-none" style={{ background: "var(--color-accent)" }} />
     <div className="relative z-10 flex flex-col items-center animate-fade-in-up">
       <div className="flex items-center justify-center mb-6" style={{ animation: "pulse-glow 2.5s infinite ease-in-out" }}>
-        <img src="./logo.png" alt="ADE Logo" className="w-64 h-64 object-contain" />
+        <img src="./logo.png" alt="ADE Logo" className="h-[240px] w-[420px] max-w-[72vw] object-contain" />
       </div>
       <div className="flex flex-col items-center gap-2">
         <div className="text-xl font-bold tracking-tight text-fg">Starting ADE</div>
@@ -85,11 +101,13 @@ class PageErrorBoundaryInner extends React.Component<
     return { hasError: true, message: error instanceof Error ? error.message : String(error) };
   }
 
-  componentDidCatch(error: unknown): void {
-    console.error("page.crash", error);
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    console.error("page.crash", error, errorInfo, error?.stack);
     logRendererDebugEvent("renderer.page_boundary_crash", {
-      message: error instanceof Error ? error.message : String(error),
+      message: error?.message ?? String(error),
       route: window.location.hash || window.location.pathname,
+      componentStack: errorInfo.componentStack ?? null,
+      causeStack: error?.stack ?? null,
     });
   }
 
@@ -174,10 +192,90 @@ function guardedLazy(element: React.ReactElement): React.ReactElement {
   );
 }
 
+function isWorkRoutePath(pathname: string): boolean {
+  return pathname === "/work" || pathname.startsWith("/work/");
+}
+
+function PersistentWorkSurface({ active }: { active: boolean }) {
+  const projectHydrated = useAppStore((s) => s.projectHydrated);
+  const showWelcome = useAppStore((s) => s.showWelcome);
+  const project = useAppStore((s) => s.project);
+  const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Only fire the reveal once the surface is *actually* mounted with a
+  // project. On a cold `/work` boot the route renders before `projectHydrated`
+  // / `project.rootPath` settle; firing the reveal here would notify
+  // listeners about a surface that's still showing the loading fallback.
+  const hasActiveProject = Boolean(project?.rootPath);
+  const shouldReveal = active && projectHydrated && hasActiveProject && !showWelcome;
+  React.useEffect(() => {
+    if (!shouldReveal) return;
+    const raf = window.requestAnimationFrame(() => {
+      dispatchWorkSurfaceRevealed();
+    });
+    const settleTimer = window.setTimeout(() => {
+      dispatchWorkSurfaceRevealed();
+    }, 120);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(settleTimer);
+    };
+  }, [shouldReveal]);
+
+  React.useEffect(() => {
+    const node = workSurfaceRef.current;
+    // The `<div ref={workSurfaceRef}>` below is gated by the `projectHydrated`
+    // / `hasActiveProject` / `showWelcome` early returns, so on a cold `/work`
+    // boot the ref is null on the first run when `active` flips true. Re-run
+    // once those guards settle so the inert state lands on the real node.
+    if (!node) return;
+    if (active) {
+      node.removeAttribute("inert");
+    } else {
+      node.setAttribute("inert", "");
+    }
+  }, [active, projectHydrated, hasActiveProject, showWelcome]);
+
+  if (!projectHydrated) {
+    return active ? GuardLoadingFallback : null;
+  }
+
+  if (!hasActiveProject || showWelcome) {
+    return active ? <Navigate to="/project" replace /> : null;
+  }
+
+  return (
+    <div
+      ref={workSurfaceRef}
+      className="h-full min-h-0 w-full"
+      aria-hidden={!active}
+      style={!active
+        ? {
+          position: "absolute",
+          inset: 0,
+          zIndex: -1,
+          opacity: 0,
+          pointerEvents: "none",
+        }
+        : undefined}
+    >
+      <PageErrorBoundary>
+        <React.Suspense fallback={LazyFallback}>
+          <TerminalsPage />
+        </React.Suspense>
+      </PageErrorBoundary>
+    </div>
+  );
+}
+
 function ShellLayout() {
+  const location = useLocation();
+  const isWorkRoute = isWorkRoutePath(location.pathname);
+
   return (
     <AppShell>
-      <Outlet />
+      <PersistentWorkSurface active={isWorkRoute} />
+      {isWorkRoute ? null : <Outlet />}
     </AppShell>
   );
 }
@@ -202,19 +300,23 @@ export function App() {
   return (
     <Router>
       <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
+        <OnboardingBootstrap />
         <Routes>
           <Route path="/startup" element={<Navigate to="/work" replace />} />
           <Route element={<ShellLayout />}>
             <Route path="/" element={<Navigate to="/work" replace />} />
             <Route path="/project" element={guarded(<RunPage />)} />
             <Route path="/onboarding" element={guarded(<ProjectSetupPage />)} />
+            <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
             <Route path="/lanes" element={guardedLazy(<LanesPage />)} />
             <Route path="/files" element={guardedLazy(<FilesPage />)} />
-            <Route path="/work" element={guardedLazy(<TerminalsPage />)} />
+            <Route path="/work" element={null} />
             <Route path="/graph" element={guardedLazy(<WorkspaceGraphPage />)} />
             <Route path="/prs" element={guardedLazy(<PRsPage />)} />
+            <Route path="/review" element={guardedLazy(<ReviewPage />)} />
             <Route path="/history" element={guardedLazy(<HistoryPage />)} />
             <Route path="/automations" element={guardedLazy(<AutomationsPage />)} />
+            <Route path="/automations/templates" element={guardedLazy(<AutomationsTemplatesPage />)} />
             <Route path="/missions" element={guardedLazy(<MissionsPage />)} />
             <Route path="/cto" element={guardedLazy(<CtoPage />)} />
             <Route path="/settings" element={guardedLazy(<SettingsPage />)} />

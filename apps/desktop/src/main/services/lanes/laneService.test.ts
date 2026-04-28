@@ -1961,6 +1961,80 @@ describe("laneService missionId and laneRole", () => {
     }
   });
 
+  it("createChild with baseBranchRef tracks remote-only branch and bases lane on it", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-child-base-override-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-child-base-override", repoRoot });
+
+    const trackCalls: string[][] = [];
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "branch" && args[1] === "--track") {
+        trackCalls.push([...args]);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        // worktree add -b <new-branch> <path> <startPoint>
+        expect(args[2]).toBe("-b");
+        expect(args[5]).toBe("sha-feature-remote");
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/remote-only") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "fetch" && args[1] === "--prune" && args[2] === "--all") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/remotes/origin/feature/remote-only") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/feature/remote-only") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "feature/remote-only") {
+        return { exitCode: 0, stdout: "sha-feature-remote\n", stderr: "" };
+      }
+      if (args[0] === "push" && args[1] === "-u") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-child-base-override",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const lane = await service.createChild({
+      parentLaneId: "lane-parent",
+      name: "Override base child",
+      baseBranchRef: "origin/feature/remote-only",
+    });
+
+    expect(trackCalls).toEqual([["branch", "--track", "feature/remote-only", "origin/feature/remote-only"]]);
+    expect(lane.baseRef).toBe("feature/remote-only");
+    expect(lane.parentLaneId).toBe("lane-parent");
+  });
+
   it("setMissionOwnership updates missionId and laneRole on an existing lane", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-set-ownership-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
@@ -2162,5 +2236,91 @@ describe("laneService missionId and laneRole", () => {
     const lane = lanes.find((l) => l.id === "lane-parent");
     expect(lane?.missionId).toBe("mission-map-test");
     expect(lane?.laneRole).toBe("integration");
+  });
+});
+
+describe("laneService updateAppearance color uniqueness", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  async function setup() {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-color-uniqueness-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-color-uniqueness", repoRoot });
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-color-uniqueness",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+    return { db, service };
+  }
+
+  it("rejects an update when another active lane already uses the color", async () => {
+    const { db, service } = await setup();
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-parent"]);
+
+    expect(() =>
+      service.updateAppearance({ laneId: "lane-child", color: "#a78bfa" }),
+    ).toThrow(/already in use by lane "Parent"/);
+
+    const child = db.get<{ color: string | null }>("select color from lanes where id = ?", ["lane-child"]);
+    expect(child?.color).toBeNull();
+  });
+
+  it("treats hex comparison case-insensitively when detecting conflicts", async () => {
+    const { service, db } = await setup();
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-parent"]);
+
+    expect(() =>
+      service.updateAppearance({ laneId: "lane-child", color: "#A78BFA" }),
+    ).toThrow(/already in use/i);
+  });
+
+  it("allows assigning a color that no other active lane is using", async () => {
+    const { db, service } = await setup();
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-parent"]);
+
+    service.updateAppearance({ laneId: "lane-child", color: "#60a5fa" });
+
+    const child = db.get<{ color: string | null }>("select color from lanes where id = ?", ["lane-child"]);
+    expect(child?.color).toBe("#60a5fa");
+  });
+
+  it("ignores archived lanes when checking for color conflicts", async () => {
+    const { db, service } = await setup();
+    db.run(
+      "update lanes set color = ?, status = 'archived', archived_at = ? where id = ?",
+      ["#a78bfa", "2026-04-01T00:00:00.000Z", "lane-parent"],
+    );
+
+    service.updateAppearance({ laneId: "lane-child", color: "#a78bfa" });
+
+    const child = db.get<{ color: string | null }>("select color from lanes where id = ?", ["lane-child"]);
+    expect(child?.color).toBe("#a78bfa");
+  });
+
+  it("does not run the conflict probe when the color is unchanged (idempotent appearance updates)", async () => {
+    const { db, service } = await setup();
+    // Two active lanes share the same stored color (e.g. legacy data before
+    // the uniqueness check existed). Updating one of them with the SAME color
+    // should succeed because the new value equals lane.color.
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-parent"]);
+    db.run("update lanes set color = ? where id = ?", ["#a78bfa", "lane-child"]);
+
+    expect(() =>
+      service.updateAppearance({ laneId: "lane-child", color: "#a78bfa", icon: "star" }),
+    ).not.toThrow();
+
+    const child = db.get<{ color: string | null; icon: string | null }>(
+      "select color, icon from lanes where id = ?",
+      ["lane-child"],
+    );
+    expect(child?.color).toBe("#a78bfa");
+    expect(child?.icon).toBe("star");
   });
 });

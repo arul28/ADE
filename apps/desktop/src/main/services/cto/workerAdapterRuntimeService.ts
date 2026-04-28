@@ -5,8 +5,11 @@ import type {
   WorkerContinuationHandle,
   WorkerRuntimeSurface,
 } from "../../../shared/types";
+import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createAgentChatService } from "../chat/agentChatService";
+
+const ADE_CLI_WORKER_GUIDANCE = ADE_CLI_AGENT_GUIDANCE;
 
 type WorkerAdapterRuntimeServiceArgs = {
   fetchImpl?: typeof fetch;
@@ -199,7 +202,7 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
         : "";
       const sessionResult = await agentChatService!.runSessionTurn({
         sessionId,
-        text: `${instructions}${prompt}`,
+        text: `${ADE_CLI_WORKER_GUIDANCE}\n\n${instructions}${prompt}`,
         ...(toOptionalString(config.reasoningEffort) ? { reasoningEffort: toOptionalString(config.reasoningEffort) } : {}),
         timeoutMs,
       });
@@ -367,7 +370,7 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
       const result = await runCommand(spawnImpl, binary, args, {
         cwd: typeof config.cwd === "string" ? config.cwd : undefined,
         timeoutMs,
-        stdinText: `${instructions}${prompt}\n`,
+        stdinText: `${ADE_CLI_WORKER_GUIDANCE}\n\n${instructions}${prompt}\n`,
       });
       return {
         adapterType,

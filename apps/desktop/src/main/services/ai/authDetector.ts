@@ -9,6 +9,7 @@ import { spawnAsync } from "../shared/utils";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   resolveExecutableFromKnownLocations,
+  setPathEnvValue,
 } from "./cliExecutableResolver";
 import { getLocalProviderDefaultEndpoint, type LocalProviderFamily } from "../../../shared/modelRegistry";
 import type { AiLocalProviderConfigs } from "../../../shared/types";
@@ -192,7 +193,9 @@ async function refreshProcessPathFromShell(): Promise<void> {
     timeoutMs: 2_000,
   });
   if (nextPath) {
-    process.env.PATH = nextPath;
+    // Collapse any case-variant `Path` duplicates (Windows) so callers that
+    // read via getPathEnvValue see the updated value.
+    setPathEnvValue(process.env, nextPath);
   }
 }
 

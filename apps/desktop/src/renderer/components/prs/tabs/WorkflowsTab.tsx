@@ -762,7 +762,7 @@ export function WorkflowsTab({
           {([
             { id: "integration" as WorkflowCategory, label: "Integration", icon: GitBranch },
             { id: "queue" as WorkflowCategory, label: "Queue", icon: CaretRight },
-            { id: "rebase" as WorkflowCategory, label: "Rebase", icon: Sparkle },
+            { id: "rebase" as WorkflowCategory, label: "Rebase/Merge", icon: Sparkle },
           ]).map((category) => {
             const selected = activeCategory === category.id;
             const catTheme = CATEGORY_THEMES[category.id];

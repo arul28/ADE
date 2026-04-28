@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Stack graph sheet
-
 struct LaneStackGraphSheet: View {
   @Environment(\.dismiss) private var dismiss
 
@@ -29,7 +27,10 @@ struct LaneStackGraphSheet: View {
     let remaining = snapshots.filter { !seen.contains($0.lane.id) }
     let remainingIds = Set(remaining.map(\.lane.id))
     let roots = remaining
-      .filter { ($0.lane.parentLaneId == nil) || !remainingIds.contains($0.lane.parentLaneId!) }
+      .filter { snapshot in
+        guard let parentLaneId = snapshot.lane.parentLaneId else { return true }
+        return !remainingIds.contains(parentLaneId)
+      }
       .sorted { $0.lane.createdAt < $1.lane.createdAt }
     let groupedRemaining = roots.flatMap { root in
       [root] + visit(parentId: root.lane.id).filter { remainingIds.contains($0.lane.id) }
@@ -48,7 +49,7 @@ struct LaneStackGraphSheet: View {
                   HStack(spacing: 0) {
                     if snapshot.lane.stackDepth > 0 {
                       Rectangle()
-                        .fill(ADEColor.border.opacity(0.4))
+                        .fill(ADEColor.glassBorder)
                         .frame(width: CGFloat(snapshot.lane.stackDepth) * 12, height: 1)
                         .padding(.top, 10)
                     }
@@ -64,7 +65,7 @@ struct LaneStackGraphSheet: View {
                         .foregroundStyle(ADEColor.textPrimary)
                         .lineLimit(1)
                       if snapshot.lane.id == selectedLaneId {
-                        LaneTypeBadge(text: "Current", tint: ADEColor.accent)
+                        LaneMicroChip(icon: "checkmark.circle.fill", text: "Current", tint: ADEColor.accent)
                       }
                     }
                     Text(snapshot.lane.branchRef)
@@ -73,8 +74,7 @@ struct LaneStackGraphSheet: View {
                   }
                   Spacer()
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
                 .background(
                   RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(snapshot.lane.id == selectedLaneId ? ADEColor.accent.opacity(0.1) : ADEColor.surfaceBackground.opacity(0.6))

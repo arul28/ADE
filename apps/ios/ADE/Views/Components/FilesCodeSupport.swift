@@ -128,9 +128,14 @@ struct SyntaxToken: Identifiable, Equatable {
 
 struct SyntaxHighlighter {
   static func tokenize(_ text: String, as language: FilesLanguage) -> [SyntaxToken] {
+    let cacheKey = "tokens|\(language.rawValue)|\(text)"
+    if let cached = ADECodeRenderingCache.shared.tokens(for: cacheKey) {
+      return cached
+    }
+
     let nsText = text as NSString
     let rules = tokenRules(for: language)
-    return rules
+    let tokens = rules
       .flatMap { rule in
         regexMatches(pattern: rule.pattern, in: text).map { match in
           SyntaxToken(
@@ -146,9 +151,17 @@ struct SyntaxHighlighter {
         }
         return $0.range.location < $1.range.location
       }
+
+    ADECodeRenderingCache.shared.storeTokens(tokens, for: cacheKey)
+    return tokens
   }
 
   static func highlightedAttributedString(_ text: String, as language: FilesLanguage) -> AttributedString {
+    let cacheKey = "highlighted|\(language.rawValue)|\(text)"
+    if let cached = ADECodeRenderingCache.shared.highlightedString(for: cacheKey) {
+      return cached
+    }
+
     var attributed = AttributedString(text)
     attributed.font = .system(.body, design: .monospaced)
     attributed.foregroundColor = ADEColor.textPrimary
@@ -164,11 +177,12 @@ struct SyntaxHighlighter {
       attributed[attributeRange].font = token.role.font
     }
 
+    ADECodeRenderingCache.shared.storeHighlightedString(attributed, for: cacheKey)
     return attributed
   }
 
   private static func regexMatches(pattern: String, in text: String) -> [NSTextCheckingResult] {
-    guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+    guard let regex = ADECodeRenderingCache.shared.regex(for: pattern) else {
       return []
     }
     return regex.matches(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length))

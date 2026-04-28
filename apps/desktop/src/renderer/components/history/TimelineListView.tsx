@@ -84,7 +84,7 @@ export function TimelineListView({
   }
 
   return (
-    <div className="flex flex-1 flex-col overflow-y-auto">
+    <div className="flex flex-1 flex-col overflow-y-auto" data-tour="history.entries">
       {groups.map((group) => (
         <div key={group.label} className="flex flex-col gap-px">
           {/* Sticky group header */}
@@ -109,6 +109,7 @@ export function TimelineListView({
               <button
                 key={ev.id}
                 type="button"
+                data-tour="history.entry"
                 onClick={() => onSelectEvent(ev.id)}
                 className={cn(
                   "flex w-full items-center gap-2 border-l-2 border-l-transparent px-2 py-1.5",

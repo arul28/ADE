@@ -184,8 +184,10 @@ export function TimelineToolbar() {
         </div>
 
         {/* Column config */}
+        {/* tour anchor — closest viable: no dedicated export button; column/gear is the only row-1 config control. */}
         <button
           title="Column settings"
+          data-tour="history.export"
           onClick={() => toggleColumn("")}
           className={cn(
             "flex h-7 w-7 items-center justify-center rounded-md border border-transparent",
@@ -197,7 +199,7 @@ export function TimelineToolbar() {
       </div>
 
       {/* ── Row 2: Category · Status · Time · Lanes ────────── */}
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5" data-tour="history.filter">
         {/* Section label */}
         <span className="mr-1 font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
           Filter

@@ -94,7 +94,7 @@ export function buildKvDbBootstrapSql(options = {}) {
   const ftsBody = findFunctionBody(source, "function ensureUnifiedMemoriesSearchTable");
   const migrateBody = findFunctionBody(source, "function migrate");
   const statements = [
-    ...extractRunStatements(ftsBody, { firstOnly: true }),
+    extractRunStatements(ftsBody).at(-1),
     ...extractRunStatements(migrateBody),
   ]
     .map(normalizeStatement)

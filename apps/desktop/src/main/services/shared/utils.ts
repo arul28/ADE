@@ -9,6 +9,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { resolveCliSpawnInvocation } from "./processExecution";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -178,9 +179,11 @@ export function spawnAsync(
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     try {
-      const child = spawn(command, args, {
+      const invocation = resolveCliSpawnInvocation(command, args);
+      const child = spawn(invocation.command, invocation.args, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       let stdout = "";
       let stderr = "";

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160" fill="none">
+  <circle cx="90" cy="60" r="10" fill="none" stroke="var(--color-accent, #A78BFA)" stroke-width="2"/>
+  <circle cx="90" cy="110" r="10" fill="none" stroke="var(--color-accent, #A78BFA)" stroke-width="2"/>
+  <line x1="90" y1="70" x2="90" y2="100" stroke="var(--color-accent, #A78BFA)" stroke-width="2"/>
+  <circle cx="220" cy="85" r="10" fill="var(--color-accent, #A78BFA)"/>
+  <path d="M100 110 Q 160 110, 180 90 Q 210 80, 215 82" stroke="var(--color-accent, #A78BFA)" stroke-width="2" fill="none" stroke-dasharray="3 4"/>
+  <text x="140" y="60" font-family="var(--font-mono, monospace)" font-size="11" fill="var(--color-muted-fg, #908FA0)">main</text>
+  <text x="140" y="130" font-family="var(--font-mono, monospace)" font-size="11" fill="var(--color-muted-fg, #908FA0)">lane</text>
+</svg>

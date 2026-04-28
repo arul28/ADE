@@ -11,13 +11,17 @@ import {
 } from "@phosphor-icons/react";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
-  PrFile, PrActionRun, PrActivityEvent, AiReviewSummary, PrReviewThread,
+  PrFile, PrCommit, PrActionRun, PrActivityEvent, AiReviewSummary, PrReviewThread,
   LaneSummary, MergeMethod, LandResult,
   IssueInventorySnapshot,
   PipelineSettings,
   PrConvergenceState,
   PrConvergenceStatePatch,
 } from "../../../../shared/types";
+import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
+import type { PaletteKind } from "../shared/PrCommandPalettes";
+import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
+import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef } from "./PrDetailTimelineRails";
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
@@ -30,9 +34,48 @@ import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
 import { describePrTargetDiff } from "../shared/laneBranchTargets";
 import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { usePrs } from "../state/PrsContext";
+import { modifierKeyLabel } from "../../../lib/platform";
 
 // ---- Sub-tab type ----
-type DetailTab = "overview" | "convergence" | "files" | "checks" | "activity";
+type DetailTab = PrDetailRouteTab;
+const DETAIL_TAB_STORAGE_KEY = "ade:prs:detailTabs:v1";
+
+function isDetailTab(value: unknown): value is DetailTab {
+  return value === "overview" || value === "convergence" || value === "files" || value === "checks" || value === "activity";
+}
+
+function isPrsRouteRuntime(): boolean {
+  try {
+    return window.location.pathname === "/prs" || window.location.hash.startsWith("#/prs");
+  } catch {
+    return false;
+  }
+}
+
+function readStoredDetailTab(prId: string): DetailTab | null {
+  if (!isPrsRouteRuntime()) return null;
+  try {
+    const raw = window.localStorage.getItem(DETAIL_TAB_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const value = parsed?.[prId];
+    return isDetailTab(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredDetailTab(prId: string, tab: DetailTab): void {
+  if (!isPrsRouteRuntime()) return;
+  try {
+    const raw = window.localStorage.getItem(DETAIL_TAB_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    parsed[prId] = tab;
+    window.localStorage.setItem(DETAIL_TAB_STORAGE_KEY, JSON.stringify(parsed));
+  } catch {
+    // localStorage can be unavailable in private/test environments.
+  }
+}
 
 // ---- Avatar component ----
 function Avatar({ user, size = 20 }: { user: { login: string; avatarUrl?: string | null }; size?: number }) {
@@ -384,6 +427,8 @@ type PrDetailPaneProps = {
   onOpenRebaseTab?: (laneId?: string) => void;
   queueContext?: { groupId: string; label?: string | null } | null;
   onOpenQueueView?: (groupId: string) => void;
+  initialDetailTab?: DetailTab | null;
+  onDetailTabChange?: (tab: DetailTab) => void;
 };
 
 export function PrDetailPane({
@@ -401,6 +446,8 @@ export function PrDetailPane({
   onOpenRebaseTab,
   queueContext,
   onOpenQueueView,
+  initialDetailTab,
+  onDetailTabChange,
 }: PrDetailPaneProps) {
   const {
     convergenceStatesByPrId,
@@ -414,13 +461,133 @@ export function PrDetailPane({
     setResolverModel,
     setResolverReasoningLevel,
     setResolverPermissionMode,
+    prsTimelineRailsEnabled,
+    dismissedAiSummaries,
+    timelineFiltersByPrId,
+    detailAiSummary,
+    detailReviewThreads: ctxReviewThreads,
+    detailDeployments,
+    viewerLogin,
+    setTimelineFilters,
+    setAiSummaryDismissed,
+    regeneratePrAiSummary,
   } = usePrs();
-  const [activeTab, setActiveTab] = React.useState<DetailTab>("overview");
+  const [activeTab, setActiveTabState] = React.useState<DetailTab>(
+    () => initialDetailTab ?? readStoredDetailTab(pr.id) ?? "overview",
+  );
   const [detail, setDetail] = React.useState<PrDetail | null>(null);
   const [files, setFiles] = React.useState<PrFile[]>([]);
+  const [commits, setCommits] = React.useState<PrCommit[]>([]);
   const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>([]);
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
+  const timelineRailsRef = React.useRef<PrDetailTimelineRailsRef | null>(null);
+
+  const setActiveTab = React.useCallback((tab: DetailTab) => {
+    setActiveTabState(tab);
+    writeStoredDetailTab(pr.id, tab);
+    onDetailTabChange?.(tab);
+  }, [onDetailTabChange, pr.id]);
+
+  React.useEffect(() => {
+    const next = initialDetailTab ?? readStoredDetailTab(pr.id) ?? "overview";
+    setActiveTabState(next);
+    if (initialDetailTab) {
+      writeStoredDetailTab(pr.id, initialDetailTab);
+    }
+  }, [initialDetailTab, pr.id]);
+
+  React.useEffect(() => {
+    const onTourTab = (event: Event) => {
+      const tab = (event as CustomEvent<DetailTab>).detail;
+      if (tab === "overview" || tab === "convergence" || tab === "files" || tab === "checks" || tab === "activity") {
+        setActiveTab(tab);
+      }
+    };
+    window.addEventListener("ade:tour-pr-detail-tab", onTourTab);
+    return () => window.removeEventListener("ade:tour-pr-detail-tab", onTourTab);
+  }, [setActiveTab]);
+
+  const deepLinkState = React.useMemo(() => {
+    try {
+      const parsed = parsePrsRouteState({ search: window.location.search, hash: window.location.hash });
+      return { eventId: parsed.eventId, threadId: parsed.threadId, commitSha: parsed.commitSha };
+    } catch {
+      return { eventId: null, threadId: null, commitSha: null };
+    }
+  }, [pr.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const timelineFilters: PrTimelineFilters = React.useMemo(
+    () => timelineFiltersByPrId?.[pr.id] ?? DEFAULT_PR_TIMELINE_FILTERS,
+    [timelineFiltersByPrId, pr.id],
+  );
+  const handleTimelineFiltersChange = React.useCallback(
+    (next: PrTimelineFilters) => setTimelineFilters?.(pr.id, next),
+    [pr.id, setTimelineFilters],
+  );
+  const reviewThreadsForTimeline = React.useMemo(
+    () => ((ctxReviewThreads?.length ?? 0) > 0 ? ctxReviewThreads! : reviewThreads),
+    [ctxReviewThreads, reviewThreads],
+  );
+  const aiSummaryDismissedForPr = Boolean(dismissedAiSummaries?.[pr.id]);
+  const handleDismissAiSummary = React.useCallback(() => {
+    setAiSummaryDismissed?.(pr.id, true);
+  }, [pr.id, setAiSummaryDismissed]);
+  const handleRegenerateAiSummary = React.useCallback(() => {
+    void regeneratePrAiSummary?.(pr.id);
+  }, [pr.id, regeneratePrAiSummary]);
+
+  // Page-level keyboard shortcuts scoped to the Timeline+Rails overview.
+  // Only attach listeners when the flag is on AND the overview tab is active.
+  React.useEffect(() => {
+    if (!prsTimelineRailsEnabled) return;
+    const CHORD_WINDOW_MS = 800;
+    const chordPalettes: Record<string, PaletteKind> = { c: "commit", t: "thread", f: "file" };
+    let lastKey = "";
+    let lastKeyAt = 0;
+    const handler = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (activeTab !== "overview") return;
+
+      const rails = timelineRailsRef.current;
+      if (!rails) return;
+
+      const now = Date.now();
+      const inChord = lastKey === "g" && now - lastKeyAt < CHORD_WINDOW_MS;
+
+      if (inChord) {
+        const palette = chordPalettes[event.key];
+        if (palette) {
+          event.preventDefault();
+          rails.openPalette(palette);
+        }
+        lastKey = "";
+        lastKeyAt = 0;
+        return;
+      }
+
+      if (event.key === "g") {
+        lastKey = "g";
+        lastKeyAt = now;
+        return;
+      }
+
+      if (event.key === "[") {
+        event.preventDefault();
+        rails.prevUnresolvedThread();
+      } else if (event.key === "]") {
+        event.preventDefault();
+        rails.nextUnresolvedThread();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [prsTimelineRailsEnabled, activeTab]);
   const [aiSummary, setAiSummary] = React.useState<AiReviewSummary | null>(null);
   const [aiSummaryBusy, setAiSummaryBusy] = React.useState(false);
   const [showIssueResolverModal, setShowIssueResolverModal] = React.useState(false);
@@ -567,9 +734,10 @@ export function PrDetailPane({
   const loadDetail = React.useCallback(async () => {
     const requestId = ++detailLoadSeqRef.current;
     try {
-      const [d, f, a, act, threads] = await Promise.all([
+      const [d, f, c, a, act, threads] = await Promise.all([
         window.ade.prs.getDetail(pr.id).catch(() => null),
         window.ade.prs.getFiles(pr.id).catch(() => []),
+        (window.ade.prs.getCommits?.(pr.id) ?? Promise.resolve([])).catch(() => []),
         window.ade.prs.getActionRuns(pr.id).catch(() => []),
         window.ade.prs.getActivity(pr.id).catch(() => []),
         window.ade.prs.getReviewThreads(pr.id).catch(() => []),
@@ -577,6 +745,7 @@ export function PrDetailPane({
       if (requestId !== detailLoadSeqRef.current) return;
       setDetail(d);
       setFiles(f);
+      setCommits(c);
       setActionRuns(a);
       setActivity(act);
       setReviewThreads(threads);
@@ -863,6 +1032,9 @@ export function PrDetailPane({
   // ---------------------------------------------------------------------------
 
   const syncInventory = React.useCallback(async () => {
+    if (pr.state === "merged" || pr.state === "closed") {
+      return null;
+    }
     const requestId = ++inventoryLoadSeqRef.current;
     try {
       const [snapshot, freshChecks] = await Promise.all([
@@ -881,15 +1053,15 @@ export function PrDetailPane({
     } catch {
       return null;
     }
-  }, [checks, pr.id]);
+  }, [checks, pr.id, pr.state]);
 
   const refreshDetailSurface = React.useCallback(async (options: { includeInventory?: boolean } = {}) => {
     const tasks: Array<Promise<unknown>> = [onRefresh(), loadDetail()];
-    if (options.includeInventory) {
+    if (options.includeInventory && pr.state !== "merged" && pr.state !== "closed") {
       tasks.push(syncInventory());
     }
     await Promise.all(tasks);
-  }, [loadDetail, onRefresh, syncInventory]);
+  }, [loadDetail, onRefresh, pr.state, syncInventory]);
 
   const handleRefresh = React.useCallback(async () => {
     try {
@@ -911,7 +1083,19 @@ export function PrDetailPane({
       source: item.source === "unknown" ? "human" : item.source,
       dismissReason: item.dismissReason,
       agentSessionId: item.agentSessionId,
+      url: item.url,
     })) as PanelIssueItem[];
+  }, []);
+
+  const handleOpenInventorySource = React.useCallback((item: PanelIssueItem) => {
+    if (!item.url) return;
+    try {
+      const parsed = new URL(item.url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+      void window.ade.app.openExternal(parsed.toString());
+    } catch {
+      // ignore malformed URLs
+    }
   }, []);
 
   const mapConvergenceStatus = React.useCallback((snapshot: IssueInventorySnapshot | null): PanelConvergence => {
@@ -940,14 +1124,14 @@ export function PrDetailPane({
         if (runId !== convergenceTabLoadSeqRef.current) return; // stale
         applyConvergenceRuntime(runtime);
       }).catch(() => undefined);
-      void syncInventory();
+      if (pr.state !== "merged" && pr.state !== "closed") void syncInventory();
       void window.ade.prs.pipelineSettingsGet(capturedPrId).then((s) => {
         if (runId !== convergenceTabLoadSeqRef.current) return; // stale
         setPipelineSettings(s);
         pipelineSettingsRef.current = s;
       }).catch(() => undefined);
     }
-  }, [activeTab, applyConvergenceRuntime, loadConvergenceState, syncInventory, pr.id]);
+  }, [activeTab, applyConvergenceRuntime, loadConvergenceState, syncInventory, pr.id, pr.state]);
 
   // Auto-converge: hybrid polling (checks complete + comment stabilization)
   // After agent session completes, polls every 60s. Triggers next round when:
@@ -1294,13 +1478,28 @@ export function PrDetailPane({
             const settings = pipelineSettingsRef.current;
             if (settings.autoMerge) {
               // Verify all checks are passing
-              const allChecksPassed = freshChecks.every(
+              const hasCheckData = freshChecks.length > 0;
+              const allChecksPassed = hasCheckData && freshChecks.every(
                 (c: PrCheck) =>
                   c.conclusion === "success" ||
                   c.conclusion === "neutral" ||
                   c.conclusion === "skipped",
               );
-              if (allChecksPassed) {
+              if (!hasCheckData) {
+                const reason = "Auto-merge paused because GitHub returned no check data for this PR.";
+                setActionError(reason);
+                setConvergencePauseReason(reason);
+                setAutoConvergeWaitState({ phase: "paused", reason });
+                saveConvergenceRuntime({
+                  status: "paused",
+                  pollerStatus: "paused",
+                  activeSessionId: null,
+                  activeHref: convergenceSessionHref,
+                  pauseReason: reason,
+                  errorMessage: null,
+                  lastPausedAt: new Date().toISOString(),
+                });
+              } else if (allChecksPassed) {
                 try {
                   // Map pipeline merge method to MergeMethod for the land call
                   const method: MergeMethod =
@@ -1695,7 +1894,8 @@ export function PrDetailPane({
     activity: COLORS.warning,
   };
 
-  const newIssueCount = inventorySnapshot?.items.filter(i => i.state === "new").length ?? 0;
+  const isTerminalPr = pr.state === "merged" || pr.state === "closed";
+  const newIssueCount = isTerminalPr ? 0 : (inventorySnapshot?.items.filter(i => i.state === "new").length ?? 0);
 
   // Merge convergence checks with action runs so the Path to Merge panel
   // shows the same unified view as the CI / Checks tab.  Raw check-runs
@@ -1833,6 +2033,7 @@ export function PrDetailPane({
             {queueContext && onOpenQueueView ? (
               <button
                 type="button"
+                data-tour="prs.stackingIndicator"
                 onClick={() => onOpenQueueView(queueContext.groupId)}
                 style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}
                 title={queueContext.label ?? "Open queue"}
@@ -1878,7 +2079,31 @@ export function PrDetailPane({
 
       {/* ===== TAB CONTENT ===== */}
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-        {activeTab === "overview" && (
+        {activeTab === "overview" && prsTimelineRailsEnabled && (
+          <TimelineRailsOverview
+            ref={timelineRailsRef}
+            pr={pr}
+            detail={detail}
+            status={status}
+            checks={checks}
+            reviews={reviews}
+            comments={comments}
+            activity={activity}
+            commits={commits}
+            files={files}
+            reviewThreads={reviewThreadsForTimeline}
+            deployments={detailDeployments}
+            viewerLogin={viewerLogin}
+            filters={timelineFilters}
+            onFiltersChange={handleTimelineFiltersChange}
+            aiSummary={detailAiSummary}
+            aiSummaryDismissed={aiSummaryDismissedForPr}
+            onDismissAiSummary={handleDismissAiSummary}
+            onRegenerateAiSummary={handleRegenerateAiSummary}
+            deepLink={deepLinkState}
+          />
+        )}
+        {activeTab === "overview" && !prsTimelineRailsEnabled && (
           <OverviewTab
             pr={pr} detail={detail} status={status} checks={checks} actionRuns={actionRuns} reviews={reviews} comments={comments}
             detailBusy={detailBusy} aiSummary={aiSummary} aiSummaryBusy={aiSummaryBusy}
@@ -1908,6 +2133,8 @@ export function PrDetailPane({
           />
         )}
         {activeTab === "convergence" && (
+          // tour anchor — closest viable: PrConvergencePanel surfaces the rebase/conflict simulation UI.
+          <div data-tour="prs.conflictSim" style={{ display: "contents" }}>
           <PrConvergencePanel
             prNumber={pr.githubPrNumber}
             prTitle={pr.title}
@@ -1923,6 +2150,7 @@ export function PrDetailPane({
             autoConverge={autoConverge}
             pipelineSettings={pipelineSettings}
             waitState={autoConvergeWaitState}
+            terminalState={pr.state === "merged" || pr.state === "closed" ? pr.state : null}
             onPipelineSettingsChange={(partial) => {
               const prev = pipelineSettings;
               const next = { ...pipelineSettings, ...partial };
@@ -1943,6 +2171,7 @@ export function PrDetailPane({
             onMarkDismissed={handleMarkDismissed}
             onMarkEscalated={handleMarkEscalated}
             onResetInventory={handleResetInventory}
+            onOpenSource={handleOpenInventorySource}
             onViewAgentSession={(sessionId) => {
               const href = convergenceSessionHref
                 ?? (sessionId.startsWith("http://") || sessionId.startsWith("https://") || sessionId.startsWith("/")
@@ -1988,11 +2217,13 @@ export function PrDetailPane({
               });
             }}
           />
+          </div>
         )}
         {activeTab === "files" && (
           <FilesTab files={files} expandedFile={expandedFile} setExpandedFile={setExpandedFile} />
         )}
         {activeTab === "checks" && (
+          <div data-tour="prs.checksPanel" style={{ display: "contents" }}>
           <ChecksTab
             checks={checks} actionRuns={actionRuns}
             actionBusy={actionBusy}
@@ -2000,6 +2231,7 @@ export function PrDetailPane({
             showIssueResolverAction={issueResolutionAvailability.hasAnyActionableIssues}
             onOpenIssueResolver={handleOpenIssueResolver}
           />
+          </div>
         )}
         {activeTab === "activity" && (
           <ActivityTab
@@ -2121,12 +2353,13 @@ function CommentMenu({ url }: { url: string | null }) {
         <DotsThreeVertical size={16} weight="bold" />
       </button>
       {open && (
-        <div style={{
-          position: "absolute", top: "100%", right: 0, marginTop: 4,
-          background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}`,
-          borderRadius: 10, padding: 4, minWidth: 160, zIndex: 20,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-        }}>
+        <div
+          className="ade-liquid-glass-menu"
+          style={{
+            position: "absolute", top: "100%", right: 0, marginTop: 4,
+            padding: 4, minWidth: 160, zIndex: 20,
+          }}
+        >
           <button
             type="button"
             onClick={() => { void window.ade.app.openExternal(url); setOpen(false); }}
@@ -2609,7 +2842,7 @@ function OverviewTab(props: OverviewTabProps) {
             <textarea
               value={props.commentDraft}
               onChange={(e) => props.setCommentDraft(e.target.value)}
-              placeholder="Leave a comment... Supports Markdown. Cmd+Enter to submit."
+              placeholder={`Leave a comment... Supports Markdown. ${modifierKeyLabel}+Enter to submit.`}
               onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void props.onAddComment(); }}
               style={{
                 width: "100%", minHeight: 80, resize: "vertical", padding: "14px 14px 36px",
@@ -2824,7 +3057,7 @@ function OverviewTab(props: OverviewTabProps) {
                 </button>
 
                 {pr.state === "open" && (
-                  <button type="button" disabled={actionBusy} onClick={() => void props.onClose()} style={dangerButton({ height: 40, opacity: actionBusy ? 0.4 : 1, padding: "0 16px" })}>
+                  <button type="button" data-tour="prs.closeBtn" disabled={actionBusy} onClick={() => void props.onClose()} style={dangerButton({ height: 40, opacity: actionBusy ? 0.4 : 1, padding: "0 16px" })}>
                     <XCircle size={14} /> Close
                   </button>
                 )}
@@ -3428,7 +3661,7 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
           <textarea
             value={commentDraft}
             onChange={(e) => setCommentDraft(e.target.value)}
-            placeholder="Write a comment... (Cmd+Enter to submit)"
+            placeholder={`Write a comment... (${modifierKeyLabel}+Enter to submit)`}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void onAddComment(); }}
             style={{
               flex: 1, minHeight: 60, resize: "vertical", padding: 12,

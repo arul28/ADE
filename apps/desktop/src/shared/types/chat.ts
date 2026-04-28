@@ -4,7 +4,6 @@
 
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
-import type { ComputerUsePolicy } from "./computerUseArtifacts";
 import type { FileDiff } from "./git";
 import type { DelegationContract } from "./orchestrator";
 
@@ -79,6 +78,9 @@ export type AgentChatFileRef = {
   type: "file" | "image";
 };
 
+/** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
+export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
+
 /** Infer whether a file path points to an image or a generic file. */
 export function inferAttachmentType(
   filePath: string,
@@ -130,7 +132,7 @@ export type AgentChatEvent =
       attachments?: AgentChatFileRef[];
       turnId?: string;
       steerId?: string;
-      deliveryState?: "queued" | "delivered" | "failed";
+      deliveryState?: "queued" | "delivered" | "inline" | "failed";
       processed?: boolean;
     }
   | {
@@ -392,7 +394,7 @@ export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "tea
 export type AgentChatInteractionMode = "default" | "plan";
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
 export type AgentChatSurface = "work" | "automation";
-export type AgentChatCursorConfigValue = string | boolean;
+export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {
   value: string;
   label: string;
@@ -483,10 +485,10 @@ export type AgentChatSession = {
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
-  computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
+  archivedAt?: string | null;
   threadId?: string;
   /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
   requestedCwd?: string | null;
@@ -514,22 +516,24 @@ export type AgentChatSessionSummary = {
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
-  computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
   startedAt: string;
   endedAt: string | null;
+  archivedAt?: string | null;
   lastActivityAt: string;
   lastOutputPreview: string | null;
   summary: string | null;
   awaitingInput?: boolean;
   threadId?: string;
+  requestedCwd?: string | null;
 };
 
 export type AgentChatTranscriptEntry = {
@@ -604,13 +608,26 @@ export type AgentChatCreateArgs = {
   surface?: AgentChatSurface;
   automationId?: string | null;
   automationRunId?: string | null;
-  computerUse?: ComputerUsePolicy | null;
   requestedCwd?: string;
 };
 
 export type AgentChatHandoffArgs = {
   sourceSessionId: string;
   targetModelId: ModelId;
+  /**
+   * When set (including `null` for "no extra reasoning"), combined with the target
+   * model to pick a valid reasoning tier. When omitted, inherits from the source
+   * session the same way as a legacy handoff.
+   */
+  reasoningEffort?: string | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+  codexSandbox?: AgentChatCodexSandbox;
+  codexConfigSource?: AgentChatCodexConfigSource;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  permissionMode?: AgentChatPermissionMode;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
 };
 
 export type AgentChatHandoffResult = {
@@ -621,6 +638,39 @@ export type AgentChatHandoffResult = {
 export type AgentChatListArgs = {
   laneId?: string;
   includeAutomation?: boolean;
+};
+
+export type AgentChatSuggestLaneNameArgs = {
+  /** Lane the user is launching from (worktree path for the naming model call). */
+  laneId: string;
+  /** User prompt for the parallel chat launch (used to derive a short lane name prefix). */
+  prompt: string;
+  /** Registry model ID used to run the naming call (e.g. first selected model). */
+  modelId: string;
+};
+
+export type AgentChatParallelLaunchStateStatus =
+  | "creating_lanes"
+  | "sending"
+  | "completed"
+  | "cleanup_pending";
+
+export type AgentChatParallelLaunchState = {
+  parentLaneId: string;
+  createdLaneIds: string[];
+  sentLaneIds: string[];
+  status: AgentChatParallelLaunchStateStatus;
+  updatedAt: string;
+  lastError?: string | null;
+};
+
+export type AgentChatParallelLaunchStateArgs = {
+  projectRoot: string;
+  parentLaneId: string;
+};
+
+export type AgentChatSetParallelLaunchStateArgs = AgentChatParallelLaunchStateArgs & {
+  state: AgentChatParallelLaunchState | null;
 };
 
 export type AgentChatGetSummaryArgs = {
@@ -659,6 +709,27 @@ export type AgentChatEditSteerArgs = {
   text: string;
 };
 
+export type AgentChatDispatchSteerMode = "inline" | "interrupt";
+
+export type AgentChatDispatchSteerArgs = {
+  sessionId: string;
+  steerId: string;
+  mode: AgentChatDispatchSteerMode;
+};
+
+export type AgentChatDispatchSteerResult = {
+  dispatchedAt: number | null;
+};
+
+export type AgentChatCancelDispatchedSteerArgs = {
+  sessionId: string;
+  steerId: string;
+};
+
+export type AgentChatCancelDispatchedSteerResult = {
+  cancelled: boolean;
+};
+
 export type AgentChatInterruptArgs = {
   sessionId: string;
 };
@@ -684,9 +755,18 @@ export type AgentChatRespondToInputArgs = {
 
 export type AgentChatModelsArgs = {
   provider: AgentChatProvider;
+  activateRuntime?: boolean;
 };
 
 export type AgentChatDisposeArgs = {
+  sessionId: string;
+};
+
+export type AgentChatDeleteArgs = {
+  sessionId: string;
+};
+
+export type AgentChatArchiveArgs = {
   sessionId: string;
 };
 
@@ -705,7 +785,6 @@ export type AgentChatUpdateSessionArgs = {
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
-  computerUse?: ComputerUsePolicy | null;
 };
 
 export type AgentChatSlashCommand = {

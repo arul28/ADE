@@ -4,7 +4,7 @@
 
 - ADE is a local-first desktop application for orchestrating coding agents, missions, lanes, PR workflows, and proof/artifact capture.
 - The main product lives in `apps/desktop` and is built with Electron, React, and TypeScript.
-- The ADE MCP server lives in `apps/mcp-server` and shares core services with the desktop app.
+- The ADE CLI lives in `apps/ade-cli` and shares core services with the desktop app.
 - State is primarily stored under `.ade/` inside the active project, with runtime metadata in SQLite and machine-local files under `.ade/secrets`, `.ade/cache`, and `.ade/artifacts`.
 
 ## Playbooks
@@ -16,7 +16,7 @@
 - Preserve existing desktop app patterns before introducing new abstractions.
 - Prefer fixing the underlying service or shared type rather than layering renderer-only workarounds on top.
 - Keep IPC contracts, preload types, shared types, and renderer usage in sync whenever an interface changes.
-- For ADE MCP changes, verify both headless MCP mode and the desktop socket-backed MCP path.
+- For ADE CLI changes, verify both headless mode and the desktop socket-backed ADE RPC path.
 - For computer-use changes, treat policy enforcement and artifact ownership as hard requirements, not prompt guidance.
 
 ## Validation
@@ -26,10 +26,10 @@
   - `npm --prefix apps/desktop run test`
   - `npm --prefix apps/desktop run build`
   - `npm --prefix apps/desktop run lint`
-- MCP checks:
-  - `npm --prefix apps/mcp-server run typecheck`
-  - `npm --prefix apps/mcp-server run test`
-  - `npm --prefix apps/mcp-server run build`
+- ADE CLI checks:
+  - `npm --prefix apps/ade-cli run typecheck`
+  - `npm --prefix apps/ade-cli run test`
+  - `npm --prefix apps/ade-cli run build`
 - Run the smallest relevant subset first when iterating, then finish with the broader checks that cover the touched surfaces.
 
 ## Terminology
@@ -49,6 +49,30 @@
 - Do not store secrets in plaintext project files when an encrypted store already exists.
 - Do not leave policy enforcement in prompts alone when a code path can enforce it directly.
 
+## Releases via `asc` (App Store Connect CLI)
+
+Release flows live behind `asc` (installed at `/opt/homebrew/bin/asc`). There's no manual IPA/cert shuffling — prefer the CLI end-to-end and consult the `asc-*` skills (`asc-xcode-build`, `asc-testflight-orchestration`, `asc-release-flow`, `asc-signing-setup`, `asc-submission-health`). Auth is keychain-backed (`asc doctor` to verify) with the API key at `~/.apple/asc/keys/AuthKey_*.p8` and `~/.asc/config.json`.
+
+iOS signing gotchas (don't repeat these):
+
+- The iOS project uses **automatic** signing (`CODE_SIGN_STYLE = Automatic`, `DEVELOPMENT_TEAM = VQ372F39G6`). `apps/ios/ExportOptions.plist` ships with `signingStyle = manual` + named profiles for CI/archive determinism, but local ad-hoc exports need `signingStyle = automatic` instead (drop the per-bundle profile map).
+- `asc signing fetch` only downloads provisioning profiles and the `.cer` — it does **not** include the private key. Don't expect it to make local signing work on its own.
+- Local exports need the App Store Connect API key passed to `xcodebuild` so it can create/fetch missing Distribution assets on demand. Add these flags (in addition to `-allowProvisioningUpdates`):
+  ```
+  -authenticationKeyPath ~/.apple/asc/keys/AuthKey_WRRA7YU7RA.p8 \
+  -authenticationKeyID WRRA7YU7RA \
+  -authenticationKeyIssuerID 4d523a6c-e68c-49b2-8560-34e59786d8e3
+  ```
+  (Pull the current values from `~/.asc/config.json` rather than hard-coding.) This works even when the local keychain has only the Development cert, because xcodebuild provisions the Distribution cert via ASC.
+- For the full flow, `asc publish testflight --app <APP_ID> --project apps/ios/ADE.xcodeproj --scheme ADE --version <x.y.z> --build-number <N> --export-options <auto-plist> --group "<Beta Group>" --wait` does archive + export + upload + distribute in one shot.
+- After upload, `processingState = VALID` alone isn't enough for TestFlight distribution — you also need `usesNonExemptEncryption` answered (`asc builds update --build-id <ID> --uses-non-exempt-encryption=false`) and the build assigned to a beta group (`asc publish testflight --build <ID> --group "<Group>"`).
+
+Desktop release:
+
+- Tag a commit on `main` with `vX.Y.Z` and push the tag. `.github/workflows/release.yml` triggers, runs the `release-core.yml` job, and publishes a draft GitHub Release with `.dmg`, `.zip`, blockmap, and `latest-mac.yml` assets. The workflow requires the tagged commit to be an ancestor of `origin/main`.
+- Draft releases stay unpublished until you flip them (`gh release edit vX.Y.Z --draft=false` or the UI). Don't publish silently.
+- Main is protected by a ruleset: admin bypass is required for direct pushes, and the "strict required status checks" rule makes GitHub's "Merge pull request" button reject merges that use a non-linear history (even when the branch already contains `main`). `gh pr merge --admin` hits the same block; merging locally and pushing (admin bypass) is the fallback.
+
 ## Cursor Cloud specific instructions
 
 ### Environment overview
@@ -57,6 +81,24 @@
 - Each app under `apps/` has its own independent `node_modules` and `package-lock.json` (no npm workspaces).
 - Validation commands are documented in the "Validation" section above.
 - The desktop test suite (265 test files) is large; CI shards it. For local iteration, run targeted tests (e.g. `npm --prefix apps/desktop run test:unit`) or a single file rather than the full suite.
+
+### Inspecting the local Electron desktop app with Codex Computer Use on macOS
+
+- To inspect ADE desktop parity locally with Codex Computer Use, launch the dev app from the worktree with `npm run dev` in `apps/desktop`.
+- Treat the Electron process spawned by that command as the source of truth, even if the window title or bundle branding says "ADE". In Codex Computer Use, call `list_apps` / `get_app_state` and prefer the `Electron` app entry (`App=com.github.Electron`) over the installed `ADE` app entry (`App=com.ade.desktop`).
+- Confirm the Codex Computer Use app state shows an ADE window whose HTML content URL contains `localhost:5173`. That is the local dev Electron surface.
+- The first `Electron` window exposed to Codex Computer Use may be DevTools (`Developer Tools - http://localhost:5173/`). Press `Cmd+\`` in the `Electron` app to cycle to the main ADE window before interacting with the app.
+- On first launch, the dev app may open to `localhost:5173/#/project` with no project selected. Open the recent `ADE /Users/admin/Projects/ADE` project inside that dev window before comparing desktop parity.
+- Do not use Safari as the desktop parity reference. ADE desktop parity should be checked against the Electron app surface unless the task explicitly asks for renderer-only Vite behavior.
+- Keep the dev terminal logs visible while inspecting. Useful confirmation lines include `dev launcher using http://localhost:5173`, `DevTools listening on ws://127.0.0.1:9222`, `window.loading_url`, and `renderer.route_change`.
+
+### Pairing the iOS simulator with the desktop dev app on macOS
+
+- When the user wants the ADE iOS app paired to desktop, run the desktop dev app from the active lane's `apps/desktop`, but set `ADE_PROJECT_ROOT` to the ADE project root the phone should sync with. For this local setup, that is commonly `ADE_PROJECT_ROOT=/Users/arul/ADE npm run dev`, even when the code under test is in `/Users/arul/ADE/.ade/worktrees/...`.
+- Do not interact with an already-open Xcode GUI window unless the user explicitly says it is the ADE iOS project. Other projects may be open. Prefer `xcodebuild` and `xcrun simctl` for building, installing, launching, and inspecting the simulator.
+- The desktop sync PIN can be read or configured through the dev Electron preload once the `localhost:5173` page is running. Use the CDP endpoint printed by the dev app (`http://127.0.0.1:9222/json/list`) and evaluate `window.ade.sync.getStatus()` to verify `pairingPinConfigured`, `pairingPin`, the sync port, and `connectedPeers`.
+- A successful simulator pairing is not just the Settings screen showing "Connected". Also verify desktop `connectedPeers > 0`, inspect the simulator database under `xcrun simctl get_app_container <UDID> com.ade.ios data`, and check recent simulator logs for `incoming message failed`, `FOREIGN KEY`, or changeset errors.
+- If pairing reaches WebSocket but the phone reports `FOREIGN KEY constraint failed` while applying `changeset_batch`, treat it as an iOS sync/materialization bug until disproven. Desktop CRR tables may not enforce the same foreign keys as the iOS SQLite schema, so valid remote CRDT batches can arrive in an order that local foreign-key checks reject.
 
 ### Running the Electron desktop app on Linux
 

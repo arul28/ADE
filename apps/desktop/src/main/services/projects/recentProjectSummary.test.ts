@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { toRecentProjectSummary } from "./recentProjectSummary";
+import { inspectRecentProject, toRecentProjectSummary } from "./recentProjectSummary";
 
 function createLogger() {
   return {
@@ -122,14 +122,17 @@ describe("toRecentProjectSummary", () => {
     });
     db.close();
 
-    const summary = toRecentProjectSummary({
+    const inspection = inspectRecentProject({
       rootPath: projectRoot,
       displayName: "demo",
       lastOpenedAt: now,
     });
+    const summary = inspection.summary;
 
     expect(summary.exists).toBe(true);
     expect(summary.laneCount).toBe(3);
+    expect(inspection.projectId).toBe("proj-recent");
+    expect(inspection.defaultBaseRef).toBe("main");
   });
 
   it("falls back to git worktree metadata when no ADE lane registry exists", () => {

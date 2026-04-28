@@ -129,7 +129,6 @@ function looksLikeLowSignalMissionNoise(text: string): boolean {
   if (!trimmed.length) return true;
   if (/^streaming(?:\.\.\.)?$/i.test(trimmed)) return true;
   if (/^usage$/i.test(trimmed)) return true;
-  if (/^mcp:/i.test(trimmed)) return true;
   if (/^[\-dlcbps][rwx\-@+]{8,}/i.test(trimmed)) return true;
   if (/^[A-Z0-9 .:_()/-]{24,}$/.test(trimmed)) return true;
   // Single-token strings under 24 chars that look like identifiers or noise

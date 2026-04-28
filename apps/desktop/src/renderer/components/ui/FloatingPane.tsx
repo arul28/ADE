@@ -39,9 +39,13 @@ export function FloatingPane({
   onDragEnd,
   onDrop,
   onDragLeave,
+  onPaneMouseDown,
+  onPaneContextMenu,
   minimizeBehavior = "css",
   className,
   bodyClassName,
+  dataTour,
+  laneAccentColor,
   children
 }: {
   id: string;
@@ -61,9 +65,14 @@ export function FloatingPane({
   onDragEnd?: () => void;
   onDrop?: () => void;
   onDragLeave?: () => void;
+  onPaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onPaneContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
   minimizeBehavior?: "css" | "native";
   className?: string;
   bodyClassName?: string;
+  dataTour?: string;
+  /** Lane hex (or CSS color); enables `--lane-accent` and subtle header/border chrome when truthy. */
+  laneAccentColor?: string | null;
   children: React.ReactNode;
 }) {
   const handleDragStart = (e: React.DragEvent) => {
@@ -96,12 +105,19 @@ export function FloatingPane({
   const dropZoneStyle = dropEdge ? getDropZoneStyle(dropEdge) : null;
   const usesCssMinimize = minimizeBehavior === "css";
   const hideBody = usesCssMinimize && minimized;
+  const laneAccent = laneAccentColor?.trim() ? laneAccentColor.trim() : null;
+  const laneAccentStyle: React.CSSProperties | undefined = laneAccent
+    ? ({ "--lane-accent": laneAccent } as React.CSSProperties)
+    : undefined;
 
   return (
     <div
       data-pane-id={id}
+      data-tour={dataTour}
+      style={laneAccentStyle}
       className={cn(
         "ade-floating-pane relative",
+        laneAccent && "ade-floating-pane--lane-accent",
         usesCssMinimize && minimized && "minimized",
         isDragging && "dragging",
         isDropTarget && !dropZoneStyle && "drop-target",
@@ -110,6 +126,8 @@ export function FloatingPane({
       onDragOver={isDraggable ? handleDragOver : undefined}
       onDrop={isDraggable ? handleDrop : undefined}
       onDragLeave={isDraggable ? handleDragLeave : undefined}
+      onMouseDown={onPaneMouseDown}
+      onContextMenu={onPaneContextMenu}
     >
       <div
         className={cn("ade-floating-pane-header", minimized && "ade-floating-pane-header-minimized")}

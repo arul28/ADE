@@ -27,6 +27,7 @@ import type {
   AutomationTriggerType,
   NormalizedLinearIssue,
   PrSummary,
+  RunAdeActionConfig,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
@@ -43,14 +44,55 @@ import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { BudgetCapProvider } from "../../../shared/types/usage";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/providerOrchestratorAdapter";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
-import { escapeRegExp, globToRegExp, isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
+import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
+import { terminateProcessTree } from "../shared/processExecution";
 import { getDefaultModelDescriptor, getModelById, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 
 type CronTask = {
   stop: () => void;
 };
 
-type TriggerContext = {
+/**
+ * Contract for the shared ADE-action registry. Implementations bridge to the
+ * same allowlist and service map that the RPC server's `run_ade_action` uses
+ * so that automations and CTO calls cannot diverge.
+ */
+export type AutomationAdeActionRegistry = {
+  isAllowed(domain: string, action: string): boolean;
+  getService(domain: string): Record<string, unknown> | null;
+  listDomains(): string[];
+  listActions(domain: string): string[];
+};
+
+type TriggerIssueContext = {
+  number: number;
+  title: string;
+  body?: string;
+  author?: string;
+  labels?: string[];
+  repo?: string;
+  url?: string;
+};
+
+type TriggerPrContext = TriggerIssueContext & {
+  baseBranch?: string;
+  headBranch?: string;
+  draft?: boolean;
+  merged?: boolean;
+};
+
+type TriggerLinearIssueContext = {
+  id: string;
+  title?: string;
+  team?: string;
+  project?: string;
+  assignee?: string;
+  state?: string;
+  previousState?: string;
+  labels?: string[];
+};
+
+export type TriggerContext = {
   triggerType: AutomationTriggerType;
   laneId?: string;
   laneName?: string;
@@ -77,6 +119,13 @@ type TriggerContext = {
   changedFields?: string[];
   draftState?: "draft" | "ready" | "any";
   summary?: string;
+  repo?: string;
+  /** Structured GitHub issue payload for `github.issue_*` triggers. */
+  issue?: TriggerIssueContext;
+  /** Structured GitHub PR payload for `github.pr_*` triggers. */
+  pr?: TriggerPrContext;
+  /** Structured Linear payload for `linear.*` triggers. */
+  linear?: { issue: TriggerLinearIssueContext };
 };
 
 type WatchedFileRoot = {
@@ -185,41 +234,39 @@ type AutomationPendingPublishRow = {
 type ProjectConfigService = ReturnType<typeof createProjectConfigService>;
 
 const AUTOMATION_SCOPE = "automation-rule";
-const AUTOMATION_TASK_KEY_PREFIX = "automation-rule";
-const AUTOMATION_TOOL_BASELINE = buildClaudeReadOnlyWorkerAllowedTools("ade");
-const PUBLISH_CAPABLE_TOOL_FAMILIES = new Set<AutomationToolFamily>(["github", "linear", "browser", "external-mcp"]);
+const AUTOMATION_TOOL_BASELINE = buildClaudeReadOnlyWorkerAllowedTools();
+const PUBLISH_CAPABLE_TOOL_FAMILIES = new Set<AutomationToolFamily>(["github", "linear", "browser"]);
 const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
   repo: ["Read", "Glob", "Grep", "LS"],
   git: ["Bash", "bash"],
   tests: ["Bash", "bash"],
-  github: ["Bash", "bash", "mcp__github__get_pull_request", "mcp__github__create_pull_request", "mcp__github__add_issue_comment"],
-  linear: ["mcp__linear__get_issue", "mcp__linear__save_comment", "mcp__linear__save_issue"],
+  github: ["Bash", "bash", "gh", "ade"],
+  linear: ["ade", "linear"],
   browser: [
     "agent-browser",
-    "mcp__ade__get_environment_info",
-    "mcp__ade__launch_app",
-    "mcp__ade__interact_gui",
-    "mcp__ade__screenshot_environment",
-    "mcp__ade__record_environment",
-    "mcp__playwright__browser_navigate",
-    "mcp__playwright__browser_snapshot",
-    "mcp__playwright__browser_click",
-    "mcp__playwright__browser_fill_form",
-    "mcp__playwright__browser_type",
-    "mcp__playwright__browser_take_screenshot",
+    "get_environment_info",
+    "launch_app",
+    "interact_gui",
+    "screenshot_environment",
+    "record_environment",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_fill_form",
+    "browser_type",
+    "browser_take_screenshot",
   ],
-  memory: ["mcp__ade__memory_search", "mcp__ade__memory_add"],
+  memory: ["memory_search", "memory_add"],
   mission: [
-    "mcp__ade__get_mission",
-    "mcp__ade__get_run_graph",
-    "mcp__ade__stream_events",
-    "mcp__ade__get_timeline",
-    "mcp__ade__get_pending_messages",
-    "mcp__ade__report_status",
-    "mcp__ade__report_result",
-    "mcp__ade__ask_user",
+    "get_mission",
+    "get_run_graph",
+    "stream_events",
+    "get_timeline",
+    "get_pending_messages",
+    "report_status",
+    "report_result",
+    "ask_user",
   ],
-  "external-mcp": [],
 };
 
 function safeJsonParseRecord(raw: string | null): Record<string, unknown> | null {
@@ -258,8 +305,15 @@ function dedupeStrings(values: Array<string | null | undefined>): string[] {
 }
 
 
-function normalizeTriggerType(type: AutomationTriggerType): AutomationTriggerType {
+export function normalizeTriggerType(type: AutomationTriggerType): AutomationTriggerType {
   if (type === "commit") return "git.commit";
+  // Legacy `git.pr_*` names now alias to the canonical `github.pr_*` names so
+  // pre-existing rules continue to match new runtime events without a
+  // config-file migration.
+  if (type === "git.pr_opened") return "github.pr_opened";
+  if (type === "git.pr_updated") return "github.pr_updated";
+  if (type === "git.pr_merged") return "github.pr_merged";
+  if (type === "git.pr_closed") return "github.pr_closed";
   return type;
 }
 
@@ -267,11 +321,154 @@ function triggerTypesMatch(ruleType: AutomationTriggerType, runtimeType: Automat
   return normalizeTriggerType(ruleType) === normalizeTriggerType(runtimeType);
 }
 
+/**
+ * Walk a dotted path (e.g. `trigger.issue.number` or `issue.number`) against a
+ * TriggerContext and return the raw value, or undefined if any segment is
+ * missing. Pure — safe to use outside the service closure (and in tests).
+ */
+export function readTriggerPath(trigger: TriggerContext, pathExpr: string): unknown {
+  const raw = pathExpr.trim();
+  if (!raw) return undefined;
+  const segments = (raw.startsWith("trigger.") ? raw.slice("trigger.".length) : raw).split(".").filter(Boolean);
+  let cursor: unknown = trigger as unknown;
+  for (const segment of segments) {
+    if (cursor == null || typeof cursor !== "object") return undefined;
+    cursor = (cursor as Record<string, unknown>)[segment];
+  }
+  return cursor;
+}
+
+/**
+ * Recursively substitute `{{trigger.*}}` placeholders inside a JSON-ish args
+ * tree with values read from the trigger context. Strings that are wholly a
+ * single placeholder (`"{{trigger.issue.number}}"`) are replaced with the raw
+ * value (preserves number/boolean types); strings with embedded placeholders
+ * are templated. Pure — safe to use outside the service closure.
+ */
+export function resolvePlaceholders(node: unknown, trigger: TriggerContext): unknown {
+  if (node == null) return node;
+  if (Array.isArray(node)) return node.map((entry) => resolvePlaceholders(entry, trigger));
+  if (typeof node === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      out[key] = resolvePlaceholders(value, trigger);
+    }
+    return out;
+  }
+  if (typeof node === "string") {
+    const wholeMatch = /^\{\{\s*(trigger\.[^}\s]+)\s*\}\}$/.exec(node);
+    if (wholeMatch) {
+      const value = readTriggerPath(trigger, wholeMatch[1]!);
+      return value === undefined ? node : value;
+    }
+    return node.replace(/\{\{\s*(trigger\.[^}\s]+)\s*\}\}/g, (_, expr) => {
+      const value = readTriggerPath(trigger, String(expr));
+      if (value == null) return "";
+      if (typeof value === "string") return value;
+      try { return JSON.stringify(value); } catch { return String(value); }
+    });
+  }
+  return node;
+}
+
 
 function listMatches(expected: string[] | undefined, actual: string[] | undefined): boolean {
   if (!expected?.length) return true;
   const actualSet = normalizeSet(actual);
   return expected.some((entry) => actualSet.has(entry.trim().toLowerCase()));
+}
+
+/**
+ * Decide whether an incoming trigger event (context + lane metadata) matches a
+ * rule's filter. Pure — no closure state, safe to use outside the service.
+ * Semantics:
+ *   - `labels[]` is a subset check (rule.labels ⊆ event.labels).
+ *   - `titleRegex` / `bodyRegex` are case-insensitive; invalid patterns drop the match.
+ *   - `authors[]` prefers `trigger.issue.author` / `trigger.pr.author` over `trigger.author`.
+ */
+export function triggerMatches(
+  ruleTrigger: AutomationTrigger,
+  trigger: TriggerContext,
+  laneBranch: string | undefined,
+  laneName: string | undefined,
+): boolean {
+  if (!triggerTypesMatch(ruleTrigger.type, trigger.triggerType)) return false;
+
+  const canonicalType = normalizeTriggerType(ruleTrigger.type);
+  const isPrCanonical =
+    canonicalType === "github.pr_opened"
+    || canonicalType === "github.pr_updated"
+    || canonicalType === "github.pr_closed"
+    || canonicalType === "github.pr_commented"
+    || canonicalType === "github.pr_review_submitted";
+  if (canonicalType === "github.pr_merged") {
+    const expectedTarget = (ruleTrigger.targetBranch ?? ruleTrigger.branch ?? "").trim();
+    if (expectedTarget && !matchesGlob(expectedTarget, trigger.targetBranch)) return false;
+  } else if (ruleTrigger.branch?.trim()) {
+    const branchToMatch = isPrCanonical ? trigger.branch : laneBranch;
+    if (!matchesGlob(ruleTrigger.branch, branchToMatch)) return false;
+  }
+  if (ruleTrigger.event?.trim() && ruleTrigger.event.trim() !== (trigger.eventName ?? "").trim()) return false;
+
+  const triggerAuthor = (trigger.issue?.author ?? trigger.pr?.author ?? trigger.author ?? "").trim().toLowerCase();
+  const expectedAuthors = [
+    ...(ruleTrigger.authors ?? []),
+    ...(ruleTrigger.author ? [ruleTrigger.author] : []),
+  ]
+    .map((a) => a.trim().toLowerCase())
+    .filter(Boolean);
+  if (expectedAuthors.length) {
+    if (!triggerAuthor || !expectedAuthors.includes(triggerAuthor)) return false;
+  }
+
+  const eventLabels = normalizeSet(trigger.issue?.labels ?? trigger.pr?.labels ?? trigger.labels ?? []);
+  if (ruleTrigger.labels?.length) {
+    const expected = ruleTrigger.labels.map((l) => l.trim().toLowerCase()).filter(Boolean);
+    if (!expected.every((l) => eventLabels.has(l))) return false;
+  }
+
+  if (ruleTrigger.paths?.length) {
+    const paths = trigger.paths ?? [];
+    if (!paths.some((entry) => ruleTrigger.paths?.some((expected) => matchesGlob(expected, entry)))) return false;
+  }
+  if (ruleTrigger.keywords?.length) {
+    const haystack = `${trigger.summary ?? ""} ${(trigger.keywords ?? []).join(" ")}`.toLowerCase();
+    if (!ruleTrigger.keywords.some((entry) => haystack.includes(entry.trim().toLowerCase()))) return false;
+  }
+
+  const titleHaystack = trigger.issue?.title ?? trigger.pr?.title ?? "";
+  const bodyHaystack = trigger.issue?.body ?? trigger.pr?.body ?? "";
+  if (ruleTrigger.titleRegex?.trim()) {
+    try {
+      if (!new RegExp(ruleTrigger.titleRegex, "i").test(titleHaystack)) return false;
+    } catch {
+      return false;
+    }
+  }
+  if (ruleTrigger.bodyRegex?.trim()) {
+    try {
+      if (!new RegExp(ruleTrigger.bodyRegex, "i").test(bodyHaystack)) return false;
+    } catch {
+      return false;
+    }
+  }
+
+  if (ruleTrigger.repo?.trim()) {
+    const repoCandidate = (trigger.issue?.repo ?? trigger.pr?.repo ?? trigger.repo ?? "").trim();
+    if (!matchesGlob(ruleTrigger.repo, repoCandidate)) return false;
+  }
+
+  if (ruleTrigger.namePattern?.trim() && !matchesGlob(ruleTrigger.namePattern, laneName)) return false;
+  if (ruleTrigger.project?.trim() && !matchesGlob(ruleTrigger.project, trigger.linear?.issue?.project ?? trigger.project)) return false;
+  if (ruleTrigger.team?.trim() && !matchesGlob(ruleTrigger.team, trigger.linear?.issue?.team ?? trigger.team)) return false;
+  if (ruleTrigger.assignee?.trim() && !matchesGlob(ruleTrigger.assignee, trigger.linear?.issue?.assignee ?? trigger.assignee)) return false;
+  if (ruleTrigger.stateTransition?.trim() && (trigger.stateTransition ?? "").trim() !== ruleTrigger.stateTransition.trim()) return false;
+  if (!listMatches(ruleTrigger.changedFields, trigger.changedFields)) return false;
+  if (ruleTrigger.draftState && ruleTrigger.draftState !== "any" && trigger.draftState && ruleTrigger.draftState !== trigger.draftState) {
+    return false;
+  }
+  if (ruleTrigger.activeHours && !isWithinActiveHours(ruleTrigger.activeHours)) return false;
+  return true;
 }
 
 function parseCronPart(field: string, value: number, min: number, max: number): boolean {
@@ -333,9 +530,11 @@ function normalizeRunStatus(value: string, fallback: AutomationRunStatus): Autom
     value === "succeeded" ||
     value === "failed" ||
     value === "cancelled" ||
-    value === "paused" ||
-    value === "needs_review"
+    value === "paused"
   ) return value;
+  // Legacy `needs_review` rows fold into `succeeded` now that the review
+  // gate has been removed from the UI/runtime.
+  if (value === "needs_review") return "succeeded";
   return fallback;
 }
 
@@ -398,10 +597,6 @@ function computeConfidence(rule: AutomationRule, procedureCount: number): Automa
   };
 }
 
-function primaryTrigger(rule: AutomationRule): AutomationTrigger {
-  return normalizedRuleTriggers(rule)[0] ?? { type: "manual" };
-}
-
 function normalizedRuleTriggers(rule: AutomationRule): AutomationTrigger[] {
   if (Array.isArray(rule.triggers) && rule.triggers.length > 0) return rule.triggers;
   const legacyTrigger = (rule as AutomationRule & { trigger?: AutomationTrigger }).trigger;
@@ -410,20 +605,42 @@ function normalizedRuleTriggers(rule: AutomationRule): AutomationTrigger[] {
   return [{ type: "manual" }];
 }
 
-function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
-  const triggers = normalizedRuleTriggers(rule);
+function canonicalizeTriggerForRuntime(trigger: AutomationTrigger): AutomationTrigger {
+  const canonical = normalizeTriggerType(trigger.type);
+  return canonical === trigger.type ? trigger : { ...trigger, type: canonical };
+}
+
+function deriveIncludeProjectContext(rule: AutomationRule): boolean {
+  if (typeof rule.includeProjectContext === "boolean") return rule.includeProjectContext;
+  const memoryMode = rule.memory?.mode;
+  if (memoryMode && memoryMode !== "none") return true;
+  if ((rule.contextSources ?? []).length > 0) return true;
+  return false;
+}
+
+export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
+  const triggers = normalizedRuleTriggers(rule).map(canonicalizeTriggerForRuntime);
   const legacyActions = Array.isArray(rule.legacy?.actions)
     ? rule.legacy.actions
     : Array.isArray((rule as AutomationRule & { actions?: AutomationAction[] }).actions)
       ? (rule as AutomationRule & { actions?: AutomationAction[] }).actions ?? []
       : [];
   const primary = triggers[0] ?? { type: "manual" as const };
+  const includeProjectContext = deriveIncludeProjectContext(rule);
   const rawExecution = rule.execution ?? (legacyActions.length > 0
     ? { kind: "built-in" as const, builtIn: { actions: legacyActions } }
     : { kind: "mission" as const });
+  const sharedLaneFields = {
+    ...(rawExecution.laneMode ? { laneMode: rawExecution.laneMode } : {}),
+    ...(rawExecution.laneNamePreset ? { laneNamePreset: rawExecution.laneNamePreset } : {}),
+    ...(rawExecution.laneNamePreset === "custom" && rawExecution.laneNameTemplate
+      ? { laneNameTemplate: rawExecution.laneNameTemplate }
+      : {}),
+  };
   const normalizedExecution: AutomationExecution = rawExecution.kind === "built-in"
     ? {
         kind: "built-in",
+        ...sharedLaneFields,
         ...(rawExecution.targetLaneId ? { targetLaneId: rawExecution.targetLaneId } : {}),
         builtIn: {
           actions: rawExecution.builtIn?.actions?.length ? rawExecution.builtIn.actions : legacyActions,
@@ -432,15 +649,28 @@ function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
     : rawExecution.kind === "agent-session"
       ? {
           kind: "agent-session",
+          ...sharedLaneFields,
           ...(rawExecution.targetLaneId ? { targetLaneId: rawExecution.targetLaneId } : {}),
           ...(rawExecution.session ? { session: rawExecution.session } : {}),
         }
       : {
           kind: "mission",
+          ...sharedLaneFields,
           ...(rawExecution.targetLaneId ? { targetLaneId: rawExecution.targetLaneId } : {}),
           ...(rawExecution.mission ? { mission: rawExecution.mission } : {}),
         };
   const outputDisposition = rule.outputs?.disposition ?? "comment-only";
+  // Silently drop per-rule budget/review fields that are no longer surfaced
+  // in the UI. We keep them in the on-disk YAML so a downgrade doesn't lose
+  // data, but the in-memory runtime shape zeroes them out.
+  const sanitizedGuardrails = { ...(rule.guardrails ?? {}) } as AutomationRule["guardrails"] & {
+    budgetCapUsd?: number;
+    maxSpendUsd?: number;
+    budgetUsd?: number;
+  };
+  delete (sanitizedGuardrails as { budgetCapUsd?: number }).budgetCapUsd;
+  delete (sanitizedGuardrails as { maxSpendUsd?: number }).maxSpendUsd;
+  delete (sanitizedGuardrails as { budgetUsd?: number }).budgetUsd;
   return {
     ...rule,
     enabled: rule.enabled !== false,
@@ -449,16 +679,21 @@ function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
     executor: { mode: "automation-bot" },
     reviewProfile: rule.reviewProfile ?? "quick",
     toolPalette: rule.toolPalette?.length ? rule.toolPalette : ["repo", "memory", "mission"],
-    contextSources: rule.contextSources?.length ? rule.contextSources : [{ type: "project-memory" }, { type: "procedures" }],
-    memory: rule.memory ?? { mode: "automation-plus-project", ruleScopeKey: rule.id },
-    guardrails: rule.guardrails ?? {},
+    contextSources: includeProjectContext
+      ? (rule.contextSources?.length ? rule.contextSources : [{ type: "project-memory" }, { type: "procedures" }])
+      : [],
+    memory: includeProjectContext
+      ? (rule.memory ?? { mode: "automation-plus-project", ruleScopeKey: rule.id })
+      : { mode: "none" },
+    guardrails: sanitizedGuardrails,
+    includeProjectContext,
     outputs: {
       disposition: outputDisposition,
       createArtifact: rule.outputs?.createArtifact ?? true,
       ...(rule.outputs?.notificationChannel ? { notificationChannel: rule.outputs.notificationChannel } : {}),
     },
     verification: {
-      verifyBeforePublish: rule.verification?.verifyBeforePublish === true,
+      verifyBeforePublish: Boolean(rule.verification?.verifyBeforePublish),
       mode: rule.verification?.mode ?? "intervention",
     },
     billingCode: rule.billingCode?.trim() || `auto:${rule.id}`,
@@ -474,37 +709,40 @@ function resolveExecutionKind(rule: AutomationRule): AutomationExecution["kind"]
   return rule.execution?.kind ?? ((rule.legacy?.actions?.length ?? 0) > 0 ? "built-in" : "mission");
 }
 
-function summarizeTrigger(trigger: AutomationTrigger): string {
-  if (trigger.type === "schedule" && trigger.cron) return `schedule ${trigger.cron}`;
-  if ((trigger.type === "commit" || trigger.type === "git.commit" || trigger.type === "git.push") && trigger.branch) {
-    return `${normalizeTriggerType(trigger.type)}:${trigger.branch}`;
-  }
-  if ((trigger.type === "git.pr_opened" || trigger.type === "git.pr_updated" || trigger.type === "git.pr_closed") && trigger.branch) {
-    return `${trigger.type}:${trigger.branch}`;
-  }
-  if (trigger.type === "git.pr_merged" && (trigger.targetBranch || trigger.branch)) {
-    return `git.pr_merged:${trigger.targetBranch ?? trigger.branch}`;
-  }
-  if ((trigger.type === "lane.created" || trigger.type === "lane.archived") && trigger.namePattern) {
-    return `${trigger.type}:${trigger.namePattern}`;
-  }
-  if (trigger.type === "file.change" && trigger.paths?.length) {
-    return `file.change:${trigger.paths.join(",")}`;
-  }
-  if (trigger.type.startsWith("linear.") && (trigger.project || trigger.team || trigger.assignee)) {
-    return `${trigger.type}:${[trigger.project, trigger.team, trigger.assignee].filter(Boolean).join("/")}`;
-  }
-  if (trigger.type === "github-webhook" && trigger.event) return `github:${trigger.event}`;
-  if (trigger.type === "webhook" && trigger.event) return `webhook:${trigger.event}`;
-  return trigger.type;
-}
-
 function summarizeLegacyActions(actions: AutomationAction[]): string {
   if (!actions.length) return "mission dispatch";
   return actions.map((action) => action.type).join(", ");
 }
 
-function mapMissionStatus(status: string, verificationRequired: boolean): AutomationRunStatus {
+/**
+ * Map a lane-name preset to a `{{trigger.*}}` template string. `"custom"`
+ * is a sentinel — callers should pass the user's `laneNameTemplate` instead.
+ */
+export function presetToTemplate(preset: string | undefined | null): string {
+  switch (preset) {
+    case "issue-title":
+      return "{{trigger.issue.title}}";
+    case "issue-num-title":
+      return "Issue #{{trigger.issue.number}} – {{trigger.issue.title}}";
+    case "pr-title-author":
+      return "{{trigger.pr.title}} – {{trigger.pr.author}}";
+    default:
+      return "";
+  }
+}
+
+function resolveTemplateString(template: string | undefined | null, trigger: TriggerContext): string {
+  const resolved = resolvePlaceholders(template ?? "", trigger);
+  if (typeof resolved === "string") return resolved.trim();
+  if (resolved == null) return "";
+  try {
+    return JSON.stringify(resolved).trim();
+  } catch {
+    return String(resolved).trim();
+  }
+}
+
+function mapMissionStatus(status: string, _verificationRequired: boolean): AutomationRunStatus {
   switch (status) {
     case "queued":
     case "planning":
@@ -512,19 +750,19 @@ function mapMissionStatus(status: string, verificationRequired: boolean): Automa
     case "in_progress":
       return "running";
     case "intervention_required":
-      return verificationRequired ? "needs_review" : "paused";
+      return "paused";
     case "completed":
-      return verificationRequired ? "needs_review" : "succeeded";
+      return "succeeded";
     case "failed":
       return "failed";
     case "canceled":
       return "cancelled";
     default:
-      return verificationRequired ? "needs_review" : "running";
+      return "running";
   }
 }
 
-function mapWorkerStatus(status: string, verificationRequired: boolean): AutomationRunStatus {
+function mapWorkerStatus(status: string, _verificationRequired: boolean): AutomationRunStatus {
   switch (status) {
     case "queued":
     case "deferred":
@@ -532,11 +770,11 @@ function mapWorkerStatus(status: string, verificationRequired: boolean): Automat
     case "running":
       return "running";
     case "completed":
-      return verificationRequired ? "needs_review" : "succeeded";
+      return "succeeded";
     case "cancelled":
       return "cancelled";
     case "skipped":
-      return verificationRequired ? "needs_review" : "paused";
+      return "paused";
     case "failed":
     default:
       return "failed";
@@ -653,6 +891,7 @@ export function createAutomationService({
   memoryBriefingService,
   proceduralLearningService,
   budgetCapService,
+  adeActionRegistry,
   onEvent
 }: {
   db: AdeDb;
@@ -669,6 +908,13 @@ export function createAutomationService({
   memoryBriefingService?: ReturnType<typeof createMemoryBriefingService>;
   proceduralLearningService?: ReturnType<typeof createProceduralLearningService>;
   budgetCapService?: ReturnType<typeof createBudgetCapService>;
+  /**
+   * Registry that resolves `ade-action` automation steps to a concrete
+   * (domain, action) callable. Wired up from main.ts so that both the RPC
+   * server and the automation runtime share the same allowlist and service
+   * instances. See `apps/desktop/src/main/services/adeActions/registry.ts`.
+   */
+  adeActionRegistry?: AutomationAdeActionRegistry | null;
   onEvent?: (payload: {
     type: "runs-updated" | "webhook-status-updated" | "ingress-updated";
     automationId?: string;
@@ -686,6 +932,7 @@ export function createAutomationService({
   let proceduralLearningServiceRef = proceduralLearningService;
   let budgetCapServiceRef = budgetCapService;
   let workerHeartbeatServiceRef: ReturnType<typeof createWorkerHeartbeatService> | null = null;
+  let adeActionRegistryRef: AutomationAdeActionRegistry | null = adeActionRegistry ?? null;
   let ingressStatusRef: AutomationIngressStatus = {
     githubRelay: {
       configured: false,
@@ -899,11 +1146,13 @@ export function createAutomationService({
     return Math.max(0, Number(row?.max_position ?? 0)) + 1;
   };
 
-  const computeAllowedToolList = (rule: AutomationRule, options: { publishPhase: boolean }): string[] => {
+  const computeAllowedToolList = (rule: AutomationRule, options: { publishPhase: boolean }, action?: AutomationAction | null): string[] => {
     const families = rule.toolPalette.filter((family) => options.publishPhase || !PUBLISH_CAPABLE_TOOL_FAMILIES.has(family));
     const explicit = dedupeStrings([
       ...(rule.permissionConfig?.cli?.allowedTools ?? []),
       ...(rule.permissionConfig?.providers?.allowedTools ?? []),
+      ...(action?.permissionConfig?.cli?.allowedTools ?? []),
+      ...(action?.permissionConfig?.providers?.allowedTools ?? []),
     ]);
     return dedupeStrings([
       ...AUTOMATION_TOOL_BASELINE,
@@ -912,10 +1161,14 @@ export function createAutomationService({
     ]);
   };
 
-  const buildPermissionConfig = (rule: AutomationRule, options: { publishPhase: boolean }) => {
-    const allowedTools = computeAllowedToolList(rule, options);
-    const cli = rule.permissionConfig?.cli;
-    const providers = rule.permissionConfig?.providers;
+  const buildPermissionConfig = (rule: AutomationRule, options: { publishPhase: boolean }, action?: AutomationAction | null) => {
+    const allowedTools = computeAllowedToolList(rule, options, action);
+    const cli = action?.permissionConfig?.cli ?? rule.permissionConfig?.cli;
+    const inProcess = action?.permissionConfig?.inProcess ?? rule.permissionConfig?.inProcess;
+    const providers = {
+      ...(rule.permissionConfig?.providers ?? {}),
+      ...(action?.permissionConfig?.providers ?? {}),
+    };
     return {
       ...(cli
         ? {
@@ -931,17 +1184,27 @@ export function createAutomationService({
               allowedTools,
             },
           }),
-      ...(rule.permissionConfig?.inProcess ? { inProcess: rule.permissionConfig.inProcess } : {}),
-      ...(rule.permissionConfig?.externalMcp ? { externalMcp: rule.permissionConfig.externalMcp } : {}),
+      ...(inProcess ? { inProcess } : {}),
       providers: {
-        claude: rule.verification.mode === "dry-run" ? "plan" : (providers?.claude ?? "edit"),
-        codex: rule.verification.mode === "dry-run" ? "plan" : (providers?.codex ?? "edit"),
-        opencode: rule.verification.mode === "dry-run" ? "plan" : (providers?.opencode ?? "edit"),
-        codexSandbox: providers?.codexSandbox ?? "workspace-write",
-        ...(providers?.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
+        claude: rule.verification.mode === "dry-run" ? "plan" : (providers.claude ?? "edit"),
+        codex: rule.verification.mode === "dry-run" ? "plan" : (providers.codex ?? "default"),
+        cursor: rule.verification.mode === "dry-run" ? "plan" : (providers.cursor ?? "edit"),
+        opencode: rule.verification.mode === "dry-run" ? "plan" : (providers.opencode ?? "edit"),
+        codexSandbox: providers.codexSandbox ?? "workspace-write",
+        ...(providers.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
         allowedTools,
       },
     };
+  };
+
+  const resolveProviderPermissionMode = (
+    providerGroup: string,
+    permissionConfig: ReturnType<typeof buildPermissionConfig>,
+  ) => {
+    if (providerGroup === "claude") return permissionConfig.providers?.claude ?? "edit";
+    if (providerGroup === "codex") return permissionConfig.providers?.codex ?? "default";
+    if (providerGroup === "cursor") return permissionConfig.providers?.cursor ?? "edit";
+    return permissionConfig.providers?.opencode ?? "edit";
   };
 
   const requiresPublishGate = (rule: AutomationRule): boolean =>
@@ -975,6 +1238,10 @@ export function createAutomationService({
     ...(trigger.changedFields?.length ? { changedFields: trigger.changedFields } : {}),
     ...(trigger.draftState ? { draftState: trigger.draftState } : {}),
     ...(trigger.summary ? { summary: trigger.summary } : {}),
+    ...(trigger.repo ? { repo: trigger.repo } : {}),
+    ...(trigger.issue ? { issue: trigger.issue } : {}),
+    ...(trigger.pr ? { pr: trigger.pr } : {}),
+    ...(trigger.linear ? { linear: trigger.linear } : {}),
   });
 
   const insertRun = (args: {
@@ -1311,8 +1578,10 @@ export function createAutomationService({
   const buildMissionPrompt = (args: {
     rule: AutomationRule;
     trigger: TriggerContext;
+    executionLaneId?: string | null;
     briefing: Awaited<ReturnType<NonNullable<typeof memoryBriefingServiceRef>["buildBriefing"]>> | null;
   }): string => {
+    const laneId = args.executionLaneId ?? args.trigger.laneId ?? null;
     const lines: string[] = [
       `Automation rule: ${args.rule.name}`,
       `Mode: ${args.rule.mode}`,
@@ -1321,11 +1590,17 @@ export function createAutomationService({
       `Trigger: ${args.trigger.triggerType}`,
     ];
     if (args.trigger.commitSha) lines.push(`Commit SHA: ${args.trigger.commitSha}`);
-    if (args.trigger.laneId) lines.push(`Lane ID: ${args.trigger.laneId}`);
+    if (laneId) lines.push(`Lane ID: ${laneId}`);
     if (args.trigger.eventName) lines.push(`Event: ${args.trigger.eventName}`);
     if (args.trigger.summary) lines.push(`Ingress summary: ${args.trigger.summary}`);
     if (args.rule.prompt?.trim()) {
-      lines.push("", args.rule.prompt.trim());
+      // Substitute `{{trigger.*}}` placeholders inside the user-authored prompt
+      // (same mechanism used for ade-action args) so rules like
+      // "Triage issue #{{trigger.issue.number}} by {{trigger.issue.author}}"
+      // reach the agent with real values.
+      const interpolated = resolvePlaceholders(args.rule.prompt, args.trigger);
+      const text = typeof interpolated === "string" ? interpolated.trim() : args.rule.prompt.trim();
+      lines.push("", text);
     } else if (args.rule.mode === "review") {
       lines.push("", "Review the latest relevant changes, surface only high-signal findings, and summarize merge readiness.");
     } else if (args.rule.mode === "fix") {
@@ -1354,7 +1629,9 @@ export function createAutomationService({
 
   const runCommand = async (args: { command: string; cwd: string; timeoutMs: number }): Promise<{ output: string; exitCode: number | null }> => {
     const startedAt = Date.now();
-    const child = spawn(process.platform === "win32" ? "cmd.exe" : "sh", process.platform === "win32" ? ["/c", args.command] : ["-lc", args.command], {
+    const shellFile = process.platform === "win32" ? (process.env.ComSpec?.trim() || "cmd.exe") : "sh";
+    const shellArgs = process.platform === "win32" ? ["/d", "/s", "/c", args.command] : ["-lc", args.command];
+    const child = spawn(shellFile, shellArgs, {
       cwd: args.cwd,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"]
@@ -1374,11 +1651,7 @@ export function createAutomationService({
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
+        terminateProcessTree(child, "SIGKILL");
         settled = true;
         reject(new Error(`Command timed out after ${timeoutMs}ms`));
       }, timeoutMs);
@@ -1403,7 +1676,77 @@ export function createAutomationService({
     };
   };
 
-  const runLegacyAction = async (action: AutomationAction, trigger: TriggerContext): Promise<{ status: AutomationActionStatus; output?: string }> => {
+  const trimToNull = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  };
+
+  const getConfiguredTargetLaneId = (rule: AutomationRule, action?: AutomationAction | null): string | null => {
+    return trimToNull(action?.targetLaneId) ?? trimToNull(rule.execution?.targetLaneId);
+  };
+
+  const dispatchAdeAction = async (
+    config: RunAdeActionConfig,
+    trigger: TriggerContext,
+  ): Promise<{ status: AutomationActionStatus; output?: string }> => {
+    if (!adeActionRegistryRef) {
+      return { status: "failed", output: "ADE action registry is not available in this process." };
+    }
+    const domain = (config.domain ?? "").trim();
+    const actionName = (config.action ?? "").trim();
+    if (!domain || !actionName) {
+      return { status: "failed", output: "ade-action requires both 'domain' and 'action'." };
+    }
+    if (!adeActionRegistryRef.isAllowed(domain, actionName)) {
+      return { status: "failed", output: `Action '${domain}.${actionName}' is not in the ADE action registry.` };
+    }
+    const service = adeActionRegistryRef.getService(domain);
+    if (!service) {
+      return { status: "failed", output: `Service for domain '${domain}' is not available in this process.` };
+    }
+    const fn = service[actionName];
+    if (typeof fn !== "function") {
+      return { status: "failed", output: `Action '${domain}.${actionName}' is not callable on the resolved service.` };
+    }
+
+    // Resolve placeholders in args + any explicit `resolvers` map.
+    const resolvedArgs = resolvePlaceholders(config.args ?? {}, trigger);
+    if (config.resolvers && typeof resolvedArgs === "object" && resolvedArgs !== null && !Array.isArray(resolvedArgs)) {
+      for (const [key, pathExpr] of Object.entries(config.resolvers)) {
+        const value = readTriggerPath(trigger, pathExpr);
+        if (value !== undefined) {
+          (resolvedArgs as Record<string, unknown>)[key] = value;
+        }
+      }
+    }
+
+    try {
+      const callable = fn as (...a: unknown[]) => unknown;
+      const result = Array.isArray(resolvedArgs)
+        ? await callable(...resolvedArgs)
+        : await callable(resolvedArgs);
+      let output: string;
+      try {
+        output = result === undefined ? "" : typeof result === "string" ? result : JSON.stringify(result);
+      } catch {
+        output = String(result);
+      }
+      return { status: "succeeded", output };
+    } catch (error) {
+      return {
+        status: "failed",
+        output: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
+  const runLegacyAction = async (
+    rule: AutomationRule,
+    action: AutomationAction,
+    trigger: TriggerContext,
+    runId: string,
+  ): Promise<{ status: AutomationActionStatus; output?: string }> => {
     const raw = (action.condition ?? "").trim();
     if (raw === "false") return { status: "skipped", output: "Condition evaluated false." };
     if (raw === "provider-enabled" && (projectConfigService.get().effective.providerMode ?? "guest") === "guest") {
@@ -1414,22 +1757,147 @@ export function createAutomationService({
       await conflictService.runPrediction(trigger.laneId ? { laneId: trigger.laneId } : {});
       return { status: "succeeded" };
     }
+    if (action.type === "create-lane") {
+      const fallbackName = trigger.issue?.title ?? trigger.pr?.title ?? trigger.summary ?? rule.name;
+      const rendered = resolveTemplateString(action.laneNameTemplate, trigger);
+      const renderedClean = rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered : "";
+      const laneName = renderedClean || fallbackName;
+      if (!laneName.trim()) {
+        return { status: "failed", output: "create-lane action requires a lane name." };
+      }
+      const description = resolveTemplateString(action.laneDescriptionTemplate, trigger)
+        || [
+          trigger.issue ? `GitHub issue #${trigger.issue.number}` : null,
+          trigger.issue?.url ?? trigger.pr?.url ?? null,
+          trigger.summary ?? null,
+        ].filter(Boolean).join("\n");
+      const parentLaneId = trimToNull(action.parentLaneId);
+      const lane = await laneService.create({
+        name: laneName,
+        description,
+        ...(parentLaneId ? { parentLaneId } : {}),
+      });
+      trigger.laneId = lane.id;
+      trigger.laneName = lane.name;
+      trigger.branch = lane.branchRef;
+      return {
+        status: "succeeded",
+        output: JSON.stringify({
+          laneId: lane.id,
+          laneName: lane.name,
+          branchRef: lane.branchRef,
+        }),
+      };
+    }
     if (action.type === "run-tests") {
       const suiteId = (action.suiteId ?? "").trim();
       if (!suiteId) throw new Error("run-tests requires suiteId");
       if (!testService) throw new Error("Test service unavailable");
       const activeLanes = await laneService.list({ includeArchived: false });
-      const laneId = trigger.laneId
-        ? trigger.laneId
-        : activeLanes.find((lane) => lane.laneType === "primary")?.id ?? activeLanes[0]?.id ?? null;
+      const configuredLaneId = getConfiguredTargetLaneId(rule, action);
+      const laneId = configuredLaneId
+        ?? trigger.laneId
+        ?? activeLanes.find((lane) => lane.laneType === "primary")?.id
+        ?? activeLanes[0]?.id
+        ?? null;
       if (!laneId) throw new Error("No lane available to run tests");
       await testService.run({ laneId, suiteId });
       return { status: "succeeded" };
     }
+    if (action.type === "ade-action") {
+      const config = action.adeAction;
+      if (!config) {
+        return { status: "failed", output: "ade-action action is missing adeAction config." };
+      }
+      return await dispatchAdeAction(config, trigger);
+    }
+    if (action.type === "agent-session") {
+      // Spawn a scoped agent chat session as one step in a built-in chain.
+      // The prompt on the action wins over the rule-level prompt; placeholders
+      // inside the prompt are substituted the same way buildMissionPrompt does.
+      if (!agentChatServiceRef) {
+        return { status: "failed", output: "Agent chat service is unavailable." };
+      }
+      const laneId = await resolveExecutionLaneId(rule, trigger, action, runId);
+      if (!laneId) {
+        return { status: "failed", output: "No lane is available for this automation run." };
+      }
+      const rawPrompt = (action.prompt ?? rule.prompt ?? "").trim();
+      if (!rawPrompt) {
+        return { status: "failed", output: "agent-session action requires a prompt." };
+      }
+      const interpolated = resolvePlaceholders(rawPrompt, trigger);
+      const promptText = typeof interpolated === "string" ? interpolated : rawPrompt;
+      const { modelId, modelDescriptor, providerGroup } = resolveAutomationModelDescriptor(rule, action);
+      const resolvedChat = resolveChatProviderForDescriptor(modelDescriptor);
+      const permissionConfig = buildPermissionConfig(rule, { publishPhase: false }, action);
+      const permissionMode = resolveProviderPermissionMode(providerGroup, permissionConfig);
+      const reasoningEffort = action.modelConfig?.thinkingLevel
+        ?? rule.execution?.session?.reasoningEffort
+        ?? rule.modelConfig?.orchestratorModel?.thinkingLevel
+        ?? null;
+      const timeoutMs = Math.max(
+        15_000,
+        Math.floor(action.timeoutMs ?? (rule.guardrails.maxDurationMin ?? 10) * 60_000),
+      );
+      try {
+        const session = await agentChatServiceRef.createSession({
+          laneId,
+          provider: resolvedChat.provider,
+          model: resolvedChat.model,
+          modelId,
+          sessionProfile: "workflow",
+          reasoningEffort,
+          permissionMode,
+          ...(providerGroup === "codex" && permissionConfig.providers?.codexSandbox
+            ? { codexSandbox: permissionConfig.providers.codexSandbox }
+            : {}),
+          surface: "automation",
+          automationId: rule.id,
+          automationRunId: runId,
+        });
+        updateRun(runId, { chat_session_id: session.id });
+        const result = await agentChatServiceRef.runSessionTurn({
+          sessionId: session.id,
+          text: promptText,
+          displayText: action.sessionTitle?.trim() || promptText,
+          reasoningEffort,
+          timeoutMs,
+        });
+        const output = result.outputText?.trim()
+          ? result.outputText
+          : `Agent session ${session.id} completed.`;
+        return { status: "succeeded", output };
+      } catch (err) {
+        return { status: "failed", output: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    if (action.type === "launch-mission") {
+      const missionRule: AutomationRule = {
+        ...rule,
+        execution: {
+          kind: "mission",
+          ...(rule.execution?.targetLaneId ? { targetLaneId: rule.execution.targetLaneId } : {}),
+          mission: { title: action.sessionTitle?.trim() || rule.execution?.mission?.title || null },
+        },
+      };
+      const missionRun = await dispatchMissionRun({
+        rule: missionRule,
+        trigger,
+        existingRunId: runId,
+        recordDispatchAction: false,
+      });
+      return {
+        status: "succeeded",
+        output: missionRun.missionId
+          ? `Mission ${missionRun.missionId} started for automation dispatch.`
+          : "Mission started for automation dispatch.",
+      };
+    }
     if (action.type === "run-command") {
       const command = (action.command ?? "").trim();
       if (!command) throw new Error("run-command requires command");
-      const laneId = trigger.laneId ?? null;
+      const laneId = getConfiguredTargetLaneId(rule, action) ?? trigger.laneId;
       const baseCwd = laneId ? laneService.getLaneWorktreePath(laneId) : projectRoot;
       const configuredCwd = (action.cwd ?? "").trim();
       const cwdCandidate = configuredCwd.length
@@ -1474,6 +1942,7 @@ export function createAutomationService({
     let runStatus: AutomationRunStatus = "succeeded";
     let runError: string | null = null;
     let finalQueueStatus: AutomationRunQueueStatus = "pending-review";
+    let keepRunOpen = false;
     try {
       for (let index = 0; index < actions.length; index += 1) {
         const action = actions[index]!;
@@ -1483,10 +1952,14 @@ export function createAutomationService({
           const maxRetry = Number.isFinite(action.retry) ? Math.max(0, Math.min(5, Math.floor(action.retry ?? 0))) : 0;
           for (let attempt = 0; attempt <= maxRetry; attempt += 1) {
             try {
-              const result = await runLegacyAction(action, trigger);
+              const result = await runLegacyAction(rule, action, trigger, run.id);
               lastOutput = result.output ?? null;
               if (result.status === "failed") throw new Error(result.output ?? "Action failed");
               finishAction({ id: actionId, status: result.status, output: result.output ?? null });
+              if (action.type === "launch-mission") {
+                runStatus = "running";
+                keepRunOpen = true;
+              }
               break;
             } catch (error) {
               if (attempt >= maxRetry) throw error;
@@ -1514,7 +1987,7 @@ export function createAutomationService({
         summary: runError,
       });
       updateRun(run.id, {
-        ended_at: nowIso(),
+        ended_at: keepRunOpen ? null : nowIso(),
         status: runStatus,
         error_message: runError,
         queue_status: finalQueueStatus,
@@ -1552,6 +2025,7 @@ export function createAutomationService({
   };
 
   const buildBriefing = async (rule: AutomationRule, trigger: TriggerContext) => {
+    if (!rule.includeProjectContext) return null;
     if (!memoryBriefingServiceRef) return null;
     try {
       return await memoryBriefingServiceRef.buildBriefing({
@@ -1573,16 +2047,102 @@ export function createAutomationService({
     }
   };
 
-  const resolveExecutionLaneId = async (rule: AutomationRule, trigger: TriggerContext): Promise<string | null> => {
-    const triggerLaneId = typeof trigger.laneId === "string" && trigger.laneId.trim().length
-      ? trigger.laneId.trim()
-      : null;
-    if (triggerLaneId) return triggerLaneId;
+  /**
+   * Spawn a fresh lane for a single automation run. Resolves the user's
+   * preset/template via {@link resolvePlaceholders}; if a sibling lane already
+   * carries the same name, appends `#NN` (or short timestamp for non-issue
+   * triggers); if that *still* collides, appends a 4-char random suffix.
+   * Returns the new lane id. Throws on lane-service failure (caller marks
+   * the run failed; no fallback to primary).
+   */
+  const createLaneForRun = async (rule: AutomationRule, trigger: TriggerContext): Promise<{ laneId: string; laneName: string }> => {
+    const preset = rule.execution?.laneNamePreset;
+    const template = preset && preset !== "custom"
+      ? presetToTemplate(preset)
+      : (rule.execution?.laneNameTemplate ?? "");
+    const rendered = resolveTemplateString(template, trigger);
+    const fallbackName = trigger.issue?.title ?? trigger.pr?.title ?? trigger.summary ?? rule.name;
+    const baseName = (rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered : "").trim() || fallbackName.trim();
+    if (!baseName) {
+      throw new Error("Lane name template resolved to an empty string.");
+    }
 
-    const configuredLaneId = typeof rule.execution?.targetLaneId === "string" && rule.execution.targetLaneId.trim().length
-      ? rule.execution.targetLaneId.trim()
-      : null;
+    const existingLanes = await laneService.list({ includeArchived: false });
+    const existingNames = new Set(existingLanes.map((lane: { name?: string | null }) => (lane.name ?? "").trim().toLowerCase()));
+
+    let candidate = baseName;
+    if (existingNames.has(candidate.toLowerCase())) {
+      const issueOrPrNumber = trigger.issue?.number ?? trigger.pr?.number;
+      const suffix = typeof issueOrPrNumber === "number"
+        ? `#${issueOrPrNumber}`
+        : new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 12);
+      candidate = `${baseName} (${suffix})`;
+    }
+    if (existingNames.has(candidate.toLowerCase())) {
+      const random = randomUUID().replace(/-/g, "").slice(0, 4);
+      candidate = `${baseName} (${random})`;
+    }
+
+    const description = [
+      trigger.issue ? `GitHub issue #${trigger.issue.number}` : null,
+      trigger.issue?.url ?? trigger.pr?.url ?? null,
+      trigger.summary ?? null,
+    ].filter(Boolean).join("\n");
+
+    const lane = await laneService.create({
+      name: candidate,
+      description,
+    });
+    trigger.laneId = lane.id;
+    trigger.laneName = lane.name;
+    trigger.branch = lane.branchRef;
+    return { laneId: lane.id, laneName: lane.name };
+  };
+
+  /**
+   * Resolve which lane an automation should run in. When the rule opts into
+   * `execution.laneMode === "create"`, allocate a fresh lane via
+   * {@link createLaneForRun} and (if a runId is provided) record a synthetic
+   * `lane-setup` row in `automation_action_results` so success / failure has
+   * a visible line in the run-detail UI. On failure of the create path the
+   * caller MUST mark the run failed — we deliberately do not fall back to
+   * the primary lane (work would silently land in the wrong place).
+   */
+  const resolveExecutionLaneId = async (
+    rule: AutomationRule,
+    trigger: TriggerContext,
+    action?: AutomationAction | null,
+    runId?: string | null,
+  ): Promise<string | null> => {
+    const actionLaneId = trimToNull(action?.targetLaneId);
+    if (actionLaneId) return actionLaneId;
+
+    if (rule.execution?.laneMode === "create") {
+      const setupActionId = runId ? insertAction(runId, -1, "lane-setup") : null;
+      try {
+        const { laneId, laneName } = await createLaneForRun(rule, trigger);
+        if (setupActionId) {
+          finishAction({
+            id: setupActionId,
+            status: "succeeded",
+            output: JSON.stringify({ laneId, laneName }),
+          });
+        }
+        return laneId;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (setupActionId) {
+          finishAction({ id: setupActionId, status: "failed", errorMessage: message });
+        }
+        throw error;
+      }
+    }
+
+    const configuredLaneId = trimToNull(rule.execution?.targetLaneId);
     if (configuredLaneId) return configuredLaneId;
+
+    const triggerLaneId = trimToNull(trigger.laneId);
+    if (triggerLaneId) return triggerLaneId;
 
     try {
       const lanes = await laneService.list({ includeArchived: false });
@@ -1593,8 +2153,8 @@ export function createAutomationService({
     }
   };
 
-  const resolveAutomationModelDescriptor = (rule: AutomationRule) => {
-    const requestedModelId = rule.modelConfig?.orchestratorModel?.modelId;
+  const resolveAutomationModelDescriptor = (rule: AutomationRule, action?: AutomationAction | null) => {
+    const requestedModelId = action?.modelConfig?.modelId ?? rule.modelConfig?.orchestratorModel?.modelId;
     if (requestedModelId && !getModelById(requestedModelId)) {
       throw new Error(`Unknown model '${requestedModelId}'.`);
     }
@@ -1621,11 +2181,6 @@ export function createAutomationService({
       throw new Error("Agent chat service is unavailable");
     }
 
-    const laneId = await resolveExecutionLaneId(args.rule, args.trigger);
-    if (!laneId) {
-      throw new Error("No lane is available for this automation run.");
-    }
-
     const { modelId, modelDescriptor, providerGroup, budgetProvider } = resolveAutomationModelDescriptor(args.rule);
     const resolvedChat = resolveChatProviderForDescriptor(modelDescriptor);
     const budgetCheck = budgetCapServiceRef?.checkBudget(
@@ -1640,7 +2195,6 @@ export function createAutomationService({
     const briefing = await buildBriefing(args.rule, args.trigger);
     const linkedProcedureIds = briefing?.usedProcedureIds ?? [];
     const confidence = computeConfidence(args.rule, linkedProcedureIds.length);
-    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, briefing });
     const existingRunRow = args.existingRunId ? loadRunRow(args.existingRunId) : null;
     const run = existingRunRow
       ? toRun(existingRunRow)
@@ -1654,17 +2208,30 @@ export function createAutomationService({
           ingressEventId: args.trigger.ingressEventId ?? null,
         });
 
+    let laneId: string | null;
+    try {
+      laneId = await resolveExecutionLaneId(args.rule, args.trigger, null, run.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateRun(run.id, { ended_at: nowIso(), status: "failed", error_message: message });
+      emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
+      throw error;
+    }
+    if (!laneId) {
+      const message = "No lane is available for this automation run.";
+      updateRun(run.id, { ended_at: nowIso(), status: "failed", error_message: message });
+      emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
+      throw new Error(message);
+    }
+    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId, briefing });
+
     const actionId = insertAction(run.id, 0, "agent-session");
     const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: false });
     const verificationRequired = requiresPublishGate(args.rule);
     const dryRun = args.rule.verification.mode === "dry-run";
     const permissionMode = verificationRequired || dryRun
       ? "plan"
-      : providerGroup === "claude"
-        ? permissionConfig.providers?.claude ?? "edit"
-        : providerGroup === "codex"
-          ? permissionConfig.providers?.codex ?? "edit"
-          : permissionConfig.providers?.opencode ?? "edit";
+      : resolveProviderPermissionMode(providerGroup, permissionConfig);
     const reasoningEffort = args.rule.execution?.session?.reasoningEffort ?? args.rule.modelConfig?.orchestratorModel?.thinkingLevel ?? null;
     const timeoutMs = Math.max(
       15_000,
@@ -1790,6 +2357,7 @@ export function createAutomationService({
     existingQueueItemId?: string | null;
     queuedFromNightShift?: boolean;
     publishPhase?: boolean;
+    recordDispatchAction?: boolean;
   }): Promise<AutomationRun> => {
     if (!missionServiceRef || !aiOrchestratorServiceRef) {
       throw new Error("Mission automation services are unavailable");
@@ -1809,11 +2377,35 @@ export function createAutomationService({
       throw new Error(budgetCheck.reason ?? "Budget cap blocked automation run.");
     }
 
-    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, briefing });
+    const existingRunRowEarly = args.existingRunId ? loadRunRow(args.existingRunId) : null;
+    const earlyRun = existingRunRowEarly
+      ? toRun(existingRunRowEarly)
+      : insertRun({
+          rule: args.rule,
+          trigger: args.trigger,
+          actionsTotal: 1,
+          queueStatus: "pending-review",
+          confidence,
+          linkedProcedureIds,
+          summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
+          queueItemId: args.existingQueueItemId ?? null,
+          ingressEventId: args.trigger.ingressEventId ?? null,
+        });
+
+    let laneId: string | null;
+    try {
+      laneId = await resolveExecutionLaneId(args.rule, args.trigger, null, earlyRun.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateRun(earlyRun.id, { ended_at: nowIso(), status: "failed", error_message: message });
+      emit({ type: "runs-updated", automationId: args.rule.id, runId: earlyRun.id });
+      throw error;
+    }
+    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId, briefing });
     const mission = missionServiceRef.create({
       title: `${args.rule.name} · ${args.rule.mode}`,
       prompt,
-      laneId: args.trigger.laneId ?? null,
+      laneId,
       autostart: false,
       launchMode: "autopilot",
       autopilotExecutor: "opencode",
@@ -1852,21 +2444,8 @@ export function createAutomationService({
       }
     });
 
-    const existingRunRow = args.existingRunId ? loadRunRow(args.existingRunId) : null;
-    const run = existingRunRow
-      ? toRun(existingRunRow)
-      : insertRun({
-          rule: args.rule,
-          trigger: args.trigger,
-          actionsTotal: 1,
-          queueStatus: "pending-review",
-          confidence,
-          linkedProcedureIds,
-          summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
-          missionId: mission.id,
-          queueItemId: args.existingQueueItemId ?? null,
-          ingressEventId: args.trigger.ingressEventId ?? null,
-        });
+    const run = earlyRun;
+    updateRun(run.id, { mission_id: mission.id });
 
     if (args.existingRunId) {
       updateRun(args.existingRunId, {
@@ -1881,12 +2460,14 @@ export function createAutomationService({
       });
     }
 
-    const dispatchActionId = insertAction(run.id, 0, "launch-mission");
-    finishAction({
-      id: dispatchActionId,
-      status: "succeeded",
-      output: `Mission ${mission.id} started for automation dispatch.`,
-    });
+    if (args.recordDispatchAction !== false) {
+      const dispatchActionId = insertAction(run.id, 0, "launch-mission");
+      finishAction({
+        id: dispatchActionId,
+        status: "succeeded",
+        output: `Mission ${mission.id} started for automation dispatch.`,
+      });
+    }
     updateRun(run.id, {
       actions_completed: 1,
       mission_id: mission.id,
@@ -2081,47 +2662,6 @@ export function createAutomationService({
       }
     }
     return { laneBranch, laneName };
-  };
-
-  const triggerMatches = (ruleTrigger: AutomationTrigger, trigger: TriggerContext, laneBranch: string | undefined, laneName: string | undefined): boolean => {
-    if (!triggerTypesMatch(ruleTrigger.type, trigger.triggerType)) return false;
-
-    const canonicalType = normalizeTriggerType(ruleTrigger.type);
-    if (canonicalType === "git.pr_merged") {
-      const expectedTarget = (ruleTrigger.targetBranch ?? ruleTrigger.branch ?? "").trim();
-      if (expectedTarget && !matchesGlob(expectedTarget, trigger.targetBranch)) return false;
-    } else if (ruleTrigger.branch?.trim()) {
-      const branchToMatch =
-        canonicalType === "git.pr_opened" || canonicalType === "git.pr_updated" || canonicalType === "git.pr_closed"
-          ? trigger.branch
-          : laneBranch;
-      if (!matchesGlob(ruleTrigger.branch, branchToMatch)) return false;
-    }
-    if (ruleTrigger.event?.trim() && ruleTrigger.event.trim() !== (trigger.eventName ?? "").trim()) return false;
-    if (ruleTrigger.author?.trim()) {
-      const author = (trigger.author ?? "").trim().toLowerCase();
-      if (!author || author !== ruleTrigger.author.trim().toLowerCase()) return false;
-    }
-    if (!listMatches(ruleTrigger.labels, trigger.labels)) return false;
-    if (ruleTrigger.paths?.length) {
-      const paths = trigger.paths ?? [];
-      if (!paths.some((entry) => ruleTrigger.paths?.some((expected) => matchesGlob(expected, entry)))) return false;
-    }
-    if (ruleTrigger.keywords?.length) {
-      const haystack = `${trigger.summary ?? ""} ${(trigger.keywords ?? []).join(" ")}`.toLowerCase();
-      if (!ruleTrigger.keywords.some((entry) => haystack.includes(entry.trim().toLowerCase()))) return false;
-    }
-    if (ruleTrigger.namePattern?.trim() && !matchesGlob(ruleTrigger.namePattern, laneName)) return false;
-    if (ruleTrigger.project?.trim() && !matchesGlob(ruleTrigger.project, trigger.project)) return false;
-    if (ruleTrigger.team?.trim() && !matchesGlob(ruleTrigger.team, trigger.team)) return false;
-    if (ruleTrigger.assignee?.trim() && !matchesGlob(ruleTrigger.assignee, trigger.assignee)) return false;
-    if (ruleTrigger.stateTransition?.trim() && (trigger.stateTransition ?? "").trim() !== ruleTrigger.stateTransition.trim()) return false;
-    if (!listMatches(ruleTrigger.changedFields, trigger.changedFields)) return false;
-    if (ruleTrigger.draftState && ruleTrigger.draftState !== "any" && trigger.draftState && ruleTrigger.draftState !== trigger.draftState) {
-      return false;
-    }
-    if (ruleTrigger.activeHours && !isWithinActiveHours(ruleTrigger.activeHours)) return false;
-    return true;
   };
 
   const dispatchTrigger = async (trigger: TriggerContext) => {
@@ -2476,10 +3016,21 @@ export function createAutomationService({
     labels?: string[];
     paths?: string[];
     keywords?: string[];
+    branch?: string | null;
+    targetBranch?: string | null;
     draftState?: "draft" | "ready" | "any";
     cursor?: string | null;
     rawPayload?: Record<string, unknown> | null;
     automationId?: string | null;
+    repo?: string | null;
+    issue?: TriggerIssueContext | null;
+    pr?: TriggerPrContext | null;
+    linear?: { issue: TriggerLinearIssueContext } | null;
+    project?: string | null;
+    team?: string | null;
+    assignee?: string | null;
+    stateTransition?: string | null;
+    changedFields?: string[];
   }): Promise<AutomationIngressEventRecord | null> => {
     const eventKey = args.eventKey.trim();
     if (!eventKey.length) return null;
@@ -2530,9 +3081,20 @@ export function createAutomationService({
       labels: args.labels,
       paths: args.paths,
       keywords: args.keywords,
+      branch: args.branch ?? undefined,
+      targetBranch: args.targetBranch ?? undefined,
       draftState: args.draftState,
       reason: args.eventName ?? eventKey,
       scheduledAt: receivedAt,
+      repo: args.repo ?? undefined,
+      issue: args.issue ?? undefined,
+      pr: args.pr ?? undefined,
+      linear: args.linear ?? undefined,
+      project: args.project ?? undefined,
+      team: args.team ?? undefined,
+      assignee: args.assignee ?? undefined,
+      stateTransition: args.stateTransition ?? undefined,
+      changedFields: args.changedFields,
     };
 
     const candidateRules = listRules()
@@ -2596,6 +3158,10 @@ export function createAutomationService({
       proceduralLearningServiceRef = args.proceduralLearningService ?? proceduralLearningServiceRef;
       budgetCapServiceRef = args.budgetCapService ?? budgetCapServiceRef;
       workerHeartbeatServiceRef = args.workerHeartbeatService ?? workerHeartbeatServiceRef;
+    },
+
+    bindAdeActionRegistry(registry: AutomationAdeActionRegistry | null) {
+      adeActionRegistryRef = registry;
     },
 
     list(): AutomationRuleSummary[] {
@@ -2829,10 +3395,21 @@ export function createAutomationService({
       labels?: string[];
       paths?: string[];
       keywords?: string[];
+      branch?: string | null;
+      targetBranch?: string | null;
       draftState?: "draft" | "ready" | "any";
       cursor?: string | null;
       rawPayload?: Record<string, unknown> | null;
       automationId?: string | null;
+      repo?: string | null;
+      issue?: TriggerIssueContext | null;
+      pr?: TriggerPrContext | null;
+      linear?: { issue: TriggerLinearIssueContext } | null;
+      project?: string | null;
+      team?: string | null;
+      assignee?: string | null;
+      stateTransition?: string | null;
+      changedFields?: string[];
     }): Promise<AutomationIngressEventRecord | null> {
       return await dispatchIngressTrigger(args);
     },

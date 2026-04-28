@@ -123,7 +123,7 @@ function toRun(row: RunRow): LinearWorkflowRun {
     retryAfter: row.retry_after,
     closeoutState: row.closeout_state,
     terminalOutcome: row.terminal_outcome,
-    sourceIssueSnapshot: JSON.parse(row.source_issue_snapshot_json),
+    sourceIssueSnapshot: safeJsonParse<NormalizedLinearIssue | null>(row.source_issue_snapshot_json, null),
     routeContext: safeJsonParse(row.route_context_json, null),
     executionContext: safeJsonParse(row.execution_context_json, null),
     createdAt: row.created_at,
@@ -146,7 +146,7 @@ function toRunStep(row: StepRow, workflow?: LinearWorkflowDefinition | null): Li
     status: row.status,
     startedAt: row.started_at,
     completedAt: row.completed_at,
-    payload: row.payload_json ? JSON.parse(row.payload_json) : null,
+    payload: safeJsonParse(row.payload_json, null),
   };
 }
 
@@ -157,7 +157,7 @@ function toRunEvent(row: EventRow): LinearWorkflowRunEvent {
     eventType: row.event_type,
     status: row.status,
     message: row.message,
-    payload: row.payload_json ? JSON.parse(row.payload_json) : null,
+    payload: safeJsonParse(row.payload_json, null),
     createdAt: row.created_at,
   };
 }
@@ -913,7 +913,7 @@ export function createLinearDispatcherService(args: {
   const getRetryDelaySec = (workflow: LinearWorkflowDefinition, retryCount: number): number => {
     const baseDelay = workflow.retry?.backoffSeconds ?? workflow.retry?.baseDelaySec ?? 30;
     const safeBase = Math.max(5, Math.floor(baseDelay));
-    return safeBase * (2 ** Math.max(0, retryCount));
+    return Math.min(safeBase * (2 ** Math.max(0, retryCount)), 3600);
   };
 
   const scheduleRetry = async (

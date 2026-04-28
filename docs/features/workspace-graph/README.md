@@ -49,17 +49,38 @@ Lane topology (parent-child stack relationships)
 
 `GraphViewMode` — one of:
 
-| Mode | Label | Layout |
-|------|-------|--------|
-| `all` | Overview | Concentric rings around primary, split into core (environment-tagged) and others |
-| `stack` | Dependencies | Tree by stack depth, children arranged beneath parents |
-| `risk` | Conflict Risk | Circular layout, all lanes equidistant for cleaner overlap edges |
-| `activity` | Activity | Grid sorted by activity score (most active first) |
+| Mode | Label | What changes |
+|------|-------|--------------|
+| `all` | Overview | Primary-centric tree. Stack edges are shown; risk "overlap web" is hidden by default behind a "Show overlap web" toggle. |
+| `stack` | Dependencies | Same tree layout as Overview. Emphasis on parent-child stack edges; drag to reparent. |
+| `risk` | Conflict Risk | Same tree layout, risk edges always drawn between overlapping lanes. Matrix panel available for file-level detail. |
+| `activity` | Activity | Same row grid, but siblings within a row sort by activity score (high → low) before stack depth and name. |
 
-`computeAutoLayout(lanes, viewMode, activityScoreByLaneId,
-environmentByLaneId)` returns positions for each lane id. User
-drags override auto-positions and persist in the session layout
-snapshot.
+All view modes share a single primary-centric row layout. The
+primary lane sits at the top, each descendant appears on row
+`depth * Y_STEP` below it, and row members are spaced at
+`X_PITCH` centered horizontally. Lanes that can't be traced back
+to the workspace primary via parent links are bucketed into a
+single "orphan" row at the bottom (`depthByLaneId = 10_000`).
+
+Implementation:
+
+- `laneHierarchyFromPrimary(lanes)` returns
+  `{ primary: LaneSummary | null, depthByLaneId, parentNameByLaneId }`.
+  Returns an empty shape when `lanes` is empty — callers must
+  handle `primary: null` (this matters during project open/switch
+  when the lane list briefly empties out).
+- `layoutPrimaryCentricRows(lanes, activityScoreByLaneId, tieBreak)`
+  produces the actual positions. `tieBreak` is `"activity"` in
+  activity mode, `"stack"` everywhere else.
+- `computeAutoLayout(lanes, viewMode, activityScoreByLaneId, _environmentByLaneId)`
+  is the public entry point the page calls. The environment map
+  parameter is accepted for signature stability but no longer
+  influences layout — lanes aren't split into "core" vs "others"
+  any more.
+
+User drags override auto-positions and persist in the session
+layout snapshot per view mode.
 
 ## Persisted state
 
@@ -97,6 +118,10 @@ type GraphNodeData = {
   autoRebaseStatus: AutoRebaseLaneStatus | null;
   activeSessions: number;
   collapsedChildCount: number;
+  /** Steps from the workspace primary lane along parent links (0 = primary). */
+  hierarchyDepth: number;
+  /** Immediate parent lane name when parent exists in the workspace. */
+  parentLaneName: string | null;
   dimmed: boolean;
   activityBucket: "min" | "low" | "medium" | "high";
   viewMode: GraphViewMode;
@@ -117,9 +142,30 @@ type GraphNodeData = {
 };
 ```
 
-The `LaneNode` renderer chooses sync/PR badges entirely from this
-data — see `syncBadge` / `prBadge` IIFEs in
-`graphNodes/LaneNode.tsx`.
+`hierarchyDepth` and `parentLaneName` come from
+`laneHierarchyFromPrimary(lanes)` (memoized once per lane list as
+`primaryHierarchyMeta`) and are threaded into every lane node
+during derivation. Orphan lanes (not under primary) use the
+sentinel `10_000`; `LaneNode` treats anything `>= 1000` as an
+orphan and suppresses the depth badge.
+
+The `LaneNode` renderer:
+
+- Chooses sync/PR badges entirely from this data — see `syncBadge`
+  / `prBadge` IIFEs in `graphNodes/LaneNode.tsx`.
+- Renders a role-label chip top-right using lane terminology:
+  `"Primary lane"` for `laneType === "primary"`,
+  `"Attached lane"` for `"attached"`, and `"Lane"` for
+  `"worktree"`. Integration lanes get a distinctive purple
+  `Integration` badge instead.
+- Shows the custom `lane.icon` glyph when set; the primary lane
+  falls back to a `House` icon if no custom icon is configured.
+- Renders an `L{depth}` badge next to the branch ref
+  (`TreeStructure` icon) when the lane sits under primary. For
+  orphans, the badge is replaced with an amber "Not stacked under
+  the workspace primary" hint.
+- Renders a parent-lane breadcrumb ("On <parentName>") underneath
+  the header when `parentLaneName` is non-null.
 
 ## Edge data (`GraphEdgeData`)
 
@@ -139,6 +185,31 @@ type GraphEdgeData = {
 `RiskEdge` (in `graphEdges/RiskEdge.tsx`) renders edges with colors
 from `getPrEdgeColor` (PR-aware edges) or from the risk level
 palette (conflict edges). Stale edges render at reduced opacity.
+
+### Risk edges and the overview overlap web
+
+The page has a `showOverviewRiskEdges` boolean (toggled by the
+"Show overlap web" / "Hide overlap web" button in the filter bar,
+shown only when `viewMode === "all"`). It resets to `false` on
+any view-mode change.
+
+Risk edges render when:
+
+```
+viewMode === "risk"
+|| (viewMode === "all" && showOverviewRiskEdges)
+```
+
+Both the render pass and the `riskPairsWithVisibleEdge`
+population (used to decide whether PR overlays get their own edge
+or piggyback on an existing risk/stack edge) use this same gate,
+so PR overlays in Overview consistently stick to the visible
+topology/stack edge when the overlap web is hidden.
+
+In Overview, redundant "primary → lane" spokes are also
+suppressed when the lane already has a parent within the
+workspace — the stack edge chain already communicates the tree,
+so the extra spoke would just add clutter.
 
 ## Core interactions
 
@@ -287,13 +358,16 @@ persistence on next save.
 
 ## Current product contract
 
-Per the design doc in `docs/features/WORKSPACE_GRAPH.md`:
-
-- Make topology visible first.
-- Stage non-essential overlays (risk, PR, sync) after first paint.
+- Make topology visible first: one shared primary-centric row
+  layout across Overview / Dependencies / Conflict Risk /
+  Activity so switching modes doesn't rearrange the canvas.
+- Stage non-essential overlays (risk, PR, sync) after first
+  paint.
+- Hide the overlap web by default in Overview — stack edges are
+  enough on their own; the overlap web is one click away.
 - Bound activity and polling work.
-- Avoid history-backed activity recompute on every terminal event;
-  use the live PTY signal instead.
+- Avoid history-backed activity recompute on every terminal
+  event; use the live PTY signal instead.
 - Keep risk, PR, and sync overlays fresh enough without constant
   churn.
 
@@ -318,10 +392,17 @@ sequence in detail.
 - **Refresh coalescing.** Direct `refresh*` calls bypass the
   in-flight guard; prefer `scheduleRefresh*` variants from the
   refresh-scheduling section.
-- **Node positions persist per view mode.** Switching modes can
-  show a dramatically different layout if the user has not yet
-  moved nodes in the new mode. Auto-layout runs when no persisted
-  positions exist.
+- **Node positions persist per view mode.** Every view mode
+  auto-layouts to the same primary-centric rows, so the canvas
+  stays stable when switching modes as long as the user hasn't
+  dragged nodes. Once the user drags in a given mode, that
+  mode's snapshot diverges and auto-layout stops applying until
+  "Reset View" clears it.
+- **`laneHierarchyFromPrimary` can return `primary: null`.** The
+  workspace briefly has zero lanes during project open/switch;
+  callers (layout, edge derivation, node data) must tolerate the
+  null primary rather than dereference it. Regression coverage
+  lives in `graphLayout.test.ts`.
 - **Integration lane nodes use distinctive styling** (purple
   gradient, dashed integration badge). `isIntegration` is set via
   `isIntegrationLaneFromMetadata(lane)` from

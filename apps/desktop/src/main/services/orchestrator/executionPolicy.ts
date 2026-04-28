@@ -39,7 +39,7 @@ import { TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorCont
 // ─────────────────────────────────────────────────────
 
 const DEFAULT_CLAUDE_POLICY_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
-const DEFAULT_CODEX_POLICY_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+const DEFAULT_CODEX_POLICY_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
 
 export const DEFAULT_EXECUTION_POLICY: MissionExecutionPolicy = {
   planning: { mode: "auto", model: DEFAULT_CLAUDE_POLICY_MODEL_ID },

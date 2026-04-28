@@ -43,7 +43,7 @@ When Cursor's agent executable is detected, ADE can use it as a chat provider th
 
 1. ADE resolves the Cursor agent executable path (checks standard install locations and PATH)
 2. An ACP session pool manages connections to the Cursor agent process
-3. Chat messages are routed through the ACP protocol with MCP bridging
+3. Chat messages are routed through the ACP protocol, and the Cursor agent has access to the `ade` CLI for ADE workflows
 4. Model discovery queries Cursor for available models and capabilities
 
 ### Selecting Cursor in chat
@@ -63,7 +63,7 @@ ADE queries Cursor for its available models at startup and caches the result. Th
 |----------|---------|
 | **Session lifecycle** | Managed by the ACP pool; sessions are reused when possible |
 | **Event mapping** | ACP events are mapped to ADE's chat event model for consistent UI |
-| **MCP bridging** | ADE's MCP tools are available to Cursor agents through the ACP-MCP bridge |
+| **ADE CLI access** | The `ade` CLI is on `PATH` so Cursor agents can call ADE lane, git, PR, and action tools |
 | **Interrupts** | Supported via ACP session cancel |
 
 ---

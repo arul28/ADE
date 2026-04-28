@@ -1,10 +1,11 @@
 import React from "react";
 import { Archive, CheckCircle, GitBranch, Trash, Warning } from "@phosphor-icons/react";
 import type { LaneSummary, PrSummary } from "../../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
+import { branchNameFromRef } from "./laneBranchTargets";
 
 type PrLaneCleanupBannerProps = {
-  pr: Pick<PrSummary, "state"> | null;
+  pr: { id?: string | null; state: PrSummary["state"]; headBranch?: string | null; baseBranch?: string | null } | null;
   lane: LaneSummary | null;
   actionBusy?: boolean;
   compact?: boolean;
@@ -28,11 +29,15 @@ export function PrLaneCleanupBanner({
 
   if (!pr || !lane) return null;
   if (pr.state !== "merged" && pr.state !== "closed") return null;
-  if (lane.laneType === "primary") return null;
 
   const isAttached = lane.laneType === "attached";
+  const prHeadBranch = branchNameFromRef(pr.headBranch);
+  const laneBranch = branchNameFromRef(lane.branchRef);
+  const isPrimaryBranchMismatch = lane.laneType === "primary" && prHeadBranch && prHeadBranch !== laneBranch;
   const deletePhrase = `delete ${lane.name}`;
+  const cleanupPhrase = `delete ${prHeadBranch}`;
   const confirmMatch = confirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
+  const branchConfirmMatch = confirmText.trim().toLowerCase() === cleanupPhrase.toLowerCase();
   const isDisabled = busy || actionBusy;
 
   const shellPadding = compact ? "10px 12px" : "12px 16px";
@@ -77,6 +82,36 @@ export function PrLaneCleanupBanner({
     }
   };
 
+  const handleBranchCleanup = async () => {
+    if (!branchConfirmMatch || !prHeadBranch || !pr.id) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.ade.prs.cleanupBranch({
+        prId: pr.id,
+        deleteLocalBranch: deleteMode !== "remote_branch",
+        deleteRemoteBranch: deleteMode !== "worktree",
+        remoteName: remoteName.trim() || "origin",
+      });
+      const parts = [
+        result.localDeleted ? "local branch deleted" : null,
+        result.remoteDeleted ? "remote branch deleted" : null,
+      ].filter(Boolean);
+      if (result.localError || result.remoteError) {
+        setError([result.localError, result.remoteError].filter(Boolean).join(" "));
+      } else {
+        setDone(parts.length ? parts.join(" + ") : "No matching branch found to delete");
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Surface the shared success banner for every cleanup path — including the
+  // primary-branch mismatch case below, which would otherwise stay stuck on
+  // the confirmation form even after a successful delete.
   if (done) {
     return (
       <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `${COLORS.success}30`, background: `${COLORS.success}08` }}>
@@ -87,6 +122,78 @@ export function PrLaneCleanupBanner({
       </div>
     );
   }
+
+  if (isPrimaryBranchMismatch) {
+    return (
+      <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `${COLORS.warning}30` }}>
+        <div style={{ padding: shellPadding, borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.warning}08`, display: "flex", alignItems: "center", gap: 8 }}>
+          <Warning size={14} weight="fill" style={{ color: COLORS.warning }} />
+          <span style={{ fontFamily: SANS_FONT, fontSize: titleSize, fontWeight: 600, color: COLORS.textPrimary }}>
+            PR is linked to Primary, but its branch is separate
+          </span>
+          <span style={inlineBadge(COLORS.warning, { padding: "1px 8px", fontSize: 10 })}>{pr.state}</span>
+        </div>
+        <div style={{ padding: bodyPadding, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ fontFamily: SANS_FONT, fontSize: textSize, color: COLORS.textMuted }}>
+            ADE will not delete the Primary lane. You can clean up the PR branch instead.
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: textSize, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+            <span>PR branch: <span style={{ color: COLORS.textPrimary }}>{prHeadBranch}</span></span>
+            <span>Primary branch: <span style={{ color: COLORS.textPrimary }}>{laneBranch}</span></span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr" : "1fr 1fr 1fr", gap: 8 }}>
+            {([
+              { value: "worktree" as const, label: "Local branch only" },
+              { value: "remote_branch" as const, label: "Remote branch only" },
+              { value: "local_branch" as const, label: "Local + remote" },
+            ]).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setDeleteMode(opt.value)}
+                style={{
+                  padding: "8px 10px",
+                  fontSize: textSize,
+                  fontFamily: SANS_FONT,
+                  background: deleteMode === opt.value ? `${COLORS.danger}14` : "rgba(255,255,255,0.03)",
+                  border: `1px solid ${deleteMode === opt.value ? `${COLORS.danger}40` : COLORS.border}`,
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  textAlign: "left",
+                  color: deleteMode === opt.value ? COLORS.danger : COLORS.textSecondary,
+                  fontWeight: deleteMode === opt.value ? 600 : 400,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {deleteMode !== "worktree" ? (
+            <input
+              type="text"
+              value={remoteName}
+              onChange={(e) => setRemoteName(e.target.value)}
+              placeholder="Remote name"
+              style={{ height: 30, padding: "0 10px", borderRadius: 6, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 11 }}
+            />
+          ) : null}
+          <input
+            type="text"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder={`Type "${cleanupPhrase}" to confirm`}
+            style={{ height: 32, padding: "0 10px", borderRadius: 6, border: `1px solid ${branchConfirmMatch ? `${COLORS.danger}60` : COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 11 }}
+          />
+          {error ? <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: textSize }}>{error}</div> : null}
+          <button type="button" disabled={isDisabled || !branchConfirmMatch || !pr.id} onClick={() => void handleBranchCleanup()} style={dangerButton({ height: compact ? 30 : 32, padding: "0 16px", opacity: isDisabled || !branchConfirmMatch || !pr.id ? 0.45 : 1 })}>
+            <Trash size={13} /> Delete PR branch
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (lane.laneType === "primary") return null;
 
   return (
     <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: pr.state === "merged" ? `${COLORS.success}25` : COLORS.border }}>

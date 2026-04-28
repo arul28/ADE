@@ -29,6 +29,7 @@ export function resolveLaneLaunchContext(args: {
   laneService: ReturnType<typeof createLaneService>;
   laneId: string;
   requestedCwd?: string | null;
+  allowExternalCwd?: boolean;
   purpose: string;
 }): LaneLaunchContext {
   const laneId = String(args.laneId ?? "").trim();
@@ -48,6 +49,16 @@ export function resolveLaneLaunchContext(args: {
     return {
       laneWorktreePath: laneRoot,
       cwd: laneRoot,
+    };
+  }
+
+  if (args.allowExternalCwd === true && path.isAbsolute(requestedCwd)) {
+    return {
+      laneWorktreePath: laneRoot,
+      cwd: ensureDirectoryExists(
+        path.resolve(requestedCwd),
+        `Requested cwd '${requestedCwd}' is not an existing directory.`,
+      ),
     };
   }
 

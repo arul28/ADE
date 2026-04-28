@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "../../../shared/types/sync";
 import { openKvDb } from "../state/kvDb";
 import { createDeviceRegistryService } from "./deviceRegistryService";
 
@@ -59,5 +60,157 @@ describe("deviceRegistryService", () => {
     expect(registry2.listDevices()).toHaveLength(1);
 
     db2.close();
+  });
+
+  it("can share a desktop device identity across project registries", async () => {
+    const projectRootA = makeProjectRoot("ade-device-registry-global-a-");
+    const projectRootB = makeProjectRoot("ade-device-registry-global-b-");
+    const globalDeviceIdPath = path.join(os.tmpdir(), `ade-global-device-${Date.now()}-${Math.random()}`, "sync-device-id");
+
+    const dbA = await openKvDb(path.join(projectRootA, ".ade", "ade.db"), createLogger() as any);
+    const dbB = await openKvDb(path.join(projectRootB, ".ade", "ade.db"), createLogger() as any);
+    const registryA = createDeviceRegistryService({
+      db: dbA,
+      logger: createLogger() as any,
+      projectRoot: projectRootA,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+    const registryB = createDeviceRegistryService({
+      db: dbB,
+      logger: createLogger() as any,
+      projectRoot: projectRootB,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+
+    const localA = registryA.ensureLocalDevice();
+    const localB = registryB.ensureLocalDevice();
+
+    expect(localB.deviceId).toBe(localA.deviceId);
+    expect(localB.siteId).not.toBe(localA.siteId);
+
+    dbA.close();
+    dbB.close();
+  });
+
+  it("migrates the legacy project device identity into the shared desktop identity file", async () => {
+    const projectRoot = makeProjectRoot("ade-device-registry-global-migrate-");
+    const legacyDeviceId = "legacy-project-device-id";
+    const legacyDeviceIdPath = path.join(projectRoot, ".ade", "secrets", "sync-device-id");
+    const globalDeviceIdPath = path.join(os.tmpdir(), `ade-global-device-migrate-${Date.now()}-${Math.random()}`, "sync-device-id");
+    fs.mkdirSync(path.dirname(legacyDeviceIdPath), { recursive: true });
+    fs.writeFileSync(legacyDeviceIdPath, `${legacyDeviceId}\n`);
+
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const registry = createDeviceRegistryService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+
+    expect(registry.ensureLocalDevice().deviceId).toBe(legacyDeviceId);
+    expect(fs.readFileSync(globalDeviceIdPath, "utf8").trim()).toBe(legacyDeviceId);
+
+    db.close();
+  });
+
+  it("converges to a single desktop identity even when each project had a different legacy id", async () => {
+    // Two legacy per-project device-ids. Opening project A first should seed
+    // the shared file with A's legacy id. Opening B afterwards must use the
+    // shared id — not flip to B's own legacy id — so every project registry
+    // agrees on one desktop identity.
+    const projectRootA = makeProjectRoot("ade-device-registry-converge-a-");
+    const projectRootB = makeProjectRoot("ade-device-registry-converge-b-");
+    const globalDeviceIdPath = path.join(os.tmpdir(), `ade-global-device-converge-${Date.now()}-${Math.random()}`, "sync-device-id");
+
+    const legacyA = "legacy-a-identity";
+    const legacyB = "legacy-b-identity";
+    fs.mkdirSync(path.join(projectRootA, ".ade", "secrets"), { recursive: true });
+    fs.mkdirSync(path.join(projectRootB, ".ade", "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-device-id"), `${legacyA}\n`);
+    fs.writeFileSync(path.join(projectRootB, ".ade", "secrets", "sync-device-id"), `${legacyB}\n`);
+
+    const dbA = await openKvDb(path.join(projectRootA, ".ade", "ade.db"), createLogger() as any);
+    const registryA = createDeviceRegistryService({
+      db: dbA,
+      logger: createLogger() as any,
+      projectRoot: projectRootA,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+    expect(registryA.ensureLocalDevice().deviceId).toBe(legacyA);
+
+    const dbB = await openKvDb(path.join(projectRootB, ".ade", "ade.db"), createLogger() as any);
+    const registryB = createDeviceRegistryService({
+      db: dbB,
+      logger: createLogger() as any,
+      projectRoot: projectRootB,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+
+    expect(registryB.ensureLocalDevice().deviceId).toBe(legacyA);
+    expect(fs.readFileSync(globalDeviceIdPath, "utf8").trim()).toBe(legacyA);
+
+    dbA.close();
+    dbB.close();
+  });
+
+  it("persists notification preferences in device metadata across registry restarts", async () => {
+    const projectRoot = makeProjectRoot("ade-device-registry-prefs-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+
+    const db1 = await openKvDb(dbPath, createLogger() as any);
+    const registry1 = createDeviceRegistryService({
+      db: db1,
+      logger: createLogger() as any,
+      projectRoot,
+    });
+    const local = registry1.ensureLocalDevice();
+    const prefs = {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      chat: {
+        ...DEFAULT_NOTIFICATION_PREFERENCES.chat,
+        awaitingInput: false,
+      },
+    };
+
+    registry1.setNotificationPreferences(local.deviceId, prefs);
+    db1.close();
+
+    const db2 = await openKvDb(dbPath, createLogger() as any);
+    const registry2 = createDeviceRegistryService({
+      db: db2,
+      logger: createLogger() as any,
+      projectRoot,
+    });
+
+    expect(registry2.getNotificationPreferences(local.deviceId)?.chat.awaitingInput).toBe(false);
+    db2.close();
+  });
+
+  it("stores workspace Live Activity update tokens and invalidates only the rejected token", async () => {
+    const projectRoot = makeProjectRoot("ade-device-registry-apns-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    const registry = createDeviceRegistryService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+    });
+    const local = registry.ensureLocalDevice();
+
+    registry.setApnsToken(local.deviceId, "alert-token", "alert", "sandbox", { bundleId: "com.ade.ios" });
+    registry.setApnsToken(local.deviceId, "start-token", "activity-start", "sandbox");
+    registry.setApnsToken(local.deviceId, "workspace-token", "activity-update", "sandbox");
+    registry.setApnsToken(local.deviceId, "session-token", "activity-update", "sandbox", { activityId: "session-1" });
+
+    expect(registry.getApnsTokenForDevice(local.deviceId, "activity-update")).toBe("workspace-token");
+    registry.invalidateApnsToken("session-token");
+
+    const metadata = registry.getDevice(local.deviceId)?.metadata ?? {};
+    expect(metadata.apnsAlertToken).toBe("alert-token");
+    expect(metadata.apnsActivityStartToken).toBe("start-token");
+    expect(metadata.apnsActivityUpdateTokens).toEqual({ workspace: "workspace-token" });
+
+    db.close();
   });
 });

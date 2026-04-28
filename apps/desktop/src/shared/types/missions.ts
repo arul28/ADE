@@ -19,9 +19,7 @@ import type { AgentChatPermissionMode } from "./chat";
 import type {
   ComputerUseArtifactKind,
   ComputerUseOwnerSnapshot,
-  ComputerUsePolicy,
 } from "./computerUseArtifacts";
-import type { ExternalMcpMissionSelection } from "./externalMcp";
 
 /** @deprecated Use MissionProviderPermissions instead. Kept for backward compat with stored missions. */
 export type MissionCliPermissionMode = AiCliPermissionMode;
@@ -64,7 +62,6 @@ export type MissionPermissionConfig = {
   };
   /** New per-provider permission shape. Takes precedence over cli/inProcess when present. */
   providers?: MissionProviderPermissions;
-  externalMcp?: ExternalMcpMissionSelection;
 };
 
 export type MissionStatus =
@@ -637,7 +634,6 @@ export type MissionDetail = MissionSummary & {
   warnings?: MissionDetailWarning[];
   plannerPlan?: PlannerPlan | null;
   phaseConfiguration?: MissionPhaseConfiguration | null;
-  computerUse?: ComputerUsePolicy | null;
 };
 
 export type MissionAgentRuntimeConfig = {
@@ -684,8 +680,6 @@ export type CreateMissionArgs = {
   phaseOverride?: PhaseCard[];
   /** Per-provider worker permission overrides for this mission */
   permissionConfig?: MissionPermissionConfig;
-  /** Mission-scoped computer-use policy for external backends and fallback handling. */
-  computerUse?: ComputerUsePolicy | null;
 };
 
 export type MissionPreflightCheckId =
@@ -744,8 +738,8 @@ export type MissionPreflightResult = {
   budgetEstimate: MissionPreflightBudgetEstimate | null;
   approvalSummary?: MissionPreflightApprovalSummary | null;
   computerUse?: {
-    policy: ComputerUsePolicy;
     requiredKinds: ComputerUseArtifactKind[];
+    /** Missing proof kinds that are configured as blocking. Warning-only gaps stay in the checklist. */
     missingKinds: ComputerUseArtifactKind[];
     availableExternalBackends: string[];
     blocked: boolean;

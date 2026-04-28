@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import type {
   LaneEnvInitConfig,
   LaneEnvInitProgress,
@@ -22,6 +22,7 @@ import {
   secureCopyPathIntoRoot,
   secureWriteFileWithinRoot,
 } from "../shared/utils";
+import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
 /** Resolve a relative path against `root` and throw if it escapes.  Logs a warning on escape. */
 function resolveCheckedPath(
@@ -227,15 +228,42 @@ export function createLaneEnvironmentService({
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     return new Promise((resolve) => {
       const [cmd, ...args] = command;
-      execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-        const exitCode = error && typeof (error as { code?: unknown }).code === "number"
-          ? (error as { code: number }).code
-          : 1;
-        resolve({
-          exitCode: error ? exitCode : 0,
-          stdout: stdout ?? "",
-          stderr: stderr ?? ""
-        });
+      if (!cmd) {
+        resolve({ exitCode: 1, stdout: "", stderr: "Missing command" });
+        return;
+      }
+      const invocation = resolveCliSpawnInvocation(cmd, args, process.env);
+      const child = spawn(invocation.command, invocation.args, {
+        cwd,
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const maxBuffer = 10 * 1024 * 1024;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        terminateProcessTree(child);
+      }, timeoutMs);
+      const append = (current: string, chunk: Buffer): string =>
+        current.length >= maxBuffer
+          ? current
+          : current + chunk.toString("utf8").slice(0, maxBuffer - current.length);
+      child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
+      child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+      child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ exitCode: 1, stdout, stderr: error instanceof Error ? error.message : String(error) });
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ exitCode: code ?? 1, stdout, stderr });
       });
     });
   }

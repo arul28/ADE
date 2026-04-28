@@ -1,6 +1,5 @@
 import React from "react";
 import { Plus } from "@phosphor-icons/react";
-import { STAGE_COLORS } from "./pipelineLabels";
 
 type Props = {
   onAddStage?: () => void;

@@ -1,0 +1,71 @@
+{
+  "milestone": "work",
+  "round": 1,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "xcodebuild test -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "xcodebuild build -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "xcodebuild -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build analyze",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 3,
+    "passed": 0,
+    "failed": 3,
+    "failedFeatures": [
+      "work-sync-contract-parity",
+      "work-mobile-session-browser-and-creation",
+      "work-mobile-session-detail-and-linked-actions"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "work-sync-contract-parity",
+      "severity": "blocking",
+      "description": "Persisted/disconnected Work chat sessions can lose their `awaitingInput` summary signal because `summarizeSessionRow()` only derives it from live in-memory pending-input state in `apps/desktop/src/main/services/chat/agentChatService.ts`."
+    },
+    {
+      "featureId": "work-mobile-session-browser-and-creation",
+      "severity": "blocking",
+      "description": "The Work root Activity feed is built from unfiltered merged sessions in `apps/ios/ADE/Views/Work/WorkRootScreen.swift`, so lane/search/status filters do not fully constrain what the root shows."
+    },
+    {
+      "featureId": "work-mobile-session-detail-and-linked-actions",
+      "severity": "blocking",
+      "description": "The new Work session-detail `Open lane` action only switches to the Lanes tab without consuming the requested lane navigation, so it does not open the related lane as promised."
+    },
+    {
+      "featureId": "work-mobile-session-detail-and-linked-actions",
+      "severity": "blocking",
+      "description": "Work file-reference navigation can silently fall back to `workspaces.first` when the session lane workspace is missing, routing to the wrong Files workspace instead of surfacing an explicit error."
+    }
+  ],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "skill",
+      "suggestion": "Update `sync-parity-worker` to stop prescribing `npm --prefix apps/desktop run test -- --maxWorkers=7` and instead use the repo's supported targeted Vitest patterns or other documented commands.",
+      "evidence": "The `work-sync-contract-parity` review found `.factory/skills/sync-parity-worker/SKILL.md` still recommends `--maxWorkers=7`, while `.factory/library/work-sync-validation.md` documents that this repo's Vitest CLI rejects that flag. The reviewed worker handoff also recorded the mismatch as a procedure deviation.",
+      "isSystemic": true
+    },
+    {
+      "target": "skill",
+      "suggestion": "Update `ios-worker` verification guidance to align with this mission's targeted `xcodebuild test -only-testing:...` policy instead of prescribing the full suite for every feature.",
+      "evidence": "The `work-mobile-session-detail-and-linked-actions` review found `.factory/skills/ios-worker/SKILL.md` still prescribes full `xcodebuild test`, while the mission `AGENTS.md` and the feature instructions require targeted `-only-testing:` validation for Work changes. The worker handoff called out that mismatch explicitly.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": null
+}

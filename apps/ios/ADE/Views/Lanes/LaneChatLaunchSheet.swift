@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Chat launch sheet
-
 struct LaneChatLaunchSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -51,6 +49,14 @@ struct LaneChatLaunchSheet: View {
                 .foregroundStyle(ADEColor.textSecondary)
             }
           }
+          .adeBorderBeam(
+            cornerRadius: 16,
+            duration: 18,
+            strength: 0.5,
+            lineWidth: 1.25,
+            variant: .provider(provider),
+            active: true
+          )
 
           GlassSection(title: providerTitle) {
             HStack(alignment: .center, spacing: 12) {
@@ -78,6 +84,9 @@ struct LaneChatLaunchSheet: View {
                   }
                 }
                 .pickerStyle(.menu)
+                .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .glassEffect(in: .rect(cornerRadius: 10))
 
                 if let selectedModel {
                   VStack(alignment: .leading, spacing: 8) {
@@ -124,16 +133,16 @@ struct LaneChatLaunchSheet: View {
           }
 
           if let errorMessage {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
               Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEColor.danger)
               Text(errorMessage)
                 .font(.caption)
                 .foregroundStyle(ADEColor.danger)
-              Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+              Spacer(minLength: 0)
             }
-            .padding(12)
-            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .adeGlassCard(cornerRadius: 12, padding: 12)
           }
 
           if busy {
@@ -167,8 +176,6 @@ struct LaneChatLaunchSheet: View {
         }
       }
       .onChange(of: selectedModelId) { _, _ in
-        // Reset reasoning effort when the model changes so a stale value
-        // for a model that doesn't support it is never submitted.
         if let efforts = selectedModel?.reasoningEfforts, !efforts.isEmpty {
           if !efforts.contains(where: { $0.effort == selectedReasoningEffort }) {
             selectedReasoningEffort = ""
@@ -178,8 +185,6 @@ struct LaneChatLaunchSheet: View {
         }
       }
       .task(id: provider) {
-        // Clear state immediately so the UI doesn't show stale models
-        // from the previous provider while the async load is in-flight.
         models = []
         selectedModelId = ""
         selectedReasoningEffort = ""
@@ -193,7 +198,6 @@ struct LaneChatLaunchSheet: View {
     let requestedProvider = provider
     do {
       let loadedModels = try await syncService.listChatModels(provider: requestedProvider)
-      // Ignore stale results if provider changed while loading.
       guard provider == requestedProvider else { return }
       models = loadedModels
       if resetSelection || loadedModels.contains(where: { $0.id == selectedModelId }) == false {
@@ -207,6 +211,7 @@ struct LaneChatLaunchSheet: View {
       }
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -232,6 +237,7 @@ struct LaneChatLaunchSheet: View {
       await onComplete(session)
       dismiss()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busy = false

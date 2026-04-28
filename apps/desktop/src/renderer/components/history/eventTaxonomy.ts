@@ -199,7 +199,7 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "budget.exceeded":       { label: "Budget Exceeded",    category: "system", iconName: "Warning",        description: "Budget exceeded",          importance: "high" },
 
   // ── Noise-level events (hidden by default) ─────────────────
-  "mcp_tool_call":     { label: "Tool Call",         category: "system", iconName: "Wrench",          description: "MCP tool invocation",          importance: "noise" },
+  "tool_call":         { label: "Tool Call",         category: "system", iconName: "Wrench",          description: "Tool invocation",              importance: "noise" },
   "worker":            { label: "Worker",            category: "mission", iconName: "Robot",           description: "Worker orchestration step",    importance: "noise" },
   "implementation":    { label: "Implementation",    category: "mission", iconName: "Code",            description: "Implementation step",          importance: "noise" },
   "coordinator":       { label: "Coordinator",       category: "mission", iconName: "TreeStructure",   description: "Coordinator operation",        importance: "noise" },

@@ -27,6 +27,7 @@ import {
   signalChildProcessTree,
   terminateChildProcessTree,
 } from "../shared/utils";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
 
 /** Bridge hooks for an ACP host (Cursor agent, Droid exec, etc.). */
 export type AcpHostBridge = {
@@ -168,12 +169,14 @@ export function createAcpHostClient(
       const limit = typeof params.outputByteLimit === "number" && params.outputByteLimit > 0
         ? params.outputByteLimit
         : 512 * 1024;
-      const proc = spawn(params.command, params.args ?? [], {
+      const env = mergeEnvVars(process.env, params.env ?? undefined);
+      const invocation = resolveCliSpawnInvocation(params.command, params.args ?? [], env);
+      const proc = spawn(invocation.command, invocation.args, {
         cwd,
-        env: mergeEnvVars(process.env, params.env ?? undefined),
-        shell: process.platform === "win32",
+        env,
         detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       proc.on("error", (err) => {
         console.error(`${logPrefix} terminal process error for termId=${termId}:`, err);

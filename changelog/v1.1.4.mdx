@@ -1,0 +1,102 @@
+---
+title: "v1.1.4"
+description: "Release notes for ADE v1.1.4 — April 24, 2026"
+---
+
+v1.1.4 lands the new review engine: a multi-pass pipeline with adjudicated findings, embedding-backed suppression memory, tool-signal evidence, inline diff excerpts, and a Learnings tab tracking quality over time. PR detail picks up convergence rails on both desktop and iOS, the onboarding tour is rewritten, and the terminals surface gets a session-archive overhaul. Chat fixes a long-standing doubled-bubble bug across both Claude and Codex runtimes, scroll-anchoring is reworked, and assistant thoughts collapse cleanly. Windows release validation is hardened against the hangs that broke v1.1.3, and the release pipeline now expects mac + Windows assets in lockstep. iOS lands the desktop-side parity (review schema, archive semantics, CSI fixes), simplifies the lane filter menu, and ships in TestFlight build 6.
+
+---
+
+## Review
+
+The review engine moves from a single-pass diff scan to a multi-pass pipeline with persistent quality memory.
+
+- **Multi-pass pipeline.** Three passes — `diff-risk`, `cross-file-impact`, `checks-and-tests` — each with their own rule overlay via `reviewRuleRegistry`. Findings are deduplicated and then adjudicated with a confidence score; `reviewContextBuilder` assembles a structured prompt per pass instead of pasting a single mega-context.
+- **Suppression memory (ADE-27).** A new `review_suppressions` table plus `reviewSuppressionService` embeds suppressed finding titles via the existing embedding service and KNN-matches future candidates (cosine with Jaccard fallback). Scope tiers: `repo`, `path` (glob), `global`. Pre-publish filter skips matched findings and tags them with scope + similarity; suppress without a path falls back to `repo` so we never insert a never-matchable rule. The path-glob cache is capped at 256 entries with FIFO eviction.
+- **Tool-backed evidence (ADE-26).** `reviewToolEvidence` promotes CI checks, test runs, and session failures from the validation context into first-class `tool_signal` Evidence entries, capped at three per finding and gated on title/body token overlap so unrelated check failures stop attaching to every finding.
+- **Inline diff excerpts.** `reviewDiffContext` builds a highlighted ±8 line window around the anchored line from the materialized patch, with add/del tinting and a focus-line border. When the anchor falls outside every hunk, the first hunk renders unsliced rather than leaving just a hunk header on screen.
+- **Finding-class chips.** `intent_drift`, `incomplete_rollout`, and `late_stage_regression` chips with explanatory tooltips and distinct tones; `finding_class`, `originating_passes`, and adjudication metadata are now schema fields.
+- **Feedback loop.** Per-finding acknowledge / dismiss / snooze / suppress with reason capture, persisted to `review_finding_feedback` and rendered as badges on finding cards. `byClass` quality metrics use a `latest_only` CTE so multiple feedback rows on a single finding don't inflate counts.
+- **Publishing controls.** Publication budget; cancel-run for queued or in-flight reviews (guards against cancellation before the first pass and re-checks after `publishRun`); retry for failed runs; severity filter chips; filtered-count toggle; dedicated no-findings empty state.
+- **Learnings tab.** Quality metrics (runs, noise rate, addressed, dismissed, published, by-class), active suppressions list with hit counts, recent feedback log. Active suppressions are inspectable and removable.
+- **Lane cleanup.** `laneService` explicitly deletes `review_finding_feedback` before `review_findings` on lane delete (CRR strips FKs, no cascade).
+- **Anchored-position correctness.** `reviewTargetMaterializer` increments diff position on non-first `@@` hunks so GitHub inline-comment positions land on the right line across multi-hunk files.
+
+---
+
+## PR convergence rails
+
+PR detail gets a new convergence panel and timeline rails on both desktop and iOS, plus a lane-cleanup banner for branches that have already merged. Issue inventory + resolver tighten how PR comments turn into actionable lanes.
+
+- **PR detail timeline rails.** `PrDetailTimelineRails` and `PrTimeline` render a single timeline of commits, reviews, comments, and check transitions instead of separate panels.
+- **`PrConvergencePanel` + `PrLaneCleanupBanner`.** Convergence panel surfaces auto-converge run state directly in PR detail; cleanup banner prompts to remove the working lane once the PR has merged.
+- **Issue inventory + resolver.** New `issueInventoryService` and `prIssueResolver` aggregate review-bot comments, classify them, and feed the same backing data the AI resolver CTA uses.
+- **External cwd allowed for managed processes.** `processService` accepts a configured absolute `cwd` for managed commands; the trust path is documented inline (originates from `projectConfigService`, no IPC surface lets UI input reach it).
+- **Auto-converge persistence.** New `pr_convergence_state` and `auto_converge_runs` tables in kvDb; iOS `DatabaseBootstrap.sql` regenerated for parity.
+
+---
+
+## /shipLane and orchestration
+
+A new `/shipLane` slash command drives a PR from open to merge autonomously: `automate → finalize`, then poll CI and review comments on a self-paced 12-minute cadence, fixing valid comments and failing tests in place.
+
+- **TeamCreate-first.** Prefers TeamCreate agent teams when available, falls back to parallel `Agent` calls otherwise.
+- **PR creation through ADE.** Opens PRs via `ade prs create` so they show up in ADE's PR tracking; falls back to `gh pr create` only after the agent has exhausted the ADE path via `--help`-driven discovery.
+- **`/automate` narrowed.** Runs only new and affected tests, not the full suite.
+- **`/finalize` Phase 3j cleanup.** Kills lingering vitest / tsup / typecheck worker pools scoped to `apps/` paths after each phase exits, so subsequent runs don't accumulate file locks.
+- **`.gitignore` `node_modules` pattern.** Trailing slash dropped — lane worktrees use symlinks named `node_modules`, and the previous directory-only pattern made git see them as untracked, blocking `ade prs create` preflight.
+
+---
+
+## Chat UX
+
+A doubled-bubble bug that had been intermittently rendering assistant content twice is fixed across both Claude and Codex runtimes. Scroll-anchoring is reworked and assistant thoughts collapse on demand.
+
+- **Claude snapshot dedup against id-less fallback keys.** When `content_block_delta` arrived before `message_start` (SDK ordering / mocks / cached responses), deltas stored fallback dedup keys `${turnId}:b${N}:${idx}`. The snapshot then arrived with a real `assistantMessageId`, computed `${msg_abc}:${idx}`, missed the set, and re-emitted. Snapshot-time lookup now checks both the real-id key and the id-less fallback; mirrored for thinking blocks.
+- **Codex command-output / file-diff dedup on completion.** `mergeStreamingText`'s `startsWith` heuristic fails when a `completed` snapshot's prefix doesn't match accumulated deltas — most reliably for file diffs (the snapshot carries `--- a/file` / `+++ b/file` headers that `outputDelta` never includes). New `streamedCommandItemIds` / `streamedFileChangeItemIds` runtime sets track which itemIds streamed; on `completed`, if the item streamed, the event is emitted with empty output/diff so the renderer keeps accumulated content while the status transition still applies.
+- **Jump-to-latest pill.** Visible without an active turn; the programmatic-scroll counter only increments when the assignment actually moves the element.
+- **Slash menu polish.** `/clear` is hidden from `AgentChatComposer` when no `onClearEvents` handler is wired; the menu closes once the user types a space after the command name so Enter submits with args. File-backed slash expansion defers to any runtime-registered slash command of the same name. Discovery falls back to a normalized-name directory walk for non-canonical filenames; templates missing `$ARGUMENTS` append trailing args instead of dropping them silently.
+- **Session archive semantics.** `sessionService.archive` / `unarchive` return `false` and skip meta-updated emission when the session id does not exist.
+
+---
+
+## Windows release pipeline
+
+v1.1.3's Windows release job hung for 1h26m on `validate:win:release`. v1.1.4 hardens both the packaged-runtime smoke and the validator, and adds a CI signal so this class of regression surfaces on PRs instead of at release time.
+
+- **Packaged-runtime smoke exits cleanly.** `packagedRuntimeSmoke.ts` calls `process.exit(0)` on main success rather than relying on the event loop emptying — node-pty / conpty and the Claude SDK can leave handles open on Windows.
+- **Validator timeouts.** `validate-win-artifacts.mjs` adds a 3-minute default timeout to `runCommand`, SIGKILL on expiry, with captured stdout/stderr in the rejection. Hangs in any validator-spawned child (`ade.cmd` wrapper, installer shim, plain-node fallback) now fail fast instead of sitting until the 6-hour job timeout.
+- **CI `build-win` job.** New self-contained job on `windows-latest` runs the same `dist:win` pipeline as `release-core.yml` (minus the upload step). Self-contained because Windows `node_modules` carry platform-specific native binaries (`node-pty`, `cr-sqlite`, `onnxruntime-node`) that can't share the Linux install archive. Wired into the `ci-pass` gate so a broken Windows pipeline blocks merge.
+- **Vercel preview build skip.** Skipped when `apps/web` is unchanged, so desktop / CLI PRs don't burn the Vercel free tier.
+
+---
+
+## /release command
+
+Updates to the release runbook itself, driven by what went wrong on v1.1.3.
+
+- **iOS group selection is now mandatory.** Phase 7a always pauses for build number AND target TestFlight group(s); enumerates groups with their tester counts before asking; explains internal vs external groups. Builds can no longer land in an empty group (invisible) or in the wrong audience by accident.
+- **Safe sequenced asc publish.** Phase 7e replaces the one-shot `asc publish testflight --group ... --wait` (which races: `--wait` returns at `processingState=VALID`, but `usesNonExemptEncryption` is still `None`, so `add-groups` fails with "Build is not in an externally assignable state"). Sequence is: upload + wait → resolve build id → answer encryption → add to groups.
+- **Distribution verification.** Phase 7f verifies the build is in a non-empty group and linked correctly; doesn't trust `autoNotifyEnabled` alone.
+- **Mac + Windows asset gating.** Phase 5 enumerates the expected mac and Windows asset set; Phase 8 refuses to flip the draft when any expected asset is missing (asymmetric desktop releases break electron-updater consumers on the missing platform).
+
+---
+
+## Sync
+
+- **`isOpen` on `SyncMobileProjectSummary`.** Desktop now threads through whether the summary represents the currently-open project or a cached/recent one. Optional / nil-tolerant on older desktop builds.
+
+---
+
+## iOS
+
+iOS picks up parity with the desktop-side review schema, archive semantics, and chat fixes, plus a focused round of catalog and lane-filter polish. Ships in **TestFlight build 6** of 1.1.1.
+
+- **Lane status upsert fix.** `Database.swift`'s `lane_statuses` insert now has an `on conflict do update` clause, so repeat syncs actually refresh `dirty` / `ahead` / `behind` instead of hitting the unique-lane-id constraint and dropping the update.
+- **Closed-project badge.** `MobileProjectSummary` carries optional `isOpen` (nil-tolerant; defaults to "open" for older desktop builds). `ContentView` shows a "Closed" capsule in place of the lane count when a project is explicitly `isOpen=false`. `SyncService` sorts open projects above closed in the catalog; the active project still wins outright.
+- **Lane filter simplification.** `LanesTabView` collapses the full filter menu (scope, runtime, manage-visible) to just the primary-branch picker, which is the only filter most users reach for. Scope and runtime were clutter for little benefit.
+- **Archive authority.** `WorkRootScreen.archivedSessionIds` treats remote `archivedAt` as authoritative for sessions present in the remote payload; toggle paths operate on raw local storage so remote state isn't shadowed by stale local ids.
+- **CSI 1K correctness.** `WorkNavigationAndTranscriptHelpers` blanks columns in place with spaces and leaves the cursor column unchanged, per ECMA-48.
+- **Chat surfaces refreshed.** Composer, message list, reasoning card, mention input, sync/session command-output plumbing, model registry, and slash-command discovery all moved forward in lockstep with the desktop chat-ux pass.
+- **Destination icon polish.** `WorkSessionDestinationView` drops the `.circle` variant on the branch icon to match other inline destination icons.
+- **Database bootstrap regen.** `DatabaseBootstrap.sql` regenerated for the new `pr_convergence_state` / `auto_converge_runs` kvDb tables and for the `terminal_sessions.archived_at` column.

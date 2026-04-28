@@ -230,6 +230,172 @@ describe("automationPlannerService.validateDraft", () => {
     expect(saved.rule.actions[0]?.type).toBe("run-tests");
     expect(getSnapshot().local.automations[0]?.actions?.[0]?.type).toBe("run-tests");
   });
+
+  it("accepts canonical GitHub triggers and ade-action steps without rehydrating project context", () => {
+    const { planner, getSnapshot } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Label issue",
+      triggers: [{ type: "github.issue_opened", titleRegex: "^Bug", bodyRegex: "crash", repo: "acme/ade" }],
+      trigger: { type: "github.issue_opened", titleRegex: "^Bug", bodyRegex: "crash", repo: "acme/ade" },
+      includeProjectContext: false,
+      memory: { mode: "none" },
+      contextSources: [{ type: "project-memory" }],
+      actions: [{ type: "ade-action", adeAction: { domain: "issue", action: "setLabels", args: { labels: ["triage"] } } }],
+      legacyActions: [{ type: "ade-action", adeAction: { domain: "issue", action: "setLabels", args: { labels: ["triage"] } } }],
+    });
+
+    const saved = planner.saveDraft({ draft, confirmations: [] });
+
+    expect(saved.rule.triggers[0]).toMatchObject({
+      type: "github.issue_opened",
+      titleRegex: "^Bug",
+      bodyRegex: "crash",
+      repo: "acme/ade",
+    });
+    expect(saved.rule.actions[0]).toMatchObject({
+      type: "ade-action",
+      adeAction: { domain: "issue", action: "setLabels" },
+    });
+    expect(saved.rule.includeProjectContext).toBe(false);
+    expect(getSnapshot().local.automations[0]?.includeProjectContext).toBe(false);
+  });
+
+  it("normalizes issue-to-lane pipelines with per-step agent settings", () => {
+    const { planner } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Issue pipeline",
+      triggers: [{ type: "github.issue_opened", repo: "arul28/ADE" }],
+      trigger: { type: "github.issue_opened", repo: "arul28/ADE" },
+      execution: { kind: "built-in" } as any,
+      actions: [
+        {
+          type: "create-lane",
+          laneNameTemplate: "{{trigger.issue.title}}",
+          laneDescriptionTemplate: "{{trigger.issue.url}}",
+        },
+        {
+          type: "agent-session",
+          prompt: "Fix {{trigger.issue.title}}",
+          sessionTitle: "Fix issue",
+          modelConfig: { modelId: "opencode/openai/gpt-5.4", thinkingLevel: "high" },
+          permissionConfig: { providers: { opencode: "full-auto" } },
+        },
+      ],
+      legacyActions: [
+        {
+          type: "create-lane",
+          laneNameTemplate: "{{trigger.issue.title}}",
+          laneDescriptionTemplate: "{{trigger.issue.url}}",
+        },
+        {
+          type: "agent-session",
+          prompt: "Fix {{trigger.issue.title}}",
+          sessionTitle: "Fix issue",
+          modelConfig: { modelId: "opencode/openai/gpt-5.4", thinkingLevel: "high" },
+          permissionConfig: { providers: { opencode: "full-auto" } },
+        },
+      ],
+    } as any);
+
+    const res = planner.validateDraft({ draft, confirmations: [] });
+    expect(res.ok).toBe(true);
+    expect(res.normalized?.actions[0]).toMatchObject({
+      type: "create-lane",
+      laneNameTemplate: "{{trigger.issue.title}}",
+    });
+    expect(res.normalized?.actions[1]).toMatchObject({
+      type: "agent-session",
+      modelConfig: { modelId: "opencode/openai/gpt-5.4", thinkingLevel: "high" },
+      permissionConfig: { providers: { opencode: "full-auto" } },
+    });
+  });
+
+  it("defaults the create-lane name template to trigger.issue.title when blank", () => {
+    const { planner } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Default lane name",
+      triggers: [{ type: "github.issue_opened" }],
+      trigger: { type: "github.issue_opened" },
+      execution: { kind: "built-in" } as any,
+      actions: [{ type: "create-lane", laneNameTemplate: "   " } as any],
+      legacyActions: [{ type: "create-lane", laneNameTemplate: "   " } as any],
+    });
+
+    const res = planner.validateDraft({ draft, confirmations: [] });
+    expect(res.ok).toBe(true);
+    expect(res.normalized?.actions[0]).toMatchObject({
+      type: "create-lane",
+      laneNameTemplate: "{{trigger.issue.title}}",
+    });
+    expect((res.normalized?.actions[0] as any).laneDescriptionTemplate).toBeUndefined();
+    expect((res.normalized?.actions[0] as any).parentLaneId).toBeUndefined();
+  });
+
+  it("preserves per-action targetLaneId on every action via the base spread", () => {
+    const { planner } = getPlanner({ suites: [{ id: "unit", name: "Unit Tests" }] });
+    const draft = createDraft({
+      name: "Per-action lanes",
+      execution: { kind: "built-in" } as any,
+      actions: [
+        {
+          type: "ade-action",
+          targetLaneId: "lane-ade",
+          adeAction: { domain: "issue", action: "setLabels", args: { labels: ["x"] } },
+        } as any,
+        { type: "run-tests", suite: "unit", targetLaneId: "lane-tests" } as any,
+        { type: "predict-conflicts", targetLaneId: "lane-conflict" } as any,
+      ],
+      legacyActions: [
+        {
+          type: "ade-action",
+          targetLaneId: "lane-ade",
+          adeAction: { domain: "issue", action: "setLabels", args: { labels: ["x"] } },
+        } as any,
+        { type: "run-tests", suite: "unit", targetLaneId: "lane-tests" } as any,
+        { type: "predict-conflicts", targetLaneId: "lane-conflict" } as any,
+      ],
+    });
+
+    const res = planner.validateDraft({ draft, confirmations: [] });
+    expect(res.ok).toBe(true);
+    expect((res.normalized?.actions[0] as any).targetLaneId).toBe("lane-ade");
+    expect((res.normalized?.actions[1] as any).targetLaneId).toBe("lane-tests");
+    expect((res.normalized?.actions[2] as any).targetLaneId).toBe("lane-conflict");
+  });
+
+  it("validates run-command cwd against the per-action targetLaneId before draft execution lane", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-action-lane-"));
+    const actionLane = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-action-lane-target-"));
+    const draftLane = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-draft-lane-"));
+
+    try {
+      fs.mkdirSync(path.join(actionLane, "scripts"), { recursive: true });
+      const { planner } = getPlanner({
+        suites: [],
+        projectRoot,
+        laneWorktrees: { "lane-action": actionLane, "lane-draft": draftLane },
+      });
+
+      const draft = createDraft({
+        name: "Per-action lane cwd",
+        execution: { kind: "built-in", targetLaneId: "lane-draft" } as any,
+        actions: [{ type: "run-command", command: "ls", cwd: "scripts", targetLaneId: "lane-action" } as any],
+        legacyActions: [{ type: "run-command", command: "ls", cwd: "scripts", targetLaneId: "lane-action" } as any],
+      });
+
+      const res = planner.validateDraft({ draft, confirmations: ["confirm.run-command"] });
+      expect(res.ok).toBe(true);
+      expect(res.normalized?.actions[0]).toMatchObject({
+        type: "run-command",
+        cwd: "scripts",
+        targetLaneId: "lane-action",
+      });
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(actionLane, { recursive: true, force: true });
+      fs.rmSync(draftLane, { recursive: true, force: true });
+    }
+  });
 });
  
 function createDraft(

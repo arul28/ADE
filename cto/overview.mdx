@@ -6,11 +6,7 @@ icon: "crown"
 
 ## What is the CTO Agent?
 
-The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI agent. Unlike agents you spawn for a specific task, the CTO is always running in the background — watching commits, monitoring lane status, tracking PR progress, and building a cumulative understanding of your project over time.
-
-Think of the CTO as the single intelligence that holds your project together. It knows your architecture, your conventions, which lanes are stuck, which PRs are at risk, and what has changed since you were last looking. When you need a quick project status, a code review, or to delegate a large task, the CTO is your first stop.
-
-The CTO ships with a rich default persona: a persistent technical lead who holds the complete mental model of your codebase, coordinates worker agents, and ensures consistency across all development efforts. Its system prompt includes a baked-in **Memory Protocol** (search memory before acting, save important findings immediately), a **Daily Context** routine (orient at the start of each conversation by checking recent decisions and worker activity), and a **Decision Framework** (make autonomous decisions when safe, escalate when risky). These protocols are part of the CTO's DNA — they are always present in the system prompt, even after compaction.
+The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI agent — always running in the background watching commits, monitoring lane status, tracking PR progress, and accumulating project understanding over time. Its system prompt includes a baked-in **Memory Protocol** (search before acting, save findings immediately), a **Daily Context** routine (check recent decisions and worker activity at each activation), and a **Decision Framework** (act autonomously when safe, escalate when risky). These protocols survive compaction.
 
 <CardGroup cols={2}>
   <Card title="Always-On Awareness" icon="eye">
@@ -43,7 +39,7 @@ Understanding how the CTO differs from the agents you spawn manually (in chat se
 | **Memory** | Accumulates over weeks/months | Within the current session or run |
 | **Triggers** | Heartbeat schedule + events + manual chat | Explicit user action or automation trigger |
 | **Authority** | Can spawn lanes, create missions, delegate to workers, drive PR convergence | Operates within its assigned lane/context |
-| **Linear access** | Full bidirectional sync (owner) | Read-only via MCP tools, if granted |
+| **Linear access** | Full bidirectional sync (owner) | Read-only via ADE CLI tools, if granted |
 | **Primary UI** | CTO tab | Lane terminal, Chat pane, Missions tab |
 
 ---
@@ -63,7 +59,7 @@ The CTO sits at the top. Below it are **Worker agents** (also called Employees) 
 
 - A **name** and **specialization prompt** that defines their role and constraints
 - An **assigned lane** (optional; some workers operate across lanes)
-- A **tool palette** — a subset of MCP tools they are permitted to use
+- A **tool palette** — a subset of ADE CLI tools they are permitted to use
 - A **budget limit** — a token/cost cap enforced by the CTO
 
 The CTO coordinates workers: it assigns tasks, monitors their output, routes their results back to Linear or PRs, and intervenes if a worker is stuck or over budget.

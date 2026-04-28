@@ -10,11 +10,20 @@ import type {
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { BudgetCapEditor } from "../automations/components/BudgetCapEditor";
-import { CostSummaryCard } from "../automations/components/CostSummaryCard";
-import { UsageMeter } from "../automations/components/UsageMeter";
-import { UsagePacingBadge } from "../automations/components/UsagePacingBadge";
-import { CARD_SHADOW_STYLE, extractError } from "../automations/shared";
+import { BudgetCapEditor } from "./BudgetCapEditor";
+import { CostSummaryCard } from "./CostSummaryCard";
+import { UsageMeter } from "./UsageMeter";
+import { UsagePacingBadge } from "./UsagePacingBadge";
+
+const CARD_SHADOW_STYLE: React.CSSProperties = {
+  background: "linear-gradient(180deg, rgba(20, 31, 45, 0.96) 0%, rgba(10, 18, 28, 0.94) 100%)",
+  border: "1px solid rgba(87, 108, 128, 0.22)",
+  boxShadow: "0 18px 40px -24px rgba(0, 0, 0, 0.78), inset 0 1px 0 rgba(255,255,255,0.04)",
+};
+
+function extractError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 function computeResetsInMs(resetsAt: string, nowMs: number): number {
   if (!resetsAt) return 0;

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160" fill="none">
+  <rect x="60" y="40" width="160" height="50" rx="14" fill="var(--color-surface-2, rgba(255,255,255,0.04))" stroke="var(--color-accent, #A78BFA)" stroke-opacity="0.4"/>
+  <rect x="100" y="80" width="160" height="50" rx="14" fill="var(--color-accent, #A78BFA)" fill-opacity="0.2" stroke="var(--color-accent, #A78BFA)" stroke-opacity="0.6"/>
+  <circle cx="78" cy="65" r="4" fill="var(--color-muted-fg, #908FA0)"/>
+  <circle cx="90" cy="65" r="4" fill="var(--color-muted-fg, #908FA0)"/>
+  <circle cx="102" cy="65" r="4" fill="var(--color-muted-fg, #908FA0)"/>
+  <circle cx="118" cy="105" r="4" fill="var(--color-accent, #A78BFA)"/>
+  <circle cx="130" cy="105" r="4" fill="var(--color-accent, #A78BFA)"/>
+  <circle cx="142" cy="105" r="4" fill="var(--color-accent, #A78BFA)"/>
+</svg>

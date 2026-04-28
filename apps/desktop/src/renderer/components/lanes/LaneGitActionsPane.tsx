@@ -3,6 +3,7 @@ import { ArrowDown, ArrowsClockwise, Check, Stack, Trash, Upload, Warning } from
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
+import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
@@ -208,7 +209,7 @@ function getCommitHelperText(args: {
   commitMessageAi: CommitMessageAiState;
 }): string {
   if (args.commitMessage.trim().length > 0) {
-    return "Press Cmd+Enter to commit with the typed message.";
+    return `Press ${modifierKeyLabel}+Enter to commit with the typed message.`;
   }
   if (args.commitMessageAi.enabled && args.commitMessageAi.modelId) {
     return `Blank messages will be auto-generated with ${args.commitMessageAi.modelId}.`;
@@ -927,6 +928,16 @@ export function LaneGitActionsPane({
     });
   };
 
+  const discardStagedFile = (path: string) => {
+    if (!laneId) return;
+    if (busyAction) return;
+    const ok = window.confirm(`Discard staged and unstaged changes to ${path}? This cannot be undone.`);
+    if (!ok) return;
+    void runAction("discard staged file", async () => {
+      await window.ade.git.restoreStagedFile({ laneId, path });
+    });
+  };
+
   const discardAll = () => {
     if (!laneId) return;
     if (busyAction) return;
@@ -935,6 +946,18 @@ export function LaneGitActionsPane({
     void runAction("discard all", async () => {
       for (const file of changes.unstaged) {
         await window.ade.git.discardFile({ laneId, path: file.path });
+      }
+    });
+  };
+
+  const discardAllStaged = () => {
+    if (!laneId) return;
+    if (busyAction) return;
+    const ok = window.confirm(`Discard ALL staged changes (${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"})? This also discards any unstaged edits to the same files and cannot be undone.`);
+    if (!ok) return;
+    void runAction("discard staged files", async () => {
+      for (const file of changes.staged) {
+        await window.ade.git.restoreStagedFile({ laneId, path: file.path });
       }
     });
   };
@@ -1284,7 +1307,40 @@ export function LaneGitActionsPane({
             <Trash size={12} />
           </button>
           </SmartTooltip>
-        ) : null}
+        ) : (
+          <SmartTooltip content={{
+            label: "Discard Staged Changes",
+            description: `Revert ${file.path} to its last committed state.`,
+            gitCommand: `git restore --staged --worktree --source=HEAD -- "${file.path}"`,
+            effect: `Discard staged and unstaged changes to ${file.path}`,
+            warning: "This cannot be undone",
+          }}>
+            <button
+              type="button"
+              className="shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity flex items-center justify-center"
+              style={{
+                width: 20,
+                height: 20,
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                color: COLORS.textDim,
+              }}
+              aria-label={`Discard staged changes to ${file.path}`}
+              onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.danger; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+              onFocus={(e) => { e.currentTarget.style.color = COLORS.danger; }}
+              onBlur={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+              disabled={!!busyAction}
+              onClick={(event) => {
+                event.stopPropagation();
+                void discardStagedFile(file.path);
+              }}
+            >
+              <Trash size={12} />
+            </button>
+          </SmartTooltip>
+        )}
       </div>
     );
   };
@@ -1546,7 +1602,7 @@ export function LaneGitActionsPane({
             onResolveRebaseConflict(laneId, rebaseConflictParentLaneId);
             return;
           }
-          const search = new URLSearchParams({ tab: "rebase", laneId });
+          const search = new URLSearchParams({ tab: "workflows", workflow: "rebase", laneId });
           if (rebaseConflictParentLaneId) search.set("parentLaneId", rebaseConflictParentLaneId);
           navigate(`/prs?${search.toString()}`);
         };
@@ -1571,8 +1627,8 @@ export function LaneGitActionsPane({
             {autoRebaseStatus.state !== "autoRebased" ? (
               isAutoRebaseFailure ? (
                 <SmartTooltip content={{
-                  label: "Open Rebase Tab",
-                  description: "View detailed rebase conflict information and resolve issues.",
+                  label: "Open Rebase/Merge Tab",
+                  description: "View detailed rebase information and resolve issues.",
                   effect: "Navigate to the rebase details view",
                 }}>
                   <button
@@ -1581,7 +1637,7 @@ export function LaneGitActionsPane({
                     disabled={!laneId || busyAction != null}
                     onClick={openRebaseTab}
                   >
-                    OPEN REBASE TAB
+                    OPEN REBASE/MERGE TAB
                   </button>
                 </SmartTooltip>
               ) : (
@@ -1676,7 +1732,7 @@ export function LaneGitActionsPane({
               effect: hasStaged
                 ? `${amendCommit ? "Amend" : "Commit"} ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}`
                 : "No staged files to commit",
-              shortcut: "\u2318+Enter",
+              shortcut: `${modifierKeyLabel}+Enter`,
             }}>
               <button
                 type="button"
@@ -2091,7 +2147,7 @@ export function LaneGitActionsPane({
         >
           <SectionCard
             title="Files"
-            description="Changed files and stash controls."
+            description="Changed files. Stashes are saved snapshots below."
             dataTestId="files-section"
             sectionStyle={{ minHeight: 0, height: "100%" }}
             bodyStyle={{ flex: 1, minHeight: 0 }}
@@ -2118,7 +2174,7 @@ export function LaneGitActionsPane({
                       </button>
                     </SmartTooltip>
                     <SmartTooltip content={{
-                      label: "Discard All",
+                      label: "Discard All Unstaged",
                       description: "Permanently discard all unstaged changes. Files revert to their last committed state.",
                       gitCommand: "git checkout -- .",
                       effect: `Discard changes in ${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"}`,
@@ -2130,26 +2186,44 @@ export function LaneGitActionsPane({
                         onClick={discardAll}
                         disabled={busyAction != null}
                       >
-                        DISCARD ALL
+                        DISCARD UNSTAGED
                       </button>
                     </SmartTooltip>
                   </>
                 ) : null}
                 {changes.staged.length > 0 ? (
-                  <SmartTooltip content={{
-                    label: "Unstage All",
-                    description: "Remove all files from the staging area. Changes are kept but won't be included in the next commit.",
-                    gitCommand: "git reset HEAD",
-                    effect: `Unstage ${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"}`,
-                  }}>
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      onClick={unstageAll}
-                    >
-                      UNSTAGE ALL
-                    </button>
-                  </SmartTooltip>
+                  <>
+                    <SmartTooltip content={{
+                      label: "Unstage All",
+                      description: "Remove all files from the staging area. Changes are kept but won't be included in the next commit.",
+                      gitCommand: "git reset HEAD",
+                      effect: `Unstage ${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"}`,
+                    }}>
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        onClick={unstageAll}
+                      >
+                        UNSTAGE STAGED
+                      </button>
+                    </SmartTooltip>
+                    <SmartTooltip content={{
+                      label: "Discard All Staged",
+                      description: "Permanently discard all staged changes. If any staged file also has unstaged edits, those edits are discarded too.",
+                      gitCommand: "git restore --staged --worktree --source=HEAD -- <paths>",
+                      effect: `Discard staged changes in ${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"}`,
+                      warning: "This cannot be undone",
+                    }}>
+                      <button
+                        type="button"
+                        style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        onClick={discardAllStaged}
+                        disabled={busyAction != null}
+                      >
+                        DISCARD STAGED
+                      </button>
+                    </SmartTooltip>
+                  </>
                 ) : null}
                 {showRescueButton ? (
                   <SmartTooltip content={{
@@ -2220,7 +2294,7 @@ export function LaneGitActionsPane({
                           });
                         }}
                       >
-                        CLEAR ALL
+                        CLEAR STASHES
                       </button>
                     </SmartTooltip>
                   )}
@@ -2336,9 +2410,15 @@ export function LaneGitActionsPane({
                             disabled={!laneId || busyAction != null}
                             onClick={() => {
                               if (!laneId) return;
-                              const ok = window.confirm(`Delete stash "${stash.subject || stash.ref}"? This cannot be undone.`);
-                              if (!ok) return;
                               void runAction("stash drop", async () => {
+                                const confirmation = await requestTextInput({
+                                  title: "Delete stash?",
+                                  message: `This will permanently delete "${stash.subject || stash.ref}". Type "delete" to confirm.`,
+                                  placeholder: "Type delete to confirm",
+                                  confirmLabel: "Delete stash",
+                                  validate: (v) => v.trim().toLowerCase() === "delete" ? null : "Type delete to confirm",
+                                });
+                                if (confirmation == null) throw new Error("__ade_cancelled__");
                                 await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
                                 await refreshGitMeta(laneId);
                               });

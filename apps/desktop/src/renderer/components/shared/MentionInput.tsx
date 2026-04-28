@@ -314,6 +314,10 @@ export function MentionInput({
             disabled={disabled}
             placeholder={placeholder}
             autoFocus={autoFocus}
+            autoComplete="on"
+            autoCorrect="on"
+            autoCapitalize="sentences"
+            spellCheck={true}
             rows={1}
             className="w-full resize-none rounded-[var(--chat-radius-card)] border border-white/8 bg-black/12 px-4 py-3 text-[12px] outline-none transition-colors placeholder:text-white/24 disabled:opacity-50"
             style={{

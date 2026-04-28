@@ -7,6 +7,7 @@ import {
   CopySimple,
   ArrowsClockwise,
   Eye,
+  ArrowSquareOut,
   Trash,
   ArrowUp,
   Play,
@@ -40,6 +41,7 @@ export type IssueInventoryItem = {
   source: IssueItemSource;
   dismissReason: string | null;
   agentSessionId: string | null;
+  url?: string | null;
 };
 
 export type ConvergenceStatus = {
@@ -73,6 +75,7 @@ export type PrConvergencePanelProps = {
   autoConverge: boolean;
   pipelineSettings: PipelineSettings;
   waitState: AutoConvergeWaitState;
+  terminalState?: "merged" | "closed" | null;
   onPipelineSettingsChange: (settings: Partial<PipelineSettings>) => void;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (value: string) => void;
@@ -83,6 +86,7 @@ export type PrConvergencePanelProps = {
   onMarkDismissed: (itemIds: string[], reason: string) => void;
   onMarkEscalated: (itemIds: string[]) => void;
   onResetInventory: () => void;
+  onOpenSource?: (item: IssueInventoryItem) => void;
   onViewAgentSession?: (sessionId: string) => void;
   onStopAutoConverge?: () => void;
   onResumePause?: () => void;
@@ -386,7 +390,7 @@ function SeverityBadge({ severity }: { severity: IssueItemSeverity }) {
 }
 
 function SourceTag({ source }: { source: IssueItemSource }) {
-  const meta = SOURCE_META[source];
+  const meta = SOURCE_META[source] ?? { label: String(source || "SRC").slice(0, 3).toUpperCase(), color: COLORS.textMuted };
   return (
     <span
       style={{
@@ -412,11 +416,13 @@ function IssueRow({
   showAgent,
   onDismiss,
   onEscalate,
+  onOpenSource,
 }: {
   item: IssueInventoryItem;
   showAgent?: boolean;
   onDismiss?: (itemId: string) => void;
   onEscalate?: (itemId: string) => void;
+  onOpenSource?: (item: IssueInventoryItem) => void;
 }) {
   let location: string | null = null;
   if (item.filePath) {
@@ -487,6 +493,30 @@ function IssueRow({
       ) : null}
       {item.state === "fixed" ? (
         <CheckCircle size={15} weight="fill" style={{ color: COLORS.success, flexShrink: 0 }} />
+      ) : null}
+      {onOpenSource && item.url ? (
+        <button
+          type="button"
+          title="Open source comment"
+          onClick={() => onOpenSource(item)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: 4,
+            border: `1px solid ${COLORS.border}`,
+            background: "rgba(255,255,255,0.03)",
+            cursor: "pointer",
+            color: COLORS.textMuted,
+            padding: 0,
+            flexShrink: 0,
+            transition: "all 0.15s ease",
+          }}
+        >
+          <ArrowSquareOut size={11} />
+        </button>
       ) : null}
       {onDismiss && item.state !== "fixed" && item.state !== "dismissed" ? (
         <button
@@ -989,6 +1019,7 @@ export function PrConvergencePanel({
   autoConverge,
   pipelineSettings,
   waitState,
+  terminalState = null,
   onPipelineSettingsChange,
   onModelChange,
   onReasoningEffortChange,
@@ -999,6 +1030,7 @@ export function PrConvergencePanel({
   onMarkDismissed,
   onMarkEscalated,
   onResetInventory,
+  onOpenSource,
   onViewAgentSession,
   onStopAutoConverge,
   onResumePause,
@@ -1057,6 +1089,38 @@ export function PrConvergencePanel({
     : null;
 
   const isEmpty = items.length === 0 && checks.length === 0;
+
+  if (terminalState) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", height: "100%", background: COLORS.pageBg, overflow: "auto", padding: 16, gap: 12 }}>
+        <div style={{ border: `1px solid ${terminalState === "merged" ? `${COLORS.success}35` : COLORS.border}`, background: terminalState === "merged" ? `${COLORS.success}08` : "rgba(255,255,255,0.02)", padding: 16, borderRadius: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <CheckCircle size={18} weight="fill" style={{ color: terminalState === "merged" ? COLORS.success : COLORS.textMuted }} />
+            <div>
+              <div style={{ fontFamily: SANS_FONT, fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>
+                PR {terminalState === "merged" ? "merged" : "closed"}
+              </div>
+              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, marginTop: 3 }}>
+                Path to Merge is frozen for terminal PRs. Historical comments are shown for reference only.
+              </div>
+            </div>
+          </div>
+        </div>
+        {items.length > 0 ? (
+          <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden", background: "rgba(255,255,255,0.015)" }}>
+            <div style={{ padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}`, fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Historical review inventory
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 8 }}>
+              {items.map((item) => (
+                <IssueRow key={item.id} item={item} onOpenSource={onOpenSource} />
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -1313,6 +1377,7 @@ export function PrConvergencePanel({
                                     showAgent={state === "in_progress"}
                                     onDismiss={(id) => onMarkDismissed([id], "Dismissed from UI")}
                                     onEscalate={(id) => onMarkEscalated([id])}
+                                    onOpenSource={onOpenSource}
                                   />
                                 );
                               })}

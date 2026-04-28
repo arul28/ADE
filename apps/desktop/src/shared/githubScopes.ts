@@ -1,7 +1,6 @@
 export const REQUIRED_GITHUB_CLASSIC_SCOPES = [
   "repo",
   "workflow",
-  "read:org",
 ] as const;
 
 export type GitHubClassicScope = (typeof REQUIRED_GITHUB_CLASSIC_SCOPES)[number];
@@ -20,14 +19,11 @@ export type GitHubTokenAccessState = {
   requirements: Record<GitHubClassicScope, ScopeRequirementState>;
 };
 
-const REPO_FINE_GRAINED_PERMISSIONS = ["contents", "pull_requests"] as const;
-const WORKFLOW_FINE_GRAINED_PERMISSIONS = ["workflow", "workflows", "actions", "checks"] as const;
-const ORG_FINE_GRAINED_PERMISSIONS = ["read:org", "admin:org", "members", "organization_members", "read_org"] as const;
+const REPO_FINE_GRAINED_PERMISSIONS = ["contents", "pull_requests", "metadata"] as const;
+const WORKFLOW_FINE_GRAINED_PERMISSIONS = ["actions", "workflows"] as const;
 const FINE_GRAINED_PERMISSION_PREFIXES = [
   ...REPO_FINE_GRAINED_PERMISSIONS,
   ...WORKFLOW_FINE_GRAINED_PERMISSIONS,
-  ...ORG_FINE_GRAINED_PERMISSIONS,
-  "metadata",
 ] as const;
 
 function normalizeScopeToken(value: string): string {
@@ -49,10 +45,6 @@ function hasScopeLike(normalizedScopes: Set<string>, candidate: string): boolean
   ));
 }
 
-function hasAnyScopeLike(normalizedScopes: Set<string>, candidates: readonly string[]): boolean {
-  return candidates.some((candidate) => hasScopeLike(normalizedScopes, candidate));
-}
-
 export function parseGitHubScopeHeaders(headers: Pick<Headers, "get">): string[] {
   return splitHeaderScopes(headers.get("x-oauth-scopes"));
 }
@@ -66,8 +58,8 @@ export function getGitHubTokenAccessState(scopes: Iterable<string>): GitHubToken
 
   const repoPresent = hasScopeLike(normalizedScopes, "repo")
     || REPO_FINE_GRAINED_PERMISSIONS.every((permission) => hasScopeLike(normalizedScopes, permission));
-  const workflowPresent = hasAnyScopeLike(normalizedScopes, WORKFLOW_FINE_GRAINED_PERMISSIONS);
-  const orgPresent = hasAnyScopeLike(normalizedScopes, ORG_FINE_GRAINED_PERMISSIONS);
+  const workflowPresent = hasScopeLike(normalizedScopes, "workflow")
+    || WORKFLOW_FINE_GRAINED_PERMISSIONS.every((permission) => hasScopeLike(normalizedScopes, permission));
 
   const usesFineGrainedPermissions = FINE_GRAINED_PERMISSION_PREFIXES.some((candidate) =>
     hasScopeLike(normalizedScopes, candidate),
@@ -79,8 +71,6 @@ export function getGitHubTokenAccessState(scopes: Iterable<string>): GitHubToken
         return !repoPresent;
       case "workflow":
         return !workflowPresent;
-      case "read:org":
-        return !orgPresent;
       default:
         return true;
     }
@@ -88,9 +78,8 @@ export function getGitHubTokenAccessState(scopes: Iterable<string>): GitHubToken
 
   const missingDescriptions = usesFineGrainedPermissions
     ? [
-        !repoPresent ? "Contents and Pull requests" : null,
-        !workflowPresent ? "Actions/Workflows or Checks" : null,
-        !orgPresent ? "Members" : null,
+        !repoPresent ? "Contents, Pull requests, and Metadata" : null,
+        !workflowPresent ? "Actions and Workflows" : null,
       ].filter((value): value is string => Boolean(value))
     : [...missingClassicScopes];
 
@@ -103,7 +92,6 @@ export function getGitHubTokenAccessState(scopes: Iterable<string>): GitHubToken
     requirements: {
       repo: { id: "repo", present: repoPresent },
       workflow: { id: "workflow", present: workflowPresent },
-      "read:org": { id: "read:org", present: orgPresent },
     },
   };
 }

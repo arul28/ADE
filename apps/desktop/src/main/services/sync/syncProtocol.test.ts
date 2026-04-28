@@ -59,4 +59,45 @@ describe("syncProtocol", () => {
     expect(parsed.compression).toBe("gzip");
     expect(parsed.payload).toEqual(payload);
   });
+
+  it("round-trips project switch result payloads with request ids", () => {
+    const payload = {
+      ok: true,
+      project: {
+        id: "project-1",
+        displayName: "ADE",
+        rootPath: "/Users/arul/ADE",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T12:00:00.000Z",
+        laneCount: 3,
+        isAvailable: true,
+        isCached: true,
+      },
+      connection: {
+        authKind: "bootstrap",
+        token: "bootstrap-token",
+        hostIdentity: {
+          deviceId: "host-1",
+          siteId: "site-1",
+          name: "ADE Desktop",
+          platform: "macOS",
+          deviceType: "desktop",
+        },
+        port: 8787,
+        addressCandidates: [{ host: "192.168.1.44", kind: "lan" }],
+      },
+    };
+
+    const encoded = encodeSyncEnvelope({
+      type: "project_switch_result",
+      requestId: "switch-1",
+      payload,
+      compressionThresholdBytes: 10_000,
+    });
+
+    const parsed = parseSyncEnvelope(encoded);
+    expect(parsed.type).toBe("project_switch_result");
+    expect(parsed.requestId).toBe("switch-1");
+    expect(parsed.payload).toEqual(payload);
+  });
 });

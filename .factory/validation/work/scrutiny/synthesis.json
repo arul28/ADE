@@ -1,0 +1,51 @@
+{
+  "milestone": "work",
+  "round": 2,
+  "status": "pass",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "xcodebuild test -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "xcodebuild build -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "xcodebuild -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build analyze",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "skill",
+      "suggestion": "Update `sync-parity-worker` to stop prescribing `npm --prefix apps/desktop run test -- --maxWorkers=7` and instead use the repo's supported targeted Vitest patterns plus the mission's targeted `xcodebuild test -only-testing:` guidance.",
+      "evidence": "`work-sync-contract-parity` and `work-scrutiny-round1-consolidated-fixes` both flagged that `.factory/skills/sync-parity-worker/SKILL.md` still prescribes `npm --prefix apps/desktop run test -- --maxWorkers=7` and broad `xcodebuild test`, while `.factory/library/work-sync-validation.md` documents that `--maxWorkers=7` fails in this repo and the mission `AGENTS.md` requires targeted desktop Vitest and iOS `-only-testing:` validation.",
+      "isSystemic": true
+    },
+    {
+      "target": "skill",
+      "suggestion": "Update `ios-worker` verification guidance to align with this mission's targeted `xcodebuild test -only-testing:...` policy instead of prescribing the full suite for every feature.",
+      "evidence": "The `work-mobile-session-detail-and-linked-actions` review found `.factory/skills/ios-worker/SKILL.md` still prescribes full `xcodebuild test`, while the mission `AGENTS.md` and the feature instructions require targeted `-only-testing:` validation for Work changes. The worker handoff called out that mismatch explicitly.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [
+    {
+      "observation": "The consolidated fix review repeated the `sync-parity-worker` validation-command mismatch already noted in round 1.",
+      "reason": "duplicate"
+    }
+  ],
+  "previousRound": ".factory/validation/work/scrutiny/synthesis.round1.json"
+}

@@ -1,12 +1,35 @@
 import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage, resolvePathWithinRoot } from "../../shared/utils";
 
-const execFileAsync = promisify(execFile);
+/** Swappable for Vitest — defaults to Node's `execFile`. */
+let execFileForRipgrep: typeof execFile = execFile;
+
+/** @internal Used by grepSearch.test.ts to force the JS fallback path. */
+export function __testSetRipgrepExecFile(fn: typeof execFile): void {
+  execFileForRipgrep = fn;
+}
+
+/** @internal */
+export function __testResetRipgrepExecFile(): void {
+  execFileForRipgrep = execFile;
+}
+
+function execFileAsync(
+  file: string,
+  args: readonly string[] | null | undefined,
+  options: ExecFileOptionsWithStringEncoding,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFileForRipgrep(file, args, options, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolve({ stdout, stderr });
+    });
+  });
+}
 
 type GrepMatch = {
   path: string;
@@ -77,10 +100,13 @@ export function createGrepSearchTool(cwd: string) {
         const matches = jsFallbackGrep(root, pattern, target, fileGlob);
         return { matches, matchCount: matches.length, root: target };
       } catch (err) {
+        const message = getErrorMessage(err);
         return {
           matches: [],
           matchCount: 0,
-          error: `Search failed: ${getErrorMessage(err)}`,
+          error: message.startsWith("Invalid regex pattern")
+            ? message
+            : `Search failed: ${message}`,
         };
       }
     },
@@ -126,9 +152,17 @@ function jsFallbackGrep(
   target: string,
   fileGlob: string | undefined
 ): GrepMatch[] {
-  const regex = new RegExp(pattern);
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern);
+  } catch (error) {
+    // Surface a user-facing message distinct from generic "Search failed".
+    // Ripgrep itself returns a descriptive error for malformed patterns; match that ergonomic on the fallback path.
+    throw new Error(`Invalid regex pattern: ${getErrorMessage(error)}`);
+  }
   const results: GrepMatch[] = [];
-  const files = collectFiles(target, fileGlob);
+  const searchWholeRepo = path.resolve(target) === path.resolve(root);
+  const files = collectFiles(target, fileGlob, searchWholeRepo);
 
   for (const filePath of files) {
     if (results.length >= 500) break;
@@ -151,16 +185,40 @@ function jsFallbackGrep(
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 
+/** Hidden first-segment dirs under the repo root we still want repo-wide search to enter. */
+const ALLOW_HIDDEN_ROOT_DIRS = new Set([".github"]);
+
+function shouldSkipHiddenDirUnderRepoRoot(
+  rootReal: string,
+  parentAbs: string,
+  dirName: string,
+  searchWholeRepo: boolean,
+): boolean {
+  if (!searchWholeRepo) return false;
+  if (!dirName.startsWith(".") || dirName === "." || dirName === "..") return false;
+  if (ALLOW_HIDDEN_ROOT_DIRS.has(dirName)) return false;
+  const childAbs = path.resolve(path.join(parentAbs, dirName));
+  const rel = path.relative(rootReal, childAbs);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  const first = rel.split(path.sep)[0] ?? "";
+  // Only skip direct children of the repo root (e.g. `.ade`, `.env`) — not `src/.cache`.
+  return first === dirName;
+}
+
 function collectFiles(
   dir: string,
   fileGlob: string | undefined,
+  searchWholeRepo: boolean,
   maxFiles = 5000
 ): string[] {
   const stat = fs.statSync(dir);
   if (stat.isFile()) return [dir];
 
   const files: string[] = [];
-  const globRegex = fileGlob ? globToRegex(fileGlob) : null;
+  const normalizedFileGlob = fileGlob?.replace(/\\/g, "/");
+  const globRegex = normalizedFileGlob ? globToRegex(normalizedFileGlob) : null;
+  const globIncludesDirectory = normalizedFileGlob?.includes("/") ?? false;
+  const rootReal = fs.realpathSync(dir);
 
   function walk(current: string): void {
     if (files.length >= maxFiles) return;
@@ -173,12 +231,19 @@ function collectFiles(
     for (const entry of entries) {
       if (files.length >= maxFiles) return;
       if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".")) {
-          walk(path.join(current, entry.name));
+        if (SKIP_DIRS.has(entry.name)) continue;
+        const next = path.join(current, entry.name);
+        if (
+          shouldSkipHiddenDirUnderRepoRoot(rootReal, current, entry.name, searchWholeRepo)
+        ) {
+          continue;
         }
+        walk(next);
       } else if (entry.isFile()) {
         const fullPath = path.join(current, entry.name);
-        if (!globRegex || globRegex.test(entry.name)) {
+        const relativeFilePath = path.relative(rootReal, fullPath).replace(/\\/g, "/");
+        const globTarget = globIncludesDirectory ? relativeFilePath : entry.name;
+        if (!globRegex || globRegex.test(globTarget)) {
           files.push(fullPath);
         }
       }
@@ -190,16 +255,47 @@ function collectFiles(
 }
 
 function globToRegex(glob: string): RegExp {
-  // Escape special regex chars except * and ? first, BEFORE brace expansion.
-  // This avoids escaping the parens/pipe that brace expansion introduces.
-  let pattern = glob.replace(/[.+^$[\]\\]/g, "\\$&");
-  // Replace glob wildcards
-  pattern = pattern.replace(/\*/g, ".*");
-  pattern = pattern.replace(/\?/g, ".");
-  // Handle {a,b} patterns (after escaping, so parens/pipe stay unescaped)
-  pattern = pattern.replace(/\{([^}]+)\}/g, (_m, inner: string) => {
-    return `(${inner.split(",").join("|")})`;
-  });
+  let pattern = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    const next = glob[i + 1];
+
+    if (char === "*" && next === "*") {
+      if (glob[i + 2] === "/") {
+        pattern += "(?:.*/)?";
+        i += 2;
+      } else {
+        pattern += ".*";
+        i += 1;
+      }
+      continue;
+    }
+
+    if (char === "*") {
+      pattern += "[^/]*";
+      continue;
+    }
+
+    if (char === "?") {
+      pattern += "[^/]";
+      continue;
+    }
+
+    if (char === "{") {
+      const close = glob.indexOf("}", i + 1);
+      if (close !== -1) {
+        const alternatives = glob
+          .slice(i + 1, close)
+          .split(",")
+          .map((part) => part.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&"));
+        pattern += `(${alternatives.join("|")})`;
+        i = close;
+        continue;
+      }
+    }
+
+    pattern += char.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&");
+  }
   return new RegExp(`^${pattern}$`);
 }
 

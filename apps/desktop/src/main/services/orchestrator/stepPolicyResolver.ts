@@ -288,8 +288,6 @@ import fs from "node:fs";
 const docPathsCache = new Map<string, { paths: string[]; expiresAt: number }>();
 const DOC_PATHS_CACHE_TTL_MS = 60_000;
 const DOC_PRIORITY_REL_PATHS = [
-  ".ade/context/PRD.ade.md",
-  ".ade/context/ARCHITECTURE.ade.md",
   "README.md",
   "CLAUDE.md",
   "AGENTS.md",
@@ -360,8 +358,7 @@ export function readDocPaths(projectRoot: string): string[] {
       const inDocsDir = /(^|\/)docs\//i.test(rel);
       const hinted =
         DOC_FILE_NAME_HINT_RE.test(entry.name)
-        || inDocsDir
-        || rel.startsWith(".ade/context/");
+        || inDocsDir;
       if (!hinted) continue;
       const normalized = path.normalize(abs);
       if (!prioritySet.has(normalized)) scannedSet.add(normalized);

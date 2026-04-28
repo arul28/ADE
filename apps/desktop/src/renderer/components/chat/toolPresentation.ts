@@ -81,7 +81,6 @@ const TOKEN_LABELS: Record<string, string> = {
   html: "HTML",
   ipc: "IPC",
   llm: "LLM",
-  mcp: "MCP",
   pr: "PR",
   sql: "SQL",
   ui: "UI",
@@ -105,14 +104,6 @@ function splitToolIdentifier(toolName: string): {
   namespace: string | null;
   action: string | null;
 } {
-  if (toolName.startsWith("mcp__")) {
-    const parts = toolName.split("__").filter(Boolean);
-    return {
-      namespace: parts[1] ?? null,
-      action: parts.slice(2).join("__") || null,
-    };
-  }
-
   if (toolName.includes(".")) {
     const parts = toolName.split(".").filter(Boolean);
     return {
@@ -174,7 +165,8 @@ function normalizeToolMention(match: string): string {
   return [display.label, display.secondaryLabel].filter(Boolean).join(" ");
 }
 
-const NAMESPACED_TOOL_MENTION_PATTERN = /\b(?:mcp__[\w-]+(?:__[\w-]+)+|(?:functions|multi_tool_use|web)\.[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)\b/g;
+const NAMESPACED_TOOL_MENTION_PATTERN =
+  /\b(?:(?:context7|functions|linear|multi_tool_use|pencil|playwright|posthog|sentry|shadcn|web)\.[A-Za-z0-9_]+(?:[\._-][A-Za-z0-9_]+)*)\b/g;
 
 export function replaceInternalToolNames(text: string): string {
   const trimmed = text.trim();

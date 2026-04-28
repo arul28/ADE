@@ -346,7 +346,7 @@ export type LinearWorkflowRun = {
   closeoutState: "pending" | "applied" | "failed";
   terminalOutcome: LinearWorkflowRunTerminalOutcome;
   lastError?: string | null;
-  sourceIssueSnapshot: Record<string, unknown>;
+  sourceIssueSnapshot: NormalizedLinearIssue | null;
   routeContext?: LinearWorkflowRouteContext | null;
   executionContext?: LinearWorkflowExecutionContext | null;
   createdAt: string;

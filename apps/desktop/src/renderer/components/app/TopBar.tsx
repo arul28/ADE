@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ChatCircleDots, CircleNotch, Folder, FolderOpen, Info, Plus, Minus, Trash, X } from "@phosphor-icons/react";
-import { SmartTooltip } from "../ui/SmartTooltip";
-import { useNavigate } from "react-router-dom";
+import { ChatCircleDots, CircleNotch, DeviceMobile, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import * as Dialog from "@radix-ui/react-dialog";
 
 import { useAppStore } from "../../state/appStore";
 import { isRunOwnedSession } from "../../lib/sessions";
@@ -13,40 +12,281 @@ import {
   getStoredZoomLevel,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
-import type { ProcessRuntime, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
+import type { ProcessRuntime, ProjectIcon, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
+import { HelpMenu } from "../onboarding/HelpMenu";
+import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
 
+// Bounded LRU so we don't accumulate icons for every project ever opened in
+// long-lived sessions. 24 entries keeps the working set hot for typical usage
+// (current project + a few recents in the tab list) without unbounded growth.
+const PROJECT_ICON_CACHE_MAX = 24;
+const projectIconCache = new Map<string, ProjectIcon>();
+function getProjectIconFromCache(rootPath: string): ProjectIcon | undefined {
+  const cached = projectIconCache.get(rootPath);
+  if (cached === undefined) return undefined;
+  // Touch on read to mark as most-recently-used.
+  projectIconCache.delete(rootPath);
+  projectIconCache.set(rootPath, cached);
+  return cached;
+}
+function setProjectIconCache(rootPath: string, icon: ProjectIcon): void {
+  if (projectIconCache.has(rootPath)) {
+    projectIconCache.delete(rootPath);
+  } else if (projectIconCache.size >= PROJECT_ICON_CACHE_MAX) {
+    // Map iteration order is insertion order, so the first key is the LRU.
+    const oldestKey = projectIconCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      projectIconCache.delete(oldestKey);
+    }
+  }
+  projectIconCache.set(rootPath, icon);
+}
+const PHONE_SYNC_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "textarea:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "[tabindex]:not([tabindex=\"-1\"])",
+].join(",");
+
+function getFocusableElements(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(PHONE_SYNC_FOCUSABLE_SELECTOR))
+    .filter((element) =>
+      element.getAttribute("aria-hidden") !== "true"
+      && !element.hasAttribute("disabled")
+      && element.tabIndex >= 0
+    );
+}
+
 function syncDotClass(snapshot: SyncRoleSnapshot): string {
   if (snapshot.client.state === "error") return "ade-status-dot-error";
-  if (snapshot.client.state === "connected" || snapshot.mode === "brain") return "ade-status-dot-active";
+  if (snapshot.client.state === "connected" || snapshot.role === "brain") return "ade-status-dot-active";
   return "ade-status-dot-warning";
 }
 
 function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
   if (!snapshot) return null;
-  if (snapshot.mode === "brain") {
+  if (snapshot.client.state === "error") return "Phone sync error";
+  if (snapshot.role === "brain") {
     const count = snapshot.connectedPeers.length;
-    return `Hosting locally · ${count} controller${count === 1 ? "" : "s"}`;
+    if (count > 0) {
+      return `${count} phone${count === 1 ? "" : "s"} connected`;
+    }
+    return "Phone sync ready";
   }
-  if (snapshot.mode === "standalone") return "Phone pairing ready";
+  if (snapshot.mode === "standalone") return "Phone sync ready";
   switch (snapshot.client.state) {
     case "connected":
-      return `Connected to host · ${snapshot.currentBrain?.name ?? "host"}`;
+      return `Linked to ${snapshot.currentBrain?.name ?? "host"}`;
     case "connecting":
-      return "Connecting to host…";
-    case "error":
-      return "Host link error";
+      return "Connecting…";
     default:
-      return "No host link";
+      return "Phone sync offline";
   }
 }
 
+function ProjectTabIcon({
+  rootPath,
+  isCurrent,
+  animate,
+  disabled,
+}: {
+  rootPath: string;
+  isCurrent: boolean;
+  animate: boolean;
+  disabled: boolean;
+}) {
+  const [icon, setIcon] = useState<ProjectIcon | null>(() =>
+    disabled ? null : getProjectIconFromCache(rootPath) ?? null
+  );
+  const [failed, setFailed] = useState(false);
+  const [iconDialogOpen, setIconDialogOpen] = useState(false);
+  const [choosing, setChoosing] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+    // Honor `disabled` (e.g. project marked missing) BEFORE consulting the
+    // cache. Otherwise a project that was successfully resolved earlier in
+    // the session keeps showing its stale icon after it goes missing.
+    if (disabled) {
+      setIcon(null);
+      return;
+    }
+    const cached = getProjectIconFromCache(rootPath);
+    if (cached) {
+      setIcon(cached);
+      return;
+    }
+
+    let cancelled = false;
+    window.ade.project.resolveIcon(rootPath).then((nextIcon) => {
+      if (cancelled) return;
+      setProjectIconCache(rootPath, nextIcon);
+      setIcon(nextIcon);
+    }).catch(() => {
+      if (!cancelled) setIcon(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [disabled, rootPath]);
+
+  const fallbackIcon = (
+    <Folder
+      size={15}
+      weight="regular"
+      className={cn(
+        "shrink-0 transition-opacity duration-150",
+        isCurrent ? "opacity-90" : "opacity-70",
+        animate && "animate-pulse",
+      )}
+    />
+  );
+
+  const iconNode = !icon?.dataUrl || failed ? fallbackIcon : (
+    <img
+      src={icon.dataUrl}
+      alt=""
+      className={cn(
+        "h-4 w-4 shrink-0 rounded-[3px] object-contain transition-opacity duration-150",
+        isCurrent ? "opacity-95" : "opacity-75",
+        animate && "animate-pulse",
+      )}
+      draggable={false}
+      onError={() => setFailed(true)}
+    />
+  );
+
+  const handleChooseIcon = useCallback(async () => {
+    if (disabled || choosing) return;
+    setChoosing(true);
+    try {
+      const nextIcon = await window.ade.project.chooseIcon(rootPath);
+      if (nextIcon) {
+        setProjectIconCache(rootPath, nextIcon);
+        setFailed(false);
+        setIcon(nextIcon);
+        setIconDialogOpen(false);
+      }
+    } catch {
+      // Keep the current icon; the dialog path is best-effort UI chrome.
+    } finally {
+      setChoosing(false);
+    }
+  }, [choosing, disabled, rootPath]);
+
+  const handleRemoveIcon = useCallback(async () => {
+    if (disabled || removing) return;
+    setRemoving(true);
+    try {
+      const nextIcon = await window.ade.project.removeIcon(rootPath);
+      setProjectIconCache(rootPath, nextIcon);
+      setFailed(false);
+      setIcon(nextIcon);
+      setIconDialogOpen(false);
+    } catch {
+      // Keep the current icon.
+    } finally {
+      setRemoving(false);
+    }
+  }, [disabled, removing, rootPath]);
+
+  if (disabled) return iconNode;
+
+  return (
+    <Dialog.Root open={iconDialogOpen} onOpenChange={setIconDialogOpen}>
+      <Dialog.Trigger asChild>
+        <button
+          type="button"
+          aria-label="Project icon"
+          title="Project icon"
+          className={cn(
+            "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[4px]",
+            "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
+          )}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          {choosing || removing ? <CircleNotch size={14} weight="bold" className="animate-spin opacity-80" /> : iconNode}
+        </button>
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-[120] bg-black/45 backdrop-blur-sm" />
+        <Dialog.Content
+          className={cn(
+            "fixed left-1/2 top-1/2 z-[121] w-[min(320px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2",
+            "rounded-lg border border-border bg-surface p-4 text-fg shadow-2xl",
+          )}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <Dialog.Title className="text-sm font-semibold">Project icon</Dialog.Title>
+              <Dialog.Description className="sr-only">
+                Preview and manage this project's shared icon.
+              </Dialog.Description>
+            </div>
+            <Dialog.Close asChild>
+              <button
+                type="button"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/10 hover:text-fg"
+                aria-label="Close"
+              >
+                <X size={15} />
+              </button>
+            </Dialog.Close>
+          </div>
+
+          <div className="mt-4 flex items-center justify-center rounded-md border border-border bg-bg/60 p-5">
+            {icon?.dataUrl && !failed ? (
+              <img
+                src={icon.dataUrl}
+                alt=""
+                className="h-20 w-20 rounded-md object-contain"
+                draggable={false}
+              />
+            ) : (
+              <Folder size={52} className="text-muted-fg" />
+            )}
+          </div>
+
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-muted-fg transition-colors hover:bg-white/10 hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={choosing || removing}
+              onClick={handleRemoveIcon}
+            >
+              {removing ? <CircleNotch size={13} weight="bold" className="mr-1.5 animate-spin" /> : null}
+              Remove
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center justify-center rounded-md bg-accent px-3 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={choosing || removing}
+              onClick={handleChooseIcon}
+            >
+              {choosing ? <CircleNotch size={13} weight="bold" className="mr-1.5 animate-spin" /> : null}
+              Replace
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 export function TopBar() {
-  const navigate = useNavigate();
   const project = useAppStore((s) => s.project);
+  const projectHydrated = useAppStore((s) => s.projectHydrated);
+  const showWelcome = useAppStore((s) => s.showWelcome);
   const closeProject = useAppStore((s) => s.closeProject);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const openRepo = useAppStore((s) => s.openRepo);
@@ -57,17 +297,22 @@ export function TopBar() {
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   const clearProjectTransitionError = useAppStore((s) => s.clearProjectTransitionError);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
-  const smartTooltipsEnabled = useAppStore((s) => s.smartTooltipsEnabled);
-  const setSmartTooltipsEnabled = useAppStore((s) => s.setSmartTooltipsEnabled);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
   const [zoom, setZoom] = useState(getStoredZoomLevel);
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(null);
+  const [phoneSyncOpen, setPhoneSyncOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
+  const phoneSyncPanelRef = useRef<HTMLDivElement | null>(null);
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
+  const workspaceProjectOpen =
+    projectHydrated === true &&
+    showWelcome !== true &&
+    isNewTabOpen !== true &&
+    Boolean(project?.rootPath);
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
@@ -90,6 +335,14 @@ export function TopBar() {
     fetchRecent();
   }, [project?.rootPath, fetchRecent]);
 
+  useEffect(() => {
+    if (!phoneSyncOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      phoneSyncPanelRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [phoneSyncOpen]);
+
   // Re-fetch when app regains focus (catches external deletions).
   useEffect(() => {
     const onFocus = () => fetchRecent();
@@ -105,9 +358,17 @@ export function TopBar() {
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade.sync.getStatus().then((snapshot) => {
-      if (!cancelled) setSyncSnapshot(snapshot);
-    }).catch(() => {});
+    const refreshSyncStatus = () => {
+      void window.ade.sync.getStatus().then((snapshot) => {
+        if (!cancelled) setSyncSnapshot(snapshot);
+      }).catch(() => {
+        if (!cancelled) setSyncSnapshot(null);
+      });
+    };
+    setSyncSnapshot(null);
+    refreshSyncStatus();
+    const interval = window.setInterval(refreshSyncStatus, 5_000);
+    window.addEventListener("focus", refreshSyncStatus);
     const dispose = window.ade.sync.onEvent((event) => {
       if (!cancelled && event.type === "sync-status") {
         setSyncSnapshot(event.snapshot);
@@ -115,9 +376,15 @@ export function TopBar() {
     });
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshSyncStatus);
       dispose();
     };
-  }, []);
+    // Background projects don't broadcast sync-status events (main.ts filters
+    // them to the active project), so we re-run this effect on rootPath
+    // change to force an immediate refetch instead of waiting up to 5s for
+    // the next polling tick.
+  }, [project?.rootPath]);
 
   const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {
     if (project?.rootPath !== projectRootPath) return true;
@@ -178,9 +445,13 @@ export function TopBar() {
   }, [isProjectBusy, openNewTab]);
 
   const handleSwitchProject = useCallback((rootPath: string) => {
-    if (isProjectBusy || project?.rootPath === rootPath) return;
+    if (isProjectBusy) return;
+    if (project?.rootPath === rootPath) {
+      cancelNewTab();
+      return;
+    }
     switchProjectToPath(rootPath).catch(() => { });
-  }, [isProjectBusy, project?.rootPath, switchProjectToPath]);
+  }, [cancelNewTab, isProjectBusy, project?.rootPath, switchProjectToPath]);
 
   const handleRemoveTab = useCallback((rootPath: string) => {
     void (async () => {
@@ -250,6 +521,37 @@ export function TopBar() {
     setDropIdx(null);
   }, []);
 
+  const handlePhoneSyncDialogKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setPhoneSyncOpen(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const panel = phoneSyncPanelRef.current;
+    if (!panel) return;
+    const focusable = getFocusableElements(panel);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      panel.focus();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (document.activeElement === panel) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }, []);
+
   const syncLabel = deriveSyncLabel(syncSnapshot);
   const transitionTargetName =
     projectTransition?.rootPath
@@ -276,7 +578,7 @@ export function TopBar() {
         src="./logo.png"
         alt="ADE"
         className="shrink-0 select-none"
-        style={{ height: 20 }}
+        style={{ height: 26 }}
         draggable={false}
       />
 
@@ -302,7 +604,7 @@ export function TopBar() {
           </button>
         ) : (
           <>
-              {recentProjects.map((rp, idx) => {
+            {recentProjects.map((rp, idx) => {
               const isCurrent = project?.rootPath === rp.rootPath;
               const isMissing = !rp.exists;
               const isRelocating = relocatingPath === rp.rootPath;
@@ -323,6 +625,7 @@ export function TopBar() {
                   role={isMissing ? undefined : "button"}
                   tabIndex={isMissing ? -1 : 0}
                   data-state={projectTabState}
+                  data-tour={isCurrent && workspaceProjectOpen ? "project.activeTab" : undefined}
                   aria-current={isCurrent ? "true" : undefined}
                   aria-disabled={isRelocating || isProjectBusy ? true : undefined}
                   draggable={!isMissing && !isRelocating && !isProjectBusy}
@@ -354,14 +657,11 @@ export function TopBar() {
                   }}
                   title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
                 >
-                  <Folder
-                    size={12}
-                    weight="regular"
-                    className={cn(
-                      "shrink-0 transition-opacity duration-150",
-                      isCurrent ? "opacity-90" : "opacity-70",
-                      (isSwitchTarget || isClosingTarget) && "animate-pulse"
-                    )}
+                  <ProjectTabIcon
+                    rootPath={rp.rootPath}
+                    isCurrent={isCurrent}
+                    animate={isSwitchTarget || isClosingTarget}
+                    disabled={isMissing}
                   />
                   {isSwitchTarget || isClosingTarget ? (
                     <CircleNotch size={11} weight="bold" className="shrink-0 animate-spin opacity-80" />
@@ -456,7 +756,7 @@ export function TopBar() {
                 {projectTransition?.kind === "opening" ? (
                   <CircleNotch size={12} weight="bold" className="animate-spin" />
                 ) : (
-                  <img src="./logo.png" alt="" style={{ height: 12, width: 12 }} draggable={false} />
+                  <img src="./logo.png" alt="" style={{ height: 14, width: 30, objectFit: "contain" }} draggable={false} />
                 )}
                 <span className="truncate text-[11px]">
                   {projectTransition?.kind === "opening" ? "Opening…" : "New Tab"}
@@ -486,6 +786,7 @@ export function TopBar() {
         {/* Add project button */}
         <button
           type="button"
+          data-tour="project.addProject"
           className={cn(
             "ade-shell-control inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center",
             "transition-[background-color,color,border-color,box-shadow] duration-150"
@@ -544,9 +845,11 @@ export function TopBar() {
           )}
           data-variant="ghost"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          title={`Sync mode: ${syncSnapshot.mode}`}
-          onClick={() => navigate("/settings")}
+          title="Connect a phone to this computer"
+          aria-expanded={phoneSyncOpen}
+          onClick={() => setPhoneSyncOpen((open) => !open)}
         >
+          <DeviceMobile size={12} weight="regular" className="shrink-0 opacity-85" />
           <span
             className={cn(
               "ade-status-dot h-1.5 w-1.5 shrink-0",
@@ -557,33 +860,53 @@ export function TopBar() {
         </button>
       ) : null}
 
+      {phoneSyncOpen ? (
+        <div
+          className="fixed inset-0 z-[80]"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          onClick={() => setPhoneSyncOpen(false)}
+        >
+          <div
+            ref={phoneSyncPanelRef}
+            className={cn(
+              "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(620px,calc(100vw-24px))] overflow-y-auto",
+              "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45"
+            )}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="phone-sync-title"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={handlePhoneSyncDialogKeyDown}
+          >
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <DeviceMobile size={16} weight="regular" className="shrink-0 opacity-85" />
+                <div className="min-w-0">
+                  <div id="phone-sync-title" className="truncate text-[13px] font-semibold">Phone sync</div>
+                  <div className="truncate text-[11px] text-white/55">{syncLabel}</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
+                data-variant="ghost"
+                onClick={() => setPhoneSyncOpen(false)}
+                title="Close phone sync"
+              >
+                <X size={13} weight="regular" />
+              </button>
+            </div>
+            <div className="p-4">
+              <SyncDevicesSection />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <AutoUpdateControl />
 
-      <SmartTooltip
-        forceEnabled
-        content={{
-          label: "Smart Tooltips",
-          description: smartTooltipsEnabled
-            ? "Detailed tooltips are ON. Hover any button to see what it does and what would happen. Click to turn off."
-            : "Detailed tooltips are OFF. Click to turn on hover tooltips across the app.",
-        }}
-        side="bottom"
-      >
-        <button
-          type="button"
-          className={cn(
-            "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
-            "transition-[background-color,color,border-color,box-shadow] duration-150"
-          )}
-          onClick={() => setSmartTooltipsEnabled(!smartTooltipsEnabled)}
-          style={{
-            WebkitAppRegion: "no-drag",
-            color: smartTooltipsEnabled ? "var(--color-accent)" : undefined,
-          } as React.CSSProperties}
-        >
-          <Info size={12} weight={smartTooltipsEnabled ? "fill" : "regular"} />
-        </button>
-      </SmartTooltip>
+      <HelpMenu />
 
       <button
         type="button"

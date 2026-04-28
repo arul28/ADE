@@ -175,6 +175,9 @@ describe("projectConfigService AI mode normalization", () => {
           },
           chat: {
             autoTitleEnabled: true,
+            autoTitleModelId: "openai/gpt-5.3-codex-spark",
+            autoTitleRefreshOnComplete: false,
+            autoAllowAskUser: false,
             codexSandbox: "workspace-write",
           },
         },
@@ -193,7 +196,10 @@ describe("projectConfigService AI mode normalization", () => {
     const snapshot = service.get();
     expect(snapshot.effective.ai?.features?.commit_messages).toBe(true);
     expect(snapshot.effective.ai?.featureModelOverrides?.commit_messages).toBe("openai/gpt-5.4-mini");
-    expect(snapshot.effective.ai?.chat?.autoTitleEnabled).toBe(true);
+    expect(snapshot.effective.ai?.sessionIntelligence?.titles?.enabled).toBe(true);
+    expect(snapshot.effective.ai?.sessionIntelligence?.titles?.modelId).toBe("openai/gpt-5.3-codex-spark");
+    expect(snapshot.effective.ai?.sessionIntelligence?.titles?.refreshOnComplete).toBe(false);
+    expect(snapshot.effective.ai?.chat?.autoAllowAskUser).toBe(false);
     expect(snapshot.effective.ai?.chat?.codexSandbox).toBe("workspace-write");
 
     service.save({
@@ -204,7 +210,13 @@ describe("projectConfigService AI mode normalization", () => {
     const persisted = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
     expect(persisted.ai?.features?.commit_messages).toBe(true);
     expect(persisted.ai?.featureModelOverrides?.commit_messages).toBe("openai/gpt-5.4-mini");
-    expect(persisted.ai?.chat?.autoTitleEnabled).toBe(true);
+    expect(persisted.ai?.chat?.autoTitleEnabled).toBeUndefined();
+    expect(persisted.ai?.chat?.autoTitleModelId).toBeUndefined();
+    expect(persisted.ai?.chat?.autoTitleRefreshOnComplete).toBeUndefined();
+    expect(persisted.ai?.sessionIntelligence?.titles?.enabled).toBe(true);
+    expect(persisted.ai?.sessionIntelligence?.titles?.modelId).toBe("openai/gpt-5.3-codex-spark");
+    expect(persisted.ai?.sessionIntelligence?.titles?.refreshOnComplete).toBe(false);
+    expect(persisted.ai?.chat?.autoAllowAskUser).toBe(false);
     expect(persisted.ai?.chat?.codexSandbox).toBe("workspace-write");
   });
 });

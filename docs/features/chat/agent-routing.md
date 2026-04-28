@@ -26,10 +26,10 @@ for vendored runtimes without changing the union.
 
 | Provider | Runtime | Adapter location |
 |---|---|---|
-| `claude` | `@anthropic-ai/claude-agent-sdk` V2 (`unstable_v2_createSession`). Persistent subprocess + MCP servers stay alive between turns. Resolves `claude` executable via `claudeCodeExecutable.ts`. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
+| `claude` | `@anthropic-ai/claude-agent-sdk` V2 (`unstable_v2_createSession`). Persistent subprocess + ADE CLI stay alive between turns. Resolves `claude` executable via `claudeCodeExecutable.ts`. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
 | `codex` | `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter); config via `codexAppServerConfig.ts`. |
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
-| `cursor` | Cursor CLI via ACP (Agent Client Protocol). | `cursorAcpPool.ts`, `cursorAcpEventMapper.ts`, `cursorAcpConfigState.ts`, `cursorAcpMcp.ts`. |
+| `cursor` | Cursor CLI via ACP (Agent Client Protocol). | `cursorAcpPool.ts`, `cursorAcpEventMapper.ts`, `cursorAcpConfigState.ts`. |
 
 ## Model registry
 
@@ -84,6 +84,17 @@ registry at runtime when LM Studio or Ollama report available models.
 These descriptors carry `discoverySource` and a `harnessProfile` that
 defaults to `guarded` unless explicitly whitelisted.
 
+### Reasoning tiers (Claude)
+
+Claude's reasoning-tier vocabulary is `low | medium | high | max`
+(`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`). `max` was added
+alongside the Claude Opus 4.7 1M entry (`anthropic/claude-opus-4-7-1m`,
+aliases `opus[1m]` / `claude-opus-4-7[1m]`, 1,000,000-token context,
+128 k output, tier `very_high`) — it's the first registry entry that
+advertises the full `low|medium|high|max` tier set. Passthrough to the
+provider config is unchanged (the tier string is forwarded directly to
+the CLI / SDK — no synthesized token budgets).
+
 ## Auth and credentials
 
 `authDetector.ts` (`detectAllAuth`) probes every provider:
@@ -129,6 +140,28 @@ Two independent controls:
   `config-toml`, ADE defers both controls to the project's
   `.codex/config.toml`.
 
+The chat adapter now rehydrates the effective approval/sandbox/reasoning
+tuple from the Codex app-server response: every `thread/start` and
+`thread/resume` call passes `{ model, cwd, ...codexPolicyArgs,
+persistExtendedHistory: true }` (no redundant `reasoningEffort`) and the
+return envelope is consumed by `applyCodexEffectiveThreadState`, which
+normalizes `approvalPolicy`, `sandbox` (including the camel-case
+aliases `readOnly` / `workspaceWrite` / `dangerFullAccess` that the
+server emits), and `reasoningEffort`. That snapshot becomes the session
+state, so the picker chips always show what the runtime actually
+applied. On resume, the persisted chat state is re-written after
+normalization instead of being re-copied from the on-disk file — the
+server's reading of `.codex/config.toml` wins over a stale persisted
+pair. Turns use the Codex-native `effort` key
+(`turn/start({ threadId, input, effort? })`) instead of the legacy
+`reasoningEffort` name.
+
+Default Codex chats map to the "Default permissions" preset
+(`workspace-write` + `on-request`). The older implicit fallback that
+mapped CLI `edit` mode to `untrusted` was removed so the first-turn
+picker state matches the documented default; the explicit Codex
+`edit` preset still resolves through the picker path.
+
 ### OpenCode
 
 `AgentChatOpenCodePermissionMode`:
@@ -168,6 +201,17 @@ operates in read-only planning mode and proposes changes via
 permission mode automatically. In `bypassPermissions` or `full-auto`
 permission modes, plan approval auto-grants (no UI), since the user has
 opted out of permission gates.
+
+When the user approves an `ExitPlanMode` call, the canUseTool handler
+returns `{ behavior: "allow", updatedInput: input }` so the SDK's native
+`ExitPlanMode` handler runs, restores the pre-plan permission mode from
+its `toolPermissionContext.prePlanMode`, and emits a normal
+`tool_result` back to the model. ADE additionally calls
+`setPermissionMode` defensively so the SDK and ADE agree on the target
+mode even if the SDK's restore path no-ops, but the SDK is still the
+source of truth. (Previously we returned `behavior: "deny"` to dodge a
+ZodError in the SDK's input schema; that is no longer necessary and the
+deny path made the model hesitate after a "denied" tool call.)
 
 ## Model selection flow
 
@@ -211,7 +255,7 @@ The `AgentChatHandoffResult` reports whether a fallback summary was used
 ## Auto-title generation
 
 Sessions auto-title through two stages when
-`ai.chat.autoTitleEnabled` is true and the runtime is not `guest`:
+`ai.sessionIntelligence.titles.enabled` is true and the runtime is not `guest`:
 
 - **Initial** -- generated early in the conversation from the first
   user message, providing an immediate label while the session is still
@@ -219,7 +263,7 @@ Sessions auto-title through two stages when
 - **Final** -- generated once enough transcript has accumulated,
   producing a more accurate title.
 
-`ai.chat.autoTitleRefreshOnComplete` (default true) triggers a final
+`ai.sessionIntelligence.titles.refreshOnComplete` (default true) triggers a final
 refresh after a turn completes.
 
 Manual renaming sets `manuallyNamed: true`, which permanently

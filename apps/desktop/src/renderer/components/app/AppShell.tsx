@@ -21,11 +21,12 @@ import {
   type PrToastTone,
 } from "./prToastPresentation";
 import { TabBackground } from "../ui/TabBackground";
+import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { useAppStore } from "../../state/appStore";
+import { useOnboardingStore } from "../../state/onboardingStore";
 import { Button } from "../ui/Button";
 import type {
   AiSettingsStatus,
-  ContextStatus,
   GitHubStatus,
   LinearWorkflowEventPayload,
   OnboardingStatus,
@@ -38,22 +39,70 @@ import {
   getEffectiveBinding,
 } from "../../lib/keybindings";
 import { listSessionsCached } from "../../lib/sessionListCache";
-import { isRunOwnedSession } from "../../lib/sessions";
+import { getStaleRunningCliSessionAgeHours, isRunOwnedSession } from "../../lib/sessions";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
 import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { cn } from "../ui/cn";
-import {
-  describeContextDocHealth,
-  listActionableContextDocs,
-  listContextDocsByHealth,
-} from "../context/contextShared";
+import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
+import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
 
 type PrToast = {
   id: string;
   event: Extract<PrEventPayload, { type: "pr-notification" }>;
 };
+
+function primaryTabPath(pathname: string): string {
+  const roots = ["/project", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/missions", "/settings"];
+  return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
+}
+
+const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
+
+function projectRouteStorageKey(projectRoot: string): string {
+  return `${PROJECT_ROUTE_STORAGE_PREFIX}${projectRoot}`;
+}
+
+function serializeLocationRoute(location: ReturnType<typeof useLocation>): string | null {
+  const pathname = location.pathname || "/work";
+  const route = `${pathname}${location.search ?? ""}${location.hash ?? ""}`;
+  const allowedRoots = [
+    "/project",
+    "/lanes",
+    "/files",
+    "/work",
+    "/graph",
+    "/prs",
+    "/review",
+    "/history",
+    "/automations",
+    "/missions",
+    "/cto",
+    "/settings",
+  ];
+  if (!allowedRoots.some((root) => pathname === root || pathname.startsWith(`${root}/`))) {
+    return null;
+  }
+  return route;
+}
+
+function readStoredProjectRoute(projectRoot: string): string | null {
+  try {
+    const value = window.localStorage.getItem(projectRouteStorageKey(projectRoot));
+    return value?.startsWith("/") ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredProjectRoute(projectRoot: string, route: string): void {
+  try {
+    window.localStorage.setItem(projectRouteStorageKey(projectRoot), route);
+  } catch {
+    // localStorage can be unavailable in private/test environments.
+  }
+}
 
 type AiBannerState = {
   laneId: string | null;
@@ -71,6 +120,11 @@ type LinearWorkflowToast = {
   >;
 };
 
+type StaleCliNotice = {
+  count: number;
+  oldestStartedAt: string;
+};
+
 const EMPTY_TERMINAL_ATTENTION = {
   runningCount: 0,
   activeCount: 0,
@@ -83,6 +137,56 @@ function shortId(id: string): string {
   const trimmed = (id ?? "").trim();
   if (!trimmed) return "";
   return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
+}
+
+function describeGithubBanner(status: GitHubStatus): { message: string; linkLabel: string } {
+  if (!status.tokenStored) {
+    return {
+      message: "GitHub is not connected for this ADE app yet. ",
+      linkLabel: "Connect GitHub",
+    };
+  }
+  if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
+    const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repo";
+    return {
+      message: `GitHub token saved, but it cannot access ${repoLabel}. `,
+      linkLabel: "Fix GitHub token",
+    };
+  }
+  return {
+    message: "GitHub token saved, but it does not have the required permissions. ",
+    linkLabel: "Fix GitHub token",
+  };
+}
+
+function GithubBanner({
+  status,
+  onDismiss,
+}: {
+  status: GitHubStatus;
+  onDismiss: () => void;
+}): JSX.Element {
+  const { message, linkLabel } = describeGithubBanner(status);
+  return (
+    <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
+      <span>
+        {message}
+        <Link to="/settings?tab=integrations" className="underline">
+          {linkLabel}
+        </Link>
+      </span>
+      <button
+        type="button"
+        data-testid="dismiss-github-banner"
+        className="ml-2 text-amber-900/70 hover:text-amber-900"
+        onClick={onDismiss}
+        title="Dismiss for this session"
+        aria-label="Dismiss GitHub not connected banner for this session"
+      >
+        ×
+      </button>
+    </div>
+  );
 }
 
 function getPrToastToneClasses(tone: PrToastTone): {
@@ -143,6 +247,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
   const project = useAppStore((s) => s.project);
+  const projectRevision = useAppStore((s) => s.projectRevision);
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const openRepo = useAppStore((s) => s.openRepo);
@@ -165,6 +270,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     LinearWorkflowToast[]
   >([]);
   const linearToastTimersRef = useRef<Map<string, number>>(new Map());
+  const [staleCliNotice, setStaleCliNotice] =
+    useState<StaleCliNotice | null>(null);
+  const dismissedStaleCliNoticeKeyRef = useRef<string | null>(null);
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
   const [aiMockProvider, setAiMockProvider] = useState<{
     createdAt: string;
@@ -175,15 +283,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [onboardingStatus, setOnboardingStatus] =
     useState<OnboardingStatus | null>(null);
   const [onboardingStatusLoading, setOnboardingStatusLoading] = useState(false);
-  const [contextStatus, setContextStatus] = useState<ContextStatus | null>(
-    null,
-  );
-  const [dismissedContextBannerRoots, setDismissedContextBannerRoots] =
-    useState<Record<string, true>>({});
+  // Banner dismissals live in the store so they can be pruned when projects close/switch
+  // — AppShell used to own these as local state, which leaked entries across a long session.
+  const dismissedMissingAiBannerRoots = useAppStore((s) => s.dismissedMissingAiBannerRoots);
+  const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
+  const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
+  const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
+  const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
   const isOnboardingRoute = location.pathname === "/onboarding";
+  const isLanesRoute = location.pathname.startsWith("/lanes");
   const shouldTrackTerminalAttention =
     Boolean(project?.rootPath) &&
     !showWelcome &&
@@ -203,6 +314,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       })}`,
     );
   }, [location.pathname, project?.rootPath, showWelcome]);
+
+  useEffect(() => {
+    disposeTerminalRuntimesForProjectChange(project?.rootPath ?? null, projectRevision);
+  }, [project?.rootPath, projectRevision]);
+
+  useEffect(() => {
+    const syncApi = window.ade.sync;
+    if (!syncApi?.onEvent || !project?.rootPath || !isLanesRoute) {
+      return;
+    }
+    let cancelled = false;
+    let refreshTimer: number | null = null;
+
+    const scheduleLaneRefresh = () => {
+      if (refreshTimer != null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        if (cancelled) return;
+        void refreshLanes({ includeStatus: false }).catch(() => {});
+      }, 200);
+    };
+
+    const dispose = syncApi.onEvent((event) => {
+      if (event.type !== "sync-status") return;
+      scheduleLaneRefresh();
+    });
+
+    return () => {
+      cancelled = true;
+      if (refreshTimer != null) {
+        window.clearTimeout(refreshTimer);
+      }
+      dispose();
+    };
+  }, [isLanesRoute, project?.rootPath, refreshLanes]);
 
   useEffect(() => {
     let cancelled = false;
@@ -340,8 +486,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     scheduleRefresh(2_500);
 
-    const unsubData = window.ade.pty.onData(() => scheduleRefresh());
-    const unsubExit = window.ade.pty.onExit(() => scheduleRefresh());
+    const isCurrentProjectEvent = (event: { projectRoot?: string | null }) => {
+      const currentRoot = useAppStore.getState().project?.rootPath ?? null;
+      return !event.projectRoot || event.projectRoot === currentRoot;
+    };
+
+    const unsubData = window.ade.pty.onData((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
+    const unsubExit = window.ade.pty.onExit((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       scheduleRefresh();
@@ -366,6 +521,80 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [setTerminalAttention, shouldTrackTerminalAttention]);
+
+  useEffect(() => {
+    if (!project?.rootPath || showWelcome) {
+      setStaleCliNotice(null);
+      dismissedStaleCliNoticeKeyRef.current = null;
+      return;
+    }
+
+    const projectRoot = project.rootPath;
+    let cancelled = false;
+    let refreshTimer: number | null = null;
+
+    // Prevent cross-project stale notice carryover while the first refresh is
+    // pending for the new project.
+    setStaleCliNotice(null);
+
+    const refreshStaleCliNotice = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const sessions = await listSessionsCached(
+          { status: "running", limit: 500 },
+          { force: true },
+        );
+        if (cancelled) return;
+        const nowMs = Date.now();
+        const stale = sessions
+          .filter((session) => {
+            if (isRunOwnedSession(session)) return false;
+            return getStaleRunningCliSessionAgeHours(session, nowMs) != null;
+          })
+          .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
+
+        if (!stale.length) {
+          setStaleCliNotice(null);
+          return;
+        }
+
+        const oldestStartedAt = stale[0]?.startedAt ?? new Date(nowMs).toISOString();
+        const noticeKey = `${projectRoot}:${stale.length}:${oldestStartedAt}`;
+        if (dismissedStaleCliNoticeKeyRef.current === noticeKey) {
+          setStaleCliNotice(null);
+          return;
+        }
+        setStaleCliNotice({ count: stale.length, oldestStartedAt });
+      } catch {
+        // best effort
+      }
+    };
+
+    const scheduleRefresh = (delayMs = 0) => {
+      if (refreshTimer != null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshStaleCliNotice();
+      }, delayMs);
+    };
+
+    scheduleRefresh(4_000);
+    const interval = window.setInterval(() => scheduleRefresh(), 10 * 60_000);
+    const onFocus = () => scheduleRefresh();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") scheduleRefresh();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [project?.rootPath, showWelcome]);
 
   useEffect(() => {
     let cancelled = false;
@@ -440,15 +669,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     if (previousProjectRoot === undefined) return;
     if (!nextProjectRoot || showWelcome) return;
-    if (location.pathname !== "/project") return;
     if (previousProjectRoot === nextProjectRoot) return;
-    navigate("/work", { replace: true });
-  }, [location.pathname, navigate, project?.rootPath, showWelcome]);
+    // First attach of a project (null → /path) must not restore localStorage, or we
+    // clobber a deep link / address-bar route (e.g. Vite, Cursor Simple Browser) with
+    // the last tab the user had for that project — often /graph.
+    if (previousProjectRoot == null) return;
+    if (previousProjectRoot) {
+      const previousRoute = serializeLocationRoute(location);
+      if (previousRoute) writeStoredProjectRoute(previousProjectRoot, previousRoute);
+    }
+    navigate(readStoredProjectRoute(nextProjectRoot) ?? "/work", { replace: true });
+  }, [location, navigate, project?.rootPath, showWelcome]);
+
+  useEffect(() => {
+    const projectRoot = project?.rootPath ?? null;
+    if (!projectRoot || showWelcome) return;
+
+    if (lastRouteSaveProjectRootRef.current !== projectRoot) {
+      lastRouteSaveProjectRootRef.current = projectRoot;
+      return;
+    }
+
+    const route = serializeLocationRoute(location);
+    if (route) writeStoredProjectRoute(projectRoot, route);
+  }, [location, project?.rootPath, showWelcome]);
 
   useEffect(() => {
     let cancelled = false;
     if (!project?.rootPath) {
-      setContextStatus(null);
       setAiStatus(null);
       setAiStatusLoaded(false);
       setGithubStatus(null);
@@ -457,15 +705,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setAiStatusLoaded(false);
     const timer = window.setTimeout(() => {
       void Promise.allSettled([
-        window.ade.context.getStatus(),
         window.ade.ai.getStatus(),
         window.ade.github.getStatus(),
       ]).then((results) => {
         if (cancelled) return;
-        const [contextResult, aiResult, githubResult] = results;
-        setContextStatus(
-          contextResult.status === "fulfilled" ? contextResult.value : null,
-        );
+        const [aiResult, githubResult] = results;
         setAiStatus(aiResult.status === "fulfilled" ? aiResult.value : null);
         setAiStatusLoaded(true);
         setGithubStatus(
@@ -479,14 +723,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [project?.rootPath]);
 
+  // Refresh the GitHub banner the moment Settings saves/clears a token, so the
+  // shell does not lag behind the Settings UI (the original "banner stays up
+  // even though Settings says CONNECTED" bug).
   useEffect(() => {
-    if (!project?.rootPath) return;
     return (
-      window.ade.context?.onStatusChanged?.((status) => {
-        setContextStatus(status);
+      window.ade.github?.onStatusChanged?.((status) => {
+        setGithubStatus(status);
       }) ?? (() => {})
     );
-  }, [project?.rootPath]);
+  }, []);
 
   useEffect(() => {
     if (!window.ade.feedback?.onUpdate) return;
@@ -533,34 +779,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return Boolean(runtimeOrLocal || (aiStatus.detectedAuth?.length ?? 0) > 0);
   }, [aiStatus]);
 
-  const missingContextDocs = useMemo(
-    () => listContextDocsByHealth(contextStatus, "missing"),
-    [contextStatus],
-  );
-
-  const actionableContextDocs = useMemo(
-    () => listActionableContextDocs(contextStatus),
-    [contextStatus],
-  );
-
-  const actionableContextSummary = useMemo(
-    () =>
-      actionableContextDocs
-        .map((doc) => `${doc.label} (${describeContextDocHealth(doc)})`)
-        .join(", "),
-    [actionableContextDocs],
-  );
-
-  const missingContextSummary = useMemo(
-    () => missingContextDocs.map((doc) => doc.label).join(", "),
-    [missingContextDocs],
-  );
   const currentProjectRoot = project?.rootPath ?? null;
-  const contextBannerDismissed = Boolean(
-    currentProjectRoot && dismissedContextBannerRoots[currentProjectRoot],
+  const missingAiBannerDismissed = Boolean(
+    currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
   );
-  const generationState = contextStatus?.generation.state;
-
+  const githubBannerDismissed = Boolean(
+    currentProjectRoot && dismissedGithubBannerRoots[currentProjectRoot],
+  );
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
     [keybindings],
@@ -661,7 +886,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/missions": "tab-tint-missions",
       "/settings": "tab-tint-settings",
     };
-    return tintMap[location.pathname] ?? "";
+    return tintMap[primaryTabPath(location.pathname)] ?? "";
   }, [location.pathname]);
 
   const shouldHoldProjectRouteForOnboarding =
@@ -670,15 +895,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     location.pathname === "/project" &&
     onboardingStatusLoading;
   const hideSidebar = isOnboardingRoute || shouldHoldProjectRouteForOnboarding;
-  const showContextBanner =
-    !hideSidebar &&
-    Boolean(project?.rootPath) &&
-    !showWelcome &&
-    generationState !== "pending" &&
-    generationState !== "running" &&
-    actionableContextDocs.length > 0 &&
-    !contextBannerDismissed;
-
+  const tourActive = useOnboardingStore((s) => s.activeTourId != null);
+  const staleCliNoticeAgeHours = staleCliNotice
+    ? getStaleRunningCliSessionAgeHours({
+        status: "running",
+        startedAt: staleCliNotice.oldestStartedAt,
+        toolType: "shell",
+      }) ?? 12
+    : 0;
+  const staleCliNoticeDismissKey =
+    staleCliNotice && currentProjectRoot
+      ? `${currentProjectRoot}:${staleCliNotice.count}:${staleCliNotice.oldestStartedAt}`
+      : null;
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
       <div className="shrink-0 relative z-20">
@@ -744,12 +972,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       !showWelcome &&
       aiStatusLoaded &&
       aiStatus !== null &&
-      !hasAnyAiProvider ? (
+      !hasAnyAiProvider &&
+      !missingAiBannerDismissed ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          No AI provider is configured yet.{" "}
-          <Link to="/settings?tab=ai" className="underline">
-            Set up AI
-          </Link>
+          <span>
+            No AI provider is configured yet.{" "}
+            <Link to="/settings?tab=ai" className="underline">
+              Set up AI
+            </Link>
+          </span>
+          <button
+            type="button"
+            data-testid="dismiss-missing-ai-banner"
+            className="ml-2 text-amber-900/70 hover:text-amber-900"
+            onClick={() => {
+              if (!currentProjectRoot) return;
+              dismissMissingAiBanner(currentProjectRoot);
+            }}
+            title="Dismiss for this session"
+            aria-label="Dismiss missing AI provider banner for this session"
+          >
+            ×
+          </button>
         </div>
       ) : null}
 
@@ -758,13 +1002,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       !showWelcome &&
       !isOnboardingRoute &&
       githubStatus !== null &&
-      !githubStatus.tokenStored ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          GitHub is not connected for this ADE app yet.{" "}
-          <Link to="/settings?tab=integrations" className="underline">
-            Connect GitHub
-          </Link>
-        </div>
+      !githubStatus.connected &&
+      !githubBannerDismissed ? (
+        <GithubBanner
+          status={githubStatus}
+          onDismiss={() => {
+            if (!currentProjectRoot) return;
+            dismissGithubBanner(currentProjectRoot);
+          }}
+        />
       ) : null}
 
       {!hideSidebar && providerMode === "subscription" && aiMockProvider ? (
@@ -810,72 +1056,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar &&
-      project?.rootPath &&
-      !showWelcome &&
-      (contextStatus?.generation.state === "pending" ||
-        contextStatus?.generation.state === "running") ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-sky-500/6 px-3 py-1.5 text-[11px] font-mono text-sky-800 animate-pulse">
-          Generating context docs...{" "}
-          <Link to="/settings?tab=workspace" className="underline">
-            Open context settings
-          </Link>
-        </div>
-      ) : null}
-
       {!hideSidebar && feedbackGenerating ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-violet-500/6 px-3 py-1.5 text-[11px] font-mono text-violet-800 animate-pulse">
           Generating feedback report...
         </div>
       ) : null}
 
-      {!hideSidebar &&
-      project?.rootPath &&
-      !showWelcome &&
-      contextStatus?.generation.state === "failed" ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-red-500/6 px-3 py-1.5 text-[11px] font-mono text-red-800">
-          Context doc generation failed
-          {contextStatus.generation.error
-            ? `: ${contextStatus.generation.error}`
-            : "."}{" "}
-          <Link to="/settings?tab=workspace" className="underline">
-            Retry generation
-          </Link>
-        </div>
-      ) : null}
-
-      {showContextBanner ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          <span>
-            {missingContextDocs.length > 0
-              ? `Missing ADE context docs: ${missingContextSummary}.`
-              : `ADE context docs need regeneration: ${actionableContextSummary}.`}
-            <Link to="/settings?tab=workspace" className="ml-2 underline">
-              Generate docs
-            </Link>
-          </span>
-          <button
-            type="button"
-            className="ml-2 text-amber-900/70 hover:text-amber-900"
-            onClick={() => {
-              if (!currentProjectRoot) return;
-              setDismissedContextBannerRoots((prev) => ({
-                ...prev,
-                [currentProjectRoot]: true,
-              }));
-            }}
-            title="Dismiss for this session"
-          >
-            ×
-          </button>
-        </div>
-      ) : null}
-
       <div className="flex-1 flex min-h-0">
         {hideSidebar ? null : (
-          <aside className="ade-sidebar-clip shrink-0 z-10 border-r">
+          // Graph page uses `fixed` viewport layers up to z-[96]; keep the tab rail above them.
+          <aside className="ade-sidebar-clip shrink-0 z-[100] border-r" data-tour="app.sidebar">
             <div className="ade-sidebar flex flex-col py-2 h-full">
-              <TabNav />
+              <TabNav githubStatus={githubStatus} />
             </div>
           </aside>
         )}
@@ -898,12 +1090,65 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <RightEdgeFloatingPane />
 
-          {prToasts.length > 0 ? (
+          {staleCliNotice || prToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
+              {staleCliNotice ? (
+                <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/12">
+                      <WarningCircle size={16} weight="fill" className="text-amber-300" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-300">
+                            Running sessions
+                          </span>
+                          <div className="mt-2 text-[13px] font-semibold leading-tight text-fg">
+                            {staleCliNotice.count} old CLI or shell process{staleCliNotice.count === 1 ? "" : "es"} still running
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+                          onClick={() => {
+                            if (staleCliNoticeDismissKey) {
+                              dismissedStaleCliNoticeKeyRef.current = staleCliNoticeDismissKey;
+                            }
+                            setStaleCliNotice(null);
+                          }}
+                          aria-label="Dismiss old running sessions notice"
+                          title="Dismiss"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <div className="mt-2 text-[12px] leading-relaxed text-muted-fg">
+                        The oldest has been open for about {staleCliNoticeAgeHours} hours. Review running sessions and close anything no longer in use.
+                      </div>
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          type="button"
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-amber-300 px-3 text-[11px] font-medium text-[#0F0D14] transition-colors hover:brightness-110"
+                          onClick={() => {
+                            navigate("/work?status=running");
+                            if (staleCliNoticeDismissKey) {
+                              dismissedStaleCliNoticeKeyRef.current = staleCliNoticeDismissKey;
+                            }
+                            setStaleCliNotice(null);
+                          }}
+                        >
+                          View processes
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               {prToasts.map((toast) => {
-                const laneName =
-                  lanes.find((lane) => lane.id === toast.event.laneId)?.name ??
-                  toast.event.laneId;
+                const toastLane = lanes.find((lane) => lane.id === toast.event.laneId) ?? null;
+                const laneName = toastLane?.name ?? toast.event.laneId;
+                const laneColor = toastLane?.color ?? null;
                 const tone = getPrToastTone(toast.event.kind);
                 const toneClasses = getPrToastToneClasses(tone);
                 const Icon = getPrToastIcon(toast.event.kind);
@@ -963,23 +1208,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         </div>
                         {meta.length > 0 ? (
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                            {meta.map((item, index) => (
-                              <span
-                                key={`${toast.id}-meta-${index}`}
-                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/50 bg-black/10 px-2 py-1 text-[10px] text-muted-fg"
-                              >
-                                {item.includes("/") ? (
-                                  <GitBranch size={10} />
-                                ) : item.includes("#") ||
-                                  (toast.event.repoOwner &&
-                                    item.includes(toast.event.repoOwner)) ? (
-                                  <GithubLogo size={10} />
-                                ) : (
-                                  <GitPullRequest size={10} />
-                                )}
-                                <span className="truncate">{item}</span>
-                              </span>
-                            ))}
+                            {meta.map((item, index) => {
+                              const isLane = laneName != null && item === laneName;
+                              return (
+                                <span
+                                  key={`${toast.id}-meta-${index}`}
+                                  className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/50 bg-black/10 px-2 py-1 text-[10px] text-muted-fg"
+                                  style={isLane && laneColor ? { color: laneColor } : undefined}
+                                >
+                                  {isLane && laneColor ? (
+                                    <LaneAccentDot lane={{ color: laneColor }} size={7} />
+                                  ) : item.includes("/") ? (
+                                    <GitBranch size={10} />
+                                  ) : item.includes("#") ||
+                                    (toast.event.repoOwner &&
+                                      item.includes(toast.event.repoOwner)) ? (
+                                    <GithubLogo size={10} />
+                                  ) : (
+                                    <GitPullRequest size={10} />
+                                  )}
+                                  <span className="truncate">{item}</span>
+                                </span>
+                              );
+                            })}
                           </div>
                         ) : null}
                         <div className="mt-2 line-clamp-3 text-[12px] leading-relaxed text-muted-fg">
@@ -990,9 +1241,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             type="button"
                             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-transparent px-3 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg"
                             onClick={() => {
-                              selectLane(toast.event.laneId);
-                              setLaneInspectorTab(toast.event.laneId, "merge");
-                              window.location.hash = `#/lanes?laneId=${encodeURIComponent(toast.event.laneId)}&focus=single&inspectorTab=merge`;
+                              let detailTab: PrDetailRouteTab | null = null;
+                              if (toast.event.kind === "checks_failing") {
+                                detailTab = "checks";
+                              } else if (
+                                toast.event.kind === "changes_requested" ||
+                                toast.event.kind === "review_requested"
+                              ) {
+                                detailTab = "activity";
+                              }
+                              const search = buildPrsRouteSearch({
+                                activeTab: "normal",
+                                selectedPrId: toast.event.prId,
+                                selectedQueueGroupId: null,
+                                selectedRebaseItemId: null,
+                                detailTab,
+                              });
+                              navigate(`/prs${search}`);
                               dismissPrToast(toast.id);
                             }}
                           >

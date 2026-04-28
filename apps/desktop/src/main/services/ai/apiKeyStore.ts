@@ -4,9 +4,8 @@ import type { SafeStorage } from "electron";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 // electron.safeStorage is only available inside an Electron main process.
-// When this module is bundled into the headless MCP server (spawned by
-// Claude Agent SDK / Codex App Server as a plain Node process), `electron`
-// is not present.  Gracefully degrade so the MCP server can start.
+// When this module is bundled into the ADE CLI headless runtime, `electron`
+// is not present. Gracefully degrade so the CLI can start.
 let safeStorage: SafeStorage | null = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports

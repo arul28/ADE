@@ -4,6 +4,8 @@ type StatusCacheEntry = {
   value: AiSettingsStatus | null;
   timestamp: number;
   inFlight: Promise<AiSettingsStatus> | null;
+  includesOpenCodeInventory: boolean;
+  inFlightIncludesOpenCodeInventory: boolean;
 };
 
 type ModelsCacheEntry = {
@@ -26,35 +28,55 @@ function statusCacheKey(projectRoot: string | null | undefined): string {
   return normalizeProjectRoot(projectRoot);
 }
 
-function modelsCacheKey(projectRoot: string | null | undefined, provider: AgentChatProvider): string {
-  return `${normalizeProjectRoot(projectRoot)}::${provider}`;
+function modelsCacheKey(
+  projectRoot: string | null | undefined,
+  provider: AgentChatProvider,
+  activateRuntime: boolean,
+): string {
+  return `${normalizeProjectRoot(projectRoot)}::${provider}::${activateRuntime ? "active" : "passive"}`;
 }
 
 export async function getAiStatusCached(args: {
   projectRoot: string | null | undefined;
   force?: boolean;
   ttlMs?: number;
+  refreshOpenCodeInventory?: boolean;
 }): Promise<AiSettingsStatus> {
   const key = statusCacheKey(args.projectRoot);
   const ttlMs = args.ttlMs ?? DEFAULT_AI_STATUS_TTL_MS;
   const now = Date.now();
   const existing = aiStatusCache.get(key);
+  const requiresOpenCodeInventory = args.refreshOpenCodeInventory === true;
 
-  if (!args.force && existing?.value && now - existing.timestamp < ttlMs) {
+  if (
+    !args.force
+    && existing?.value
+    && now - existing.timestamp < ttlMs
+    && (!requiresOpenCodeInventory || existing.includesOpenCodeInventory)
+  ) {
     return existing.value;
   }
-  if (!args.force && existing?.inFlight) {
+  if (
+    !args.force
+    && existing?.inFlight
+    && (!requiresOpenCodeInventory || existing.inFlightIncludesOpenCodeInventory)
+  ) {
     return existing.inFlight;
   }
 
   let request: Promise<AiSettingsStatus> | null = null;
-  request = window.ade.ai.getStatus().then((status) => {
+  request = window.ade.ai.getStatus({
+    force: args.force === true,
+    refreshOpenCodeInventory: requiresOpenCodeInventory,
+  }).then((status) => {
     const current = aiStatusCache.get(key);
     if (current?.inFlight === request) {
       aiStatusCache.set(key, {
         value: status,
         timestamp: Date.now(),
         inFlight: null,
+        includesOpenCodeInventory: requiresOpenCodeInventory,
+        inFlightIncludesOpenCodeInventory: false,
       });
     }
     return status;
@@ -65,6 +87,8 @@ export async function getAiStatusCached(args: {
         value: current.value,
         timestamp: current.timestamp,
         inFlight: null,
+        includesOpenCodeInventory: current.includesOpenCodeInventory,
+        inFlightIncludesOpenCodeInventory: false,
       });
     }
     throw error;
@@ -74,6 +98,8 @@ export async function getAiStatusCached(args: {
     value: existing?.value ?? null,
     timestamp: existing?.timestamp ?? 0,
     inFlight: request,
+    includesOpenCodeInventory: existing?.includesOpenCodeInventory ?? false,
+    inFlightIncludesOpenCodeInventory: requiresOpenCodeInventory,
   });
 
   return request;
@@ -82,10 +108,12 @@ export async function getAiStatusCached(args: {
 export async function getAgentChatModelsCached(args: {
   projectRoot: string | null | undefined;
   provider: AgentChatProvider;
+  activateRuntime?: boolean;
   force?: boolean;
   ttlMs?: number;
 }): Promise<AgentChatModelInfo[]> {
-  const key = modelsCacheKey(args.projectRoot, args.provider);
+  const activateRuntime = args.activateRuntime === true;
+  const key = modelsCacheKey(args.projectRoot, args.provider, activateRuntime);
   const ttlMs = args.ttlMs ?? DEFAULT_MODELS_TTL_MS;
   const now = Date.now();
   const existing = providerModelsCache.get(key);
@@ -98,7 +126,10 @@ export async function getAgentChatModelsCached(args: {
   }
 
   let request: Promise<AgentChatModelInfo[]> | null = null;
-  request = window.ade.agentChat.models({ provider: args.provider }).then((models) => {
+  request = window.ade.agentChat.models({
+    provider: args.provider,
+    ...(activateRuntime ? { activateRuntime: true } : {}),
+  }).then((models) => {
     const current = providerModelsCache.get(key);
     if (current?.inFlight === request) {
       providerModelsCache.set(key, {

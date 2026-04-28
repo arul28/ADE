@@ -9,7 +9,7 @@ import type {
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
-import { formatComputerUseKind, formatComputerUseMode, summarizeComputerUseProof } from "../../lib/computerUse";
+import { formatComputerUseKind, summarizeComputerUseProof } from "../../lib/computerUse";
 import { getMissionInterventionOwnerLabel } from "./missionHelpers";
 
 // ---------------------------------------------------------------------------
@@ -318,16 +318,12 @@ function ComputerUsePanel({ runView }: { runView: MissionRunView }) {
   return (
     <div style={sectionStyle}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div style={sectionLabelStyle}>Computer Use</div>
-        <span style={{ fontSize: 9, fontFamily: MONO_FONT, color: snapshot.usingLocalFallback ? COLORS.warning : COLORS.success }}>
-          {snapshot.usingLocalFallback ? "local fallback" : "external-first"}
-        </span>
+        <div style={sectionLabelStyle}>Proof</div>
       </div>
       <div className="mt-1 text-[11px]" style={{ color: COLORS.textPrimary }}>
         {snapshot.summary}
       </div>
       <div className="mt-2 flex flex-wrap gap-3 text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-        <span>Policy: {formatComputerUseMode(snapshot.policy)}</span>
         <span>{summarizeComputerUseProof(snapshot)}</span>
         <span>
           Backend: {snapshot.activeBackend ? `${snapshot.activeBackend.name} (${snapshot.activeBackend.source})` : "not selected"}

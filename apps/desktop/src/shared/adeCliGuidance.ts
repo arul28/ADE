@@ -1,0 +1,12 @@
+export const ADE_CLI_AGENT_GUIDANCE = [
+  "## ADE CLI",
+  "`ade` is the default control plane for ADE-managed sessions: lanes, missions, PRs, chats/sessions, memory, proof, config, and process state.",
+  "If `command -v ade` fails, try `${ADE_CLI_PATH:-}` when set, then `${ADE_CLI_BIN_DIR:-}/ade`, and in an ADE source checkout fall back to `node apps/ade-cli/dist/cli.cjs ...` after confirming the file exists.",
+  "The only normal reason to skip ADE CLI for an ADE action is that the user truly does not have it installed or reachable after those fallbacks.",
+  "For ADE work beyond the immediate local edit, shell command, or repository inspection in front of you, check ADE CLI first: run `ade doctor` if needed, use typed commands like `ade lanes list --text` / `ade prs checks <pr> --text`, or discover with `ade actions list --text` and `ade actions run ...`.",
+  "When the user asks you to capture, send, attach, or provide proof, use whatever computer-use or browser tool is appropriate to produce the evidence, then register it with ADE via `ade proof ...` so it appears in the ADE proof drawer for the active chat, mission, or lane.",
+  "When you run processes of any kind, track what you started and clean up old, stale, or finished processes before leaving the task.",
+].join("\n");
+
+export const ADE_CLI_INLINE_GUIDANCE =
+  "`ade` is the default control plane for ADE-managed sessions: lanes, missions, PRs, chats/sessions, memory, proof, config, and process state. If `command -v ade` fails, try `${ADE_CLI_PATH:-}`, then `${ADE_CLI_BIN_DIR:-}/ade`, and in an ADE source checkout `node apps/ade-cli/dist/cli.cjs ...` after confirming it exists. The only normal reason to skip ADE CLI for an ADE action is that the user truly does not have it installed or reachable after those fallbacks. For ADE work beyond the immediate local edit, shell command, or repository inspection in front of you, check ADE CLI first: try `ade doctor`, typed `ade ... --text` commands, or `ade actions list --text` / `ade actions run ...`. When the user asks you to capture, send, attach, or provide proof, use whatever computer-use or browser tool is appropriate to produce the evidence, then register it with ADE via `ade proof ...` so it appears in the ADE proof drawer for the active chat, mission, or lane. When you run processes of any kind, track what you started and clean up old, stale, or finished processes before leaving the task.";

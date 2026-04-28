@@ -5,13 +5,16 @@ import type {
   GitActionResult,
   GitBatchFileActionArgs,
   GitBranchSummary,
+  GitCheckoutBranchArgs,
   GitCherryPickArgs,
   GitCommitArgs,
   GitGenerateCommitMessageArgs,
   GitGenerateCommitMessageResult,
   GitCommitSummary,
   GitConflictState,
+  GitFileHistoryEntry,
   GitGetCommitMessageArgs,
+  GitGetFileHistoryArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
@@ -599,6 +602,90 @@ export function createGitOperationsService({
       });
     },
 
+    async getFileHistory(args: GitGetFileHistoryArgs): Promise<GitFileHistoryEntry[]> {
+      const laneId = args.laneId.trim();
+      const relPath = ensureRelativeRepoPath(args.path);
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(100, Math.floor(args.limit))) : 20;
+      return readLaneCached(`file-history:${laneId}:${relPath}:${limit}`, 2_000, async () => {
+        const lane = laneService.getLaneBaseAndBranch(laneId);
+        const out = await runGitOrThrow(
+          [
+            "log",
+            "--follow",
+            `-n${limit}`,
+            "--date=iso-strict",
+            "--name-status",
+            "--format=%x1e%H%x1f%h%x1f%an%x1f%aI%x1f%s",
+            "--",
+            relPath,
+          ],
+          { cwd: lane.worktreePath, timeoutMs: 15_000 }
+        );
+
+        return out
+          .split("\u001e")
+          .map((block) => block.trim())
+          .filter(Boolean)
+          .map((block): GitFileHistoryEntry | null => {
+            const lines = block.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+            const metadataLine = lines.shift();
+            if (!metadataLine) return null;
+            const [commitSha, shortSha, authorName, authoredAt, subject] = parseDelimited(metadataLine);
+            if (!commitSha || !shortSha) return null;
+
+            let path = relPath;
+            let previousPath: string | null = null;
+            let changeType: GitFileHistoryEntry["changeType"] = "unknown";
+
+            const statusLine = lines[0] ?? "";
+            if (statusLine.length) {
+              const parts = statusLine.split("\t");
+              const status = parts[0]?.trim() ?? "";
+              const code = status[0] ?? "";
+              switch (code) {
+                case "A":
+                  changeType = "added";
+                  path = parts[1] ?? relPath;
+                  break;
+                case "M":
+                  changeType = "modified";
+                  path = parts[1] ?? relPath;
+                  break;
+                case "D":
+                  changeType = "deleted";
+                  path = parts[1] ?? relPath;
+                  break;
+                case "R":
+                  changeType = "renamed";
+                  previousPath = parts[1] ?? null;
+                  path = parts[2] ?? relPath;
+                  break;
+                case "C":
+                  changeType = "copied";
+                  previousPath = parts[1] ?? null;
+                  path = parts[2] ?? relPath;
+                  break;
+                default:
+                  path = parts.at(-1) ?? relPath;
+                  break;
+              }
+            }
+
+            return {
+              commitSha,
+              shortSha,
+              authorName: authorName ?? "",
+              authoredAt: authoredAt ?? "",
+              subject: subject ?? "",
+              path,
+              previousPath,
+              changeType,
+            };
+          })
+          .filter((entry): entry is GitFileHistoryEntry => entry != null);
+      });
+    },
+
     async getSyncStatus(args: { laneId: string }): Promise<GitUpstreamSyncStatus> {
       const laneId = args.laneId.trim();
       return readLaneCached(`sync-status:${laneId}:default`, 2_000, async () => {
@@ -1008,9 +1095,36 @@ export function createGitOperationsService({
         ["for-each-ref", "--sort=refname", "--format=%(refname)\t%(refname:short)\t%(HEAD)\t%(upstream:short)", "refs/heads", "refs/remotes"],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
+      const branchProfiles = new Set<string>();
+      try {
+        for (const profile of laneService.listBranchProfiles(args.laneId)) {
+          branchProfiles.add(profile.branchRef);
+        }
+      } catch {
+        // Branch listing should still work even if profile bookkeeping fails.
+      }
+      const activeLaneOwners = new Map<string, { id: string; name: string }>();
+      try {
+        const owners = laneService.listBranchOwners({ excludeLaneId: args.laneId });
+        for (const owner of owners) {
+          activeLaneOwners.set(owner.branchRef, { id: owner.id, name: owner.name });
+        }
+      } catch {
+        // Branch listing should still work if lane summaries are temporarily unavailable.
+      }
 
       const localBranches = new Map<string, GitBranchSummary>();
       const remoteBranches: GitBranchSummary[] = [];
+      const annotate = (summary: GitBranchSummary): GitBranchSummary => {
+        const localName = summary.isRemote ? localBranchNameFromRemoteRef(summary.name) : summary.name;
+        const owner = activeLaneOwners.get(localName) ?? null;
+        return {
+          ...summary,
+          ownedByLaneId: owner?.id ?? null,
+          ownedByLaneName: owner?.name ?? null,
+          profiledInCurrentLane: branchProfiles.has(localName),
+        };
+      };
 
       out
         .split("\n")
@@ -1025,18 +1139,18 @@ export function createGitOperationsService({
           if (fullRef.startsWith("refs/heads/")) {
             const isCurrent = (parts[2]?.trim() ?? "") === "*";
             const upstream = parts[3]?.trim() || null;
-            localBranches.set(shortRef, { name: shortRef, isCurrent, isRemote: false, upstream });
+            localBranches.set(shortRef, annotate({ name: shortRef, isCurrent, isRemote: false, upstream }));
             return;
           }
 
           if (fullRef.startsWith("refs/remotes/")) {
             if (shortRef.endsWith("/HEAD")) return;
-            remoteBranches.push({
+            remoteBranches.push(annotate({
               name: shortRef,
               isCurrent: false,
               isRemote: true,
               upstream: null
-            });
+            }));
           }
         });
 
@@ -1055,40 +1169,22 @@ export function createGitOperationsService({
       return [...sortedLocals, ...sortedRemotes];
     },
 
-    async checkoutBranch(args: { laneId: string; branchName: string }): Promise<GitActionResult> {
+    async checkoutBranch(args: GitCheckoutBranchArgs): Promise<GitActionResult> {
       const branchName = args.branchName.trim();
       if (!branchName.length) throw new Error("Branch name is required");
-
-      const lane = laneService.getLaneBaseAndBranch(args.laneId);
-      if (lane.laneType !== "primary") {
-        throw new Error("Branch checkout is only supported on the primary lane");
-      }
-
-      const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
-        cwd: lane.worktreePath,
-        timeoutMs: 8_000
-      }).then((res) => res.exitCode === 0);
-      const remoteExists = !localExists
-        ? await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/${branchName}`], {
-          cwd: lane.worktreePath,
-          timeoutMs: 8_000
-        }).then((res) => res.exitCode === 0)
-        : false;
-
-      const trackRemoteBranch = !localExists && remoteExists;
-      const resolvedBranchRef = trackRemoteBranch ? localBranchNameFromRemoteRef(branchName) : branchName;
 
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_checkout_branch",
         reason: "checkout_branch",
-        metadata: { branchName, trackRemoteBranch },
-        fn: async (l) => {
-          const checkoutCmd = trackRemoteBranch
-            ? ["checkout", "--track", "--ignore-other-worktrees", branchName]
-            : ["checkout", "--ignore-other-worktrees", branchName];
-          await runGitOrThrow(checkoutCmd, { cwd: l.worktreePath, timeoutMs: 60_000 });
-          laneService.updateBranchRef(args.laneId, resolvedBranchRef);
+        metadata: {
+          branchName,
+          mode: args.mode ?? "existing",
+          startPoint: args.startPoint ?? null,
+          baseRef: args.baseRef ?? null,
+        },
+        fn: async () => {
+          await laneService.switchBranch(args);
         }
       });
       return action;

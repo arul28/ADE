@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ADE — OG Image</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --color-bg: #0a0a0f;
+        --color-cream: #efe6d0;
+        --color-cream-muted: #b8ae94;
+        --color-cream-faint: rgba(239, 230, 208, 0.45);
+        --color-hairline: rgba(239, 230, 208, 0.14);
+        --color-hairline-strong: rgba(239, 230, 208, 0.28);
+        --color-violet-bright: #a78bfa;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+      }
+
+      body {
+        font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, sans-serif;
+        color: var(--color-cream);
+        background-color: var(--color-bg);
+        background-image:
+          radial-gradient(circle at 18% 22%, rgba(124, 58, 237, 0.28), transparent 55%),
+          radial-gradient(circle at 88% 78%, rgba(167, 139, 250, 0.18), transparent 60%),
+          radial-gradient(rgba(239, 230, 208, 0.045) 1px, transparent 1px);
+        background-size: auto, auto, 22px 22px;
+        background-position: 0 0, 0 0, 0 0;
+      }
+
+      .page {
+        position: relative;
+        width: 1200px;
+        height: 630px;
+        padding: 56px 64px 96px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 36px;
+        align-items: start;
+      }
+
+      /* ---------------- Left: Lede ---------------- */
+      .lede { position: relative; }
+
+      .eyebrow {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 13px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.34em;
+        color: var(--color-violet-bright);
+        margin: 0 0 18px;
+      }
+      .eyebrow .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--color-violet-bright);
+        box-shadow: 0 0 18px rgba(167, 139, 250, 0.65);
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 16px;
+        border-radius: 999px;
+        border: 1px solid rgba(167, 139, 250, 0.4);
+        background: rgba(167, 139, 250, 0.1);
+        box-shadow: 0 0 32px -8px rgba(167, 139, 250, 0.5);
+        font-size: 12px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.22em;
+        color: var(--color-cream);
+        margin-bottom: 30px;
+        white-space: nowrap;
+        width: max-content;
+        max-width: 100%;
+      }
+      .pill .ping {
+        position: relative;
+        width: 9px;
+        height: 9px;
+      }
+      .pill .ping::before,
+      .pill .ping::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 999px;
+        background: var(--color-violet-bright);
+      }
+      .pill .ping::before { opacity: 0.55; transform: scale(1.6); filter: blur(2px); }
+      .pill .sep { color: var(--color-cream-faint); }
+      .pill .agpl { color: var(--color-violet-bright); }
+
+      h1.headline {
+        font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
+        font-weight: 400;
+        font-size: 80px;
+        line-height: 1.02;
+        letter-spacing: -0.02em;
+        margin: 0;
+        color: var(--color-cream);
+      }
+      h1.headline em {
+        font-style: italic;
+        color: var(--color-violet-bright);
+      }
+
+      .sub {
+        margin-top: 26px;
+        max-width: 44ch;
+        font-size: 18px;
+        line-height: 1.5;
+        color: var(--color-cream-muted);
+      }
+      .sub strong { font-weight: 500; color: var(--color-cream); }
+
+      /* ---------------- Right: Competitor equation ---------------- */
+      .equation {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 26px;
+        padding-top: 6px;
+      }
+
+      .row {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: flex-start;
+        justify-content: center;
+        gap: 10px;
+      }
+
+      .chip {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 7px;
+        flex-shrink: 0;
+        width: 66px;
+      }
+      .chip .label {
+        white-space: nowrap;
+      }
+      .chip .logo {
+        width: 66px;
+        height: 66px;
+        border-radius: 15px;
+        border: 1px solid var(--color-hairline-strong);
+        background: rgba(255, 255, 255, 0.045);
+        padding: 7px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .chip .logo img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .chip .label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--color-cream-muted);
+      }
+
+      .plus {
+        font-family: "Instrument Serif", Georgia, serif;
+        font-size: 56px;
+        line-height: 1;
+        color: var(--color-cream-faint);
+        flex-shrink: 0;
+        align-self: flex-start;
+        margin-top: 8px;
+      }
+
+      .equals-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 32px;
+        margin-top: 10px;
+      }
+      .equals {
+        font-family: "Instrument Serif", Georgia, serif;
+        font-style: italic;
+        font-size: 64px;
+        color: var(--color-violet-bright);
+      }
+      .ade-icon {
+        position: relative;
+        width: 260px;
+        height: 260px;
+      }
+      .ade-icon::before {
+        content: "";
+        position: absolute;
+        inset: -48px;
+        border-radius: 30%;
+        background: radial-gradient(circle, rgba(124, 58, 237, 0.65), transparent 65%);
+        filter: blur(26px);
+        z-index: 0;
+      }
+      .ade-icon img {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        height: 100%;
+        border-radius: 26%;
+        object-fit: contain;
+        filter: drop-shadow(0 22px 56px rgba(124, 58, 237, 0.65));
+      }
+
+      /* ---------------- Footer mark ---------------- */
+      .wordmark {
+        position: absolute;
+        left: 72px;
+        bottom: 42px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.28em;
+        color: var(--color-cream-faint);
+      }
+      .wordmark .rule {
+        width: 40px;
+        height: 1px;
+        background: var(--color-hairline-strong);
+      }
+
+      .domain {
+        position: absolute;
+        right: 72px;
+        bottom: 42px;
+        font-size: 13px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--color-cream-muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="lede">
+        <div class="pill">
+          <span class="ping"></span>
+          100% Free
+          <span class="sep">·</span>
+          Open source
+          <span class="sep">·</span>
+          <span class="agpl">AGPL-3.0</span>
+        </div>
+        <h1 class="headline">
+          Every AI<br />
+          coding tool.<br />
+          <em>One</em> app.
+        </h1>
+        <p class="sub">
+          A single native workspace for
+          <strong>every AI coding agent</strong>.
+          <strong>macOS</strong>, <strong>iOS</strong>, <strong>CLI</strong> — synced in real time.
+        </p>
+      </div>
+
+      <div class="equation">
+        <div class="row">
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/claude-code.png" alt="" /></div>
+            <span class="label">Claude</span>
+          </div>
+          <span class="plus">+</span>
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/codex.png" alt="" /></div>
+            <span class="label">Codex</span>
+          </div>
+          <span class="plus">+</span>
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/opencode.png" alt="" /></div>
+            <span class="label">OpenC.</span>
+          </div>
+          <span class="plus">+</span>
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/t3-code.png" alt="" /></div>
+            <span class="label">T3</span>
+          </div>
+          <span class="plus">+</span>
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/cursor.png" alt="" /></div>
+            <span class="label">Cursor</span>
+          </div>
+          <span class="plus">+</span>
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/superset.png" alt="" /></div>
+            <span class="label">Superset</span>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/conductor.png" alt="" /></div>
+            <span class="label">Cond.</span>
+          </div>
+          <span class="plus">+</span>
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/factory.png" alt="" /></div>
+            <span class="label">Factory</span>
+          </div>
+          <span class="plus">+</span>
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/paperclip.png" alt="" /></div>
+            <span class="label">Paperc.</span>
+          </div>
+          <span class="plus">+</span>
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/openclaw.png" alt="" /></div>
+            <span class="label">OpenClaw</span>
+          </div>
+          <span class="plus">+</span>
+          <div class="chip">
+            <div class="logo"><img src="../public/images/competitors/github.png" alt="" /></div>
+            <span class="label">GitHub</span>
+          </div>
+        </div>
+
+        <div class="equals-row">
+          <span class="equals">equals</span>
+          <div class="ade-icon">
+            <img src="../public/images/ade-dock-icon.png" alt="ADE" />
+          </div>
+        </div>
+      </div>
+
+      <div class="wordmark">
+        <span class="rule"></span>
+        By ADE · Published Apr 2026
+      </div>
+      <div class="domain">ade-app.dev</div>
+    </div>
+  </body>
+</html>

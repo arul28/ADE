@@ -14,8 +14,7 @@ function toolNameFromKind(kind: string | undefined, title: string): string {
   const trimmedTitle = title.trim();
   if (trimmedTitle.length) {
     if (
-      trimmedTitle.startsWith("mcp__")
-      || trimmedTitle.startsWith("functions.")
+      trimmedTitle.startsWith("functions.")
       || trimmedTitle.startsWith("multi_tool_use.")
       || trimmedTitle.startsWith("web.")
       || /^[A-Za-z][A-Za-z0-9_.-]{1,127}$/.test(trimmedTitle)

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160" fill="none">
+  <circle cx="160" cy="80" r="26" fill="var(--color-accent, #A78BFA)" fill-opacity="0.18" stroke="var(--color-accent, #A78BFA)" stroke-width="1.5"/>
+  <text x="160" y="85" text-anchor="middle" font-family="var(--font-sans)" font-size="14" font-weight="600" fill="var(--color-accent, #A78BFA)">CTO</text>
+  <circle cx="95" cy="50" r="10" fill="none" stroke="var(--color-muted-fg, #908FA0)" stroke-width="1.5"/>
+  <circle cx="95" cy="115" r="10" fill="none" stroke="var(--color-muted-fg, #908FA0)" stroke-width="1.5"/>
+  <circle cx="225" cy="50" r="10" fill="none" stroke="var(--color-muted-fg, #908FA0)" stroke-width="1.5"/>
+  <circle cx="225" cy="115" r="10" fill="none" stroke="var(--color-muted-fg, #908FA0)" stroke-width="1.5"/>
+  <line x1="105" y1="56" x2="137" y2="72" stroke="var(--color-muted-fg, #908FA0)" stroke-opacity="0.5"/>
+  <line x1="105" y1="109" x2="137" y2="92" stroke="var(--color-muted-fg, #908FA0)" stroke-opacity="0.5"/>
+  <line x1="215" y1="56" x2="183" y2="72" stroke="var(--color-muted-fg, #908FA0)" stroke-opacity="0.5"/>
+  <line x1="215" y1="109" x2="183" y2="92" stroke="var(--color-muted-fg, #908FA0)" stroke-opacity="0.5"/>
+</svg>

@@ -17,7 +17,7 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `workerAdapterRuntimeService.ts` — adapter lifecycle for claude-local / codex-local / process / openclaw-webhook.
 - `linearCredentialService.ts` — personal API key storage, token status.
 - `linearOAuthService.ts` — PKCE loopback OAuth flow on port 19836.
-- `linearClient.ts` — Linear GraphQL client (shared by desktop and headless MCP).
+- `linearClient.ts` — Linear GraphQL client (shared by desktop and headless ADE CLI).
 - `linearIssueTracker.ts` / `issueTracker.ts` — Linear issue cache and change detection.
 - `flowPolicyService.ts` — canonical `LinearWorkflowConfig` (intake, workflows, migration), file-backed via `linearWorkflowFileService`.
 - `linearWorkflowFileService.ts` — repo YAML persistence for workflows.
@@ -33,15 +33,15 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 
 ### Headless parity
 
-- `apps/mcp-server/src/headlessLinearServices.ts` — wires the same CTO Linear services (client, tracker, template, workflow file, flow policy, routing, intake, outbound, closeout, dispatcher, sync, ingress) into the headless MCP server so `ade mcp` acts as a drop-in Linear-capable runtime, not a read-only stub.
+- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same CTO Linear services (client, tracker, template, workflow file, flow policy, routing, intake, outbound, closeout, dispatcher, sync, ingress) into the headless ADE CLI so `ADE CLI` acts as a drop-in Linear-capable runtime, not a read-only stub.
 
 ### Renderer (apps/desktop/src/renderer/components/cto/)
 
-- `CtoPage.tsx` — the `/cto` shell. Four tabs: Chat, Team, Workflows, Settings. Lazy-loads history, budget, and external-MCP registry.
+- `CtoPage.tsx` — the `/cto` shell. Four tabs: Chat, Team, Workflows, Settings. Lazy-loads history, budget, and external-ADE CLI registry.
 - `AgentSidebar.tsx` — memoized worker tree; budget footer isolated so budget refresh does not rerender siblings.
 - `OnboardingBanner.tsx` / `OnboardingWizard.tsx` — minimal first-run flow: personality preset only.
 - `IdentityEditor.tsx` — editable identity surface (personality preset + custom overlay + model). No longer a full identity-prompt editor.
-- `CtoSettingsPanel.tsx` — identity, core memory (project summary / conventions / preferences / focus / notes), external-MCP access policy, onboarding reset.
+- `CtoSettingsPanel.tsx` — identity, core memory (project summary / conventions / preferences / focus / notes), external-ADE CLI access policy, onboarding reset.
 - `CtoPromptPreview.tsx` — three-section prompt preview: doctrine, personality overlay, memory model.
 - `TeamPanel.tsx` — worker editor and detail view.
 - `WorkerCreationWizard.tsx` — two-step wizard: template selection then configure.
@@ -60,6 +60,16 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `apps/desktop/src/shared/linearWorkflowPresets.ts` — `LinearWorkflowVisualPlan` type, `deriveVisualPlan`, `rebuildWorkflowSteps`, completion contract tables, step synthesis.
 - `apps/desktop/src/shared/types/linearSync.ts` — `LinearWorkflowDefinition`, `LinearWorkflowTarget`, trigger groups, step types, closeout types.
 - `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — complete operator tool surface registered for CTO chat sessions.
+
+### iOS companion (apps/ios/ADE/Views/Cto/)
+
+- `CtoTabShell.swift` — segmented mobile shell for Chat / Team /
+  Workflows with shared glass navigation styling.
+- `CtoTeamScreen.swift` — worker roster, hire action, worker rows,
+  quick actions, and per-worker context menus.
+- `CtoWorkflowsScreen.swift` — mobile workflow dashboard, policy list,
+  recent sync events, and connection/not-connected states backed by the
+  same Linear workflow command surface as desktop.
 
 ## Domain model
 
@@ -96,7 +106,7 @@ Portability rule (Phase 6 W3): identity YAML and the project memory schema are g
 | Chat | CTO session, subordinate activity summary | Immediate |
 | Team | Agents, revisions, worker core memory, worker runs | On tab activation |
 | Workflows | `LinearSyncPanel` (dashboard + run detail + pipeline) | On tab activation; refresh debounced |
-| Settings | Identity, core memory, session logs, external-MCP registry, OpenClaw | On tab activation |
+| Settings | Identity, core memory, session logs, external-ADE CLI registry, OpenClaw | On tab activation |
 
 The sidebar worker tree is precomputed and memoized. The budget footer is isolated so a budget refresh does not rerender the tree.
 
@@ -120,7 +130,7 @@ Linear poll / webhook
 
 ## CTO operator tools
 
-Registered in `ctoOperatorTools.ts` and exposed as MCP tools to the CTO chat session. Organized by domain: lanes, chats, missions, workers, git, PRs, convergence, conflicts, files, context, processes, tests, terminals, Linear, automations, events, project health, computer use, budget, memory. When the CTO wants to surface something in the UI it returns an `OperatorNavigationSuggestion` instead of silently switching tabs.
+Registered in `ctoOperatorTools.ts` and exposed as ADE CLI actions to the CTO chat session. Organized by domain: lanes, chats, missions, workers, git, PRs, convergence, conflicts, files, context, processes, tests, terminals, Linear, automations, events, project health, computer use, budget, memory. When the CTO wants to surface something in the UI it returns an `OperatorNavigationSuggestion` instead of silently switching tabs.
 
 The environment knowledge block inside the system prompt teaches intent-to-tool routing (e.g. "start a chat" -> `spawnChat`, "open a terminal" -> `createTerminal`). The capability manifest is injected in full, not summarized, so the CTO can pick the right tool even for less common actions.
 
@@ -143,7 +153,7 @@ The environment knowledge block inside the system prompt teaches intent-to-tool 
 - Ingress only auto-starts when realtime config is actually present.
 - Management surfaces (Team, Workflows, Settings) hydrate lazily without weakening persistent identity.
 - OpenClaw is advanced config, not first-run.
-- Headless MCP uses the same Linear services, not a read-only fake.
+- Headless ADE CLI uses the same Linear services, not a read-only fake.
 
 ## Gotchas and fragile areas
 

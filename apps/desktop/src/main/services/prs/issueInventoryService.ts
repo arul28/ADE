@@ -14,7 +14,7 @@ import type {
   PrReviewThread,
 } from "../../../shared/types";
 import { DEFAULT_CONVERGENCE_RUNTIME_STATE, DEFAULT_PIPELINE_SETTINGS } from "../../../shared/types";
-import { isNoisyIssueComment } from "./resolverUtils";
+import { isNoisyIssueComment, looksLikeResolutionAck } from "./resolverUtils";
 import { nowIso } from "../shared/utils";
 
 // ---------------------------------------------------------------------------
@@ -740,7 +740,16 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
           threadLatestCommentSource: source,
         };
 
-        if (thread.isResolved || thread.isOutdated) {
+        // Only treat as a resolution ACK when the latest reply is from a real
+        // human (or an unclassified author). Review bots — CodeRabbit (normalized
+        // from `coderabbitai`), Copilot, Codex, Greptile, Seer, ADE, etc. — often
+        // mention "fixed/resolved/done" inside long markdown bodies without
+        // actually acknowledging a fix, so passing their comments through the
+        // heuristic silently flips real, open threads to `"fixed"`.
+        const latestReplyLooksResolved = (source === "human" || source === "unknown")
+          && looksLikeResolutionAck(body);
+
+        if (thread.isResolved || thread.isOutdated || latestReplyLooksResolved) {
           if (!existing) continue;
           upsertItem(prId, externalId, threadData, {
             state: "fixed",

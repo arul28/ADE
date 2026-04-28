@@ -1,0 +1,40 @@
+---
+title: "v1.1.6"
+description: "Release notes for ADE v1.1.6 — April 26, 2026"
+---
+
+v1.1.6 makes automation rules first-class: per-action targeting and overrides, an explicit `laneMode` for whether a run reuses or creates a lane (with a preset → template helper that handles collisions and a synthetic `lane-setup` row when allocation fails), and a renderer pass that swaps the bespoke automations chrome for the shared CTO design tokens. Sync gets a `forceHostRole` lock so a desktop hosting the phone can't be silently demoted by stale on-disk state, and the `ade-cli` proof tools learn explicit `ownerKind` / `ownerId` routing. Test suite is consolidated heavily — orchestrator, CTO, and PR-service tests collapse from dozens of fragments into a handful of feature suites, and dead tests for ripped-out features are removed. iOS picks up a Work-surface refactor (model catalog/picker, session grouping, per-host token shelf) and a stale-host-key cleanup. Ships in **TestFlight build 8** of 1.1.1.
+
+---
+
+## Desktop
+
+- **Per-action automation overrides.** Rule actions can now carry their own `targetLaneId`, `modelConfig`, and `permissionConfig`. The planner and `automationService` merge these on top of rule-level config, with sanitation so per-action `permissionConfig` never leaks `undefined` keys and the Cursor provider key stays clean. Per-key clears in `permissionControls` replace the old wipe-all behaviour so you can reset a single override without losing the rest.
+- **`laneMode` is a first-class execution setting.** `AutomationExecution` gains `laneMode` + `laneNamePreset` (and a preserved `laneNameTemplate`). `resolveExecutionLaneId` branches on `laneMode`: `create` allocates a fresh lane via `createLaneForRun`, which resolves the preset/template, disambiguates collisions with `#issueNumber` or a short timestamp, then falls back to a 4-char random suffix. Allocation failures emit a synthetic `lane-setup` `action_results` row so they surface in run history instead of silently falling back to the primary lane.
+- **Legacy create-lane rules migrate on load.** `projectConfigService` rewrites old "create lane as first action" rules into `laneMode: 'create'` on load, carrying the prior name template forward as a `custom` preset. Unmigrated rows still render in `ActionRow` as read-only with a "now in Execution" pill so older rules display sensibly during the transition.
+- **Automations renderer adopts the shared design tokens.** New `designTokens.ts` re-exports the CTO panel tokens (`inputCls`, `selectCls`, `labelCls`, `cardCls`, …) as the single source of truth for the automations surface. `shared.ts` collapses `INPUT_CLS` / `INPUT_STYLE` / `CARD_STYLE` to thin aliases over those tokens, so existing call sites inherit the new chrome with zero churn. `RunDetailPanel` swaps hex literals for CSS variables, gives `lane-setup` rows a `GitBranch` icon + accent border, and renders `error_message` in `text-error`.
+- **Rules-tab affordances.** `RulesTab` shows a "Last run: failed" pill on the rule list with click-through to history; the empty state uses `cardCls`. `ActionList` drops "Create lane" from the +Add menu now that lane creation lives in Execution.
+- **Sync host-role lock.** `syncService` gains `forceHostRole` so the desktop instance hosting phone sync cannot be demoted to viewer by stale on-disk state. `main.ts` serialises `reconcileSyncHostContexts` so async runs land in order, and the post-clear `agentChatService` refreshes its reconstruction context when `sdkSessionId` is cleared.
+- **`syncHostService` no longer silent-fails on CONNECTING.** `sendAndWait` drops the silent `CONNECTING` fall-through; callers now get an explicit error instead of a swallowed promise.
+- **`ade-cli` proof routing.** Adds `proof attach` / `proof capture` plus explicit `ownerKind` / `ownerId` flags on the RPC proof tools, with `chat` / `pr` aliases. `adeRpcServer` rejects half-specified explicit owners and preserves PR/issue relations. Capture-style commands run headless by default. New owner/caption flags are wired into `VALUE_CARRIER_FLAGS`.
+- **`create-lane` automation action.** Available as an explicit action type in addition to the `laneMode: 'create'` execution setting, for rules that need lane creation mid-flow rather than at run start.
+
+### Test suite consolidation
+
+After the recent feature ripouts, the test tree was carrying a lot of dead and fragmented files. This release collapses them.
+
+- **Orchestrator tests: 17 → 12 suites.** `orchestratorAdapters.test.ts` absorbs `baseOrchestratorAdapter` + `providerOrchestratorAdapter` + `permissionMapping` + `modelConfigResolver`. `mission.test.ts` absorbs `missionLifecycle` + `missionBudgetService` + `missionStateDoc`. `orchestratorPlanning.test.ts` absorbs `orchestratorContext` + `delegationContracts`. All 463 cases preserved.
+- **CTO tests: 26 → 7 suites.** Linear OAuth/credential/client into `linearAuth`; sync/dispatcher/outbound/template/workflow-file into `linearSync`; intake/ingress/routing/closeout into `linearIntake`; worker-{heartbeat,adapterRuntime,agent,budget,revision,taskSession,openclawBridge} into `ctoWorkerLifecycle`; pipelineHelpers + pipelineLabels into `pipeline`; settings panel + Linear sync panel + session view state into `ctoUi`. 226 cases preserved verbatim, scoped per-source via outer `describe(...)` blocks.
+- **PR-service tests: 10 → 5 feature suites.** `prMergeQueue` (queueLandingService + integrationPlanning + integrationValidation), `prRebase` (prRebaseResolver + resolverUtils via `vi.importActual`), `prAsync` (prPollingService + prSummaryService), `prIssueResolution` (issueInventoryService + prIssueResolver). 180 cases preserved.
+- **Dead tests removed.** Orphaned tests in `orchestrator/`, `prs/`, `missions/`, and a handful of others where the source files no longer exist. A no-op `expect(true).toBe(true)` in `usageTrackingService.test.ts` is rewritten to a real `not.toThrow()` check.
+
+---
+
+## iOS
+
+- **Work surface refactor.** New `WorkModelCatalog` + `WorkModelPickerSheet` replace the inline model selection. `WorkSessionGrouping` is split out as a helper, and now counts awaiting-input sessions in `globalLiveSessionCount` so the badge matches what the user sees.
+- **Per-host token shelf in keychain.** `KeychainService` carries paired-auth payloads keyed by host, so the phone can hold credentials for multiple desktops without thrashing on switch. `SyncService` prunes legacy host keys on load and removes the stale saved profile on a failure path.
+- **Host-identity guards.** `SyncService` drops `suspendAutoReconnect` on a host-identity mismatch — a swapped desktop is treated as a fresh pairing rather than a recoverable disconnect.
+- **`SettingsPairingSection`.** New surface for managing paired desktops directly from settings.
+- **Lane stack canvas refinements.** `LaneStackCanvasScreen` and the `LaneListViewParts` / `LaneComponents` split land alongside the desktop laneMode work, keeping the iOS canvas in sync with the new lane lifecycle.
+- **Mobile UI polish.** Assorted layout fixes across Work and Lanes — caught during a hand pass on the device after the renderer changes landed.

@@ -2,7 +2,7 @@
   "name": "ade",
   "private": true,
   "scripts": {
-    "test": "npm run test --prefix apps/desktop && npm run test --prefix apps/mcp-server",
-    "test:ci": "npm run test:coverage --prefix apps/desktop && npm run test --prefix apps/mcp-server"
+    "test": "npm run test --prefix apps/desktop && npm run test --prefix apps/ade-cli",
+    "test:ci": "npm run test:coverage --prefix apps/desktop && npm run test --prefix apps/ade-cli"
   }
 }

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ConflictFileType } from "../../../shared/types";
+import { terminateProcessTree } from "../shared/processExecution";
 
 export type GitRunOptions = {
   cwd: string;
@@ -136,11 +137,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     };
 
     const onTimeout = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
+      terminateProcessTree(child, "SIGKILL");
       finish({
         exitCode: 124,
         stdout,

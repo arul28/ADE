@@ -19,10 +19,6 @@ const menuContentStyle: React.CSSProperties = {
   minWidth: 240,
   maxWidth: 320,
   padding: 6,
-  background: COLORS.cardBg,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 0,
-  boxShadow: "0 12px 32px rgba(0, 0, 0, 0.28)",
   zIndex: 300,
 };
 
@@ -180,7 +176,7 @@ export function QuickRunMenu({
       </DropdownMenu.Trigger>
 
       <DropdownMenu.Portal>
-        <DropdownMenu.Content sideOffset={6} align={align} style={menuContentStyle}>
+        <DropdownMenu.Content sideOffset={6} align={align} className="ade-liquid-glass-menu" style={menuContentStyle}>
           <div style={menuSectionLabelStyle}>Lane runtime</div>
           <QuickRunItem icon={<Rocket size={12} />} label="Open Run tab" onSelect={handleOpenRun} />
           <QuickRunItem icon={<Terminal size={12} />} label="Open shell in Work" onSelect={handleOpenShell} />

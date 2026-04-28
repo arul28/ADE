@@ -45,7 +45,7 @@ function mergeActivity(runs: WorkerAgentRun[], sessions: AgentSessionLogEntry[])
       timestamp: session.createdAt,
       title: session.summary,
       status: session.capabilityMode,
-      statusVariant: session.capabilityMode === "full_mcp" ? "success" : "muted",
+      statusVariant: session.capabilityMode === "full_tooling" ? "success" : "muted",
       icon: ChatCircle,
     });
   }

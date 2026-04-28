@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160" fill="none">
+  <circle cx="160" cy="40" r="14" fill="var(--color-accent, #A78BFA)" fill-opacity="0.9"/>
+  <circle cx="100" cy="90" r="11" fill="none" stroke="var(--color-accent, #A78BFA)" stroke-width="2"/>
+  <circle cx="160" cy="90" r="11" fill="none" stroke="var(--color-accent, #A78BFA)" stroke-width="2"/>
+  <circle cx="220" cy="90" r="11" fill="none" stroke="var(--color-accent, #A78BFA)" stroke-width="2"/>
+  <circle cx="130" cy="130" r="9" fill="none" stroke="var(--color-muted-fg, #908FA0)" stroke-width="1.5"/>
+  <circle cx="190" cy="130" r="9" fill="none" stroke="var(--color-muted-fg, #908FA0)" stroke-width="1.5"/>
+  <line x1="160" y1="54" x2="100" y2="79" stroke="var(--color-accent, #A78BFA)" stroke-opacity="0.6"/>
+  <line x1="160" y1="54" x2="160" y2="79" stroke="var(--color-accent, #A78BFA)" stroke-opacity="0.6"/>
+  <line x1="160" y1="54" x2="220" y2="79" stroke="var(--color-accent, #A78BFA)" stroke-opacity="0.6"/>
+  <line x1="100" y1="101" x2="130" y2="121" stroke="var(--color-muted-fg, #908FA0)" stroke-opacity="0.5"/>
+  <line x1="160" y1="101" x2="190" y2="121" stroke="var(--color-muted-fg, #908FA0)" stroke-opacity="0.5"/>
+</svg>

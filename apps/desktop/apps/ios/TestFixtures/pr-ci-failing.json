@@ -1,0 +1,16 @@
+{
+  "aps": {
+    "alert": {
+      "title": "PR #412 · auth-refactor",
+      "body": "3 CI checks failing: lint, tsc, test."
+    },
+    "sound": "default",
+    "mutable-content": 1,
+    "interruption-level": "active",
+    "relevance-score": 0.8,
+    "thread-id": "pr:412",
+    "category": "PR_CI_FAILING"
+  },
+  "prId": "pr-412-internal",
+  "prNumber": 412
+}

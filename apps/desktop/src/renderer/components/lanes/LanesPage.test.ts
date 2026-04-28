@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveCreateLaneRequest } from "./LanesPage";
+import { resolveCreateLaneRequest, resolveLaneIdsDeepLinkSelection } from "./LanesPage";
 
 describe("resolveCreateLaneRequest", () => {
   it("creates an independent lane from the selected primary branch", () => {
@@ -54,5 +54,37 @@ describe("resolveCreateLaneRequest", () => {
         name: "git actions fixes",
       },
     });
+  });
+});
+
+describe("resolveLaneIdsDeepLinkSelection", () => {
+  it("returns the lane selection for a new deep link signature", () => {
+    expect(resolveLaneIdsDeepLinkSelection({
+      laneIdsRaw: "lane-a, lane-b",
+      inspectorTabParam: "work",
+      availableLaneIds: ["lane-a", "lane-b", "lane-c"],
+      consumedSignature: null,
+    })).toEqual({
+      laneIds: ["lane-a", "lane-b"],
+      signature: "lane-a,lane-b::work",
+    });
+  });
+
+  it("does not re-apply the same laneIds deep link after it has been consumed", () => {
+    expect(resolveLaneIdsDeepLinkSelection({
+      laneIdsRaw: "lane-a,lane-b",
+      inspectorTabParam: "work",
+      availableLaneIds: ["lane-a", "lane-b"],
+      consumedSignature: "lane-a,lane-b::work",
+    })).toBeNull();
+  });
+
+  it("waits for referenced lanes to exist before consuming the deep link", () => {
+    expect(resolveLaneIdsDeepLinkSelection({
+      laneIdsRaw: "lane-a,lane-b",
+      inspectorTabParam: "work",
+      availableLaneIds: ["lane-a"],
+      consumedSignature: null,
+    })).toBeNull();
   });
 });

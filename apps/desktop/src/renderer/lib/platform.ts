@@ -10,3 +10,4 @@ function getPlatformValue(): string {
 
 const isMac = /mac|darwin/i.test(getPlatformValue());
 export const revealLabel = isMac ? "Reveal in Finder" : "Reveal in File Explorer";
+export const modifierKeyLabel = isMac ? "Cmd" : "Ctrl";

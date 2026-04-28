@@ -22,20 +22,20 @@ describe("describeToolIdentifier", () => {
     expect(result.secondaryLabel).toBe("Workspace");
   });
 
-  it("resolves MCP-style tool names with double-underscore separators", () => {
-    const result = describeToolIdentifier("mcp__context7__resolve_library_id");
+  it("resolves namespaced tool names with dotted separators", () => {
+    const result = describeToolIdentifier("context7.resolve_library_id");
     expect(result.label).toBe("Docs");
     expect(result.secondaryLabel).toBe("Resolve Library Id");
   });
 
   it("humanizes unknown snake_case tool parts", () => {
-    const result = describeToolIdentifier("mcp__custom_server__do_something");
+    const result = describeToolIdentifier("custom_server.do_something");
     expect(result.label).toBe("Custom Server");
     expect(result.secondaryLabel).toBe("Do Something");
   });
 
-  it("uses known action labels from MCP tools", () => {
-    const result = describeToolIdentifier("mcp__playwright__bash");
+  it("uses known action labels from namespaced tools", () => {
+    const result = describeToolIdentifier("playwright.bash");
     expect(result.label).toBe("Shell");
     expect(result.secondaryLabel).toBe("Browser");
   });
@@ -47,13 +47,13 @@ describe("describeToolIdentifier", () => {
   });
 
   it("applies TOKEN_LABELS for known abbreviations", () => {
-    const result = describeToolIdentifier("mcp__custom__get_api_url");
+    const result = describeToolIdentifier("custom.get_api_url");
     expect(result.secondaryLabel).toContain("API");
     expect(result.secondaryLabel).toContain("URL");
   });
 
-  it("handles deeply nested MCP namespaces", () => {
-    const result = describeToolIdentifier("mcp__pencil__batch_design");
+  it("handles known namespaced tools", () => {
+    const result = describeToolIdentifier("pencil.batch_design");
     expect(result.label).toBe("Canvas");
     expect(result.secondaryLabel).toBe("Batch Design");
   });
@@ -77,10 +77,10 @@ describe("replaceInternalToolNames", () => {
     expect(result).not.toContain("functions.exec_command");
   });
 
-  it("replaces MCP tool mentions inline", () => {
-    const result = replaceInternalToolNames("Called mcp__context7__resolve_library_id for docs.");
+  it("replaces namespaced tool mentions inline", () => {
+    const result = replaceInternalToolNames("Called context7.resolve_library_id for docs.");
     expect(result).toContain("Docs");
-    expect(result).not.toContain("mcp__context7__resolve_library_id");
+    expect(result).not.toContain("context7.resolve_library_id");
   });
 
   it("replaces multiple tool mentions in the same text", () => {

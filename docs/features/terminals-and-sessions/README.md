@@ -5,10 +5,15 @@ single `terminal_sessions` row and surfaced in the Work view, lane panels, and
 the Sessions sidebar. The session model is the backbone for transcripts,
 deltas, lane association, and resume flows.
 
-The main-process services for this feature have been heavily rewritten on the
-current branch: `ptyService.ts`, `sessionService.ts`, and `processService.ts`
-all carry large diffs. Treat them as fragile and re-read whenever wiring
-changes.
+The main-process services for this feature are large and have been repeatedly
+rewritten: `ptyService.ts`, `sessionService.ts`, and `processService.ts`.
+Treat them as fragile and re-read whenever wiring changes.
+
+`processService` keeps one runtime record per *invocation*, not per
+(lane, process) pair. A single `ProcessDefinition` can have many concurrent
+or historical `ProcessRuntime` rows in memory, each identified by `runId`. The
+Run page renders those runs on a single card and the aggregate persisted
+snapshot (the most recent run) is what lives in the `process_runtime` table.
 
 ## Source file map
 
@@ -16,7 +21,8 @@ Main process:
 
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
   transcript capture, runtime state, AI auto-titles, tool-type routing,
-  resume backfill. ~1,500 lines. Branch rewrite.
+  resume backfill, and session-id based write/resize entry points used
+  by mobile sync terminal control. ~1,500 lines. Branch rewrite.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
@@ -28,8 +34,9 @@ Main process:
   end-of-session git diff + transcript delta computation, reads from
   `session_deltas` table.
 - `apps/desktop/src/main/services/processes/processService.ts` — managed
-  process lifecycle, readiness checks, restart policy, stack buttons.
-  ~860 lines. Branch rewrite (551 lines changed).
+  process lifecycle keyed by `runId` (multi-run history per
+  `(laneId, processId)`), readiness checks, restart policy with
+  exponential backoff, stack buttons, process-group filtering. ~870 lines.
 - `apps/desktop/src/main/services/processes/processService.test.ts` —
   managed process tests.
 - `apps/desktop/src/main/services/lanes/laneLaunchContext.ts` —
@@ -40,9 +47,15 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/sessions.ts` — `TerminalSessionSummary`,
   `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
   `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`.
-- `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`,
-  `ProcessRuntime`, `ProcessRuntimeStatus`, `ProcessReadinessConfig`,
-  `StackButtonDefinition`, `ProcessRestartPolicy`.
+- `apps/desktop/src/shared/types/sync.ts` — terminal stream/control
+  envelopes (`terminal_subscribe`, `terminal_data`, `terminal_exit`,
+  `terminal_input`, `terminal_resize`) for iOS Work surfaces.
+- `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`
+  (now carries `groupIds: string[]`), `ProcessGroupDefinition`,
+  `ProcessRuntime` (now carries `runId`), `ProcessRuntimeStatus`,
+  `ProcessReadinessConfig`, `StackButtonDefinition`,
+  `ProcessRestartPolicy`. `ProcessActionArgs` and
+  `GetProcessLogTailArgs` accept an optional `runId`.
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
   `ade.pty.*`, `ade.processes.*`.
 
@@ -62,35 +75,104 @@ Renderer surfaces:
 
 - `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` —
   entry surface with `PaneTilingLayout` (sessions list + work view).
+  Owns the multi-select state (`selectedSessionIds`, shift/ctrl anchor,
+  bulk close and bulk delete handlers) that the sidebar forwards into.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
-  sticky group headers, search/filter.
+  sticky group headers, search/filter. Renders a bulk action bar at the
+  bottom when sessions are multi-selected (Close N running / Delete N
+  ended / clear selection).
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
-  delta chips).
+  delta chips). Surfaces a small amber warning pip next to the title
+  when `getStaleRunningCliSessionAgeHours` returns a value, so users
+  can spot long-running CLI/shell sessions without opening them. The
+  card also reports its multi-select state via `isMultiSelected`.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
-  multi-tab and multi-tile Work view that owns the `PackedSessionGrid`.
+  tabs/grid/single Work view. The grid mode renders through the shared
+  `PaneTilingLayout`; the seed tree comes from `buildWorkSessionTilingTree`.
 - `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —
   empty-state "start new chat / terminal" surface.
 - `apps/desktop/src/renderer/components/terminals/TerminalView.tsx` —
   xterm.js wrapper; WebGL renderer with DOM fallback, fit retries, health
   counters.
-- `apps/desktop/src/renderer/components/terminals/PackedSessionGrid.tsx`
-  + `packedSessionGridMath.ts` — bin-packed resizable grid for multiple
-  simultaneous sessions.
+- `apps/desktop/src/renderer/components/terminals/workSessionTiling.ts` —
+  pure helper that produces the seed `PaneSplit` for the Work grid from
+  an ordered list of session IDs. Accepts a `TilingPreset` of
+  `"auto"` (default — single-column for ≤1 session, single row when
+  `ceil(sqrt(n)) == n`, otherwise a vertical stack of horizontal rows
+  with counts distributed by `rowSizes`), `"rows"` (one full-width row
+  per session), or `"columns"` (one column per session). The
+  `WorkViewArea` arrange menu rewrites the persisted tiling tree when
+  the user picks a non-auto preset.
+- `apps/desktop/src/renderer/components/ui/PaneTilingLayout.tsx` +
+  `paneTreeOps.ts` — recursive pane tree component + pure operations
+  (`reconcilePaneTree`, `splitPaneAtEdge`, `swapPanes`, `removePaneFromTree`,
+  `detectDropEdge`) shared by every tiled surface, including the Work grid.
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
-  `ade.workViewState.v1`.
+  `ade.workViewState.v1`. Invalidates the shared session-list cache
+  and schedules a background refresh on window focus /
+  `visibilitychange` and on chat events, so returning to Work after a
+  tab switch always renders the current session set.
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
 - `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` —
-  builds Claude/Codex CLI command strings with permission and sandbox
-  flags.
+  builds Claude/Codex CLI launch payloads with permission and sandbox
+  flags. `buildTrackedCliLaunchCommand` returns a typed
+  `TrackedCliLaunchCommand` (`{ command, args, startupCommand }`) so
+  `ptyService.create` can spawn the CLI directly via argv (preferred)
+  while `startupCommand` stays as a shell-typed fallback for systems
+  whose Claude/Codex shim only resolves through the user's shell rc.
+  Both providers get ADE session guidance injected at launch:
+  Claude through `--append-system-prompt` (text from
+  `ADE_CLI_AGENT_GUIDANCE`), Codex through a leading initial prompt
+  built from `ADE_CLI_INLINE_GUIDANCE`. The legacy
+  `buildTrackedCliStartupCommand` and `defaultTrackedCliStartupCommand`
+  are now thin wrappers over `buildTrackedCliLaunchCommand` for
+  callers that only need the shell string.
+- `apps/desktop/src/shared/adeCliGuidance.ts` — single source of truth
+  for the ADE session guidance text injected into Claude/Codex CLI
+  launches. Exported as `ADE_CLI_AGENT_GUIDANCE` and
+  `ADE_CLI_INLINE_GUIDANCE`.
+- `apps/desktop/src/renderer/components/terminals/workSurfaceVisibility.ts`
+  — exports the `WORK_SURFACE_REVEALED_EVENT` window-event constant
+  and a `dispatchWorkSurfaceRevealed()` helper. The persistent Work
+  surface fires this event whenever the work area becomes active again
+  so xterm tiles can clear their texture atlas, force a refit against
+  the new viewport, and restore focus/scroll without waiting for a
+  resize event that will never come.
 - `apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx`
   and `SessionInfoPopover.tsx` — right-click actions and info overlay.
+  Ended chat sessions get an additional "Delete chat" action wired to
+  `ade.agentChat.delete`.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
   cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
+- `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers
+  plus `getStaleRunningCliSessionAgeHours`, the canonical check that
+  returns a rounded age in hours when a non-run, non-chat session has
+  been `running` for at least `STALE_RUNNING_CLI_SESSION_MS` (12 h).
+  Used by both `SessionCard` (inline pip) and `AppShell` (stale-CLI
+  toast).
+- `apps/desktop/src/renderer/lib/transcriptExport.ts` —
+  `formatSessionBundleMarkdown` builds a metadata-only markdown bundle
+  for a list of selected sessions; `triggerBrowserDownload` writes it
+  to disk via a transient anchor + Object URL. Used by the bulk-export
+  action in the session list.
+
+iOS Work surfaces:
+
+- `apps/ios/ADE/Views/Work/WorkRootScreen.swift` and
+  `WorkRootComponents.swift` — mobile Work list, filters, activity feed,
+  grouped session rows, and live-count/status pills.
+- `apps/ios/ADE/Views/Work/WorkArtifactTerminalViews.swift` —
+  terminal artifact/output views and the compact input bar that sends
+  `terminal_input` bytes and Ctrl-C to the subscribed host PTY.
+- `apps/ios/ADE/Views/Work/WorkChatSessionView.swift`,
+  `WorkChatComposerAndInputViews.swift`, `WorkChatRichCardViews.swift`,
+  `WorkReasoningCard.swift`, `WorkNewChatScreen.swift` — mobile chat,
+  composer, command/tool/reasoning cards, and new-chat launch surface.
 
 ## Detail docs
 
@@ -99,8 +181,9 @@ Renderer surfaces:
   backfill, stale reconciliation. Covers the branch-heavy main-process
   code.
 - [ui-surfaces.md](./ui-surfaces.md) — the renderer surfaces:
-  `TerminalsPage`, `SessionListPane`, `WorkViewArea`, `WorkStartSurface`,
-  `TerminalView`, `PackedSessionGrid`, and state hooks.
+  `TerminalsPage`, `SessionListPane`, `WorkViewArea` (including the
+  `PaneTilingLayout`-backed grid mode), `WorkStartSurface`,
+  `TerminalView`, and state hooks.
 - [runtime-isolation.md](./runtime-isolation.md) — how a session stays
   bound to a single lane worktree and a single mission/run context.
 
@@ -174,9 +257,22 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    transcript history intact.
 
 7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
-   orphaned `running` rows as `disposed`. An `excludeToolTypes` option
-   lets the caller keep chat sessions alive so they can be resumed via
-   their SDK rather than force-closed.
+   orphaned `running` rows as `disposed`. The service still accepts an
+   `excludeToolTypes` option, but `main.ts` no longer passes chat tool
+   types: chat runtimes always warm up afresh on app start, so leaving
+   stale `running` chat rows behind only causes UI confusion. Ended
+   chat sessions stay in the table and are resumable through the SDK
+   (or removable via `ade.agentChat.delete`).
+
+8. **Delete** — `sessionService.deleteSession(sessionId)` removes a
+   row outright and emits `terminalSessionChanged` with
+   `reason: "deleted"` so renderer caches drop it immediately.
+   `agentChatService.deleteSession` wraps this for chat rows: it
+   disposes a live runtime, cancels the pending turn collector,
+   rejects outstanding input waiters, deletes the persisted JSON and
+   transcript (path-safe under `.ade/`), and then calls the session
+   service. PTY rows use the same `deleteSession` as their deletion
+   primitive.
 
 ## Hot paths worth knowing
 
@@ -205,9 +301,11 @@ Sessions:
 | `ade.sessions.list` | list by lane/status; cached at renderer |
 | `ade.sessions.get` | single session detail including runtime state |
 | `ade.sessions.updateMeta` | rename (sets `manuallyNamed`), pin, edit goal, update resume metadata |
+| `ade.sessions.delete` | remove a row outright; emits `terminalSessionChanged` with `reason: "deleted"` |
 | `ade.sessions.readTranscriptTail` | tail bytes of transcript (raw or ANSI-stripped) |
 | `ade.sessions.getDelta` | `SessionDeltaSummary` |
-| `ade.sessions.changed` (event) | fired on meta updates |
+| `ade.sessions.changed` (event) | fired on meta updates and deletions (`reason: "meta-updated" \| "deleted"`) |
+| `ade.agentChat.delete` | delete a chat session: disposes the runtime, resolves waiters, wipes persisted JSON + transcript, then calls `sessions.delete` |
 
 PTY:
 
@@ -225,21 +323,30 @@ Processes (managed):
 | Channel | Purpose |
 |---|---|
 | `ade.processes.listDefinitions` | read from project config |
-| `ade.processes.listRuntime` | current status per lane |
-| `ade.processes.start` / `stop` / `restart` / `kill` | lifecycle |
+| `ade.processes.listRuntime` | every in-memory run for the lane (one entry per `runId`, including recent stopped/crashed ones up to the 20-run history cap) |
+| `ade.processes.start` | lifecycle; always returns the new `ProcessRuntime` |
+| `ade.processes.stop` / `ade.processes.kill` | returns the targeted `ProcessRuntime`, or `null` when no active run exists for the `(laneId, processId[, runId])` tuple |
+| `ade.processes.restart` | stop active runs, wait for exit (up to 10 s), start a new run |
 | `ade.processes.startStack` / `stopStack` / `restartStack` | stack buttons |
 | `ade.processes.startAll` / `stopAll` | bulk ops |
-| `ade.processes.getLogTail` | transcript tail for the focused process |
-| `ade.processes.event` (event) | `runtime` and `log` events |
+| `ade.processes.getLogTail` | transcript tail for the focused run (pass `runId` to target a specific invocation) |
+| `ade.processes.event` (event) | `runtime` events carrying a `ProcessRuntime` with `runId`, and `log` events carrying `runId` + `laneId` + `processId` |
 
 ## Gotchas
 
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
-- `reconcileStaleRunningSessions` now accepts `excludeToolTypes`. If
-  you add a new chat-style tool type, add it to the exclusion list in
-  `main.ts` or chat sessions will be force-disposed on every startup.
+- `processes.stop` / `processes.kill` resolve to `null` when nothing
+  matches the caller's `(laneId, processId[, runId])`. Don't treat a
+  null return as a failure — it just means there was no active run to
+  act on. Callers that need a sync confirmation should subscribe to
+  the `runtime` event instead.
+- `reconcileStaleRunningSessions` accepts `excludeToolTypes` but the
+  main-process startup no longer excludes chat tool types — stale
+  `running` chat rows are swept to `disposed` like any other orphaned
+  row. If you need a row to survive reconciliation, the caller has to
+  pass `excludeToolTypes` explicitly.
 - `transcriptPath` may be blank for untracked sessions (tracked=false)
   and for processes that died before their PTY opened — always
   null-check before reading.
@@ -252,9 +359,15 @@ Processes (managed):
   `transcriptBytesWritten` is not persisted.
 - Preview updates are throttled (~900 ms) and the string is capped at
   220 chars via `derivePreviewFromChunk`.
-- `PackedSessionGrid` mounts every tile; tiles that are not visible set
-  `terminalVisible={false}` so xterm skips fit work. Do not unmount a
-  grid tile just because it is offscreen — the PTY will detach.
+- `PaneTilingLayout` mounts every leaf pane in the Work grid; each
+  `SessionSurface` still passes `terminalVisible={true}` for grid tiles
+  because the tiling layout keeps them on screen. Do not unmount a grid
+  leaf just because it is inactive — the PTY will detach. The tiling
+  tree for the Work grid is persisted per `(projectRoot, laneId)` under
+  the `work:grid:tiling:v1:` key family (via `window.ade.tilingTree`),
+  and legacy `work:grid:v2:*` layouts are intentionally ignored — a new
+  tree is seeded from `buildWorkSessionTilingTree` when nothing is
+  persisted under the current key.
 
 ## Cross-links
 
@@ -263,5 +376,3 @@ Processes (managed):
   [../files-and-editor/](../files-and-editor/) (the file watcher is
   scoped per workspace, not per session).
 - Configuration-driven processes: [../onboarding-and-settings/configuration-schema.md](../onboarding-and-settings/configuration-schema.md)
-- Context packs / exports that reference session deltas:
-  [../context-packs/](../context-packs/)

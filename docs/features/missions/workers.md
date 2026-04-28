@@ -9,7 +9,7 @@ Mission workers are transient, role-scoped agents spawned by the coordinator to 
 - `apps/desktop/src/main/services/orchestrator/orchestratorService.ts` — attempt lifecycle (`startAttempt`, `completeAttempt`, `failAttempt`, `cancelAttempt`), claims, fan-out parent/variant tracking.
 - `apps/desktop/src/main/services/orchestrator/workerDeliveryService.ts` — message delivery between coordinator and worker, retry, in-flight leases.
 - `apps/desktop/src/main/services/orchestrator/baseOrchestratorAdapter.ts` — `buildFullPrompt`, shell escaping.
-- `apps/desktop/src/main/services/orchestrator/providerOrchestratorAdapter.ts` — provider-specific launchers (Claude CLI, Codex CLI, MCP).
+- `apps/desktop/src/main/services/orchestrator/providerOrchestratorAdapter.ts` — provider-specific launchers (Claude CLI, Codex CLI, ADE CLI).
 - `apps/desktop/src/main/services/orchestrator/stepPolicyResolver.ts` — step policy, autopilot config, file-claim scope.
 - `apps/desktop/src/main/services/orchestrator/teamRuntimeConfig.ts` / `teamRuntimeState.ts` — team manifest, per-run worker roster.
 - `apps/desktop/src/main/services/orchestrator/permissionMapping.ts` — mission permission config -> provider-specific allowed tools.
@@ -56,13 +56,13 @@ Contract helpers in `delegationContracts.ts`:
 - `updateDelegationContract(contract, patch)` — merges a partial update.
 - `extractActiveDelegationContracts(run)` — returns currently active contracts for the coordinator's "what's running" view.
 - `derivePlanningStartupStateFromContract` — maps a planner contract into the coordinator's planning-startup state machine.
-- `normalizeCoordinatorToolName` — canonicalizes tool names across providers (`mcp__ade__foo` vs `foo`).
+- `normalizeCoordinatorToolName` — canonicalizes tool names across providers (`foo` vs `foo`).
 
 ## Attempt lifecycle
 
 1. **Claim** — `orchestratorService.acquireClaim()` grabs file and path scopes. Overlapping claims refuse (`doFileClaimsOverlap`, `doesFileClaimMatchPath`).
 2. **Start** — `startAttempt` writes the attempt row, starts tracking (`workerTracking.ts`), and launches the executor.
-3. **Execute** — provider-specific launcher runs the worker (Claude CLI / Codex CLI / MCP). Messages flow through `workerDeliveryService`.
+3. **Execute** — provider-specific launcher runs the worker (Claude CLI / Codex CLI / ADE CLI). Messages flow through `workerDeliveryService`.
 4. **Complete** — `completeAttempt(attemptId, result)` applies the handoff, releases claims, updates step status, and potentially transitions the parent step (for fan-out steps).
 5. **Fail** — `failAttempt` classifies the error via `classifySilentWorkerExit` / `classifyPlannerLaunchFailure`, creates an intervention if needed (with dedup), and may trigger recovery.
 6. **Cancel** — `cancelAttempt` cancels the tracked session and marks the attempt as cancelled without failing the step if other variants remain.
@@ -104,9 +104,9 @@ The coordinator respects:
 
 - **Claude CLI** — `resolveClaudeCliModel`, spawns the Claude Code CLI binary with `--model`, `--append-system-prompt`, and a tailored tool allowlist.
 - **Codex CLI** — `resolveCodexCliModel`, spawns the Codex CLI with a similar config.
-- **MCP** — `resolveAdeMcpServerLaunch` launches the ADE MCP server so workers can call ADE operator tools over MCP. `cleanupMcpConfigFile` tears down the temp config.
+- **ADE CLI** — workers inherit ADE context env vars and can call the `ade` command for ADE operator actions.
 
-Each launcher reads the `classifyWorkerExecutionPath(model)` classification from the model registry to decide between CLI and MCP.
+Each launcher reads the `classifyWorkerExecutionPath(model)` classification from the model registry to decide between provider CLI and managed OpenCode execution.
 
 ## File-claim scope
 
@@ -125,7 +125,7 @@ Overlapping claims are rejected at acquisition time — the second attempt to cl
 
 - Claude CLI — allowed-tools list plus working-dir constraints.
 - Codex CLI — allowed tools plus sandbox mode.
-- MCP — the in-process permission structure (`mapPermissionToInProcess`) used when workers call ADE tools over MCP.
+- ADE CLI — the in-process permission structure (`mapPermissionToInProcess`) used when workers call ADE tools over ADE CLI.
 
 `WorkerSandboxConfig` (in `shared/types`) controls sandbox mode, allowed network hosts, allowed file roots. Default is strict worktree-only writes.
 

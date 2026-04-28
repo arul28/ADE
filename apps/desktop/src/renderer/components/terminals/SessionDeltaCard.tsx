@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { SessionDeltaSummary, TerminalSessionDetail } from "../../../shared/types";
 import { Chip } from "../ui/Chip";
+import { cn } from "../ui/cn";
 
-export function SessionDeltaCard({ sessionId }: { sessionId: string }) {
+export function SessionDeltaCard({ sessionId, className }: { sessionId: string; className?: string }) {
   const [delta, setDelta] = useState<SessionDeltaSummary | null>(null);
   const [session, setSession] = useState<TerminalSessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -27,8 +28,13 @@ export function SessionDeltaCard({ sessionId }: { sessionId: string }) {
   }, [sessionId]);
 
   return (
-    <div className="rounded shadow-card bg-card/40 p-3 text-xs">
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-fg">Session Delta</div>
+    <div
+      className={cn(
+        "rounded-[12px] border border-white/[0.06] bg-white/[0.02] p-3 text-xs backdrop-blur-sm",
+        className,
+      )}
+    >
+      <div className="mb-1.5 text-[10px] font-medium text-muted-fg/55">Session delta</div>
       {loading ? (
         <div className="text-[11px] text-muted-fg">Computing…</div>
       ) : !delta ? (

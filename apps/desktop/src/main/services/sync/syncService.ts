@@ -7,12 +7,26 @@ import type {
   SyncDeviceRuntimeState,
   SyncPairingConnectInfo,
   SyncPairingQrPayload,
+  SyncProjectCatalogPayload,
+  SyncProjectSwitchRequestPayload,
+  SyncProjectSwitchResultPayload,
   SyncRoleSnapshot,
+  SyncTailnetDiscoveryStatus,
   SyncTransferBlocker,
   SyncTransferReadiness,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createAgentChatService } from "../chat/agentChatService";
+import type { createCtoStateService } from "../cto/ctoStateService";
+import type { createFlowPolicyService } from "../cto/flowPolicyService";
+import type { createLinearCredentialService } from "../cto/linearCredentialService";
+import type { createLinearIngressService } from "../cto/linearIngressService";
+import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
+import type { createLinearSyncService } from "../cto/linearSyncService";
+import type { createWorkerAgentService } from "../cto/workerAgentService";
+import type { createWorkerBudgetService } from "../cto/workerBudgetService";
+import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
+import type { createWorkerRevisionService } from "../cto/workerRevisionService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createFileService } from "../files/fileService";
@@ -27,26 +41,39 @@ import type { createPortAllocationService } from "../lanes/portAllocationService
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createMissionService } from "../missions/missionService";
 import type { createProcessService } from "../processes/processService";
+import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createPrService } from "../prs/prService";
+import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { NotificationEventBus } from "../notifications/notificationEventBus";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, safeJsonParse, sleep, writeTextAtomic } from "../shared/utils";
 import { createDeviceRegistryService } from "./deviceRegistryService";
-import { createSyncHostService, type SyncHostService } from "./syncHostService";
+import {
+  createSyncHostService,
+  SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+  SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+  type SyncHostService,
+} from "./syncHostService";
 import { createSyncPeerService } from "./syncPeerService";
+import { createSyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 
 type SyncServiceArgs = {
   db: AdeDb;
   logger: Logger;
   projectRoot: string;
+  localDeviceIdPath?: string;
+  phonePairingStateDir?: string;
   fileService: ReturnType<typeof createFileService>;
   laneService: ReturnType<typeof createLaneService>;
   gitService?: ReturnType<typeof createGitOperationsService>;
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   prService: ReturnType<typeof createPrService>;
+  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
@@ -62,16 +89,82 @@ type SyncServiceArgs = {
   >;
   missionService: ReturnType<typeof createMissionService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
+  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
+  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
+  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
+  ctoStateService?: ReturnType<typeof createCtoStateService> | null;
+  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
+  /**
+   * Resolvers for services that are constructed AFTER createSyncService in
+   * main.ts. Using lazy getters lets the sync router forward remote commands
+   * to them without requiring a specific init order.
+   */
+  getLinearIngressService?: () => ReturnType<typeof createLinearIngressService> | null;
+  getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
+  getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   processService: ReturnType<typeof createProcessService>;
   hostStartupEnabled?: boolean;
+  hostDiscoveryEnabled?: boolean;
+  /**
+   * Phone sync is hosted by the local desktop app. When enabled, legacy
+   * desktop-to-desktop viewer state stored in a project DB cannot demote the
+   * phone sync surface into viewer mode.
+   */
+  forceHostRole?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
+  /**
+   * Optional notification bus forwarded to the sync host. The host publishes
+   * chat/PR/mission/system events and invokes `sendInAppNotification` for
+   * connected iOS peers.
+   */
+  notificationEventBus?: NotificationEventBus | null;
+  projectCatalogProvider?: {
+    listProjects: () => Promise<SyncProjectCatalogPayload>;
+    prepareProjectConnection: (args: SyncProjectSwitchRequestPayload) => Promise<SyncProjectSwitchResultPayload>;
+    completeProjectConnection?: (
+      args: SyncProjectSwitchRequestPayload,
+      result: SyncProjectSwitchResultPayload,
+    ) => Promise<void>;
+  };
 };
 
 const DRAFT_FILE = "sync-peer-draft.json";
 const TOKEN_FILE = "sync-bootstrap-token";
+const PIN_FILE = "sync-pin.json";
+const PAIRED_DEVICES_FILE = "sync-paired-devices.json";
+
+function migrateLegacySyncSecretFile(args: {
+  legacyPath: string;
+  appPath: string;
+  logger: Logger;
+  label: string;
+}): void {
+  if (args.legacyPath === args.appPath) return;
+  if (fs.existsSync(args.appPath) || !fs.existsSync(args.legacyPath)) return;
+  try {
+    fs.mkdirSync(path.dirname(args.appPath), { recursive: true });
+    fs.copyFileSync(args.legacyPath, args.appPath, fs.constants.COPYFILE_EXCL);
+    args.logger.info("sync.app_pairing_state_migrated", {
+      label: args.label,
+      legacyPath: args.legacyPath,
+      appPath: args.appPath,
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null | undefined)?.code === "EEXIST") return;
+    args.logger.warn("sync.app_pairing_state_migration_failed", {
+      label: args.label,
+      legacyPath: args.legacyPath,
+      appPath: args.appPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
 const SYNC_HOST_PORT_RETRY_WINDOW = 12;
+const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 
 function sanitizeDraft(
   raw: unknown,
@@ -92,8 +185,6 @@ function sanitizeDraft(
     lastRemoteDbVersion: Number.isFinite(row.lastRemoteDbVersion)
       ? Number(row.lastRemoteDbVersion)
       : 0,
-    lastBrainDeviceId:
-      typeof row.lastBrainDeviceId === "string" ? row.lastBrainDeviceId : null,
   };
 }
 
@@ -101,6 +192,15 @@ function normalizeHost(host: string | null | undefined): string | null {
   if (!host) return null;
   const normalized = host.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function tailscaleDnsNameFromDevice(
+  localDevice: SyncRoleSnapshot["localDevice"],
+): string | null {
+  const value = localDevice.metadata?.tailscaleDnsName;
+  return typeof value === "string" && value.trim().toLowerCase().endsWith(".ts.net")
+    ? value.trim().replace(/\.$/, "").toLowerCase()
+    : null;
 }
 
 function buildAddressCandidates(
@@ -117,20 +217,30 @@ function buildAddressCandidates(
     seen.add(normalized);
     candidates.push({ host: normalized, kind });
   };
+  const preferredSavedHost = normalizeHost(localDevice.lastHost);
+  const preferredSavedHostIsCurrent = preferredSavedHost != null && (
+    localDevice.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
+    || normalizeHost(localDevice.tailscaleIp) === preferredSavedHost
+    || tailscaleDnsNameFromDevice(localDevice) === preferredSavedHost
+  );
+  if (preferredSavedHostIsCurrent) {
+    append(localDevice.lastHost, "saved");
+  }
   for (const lanAddress of localDevice.ipAddresses) {
     append(lanAddress, "lan");
   }
-  append(localDevice.lastHost, "saved");
+  if (!preferredSavedHostIsCurrent) {
+    append(localDevice.lastHost, "saved");
+  }
+  append(tailscaleDnsNameFromDevice(localDevice), "tailscale");
   append(localDevice.tailscaleIp, "tailscale");
+  append("127.0.0.1", "loopback");
   return candidates;
 }
 
 function buildPairingConnectInfo(argsIn: {
   localDevice: SyncRoleSnapshot["localDevice"];
-  pairingSession: SyncRoleSnapshot["pairingSession"];
-}): SyncPairingConnectInfo | null {
-  const pairingSession = argsIn.pairingSession;
-  if (!pairingSession) return null;
+}): SyncPairingConnectInfo {
   const port = argsIn.localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
   const addressCandidates = buildAddressCandidates(argsIn.localDevice);
   const hostIdentity = {
@@ -141,19 +251,15 @@ function buildPairingConnectInfo(argsIn: {
     deviceType: argsIn.localDevice.deviceType,
   };
   const qrPayload: SyncPairingQrPayload = {
-    version: 1,
+    version: 2,
     hostIdentity,
     port,
-    pairingCode: pairingSession.code,
-    expiresAt: pairingSession.expiresAt,
     addressCandidates,
   };
   const qrPayloadText = `ade-sync://pair?payload=${encodeURIComponent(JSON.stringify(qrPayload))}`;
   return {
     hostIdentity,
     port,
-    pairingCode: pairingSession.code,
-    expiresAt: pairingSession.expiresAt,
     addressCandidates,
     qrPayload,
     qrPayloadText,
@@ -163,6 +269,20 @@ function buildPairingConnectInfo(argsIn: {
 function isRetryableHostBindError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
   return code === "EADDRINUSE" || code === "EACCES";
+}
+
+function createInactiveTailnetDiscoveryStatus(
+  error: string,
+): SyncTailnetDiscoveryStatus {
+  return {
+    state: "disabled",
+    serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+    servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+    target: null,
+    updatedAt: null,
+    error,
+    stderr: null,
+  };
 }
 
 function buildHostPortCandidates(preferredPort: number | null | undefined): number[] {
@@ -199,21 +319,77 @@ function buildHostPortCandidates(preferredPort: number | null | undefined): numb
 
 export function createSyncService(args: SyncServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
-  const draftPath = path.join(layout.secretsDir, DRAFT_FILE);
-  const tokenPath = path.join(layout.secretsDir, TOKEN_FILE);
+  const pairingStateDir = args.phonePairingStateDir ?? layout.secretsDir;
+  const draftPath = path.join(pairingStateDir, DRAFT_FILE);
+  const tokenPath = path.join(pairingStateDir, TOKEN_FILE);
+  const pinPath = path.join(pairingStateDir, PIN_FILE);
+  const pairingSecretsPath = path.join(pairingStateDir, PAIRED_DEVICES_FILE);
+  migrateLegacySyncSecretFile({
+    legacyPath: path.join(layout.secretsDir, DRAFT_FILE),
+    appPath: draftPath,
+    logger: args.logger,
+    label: DRAFT_FILE,
+  });
+  migrateLegacySyncSecretFile({
+    legacyPath: path.join(layout.secretsDir, TOKEN_FILE),
+    appPath: tokenPath,
+    logger: args.logger,
+    label: TOKEN_FILE,
+  });
+  migrateLegacySyncSecretFile({
+    legacyPath: path.join(layout.secretsDir, PIN_FILE),
+    appPath: pinPath,
+    logger: args.logger,
+    label: PIN_FILE,
+  });
+  migrateLegacySyncSecretFile({
+    legacyPath: path.join(layout.secretsDir, PAIRED_DEVICES_FILE),
+    appPath: pairingSecretsPath,
+    logger: args.logger,
+    label: PAIRED_DEVICES_FILE,
+  });
   fs.mkdirSync(path.dirname(draftPath), { recursive: true });
+
+  const pinStore = createSyncPinStore({ filePath: pinPath });
 
   const deviceRegistryService = createDeviceRegistryService({
     db: args.db,
     logger: args.logger,
     projectRoot: args.projectRoot,
+    localDeviceIdPath: args.localDeviceIdPath,
   });
 
   let hostService: SyncHostService | null = null;
   let refreshRunning = false;
   let refreshQueued = false;
   let disposed = false;
-  const hostStartupEnabled = args.hostStartupEnabled !== false;
+  // Mobile project switch can fire `sync.initialize` as a background task and
+  // then immediately await `service.initialize()` from the dialog handler.
+  // Coalesce concurrent calls so the second await rides the first promise
+  // rather than re-running ensureLocalDevice/refreshRoleState in parallel.
+  let initializingPromise: Promise<void> | null = null;
+  let initialized = false;
+  let hostStartupEnabled = args.hostStartupEnabled !== false;
+  let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
+  const forceHostRole = args.forceHostRole === true;
+  const isCrdtSyncAvailable = (): boolean => args.db.sync.isAvailable?.() !== false;
+  const assertPhonePairingAvailable = (): void => {
+    if (!hostStartupEnabled) {
+      throw new Error(
+        "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+      );
+    }
+    if (!isCrdtSyncAvailable()) {
+      throw new Error(
+        "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
+      );
+    }
+  };
+  let activeLocalLanePresenceIds: string[] = [];
+  const localLanePresenceHeartbeatTimer = setInterval(() => {
+    if (disposed || !hostService || activeLocalLanePresenceIds.length === 0) return;
+    hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
+  }, LOCAL_LANE_PRESENCE_HEARTBEAT_MS);
 
   const readToken = (): string | null => {
     if (!fs.existsSync(tokenPath)) return null;
@@ -226,6 +402,7 @@ export function createSyncService(args: SyncServiceArgs) {
   };
 
   const readSavedDraft = (): SyncDesktopConnectionDraft | null => {
+    if (forceHostRole) return null;
     if (!fs.existsSync(draftPath)) return null;
     const token = readToken();
     return sanitizeDraft(
@@ -253,7 +430,6 @@ export function createSyncService(args: SyncServiceArgs) {
           authKind: draft.authKind ?? "bootstrap",
           pairedDeviceId: draft.pairedDeviceId ?? null,
           lastRemoteDbVersion: draft.lastRemoteDbVersion ?? 0,
-          lastBrainDeviceId: draft.lastBrainDeviceId ?? null,
         },
         null,
         2,
@@ -266,6 +442,7 @@ export function createSyncService(args: SyncServiceArgs) {
     logger: args.logger,
     deviceRegistryService,
     onStatusChange: (status) => {
+      if (forceHostRole) return;
       if (status.savedDraft) {
         const token = readToken();
         if (token) {
@@ -276,7 +453,6 @@ export function createSyncService(args: SyncServiceArgs) {
             authKind: status.savedDraft.authKind ?? "bootstrap",
             pairedDeviceId: status.savedDraft.pairedDeviceId ?? null,
             lastRemoteDbVersion: status.savedDraft.lastRemoteDbVersion ?? 0,
-            lastBrainDeviceId: status.savedDraft.lastBrainDeviceId ?? null,
           });
         }
       }
@@ -297,20 +473,25 @@ export function createSyncService(args: SyncServiceArgs) {
   };
 
   const startHostIfNeeded = async (): Promise<void> => {
-    if (!hostStartupEnabled) {
+    if (!hostStartupEnabled || !isCrdtSyncAvailable()) {
       if (hostService) {
         await stopHostIfRunning();
       }
+      const currentLocalDevice = deviceRegistryService.ensureLocalDevice();
       deviceRegistryService.touchLocalDevice({
         lastSeenAt: nowIso(),
+        lastHost: currentLocalDevice.ipAddresses[0] ?? currentLocalDevice.tailscaleIp ?? currentLocalDevice.lastHost,
       });
       return;
     }
     if (hostService) {
+      const currentLocalDevice = deviceRegistryService.ensureLocalDevice();
       deviceRegistryService.touchLocalDevice({
         lastSeenAt: nowIso(),
+        lastHost: currentLocalDevice.ipAddresses[0] ?? currentLocalDevice.tailscaleIp ?? currentLocalDevice.lastHost,
         lastPort: hostService.getPort(),
       });
+      hostService.refreshLanDiscovery?.();
       return;
     }
     const localDevice = deviceRegistryService.ensureLocalDevice();
@@ -327,9 +508,22 @@ export function createSyncService(args: SyncServiceArgs) {
         diffService: args.diffService,
         conflictService: args.conflictService,
         prService: args.prService,
+        issueInventoryService: args.issueInventoryService,
+        queueLandingService: args.queueLandingService,
         sessionService: args.sessionService,
         ptyService: args.ptyService,
+        processService: args.processService,
         agentChatService: args.agentChatService,
+        workerAgentService: args.workerAgentService,
+        workerBudgetService: args.workerBudgetService,
+        workerHeartbeatService: args.workerHeartbeatService,
+        workerRevisionService: args.workerRevisionService,
+        ctoStateService: args.ctoStateService,
+        flowPolicyService: args.flowPolicyService,
+        linearCredentialService: args.linearCredentialService,
+        getLinearIngressService: args.getLinearIngressService,
+        getLinearIssueTracker: args.getLinearIssueTracker,
+        getLinearSyncService: args.getLinearSyncService,
         projectConfigService: args.projectConfigService,
         portAllocationService: args.portAllocationService,
         laneEnvironmentService: args.laneEnvironmentService,
@@ -337,9 +531,14 @@ export function createSyncService(args: SyncServiceArgs) {
         rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
         autoRebaseService: args.autoRebaseService ?? undefined,
         computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
+        pinStore,
         bootstrapTokenPath: tokenPath,
+        pairingSecretsPath,
         port: attemptedPort,
+        discoveryEnabled: hostDiscoveryEnabled,
         deviceRegistryService,
+        notificationEventBus: args.notificationEventBus ?? null,
+        projectCatalogProvider: args.projectCatalogProvider,
         onStateChanged: () => {
           void refreshRoleState();
         },
@@ -347,9 +546,10 @@ export function createSyncService(args: SyncServiceArgs) {
       try {
         const resolvedPort = await candidateHostService.waitUntilListening();
         hostService = candidateHostService;
+        hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
         deviceRegistryService.touchLocalDevice({
           lastSeenAt: nowIso(),
-          lastHost: localDevice.lastHost,
+          lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
           lastPort: resolvedPort,
         });
         return;
@@ -385,18 +585,21 @@ export function createSyncService(args: SyncServiceArgs) {
 
   const resolveViewerDraftFromRegistry =
     (): SyncDesktopConnectionDraft | null => {
+      if (forceHostRole) return null;
       const cluster = deviceRegistryService.getClusterState();
       const token = readToken();
       if (!cluster || !token) return null;
       const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
-      if (!brain?.lastHost || !brain.lastPort) return null;
+      const host =
+        brain != null ? buildAddressCandidates(brain)[0]?.host ?? null : null;
+      const port = brain?.lastPort ?? DEFAULT_SYNC_HOST_PORT;
+      if (!host) return null;
       return {
-        host: brain.lastHost,
-        port: brain.lastPort,
+        host,
+        port,
         token,
         lastRemoteDbVersion:
           syncPeerService.getStatus().lastRemoteDbVersion ?? 0,
-        lastBrainDeviceId: brain.deviceId,
       };
     };
 
@@ -414,12 +617,20 @@ export function createSyncService(args: SyncServiceArgs) {
         syncPeerService.setSavedDraft(savedDraft);
         const localDevice = deviceRegistryService.ensureLocalDevice();
         let cluster = deviceRegistryService.getClusterState();
-        if (!cluster && !savedDraft) {
+        if (forceHostRole) {
+          if (!cluster || cluster.brainDeviceId !== localDevice.deviceId) {
+            cluster = deviceRegistryService.setClusterState({
+              brainDeviceId: localDevice.deviceId,
+              brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
+              updatedByDeviceId: localDevice.deviceId,
+            });
+          }
+        } else if (!cluster && !savedDraft) {
           cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
         }
-        const isLocalBrain = cluster
+        const isLocalBrain = forceHostRole || (cluster
           ? cluster.brainDeviceId === localDevice.deviceId
-          : !savedDraft;
+          : !savedDraft);
         if (isLocalBrain) {
           if (syncPeerService.isConnected()) {
             syncPeerService.disconnect({ preserveDraft: true });
@@ -427,6 +638,12 @@ export function createSyncService(args: SyncServiceArgs) {
           await startHostIfNeeded();
         } else {
           await stopHostIfRunning();
+          if (!isCrdtSyncAvailable()) {
+            if (syncPeerService.isConnected()) {
+              syncPeerService.disconnect({ preserveDraft: true });
+            }
+            continue;
+          }
           const draft = savedDraft ?? resolveViewerDraftFromRegistry();
           if (draft && !syncPeerService.isConnected()) {
             syncPeerService.setSavedDraft(draft);
@@ -553,8 +770,16 @@ export function createSyncService(args: SyncServiceArgs) {
 
   const service = {
     async initialize(): Promise<void> {
-      deviceRegistryService.ensureLocalDevice();
-      await refreshRoleState();
+      if (initialized) return;
+      if (initializingPromise) return initializingPromise;
+      initializingPromise = (async () => {
+        deviceRegistryService.ensureLocalDevice();
+        await refreshRoleState();
+        initialized = true;
+      })().finally(() => {
+        initializingPromise = null;
+      });
+      return initializingPromise;
     },
 
     async getStatus(): Promise<SyncRoleSnapshot> {
@@ -564,15 +789,13 @@ export function createSyncService(args: SyncServiceArgs) {
       const currentBrain = cluster
         ? deviceRegistryService.getDevice(cluster.brainDeviceId)
         : localDevice;
-      const isLocalBrain = cluster
+      const isLocalBrain = forceHostRole || (cluster
         ? cluster.brainDeviceId === localDevice.deviceId
-        : !savedDraft && !syncPeerService.isConnected();
+        : !savedDraft && !syncPeerService.isConnected());
       const role = isLocalBrain ? "brain" : "viewer";
+      const crdtSyncAvailable = isCrdtSyncAvailable();
+      const canHostPhonePairing = role === "brain" && hostStartupEnabled && crdtSyncAvailable;
       const client = syncPeerService.getStatus();
-      const pairingSession =
-        role === "brain" && hostStartupEnabled && hostService
-          ? hostService.getPairingSession()
-          : null;
       const mode =
         role === "viewer"
           ? "viewer"
@@ -586,21 +809,33 @@ export function createSyncService(args: SyncServiceArgs) {
         currentBrain,
         clusterState: cluster,
         bootstrapToken:
-          role === "brain" && hostStartupEnabled ? readToken() : null,
-        pairingSession,
+          canHostPhonePairing ? readToken() : null,
+        pairingPin: canHostPhonePairing ? pinStore.getPin() : null,
+        pairingPinConfigured: canHostPhonePairing ? pinStore.hasPin() : false,
         pairingConnectInfo:
-          role === "brain" && hostStartupEnabled
-            ? buildPairingConnectInfo({ localDevice, pairingSession })
+          canHostPhonePairing
+            ? buildPairingConnectInfo({ localDevice })
             : null,
         connectedPeers: hostService
           ? hostService.getPeerStates()
           : (syncPeerService.getLatestBrainStatus()?.connectedPeers ?? []),
+        tailnetDiscovery: canHostPhonePairing && hostService
+          ? hostService.getTailnetDiscoveryStatus()
+          : createInactiveTailnetDiscoveryStatus(
+              canHostPhonePairing
+                ? "Tailnet discovery is waiting for the desktop sync host to start."
+                : "Tailnet discovery is only published by the host desktop.",
+            ),
         client,
         transferReadiness: await getTransferReadiness(),
         survivableStateText:
-          "Paused and idle state will remain available on the new host.",
+          crdtSyncAvailable
+            ? "Paused and idle state will remain available on the new host."
+            : "Desktop sync is disabled because the CRDT database extension is unavailable on this platform.",
         blockingStateText:
-          "Live missions, chats, terminals, or run processes must stop first.",
+          crdtSyncAvailable
+            ? "Live missions, chats, terminals, or run processes must stop first."
+            : "Install a Windows cr-sqlite runtime before pairing or syncing devices.",
       };
     },
 
@@ -608,11 +843,32 @@ export function createSyncService(args: SyncServiceArgs) {
       return await listRuntimeDevices();
     },
 
+    async refreshDiscovery(): Promise<SyncRoleSnapshot> {
+      hostService?.refreshLanDiscovery?.({ forceTailnet: true });
+      const snapshot = await this.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return snapshot;
+    },
+
+    setHostDiscoveryEnabled(enabled: boolean): void {
+      if (hostDiscoveryEnabled === enabled) return;
+      hostDiscoveryEnabled = enabled;
+      hostService?.setDiscoveryEnabled(enabled);
+      void emitStatus();
+    },
+
+    async setHostStartupEnabled(enabled: boolean): Promise<void> {
+      if (hostStartupEnabled === enabled) return;
+      hostStartupEnabled = enabled;
+      await refreshRoleState();
+    },
+
     async updateLocalDevice(argsIn: {
       name?: string;
       deviceType?: "desktop" | "phone" | "vps" | "unknown";
     }) {
       const updated = deviceRegistryService.updateLocalDevice(argsIn);
+      hostService?.setLocalActiveLanePresence(activeLocalLanePresenceIds);
       await emitStatus();
       return updated;
     },
@@ -620,6 +876,9 @@ export function createSyncService(args: SyncServiceArgs) {
     async connectToBrain(
       draft: SyncDesktopConnectionDraft,
     ): Promise<SyncRoleSnapshot> {
+      if (!isCrdtSyncAvailable()) {
+        throw new Error("Desktop sync is unavailable because the CRDT database extension is not loaded.");
+      }
       await stopHostIfRunning();
       deviceRegistryService.clearClusterRegistryForViewerJoin();
       writeSavedDraft(draft);
@@ -645,6 +904,46 @@ export function createSyncService(args: SyncServiceArgs) {
       deviceRegistryService.clearClusterRegistryForViewerJoin();
       await refreshRoleState();
       return await this.getStatus();
+    },
+
+    getPin(): string | null {
+      return pinStore.getPin();
+    },
+
+    async setPin(pin: string): Promise<SyncRoleSnapshot> {
+      assertPhonePairingAvailable();
+      const current = await service.getStatus();
+      if (current.role !== "brain") {
+        throw new Error("Phone pairing PINs can only be managed on the host desktop.");
+      }
+      pinStore.setPin(pin);
+      const snapshot = await service.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return snapshot;
+    },
+
+    async clearPin(): Promise<SyncRoleSnapshot> {
+      assertPhonePairingAvailable();
+      const current = await service.getStatus();
+      if (current.role !== "brain") {
+        throw new Error("Phone pairing PINs can only be managed on the host desktop.");
+      }
+      pinStore.clearPin();
+      const snapshot = await service.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return snapshot;
+    },
+
+    async setActiveLanePresence(laneIds: string[]): Promise<void> {
+      const normalized = Array.isArray(laneIds)
+        ? [...new Set(
+            laneIds
+              .map((laneId) => (typeof laneId === "string" ? laneId.trim() : ""))
+              .filter((laneId) => laneId.length > 0),
+          )]
+        : [];
+      activeLocalLanePresenceIds = normalized;
+      hostService?.setLocalActiveLanePresence(activeLocalLanePresenceIds);
     },
 
     async forgetDevice(deviceId: string): Promise<SyncRoleSnapshot> {
@@ -700,9 +999,14 @@ export function createSyncService(args: SyncServiceArgs) {
       return hostService;
     },
 
+    getDeviceRegistryService() {
+      return deviceRegistryService;
+    },
+
     async dispose(): Promise<void> {
       disposed = true;
       syncPeerService.disconnect();
+      clearInterval(localLanePresenceHeartbeatTimer);
       await stopHostIfRunning();
       await syncPeerService.dispose();
     },

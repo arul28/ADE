@@ -1,0 +1,38 @@
+{
+  "featureId": "foundation-fix-ios-baseline-tests",
+  "reviewedAt": "2026-04-16T10:39:32Z",
+  "commitId": "7a9d34a9480a8e8239ce0f6af8ba2c1e1b3c480a",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The iOS fixes in `Database.swift` and `LaneHelpers.swift` appear to repair the two named ADETests failures without weakening those assertions, but the feature does not fully restore the mission's requested green iOS baseline because the hard-gate `test` command still depends on the unrelated red desktop suite.",
+    "issues": [
+      {
+        "file": ".factory/services.yaml",
+        "line": 4,
+        "severity": "blocking",
+        "description": "`commands.test` still runs `npm --prefix apps/desktop run test && xcodebuild test ...` instead of an iOS-only simulator gate. The feature description requires a green simulator baseline and the expected behavior says foundation scrutiny should treat iOS tests as the hard gate after this feature (`features.json:388-399`), but the mission guidance says the broad desktop test suite is already red in unrelated areas and should not block iOS-only features (`/Users/admin/.factory/missions/3d6b3fd2-ee5a-4122-83b2-d6dff0c07f04/AGENTS.md:64-67`). Leaving the desktop suite in the hard-gate command means the requested baseline is still not the promised iOS-only path."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "services",
+      "observation": "Mission guidance and the checked-in service manifest disagree about the foundation hard gate. AGENTS says the mission hard gate from `.factory/services.yaml` should keep unrelated red desktop state from blocking iOS-only work, but the manifest's `test` command still includes the broad desktop suite.",
+      "evidence": "`/Users/admin/.factory/missions/3d6b3fd2-ee5a-4122-83b2-d6dff0c07f04/AGENTS.md:64-67` says the broad desktop `npm --prefix apps/desktop run test`/`typecheck` failures are unrelated and should not block iOS-only features; `/Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/.factory/services.yaml:4` still runs `npm --prefix apps/desktop run test && xcodebuild test ...`."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The worker skill expected parity/performance library docs that were not present until `init.sh` generated them, which pushed unrelated `.factory` content into this feature's commit.",
+      "evidence": "`worker-transcripts.jsonl:1` shows the initial `.factory/library` listing only had `architecture.md`, `environment.md`, `ios-design-system.md`, and `user-testing.md`, then `init.sh` ran, then the worker read newly created `tab-parity.md` and `performance.md`. The reviewed commit also adds those files, adds `.factory/skills/sync-parity-worker/SKILL.md`, and removes `.factory/` from `.gitignore`."
+    },
+    {
+      "area": "skills",
+      "observation": "Baseline-repair features do not fit the current procedure text cleanly; the worker had to deviate from the baseline-validation rule and documented that this case should be clarified in shared guidance.",
+      "evidence": "The handoff records `skillFeedback.followedProcedure: false` and says the worker continued diagnosis instead of returning to the orchestrator after the baseline command failed because the assigned feature itself was to repair the failing baseline (`/Users/admin/.factory/missions/3d6b3fd2-ee5a-4122-83b2-d6dff0c07f04/handoffs/2026-04-16T09-29-29-877Z__foundation-fix-ios-baseline-tests__da06237c-17aa-458e-9812-8b103cb2142a.json:64-79`)."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the two targeted iOS code fixes look sound, but the feature still leaves `.factory/services.yaml` wired to the unrelated red desktop suite, so foundation scrutiny cannot yet treat iOS tests alone as the mission hard gate."
+}

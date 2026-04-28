@@ -18,7 +18,7 @@ import { acquireSharedOpenCodeServer, shutdownOpenCodeServers } from "./openCode
 
 const TTL_MS = 60_000;
 /** How long an idle inventory server stays alive before being killed. */
-const SERVER_IDLE_TTL_MS = 30_000;
+const SERVER_IDLE_TTL_MS = 10_000;
 
 /** Metadata for an OpenCode provider as returned by provider.list(). */
 export type OpenCodeProviderInfo = {
@@ -32,6 +32,7 @@ type CacheEntry = {
   cachedAt: number;
   projectRoot: string;
   configFingerprint: string;
+  passiveConfigFingerprint: string;
   modelIds: string[];
   providers: OpenCodeProviderInfo[];
   error: string | null;
@@ -72,7 +73,7 @@ function extractVariantKeys(model: Record<string, unknown>): string[] {
 
 /**
  * Lists connected providers/models via a shared OpenCode server, updates dynamic registry entries, and caches results.
- * Reuses a single server across probes (30s idle TTL). Concurrent calls are deduplicated.
+ * Reuses a single server across probes (see SERVER_IDLE_TTL_MS for the idle TTL). Concurrent calls are deduplicated.
  */
 export async function probeOpenCodeProviderInventory(args: {
   projectRoot: string;
@@ -89,6 +90,7 @@ export async function probeOpenCodeProviderInventory(args: {
   }
 
   const fp = fingerprintOpenCodeConfig(args.projectConfig, args.discoveredLocalModels);
+  const passiveFp = fingerprintOpenCodeConfig(args.projectConfig);
   const now = Date.now();
   if (
     !args.force
@@ -224,6 +226,7 @@ export async function probeOpenCodeProviderInventory(args: {
           cachedAt: Date.now(),
           projectRoot: args.projectRoot,
           configFingerprint: fp,
+          passiveConfigFingerprint: passiveFp,
           modelIds,
           providers: providerInfos,
           error: null,
@@ -240,6 +243,7 @@ export async function probeOpenCodeProviderInventory(args: {
         cachedAt: Date.now(),
         projectRoot: args.projectRoot,
         configFingerprint: fp,
+        passiveConfigFingerprint: passiveFp,
         modelIds: [],
         providers: [],
         error: message,
@@ -261,6 +265,7 @@ export function peekOpenCodeInventoryCache(args: {
 }): { modelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null } | null {
   const fp = fingerprintOpenCodeConfig(args.projectConfig);
   if (!inventoryCache) return null;
-  if (inventoryCache.projectRoot !== args.projectRoot || inventoryCache.configFingerprint !== fp) return null;
+  if (inventoryCache.projectRoot !== args.projectRoot) return null;
+  if (inventoryCache.passiveConfigFingerprint !== fp && inventoryCache.configFingerprint !== fp) return null;
   return { modelIds: inventoryCache.modelIds, providers: inventoryCache.providers, error: inventoryCache.error };
 }

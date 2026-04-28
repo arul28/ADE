@@ -64,7 +64,7 @@ export function SiteHeader() {
           <div className="flex items-center gap-3">
             <Link className="focus-ring inline-flex items-center rounded-lg" to="/" aria-label="ADE home">
               <img
-                src="/images/ade-wordmark.png"
+                src="/logo.png"
                 alt=""
                 className="h-9 w-auto object-contain object-left sm:h-10"
                 width={180}

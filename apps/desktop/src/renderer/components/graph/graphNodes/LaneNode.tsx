@@ -1,15 +1,40 @@
-import { Handle, Node, NodeProps, Position } from "@xyflow/react";
-import { ClockCounterClockwise, GitBranch, Stack } from "@phosphor-icons/react";
+import { Handle, Position } from "@xyflow/react";
+import type { Node, NodeProps } from "@xyflow/react";
+import {
+  ArrowsDownUp,
+  CaretRight,
+  ClockCounterClockwise,
+  GitBranch,
+  House,
+  Stack,
+  TreeStructure
+} from "@phosphor-icons/react";
+import type { ConflictStatus } from "../../../../shared/types";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { iconGlyph, nodeDimensions } from "../graphHelpers";
 import type { GraphNodeData } from "../graphTypes";
 
+function conflictStatusLabel(status: ConflictStatus["status"] | "unknown"): string {
+  switch (status) {
+    case "conflict-active":
+      return "Conflict";
+    case "conflict-predicted":
+      return "Risk";
+    case "behind-base":
+      return "Behind base";
+    case "merge-ready":
+      return "Merge ready";
+    default:
+      return "Unknown";
+  }
+}
+
 export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
   const lane = data.lane;
   const dimensions = nodeDimensions(lane, data.activityBucket, data.viewMode, {
     isIntegration: data.isIntegration,
-    integrationSourceCount: data.integrationSources.length,
+    integrationSourceCount: data.integrationSources.length
   });
   const remoteSync = data.remoteSync;
   const autoRebase = data.autoRebaseStatus;
@@ -21,6 +46,9 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
   const remoteNeedsPublish = Boolean(remoteSync && ((remoteSync.hasUpstream === false) || remoteSync.ahead > 0));
   const remoteNeedsPull = Boolean(remoteSync?.hasUpstream && remoteSync.recommendedAction === "pull");
   const baseBehind = lane.status.behind > 0 || data.status === "behind-base";
+  const isPrimary = lane.laneType === "primary";
+  const depth = data.hierarchyDepth;
+  const orphanStack = depth >= 1000;
 
   const syncBadge = (() => {
     if (remoteDiverged) return { label: "Diverged", className: "text-red-300" };
@@ -45,55 +73,129 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
     return { label: `PR #${pr.number} open`, className: "text-sky-300" };
   })();
 
+  function resolveLaneRoleLabel(): string {
+    switch (lane.laneType) {
+      case "attached":
+        return "Attached lane";
+      case "worktree":
+        return "Lane";
+      default:
+        return "Primary lane";
+    }
+  }
+  const laneRoleLabel = resolveLaneRoleLabel();
+
+  const accentBorder = data.isIntegration ? "#A78BFA" : (lane.color ?? data.environment?.color ?? undefined);
+
+  function renderLaneIcon() {
+    if (lane.icon) return iconGlyph(lane.icon);
+    if (isPrimary) return <House size={15} weight="duotone" />;
+    return null;
+  }
+
   return (
     <div
+      data-tour={selected && !isPrimary ? "graph.node" : undefined}
       className={cn(
-        "group relative rounded-xl border bg-card/92 px-2.5 py-2 text-[11px] shadow-sm transition-all duration-150",
-        lane.laneType === "attached" ? "border-dashed text-muted-fg" : "border-border text-fg",
-        lane.laneType === "primary" && "border-[3px] border-accent",
+        "group relative overflow-hidden rounded-xl border bg-white/[0.03] px-3 py-2.5 text-[11px] shadow-card backdrop-blur-sm transition-all duration-150",
+        "border-white/[0.08]",
+        lane.laneType === "attached" ? "border-dashed text-muted-fg" : "text-fg",
+        isPrimary && "border-[2.5px] border-accent/90",
         data.isIntegration && "border-2",
-        selected && "ring-2 ring-accent",
+        selected && "ring-2 ring-accent ring-offset-2 ring-offset-bg",
         data.dimmed && "opacity-55",
-        data.highlight && "shadow-[0_4px_14px_rgba(0,0,0,0.18)]",
-        data.activityBucket === "high" && "shadow-[0_0_18px_rgba(34,197,94,0.2)]",
+        data.highlight && "shadow-[0_4px_18px_rgba(0,0,0,0.22)]",
+        data.activityBucket === "high" && "shadow-[0_0_20px_rgba(34,197,94,0.18)]",
         data.rebaseFailed && "border-red-500 ring-1 ring-red-500/80",
         data.rebasePulse && "ade-node-failed-pulse",
         data.mergeInProgress && "ade-node-merging",
         data.mergeDisappearing && "ade-node-disappear",
         data.focusGlow && "ring-2 ring-purple-400/60 shadow-[0_0_20px_rgba(167,139,250,0.35)]",
-        data.isIntegration && "bg-[linear-gradient(180deg,rgba(167,139,250,0.14),rgba(24,24,27,0.9))]"
+        data.isIntegration && "bg-[linear-gradient(180deg,rgba(167,139,250,0.12),rgba(24,24,27,0.88))]"
       )}
       style={{
         width: dimensions.width,
         minHeight: dimensions.height,
-        borderColor: data.isIntegration ? "#A78BFA" : (lane.color ?? data.environment?.color ?? undefined)
+        borderColor: accentBorder
       }}
     >
-      <div className="flex items-center gap-1">
-        {iconGlyph(lane.icon)}
-        <span className="truncate font-semibold text-fg">{lane.name}</span>
-        {data.isIntegration ? (
-          <span
-            className="ml-auto flex items-center gap-0.5 rounded px-1 py-0 text-[9px] font-medium uppercase tracking-wider"
-            style={{ color: "#A78BFA", backgroundColor: "rgba(167,139,250,0.12)", border: "1px solid rgba(167,139,250,0.3)" }}
-            title="Integration lane"
-          >
-            <GitBranch size={10} weight="bold" />
-            Integration
+      <div className="flex items-start gap-2">
+        <div className="mt-0.5 shrink-0 text-muted-fg">{renderLaneIcon()}</div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="truncate font-semibold tracking-tight text-fg">{lane.name}</span>
+            {data.isIntegration ? (
+              <span
+                className="ml-auto flex items-center gap-0.5 rounded-md px-1.5 py-0 text-[9px] font-semibold uppercase tracking-wider"
+                style={{ color: "#C4B5FD", backgroundColor: "rgba(167,139,250,0.14)", border: "1px solid rgba(167,139,250,0.35)" }}
+                title="Integration lane"
+              >
+                <GitBranch size={10} weight="bold" />
+                Integration
+              </span>
+            ) : (
+              <span className="ml-auto rounded-md border border-white/[0.08] bg-white/[0.02] px-1.5 py-0 text-[9px] font-medium uppercase tracking-wide text-muted-fg">
+                {laneRoleLabel}
+              </span>
+            )}
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-fg">
+            <span className="truncate font-mono" title={lane.branchRef}>
+              {lane.branchRef}
+            </span>
+            {!data.isIntegration && !orphanStack ? (
+              <span className="inline-flex shrink-0 items-center gap-0.5 text-[10px] text-muted-fg/90" title="Depth from workspace primary">
+                <TreeStructure size={11} weight="bold" className="text-muted-fg" />
+                L{depth}
+              </span>
+            ) : null}
+          </div>
+          {!data.isIntegration && data.parentLaneName ? (
+            <div className="mt-1 flex items-center gap-0.5 truncate text-[10px] text-muted-fg" title="Parent in this workspace">
+              <CaretRight size={11} weight="bold" className="shrink-0 text-muted-fg/70" />
+              <span className="truncate">On {data.parentLaneName}</span>
+            </div>
+          ) : null}
+          {orphanStack && !data.isIntegration ? (
+            <div className="mt-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200/90">
+              Not stacked under the workspace primary — drag onto a parent or open the lane list to fix.
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-white/[0.06] pt-2">
+        <span
+          className={cn(
+            "rounded-md border px-1.5 py-0 text-[10px] font-medium",
+            data.status === "conflict-active" && "border-red-500/35 bg-red-500/10 text-red-200",
+            data.status === "conflict-predicted" && "border-amber-500/35 bg-amber-500/10 text-amber-100",
+            data.status === "behind-base" && "border-amber-500/25 bg-amber-500/8 text-amber-100",
+            data.status === "merge-ready" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
+            (data.status === "unknown" || !data.status) && "border-white/[0.06] bg-white/[0.02] text-muted-fg"
+          )}
+        >
+          {conflictStatusLabel(data.status)}
+        </span>
+        <span className="inline-flex items-center gap-0.5 rounded-md border border-white/[0.06] bg-white/[0.02] px-1.5 py-0 font-mono text-[10px] text-muted-fg" title="Commits ahead / behind parent base">
+          <ArrowsDownUp size={10} weight="bold" />
+          {lane.status.ahead}↑ {lane.status.behind}↓
+        </span>
+        {lane.status.remoteBehind >= 0 ? (
+          <span className="rounded-md border border-white/[0.06] bg-white/[0.02] px-1.5 py-0 font-mono text-[10px] text-muted-fg" title="Remote tracking">
+            r{lane.status.remoteBehind}
           </span>
         ) : null}
       </div>
-      <div className="mt-0.5 truncate text-[11px] text-muted-fg">{lane.branchRef}</div>
+
       {data.integrationSources.length > 0 ? (
         <div className="mt-2">
-          <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-[#C4B5FD]">
-            Fed By
-          </div>
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-[#C4B5FD]">Fed by</div>
           <div className="flex flex-wrap gap-1">
             {visibleIntegrationSources.map((source) => (
               <span
                 key={source.laneId}
-                className="rounded border px-1.5 py-0.5 text-[10px] font-medium text-[#E9D5FF]"
+                className="rounded-md border px-1.5 py-0.5 text-[10px] font-medium text-[#E9D5FF]"
                 style={{ borderColor: "rgba(167,139,250,0.35)", background: "rgba(167,139,250,0.12)" }}
                 title={source.laneName}
               >
@@ -102,7 +204,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
             ))}
             {hiddenIntegrationSourceCount > 0 ? (
               <span
-                className="rounded border px-1.5 py-0.5 text-[10px] font-medium text-[#DDD6FE]"
+                className="rounded-md border px-1.5 py-0.5 text-[10px] font-medium text-[#DDD6FE]"
                 style={{ borderColor: "rgba(167,139,250,0.28)", background: "rgba(167,139,250,0.08)" }}
                 title={`${hiddenIntegrationSourceCount} more source lanes`}
               >
@@ -112,8 +214,9 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
           </div>
         </div>
       ) : null}
+
       <div className="mt-2 flex flex-wrap items-center gap-1">
-        <Chip className={cn("px-1.5 py-0 text-[10px]", lane.status.dirty ? "text-amber-300" : "text-emerald-300")}>
+        <Chip className={cn("px-1.5 py-0 text-[10px]", lane.status.dirty ? "text-amber-200" : "text-emerald-200")}>
           {lane.status.dirty ? "Dirty" : "Clean"}
         </Chip>
         <Chip className={cn("px-1.5 py-0 text-[10px]", syncBadge.className)} title={`Compared to base ${lane.baseRef}`}>
@@ -126,7 +229,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
         ) : null}
         {data.environment ? (
           <span
-            className="rounded border px-1.5 py-0 text-[10px] uppercase tracking-wide"
+            className="rounded-md border px-1.5 py-0 text-[10px] uppercase tracking-wide"
             style={{
               borderColor: data.environment.color ?? undefined,
               color: data.environment.color ?? "var(--color-muted-fg)",
@@ -146,12 +249,20 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
         ) : null}
         {data.activeSessions > 0 ? <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" title="Active sessions" /> : null}
       </div>
+
       {data.collapsedChildCount > 0 ? (
-        <div className="mt-2 inline-flex items-center gap-1 rounded border border-border/10 bg-card/60 px-1.5 py-0.5 text-[11px]">
+        <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.02] px-1.5 py-0.5 text-[11px] text-muted-fg">
           <Stack size={12} weight="regular" />
-          {data.collapsedChildCount} children
+          {data.collapsedChildCount} children hidden
         </div>
       ) : null}
+
+      <div className="pointer-events-none mt-2 flex items-center justify-between border-t border-white/[0.05] pt-1.5 text-[9px] uppercase tracking-wide text-muted-fg/80">
+        <span>Click · menu</span>
+        <span>Double · lane</span>
+        <span>Drag · reparent</span>
+      </div>
+
       <Handle
         id="target"
         type="target"
@@ -164,7 +275,6 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
         position={Position.Bottom}
         style={{ width: 8, height: 8, opacity: 0, pointerEvents: "none", border: 0, background: "transparent" }}
       />
-      <div className="pointer-events-none absolute inset-0 rounded-xl opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-hover:shadow-[0_2px_8px_rgba(0,0,0,0.2)]" />
     </div>
   );
 }

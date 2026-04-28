@@ -24,20 +24,20 @@ export function ChatComposerShell({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-[var(--chat-radius-shell)] transition-colors",
-        "bg-[#14121F]/90 border border-white/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(167,139,250,0.06)]",
+        "ade-liquid-glass ade-liquid-glass-strong relative rounded-[var(--chat-radius-shell)] transition-colors",
         className,
       )}
-      style={{
-        backdropFilter: "blur(24px)",
-        WebkitBackdropFilter: "blur(24px)",
-        ...(glowColor ? {
-          boxShadow: `0 0 24px 2px ${glowColor}, 0 0 48px 4px ${glowColor}, 0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(167,139,250,0.06)`,
-          borderColor: glowColor.replace(/[\d.]+\)$/, "0.3)"),
-        } : {}),
-      }}
+      style={glowColor ? {
+        boxShadow: `0 0 24px -6px ${glowColor}, 0 0 48px -16px ${glowColor}, 0 26px 64px -34px rgba(0,0,0,0.72), 0 0 0 1px color-mix(in srgb, ${glowColor} 30%, rgba(255,255,255,0.04))`,
+        borderColor: `color-mix(in srgb, ${glowColor} 30%, transparent)`,
+      } : undefined}
       data-chat-composer-mode={mode}
     >
+      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-shell)]">
+        <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+        <div className="absolute left-6 top-0 h-24 w-32 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.10)_0%,transparent_72%)] opacity-70 blur-2xl" />
+        <div className="absolute bottom-[-3rem] right-[-2rem] h-24 w-36 rounded-full bg-[radial-gradient(circle,var(--chat-liquid-sheen)_0%,transparent_70%)] opacity-80 blur-3xl" />
+      </div>
       {pendingBanner ? <div className="relative border-b border-[color:var(--chat-panel-border)]">{pendingBanner}</div> : null}
       {trays ? <div className="relative border-b border-[color:var(--chat-panel-border)]">{trays}</div> : null}
       <div className="relative">

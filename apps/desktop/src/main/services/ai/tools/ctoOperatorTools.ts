@@ -44,7 +44,7 @@ import type { createIssueInventoryService } from "../../prs/issueInventoryServic
 import { computeConvergenceStatus, detectSource, extractSeverity } from "../../prs/issueInventoryService";
 import { launchPrIssueResolutionChat } from "../../prs/prIssueResolver";
 import type { createPrService } from "../../prs/prService";
-import { isNoisyIssueComment, mapPermissionMode } from "../../prs/resolverUtils";
+import { isNoisyIssueComment } from "../../prs/resolverUtils";
 import type { createProcessService } from "../../processes/processService";
 import type { createSessionService } from "../../sessions/sessionService";
 import type { createCtoStateService } from "../../cto/ctoStateService";
@@ -81,7 +81,7 @@ export interface CtoOperatorToolDeps {
     getLogTail: (args: { runId: string; maxBytes?: number }) => string;
   } | null;
   ptyService?: {
-    create: (args: { laneId: string; title?: string; cols?: number; rows?: number; tracked?: boolean; startupCommand?: string }) => Promise<{ ptyId: string; sessionId: string }>;
+    create: (args: { laneId: string; title?: string; cols?: number; rows?: number; tracked?: boolean; toolType?: "shell"; startupCommand?: string }) => Promise<{ ptyId: string; sessionId: string }>;
   } | null;
   automationService?: {
     list: () => AutomationRuleSummary[];
@@ -114,10 +114,6 @@ export interface CtoOperatorToolDeps {
     requestProposal: (args: any) => Promise<any>;
     applyProposal: (args: any) => Promise<any>;
     undoProposal: (args: any) => Promise<any>;
-  } | null;
-  contextDocService?: {
-    getStatus: () => any;
-    generateDocs: (args: any) => Promise<any>;
   } | null;
   steerChat?: (args: { sessionId: string; instruction: string }) => Promise<{ steerId: string; queued: boolean }>;
   cancelSteer?: (args: { sessionId: string }) => Promise<void>;
@@ -182,6 +178,7 @@ const ACTIVE_LINEAR_RUN_STATUSES = new Set([
   "waiting_for_pr",
   "awaiting_human_review",
   "awaiting_delegation",
+  "awaiting_lane_choice",
   "retry_wait",
 ]);
 
@@ -765,14 +762,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     description:
       "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
       "IMPORTANT: Always pass modelId when the user specifies a model. Use the full model ID " +
-      "(e.g. 'anthropic/claude-opus-4-6' for Opus, 'anthropic/claude-sonnet-4-6' for Sonnet, " +
-      "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.4-codex' for GPT-5.4). " +
+      "(e.g. 'anthropic/claude-opus-4-7' for Opus, 'anthropic/claude-sonnet-4-6' for Sonnet, " +
+      "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.5-codex' for GPT-5.5). " +
       "If no modelId is passed, the CTO's default model preference is used. " +
       "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
       "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
       "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead.",
     inputSchema: z.object({
-      laneId: z.string().optional().describe("Lane to run in. Defaults to CTO's lane. A new lane is auto-created if needed."),
+      laneId: z.string().optional().describe("Lane to run in. Defaults to the primary lane. A new lane is auto-created if needed."),
       modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-4-6'). MUST be set when user specifies a model."),
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort: 'low', 'medium', 'high', 'max' (opus), 'xhigh' (openai)."),
       title: z.string().optional().describe("Display title for the chat session."),
@@ -2438,6 +2435,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           laneId,
           ...(title?.trim() ? { title: title.trim() } : {}),
           ...(startupCommand?.trim() ? { startupCommand: startupCommand.trim() } : {}),
+          toolType: "shell",
           tracked: true,
         });
         return { success: true, ...result };
@@ -2647,8 +2645,22 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
 
   tools.gitCheckoutBranch = tool({
     description: "Switch to or create a git branch in a lane.",
-    inputSchema: z.object({ laneId: z.string().optional(), branch: z.string().min(1), create: z.boolean().optional().default(false) }),
-    execute: ({ laneId, branch, create }) => gitGuard(() => deps.gitService!.checkoutBranch({ laneId: resolveLaneId(laneId), branch, create })),
+    inputSchema: z.object({
+      laneId: z.string().optional(),
+      branch: z.string().min(1),
+      create: z.boolean().optional().default(false),
+      startPoint: z.string().optional(),
+      baseRef: z.string().optional(),
+      acknowledgeActiveWork: z.boolean().optional().default(false),
+    }),
+    execute: ({ laneId, branch, create, startPoint, baseRef, acknowledgeActiveWork }) => gitGuard(() => deps.gitService!.checkoutBranch({
+      laneId: resolveLaneId(laneId),
+      branchName: branch,
+      mode: create ? "create" : "existing",
+      startPoint,
+      baseRef,
+      acknowledgeActiveWork,
+    })),
   });
 
   tools.gitStashPush = tool({
@@ -2761,39 +2773,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     description: "Undo an applied conflict resolution proposal.",
     inputSchema: z.object({ laneId: z.string().min(1), proposalId: z.string().min(1) }),
     execute: ({ laneId, proposalId }) => conflictGuard(() => deps.conflictService!.undoProposal({ laneId, proposalId })),
-  });
-
-  // ---------------------------------------------------------------------------
-  // Context Pack Export
-  // ---------------------------------------------------------------------------
-
-  tools.getContextStatus = tool({
-    description: "Check what ADE context docs exist and whether they are stale.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      if (!deps.contextDocService) return { success: false, error: "Context doc service is not available." };
-      try {
-        return { success: true, ...deps.contextDocService.getStatus() };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.generateContextDocs = tool({
-    description: "Generate bounded context packs for bootstrapping workers or exporting project state.",
-    inputSchema: z.object({
-      scope: z.string().optional(),
-      categories: z.array(z.string()).optional(),
-    }),
-    execute: async ({ scope, categories }) => {
-      if (!deps.contextDocService) return { success: false, error: "Context doc service is not available." };
-      try {
-        return { success: true, ...(await deps.contextDocService.generateDocs({ scope, categories })) };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
   });
 
   // ---------------------------------------------------------------------------
@@ -3461,7 +3440,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ pattern, fileGlob, maxResults, contextLines }) => {
       try {
         const { execFileSync } = await import("node:child_process");
-        const adeRoot = path.resolve(__dirname, "../../../../..");
+        const adeRoot = typeof __dirname === "string"
+          ? path.resolve(__dirname, "../../../../..")
+          : path.resolve(process.cwd());
         const searchPattern = pattern.trim().slice(0, 500);
         const globArg = (fileGlob?.trim() || "*.ts").slice(0, 200);
         const args = [

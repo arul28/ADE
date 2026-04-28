@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClickOutside } from "../../hooks/useClickOutside";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree } from "@phosphor-icons/react";
 import { useAppStore, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
@@ -21,19 +21,28 @@ import { AttachLaneDialog } from "./AttachLaneDialog";
 import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
 import { ManageLaneDialog } from "./ManageLaneDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
+import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
+import { HelpChip } from "../onboarding/HelpChip";
+import { useOnboardingStore } from "../../state/onboardingStore";
+import { useDialogBus } from "../../lib/useDialogBus";
 import {
   sortLanesForTabs,
   sortLanesForStackGraph,
   mergeUnique,
   laneMatchesFilter,
+  isMissionLaneHiddenByDefault,
+  isMissionResultLane,
   chipLabel,
   LANES_TILING_TREE,
+  LANES_TILING_WORK_FOCUS_TREE,
   LANES_TILING_LAYOUT_VERSION,
   GIT_ACTIONS_FULLSCREEN_TREE,
   RESIZE_TARGET_MINIMUM_SIZE,
   EMPTY_LANE_PANE_DETAIL,
   formatBranchCheckoutError,
+  validateBranchName,
+  stripRemotePrefix,
   type LanePaneDetailSelection,
   type LaneBranchOption
 } from "./laneUtils";
@@ -46,6 +55,7 @@ import type {
   GitCommitSummary,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
+  LaneBranchActiveWorkItem,
   LaneListSnapshot,
   LaneSummary,
   RebaseRun,
@@ -55,6 +65,7 @@ import type {
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { docs } from "../../onboarding/docsLinks";
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -70,10 +81,14 @@ type RebasePushReviewState = {
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 
-const LANE_ACCENT_COLORS = [
-  "#a78bfa", "#60a5fa", "#34d399", "#fbbf24",
-  "#f472b6", "#fb923c", "#2dd4bf", "#c084fc",
-] as const;
+function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string {
+  const names = (devicesOpen ?? [])
+    .map((device) => device.displayName.trim())
+    .filter((name) => name.length > 0);
+  if (names.length === 0) return "Open on this device";
+  if (names.length === 1) return `Open on ${names[0]}`;
+  return `Open on ${names.length} devices: ${names.join(", ")}`;
+}
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
@@ -147,21 +162,70 @@ export function resolveCreateLaneRequest(args: {
   };
 }
 
+function parseLaneIdsParam(value: string | null): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+export function resolveLaneIdsDeepLinkSelection(args: {
+  laneIdsRaw: string | null;
+  inspectorTabParam?: string | null;
+  availableLaneIds: Iterable<string>;
+  consumedSignature: string | null;
+}): { laneIds: string[]; signature: string } | null {
+  const parsed = parseLaneIdsParam(args.laneIdsRaw);
+  if (parsed.length === 0) return null;
+  const signature = `${parsed.join(",")}::${args.inspectorTabParam ?? ""}`;
+  if (signature === args.consumedSignature) return null;
+  const available = new Set(args.availableLaneIds);
+  const laneIds = parsed.filter((laneId) => available.has(laneId));
+  if (laneIds.length !== parsed.length) return null;
+  return { laneIds, signature };
+}
+
+function laneTilingLayoutIds(laneId: string): string[] {
+  return [
+    `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`,
+    `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:wf:${laneId}`,
+    `lanes:tiling:v6:${laneId}`,
+    `lanes:tiling:v6:wf:${laneId}`,
+    `lanes:tiling:v7:${laneId}`,
+    `lanes:tiling:v7:wf:${laneId}`,
+  ];
+}
+
 /* ---- Component ---- */
 
 export function LanesPage() {
   const [params] = useSearchParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const selectLane = useAppStore((s) => s.selectLane);
   const selectRunLane = useAppStore((s) => s.selectRunLane);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
+
+  const urlLaneDeeplinks = useMemo(() => {
+    const p = new URLSearchParams(location.search);
+    return {
+      action: p.get("action"),
+      laneIdsRaw: p.get("laneIds"),
+      laneId: p.get("laneId"),
+      sessionId: p.get("sessionId"),
+      inspectorTab: p.get("inspectorTab"),
+      focus: p.get("focus"),
+    };
+  }, [location.search]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const clearLaneInspectorTab = useAppStore((s) => s.clearLaneInspectorTab);
   const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
+  const activeTourId = useOnboardingStore((s) => s.activeTourId);
+  const suppressTourDistractions = activeTourId === "first-journey";
 
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
@@ -175,6 +239,7 @@ export function LanesPage() {
   const [createMode, setCreateMode] = useState<CreateLaneMode>("primary");
   const [createBaseBranch, setCreateBaseBranch] = useState("");
   const [createImportBranch, setCreateImportBranch] = useState("");
+  const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
   const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -184,6 +249,7 @@ export function LanesPage() {
   const createBaseBranchUserPickedRef = useRef(false);
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [createSelectedColor, setCreateSelectedColor] = useState<string | null>(null);
   const [multiAttachOpen, setMultiAttachOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
@@ -208,22 +274,35 @@ export function LanesPage() {
   const [deleteForce, setDeleteForce] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [laneActionBusy, setLaneActionBusy] = useState(false);
+  const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
+  const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
-  const [rebaseBusyLaneId, setRebaseBusyLaneId] = useState<string | null>(null);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
   const [rebaseScopePrompt, setRebaseScopePrompt] = useState<RebaseScopePromptState | null>(null);
   const [rebasePushReview, setRebasePushReview] = useState<RebasePushReviewState | null>(null);
 
-  const [primaryBranches, setPrimaryBranches] = useState<LaneBranchOption[]>([]);
+  const [laneBranches, setLaneBranches] = useState<LaneBranchOption[]>([]);
+  const [laneBranchesLoading, setLaneBranchesLoading] = useState(false);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [branchCheckoutBusy, setBranchCheckoutBusy] = useState(false);
   const [branchCheckoutError, setBranchCheckoutError] = useState<string | null>(null);
   const [branchSearchQuery, setBranchSearchQuery] = useState("");
+  const [newBranchName, setNewBranchName] = useState("");
+  const [newBranchStartPoint, setNewBranchStartPoint] = useState("");
+  const [newBranchBaseRef, setNewBranchBaseRef] = useState("");
+  const [newBranchFormOpen, setNewBranchFormOpen] = useState(false);
+  const [pendingBranchSwitch, setPendingBranchSwitch] = useState<{
+    branchName: string;
+    mode: "existing" | "create";
+    startPoint?: string;
+    baseRef?: string;
+    activeWork: LaneBranchActiveWorkItem[];
+  } | null>(null);
   const branchSearchInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -238,6 +317,7 @@ export function LanesPage() {
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
   const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
+  const consumedLaneIdsDeepLinkSignatureRef = useRef<string | null>(null);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.lanes.page_mount");
@@ -252,6 +332,17 @@ export function LanesPage() {
   );
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
+  // `availableLaneIdsKey` is the content-stable dep trigger (string changes only
+  // when the id set changes). `availableLaneIds` recomputes from the key so its
+  // identity is also content-stable, letting effects depend on either safely.
+  const availableLaneIdsKey = useMemo(
+    () => sortedLanes.map((lane) => lane.id).sort().join("\0"),
+    [sortedLanes],
+  );
+  const availableLaneIds = useMemo(
+    () => (availableLaneIdsKey ? availableLaneIdsKey.split("\0") : []),
+    [availableLaneIdsKey],
+  );
   const integrationSourcesByLaneId = useMemo(
     () => buildIntegrationSourcesByLaneId(integrationProposals, lanesById),
     [integrationProposals, lanesById],
@@ -339,6 +430,7 @@ export function LanesPage() {
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
   const filteredSet = useMemo(() => new Set(filteredLaneIds), [filteredLaneIds]);
   const visibleRebaseSuggestions = useMemo(() => {
+    if (suppressTourDistractions) return [];
     const laneIdSet = new Set(filteredLaneIds);
     return laneSnapshots
       .map((snapshot) => snapshot.rebaseSuggestion)
@@ -348,8 +440,9 @@ export function LanesPage() {
           return laneIdSet.has(suggestion.laneId);
         },
       );
-  }, [laneSnapshots, filteredLaneIds]);
+  }, [laneSnapshots, filteredLaneIds, suppressTourDistractions]);
   const visibleAutoRebaseNeedsAttention = useMemo(() => {
+    if (suppressTourDistractions) return [];
     const laneIdSet = new Set(filteredLaneIds);
     return laneSnapshots
       .map((snapshot) => snapshot.autoRebaseStatus)
@@ -359,8 +452,7 @@ export function LanesPage() {
           return laneIdSet.has(status.laneId) && status.state !== "autoRebased";
         },
       );
-  }, [laneSnapshots, filteredLaneIds]);
-  const showAutoRebaseSettingsHint = !autoRebaseEnabled && (visibleRebaseSuggestions.length > 0 || visibleAutoRebaseNeedsAttention.length > 0);
+  }, [laneSnapshots, filteredLaneIds, suppressTourDistractions]);
 
   const activeWithPins = useMemo(
     () => mergeUnique(activeLaneIds, Array.from(pinnedLaneIds).filter((id) => lanesById.has(id))),
@@ -370,6 +462,36 @@ export function LanesPage() {
     () => activeWithPins.filter((id) => lanesById.has(id) && filteredSet.has(id)),
     [activeWithPins, lanesById, filteredSet]
   );
+
+  useEffect(() => {
+    const syncApi = window.ade.sync;
+    if (!syncApi?.setActiveLanePresence) {
+      return;
+    }
+    const laneIds = project?.rootPath ? [...visibleLaneIds] : [];
+    void syncApi.setActiveLanePresence({ laneIds }).catch(() => {});
+  }, [project?.rootPath, visibleLaneIds]);
+
+  useEffect(() => {
+    const syncApi = window.ade.sync;
+    if (!syncApi?.setActiveLanePresence) {
+      return;
+    }
+    return () => {
+      void syncApi.setActiveLanePresence({ laneIds: [] }).catch(() => {});
+    };
+  }, []);
+
+  const workFocusTiling = useMemo(() => {
+    if (params.get("workFocus") !== "1") return false;
+    const ids = parseLaneIdsParam(params.get("laneIds"));
+    if (ids.length < 2) return false;
+    const visibleSet = new Set(visibleLaneIds);
+    return ids.every((id) => visibleSet.has(id));
+  }, [params, visibleLaneIds]);
+
+  const laneTilingTree = workFocusTiling ? LANES_TILING_WORK_FOCUS_TREE : LANES_TILING_TREE;
+  const laneTilingLayoutSuffix = workFocusTiling ? ":wf" : "";
 
   const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
   const managedLanes = useMemo(
@@ -387,29 +509,54 @@ export function LanesPage() {
   const adoptTargetLane = adoptTargetLaneId ? lanesById.get(adoptTargetLaneId) ?? null : null;
 
   const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
+  const branchLane = useMemo(() => {
+    const candidate = selectedLaneId ? lanesById.get(selectedLaneId) ?? primaryLane : primaryLane;
+    return candidate ?? null;
+  }, [selectedLaneId, lanesById, primaryLane]);
+  const branchLaneSwitchDisabledReason = useMemo<string | null>(() => {
+    if (!branchLane) return null;
+    if (branchLane.laneType === "attached") return "Branch switching is disabled for attached lanes — manage this worktree with your own tools.";
+    if (isMissionResultLane(branchLane)) return "Branch switching is disabled for mission result lanes to keep their output stable.";
+    if (isMissionLaneHiddenByDefault(branchLane)) return "Branch switching isn't available on mission worker lanes.";
+    return null;
+  }, [branchLane]);
+  const canSwitchBranchLane = branchLane !== null && branchLaneSwitchDisabledReason === null;
 
-  /* ---- Primary branch management ---- */
+  /* ---- Lane branch management ---- */
 
   useEffect(() => {
-    if (!primaryLane || !branchDropdownOpen) return;
-    window.ade.git.listBranches({ laneId: primaryLane.id })
-      .then(setPrimaryBranches)
-      .catch(() => {});
-  }, [branchDropdownOpen, primaryLane?.id]);
+    // Always clear stale results when the target lane (or open state) changes
+    // — otherwise lane A's branches linger when the user switches to lane B
+    // before the new fetch resolves.
+    setLaneBranches([]);
+    if (!branchLane || !branchDropdownOpen) return;
+    let cancelled = false;
+    setLaneBranchesLoading(true);
+    window.ade.git.listBranches({ laneId: branchLane.id })
+      .then((result) => { if (!cancelled) setLaneBranches(result); })
+      .catch(() => { if (!cancelled) setLaneBranches([]); })
+      .finally(() => { if (!cancelled) setLaneBranchesLoading(false); });
+    return () => { cancelled = true; };
+  }, [branchDropdownOpen, branchLane?.id]);
 
   useEffect(() => {
-    if (!primaryLane) return;
-    const current = primaryBranches.find((branch) => branch.isCurrent && !branch.isRemote)?.name ?? null;
-    if (!current || current === primaryLane.branchRef) return;
+    if (!branchLane) return;
+    const current = laneBranches.find((branch) => branch.isCurrent && !branch.isRemote)?.name ?? null;
+    if (!current || current === branchLane.branchRef) return;
     refreshLanes().catch(() => {});
-  }, [primaryBranches, primaryLane?.id, primaryLane?.branchRef, refreshLanes]);
+  }, [laneBranches, branchLane?.id, branchLane?.branchRef, refreshLanes]);
 
   useEffect(() => {
     if (branchDropdownOpen) {
       setBranchSearchQuery("");
+      setPendingBranchSwitch(null);
+      setNewBranchStartPoint("");
+      setNewBranchBaseRef("");
+      setNewBranchName("");
+      setNewBranchFormOpen(false);
       setTimeout(() => branchSearchInputRef.current?.focus(), 0);
     }
-  }, [branchDropdownOpen]);
+  }, [branchDropdownOpen, branchLane?.id]);
   useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
   useClickOutside(addLaneDropdownRef, () => setAddLaneDropdownOpen(false), addLaneDropdownOpen);
 
@@ -541,8 +688,15 @@ export function LanesPage() {
         void refreshLanes().catch(() => {});
       }, 300);
     };
-    const unsubPtyData = window.ade.pty.onData(scheduleRefresh);
-    const unsubPtyExit = window.ade.pty.onExit(scheduleRefresh);
+    const currentProjectRoot = project?.rootPath ?? null;
+    const isCurrentProjectEvent = (event: { projectRoot?: string | null }) =>
+      !event.projectRoot || event.projectRoot === currentProjectRoot;
+    const unsubPtyData = window.ade.pty.onData((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
+    const unsubPtyExit = window.ade.pty.onExit((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
     const unsubChat = window.ade.agentChat.onEvent(scheduleRefresh);
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -568,7 +722,7 @@ export function LanesPage() {
       }
       window.clearInterval(intervalId);
     };
-  }, [refreshLanes]);
+  }, [project?.rootPath, refreshLanes]);
 
   useEffect(() => {
     hasActiveLaneRuntimeRef.current = laneSnapshots.some((snapshot) =>
@@ -729,21 +883,57 @@ export function LanesPage() {
 
   /* ---- Lane management actions ---- */
 
-  const currentPrimaryBranch = useMemo(
-    () => primaryBranches.find((branch) => branch.isCurrent)?.name ?? primaryLane?.branchRef ?? "",
-    [primaryBranches, primaryLane?.branchRef]
+  const currentLaneBranch = useMemo(
+    () => laneBranches.find((branch) => branch.isCurrent)?.name ?? branchLane?.branchRef ?? "",
+    [laneBranches, branchLane?.branchRef]
   );
-  const localPrimaryBranches = useMemo(() => {
+  const localLaneBranches = useMemo(() => {
     const q = branchSearchQuery.toLowerCase();
-    return primaryBranches.filter((branch) => !branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
-  }, [primaryBranches, branchSearchQuery]);
-  const remotePrimaryBranches = useMemo(() => {
+    return laneBranches.filter((branch) => !branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
+  }, [laneBranches, branchSearchQuery]);
+  const remoteLaneBranches = useMemo(() => {
     const q = branchSearchQuery.toLowerCase();
-    return primaryBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
-  }, [primaryBranches, branchSearchQuery]);
+    return laneBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
+  }, [laneBranches, branchSearchQuery]);
+  const startPointOptions = useMemo(() => {
+    type StartOption = { value: string; label: string; group: "lane" | "local" | "remote" };
+    const map = new Map<string, StartOption>();
+    if (branchLane?.branchRef) {
+      map.set(branchLane.branchRef, { value: branchLane.branchRef, label: branchLane.branchRef, group: "lane" });
+    }
+    for (const branch of laneBranches) {
+      if (branch.isRemote) continue;
+      if (!map.has(branch.name)) map.set(branch.name, { value: branch.name, label: branch.name, group: "local" });
+    }
+    for (const branch of laneBranches) {
+      if (!branch.isRemote) continue;
+      const local = stripRemotePrefix(branch.name);
+      if (map.has(local)) continue;
+      if (!map.has(branch.name)) {
+        map.set(branch.name, { value: branch.name, label: `${branch.name} (remote)`, group: "remote" });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [branchLane?.branchRef, laneBranches]);
+  const baseRefOptions = useMemo(() => {
+    const names = new Set<string>();
+    if (primaryLane?.branchRef) names.add(primaryLane.branchRef);
+    for (const opt of startPointOptions) names.add(opt.value);
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [startPointOptions, primaryLane?.branchRef]);
+  const branchNameValidation = useMemo(
+    () => (newBranchName.trim() ? validateBranchName(newBranchName) : { ok: false }),
+    [newBranchName],
+  );
 
-  const runLaneAction = async (fn: () => Promise<void>) => {
+  const runLaneAction = async (
+    fn: () => Promise<void>,
+    status: string,
+    kind: "delete" | "archive" | "adopt" = "delete",
+  ) => {
     setLaneActionBusy(true);
+    setLaneActionKind(kind);
+    setLaneActionStatus(status);
     setLaneActionError(null);
     try {
       await fn();
@@ -753,6 +943,8 @@ export function LanesPage() {
       setLaneActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setLaneActionBusy(false);
+      setLaneActionStatus(null);
+      setLaneActionKind(null);
     }
   };
 
@@ -798,29 +990,72 @@ export function LanesPage() {
     }
   }, [adoptTargetLaneId, refreshLanes, selectLane]);
 
-  const checkoutPrimaryBranch = useCallback(async (branchName: string) => {
-    if (!primaryLane) return;
-    if (primaryLane.status.dirty) {
-      setBranchCheckoutError("Cannot switch branches while primary lane has uncommitted changes. Commit, stash, or discard changes first.");
+  const checkoutLaneBranch = useCallback(async (request: {
+    branchName: string;
+    mode?: "existing" | "create";
+    startPoint?: string;
+    baseRef?: string;
+    acknowledgeActiveWork?: boolean;
+  }) => {
+    if (!branchLane) return;
+    if (branchLane.status.dirty) {
+      setBranchCheckoutError(`Cannot switch branches while ${branchLane.name} has uncommitted changes. Commit, stash, or discard changes first.`);
       return;
     }
+    const mode = request.mode ?? "existing";
+    const branchName = request.branchName.trim();
+    if (!branchName) return;
     setBranchCheckoutBusy(true);
     setBranchCheckoutError(null);
     let succeeded = false;
     try {
-      await window.ade.git.checkoutBranch({ laneId: primaryLane.id, branchName });
+      if (!request.acknowledgeActiveWork) {
+        const preview = await window.ade.lanes.previewBranchSwitch({
+          laneId: branchLane.id,
+          branchName,
+          mode,
+          startPoint: request.startPoint,
+          baseRef: request.baseRef,
+        });
+        if (preview.duplicateLaneId) {
+          throw new Error(`Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`);
+        }
+        if (preview.dirty) {
+          throw new Error(`Cannot switch branches while ${branchLane.name} has uncommitted changes.`);
+        }
+        if (preview.activeWork.length > 0) {
+          setPendingBranchSwitch({
+            branchName,
+            mode,
+            startPoint: request.startPoint,
+            baseRef: request.baseRef,
+            activeWork: preview.activeWork,
+          });
+          return;
+        }
+      }
+      await window.ade.git.checkoutBranch({
+        laneId: branchLane.id,
+        branchName,
+        mode,
+        startPoint: request.startPoint,
+        baseRef: request.baseRef,
+        acknowledgeActiveWork: request.acknowledgeActiveWork,
+      });
       await refreshLanes();
-      const updated = await window.ade.git.listBranches({ laneId: primaryLane.id });
-      setPrimaryBranches(updated);
+      const updated = await window.ade.git.listBranches({ laneId: branchLane.id });
+      setLaneBranches(updated);
+      setPendingBranchSwitch(null);
+      setNewBranchName("");
       succeeded = true;
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
-      setBranchCheckoutError(formatBranchCheckoutError(raw));
+      setBranchCheckoutError(formatBranchCheckoutError(raw, branchLane.name));
     } finally {
       setBranchCheckoutBusy(false);
       if (succeeded) setBranchDropdownOpen(false);
     }
-  }, [primaryLane, refreshLanes]);
+  }, [branchLane, refreshLanes]);
 
   const archiveManagedLanes = async () => {
     const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
@@ -830,7 +1065,7 @@ export function LanesPage() {
       for (const lane of actionable) {
         await window.ade.lanes.archive({ laneId: lane.id });
       }
-    });
+    }, actionable.length > 1 ? `Archiving ${actionable.length} lanes...` : "Archiving lane...", "archive");
   };
 
   const deleteManagedLanes = async () => {
@@ -838,6 +1073,34 @@ export function LanesPage() {
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
     if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
+    const attachedCount = actionable.filter((l) => l.laneType === "attached").length;
+    const managedCount = actionable.length - attachedCount;
+    const deleteStatus = (() => {
+      if (managedCount === 0 && attachedCount > 0) {
+        return attachedCount > 1
+          ? `Unlinking ${attachedCount} attached lanes...`
+          : "Unlinking attached lane...";
+      }
+      const managedPhrase =
+        deleteMode === "remote_branch"
+          ? managedCount > 1
+            ? `${managedCount} lane worktrees, local branches, and remote branches`
+            : "lane worktree, local branch, and remote branch"
+          : deleteMode === "local_branch"
+            ? managedCount > 1
+              ? `${managedCount} lane worktrees and local branches`
+              : "lane worktree and local branch"
+            : managedCount > 1
+              ? `${managedCount} lane worktrees`
+              : "lane worktree";
+      if (attachedCount === 0) {
+        return `Deleting ${managedPhrase}...`;
+      }
+      const attachedPhrase = attachedCount > 1
+        ? `${attachedCount} attached lanes`
+        : "attached lane";
+      return `Unlinking ${attachedPhrase} and deleting ${managedPhrase}...`;
+    })();
     await runLaneAction(async () => {
       const errors: string[] = [];
       for (const lane of actionable) {
@@ -867,7 +1130,7 @@ export function LanesPage() {
       for (const id of deletedIds) {
         clearLaneInspectorTab(id);
       }
-    });
+    }, deleteStatus);
   };
 
   const openBatchManage = useCallback((laneIds: string[]) => {
@@ -935,21 +1198,75 @@ export function LanesPage() {
     }
   }, [lanesById, pinnedLaneIds]);
 
-  const resetGridLayout = useCallback(async () => {
+  const resetGridLayout = useCallback(async (preferredLaneId?: string | null) => {
+    const selectedVisibleLane =
+      preferredLaneId && lanesById.has(preferredLaneId)
+        ? preferredLaneId
+        : selectedLaneId && lanesById.has(selectedLaneId)
+          ? selectedLaneId
+          : visibleLaneIds[0] ?? filteredLaneIds[0] ?? sortedLanes[0]?.id ?? null;
+    if (selectedVisibleLane) {
+      setPinnedLaneIds(new Set());
+      setActiveLaneIds([selectedVisibleLane]);
+      selectLane(selectedVisibleLane);
+    }
     const promises: Promise<void>[] = [];
-    for (const laneId of visibleLaneIds) {
-      const layoutKey = `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`;
-      promises.push(
-        window.ade.layout.set(layoutKey, {}).catch(() => {}),
-        window.ade.tilingTree.set(layoutKey, {}).catch(() => {})
-      );
+    const laneIdsToReset = new Set<string>([
+      ...filteredLaneIds,
+      ...visibleLaneIds,
+      ...activeLaneIds,
+    ]);
+    if (selectedVisibleLane) laneIdsToReset.add(selectedVisibleLane);
+    for (const laneId of laneIdsToReset) {
+      for (const layoutKey of laneTilingLayoutIds(laneId)) {
+        promises.push(
+          window.ade.layout.set(layoutKey, {}).catch(() => {}),
+          window.ade.tilingTree.set(layoutKey, {}).catch(() => {})
+        );
+      }
     }
     /* Also reset lane column widths */
     promises.push(window.ade.layout.set("lanes:columns:v1", {}).catch(() => {}));
     await Promise.all(promises);
     /* Force full remount so default sizes/trees take effect */
     setGridResetKey((k) => k + 1);
-  }, [visibleLaneIds]);
+  }, [activeLaneIds, filteredLaneIds, lanesById, selectLane, selectedLaneId, sortedLanes, visibleLaneIds]);
+
+  useEffect(() => {
+    const onTourEnded = (event: Event) => {
+      const detail = (event as CustomEvent<{ tourId?: unknown }>).detail;
+      if (detail?.tourId !== "first-journey") return;
+      void resetGridLayout(selectedLaneId);
+    };
+    window.addEventListener("ade:tour-ended", onTourEnded);
+    return () => window.removeEventListener("ade:tour-ended", onTourEnded);
+  }, [resetGridLayout]);
+
+  useEffect(() => {
+    const onTourFocusLane = (event: Event) => {
+      const detail = (event as CustomEvent<{ laneId?: unknown }>).detail;
+      const requestedLaneId = typeof detail?.laneId === "string" ? detail.laneId : null;
+      const requestedLane = requestedLaneId ? lanesById.get(requestedLaneId) ?? null : null;
+      const selectedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
+      const fallbackLane =
+        selectedLane && selectedLane.laneType !== "primary"
+          ? selectedLane
+          : sortedLanes.find((lane) => lane.laneType !== "primary") ?? null;
+      const targetLane = requestedLane && requestedLane.laneType !== "primary" ? requestedLane : fallbackLane;
+      if (!targetLane) return;
+      setActiveLaneIds([targetLane.id]);
+      selectLane(targetLane.id);
+      void Promise.all([
+        ...laneTilingLayoutIds(targetLane.id).flatMap((layoutKey) => [
+          window.ade.layout.set(layoutKey, {}).catch(() => {}),
+          window.ade.tilingTree.set(layoutKey, {}).catch(() => {}),
+        ]),
+        window.ade.layout.set("lanes:columns:v1", {}).catch(() => {}),
+      ]).finally(() => setGridResetKey((k) => k + 1));
+    };
+    window.addEventListener("ade:tour-focus-lane", onTourFocusLane);
+    return () => window.removeEventListener("ade:tour-focus-lane", onTourFocusLane);
+  }, [lanesById, selectLane, selectedLaneId, sortedLanes]);
 
   const requestRebaseScope = useCallback((laneId: string) => {
     const laneName = lanesById.get(laneId)?.name ?? laneId;
@@ -974,7 +1291,6 @@ export function LanesPage() {
 
   const runRebaseFlow = useCallback(async (laneId: string, mode: "local_only" | "local_and_remote") => {
     setRebaseSuggestionError(null);
-    setRebaseBusyLaneId(laneId);
     try {
       const scope = await requestRebaseScope(laneId);
       if (!scope) return;
@@ -990,7 +1306,7 @@ export function LanesPage() {
         const failedLane = start.run.failedLaneId ? lanesById.get(start.run.failedLaneId)?.name ?? start.run.failedLaneId : null;
         const detail = start.run.error ?? "Rebase failed.";
         setRebaseSuggestionError(`Rebase needs attention${failedLane ? ` for ${failedLane}` : ""}. ${detail}`);
-        navigate("/prs?tab=rebase");
+        navigate("/prs?tab=workflows&workflow=rebase");
         return;
       }
 
@@ -1010,35 +1326,69 @@ export function LanesPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setRebaseSuggestionError(message);
-      navigate("/prs?tab=rebase");
-    } finally {
-      setRebaseBusyLaneId(null);
+      navigate("/prs?tab=workflows&workflow=rebase");
     }
   }, [lanesById, navigate, refreshLanes, requestPushSelection, requestRebaseScope]);
 
+  const hideRebaseSuggestionLocally = useCallback((laneId: string) => {
+    useAppStore.setState((prev) => ({
+      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+        snapshot.lane.id === laneId ? { ...snapshot, rebaseSuggestion: null } : snapshot
+      ),
+    }));
+  }, []);
+
+  const hideAutoRebaseStatusLocally = useCallback((laneId: string) => {
+    useAppStore.setState((prev) => ({
+      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+        snapshot.lane.id === laneId ? { ...snapshot, autoRebaseStatus: null } : snapshot
+      ),
+    }));
+  }, []);
+
+  const restoreRebaseSuggestionLocally = useCallback((laneId: string, suggestion: LaneListSnapshot["rebaseSuggestion"]) => {
+    if (!suggestion) return;
+    useAppStore.setState((prev) => ({
+      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+        snapshot.lane.id === laneId && snapshot.rebaseSuggestion == null
+          ? { ...snapshot, rebaseSuggestion: suggestion }
+          : snapshot
+      ),
+    }));
+  }, []);
+
+  const restoreAutoRebaseStatusLocally = useCallback((laneId: string, status: LaneListSnapshot["autoRebaseStatus"]) => {
+    if (!status) return;
+    useAppStore.setState((prev) => ({
+      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+        snapshot.lane.id === laneId && snapshot.autoRebaseStatus == null
+          ? { ...snapshot, autoRebaseStatus: status }
+          : snapshot
+      ),
+    }));
+  }, []);
+
   const dismissRebaseSuggestion = async (laneId: string) => {
+    const previous = useAppStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.rebaseSuggestion ?? null;
     setRebaseSuggestionError(null);
-    setRebaseBusyLaneId(laneId);
+    hideRebaseSuggestionLocally(laneId);
     try {
       await window.ade.lanes.dismissRebaseSuggestion({ laneId });
-      await refreshLanes();
     } catch (err) {
+      restoreRebaseSuggestionLocally(laneId, previous);
       setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRebaseBusyLaneId(null);
     }
   };
 
-  const deferRebaseSuggestion = async (laneId: string, minutes: number) => {
+  const dismissAutoRebaseStatus = async (laneId: string) => {
+    const previous = useAppStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.autoRebaseStatus ?? null;
     setRebaseSuggestionError(null);
-    setRebaseBusyLaneId(laneId);
+    hideAutoRebaseStatusLocally(laneId);
     try {
-      await window.ade.lanes.deferRebaseSuggestion({ laneId, minutes });
-      await refreshLanes();
+      await window.ade.lanes.dismissAutoRebaseStatus({ laneId });
     } catch (err) {
+      restoreAutoRebaseStatusLocally(laneId, previous);
       setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRebaseBusyLaneId(null);
     }
   };
 
@@ -1101,10 +1451,12 @@ export function LanesPage() {
     setCreateMode("primary");
     setCreateBaseBranch("");
     setCreateImportBranch("");
+    setCreateChildBaseBranch("");
     setCreateBusy(false);
     setCreateError(null);
     setCreateEnvInitProgress(null);
     setSelectedTemplateId("");
+    setCreateSelectedColor(null);
   }, []);
 
   const prepareCreateDialog = useCallback(() => {
@@ -1113,6 +1465,7 @@ export function LanesPage() {
     setCreateMode("primary");
     setCreateBaseBranch("");
     setCreateImportBranch("");
+    setCreateChildBaseBranch("");
     setCreateBranches([]);
     setLaneCreated(false);
     createBaseBranchUserPickedRef.current = false;
@@ -1150,27 +1503,64 @@ export function LanesPage() {
     setCreateOpen(true);
   }, [lanes]);
 
-  // Intentionally ignore prepareCreateDialog churn so an open ?action=create URL
-  // doesn't reopen and reset the dialog when lanes refresh.
+  // Deep link handling: must not re-run on lane list refreshes, or a stale
+  // ?laneId / focus=single from the URL overwrites the user's current tab/split
+  // selection. Multi-lane ?laneIds= re-tries as `availableLaneIds` changes.
+
+  // Intentionally depend only on `urlLaneDeeplinks.action` (not
+  // prepareCreateDialog) so the create dialog is not re-opened from hook churn.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const laneId = params.get("laneId");
-    const sessionId = params.get("sessionId");
-    const inspectorTabParam = params.get("inspectorTab");
-    if (params.get("action") === "create") {
+    if (urlLaneDeeplinks.action === "create") {
       prepareCreateDialog();
     }
-    if (laneId) {
-      selectLane(laneId);
-      if (params.get("focus") === "single") {
-        setActiveLaneIds([laneId]);
-      }
-      if (inspectorTabParam) {
-        setLaneInspectorTab(laneId, inspectorTabParam as LaneInspectorTab);
+  }, [urlLaneDeeplinks.action]);
+
+  useEffect(() => {
+    if (!urlLaneDeeplinks.laneIdsRaw) return;
+    const laneIdsSelection = resolveLaneIdsDeepLinkSelection({
+      laneIdsRaw: urlLaneDeeplinks.laneIdsRaw,
+      inspectorTabParam: urlLaneDeeplinks.inspectorTab,
+      availableLaneIds,
+      consumedSignature: consumedLaneIdsDeepLinkSignatureRef.current,
+    });
+    if (laneIdsSelection) {
+      consumedLaneIdsDeepLinkSignatureRef.current = laneIdsSelection.signature;
+      const valid = laneIdsSelection.laneIds;
+      selectLane(valid[0]!);
+      setActiveLaneIds(valid);
+      setPinnedLaneIds(new Set());
+      if (urlLaneDeeplinks.inspectorTab && valid[0]) {
+        setLaneInspectorTab(valid[0], urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
       }
     }
-    if (sessionId) focusSession(sessionId);
-  }, [params, selectLane, focusSession, setLaneInspectorTab]);
+  }, [availableLaneIds, selectLane, setLaneInspectorTab, urlLaneDeeplinks.laneIdsRaw, urlLaneDeeplinks.inspectorTab]);
+
+  useEffect(() => {
+    if (urlLaneDeeplinks.laneIdsRaw) return;
+    consumedLaneIdsDeepLinkSignatureRef.current = null;
+    const laneId = urlLaneDeeplinks.laneId;
+    if (!laneId) return;
+    selectLane(laneId);
+    if (urlLaneDeeplinks.focus === "single") {
+      setActiveLaneIds([laneId]);
+    }
+    if (urlLaneDeeplinks.inspectorTab) {
+      setLaneInspectorTab(laneId, urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
+    }
+  }, [
+    urlLaneDeeplinks.laneIdsRaw,
+    urlLaneDeeplinks.laneId,
+    urlLaneDeeplinks.focus,
+    urlLaneDeeplinks.inspectorTab,
+    selectLane,
+    setLaneInspectorTab,
+  ]);
+
+  useEffect(() => {
+    if (!urlLaneDeeplinks.sessionId) return;
+    focusSession(urlLaneDeeplinks.sessionId);
+  }, [urlLaneDeeplinks.sessionId, focusSession]);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     if (!open && createBusy) return;
@@ -1246,7 +1636,17 @@ export function LanesPage() {
       if (request.kind === "import") {
         lane = await window.ade.lanes.importBranch(request.args);
       } else if (request.kind === "child") {
-        lane = await window.ade.lanes.createChild(request.args);
+        const trimmedBase = createChildBaseBranch.trim();
+        const parentLane = lanes.find((l) => l.id === request.args.parentLaneId);
+        if (!parentLane) {
+          setCreateError("Parent lane no longer exists. Please close and reopen the dialog.");
+          setCreateBusy(false);
+          return;
+        }
+        const childArgs = trimmedBase && trimmedBase !== parentLane.branchRef
+          ? { ...request.args, baseBranchRef: trimmedBase }
+          : request.args;
+        lane = await window.ade.lanes.createChild(childArgs);
       } else {
         lane = await window.ade.lanes.create(request.args);
       }
@@ -1254,6 +1654,14 @@ export function LanesPage() {
       // Lane created successfully — record its id so retries skip creation.
       createEnvInitLaneIdRef.current = lane.id;
       setLaneCreated(true);
+
+      if (createSelectedColor) {
+        try {
+          await window.ade.lanes.updateAppearance({ laneId: lane.id, color: createSelectedColor });
+        } catch {
+          // Color collisions or transient errors shouldn't block lane creation.
+        }
+      }
 
       await refreshLanes();
       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
@@ -1264,7 +1672,7 @@ export function LanesPage() {
       setCreateError(err instanceof Error ? err.message : String(err));
       setCreateBusy(false);
     }
-  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates]);
+  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createChildBaseBranch, lanes, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates, createSelectedColor]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -1301,6 +1709,38 @@ export function LanesPage() {
     setManageOpen(true);
   }, [selectLane]);
 
+  const handleCreateDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
+    setAddLaneDropdownOpen(false);
+    prepareCreateDialog();
+    const name = typeof props?.name === "string" ? props.name.trim() : "";
+    if (name) setCreateLaneName(name);
+  }, [prepareCreateDialog]);
+
+  const handleManageDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
+    const requestedLaneId = typeof props?.laneId === "string" ? props.laneId : null;
+    const requested = requestedLaneId ? lanesById.get(requestedLaneId) ?? null : null;
+    const selected = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
+    const fallback = sortedLanes.find((lane) => lane.laneType !== "primary") ?? null;
+    const target =
+      requested && requested.laneType !== "primary"
+        ? requested
+        : selected && selected.laneType !== "primary"
+          ? selected
+          : fallback;
+    if (!target) return;
+    openManageDialog(target.id);
+  }, [lanesById, openManageDialog, selectedLaneId, sortedLanes]);
+
+  useDialogBus("lanes.create", {
+    onOpen: handleCreateDialogBusOpen,
+    onClose: () => handleCreateDialogOpenChange(false),
+  });
+
+  useDialogBus("lanes.manage", {
+    onOpen: handleManageDialogBusOpen,
+    onClose: () => setManageOpen(false),
+  });
+
   /* ---- Pane configs ---- */
 
   const getPaneConfigs = useCallback((laneId: string | null) => {
@@ -1310,6 +1750,8 @@ export function LanesPage() {
         title: "Stack",
         icon: Stack,
         bodyClassName: "overflow-hidden",
+        dataTour: "lanes.stackPane",
+        headerActions: <HelpChip termId="stack" />,
         children: (
           <DeferredLanePane cacheKey={`stack:${laneId ?? "none"}`} label="stack">
             <LaneStackPane
@@ -1325,23 +1767,29 @@ export function LanesPage() {
       "git-actions": {
         title: "Git Actions",
         icon: FileCode,
-        headerActions: laneId ? (
-          <SmartTooltip content={{ label: expandedGitActionsLaneId === laneId ? "Minimize" : "Expand", description: expandedGitActionsLaneId === laneId ? "Minimize the Git Actions pane back to its default size." : "Expand the Git Actions pane to fill the available space." }}>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-5 w-5 p-0"
-              title={expandedGitActionsLaneId === laneId ? "Minimize Git Actions pane" : "Expand Git Actions pane"}
-              onClick={(event) => {
-                event.stopPropagation();
-                setExpandedLaneId(null);
-                setExpandedGitActionsLaneId((prev) => (prev === laneId ? null : laneId));
-              }}
-            >
-              {expandedGitActionsLaneId === laneId ? <ArrowsInSimple size={12} /> : <ArrowsOutSimple size={12} />}
-            </Button>
-          </SmartTooltip>
-        ) : null,
+        dataTour: "lanes.gitActionsPane",
+        headerActions: (
+          <>
+            <HelpChip termId="rebase" />
+            {laneId ? (
+              <SmartTooltip content={{ label: expandedGitActionsLaneId === laneId ? "Minimize" : "Expand", description: expandedGitActionsLaneId === laneId ? "Minimize the Git Actions pane back to its default size." : "Expand the Git Actions pane to fill the available space." }}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 w-5 p-0"
+                  title={expandedGitActionsLaneId === laneId ? "Minimize Git Actions pane" : "Expand Git Actions pane"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setExpandedLaneId(null);
+                    setExpandedGitActionsLaneId((prev) => (prev === laneId ? null : laneId));
+                  }}
+                >
+                  {expandedGitActionsLaneId === laneId ? <ArrowsInSimple size={12} /> : <ArrowsOutSimple size={12} />}
+                </Button>
+              </SmartTooltip>
+            ) : null}
+          </>
+        ),
         bodyClassName: "overflow-hidden",
         children: (
           <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions">
@@ -1366,6 +1814,7 @@ export function LanesPage() {
         title: "Diff",
         icon: FileCode,
         bodyClassName: "overflow-hidden",
+        dataTour: "lanes.diffPane",
         children: (
           <DeferredLanePane cacheKey={`diff:${laneId ?? "none"}`} label="diff">
             <LaneDiffPane
@@ -1381,6 +1830,8 @@ export function LanesPage() {
         title: "Work",
         icon: Terminal as any,
         bodyClassName: "overflow-hidden",
+        dataTour: "lanes.workPane",
+        headerActions: <HelpChip termId="worker" />,
         children: (
           <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
             <LaneWorkPane laneId={laneId} />
@@ -1405,27 +1856,43 @@ export function LanesPage() {
         </div>
 
         {/* Branch selector */}
-        {primaryLane && selectedLaneId === primaryLane.id ? (
-          <div className="relative shrink-0" ref={branchDropdownRef}>
-            <SmartTooltip content={{ label: "Branch Selector", description: "Switch the primary lane to a different local or remote branch." }} side="bottom">
+        {branchLane ? (
+          <div className="relative shrink-0 flex items-center" ref={branchDropdownRef}>
+            <SmartTooltip
+              content={{
+                label: canSwitchBranchLane ? `Branch — ${branchLane.name}` : `Branch — ${branchLane.name} (read-only)`,
+                description: branchLaneSwitchDisabledReason ?? `Switch ${branchLane.name} to a local or remote branch.`,
+                docUrl: docs.lanesOverview,
+              }}
+              side="bottom"
+            >
               <button
                 type="button"
+                data-tour="lanes.branchSelector"
                 style={{
                   display: "inline-flex", alignItems: "center", gap: 8,
                   padding: "0 12px", height: 32, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-                  color: COLORS.success, background: "rgba(255,255,255,0.03)",
-                  border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, cursor: "pointer",
+                  color: canSwitchBranchLane ? COLORS.success : COLORS.textMuted,
+                  background: "rgba(255,255,255,0.03)",
+                  border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8,
+                  cursor: canSwitchBranchLane ? "pointer" : "not-allowed",
+                  opacity: canSwitchBranchLane ? 1 : 0.65,
                 }}
-                onClick={() => setBranchDropdownOpen((prev) => !prev)}
-                disabled={branchCheckoutBusy}
+                onClick={() => {
+                  if (!canSwitchBranchLane) return;
+                  setBranchDropdownOpen((prev) => !prev);
+                }}
+                disabled={branchCheckoutBusy || !canSwitchBranchLane}
+                aria-disabled={!canSwitchBranchLane}
+                title={branchLaneSwitchDisabledReason ?? undefined}
               >
                 <GitBranch size={14} />
-                <span>{currentPrimaryBranch || primaryLane.branchRef}</span>
-                <CaretDown size={12} style={{ opacity: 0.6 }} />
+                <span>{branchLane.branchRef}</span>
+                <CaretDown size={12} style={{ opacity: canSwitchBranchLane ? 0.6 : 0.3 }} />
               </button>
             </SmartTooltip>
-            {branchDropdownOpen ? (
-              <div className="absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-hidden flex flex-col" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
+            {branchDropdownOpen && canSwitchBranchLane ? (
+              <div className="ade-liquid-glass-menu absolute left-0 top-full z-[200] mt-1 max-h-[480px] overflow-hidden flex flex-col" style={{ width: 360, maxWidth: 360, minWidth: 0, padding: "4px 0", border: `1px solid ${COLORS.outlineBorder}`, background: COLORS.cardBgSolid, backdropFilter: "blur(24px) saturate(150%)", WebkitBackdropFilter: "blur(24px) saturate(150%)", boxShadow: "0 24px 56px -20px rgba(0, 0, 0, 0.7)", boxSizing: "border-box" }}>
                 <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
                   <MagnifyingGlass size={13} className="pointer-events-none absolute" style={{ left: 16, top: "50%", transform: "translateY(-50%)", color: COLORS.textDim }} />
                   <input
@@ -1443,9 +1910,160 @@ export function LanesPage() {
                     onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
                   />
                 </div>
+                {newBranchFormOpen ? (
+                  <div style={{ padding: "8px 10px", borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}` }}>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div className="flex items-center justify-between">
+                        <div style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>NEW BRANCH</div>
+                        <button
+                          type="button"
+                          onClick={() => { setNewBranchFormOpen(false); setNewBranchName(""); }}
+                          style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, background: "transparent", border: "none", cursor: "pointer", padding: 0 }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="feature/short-name"
+                        value={newBranchName}
+                        onChange={(e) => setNewBranchName(e.target.value)}
+                        aria-invalid={Boolean(newBranchName.trim()) && !branchNameValidation.ok}
+                        autoFocus
+                        style={{
+                          width: "100%", padding: "6px 8px", fontSize: 12, fontFamily: MONO_FONT,
+                          color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                          border: `1px solid ${
+                            newBranchName.trim() && !branchNameValidation.ok ? COLORS.danger : COLORS.outlineBorder
+                          }`,
+                          borderRadius: 6, outline: "none",
+                        }}
+                      />
+                      {newBranchName.trim() && branchNameValidation.reason ? (
+                        <div style={{ fontSize: 11, color: COLORS.danger }}>{branchNameValidation.reason}</div>
+                      ) : null}
+                      <label className="flex flex-col gap-1" title="Git branch the new branch is forked from.">
+                        <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>START FROM</span>
+                        <select
+                          value={newBranchStartPoint || branchLane.branchRef}
+                          onChange={(e) => setNewBranchStartPoint(e.target.value)}
+                          style={{
+                            width: "100%", minWidth: 0, maxWidth: "100%", height: 30, fontSize: 12, fontFamily: MONO_FONT,
+                            color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                            border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
+                            boxSizing: "border-box", textOverflow: "ellipsis",
+                          }}
+                        >
+                          {startPointOptions.map((opt) => <option key={`start:${opt.value}`} value={opt.value}>{opt.label}</option>)}
+                        </select>
+                        <span style={{ fontSize: 10, color: COLORS.textDim }}>The commit your new branch is forked from.</span>
+                      </label>
+                      <label className="flex flex-col gap-1" title="ADE compares this lane's commits against this base for rebase / merge readiness.">
+                        <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>REBASE BASE</span>
+                        <select
+                          value={newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef}
+                          onChange={(e) => setNewBranchBaseRef(e.target.value)}
+                          style={{
+                            width: "100%", minWidth: 0, maxWidth: "100%", height: 30, fontSize: 12, fontFamily: MONO_FONT,
+                            color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                            border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
+                            boxSizing: "border-box", textOverflow: "ellipsis",
+                          }}
+                        >
+                          {baseRefOptions.map((name) => <option key={`base:${name}`} value={name}>{name}</option>)}
+                        </select>
+                        <span style={{ fontSize: 10, color: COLORS.textDim }}>What ADE compares this lane against for rebase / merge readiness.</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-center gap-2"
+                        style={{
+                          height: 30, border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6,
+                          background: "rgba(255,255,255,0.05)", color: COLORS.textPrimary,
+                          fontSize: 12, fontFamily: SANS_FONT,
+                          cursor: branchNameValidation.ok && !branchCheckoutBusy ? "pointer" : "not-allowed",
+                          opacity: branchNameValidation.ok && !branchCheckoutBusy ? 1 : 0.5,
+                        }}
+                        disabled={branchCheckoutBusy || !branchNameValidation.ok}
+                        onClick={async () => {
+                          await checkoutLaneBranch({
+                            branchName: newBranchName,
+                            mode: "create",
+                            startPoint: newBranchStartPoint || branchLane.branchRef,
+                            baseRef: newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef,
+                          });
+                        }}
+                      >
+                        <Plus size={13} />
+                        <span>Create in this lane</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2"
+                    onClick={() => setNewBranchFormOpen(true)}
+                    style={{
+                      padding: "8px 12px", border: "none",
+                      borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}`,
+                      background: "transparent", color: COLORS.textSecondary,
+                      fontSize: 12, fontFamily: SANS_FONT, cursor: "pointer", textAlign: "left",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <Plus size={13} />
+                    <span>New branch…</span>
+                  </button>
+                )}
+                {pendingBranchSwitch ? (
+                  <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.warning}12` }}>
+                    <div style={{ fontSize: 12, color: COLORS.textPrimary, fontWeight: 600 }}>This lane has active work.</div>
+                    <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>Terminals and processes stay attached to this lane and will keep running on the new branch's worktree.</div>
+                    <div style={{ marginTop: 6, display: "grid", gap: 2 }}>
+                      {pendingBranchSwitch.activeWork.slice(0, 3).map((item) => (
+                        <div key={`${item.kind}:${item.id}`} className="truncate" style={{ fontSize: 11, color: COLORS.textSecondary }}>
+                          {item.kind === "terminal" ? "Terminal" : "Process"}: {item.title}
+                        </div>
+                      ))}
+                      {pendingBranchSwitch.activeWork.length > 3 ? (
+                        <div style={{ fontSize: 11, color: COLORS.textDim }}>+ {pendingBranchSwitch.activeWork.length - 3} more</div>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        style={{
+                          fontSize: 11, padding: "4px 8px", height: 26,
+                          border: `1px solid ${COLORS.warning}`, borderRadius: 6,
+                          background: `${COLORS.warning}25`, color: COLORS.warning,
+                          fontFamily: SANS_FONT, fontWeight: 600, cursor: "pointer",
+                        }}
+                        onClick={async () => {
+                          await checkoutLaneBranch({ ...pendingBranchSwitch, acknowledgeActiveWork: true });
+                        }}
+                      >
+                        Switch anyway
+                      </button>
+                      <button
+                        type="button"
+                        style={{ ...outlineButton({ fontSize: 11, padding: "4px 8px", height: 26 }) }}
+                        onClick={() => setPendingBranchSwitch(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="overflow-auto flex-1" style={{ padding: "2px 0" }}>
+                {laneBranchesLoading && laneBranches.length === 0 ? (
+                  <div style={{ padding: "10px 12px", fontSize: 12, color: COLORS.textMuted }}>Loading branches…</div>
+                ) : null}
                 <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>LOCAL BRANCHES</div>
-                {localPrimaryBranches.map((branch) => (
+                {localLaneBranches.map((branch) => {
+                  const owned = Boolean(branch.ownedByLaneId);
+                  return (
                   <button
                     key={`local:${branch.name}`}
                     type="button"
@@ -1454,47 +2072,62 @@ export function LanesPage() {
                       padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
                       color: branch.isCurrent ? COLORS.success : COLORS.textMuted,
                       fontWeight: branch.isCurrent ? 600 : 400,
-                      background: "transparent", border: "none", cursor: "pointer",
+                      background: "transparent", border: "none",
+                      cursor: branch.isCurrent || owned ? "not-allowed" : "pointer",
+                      opacity: owned ? 0.6 : 1,
                     }}
-                    disabled={branchCheckoutBusy || branch.isCurrent}
+                    disabled={branchCheckoutBusy || branch.isCurrent || owned}
+                    title={owned ? `Already active in ${branch.ownedByLaneName ?? "another lane"}` : undefined}
                     onClick={async () => {
                       if (branch.isCurrent) return;
-                      await checkoutPrimaryBranch(branch.name);
+                      await checkoutLaneBranch({ branchName: branch.name });
                     }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                   >
                     {branch.isCurrent ? <Check size={12} className="shrink-0" /> : <span className="shrink-0" style={{ width: 12 }} />}
                     <span className="truncate">{branch.name}</span>
-                    {branch.upstream ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.textDim }}>tracked</span> : null}
+                    {branch.ownedByLaneName ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.warning }}>in {branch.ownedByLaneName}</span> : null}
+                    {!branch.ownedByLaneName && branch.upstream ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.textDim }}>tracked</span> : null}
                   </button>
-                ))}
-                {remotePrimaryBranches.length > 0 ? (
+                  );
+                })}
+                {remoteLaneBranches.length > 0 ? (
                   <>
                     <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
                     <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>REMOTE BRANCHES</div>
-                    {remotePrimaryBranches.map((branch) => (
+                    {remoteLaneBranches.map((branch) => {
+                      const owned = Boolean(branch.ownedByLaneId);
+                      return (
                       <button
                         key={`remote:${branch.name}`}
                         type="button"
                         className="flex w-full items-center gap-2 text-left"
                         style={{
                           padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
-                          color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer",
+                          color: COLORS.textMuted, background: "transparent", border: "none",
+                          cursor: owned ? "not-allowed" : "pointer",
+                          opacity: owned ? 0.6 : 1,
                         }}
-                        disabled={branchCheckoutBusy}
-                        onClick={async () => { await checkoutPrimaryBranch(branch.name); }}
+                        disabled={branchCheckoutBusy || owned}
+                        title={owned ? `Already active in ${branch.ownedByLaneName ?? "another lane"}` : undefined}
+                        onClick={async () => { await checkoutLaneBranch({ branchName: branch.name }); }}
                         onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
                         onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                       >
                         <span className="shrink-0" style={{ width: 12 }} />
                         <span className="truncate">{branch.name}</span>
-                        <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.info }}>remote</span>
+                        {branch.ownedByLaneName ? (
+                          <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.warning }}>in {branch.ownedByLaneName}</span>
+                        ) : (
+                          <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.info }}>remote</span>
+                        )}
                       </button>
-                    ))}
+                      );
+                    })}
                   </>
                 ) : null}
-                {localPrimaryBranches.length === 0 && remotePrimaryBranches.length === 0 ? (
+                {!laneBranchesLoading && localLaneBranches.length === 0 && remoteLaneBranches.length === 0 ? (
                   <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>{branchSearchQuery ? "No matching branches." : "No branches found."}</div>
                 ) : null}
                 {branchCheckoutError ? (
@@ -1505,7 +2138,7 @@ export function LanesPage() {
             ) : null}
           </div>
         ) : null}
-        {branchCheckoutError && primaryLane && selectedLaneId === primaryLane.id ? (
+        {branchCheckoutError && branchLane && !branchDropdownOpen ? (
           <div className="inline-flex items-center gap-2 shrink-0" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, borderRadius: 8, padding: "4px 8px", fontSize: 12, color: COLORS.danger }}>
             <span>{branchCheckoutError}</span>
             <button
@@ -1524,6 +2157,7 @@ export function LanesPage() {
           <MagnifyingGlass size={14} className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
           <input
             id="lanes-filter-input"
+            data-tour="lanes.filter"
             value={laneFilter}
             onChange={(event) => setLaneFilter(event.target.value)}
             placeholder="FILTER LANES"
@@ -1548,7 +2182,7 @@ export function LanesPage() {
           ) : null}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1 overflow-x-auto pb-0.5">
+        <div data-tour="lanes.statusChips" className="flex shrink-0 items-center gap-1 overflow-x-auto pb-0.5">
           {([
             { key: "all", label: "ALL", color: COLORS.accent, count: laneStatusCounts.all },
             { key: "running", label: "RUNNING", color: COLORS.success, count: laneStatusCounts.running },
@@ -1590,8 +2224,14 @@ export function LanesPage() {
 
         {/* NEW LANE button + dropdown */}
         <div className="relative shrink-0" ref={addLaneDropdownRef}>
-          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane." }}>
-            <button type="button" style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })} disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
+          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane.", docUrl: docs.lanesCreating }}>
+            <button
+              type="button"
+              data-tour="lanes.newLane"
+              style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })}
+              disabled={!canCreateLane}
+              onClick={() => setAddLaneDropdownOpen((prev) => !prev)}
+            >
               <Plus size={12} /> NEW LANE
             </button>
           </SmartTooltip>
@@ -1599,6 +2239,7 @@ export function LanesPage() {
             <div className="absolute left-0 top-full z-[200] mt-2 w-60 rounded-xl p-1 shadow-float" style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}` }}>
               <button
                 type="button"
+                data-tour="lanes.createNewLane"
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
                 onClick={() => {
                   setAddLaneDropdownOpen(false);
@@ -1615,6 +2256,7 @@ export function LanesPage() {
               </button>
               <button
                 type="button"
+                data-tour="lanes.addWorktrees"
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
                 onClick={() => {
                   setAddLaneDropdownOpen(false);
@@ -1638,9 +2280,10 @@ export function LanesPage() {
             className="shrink-0 flex items-center gap-2 rounded-lg border px-2 py-1"
             style={{ borderColor: `${COLORS.info}55`, background: `${COLORS.info}15` }}
           >
-            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same." }}>
+            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same.", docUrl: docs.lanesCreating }}>
               <button
                 type="button"
+                data-tour="lanes.moveToAde"
                 className="inline-flex items-center gap-1"
                 style={{
                   fontFamily: MONO_FONT,
@@ -1691,8 +2334,11 @@ export function LanesPage() {
           <SmartTooltip content={{ label: "Reset Grid", description: "Reset all lane column widths and panel arrangements back to their default layout." }}>
             <button
               type="button"
+              data-tour="lanes.resetGrid"
               title="Reset grid to default layout"
-              onClick={resetGridLayout}
+              onClick={() => {
+                void resetGridLayout(selectedLaneId);
+              }}
               className="inline-flex items-center gap-1 shrink-0"
               style={{
                 fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px",
@@ -1713,7 +2359,12 @@ export function LanesPage() {
       </div>
 
       {/* Lane tabs -- horizontal numbered tab bar */}
-      <div className="flex select-none overflow-x-auto" style={{ background: "rgba(255,255,255,0.01)", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div className="flex items-center select-none overflow-x-auto" style={{ background: "rgba(255,255,255,0.01)", borderBottom: `1px solid ${COLORS.border}` }}>
+        {filteredLanes.length > 0 ? (
+          <div className="flex items-center shrink-0 pl-2">
+            <HelpChip termId="lane" side="bottom" />
+          </div>
+        ) : null}
         {filteredLanes.map((lane, index) => {
           const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;
@@ -1731,13 +2382,15 @@ export function LanesPage() {
             endedCount: 0,
             sessionCount: 0,
           };
-          const rebaseSuggestion = laneSnapshot?.rebaseSuggestion ?? null;
+          const rebaseSuggestion = suppressTourDistractions ? null : laneSnapshot?.rebaseSuggestion ?? null;
           const autoRebaseStatus = laneSnapshot?.autoRebaseStatus ?? null;
+          const devicesOpen = lane.devicesOpen ?? [];
           const tabNumber = String(index + 1).padStart(2, "0");
 
           return (
             <div
               key={lane.id}
+              data-tour={isSelected && !isPrimary ? "lanes.laneTab" : undefined}
               role="button"
               tabIndex={0}
               className="group flex items-center gap-2 cursor-pointer shrink-0"
@@ -1816,20 +2469,33 @@ export function LanesPage() {
 	              </span>
 	              {/* Lane name */}
 	              <span className="truncate" style={{
-                maxWidth: 180,
-                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
-                fontWeight: isSelected ? 600 : 500,
-                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
-              }}>{lane.name}</span>
-              {/* Branch ref pill for primary */}
-              {isPrimary ? (
-                <span style={{
-                  display: "inline-flex", alignItems: "center", padding: "2px 6px",
-                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px",
-                  borderRadius: 6, color: COLORS.accent, background: COLORS.accentSubtle, border: `1px solid ${COLORS.accentBorder}`,
-                }}>{lane.branchRef}</span>
-              ) : null}
-              {/* Behind badge (rebase suggestion) */}
+	                maxWidth: 180,
+	                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
+	                fontWeight: isSelected ? 600 : 500,
+	                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
+	              }}>{lane.name}</span>
+	              {devicesOpen.length > 0 ? (
+	                <span
+	                  style={{
+	                    display: "inline-flex",
+	                    alignItems: "center",
+	                    gap: 4,
+	                    padding: "2px 6px",
+	                    borderRadius: 6,
+	                    fontFamily: MONO_FONT,
+	                    fontSize: 9,
+	                    fontWeight: 700,
+	                    color: COLORS.accent,
+	                    background: COLORS.accentSubtle,
+	                    border: `1px solid ${COLORS.accentBorder}`,
+	                  }}
+	                  title={getDevicePresenceTitle(devicesOpen)}
+	                >
+	                  <UsersThree size={10} weight="bold" />
+	                  {devicesOpen.length}
+	                </span>
+	              ) : null}
+	              {/* Behind badge (rebase suggestion) */}
               {rebaseSuggestion ? (
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,
@@ -1930,17 +2596,11 @@ export function LanesPage() {
       <LaneRebaseBanner
         visibleRebaseSuggestions={visibleRebaseSuggestions}
         visibleAutoRebaseNeedsAttention={visibleAutoRebaseNeedsAttention}
-        showAutoRebaseSettingsHint={showAutoRebaseSettingsHint}
         lanesById={lanesById}
-        rebaseBusyLaneId={rebaseBusyLaneId}
         rebaseSuggestionError={rebaseSuggestionError}
-        onRebaseNowLocal={(laneId) => { void runRebaseFlow(laneId, "local_only"); }}
-        onRebaseAndPush={(laneId) => { void runRebaseFlow(laneId, "local_and_remote"); }}
         onViewRebaseDetails={openRebaseDetails}
         onDismissRebase={(laneId) => { void dismissRebaseSuggestion(laneId); }}
-        onDeferRebase={(laneId, minutes) => { void deferRebaseSuggestion(laneId, minutes); }}
-        onOpenAutoRebaseSettings={openAutoRebaseSettings}
-        onOpenRebaseConflictResolver={openRebaseConflictResolver}
+        onDismissAutoRebase={(laneId) => { void dismissAutoRebaseStatus(laneId); }}
       />
 
       {/* Floating pane tiling layout */}
@@ -1951,17 +2611,27 @@ export function LanesPage() {
               title="No lanes created yet"
               description="Lanes let you work on multiple features in parallel."
             >
-              <Button
-                size="sm"
-                variant="primary"
-                className="mt-3"
-                disabled={!canCreateLane}
-                onClick={() => {
-                  prepareCreateDialog();
-                }}
-              >
-                Create Lane
-              </Button>
+              <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={!canCreateLane}
+                  onClick={() => {
+                    prepareCreateDialog();
+                  }}
+                >
+                  Create Lane
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    void useOnboardingStore.getState().startTour("lanes");
+                  }}
+                >
+                  Take the Lanes tour
+                </Button>
+              </div>
             </EmptyState>
           ) : (
             <EmptyState
@@ -1979,8 +2649,8 @@ export function LanesPage() {
       ) : visibleLaneIds.length === 1 ? (
         <PaneTilingLayout
           key={`lanes:single:${gridResetKey}`}
-          layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${visibleLaneIds[0]}`}
-          tree={LANES_TILING_TREE}
+          layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${visibleLaneIds[0]}`}
+          tree={laneTilingTree}
           panes={getPaneConfigs(visibleLaneIds[0] ?? null)}
           className="flex-1 min-h-0"
         />
@@ -2014,13 +2684,13 @@ export function LanesPage() {
             return (
               <Fragment key={laneId}>
                 <Panel id={`lane-column:${laneId}`} minSize="12%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
-                  <div className="ade-lane-column" style={{ "--lane-accent": LANE_ACCENT_COLORS[index % LANE_ACCENT_COLORS.length] } as React.CSSProperties}>
+                  <div className="ade-lane-column" style={{ "--lane-accent": getLaneAccent(lane, index) } as React.CSSProperties}>
                     <div className="flex items-center gap-1.5 px-2 shrink-0" style={{ height: 22, background: `color-mix(in srgb, var(--lane-accent) 6%, transparent)` }}>
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--lane-accent)", opacity: 0.85 }}>{laneName}</span>
                     </div>
                     <PaneTilingLayout
-                      layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`}
-                      tree={LANES_TILING_TREE}
+                      layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${laneId}`}
+                      tree={laneTilingTree}
                       panes={getPaneConfigs(laneId)}
                       className="flex-1 min-h-0"
                     />
@@ -2059,8 +2729,8 @@ export function LanesPage() {
             </button>
           </div>
           <PaneTilingLayout
-            layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${expandedLaneId}`}
-            tree={LANES_TILING_TREE}
+            layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${expandedLaneId}`}
+            tree={laneTilingTree}
             panes={getPaneConfigs(expandedLaneId)}
             className="flex-1 min-h-0"
           />
@@ -2095,6 +2765,7 @@ export function LanesPage() {
             setActiveLaneIds(allIds);
           }}
           onBatchManage={openBatchManage}
+          onAppearanceChanged={() => refreshLanes().catch(() => {})}
         />
       ) : null}
 
@@ -2104,6 +2775,7 @@ export function LanesPage() {
         onOpenChange={setManageOpen}
         managedLane={managedLane}
         managedLanes={managedLanes}
+        allLanes={lanes}
         deleteMode={deleteMode}
         setDeleteMode={setDeleteMode}
         deleteRemoteName={deleteRemoteName}
@@ -2114,7 +2786,9 @@ export function LanesPage() {
         setDeleteConfirmText={setDeleteConfirmText}
         deletePhrase={deletePhrase}
         laneActionBusy={laneActionBusy}
+        laneActionStatus={laneActionStatus}
         laneActionError={laneActionError}
+        laneActionKind={laneActionKind}
         onAdoptAttached={() => {
           if (!managedLane || managedLane.laneType !== "attached") return;
           reopenAdoptHint();
@@ -2122,6 +2796,7 @@ export function LanesPage() {
         }}
         onArchive={() => { archiveManagedLanes().catch(() => {}); }}
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
+        onAppearanceChanged={() => refreshLanes().catch(() => {})}
       />
 
 
@@ -2140,6 +2815,8 @@ export function LanesPage() {
         setCreateBaseBranch={handleSetCreateBaseBranch}
         createImportBranch={createImportBranch}
         setCreateImportBranch={setCreateImportBranch}
+        createChildBaseBranch={createChildBaseBranch}
+        setCreateChildBaseBranch={setCreateChildBaseBranch}
         createBranches={createBranches}
         lanes={lanes}
         onSubmit={handleCreateSubmit}
@@ -2150,6 +2827,8 @@ export function LanesPage() {
         templates={templates}
         selectedTemplateId={selectedTemplateId}
         setSelectedTemplateId={setSelectedTemplateId}
+        selectedColor={createSelectedColor}
+        setSelectedColor={setCreateSelectedColor}
         onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
         importBranchWarning={
           createMode === "existing" && createImportBranch && primaryLane?.status.dirty

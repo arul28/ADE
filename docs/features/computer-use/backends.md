@@ -8,19 +8,16 @@ Three supported backend styles. ADE's job is to discover them, report their read
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — `getLocalComputerUseCapabilities`, `getGhostDoctorProcessHealth`, `parseGhostDoctorProcessHealth`. CLI detection (`screencapture`, `open`, `swift`, `osascript`).
 - `apps/desktop/src/main/services/computerUse/agentBrowserArtifactAdapter.ts` — `parseAgentBrowserArtifactPayload`, `loadAgentBrowserArtifactPayloadFromFile`. Parses agent-browser output manifests.
 - `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — `getBackendStatus` (emits `ComputerUseBackendStatus`), backend registration, `inferSupportedKindsFromExternalTool`.
-- `apps/desktop/src/main/services/externalMcp/externalMcpService.ts` — tracks external MCP servers (including Ghost OS when configured).
-
 ## Ghost OS
 
-**Transport:** External MCP server (stdio). Added as `command: "ghost", args: ["mcp"]` in ADE-managed MCP.
+**Transport:** external CLI. ADE detects `ghost` on `PATH` and reads `ghost status` / `ghost doctor` for readiness.
 
 **Installation flow:**
 
 1. Install the Ghost OS CLI on the Mac (`brew install ghostwright/ghost-os/ghost` or equivalent).
 2. Run `ghost setup` — grants accessibility permissions, installs local dependencies.
-3. Open ADE Settings > Integrations > External MCP.
-4. Add the Ghost OS server with command `ghost`, args `["mcp"]`.
-5. Return to Settings > Computer Use and verify connected + capable.
+3. Open ADE Settings > Computer Use.
+4. Verify that Ghost OS is ready and capable.
 
 **Readiness detection** (`buildGhostOsCheck`):
 
@@ -29,14 +26,14 @@ Three supported backend styles. ADE's job is to discover them, report their read
   - `"ready"` when `status: ready` matches.
   - `"needs_setup"` when output mentions `ghost setup`, `"run `ghost setup` first"`, `not granted`, or `not configured`.
   - `"unknown"` otherwise.
-- `adeConfigured` — true when an External MCP entry has `command === "ghost"` and args includes `"mcp"`.
+- `adeConfigured` — true when an ADE CLI entry has `command === "ghost"` and args includes `"ade-cli"`.
 - `adeConnected` — true when at least one matching snapshot has `state === "connected"`.
 - `processHealth` — from `ghost doctor` output:
   - `"healthy"` when `[ok] Processes:` matches or when 1 or fewer processes reported.
   - `"stale"` when more than one process is reported (stale instances remaining) or `[FAIL] Processes:` matches.
   - `"unknown"` when the pattern isn't matchable.
 
-**Tool scope:** Ghost OS exposes a large perception + interaction tool set (see `proofObserver.ts` `GHOST_ARTIFACT_TOOLS` for the perception subset ADE auto-ingests). All tools run over MCP — ADE calls them via the external MCP service.
+**Tool scope:** Ghost OS exposes a large perception + interaction tool set (see `proofObserver.ts` `GHOST_ARTIFACT_TOOLS` for the perception subset ADE auto-ingests). All tools run over ADE CLI — ADE calls them via the ADE CLI service.
 
 **Shell-out constraints:**
 
@@ -49,7 +46,7 @@ Three supported backend styles. ADE's job is to discover them, report their read
 
 ## agent-browser
 
-**Transport:** CLI-native. Not an MCP server. Runs externally, produces a manifest or output files, ADE ingests after the fact.
+**Transport:** CLI-native. Not an ADE CLI. Runs externally, produces a manifest or output files, ADE ingests after the fact.
 
 **Installation flow:**
 
@@ -134,7 +131,7 @@ Selection precedence during a run (`buildComputerUseOwnerSnapshot`):
 
 To register a new external backend:
 
-1. Add it to the external MCP server list (if MCP) or define a CLI-detection check.
+1. Add it to the ADE CLI list (if ADE CLI) or define a CLI-detection check.
 2. Extend `buildComputerUseSettingsSnapshot` or the broker's backend enumeration to include it.
 3. Register supported proof kinds — via explicit declaration or by letting `inferSupportedKindsFromExternalTool` match from the tool descriptions.
 4. Update `proofObserver.ts` if the backend's tool names should be auto-observed.
@@ -145,7 +142,7 @@ To register a new external backend:
 
 - **Ghost OS CLI timeouts matter.** A hung `ghost` binary will throttle readiness detection. Keep the 5s / 10s timeouts tight.
 - **`ghost doctor` output format is not stable API.** The `GHOST_DOCTOR_PROCESS_REGEX` parses human-readable output. Ghost OS updates can change this.
-- **agent-browser is not MCP.** Don't treat its tool invocations as MCP calls; the only integration path is payload ingestion.
+- **agent-browser is not ADE CLI.** Don't treat its tool invocations as ADE CLI calls; the only integration path is payload ingestion.
 - **Local fallback is macOS-only.** Other platforms return `blocked_by_capability` across the board. Don't add placeholder Linux/Windows branches — the control plane treats them as blocked.
 - **`swift` vs `osascript`.** The guiInteraction capability prefers Swift if available. AppleScript is the fallback. Both are optional — if neither is present the capability is missing.
 - **Allowed-roots enforcement applies to all path-based ingestion.** Paths from agent-browser must live under `~/.agent-browser` (or the other trusted roots); otherwise `isAllowedExternalArtifactSource` rejects them.

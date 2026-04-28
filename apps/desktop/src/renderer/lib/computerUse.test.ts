@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDefaultComputerUsePolicy, type ComputerUseOwnerSnapshot } from "../../shared/types";
+import type { ComputerUseOwnerSnapshot } from "../../shared/types";
 import {
   buildComputerUseRoutePresets,
   describeComputerUseLinks,
@@ -9,7 +9,6 @@ import {
 function createSnapshot(overrides: Partial<ComputerUseOwnerSnapshot> = {}): ComputerUseOwnerSnapshot {
   return {
     owner: { kind: "mission", id: "mission-1" },
-    policy: createDefaultComputerUsePolicy(),
     backendStatus: {
       backends: [],
       localFallback: {
@@ -23,12 +22,6 @@ function createSnapshot(overrides: Partial<ComputerUseOwnerSnapshot> = {}): Comp
     artifacts: [],
     recentArtifacts: [],
     activity: [],
-    proofCoverage: {
-      requiredKinds: ["screenshot"],
-      presentKinds: [],
-      missingKinds: ["screenshot"],
-    },
-    usingLocalFallback: false,
     ...overrides,
   };
 }
@@ -68,12 +61,11 @@ describe("computerUse renderer helpers", () => {
       },
     ])).toBe("mission:mission-1 • lane:lane-1");
 
-    expect(summarizeComputerUseProof(createSnapshot())).toBe("Missing proof: screenshot");
+    expect(summarizeComputerUseProof(createSnapshot())).toBe("No proof captured yet.");
     expect(summarizeComputerUseProof(createSnapshot({
       artifacts: [{
         id: "artifact-1",
         kind: "screenshot",
-        backendStyle: "external_cli",
         backendName: "agent-browser",
         sourceToolName: null,
         originalType: null,
@@ -89,11 +81,6 @@ describe("computerUse renderer helpers", () => {
         workflowState: "evidence_only",
         reviewNote: null,
       }],
-      proofCoverage: {
-        requiredKinds: ["screenshot"],
-        presentKinds: ["screenshot"],
-        missingKinds: [],
-      },
-    }))).toBe("Proof satisfied: screenshot");
+    }))).toBe("1 retained artifact");
   });
 });

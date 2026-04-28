@@ -19,7 +19,7 @@ background; agents and the user rarely touch the raw store.
 | `apps/desktop/src/main/services/memory/episodicSummaryService.ts` | Post-session episode extraction (what was attempted, what worked, what failed). |
 | `apps/desktop/src/main/services/memory/proceduralLearningService.ts` | Distills repeatable workflows from episodes into Procedures; exports skill files. |
 | `apps/desktop/src/main/services/memory/humanWorkDigestService.ts` | Generates change digests when the user commits outside ADE. |
-| `apps/desktop/src/main/services/memory/compactionFlushService.ts` | Injects a hidden memoryAdd prompt before chat context compaction. |
+| `apps/desktop/src/main/services/memory/compactionFlushPrompt.ts` | `DEFAULT_FLUSH_PROMPT` fed into the Claude SDK `PreCompact` hook so durable findings can be saved before compaction. |
 | `apps/desktop/src/main/services/memory/memoryBriefingService.ts` | Assembles briefings that get injected into agent prompts. |
 | `apps/desktop/src/main/services/memory/memoryFilesService.ts` | Generates `.ade/memory/MEMORY.md` and topic files from promoted memories. |
 | `apps/desktop/src/main/services/memory/memoryRepairService.ts` | Schema migrations and integrity repairs. |

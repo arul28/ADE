@@ -54,9 +54,9 @@ describe("terminalSessionSignals", () => {
       permissionMode: "default",
       claudePermissionMode: "default",
     });
-    expect(parseTrackedCliLaunchConfig("codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write", "codex")).toEqual({
+    expect(parseTrackedCliLaunchConfig("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted", "codex")).toEqual({
       permissionMode: "edit",
-      codexApprovalPolicy: "on-failure",
+      codexApprovalPolicy: "untrusted",
       codexSandbox: "workspace-write",
       codexConfigSource: "flags",
     });
@@ -75,14 +75,53 @@ describe("terminalSessionSignals", () => {
       targetKind: "thread",
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
-    })).toBe("codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume thread-99");
+    })).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "codex",
       targetKind: "thread",
       targetId: null,
       launch: { permissionMode: "full-auto" },
-    })).toBe("codex --no-alt-screen --full-auto resume");
+    })).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume");
+  });
+
+  it("parses codex --full-auto as default permission mode", () => {
+    expect(parseTrackedCliLaunchConfig("codex --no-alt-screen --full-auto", "codex")).toEqual({
+      permissionMode: "default",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
+  });
+
+  it("parses codex plan mode flags", () => {
+    expect(
+      parseTrackedCliLaunchConfig("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request", "codex"),
+    ).toEqual({
+      permissionMode: "plan",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    });
+  });
+
+  it("builds codex resume command with default permission mode", () => {
+    expect(
+      buildTrackedCliResumeCommand({
+        provider: "codex",
+        targetKind: "thread",
+        targetId: null,
+        launch: { permissionMode: "default" },
+      }),
+    ).toBe("codex --no-alt-screen --full-auto resume");
+  });
+
+  it("parses legacy codex approval_policy=untrusted sandbox_mode=read-only as plan", () => {
+    const parsed = parseTrackedCliLaunchConfig(
+      "codex -c approval_policy=untrusted -c sandbox_mode=read-only",
+      "codex",
+    );
+    expect(parsed?.permissionMode).toBe("plan");
   });
 
   it("extracts resume targets from Claude and Codex picker commands", () => {
@@ -98,11 +137,11 @@ describe("terminalSessionSignals", () => {
       provider: "codex",
       targetId: "thread_abc123",
     });
-    expect(parseTrackedCliResumeCommand("codex --no-alt-screen --full-auto resume thread_abc123", "codex")).toEqual({
+    expect(parseTrackedCliResumeCommand("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread_abc123", "codex")).toEqual({
       provider: "codex",
       targetId: "thread_abc123",
     });
-    expect(parseTrackedCliResumeCommand("codex --no-alt-screen --full-auto resume", "codex")).toEqual({
+    expect(parseTrackedCliResumeCommand("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume", "codex")).toEqual({
       provider: "codex",
       targetId: null,
     });

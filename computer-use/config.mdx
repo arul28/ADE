@@ -1,68 +1,72 @@
 ---
 title: "Configuration"
-description: "Proof requirement profiles and troubleshooting common computer use issues in ADE."
+description: "Storage layout, retention, and troubleshooting for ADE proof capture."
 icon: "sliders"
 ---
 
-## Proof Requirements Configuration
+## Storage
 
-Configure which proof kinds are required for different task types in **Settings → Computer Use → Proof Requirements**.
+All captured proofs live under the project's `.ade/` directory:
 
-```yaml
-# Example proof requirement configuration
-proofRequirements:
-  default:
-    - screenshot
-  uiValidation:
-    - screenshot
-    - browser_verification
-  bugFix:
-    - screenshot
-    - browser_trace
-  fullAudit:
-    - screenshot
-    - video_recording
-    - browser_trace
-    - browser_verification
-    - console_logs
+```
+.ade/artifacts/computer-use/
+  <artifact-id>.png
+  <artifact-id>.mp4
+  <artifact-id>.zip
+  ...
 ```
 
-Missions and automations reference these named profiles by key (e.g., `proofProfile: uiValidation`).
+The metadata (kind, owner links, review state, workflow state, notes) is stored in ADE's SQLite database — not in the file itself — so renaming or moving files on disk breaks the link. Use the UI or the `ade proof` CLI to manage proofs; avoid touching the files directly.
+
+---
+
+## Retention
+
+By default, ADE retains all captured proofs until you explicitly dismiss them. There is no automatic expiration. If the `.ade/artifacts/computer-use/` directory grows large:
+
+- Dismissed proofs can be deleted from disk with a confirmation dialog from the Artifacts tab
+- `ade proof list --kind <kind>` helps you identify old proofs of a specific kind
+- For bulk cleanup, delete the row via the UI; the file is removed with it
+
+<Note>
+Proofs linked to closed PRs and completed Linear issues remain on disk until explicitly cleaned up. This is deliberate — it keeps the audit trail intact long after a mission ends.
+</Note>
 
 ---
 
 ## Troubleshooting
 
 <AccordionGroup>
-  <Accordion title="Backend shows 'Disconnected' in Settings" icon="circle-question">
-    1. Confirm the backend process is running. For Ghost OS: check the menu bar icon. For agent-browser: ADE should have launched it automatically.
-    2. Verify the `url` or `command` in `.ade/local.secret.yaml` is correct.
-    3. Check for firewall or security software blocking the connection (Ghost OS uses HTTP locally).
-    4. Restart ADE — the `autoStart: true` flag will attempt to reconnect on startup.
-    5. Open **Settings → Computer Use** and click **Reconnect** to force a reconnection attempt.
+  <Accordion title="`ade proof status` reports 'no backends available'" icon="circle-question">
+    On macOS, `ade proof` needs `screencapture` on `PATH`. Run `which screencapture` in a terminal — it should resolve to `/usr/sbin/screencapture` on a standard install.
+
+    If you are running ADE on Linux or a non-standard shell environment, ensure `screencapture` (or a compatible alternative) is available to the shell `ade` runs inside. The status output tells you which binary it looked for.
   </Accordion>
 
-  <Accordion title="Video recording not available" icon="video-slash">
-    Video recording requires either Ghost OS or agent-browser. ADE Local does not support it. If your mission requires video proof:
-
-    1. Connect Ghost OS or agent-browser (see setup instructions above).
-    2. Set the preferred backend to a capable one in Settings.
-    3. If you must proceed without video, change the mission's proof profile to one that does not require `video_recording`.
-  </Accordion>
-
-  <Accordion title="Proof coverage is low — mission blocked" icon="triangle-exclamation">
-    A `Proof` policy session requires every action to produce an artifact. If coverage is below the required threshold, the session may block.
-
-    1. Review the artifacts already collected in the Artifacts tab — some steps may have artifacts that need to be manually marked `accepted`.
-    2. Re-run specific steps from the mission's execution log to collect missing artifacts.
-    3. If the backend is failing to produce artifacts silently, check the backend's own logs (Ghost OS logs are available from its menu bar icon; agent-browser logs are in **ADE → View → Developer Tools → Console**).
-  </Accordion>
-
-  <Accordion title="Screenshots are blank or corrupted" icon="image">
-    This typically indicates a permissions issue with the macOS Screen Recording permission.
+  <Accordion title="Screenshots are blank or black" icon="image">
+    This is almost always a macOS Screen Recording permission issue.
 
     1. Open **System Settings → Privacy & Security → Screen Recording**.
-    2. Ensure ADE (and Ghost OS if applicable) are listed and enabled.
-    3. Restart ADE after granting permissions — macOS requires a restart of the process for permission changes to take effect.
+    2. Ensure ADE is listed and enabled.
+    3. Quit and relaunch ADE — macOS requires a restart after granting screen recording permission.
+    4. Try `ade proof screenshot` again.
+  </Accordion>
+
+  <Accordion title="`ade proof record` stops after a few seconds" icon="video">
+    `record` uses a built-in macOS capture pipeline with a default cap of 120 seconds. Pass `--seconds <n>` to control duration. For long captures, consider splitting into multiple segments.
+  </Accordion>
+
+  <Accordion title="A proof is not showing up on a PR" icon="code-pull-request">
+    Check that the proof's workflow state is `published` (review states of `accepted` on their own do not publish). In the Mission Artifacts tab, open the proof, click **Publish**, and choose the PR as a target.
+
+    If the PR no longer exists or has been closed, the publish call returns an error in the CLI output. Re-target the proof to a different owner.
+  </Accordion>
+
+  <Accordion title="Ingesting an external trace fails silently" icon="triangle-exclamation">
+    `ade proof ingest` rejects entries that do not have at least one of `path`, `uri`, `text`, or `json`. Confirm your payload has real content — empty inputs are skipped.
+
+    Pass `--verbose` to see the ingestion result line-by-line, including which entries were dropped.
   </Accordion>
 </AccordionGroup>
+</content>
+</invoke>

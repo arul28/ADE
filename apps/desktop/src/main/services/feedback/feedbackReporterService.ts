@@ -7,9 +7,14 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createGithubService } from "../github/githubService";
 import { parseStructuredOutput } from "../ai/utils";
 import type {
+  FeedbackCategory,
+  FeedbackDraftInput,
+  FeedbackGenerationMode,
+  FeedbackPreparedDraft,
+  FeedbackPrepareDraftArgs,
   FeedbackSubmission,
-  FeedbackSubmitArgs,
   FeedbackSubmissionEvent,
+  FeedbackSubmitDraftArgs,
 } from "../../../shared/types/feedback";
 
 const DB_KEY = "feedback:submissions";
@@ -17,24 +22,27 @@ const ALLOWED_LABELS = new Set([
   "bug", "enhancement", "question", "documentation",
   "good first issue", "help wanted", "invalid", "wontfix",
 ]);
-const FEEDBACK_ISSUE_JSON_SCHEMA = {
+const FEEDBACK_METADATA_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
     title: { type: "string" },
-    body: { type: "string" },
     labels: {
       type: "array",
       items: { type: "string" },
     },
   },
-  required: ["title", "body", "labels"],
+  required: ["title", "labels"],
 } as const;
 
-type FeedbackIssueDraft = {
+const DETERMINISTIC_NO_MODEL_WARNING = "ADE used a deterministic draft because no AI model was selected. Review the generated title and labels before posting.";
+const DETERMINISTIC_FORMAT_WARNING = "ADE used a deterministic draft because the AI title and label suggestion did not match the expected structured format.";
+
+type FeedbackMetadataSuggestion = {
   title: string;
-  body: string;
   labels: string[];
+  generationMode: FeedbackGenerationMode;
+  generationWarning: string | null;
 };
 
 function nowIso(): string {
@@ -49,6 +57,10 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function normalizeMultiline(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function clampText(value: string, maxLength: number): string {
   const trimmed = normalizeWhitespace(value);
   if (trimmed.length <= maxLength) return trimmed;
@@ -60,7 +72,7 @@ function titleCaseFirst(value: string): string {
   return value[0]!.toUpperCase() + value.slice(1);
 }
 
-function defaultLabelsForCategory(category: FeedbackSubmission["category"]): string[] {
+function defaultLabelsForCategory(category: FeedbackCategory): string[] {
   switch (category) {
     case "bug":
       return ["bug"];
@@ -72,10 +84,7 @@ function defaultLabelsForCategory(category: FeedbackSubmission["category"]): str
   }
 }
 
-function normalizeLabels(
-  category: FeedbackSubmission["category"],
-  labels: unknown,
-): string[] {
+function normalizeLabels(category: FeedbackCategory, labels: unknown): string[] {
   const normalized = Array.isArray(labels)
     ? labels
       .map((value) => String(value ?? "").trim().toLowerCase())
@@ -85,104 +94,156 @@ function normalizeLabels(
   return Array.from(new Set(combined));
 }
 
-function fallbackTitle(submission: FeedbackSubmission): string {
-  const firstLine = submission.userDescription
-    .split(/\r?\n/)
-    .map((line) => normalizeWhitespace(line))
-    .find((line) => line.length > 0);
-  const candidate = firstLine && firstLine.length > 0
-    ? firstLine
-    : `${submission.category} report`;
-  return titleCaseFirst(clampText(candidate, 90));
+type SectionHeadings = {
+  summary: string;
+  bug: { steps: string; expected: string; actual: string; environment: string };
+  feature: { useCase: string; proposed: string; alternatives: string };
+  question: { context: string; guidance: string };
+  additional: string;
+};
+
+const USER_DESCRIPTION_HEADINGS: SectionHeadings = {
+  summary: "Summary",
+  bug: {
+    steps: "Steps to reproduce",
+    expected: "Expected behavior",
+    actual: "Actual behavior",
+    environment: "Environment",
+  },
+  feature: {
+    useCase: "Use case",
+    proposed: "Proposed solution",
+    alternatives: "Alternatives considered",
+  },
+  question: {
+    context: "Context",
+    guidance: "Expected guidance",
+  },
+  additional: "Additional context",
+};
+
+const ISSUE_BODY_HEADINGS: SectionHeadings = {
+  summary: "Description",
+  bug: {
+    steps: "Steps to Reproduce",
+    expected: "Expected Behavior",
+    actual: "Actual Behavior",
+    environment: "Environment",
+  },
+  feature: {
+    useCase: "Use Case",
+    proposed: "Proposed Solution",
+    alternatives: "Alternatives Considered",
+  },
+  question: {
+    context: "Context",
+    guidance: "Expected Guidance",
+  },
+  additional: "Additional Context",
+};
+
+function appendSection(lines: string[], heading: string, value: string): void {
+  lines.push(`## ${heading}`, "", value.length > 0 ? value : "Not provided.", "");
 }
 
-function fallbackBody(submission: FeedbackSubmission): string {
-  const description = submission.userDescription.trim();
-  switch (submission.category) {
+function normalizeDraftInput(input: FeedbackDraftInput): FeedbackDraftInput {
+  const summary = normalizeMultiline(input.summary);
+  const additionalContext = normalizeMultiline(input.additionalContext);
+  switch (input.category) {
     case "bug":
-      return [
-        "## Description",
-        "",
-        description,
-        "",
-        "## Steps to Reproduce",
-        "",
-        "Not provided.",
-        "",
-        "## Expected Behavior",
-        "",
-        "Not provided.",
-        "",
-        "## Actual Behavior",
-        "",
-        "Not provided.",
-        "",
-        "## Environment",
-        "",
-        "- App: ADE Desktop",
-        `- Model: ${submission.modelId}`,
-      ].join("\n");
-    case "question":
-      return [
-        "## Description",
-        "",
-        description,
-        "",
-        "## Context",
-        "",
-        "Not provided.",
-        "",
-        "## Expected Guidance",
-        "",
-        "Not provided.",
-      ].join("\n");
+      return {
+        category: "bug",
+        summary,
+        stepsToReproduce: normalizeMultiline(input.stepsToReproduce),
+        expectedBehavior: normalizeMultiline(input.expectedBehavior),
+        actualBehavior: normalizeMultiline(input.actualBehavior),
+        environment: normalizeMultiline(input.environment),
+        additionalContext,
+      };
     case "feature":
     case "enhancement":
-      return [
-        "## Description",
-        "",
-        description,
-        "",
-        "## Use Case",
-        "",
-        "Not provided.",
-        "",
-        "## Proposed Solution",
-        "",
-        "Not provided.",
-        "",
-        "## Alternatives Considered",
-        "",
-        "Not provided.",
-      ].join("\n");
+      return {
+        category: input.category,
+        summary,
+        useCase: normalizeMultiline(input.useCase),
+        proposedSolution: normalizeMultiline(input.proposedSolution),
+        alternativesConsidered: normalizeMultiline(input.alternativesConsidered),
+        additionalContext,
+      };
+    case "question":
+      return {
+        category: "question",
+        summary,
+        context: normalizeMultiline(input.context),
+        expectedGuidance: normalizeMultiline(input.expectedGuidance),
+        additionalContext,
+      };
   }
 }
 
-function normalizeIssueDraft(
-  submission: FeedbackSubmission,
-  structuredOutput: unknown,
-): { draft: FeedbackIssueDraft; usedFallback: boolean } {
-  const candidate = isRecord(structuredOutput) ? structuredOutput : null;
-  const title =
-    typeof candidate?.title === "string" && candidate.title.trim().length > 0
-      ? candidate.title.trim()
-      : fallbackTitle(submission);
-  const body =
-    typeof candidate?.body === "string" && candidate.body.trim().length > 0
-      ? candidate.body.trim()
-      : fallbackBody(submission);
-  const labels = normalizeLabels(submission.category, candidate?.labels);
-  const usedFallback = candidate == null
-    || title === fallbackTitle(submission)
-    || body === fallbackBody(submission);
+function renderSections(input: FeedbackDraftInput, headings: SectionHeadings): string {
+  const lines: string[] = [];
+  appendSection(lines, headings.summary, input.summary);
+  switch (input.category) {
+    case "bug":
+      appendSection(lines, headings.bug.steps, normalizeMultiline(input.stepsToReproduce));
+      appendSection(lines, headings.bug.expected, normalizeMultiline(input.expectedBehavior));
+      appendSection(lines, headings.bug.actual, normalizeMultiline(input.actualBehavior));
+      appendSection(lines, headings.bug.environment, normalizeMultiline(input.environment));
+      break;
+    case "feature":
+    case "enhancement":
+      appendSection(lines, headings.feature.useCase, normalizeMultiline(input.useCase));
+      appendSection(lines, headings.feature.proposed, normalizeMultiline(input.proposedSolution));
+      appendSection(lines, headings.feature.alternatives, normalizeMultiline(input.alternativesConsidered));
+      break;
+    case "question":
+      appendSection(lines, headings.question.context, normalizeMultiline(input.context));
+      appendSection(lines, headings.question.guidance, normalizeMultiline(input.expectedGuidance));
+      break;
+  }
+  const additional = normalizeMultiline(input.additionalContext);
+  if (additional.length > 0) {
+    appendSection(lines, headings.additional, additional);
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines.join("\n");
+}
 
+function buildUserDescription(input: FeedbackDraftInput): string {
+  return renderSections(input, USER_DESCRIPTION_HEADINGS);
+}
+
+function buildIssueBody(input: FeedbackDraftInput): string {
+  return renderSections(input, ISSUE_BODY_HEADINGS);
+}
+
+function fallbackTitleForInput(input: FeedbackDraftInput): string {
+  const candidate = input.summary.length > 0 ? input.summary : `${input.category} report`;
+  return titleCaseFirst(clampText(candidate, 90));
+}
+
+function normalizeGenerationWarning(value: unknown): string | null {
+  const warning = typeof value === "string" ? value.trim() : "";
+  return warning.length > 0 ? warning : null;
+}
+
+function normalizeGenerationMode(value: unknown): FeedbackGenerationMode | null {
+  if (value === "ai_assisted" || value === "deterministic") return value;
+  if (value === "ai_structured") return "ai_assisted";
+  if (value === "fallback_template") return "deterministic";
+  return null;
+}
+
+function normalizeStoredSubmission(submission: FeedbackSubmission): FeedbackSubmission {
   return {
-    draft: {
-      title,
-      body,
-      labels,
-    },
-    usedFallback,
+    ...submission,
+    modelId: pickTrimmed(submission.modelId),
+    reasoningEffort: submission.reasoningEffort ?? null,
+    generationMode: normalizeGenerationMode(submission.generationMode),
+    generationWarning: normalizeGenerationWarning(submission.generationWarning),
   };
 }
 
@@ -196,41 +257,84 @@ function emitUpdate(submission: FeedbackSubmission): void {
   }
 }
 
-const SYSTEM_PROMPT_BUG = `You are a GitHub issue writer for the ADE open-source project (github.com/arul28/ADE).
-The user is reporting a bug. Generate a well-structured GitHub issue.
+const METADATA_SYSTEM_PROMPT = `You help convert structured ADE feedback into GitHub issue metadata.
 
-Use this format:
-- Title: a concise summary of the bug
-- Body (GitHub-flavored markdown):
-  ## Description
-  ## Steps to Reproduce
-  ## Expected Behavior
-  ## Actual Behavior
-  ## Environment
+Return ONLY valid JSON with:
+- title: a concise GitHub issue title
+- labels: an array of allowed GitHub labels
 
-Apply appropriate labels from: bug, enhancement, question, documentation, good first issue, help wanted, invalid, wontfix.
-For bug reports, always include the "bug" label.
+Allowed labels: bug, enhancement, question, documentation, good first issue, help wanted, invalid, wontfix.
+Use only details present in the provided structured fields and deterministic issue body. Do not invent missing sections or behavior.`;
 
-Respond with ONLY valid JSON (no markdown fences): { "title": string, "body": string, "labels": string[] }`;
+function buildMetadataPrompt(input: FeedbackDraftInput, body: string): string {
+  return [
+    `Category: ${input.category}`,
+    "",
+    "Structured input:",
+    JSON.stringify(input, null, 2),
+    "",
+    "Deterministic issue body:",
+    body,
+    "",
+    "Suggest the best title and labels for this issue.",
+  ].join("\n");
+}
 
-const SYSTEM_PROMPT_FEATURE = `You are a GitHub issue writer for the ADE open-source project (github.com/arul28/ADE).
-The user is requesting a feature or enhancement. Generate a well-structured GitHub issue.
+function normalizeMetadataSuggestion(
+  category: FeedbackCategory,
+  fallbackTitle: string,
+  structuredOutput: unknown,
+): FeedbackMetadataSuggestion {
+  const candidate = isRecord(structuredOutput) ? structuredOutput : null;
+  const aiTitle = typeof candidate?.title === "string" ? candidate.title.trim() : "";
+  if (aiTitle.length === 0) {
+    return {
+      title: fallbackTitle,
+      labels: defaultLabelsForCategory(category),
+      generationMode: "deterministic",
+      generationWarning: DETERMINISTIC_FORMAT_WARNING,
+    };
+  }
+  return {
+    title: aiTitle,
+    labels: normalizeLabels(category, candidate?.labels),
+    generationMode: "ai_assisted",
+    generationWarning: null,
+  };
+}
 
-Use this format:
-- Title: a concise summary of the request
-- Body (GitHub-flavored markdown):
-  ## Description
-  ## Use Case
-  ## Proposed Solution
-  ## Alternatives Considered
+function pickTrimmed(...candidates: (string | null | undefined)[]): string | null {
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const trimmed = candidate.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return null;
+}
 
-Apply appropriate labels from: bug, enhancement, question, documentation, good first issue, help wanted, invalid, wontfix.
-For features use "enhancement". For questions use "question".
-
-Respond with ONLY valid JSON (no markdown fences): { "title": string, "body": string, "labels": string[] }`;
-
-function systemPromptForCategory(category: FeedbackSubmission["category"]): string {
-  return category === "bug" ? SYSTEM_PROMPT_BUG : SYSTEM_PROMPT_FEATURE;
+function normalizePreparedDraft(
+  draft: FeedbackPreparedDraft,
+  overrides?: { title?: string; body?: string; labels?: string[] },
+): FeedbackPreparedDraft {
+  const draftInput = normalizeDraftInput(draft.draftInput);
+  const category = draftInput.category;
+  const fallbackTitle = fallbackTitleForInput(draftInput);
+  const userDescription = pickTrimmed(draft.userDescription) ?? buildUserDescription(draftInput);
+  const title = pickTrimmed(overrides?.title, draft.title) ?? fallbackTitle;
+  const body = pickTrimmed(overrides?.body, draft.body) ?? buildIssueBody(draftInput);
+  const labels = normalizeLabels(category, overrides?.labels ?? draft.labels);
+  return {
+    category,
+    draftInput,
+    userDescription,
+    modelId: pickTrimmed(draft.modelId),
+    reasoningEffort: draft.reasoningEffort ?? null,
+    title,
+    body,
+    labels,
+    generationMode: normalizeGenerationMode(draft.generationMode) ?? "deterministic",
+    generationWarning: normalizeGenerationWarning(draft.generationWarning),
+  };
 }
 
 export function createFeedbackReporterService({
@@ -247,12 +351,12 @@ export function createFeedbackReporterService({
   githubService: ReturnType<typeof createGithubService>;
 }) {
   function loadAll(): FeedbackSubmission[] {
-    return db.getJson<FeedbackSubmission[]>(DB_KEY) ?? [];
+    return (db.getJson<FeedbackSubmission[]>(DB_KEY) ?? []).map(normalizeStoredSubmission);
   }
 
   function save(submission: FeedbackSubmission): void {
     const all = loadAll();
-    const idx = all.findIndex((s) => s.id === submission.id);
+    const idx = all.findIndex((entry) => entry.id === submission.id);
     if (idx >= 0) {
       all[idx] = submission;
     } else {
@@ -261,120 +365,93 @@ export function createFeedbackReporterService({
     db.setJson(DB_KEY, all);
   }
 
-  async function runSubmission(submission: FeedbackSubmission): Promise<void> {
-    try {
-      // -- Generate --
-      submission.status = "generating";
-      save(submission);
-      emitUpdate(submission);
+  async function prepareDraft(args: FeedbackPrepareDraftArgs): Promise<FeedbackPreparedDraft> {
+    const draftInput = normalizeDraftInput(args.draftInput);
+    const category = draftInput.category;
+    const body = buildIssueBody(draftInput);
+    const userDescription = buildUserDescription(draftInput);
+    const fallbackTitle = fallbackTitleForInput(draftInput);
+    const modelId = pickTrimmed(args.modelId);
+    const reasoningEffort = args.reasoningEffort ?? null;
 
-      let normalizedDraft: FeedbackIssueDraft;
+    let title = fallbackTitle;
+    let labels = defaultLabelsForCategory(category);
+    let generationMode: FeedbackGenerationMode = "deterministic";
+    let generationWarning: string | null = modelId ? DETERMINISTIC_FORMAT_WARNING : DETERMINISTIC_NO_MODEL_WARNING;
+
+    if (modelId) {
       try {
         const result = await aiIntegrationService.executeTask({
           feature: "pr_descriptions",
           taskType: "pr_description",
-          prompt: `Category: ${submission.category}\n\nUser description:\n${submission.userDescription}`,
-          systemPrompt: systemPromptForCategory(submission.category),
+          prompt: buildMetadataPrompt(draftInput, body),
+          systemPrompt: METADATA_SYSTEM_PROMPT,
           cwd: projectRoot,
-          model: submission.modelId,
-          jsonSchema: FEEDBACK_ISSUE_JSON_SCHEMA,
+          model: modelId,
+          jsonSchema: FEEDBACK_METADATA_JSON_SCHEMA,
           permissionMode: "read-only",
           oneShot: true,
-          timeoutMs: 300_000,
-          ...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
+          timeoutMs: 120_000,
+          ...(reasoningEffort ? { reasoningEffort } : {}),
         });
-
-        const structuredCandidate = result.structuredOutput ?? parseStructuredOutput(result.text);
-        const normalized = normalizeIssueDraft(submission, structuredCandidate);
-        normalizedDraft = normalized.draft;
-
-        if (normalized.usedFallback) {
-          logger.warn("feedback.generated_with_fallback", {
-            id: submission.id,
-            category: submission.category,
-            modelId: submission.modelId,
+        const suggestion = normalizeMetadataSuggestion(
+          category,
+          fallbackTitle,
+          result.structuredOutput ?? parseStructuredOutput(result.text),
+        );
+        title = suggestion.title;
+        labels = suggestion.labels;
+        generationMode = suggestion.generationMode;
+        generationWarning = suggestion.generationWarning;
+        if (suggestion.generationMode === "deterministic") {
+          logger.warn("feedback.draft_generated_deterministically", {
+            category,
+            modelId,
           });
         }
-
-        submission.generatedTitle = normalized.draft.title;
-        submission.generatedBody = normalized.draft.body;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
-        logger.warn("feedback.generation_failed_using_fallback", {
-          id: submission.id,
-          category: submission.category,
-          modelId: submission.modelId,
+        logger.warn("feedback.draft_ai_failed_using_deterministic", {
+          category,
+          modelId,
           error: message,
         });
-        normalizedDraft = {
-          title: fallbackTitle(submission),
-          body: fallbackBody(submission),
-          labels: defaultLabelsForCategory(submission.category),
-        };
-        submission.generatedTitle = normalizedDraft.title;
-        submission.generatedBody = normalizedDraft.body;
+        generationWarning = `ADE used a deterministic draft because AI title and label suggestion failed: ${message}`;
       }
-
-      // -- Post to GitHub --
-      submission.status = "posting";
-      save(submission);
-      emitUpdate(submission);
-
-      try {
-        const { data } = await githubService.apiRequest<{
-          html_url: string;
-          number: number;
-        }>({
-          method: "POST",
-          path: "/repos/arul28/ADE/issues",
-          body: {
-            title: normalizedDraft.title,
-            body: normalizedDraft.body,
-            labels: normalizedDraft.labels,
-          },
-        });
-
-        submission.issueUrl = data.html_url;
-        submission.issueNumber = data.number;
-        submission.issueState = "open";
-        submission.status = "posted";
-        submission.completedAt = nowIso();
-        save(submission);
-        emitUpdate(submission);
-
-        logger.info("feedback.posted", {
-          id: submission.id,
-          issueNumber: data.number,
-        });
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Posting failed: ${message}`);
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      submission.status = "failed";
-      submission.error = message;
-      submission.completedAt = nowIso();
-      save(submission);
-      emitUpdate(submission);
-
-      logger.error("feedback.failed", {
-        id: submission.id,
-        error: message,
-      });
     }
+
+    return {
+      category,
+      draftInput,
+      userDescription,
+      modelId,
+      reasoningEffort,
+      title,
+      body,
+      labels,
+      generationMode,
+      generationWarning,
+    };
   }
 
-  function submit(args: FeedbackSubmitArgs): FeedbackSubmission {
+  async function submitPreparedDraft(args: FeedbackSubmitDraftArgs): Promise<FeedbackSubmission> {
+    const prepared = normalizePreparedDraft(args.draft, {
+      title: args.title,
+      body: args.body,
+      labels: args.labels,
+    });
+
     const submission: FeedbackSubmission = {
       id: randomUUID(),
-      category: args.category,
-      userDescription: args.userDescription,
-      modelId: args.modelId,
-      reasoningEffort: args.reasoningEffort ?? null,
-      status: "pending",
-      generatedTitle: null,
-      generatedBody: null,
+      category: prepared.category,
+      userDescription: prepared.userDescription,
+      modelId: prepared.modelId,
+      reasoningEffort: prepared.reasoningEffort ?? null,
+      status: "posting",
+      generationMode: prepared.generationMode,
+      generationWarning: prepared.generationWarning,
+      generatedTitle: prepared.title,
+      generatedBody: prepared.body,
       issueUrl: null,
       issueNumber: null,
       issueState: null,
@@ -386,10 +463,45 @@ export function createFeedbackReporterService({
     save(submission);
     emitUpdate(submission);
 
-    // Run generation + posting in the background
-    runSubmission(submission).catch(() => {
-      // Error already handled inside runSubmission
-    });
+    try {
+      const { data } = await githubService.apiRequest<{
+        html_url: string;
+        number: number;
+      }>({
+        method: "POST",
+        path: "/repos/arul28/ADE/issues",
+        body: {
+          title: prepared.title,
+          body: prepared.body,
+          labels: prepared.labels,
+        },
+      });
+
+      submission.issueUrl = data.html_url;
+      submission.issueNumber = data.number;
+      submission.issueState = "open";
+      submission.status = "posted";
+      submission.completedAt = nowIso();
+      save(submission);
+      emitUpdate(submission);
+
+      logger.info("feedback.posted", {
+        id: submission.id,
+        issueNumber: data.number,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      submission.status = "failed";
+      submission.error = `Posting failed: ${message}`;
+      submission.completedAt = nowIso();
+      save(submission);
+      emitUpdate(submission);
+
+      logger.error("feedback.failed", {
+        id: submission.id,
+        error: submission.error,
+      });
+    }
 
     return submission;
   }
@@ -400,5 +512,9 @@ export function createFeedbackReporterService({
     );
   }
 
-  return { submit, list };
+  return {
+    prepareDraft,
+    submitPreparedDraft,
+    list,
+  };
 }

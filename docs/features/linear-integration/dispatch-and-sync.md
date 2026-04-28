@@ -58,13 +58,17 @@ returns:
 - `processIssueUpdate(issueId)` — single-issue hot path used by
   ingress. Fetches, merges `previousState*` from the prior snapshot,
   calls `routingService` via `processIssueSnapshot`, then
-  `advanceRuns(policy)`.
+  `advanceRuns(policy)`. When a reconciliation pass is already in
+  flight, the issue id is deferred into `pendingIssueIds` and drained
+  at the end of the current pass by `replayPendingIssues` — so two
+  webhooks arriving during one reconciliation still both apply
+  without overlapping sync runs.
 - `getDashboard()` — returns `LinearSyncDashboard` for the UI.
 - `listQueue({ limit })` — `LinearSyncQueueItem[]` for the queue
   dashboard.
 - `resolveQueueItem(args)` — accepts a `LinearSyncResolutionAction`
   (`approve`, `reject`, `retry`, `resume`, `cancel`, plus
-  `employeeOverride`) from the UI or MCP tool.
+  `employeeOverride`) from the UI or ADE CLI action.
 - `getRunDetail(args)` — full `LinearWorkflowRunDetail` (run, steps,
   events, sync events).
 - `dispose()` — clears reconciliation timer, drops retry queue.
@@ -72,7 +76,7 @@ returns:
 The timer self-starts if `autoStart !== false` and
 `hasCredentials?.() === true` at creation. The headless path in
 `createHeadlessLinearServices()` passes `autoStart: false` because the
-MCP server drives sync through explicit JSON-RPC calls, and the
+ADE CLI drives sync through explicit JSON-RPC calls, and the
 ingress service calls `processIssueUpdate` directly when events arrive.
 
 Sync state (`enabled`, `running`, `lastPollAt`, `lastError`,
@@ -213,7 +217,7 @@ worker id, slug, name, or one of the Linear identity aliases), the run
 does **not** fail; it enters `awaiting_delegation` and emits a
 `run.awaiting_delegation` event. Operators resolve it via the
 `LinearSyncPanel` delegation dropdown or the
-`resolveLinearSyncQueueItem` MCP tool, passing `employeeOverride` to
+`resolveLinearSyncQueueItem` ADE CLI action, passing `employeeOverride` to
 pick a specific identity.
 
 ### Retry, concurrency, dedup
@@ -312,7 +316,7 @@ Two paths:
 - Ingress status becomes `status: "ready"` once events flow, `"error"`
   with `lastError` populated when HMAC verification or network fails.
 
-## IPC and MCP surface
+## IPC and ADE CLI surface
 
 Desktop IPC (renderer → main), from `apps/desktop/src/shared/ipc.ts`:
 
@@ -329,7 +333,7 @@ Desktop IPC (renderer → main), from `apps/desktop/src/shared/ipc.ts`:
   `ctoEnsureLinearWebhook`
 - Broadcast: `ctoLinearWorkflowEvent` (main → renderer)
 
-MCP tool surface from `apps/mcp-server/src/mcpServer.ts`:
+ADE CLI action surface from `apps/ade-cli/src/adeRpcServer.ts`:
 
 - `listLinearWorkflows`, `getLinearRunStatus`, `resolveLinearRunAction`,
   `cancelLinearRun`, `routeLinearIssueToCto`,
@@ -356,9 +360,9 @@ MCP tool surface from `apps/mcp-server/src/mcpServer.ts`:
   webhook arrives with an identical `_snapshotHash`, routing is
   skipped. Force a re-route by calling `runSyncNow` or by clearing the
   snapshot row.
-- **Worker targets are not supported in headless MCP mode.** The
+- **Worker targets are not supported in headless ADE CLI mode.** The
   headless `workerHeartbeatService` always returns
-  `status: "failed"` with the message *"Headless MCP mode does not
+  `status: "failed"` with the message *"Headless ADE CLI mode does not
   support worker-backed Linear targets yet."* Design headless
   workflows around `mission`, `employee_session`, or `pr_resolution`
   targets.

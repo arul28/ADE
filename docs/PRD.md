@@ -33,7 +33,6 @@ ADE is the control plane. It does not execute browser automation or computer-use
 | Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
 | Runtime | Per-lane process pool + env + ports + proxy + diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
 | Session | PTY-backed terminal session pinned to a lane. | [terminals-and-sessions/README.md](./features/terminals-and-sessions/README.md) |
-| Context pack | Canonical `.ade/context/*.ade.md` docs generated from repo state. | [context-packs/README.md](./features/context-packs/README.md) |
 | Memory | Structured, searchable, compaction-aware knowledge entries. | [memory/README.md](./features/memory/README.md) |
 | Proof | Normalized computer-use artifact (screenshot, recording, network log). | [computer-use/artifact-broker.md](./features/computer-use/artifact-broker.md) |
 
@@ -44,14 +43,14 @@ ADE is the control plane. It does not execute browser automation or computer-use
 ### Work execution
 
 - [**Lanes**](./features/lanes/README.md) — Worktree isolation, stacking, runtime, OAuth redirect, diagnostics. Each lane is a sandbox. Stacks are dependency chains. Runtime covers ports, env, proxy, processes.
-- [**Pull Requests**](./features/pull-requests/README.md) — Stacked PRs, merge queue, conflict simulation. Backed by lanes; dependencies rebase automatically.
+- [**Pull Requests**](./features/pull-requests/README.md) — Stacked PRs, merge queue, conflict simulation, integration merge plans, and merge-into-lane workflows. Backed by lanes; dependencies rebase automatically.
 - [**Conflicts**](./features/conflicts/README.md) — Pre-flight detection (full pairwise matrix up to 15 lanes, prefilter above), live simulation via `git merge-tree`, AI-assisted resolution, external CLI resolver flow.
 - [**Workspace Graph**](./features/workspace-graph/README.md) — React Flow canvas projecting lanes/PRs/conflicts/sessions into a single view. Staged hydration (topology first, then activity/risk/sync).
 
 ### Agents and chat
 
 - [**Agents**](./features/agents/README.md) — Three surfaces: chat, CTO operator, workers. Identity, capability modes, tool tiers, heartbeats.
-- [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, tool system (universal/workflow/coordinator), agent routing, composer + derived panels.
+- [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, tool system (universal/workflow/coordinator), agent routing, composer + derived panels, and parallel multi-model lane launch.
 - [**Memory**](./features/memory/README.md) — Unified SQLite + FTS + embeddings. Write gate, compaction, procedural learning, daily sweep, hybrid retrieval (BM25+cosine+MMR).
 - [**History**](./features/history/README.md) — Operations timeline + chat transcripts + exports. Every service follows the same `runTrackedOperation` recording pattern.
 
@@ -63,7 +62,7 @@ ADE is the control plane. It does not execute browser automation or computer-use
 
 ### Workspace surfaces
 
-- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, process services (all rewritten on current branch — fragile). AI-title pipeline, resume backfill, stale reconciliation.
+- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, and managed-process services. Multi-run process lifecycle keyed by `runId`, AI-title pipeline, lazy resume-target hydration, stale reconciliation.
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
 - [**Project Home**](./features/project-home/README.md) — Combined welcome + per-lane runtime dashboard. Loads lane-independent metadata vs lane runtime separately.
 - [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 8-tab settings, configuration schema with trust model.
@@ -72,7 +71,6 @@ ADE is the control plane. It does not execute browser automation or computer-use
 
 - [**Linear Integration**](./features/linear-integration/README.md) — Webhook + relay + reconciliation. Workflow presets, target types (mission/session/worker/PR), bidirectional sync.
 - [**Computer Use**](./features/computer-use/README.md) — Control plane for Ghost OS, agent-browser, ADE local backends. Canonical artifact model, ownership-linked storage.
-- [**Context Packs**](./features/context-packs/README.md) — Three notions: canonical docs, live exports, persisted packs. Event-driven regeneration with seven refresh events.
 - [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation). Host/controller model. WebSocket envelope. Remote commands.
 
 ---
@@ -83,7 +81,7 @@ For the system-wide picture — apps, processes, data plane, IPC, security, buil
 
 Quick pointers:
 
-- **Apps**: `apps/desktop/` (Electron main + preload + renderer), `apps/mcp-server/` (headless MCP tool server), `apps/web/` (marketing), `apps/ios/` (companion).
+- **Apps**: `apps/desktop/` (Electron main + preload + renderer), `apps/ade-cli/` (headless ADE CLI action server), `apps/web/` (marketing), `apps/ios/` (companion).
 - **Main-process services**: `apps/desktop/src/main/services/<domain>/` — one directory per capability.
 - **Renderer components**: `apps/desktop/src/renderer/components/<feature>/`.
 - **Shared types + IPC contract**: `apps/desktop/src/shared/`.

@@ -121,11 +121,11 @@ avoid ADE watching its own transcripts and cache:
 
 - `.ade/artifacts/`
 - `.ade/cache/`
-- `.ade/mcp-configs/`
+- `.ade/agent-configs/`
 - `.ade/secrets/`
 - `.ade/transcripts/`
 - `.ade/ade.db` (and SQLite's `-wal`/`-shm` sidecars via prefix match)
-- `.ade/mcp.sock`
+- `.ade/ade.sock`
 
 These are defined in `VOLATILE_ADE_PREFIXES` and
 `VOLATILE_ADE_EXACT_PATHS`.
@@ -212,7 +212,7 @@ All registered in `registerIpc.ts`:
 
 `onLaneWorktreeMutation` is an optional callback passed to
 `createFileService`. It fires when the user mutates a lane worktree
-so other services (lane manager, context doc generator) can invalidate
+so other services (lane manager, search index, and editor surfaces) can invalidate
 their caches.
 
 ## Gotchas

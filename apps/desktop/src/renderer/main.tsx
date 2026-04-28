@@ -2,11 +2,46 @@ import "./browserMock"; // Must be first — stubs window.ade when outside Elect
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
+import jetbrainsMonoUrl from "../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url";
+import geistVariableUrl from "../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2?url";
+import geistMonoVariableUrl from "../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2?url";
 import { App } from "./components/app/App";
 import { RendererErrorBoundary } from "./components/app/RendererErrorBoundary";
 import { logRendererDebugEvent } from "./lib/debugLog";
 
-const RootWrapper = (window as any).__adeBrowserMock ? React.StrictMode : React.Fragment;
+(function injectFontFaces() {
+  const style = document.createElement("style");
+  style.dataset.adeFonts = "true";
+  style.textContent = `
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('${jetbrainsMonoUrl}') format('woff2');
+      font-weight: 100 800;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Geist';
+      src: url('${geistVariableUrl}') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Geist Mono';
+      src: url('${geistMonoVariableUrl}') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+  `;
+  document.head.appendChild(style);
+})();
+
+// Vite/embedded browser: StrictMode double-invokes the graph (and other) mount
+// effects and clears graph session state, so the canvas flashes then empties. Electron
+// is already on Fragment; match that for the out-of-Electron dev preview.
+const RootWrapper = React.Fragment;
 
 function readRendererMemory() {
   const perf = performance as Performance & {
@@ -46,6 +81,17 @@ window.addEventListener("error", (event) => {
 
 window.addEventListener("unhandledrejection", (event) => {
   const reason = event.reason;
+  // Vite 6+ module-runner HMR can race: `send`/`invoke` run before the WS transport
+  // reports connected (notably on heavy routes e.g. /files + Monaco). Harmless in dev.
+  if (
+    import.meta.env.DEV
+    && reason instanceof Error
+    && (reason.message === "send was called before connect"
+      || reason.message === "invoke was called before connect")
+  ) {
+    event.preventDefault();
+    return;
+  }
   logRendererDebugEvent("renderer.unhandled_rejection", {
     reason: reason instanceof Error ? reason.message : String(reason),
     stack: reason instanceof Error ? reason.stack ?? null : null,

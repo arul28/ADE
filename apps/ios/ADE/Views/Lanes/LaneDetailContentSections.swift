@@ -1,34 +1,39 @@
 import SwiftUI
 
-// MARK: - Header card
-
-struct LaneDetailHeaderCard: View {
+struct LaneDetailHeaderCard<Footer: View>: View {
   let snapshot: LaneListSnapshot
   let detail: LaneDetailPayload?
   let linkedPullRequests: [PullRequestListItem]
-  let isExpanded: Bool
-  let onToggleExpanded: () -> Void
-  let onManageTapped: () -> Void
+  let transitionNamespace: Namespace.ID?
+  let transitionLaneId: String?
+  let canRunLiveActions: Bool
   let onStackTapped: () -> Void
   let onOpenLinkedPullRequest: (PullRequestListItem) -> Void
+  let onPush: () -> Void
+  let onPull: () -> Void
+  let onFetch: () -> Void
+  @ViewBuilder let footer: () -> Footer
+
+  // transitionNamespace / transitionLaneId are retained on the init for
+  // caller compatibility but intentionally unused in body:
+  // navigationTransition(.zoom(sourceID:)) on the container already
+  // interpolates child layouts during the push, so this destination must
+  // NOT emit per-element matchedGeometryEffect — the list row is the sole
+  // isSource=true view in each lane-icon/title/status group.
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       headerTopRow
-      if isExpanded {
-        VStack(alignment: .leading, spacing: 10) {
-          detailMetadataRow
-          statusRow
-          if let summary = headerSummaryText {
-            Text(summary)
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          if let detail {
-            stackRow(detail: detail)
-          }
-        }
+      detailMetadataRow
+      statusRow
+      if let summary = headerSummaryText {
+        Text(summary)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
       }
+      activeSessionsRow
+      syncActionsRow
+      footer()
     }
     .adeGlassCard(cornerRadius: 18, padding: 16)
     .accessibilityElement(children: .contain)
@@ -45,42 +50,97 @@ struct LaneDetailHeaderCard: View {
             .font(.headline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
+            .minimumScaleFactor(0.85)
 
           laneTypeBadge
-        }
-
-        if !isExpanded {
-          Text(snapshot.lane.branchRef)
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
         }
       }
 
       Spacer(minLength: 8)
-
-      VStack(alignment: .trailing, spacing: 8) {
-        Button(action: onManageTapped) {
-          Image(systemName: "gearshape.fill")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .padding(8)
-            .background(ADEColor.surfaceBackground.opacity(0.45), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Manage lane")
-
-        Button(action: onToggleExpanded) {
-          Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .padding(8)
-            .background(ADEColor.surfaceBackground.opacity(0.45), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(isExpanded ? "Collapse lane header" : "Expand lane header")
-      }
     }
+  }
+
+  /// Inline Pull / Push / Fetch row pinned to the bottom of the header card.
+  /// Sync details + the underlying full sync screen live in Advanced now —
+  /// this is the everyday "I'm done, push it" affordance.
+  @ViewBuilder
+  private var syncActionsRow: some View {
+    let ahead = snapshot.lane.status.ahead
+    let behind = snapshot.lane.status.behind
+    let summary = syncSummaryText(ahead: ahead, behind: behind)
+
+    HStack(spacing: 8) {
+      Image(systemName: "arrow.triangle.2.circlepath")
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      Text(summary)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Spacer(minLength: 8)
+
+      syncActionButton(
+        symbol: "arrow.down.to.line.compact",
+        // Action flips between Pull (when there are commits to integrate)
+        // and Fetch (when we just want to refresh remote state). The label
+        // and accessibility text must follow the action so VoiceOver users
+        // hear what the button is actually about to do.
+        label: behind > 0 ? "Pull" : "Fetch",
+        tint: behind > 0 ? ADEColor.warning : ADEColor.textPrimary,
+        emphasize: behind > 0,
+        action: behind > 0 ? onPull : onFetch
+      )
+      syncActionButton(
+        symbol: "arrow.up.to.line.compact",
+        label: "Push",
+        tint: ahead > 0 ? ADEColor.success : ADEColor.textPrimary,
+        emphasize: ahead > 0,
+        action: onPush
+      )
+    }
+    .padding(.top, 2)
+  }
+
+  private func syncSummaryText(ahead: Int, behind: Int) -> String {
+    switch (ahead, behind) {
+    case (0, 0): return "In sync with remote"
+    case (let a, 0): return "\(a) ahead"
+    case (0, let b): return "\(b) behind"
+    case (let a, let b): return "\(a) ahead · \(b) behind"
+    }
+  }
+
+  @ViewBuilder
+  private func syncActionButton(
+    symbol: String,
+    label: String,
+    tint: Color,
+    emphasize: Bool,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Image(systemName: symbol)
+          .font(.system(size: 11, weight: .bold))
+        Text(label)
+          .font(.caption.weight(.semibold))
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(
+        (emphasize ? tint.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.45)),
+        in: Capsule()
+      )
+      .overlay(
+        Capsule().stroke(tint.opacity(emphasize ? 0.32 : 0.16), lineWidth: 0.6)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(!canRunLiveActions)
+    .opacity(canRunLiveActions ? 1 : 0.5)
+    .accessibilityLabel(label)
   }
 
   @ViewBuilder
@@ -111,56 +171,59 @@ struct LaneDetailHeaderCard: View {
           LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount) child\(snapshot.lane.childCount == 1 ? "" : "ren")", tint: ADEColor.textMuted)
         }
         linkedPullRequestBadge
+        if let detail, !detail.stackChain.isEmpty {
+          Button(action: onStackTapped) {
+            LaneMicroChip(icon: "list.number", text: "Stack \(detail.stackChain.count)", tint: ADEColor.accent)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("View stack graph")
+        }
       }
     }
   }
 
   @ViewBuilder
-  private func stackRow(detail: LaneDetailPayload) -> some View {
-    if !detail.stackChain.isEmpty {
-      Button(action: onStackTapped) {
-        VStack(alignment: .leading, spacing: 6) {
-          HStack(spacing: 6) {
-            Image(systemName: "list.number")
-              .font(.system(size: 10, weight: .semibold))
-              .foregroundStyle(ADEColor.textSecondary)
-            Text("Stack")
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(ADEColor.textSecondary)
+  private var activeSessionsRow: some View {
+    let activeSessions = (detail?.sessions ?? []).filter { $0.status == "running" || $0.status == "active" }
+    let activeChats = (detail?.chatSessions ?? []).filter { $0.status == "running" || $0.status == "active" }
+    let totalActive = activeSessions.count + activeChats.count
+
+    if totalActive > 0 {
+      VStack(alignment: .leading, spacing: 6) {
+        ForEach(activeSessions.prefix(2)) { session in
+          HStack(spacing: 8) {
+            LaneStatusIndicator(bucket: "running", size: 7)
+            Text(session.title)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
             Spacer()
-            Text("\(detail.stackChain.count) lane\(detail.stackChain.count == 1 ? "" : "s")")
-              .font(.caption2.weight(.semibold))
+            Text("Terminal")
+              .font(.caption2)
               .foregroundStyle(ADEColor.textMuted)
           }
-
-          VStack(alignment: .leading, spacing: 4) {
-            ForEach(detail.stackChain.prefix(3)) { item in
-              HStack(spacing: 8) {
-                Circle()
-                  .fill(item.laneId == snapshot.lane.id ? ADEColor.accent : runtimeTint(bucket: detail.runtime.bucket))
-                  .frame(width: 6, height: 6)
-                  .padding(.leading, CGFloat(item.depth) * 10)
-                Text(item.laneName)
-                  .font(.caption)
-                  .foregroundStyle(ADEColor.textPrimary)
-                  .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(item.branchRef)
-                  .font(.system(.caption2, design: .monospaced))
-                  .foregroundStyle(ADEColor.textSecondary)
-              }
-            }
-            if detail.stackChain.count > 3 {
-              Text("+ \(detail.stackChain.count - 3) more")
-                .font(.caption2)
-                .foregroundStyle(ADEColor.textMuted)
-            }
+        }
+        ForEach(activeChats.prefix(2)) { chat in
+          HStack(spacing: 8) {
+            LaneStatusIndicator(bucket: "running", size: 7)
+            Text(chat.title ?? chat.provider.capitalized)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            Spacer()
+            Text(chat.provider.capitalized)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
           }
         }
-        .padding(12)
-        .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        if totalActive > 4 {
+          Text("+ \(totalActive - 4) more")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+        }
       }
-      .buttonStyle(.plain)
+      .padding(10)
+      .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
   }
 
@@ -180,8 +243,6 @@ struct LaneDetailHeaderCard: View {
     Group {
       if let detail, let conflictStatus = detail.conflictStatus, conflictStatus.status == "conflict-active" {
         LaneTypeBadge(text: "Conflict", tint: ADEColor.danger)
-      } else if let detail, let autoRebaseStatus = detail.autoRebaseStatus, autoRebaseStatus.state != "autoRebased" {
-        LaneTypeBadge(text: "Rebase attention", tint: ADEColor.warning)
       } else if snapshot.lane.archivedAt != nil {
         LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
       } else if snapshot.lane.status.dirty {
@@ -224,23 +285,11 @@ struct LaneDetailHeaderCard: View {
 
   private var headerAccessibilityLabel: String {
     var pieces = [snapshot.lane.name, snapshot.lane.branchRef]
-    if snapshot.lane.status.dirty {
-      pieces.append("dirty")
-    } else {
-      pieces.append("clean")
-    }
-    if snapshot.lane.status.ahead > 0 {
-      pieces.append("\(snapshot.lane.status.ahead) ahead")
-    }
-    if snapshot.lane.status.behind > 0 {
-      pieces.append("\(snapshot.lane.status.behind) behind")
-    }
-    if snapshot.lane.childCount > 0 {
-      pieces.append("\(snapshot.lane.childCount) child\(snapshot.lane.childCount == 1 ? "" : "ren")")
-    }
-    if !linkedPullRequests.isEmpty {
-      pieces.append("\(linkedPullRequests.count) linked pull request\(linkedPullRequests.count == 1 ? "" : "s")")
-    }
+    if snapshot.lane.status.dirty { pieces.append("dirty") } else { pieces.append("clean") }
+    if snapshot.lane.status.ahead > 0 { pieces.append("\(snapshot.lane.status.ahead) ahead") }
+    if snapshot.lane.status.behind > 0 { pieces.append("\(snapshot.lane.status.behind) behind") }
+    if snapshot.lane.childCount > 0 { pieces.append("\(snapshot.lane.childCount) child\(snapshot.lane.childCount == 1 ? "" : "ren")") }
+    if !linkedPullRequests.isEmpty { pieces.append("\(linkedPullRequests.count) linked pull request\(linkedPullRequests.count == 1 ? "" : "s")") }
     return pieces.joined(separator: ", ")
   }
 
@@ -248,12 +297,6 @@ struct LaneDetailHeaderCard: View {
     guard let detail else { return nil }
     if let conflictStatus = detail.conflictStatus {
       return conflictSummary(conflictStatus)
-    }
-    if let autoRebaseStatus = detail.autoRebaseStatus, autoRebaseStatus.state != "autoRebased" {
-      return autoRebaseStatus.message ?? "Rebase attention required."
-    }
-    if let rebaseSuggestion = detail.rebaseSuggestion {
-      return "Behind parent by \(rebaseSuggestion.behindCount) commit\(rebaseSuggestion.behindCount == 1 ? "" : "s")."
     }
     return nil
   }

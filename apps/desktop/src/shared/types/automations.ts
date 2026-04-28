@@ -17,9 +17,10 @@ import type {
   AutomationTrigger,
   AutomationTriggerType,
   AutomationVerification,
+  RunAdeActionConfig,
 } from "./config";
 import type { MissionPermissionConfig } from "./missions";
-import type { MissionModelConfig } from "./models";
+import type { MissionModelConfig, ModelConfig } from "./models";
 import type { AgentChatSessionSummary } from "./chat";
 
 export type AutomationRunStatus =
@@ -28,8 +29,7 @@ export type AutomationRunStatus =
   | "succeeded"
   | "failed"
   | "cancelled"
-  | "paused"
-  | "needs_review";
+  | "paused";
 
 export type AutomationActionStatus = "running" | "succeeded" | "failed" | "skipped" | "cancelled";
 
@@ -122,7 +122,39 @@ export type AutomationsEventPayload = {
   runId?: string;
 };
 
-export type AutomationIngressSource = "github-relay" | "local-webhook";
+export type AutomationIngressSource =
+  | "github-relay"
+  | "github-polling"
+  | "linear-relay"
+  | "local-webhook";
+
+export type AutomationTriggerIssueContext = {
+  number: number;
+  title: string;
+  body?: string;
+  author?: string;
+  labels?: string[];
+  repo?: string;
+  url?: string;
+};
+
+export type AutomationTriggerPrContext = AutomationTriggerIssueContext & {
+  baseBranch?: string;
+  headBranch?: string;
+  draft?: boolean;
+  merged?: boolean;
+};
+
+export type AutomationTriggerLinearIssueContext = {
+  id: string;
+  title?: string;
+  team?: string;
+  project?: string;
+  assignee?: string;
+  state?: string;
+  previousState?: string;
+  labels?: string[];
+};
 
 export type AutomationIngressStatus = {
   githubRelay: {
@@ -190,9 +222,25 @@ export type AutomationDraftActionBase = {
 };
 
 export type AutomationDraftAction =
+  | (AutomationDraftActionBase & {
+      type: "create-lane";
+      laneNameTemplate?: string;
+      laneDescriptionTemplate?: string;
+      parentLaneId?: string | null;
+    })
   | (AutomationDraftActionBase & { type: "predict-conflicts" })
   | (AutomationDraftActionBase & { type: "run-tests"; suite: string })
-  | (AutomationDraftActionBase & { type: "run-command"; command: string; cwd?: string });
+  | (AutomationDraftActionBase & { type: "run-command"; command: string; cwd?: string })
+  | (AutomationDraftActionBase & {
+      type: "agent-session";
+      prompt?: string;
+      sessionTitle?: string;
+      targetLaneId?: string | null;
+      modelConfig?: ModelConfig;
+      permissionConfig?: MissionPermissionConfig;
+    })
+  | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig })
+  | (AutomationDraftActionBase & { type: "launch-mission"; missionTitle?: string; targetLaneId?: string | null });
 
 export type AutomationRuleDraft = {
   id?: string | null;
@@ -217,6 +265,7 @@ export type AutomationRuleDraft = {
   outputs: AutomationOutputs;
   verification: AutomationVerification;
   billingCode: string;
+  includeProjectContext?: boolean;
   linkedRepoPaths?: string[];
   linkedDocPaths?: string[];
   rulePaths?: string[];
@@ -327,4 +376,9 @@ export type AutomationSimulateResult = {
   actions: AutomationSimulationAction[];
   notes: string[];
   issues: AutomationDraftIssue[];
+};
+
+export type AdeActionRegistryEntry = {
+  domain: string;
+  actions: Array<{ name: string; description?: string }>;
 };

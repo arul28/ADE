@@ -29,8 +29,6 @@ import { ChatChannelList, type Channel } from "./ChatChannelList";
 import { ChatMessageArea } from "./ChatMessageArea";
 import { ChatInput, type QuickTarget } from "./ChatInput";
 import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
-import { openExternalMcpSettings } from "../chat/chatNavigation";
-import { useChatMcpSummary } from "../chat/useChatMcpSummary";
 import { useMissionsStore } from "./useMissionsStore";
 
 const BG_PAGE = COLORS.pageBg;
@@ -171,7 +169,6 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const selectedChannel = useMemo(() => channels.find((c) => c.id === selectedChannelId) ?? channels[0], [channels, selectedChannelId]);
   const missionSurfaceMode = selectedChannel?.kind === "global" ? "mission-feed" : "mission-thread";
   const missionSurfaceAccent = useMemo(() => resolveMissionSurfaceAccent(selectedChannel), [selectedChannel]);
-  const mcpSummary = useChatMcpSummary(selectedChannel?.kind !== "worker");
 
   const participants = useMemo<MentionParticipant[]>(() => [], []);
   const quickTargets = useMemo<QuickTarget[]>(() => [], []);
@@ -677,9 +674,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
               missionNarrative={selectedChannel?.kind === "global" ? missionNarrative : null}
               runtimeSummary={runtimeSummary}
               agentRuntimeConfig={agentRuntimeConfig}
-              mcpSummary={selectedChannel?.kind === "worker" ? null : mcpSummary}
               runControls={runControls}
-              onOpenMcpSettings={openExternalMcpSettings}
               onApproval={handleApproval}
             />
           </>

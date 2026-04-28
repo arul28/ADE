@@ -1,0 +1,80 @@
+---
+title: "v1.0.19"
+description: "Release notes for ADE v1.0.19 — April 21, 2026"
+---
+
+New AI backends, iOS push notifications, smarter PR and rebase tooling, and a diagnostics dashboard.
+
+---
+
+## Mobile push notifications (APNS)
+
+ADE can now send push notifications to your iPhone when agents complete tasks or need your input. Notifications fire for mission complete, mission failed, and intervention required events — so you no longer have to keep the desktop app visible to stay aware of long-running work.
+
+Setup takes about 30 seconds: open **Settings → Notifications → Mobile Push**, scan the QR code with the ADE iOS app, and choose which events trigger a push. Multiple devices can be registered.
+
+---
+
+## Cursor ACP integration
+
+Cursor's agent can now connect to ADE directly as a chat provider via the **Agent Control Protocol (ACP)**. When Cursor is installed and authenticated, its models appear in the chat model selector alongside Claude, Codex, and OpenCode. ADE manages the ACP session pool and maps ACP events to its standard chat event model, so the UI behaves consistently across all providers.
+
+The `ade` CLI is on `PATH` for Cursor-backed sessions, giving Cursor agents access to lane, git, PR, and action tools.
+
+See [Cursor integration](/ai-tools/cursor) for setup details.
+
+---
+
+## OpenCode runtime integration
+
+ADE now supports [OpenCode](https://opencode.ai) as a managed AI backend. ADE downloads and manages the OpenCode binary, starts it as a local server process, and routes chat and mission requests through its OpenAI-compatible endpoint.
+
+OpenCode supports three backend modes: Anthropic API key, OpenRouter, or a fully local model via Ollama. This makes it useful when you want a local-first agent without a separate Claude or Cursor subscription.
+
+See [Windsurf & OpenCode](/ai-tools/windsurf) for setup details.
+
+---
+
+## External MCP OAuth
+
+ADE can now authenticate external MCP servers via OAuth from within the app. When an MCP server requires authentication, ADE opens the OAuth flow in a managed browser window, completes the handshake, and stores the resulting token in `local.secret.yaml`. No manual token copying required.
+
+Supported flows: Authorization Code with PKCE. Tokens are refreshed automatically before expiry.
+
+---
+
+## Auto-rebase suggestions
+
+ADE now proactively generates rebase suggestions when a lane falls behind its parent or base branch. The suggestion service monitors upstream branch activity in the background and surfaces a rebase prompt in the lane list when the behind-count reaches the configured threshold.
+
+Each suggestion shows:
+- How many commits behind the lane is
+- A preview of what the rebase will touch
+- A conflict likelihood estimate based on merge simulation
+
+Accept, defer, or dismiss directly from the suggestion card. See [Stacked Lanes](/lanes/stacks) for details.
+
+---
+
+## PR issue resolver
+
+A new **PR issue resolver** runs alongside the convergence system and proactively detects common PR problems — missing tests, type errors, lint failures — before you trigger a full convergence round. Detected issues appear in the Path to Merge issue inventory tagged with an ADE source badge. You can send them directly to an agent or include them in the next convergence round.
+
+---
+
+## Smart tooltips
+
+Hover tooltips are now consistent across the entire app, powered by a new `SmartTooltip` component. Tooltips appear on most UI controls and include inline links to the relevant documentation page. The tooltip system can be disabled in **Settings → General → Smart Tooltips**.
+
+---
+
+## Diagnostics dashboard
+
+A new **Diagnostics** section in Settings shows a live view of ADE's runtime health: provider connection status, lane runtime state, IPC health, CLI probe results, and multi-device sync status. Useful for debugging connection issues before filing a report. The full summary can be copied from the panel.
+
+---
+
+## Other changes
+
+- **Device registry improvements** — multi-device tracking is more reliable; stale device entries are pruned automatically after 30 days of inactivity
+- **Settings consolidation** — notification settings gained a Mobile Push sub-section; the settings card overview was updated to reflect new sections

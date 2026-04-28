@@ -12,8 +12,6 @@ export const ADE_TASK_SPEC_END = "<!-- ADE_TASK_SPEC_END -->";
 // Machine-readable header schema embedded in packs/exports as a JSON fence.
 export const CONTEXT_HEADER_SCHEMA_V1 = "ade.context.v1" as const;
 
-export const ADE_CONTEXT_DOC_STATUS_SCHEMA_V1 = "ade.contextDocStatus.v1" as const;
-export const ADE_CONTEXT_DOC_RUN_SCHEMA_V1 = "ade.contextDocRun.v1" as const;
 export const ADE_CONFLICT_EXTERNAL_RUN_SCHEMA_V1 = "ade.conflictExternalRun.v1" as const;
 
 // Contract version is an advisory monotonic counter for backward-compatible additions.

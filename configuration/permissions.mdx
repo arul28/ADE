@@ -14,7 +14,6 @@ ADE enforces security through layered controls: a trust-boundary architecture, S
   <Card title="Terminal Commands" icon="terminal" href="#terminal-command-policy">Allow, block, and ask-first.</Card>
   <Card title="Git Operations" icon="code-branch" href="#git-operation-restrictions">Protected branches and merge policy.</Card>
   <Card title="Network" icon="globe" href="#network-access-policy">Allow-all, allow-list, block-list.</Card>
-  <Card title="External MCP" icon="plug" href="#external-mcp-tool-permissions">Default server access controls.</Card>
   <Card title="Secrets" icon="key" href="#secret-protection">Storage, redaction, rotation.</Card>
   <Card title="Lane Proxy" icon="shield-halved" href="#per-lane-proxy-security">Cross-lane isolation rules.</Card>
   <Card title="Audit Trail" icon="scroll" href="#audit-trail">What is logged and where.</Card>
@@ -31,7 +30,7 @@ ADE is built on a **local-first, trust boundary model**. Your source code, API k
 ┌────────────────────────────────────────────────────────────────┐
 │  Renderer Process (Untrusted)                                  │
 │  React UI · TypeScript · Tailwind                              │
-│  Cannot access: filesystem, git, API keys, MCP servers         │
+│  Cannot access: filesystem, git, API keys, or ADE services    │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │  Preload Bridge (contextBridge)                          │  │
 │  │  Typed IPC only · validates all calls · no raw Node.js   │  │
@@ -39,7 +38,7 @@ ADE is built on a **local-first, trust boundary model**. Your source code, API k
 ├────────────────────────────────────────────────────────────────┤
 │  Main Process (Trusted — full Node.js access)                  │
 │  Electron main · SQLite · All services                         │
-│  API keys · File I/O · Git · PTY · MCP servers                 │
+│  API keys · File I/O · Git · PTY · ADE RPC + ade CLI          │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -51,7 +50,7 @@ ADE is built on a **local-first, trust boundary model**. Your source code, API k
     The `contextBridge` exposes only named, typed IPC channels. Renderer code cannot call arbitrary Node.js APIs. Every IPC handler validates its input before executing.
   </Card>
   <Card title="Main Process: Trusted Core" icon="shield-check">
-    API keys, git operations, file I/O, and MCP connections all live here. The main process is the only process that reads `local.secret.yaml`.
+    API keys, git operations, file I/O, and the ADE RPC surface all live here. The main process is the only process that reads `local.secret.yaml`.
   </Card>
 </CardGroup>
 
@@ -98,7 +97,7 @@ Every agent type in ADE has a default permission level. You can override these a
 | `read-only` | Read files, list directories, read git status. Cannot write files, run commands, or make git commits. |
 | `write-local` | Read and write files within the lane's worktree. Cannot push to remote, run terminal commands, or call external APIs. |
 | `write-git` | `write-local` plus: `git commit`, `git push`, `git rebase`. Cannot interact with external services (GitHub PRs, Linear). |
-| `write-external` | `write-git` plus: create PRs, post to Linear, call external MCP tools. |
+| `write-external` | `write-git` plus: create PRs and post to Linear. |
 | `full` | All operations permitted (subject to block lists and network policy). |
 
 ### Default Levels by Agent Type
@@ -266,7 +265,7 @@ permissions:
 
 ## Network Access Policy
 
-Control which external domains agents can reach. This applies to: MCP tool calls that make HTTP requests, agent-browser automations, and any outbound network traffic initiated from agent sessions.
+Control which external domains agents can reach. This applies to ADE action calls that make HTTP requests, agent-browser automations, and any outbound network traffic initiated from agent sessions.
 
 ```yaml
 # .ade/ade.yaml
@@ -288,29 +287,8 @@ permissions:
 ```
 
 <Note>
-Network policy is enforced at the MCP tool call level. ADE does not operate as a network proxy — it cannot intercept raw TCP connections made by subprocesses outside of MCP. For stronger network isolation, use OS-level firewall rules alongside ADE's policy.
+Network policy is enforced at the ADE action level. ADE does not operate as a network proxy — it cannot intercept raw TCP connections made by subprocesses outside of the ADE RPC surface. For stronger network isolation, use OS-level firewall rules alongside ADE's policy.
 </Note>
-
----
-
-## External MCP Tool Permissions
-
-External MCP tool access is controlled through a layered system. See [MCP Servers → Permission Model](/configuration/mcp-servers#permission-model) for the full four-layer reference.
-
-The high-level controls in Settings → Permissions apply to all agents by default:
-
-```yaml
-# .ade/ade.yaml
-permissions:
-  externalMcp:
-    # Default: which servers are accessible to all agents
-    # (agents can be further restricted per-instance)
-    defaultAccess:
-      - "github"
-      - "filesystem"
-    # "ghost-os" is not listed — no agent gets ghost-os access by default
-    # Grant it explicitly per-agent in CTO settings or mission config
-```
 
 ---
 
@@ -345,7 +323,7 @@ API keys and OAuth tokens are handled according to the following rules:
 Each Worktree Lane has an isolated proxy context managed by ADE's Lane Proxy Service.
 
 - **Worktree scoping**: All file tool calls from an agent session in Lane A are validated against Lane A's worktree path. Attempting to read or write files outside the lane's worktree returns an `access_denied` error, even if the path restriction rules would otherwise allow it.
-- **Cross-lane isolation**: An agent in Lane A cannot modify Lane B's worktree by any means — not through file tools, not through git commands, not through external MCP tools.
+- **Cross-lane isolation**: An agent in Lane A cannot modify Lane B's worktree by any means — not through file tools, not through git commands, not through ADE action calls.
 - **Cross-lane reads (explicit)**: ADE permits cross-lane reads for specific operations: conflict detection, pack generation, and project-level context queries. These are initiated by ADE's orchestration layer, not by agent tool calls.
 
 ---
@@ -362,7 +340,7 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
 | File write | Agent ID, tool name, file path, bytes written, timestamp |
 | Git operation | Agent ID, tool name, command, args (secrets redacted), result, timestamp |
 | Terminal command | Agent ID, command (secrets redacted), exit code, duration, timestamp |
-| MCP tool call (external) | Agent ID, server name, tool name, args (secrets redacted), response summary, timestamp |
+| ADE action call | Agent ID, domain, action name, args (secrets redacted), response summary, timestamp |
 | Permission denied | Agent ID, tool attempted, reason, rule matched, timestamp |
 | Config approval | Approving user, old SHA, new SHA, changed fields, timestamp |
 | Budget cap reached | Agent ID, session/mission, cap type, amount, timestamp |
@@ -382,7 +360,7 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
 ### Properties
 
 - **Append-only**: Log entries are never modified or deleted (only rolled over at the configured retention limit)
-- **Retention**: 30 days by default; configurable in Settings → Developer → Audit Log Retention
+- **Retention**: 30 days by default
 - **Location**: `.ade/artifacts/audit.log` in the project directory
 - **Rotation**: Logs rotate at 50MB. Up to 10 rotated files are retained before the oldest is deleted.
 ---
@@ -408,7 +386,7 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
     Review `.ade/artifacts/audit.log` periodically — especially the `permission_denied` entries. Frequent denials from a specific agent may indicate a misconfigured automation or an agent that is not working within its expected scope. They may also reveal a mistake in your allow/block rules that is blocking legitimate work.
   </Accordion>
   <Accordion title="Use mission-level permission overrides for high-risk work" icon="bullseye">
-    For missions that touch critical infrastructure, production configuration, or security-sensitive files, set a restrictive permission profile at mission creation: limit to specific paths, require Ask-First for all terminal commands, and disable external MCP access. The mission-level override applies to all workers spawned by that mission, regardless of their default permission level.
+    For missions that touch critical infrastructure, production configuration, or security-sensitive files, set a restrictive permission profile at mission creation: limit to specific paths, require Ask-First for all terminal commands, and lock the tool palette down to the minimum action set the mission needs. The mission-level override applies to all workers spawned by that mission, regardless of their default permission level.
   </Accordion>
 </AccordionGroup>
 
@@ -419,9 +397,6 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
 <CardGroup cols={2}>
   <Card title="Configuration Overview" icon="gear" href="/configuration/overview">
     Review the .ade/ directory structure, layering model, and SHA approval workflow in full.
-  </Card>
-  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
-    Understand the four-layer permission model for external MCP tool access.
   </Card>
   <Card title="Settings" icon="sliders" href="/configuration/settings">
     Configure permissions, git restrictions, and command policies in the Settings UI.

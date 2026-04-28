@@ -57,25 +57,25 @@ function statusMeta(status: ChatSubagentSnapshot["status"]): {
     case "completed":
       return {
         label: "Done",
-        chipClassName: "border-emerald-400/15 bg-emerald-500/[0.06] text-emerald-300/90",
+        chipClassName: "border-emerald-400/15 text-emerald-300/90",
         icon: <CheckCircle size={12} weight="fill" className="text-emerald-400" />,
       };
     case "failed":
       return {
         label: "Failed",
-        chipClassName: "border-red-500/20 bg-red-500/[0.08] text-red-300/90",
+        chipClassName: "border-red-500/20 text-red-300/90",
         icon: <XCircle size={12} weight="fill" className="text-red-400" />,
       };
     case "stopped":
       return {
         label: "Stopped",
-        chipClassName: "border-amber-400/20 bg-amber-500/[0.08] text-amber-300/90",
+        chipClassName: "border-amber-400/20 text-amber-300/90",
         icon: <ClockCounterClockwise size={12} weight="bold" className="text-amber-400" />,
       };
     default:
       return {
         label: "Running",
-        chipClassName: "border-emerald-400/20 bg-emerald-500/[0.08] text-emerald-300",
+        chipClassName: "border-emerald-400/20 text-emerald-300",
         icon: <ChatStatusGlyph status="working" size={12} className="ade-glow-pulse" />,
       };
   }
@@ -128,7 +128,7 @@ function SubagentDetailView({
           {snapshot.description}
         </span>
         <span className={cn(
-          "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+          "ade-chat-status-pill rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
           meta.chipClassName,
         )}>
           {meta.label}
@@ -325,7 +325,10 @@ export function ChatSubagentsPanel({
               <button
                 key={snapshot.taskId}
                 type="button"
-                className="group flex w-full items-center gap-2.5 rounded-xl border border-white/[0.06] bg-[#141220]/80 px-3.5 py-3 text-left transition-colors hover:bg-[#141220]"
+                className={cn(
+                  "ade-chat-subagent-card group flex w-full items-center gap-2.5 rounded-xl px-3.5 py-3 text-left",
+                  snapshot.status === "running" && "ade-chat-subagent-card-active",
+                )}
                 onClick={() => setView({ mode: "detail", taskId: snapshot.taskId })}
                 title={snapshot.description}
               >
@@ -345,7 +348,7 @@ export function ChatSubagentsPanel({
                     {runtimeSummary}
                   </span>
                 ) : null}
-                <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider", meta.chipClassName)}>
+                <span className={cn("ade-chat-status-pill rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider", meta.chipClassName)}>
                   {meta.label}
                 </span>
               </button>

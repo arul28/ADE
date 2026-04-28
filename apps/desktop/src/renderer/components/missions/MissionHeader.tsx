@@ -17,6 +17,7 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
+import { useAppStore } from "../../state/appStore";
 import { relativeWhen } from "../../lib/format";
 import {
   STATUS_CONFIG,
@@ -29,6 +30,7 @@ import {
   usagePercentColor,
 } from "./missionHelpers";
 import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
+import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { useShallow } from "zustand/react/shallow";
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
@@ -294,10 +296,7 @@ export function MissionHeader() {
             <ElapsedTime startedAt={selectedMission.startedAt ?? null} endedAt={missionElapsedEndedAt} />
           </span>
           {selectedMission.laneName && (
-            <span>
-              <GitBranch className="inline h-3 w-3 mr-0.5" />
-              {selectedMission.laneName}
-            </span>
+            <MissionLaneChip laneId={selectedMission.laneId ?? null} laneName={selectedMission.laneName} />
           )}
           {executionProgress.total > 0 && (
             <span>
@@ -505,6 +504,23 @@ function UsageWindowBadge({
           ({resetLabel})
         </span>
       )}
+    </span>
+  );
+}
+
+function MissionLaneChip({ laneId, laneName }: { laneId: string | null; laneName: string }): JSX.Element {
+  const laneColor = useAppStore((s) => {
+    if (!laneId) return null;
+    return s.lanes.find((l) => l.id === laneId)?.color ?? null;
+  });
+  return (
+    <span style={laneColor ? { color: laneColor } : undefined}>
+      {laneColor ? (
+        <LaneAccentDot lane={{ color: laneColor }} size={6} style={{ marginRight: 4, verticalAlign: "middle" }} />
+      ) : (
+        <GitBranch className="inline h-3 w-3 mr-0.5" />
+      )}
+      {laneName}
     </span>
   );
 }

@@ -15,6 +15,7 @@ import {
   resolveModelAlias,
   resolveModelDescriptor,
   resolveModelDescriptorForProvider,
+  resolveModelSlug,
 } from "./modelRegistry";
 import type { ProviderFamily } from "./modelRegistry";
 import { describeModelSource } from "../renderer/lib/modelOptions";
@@ -45,6 +46,23 @@ describe("modelRegistry", () => {
     expect(descriptor?.displayName).toBe("qwen2.5-coder:32b (Ollama)");
   });
 
+  it("resolveModelSlug returns canonical id for registry input and codex-hinted refs", () => {
+    const byId = resolveModelSlug("  anthropic/claude-opus-4-7  ");
+    expect(byId).toBe("anthropic/claude-opus-4-7");
+    expect(resolveModelSlug("gpt-5.4")).toBeUndefined();
+    expect(resolveModelSlug("gpt-5.5")).toBeUndefined();
+    expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4-codex");
+    expect(resolveModelSlug("gpt-5.5", "codex")).toBe("openai/gpt-5.5-codex");
+    expect(resolveModelSlug("")).toBeUndefined();
+    expect(resolveModelSlug("   ")).toBeUndefined();
+    expect(resolveModelSlug("not-a-real-model-xyz")).toBeUndefined();
+  });
+
+  it("resolveModelSlug preserves case-sensitive dynamic local ids when hinted", () => {
+    const id = "lmstudio/Qwen/Qwen2.5-Coder";
+    expect(resolveModelSlug(id, "opencode")).toBe(id);
+  });
+
   it("returns dynamic local descriptors from getModelById", () => {
     const descriptor = getModelById("lmstudio/meta-llama-3.1-70b-instruct");
     expect(descriptor).toBeTruthy();
@@ -61,6 +79,7 @@ describe("modelRegistry", () => {
 
   it("keeps only the allowed OpenAI chat models in the registry defaults", () => {
     expect(listModelDescriptorsForProvider("codex").map((model) => model.id)).toEqual([
+      "openai/gpt-5.5-codex",
       "openai/gpt-5.4-codex",
       "openai/gpt-5.4-mini-codex",
       "openai/gpt-5.3-codex",
@@ -73,7 +92,16 @@ describe("modelRegistry", () => {
     // API-key OpenAI models are now discovered dynamically through OpenCode,
     // so the static registry yields no hits for api-key auth alone.
     expect(getAvailableModels([{ type: "api-key", provider: "openai" }]).map((model) => model.id)).toEqual([]);
-    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-5.4-codex");
+    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-5.5-codex");
+  });
+
+  it("exposes GPT-5.5-Codex with the Codex app-server model id and expected reasoning tiers", () => {
+    expect(getModelById("openai/gpt-5.5-codex")).toMatchObject({
+      displayName: "GPT-5.5",
+      providerRoute: "codex-cli",
+      providerModelId: "gpt-5.5",
+      reasoningTiers: ["low", "medium", "high", "xhigh"],
+    });
   });
 
   it("exposes GPT-5.4-Mini-Codex with the expected reasoning tiers", () => {
@@ -84,7 +112,7 @@ describe("modelRegistry", () => {
   });
 
   it("marks CLI-wrapped models as CLI subscription in the shared model source helper", () => {
-    expect(describeModelSource(getModelById("openai/gpt-5.4-codex")!)).toBe("CLI subscription");
+    expect(describeModelSource(getModelById("openai/gpt-5.5-codex")!)).toBe("CLI subscription");
   });
 
   it("returns undefined for unknown model IDs", () => {
@@ -110,9 +138,19 @@ describe("modelRegistry", () => {
     expect(resolved).toBeUndefined();
   });
 
+  it("returns undefined for bare gpt-5.5 alias since API-key variants are now OpenCode-dynamic", () => {
+    const resolved = resolveModelAlias("gpt-5.5");
+    expect(resolved).toBeUndefined();
+  });
+
   it("resolves gpt-5.4 to the Codex wrapper when the provider is codex", () => {
     const resolved = resolveModelDescriptorForProvider("gpt-5.4", "codex");
     expect(resolved?.id).toBe("openai/gpt-5.4-codex");
+  });
+
+  it("resolves gpt-5.5 to the Codex wrapper when the provider is codex", () => {
+    const resolved = resolveModelDescriptorForProvider("gpt-5.5", "codex");
+    expect(resolved?.id).toBe("openai/gpt-5.5-codex");
   });
 
   it("resolves gpt-5.4-codex shortId to the codex variant", () => {
@@ -125,6 +163,59 @@ describe("modelRegistry", () => {
     const descriptor = getModelById("openai/gpt-5.4-codex");
     expect(descriptor).toBeTruthy();
     expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.4");
+  });
+
+  it("returns the real Codex app-server runtime model name for wrapped GPT-5.5", () => {
+    const descriptor = getModelById("openai/gpt-5.5-codex");
+    expect(descriptor).toBeTruthy();
+    expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.5");
+  });
+
+  describe("Claude Opus 4.7 descriptors", () => {
+    it("exposes the standard Opus 4.7 with the expected context window and pricing", () => {
+      const opus = getModelById("anthropic/claude-opus-4-7");
+      expect(opus).toBeTruthy();
+      expect(opus).toMatchObject({
+        displayName: "Claude Opus 4.7",
+        shortId: "opus",
+        family: "anthropic",
+        providerRoute: "claude-cli",
+        providerModelId: "claude-opus-4-7",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        inputPricePer1M: 5,
+        outputPricePer1M: 25,
+      });
+    });
+
+    it("exposes the 1M Opus 4.7 variant with the xhigh reasoning tier and legacy aliases", () => {
+      const opus1m = getModelById("anthropic/claude-opus-4-7-1m");
+      expect(opus1m).toBeTruthy();
+      expect(opus1m).toMatchObject({
+        shortId: "opus-1m",
+        displayName: "Claude Opus 4.7 1M",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        providerModelId: "claude-opus-4-7[1m]",
+      });
+      expect(opus1m?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus1m?.aliases).toContain("opus[1m]");
+      expect(opus1m?.aliases).toContain("claude-opus-4-7[1m]");
+    });
+
+    it("resolves the legacy opus[1m] alias to the 4.7 1M descriptor", () => {
+      const resolved = resolveModelAlias("opus[1m]");
+      expect(resolved?.id).toBe("anthropic/claude-opus-4-7-1m");
+    });
+
+    it("keeps claude-opus-4-6 ids as compatibility aliases", () => {
+      const legacyIds = MODEL_REGISTRY.filter((m) => m.id.includes("claude-opus-4-6")).map((m) => m.id);
+      expect(legacyIds).toEqual([]);
+      expect(resolveModelAlias("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-7");
+      expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
+      expect(getModelById("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-7");
+      expect(getModelById("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
+    });
   });
 
   it("does not contain groq, together, or meta provider families", () => {

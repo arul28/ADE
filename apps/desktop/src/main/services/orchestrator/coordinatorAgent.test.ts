@@ -162,6 +162,18 @@ function createTestCoordinatorAgent(args?: {
     missionService: {
       get: vi.fn(() => ({ interventions: [] })),
     } as any,
+    aiIntegrationService: {
+      executeTask: vi.fn(async () => ({
+        text: "Compacted summary",
+        structuredOutput: null,
+        provider: "claude",
+        model: args?.modelId ?? "anthropic/claude-sonnet-4-6",
+        sessionId: null,
+        inputTokens: null,
+        outputTokens: null,
+        durationMs: 1,
+      })),
+    } as any,
     projectConfigService: {
       get: vi.fn(() => ({ effective: { ai: {} } })),
     } as any,
@@ -382,6 +394,23 @@ describe("CoordinatorAgent", () => {
     }
   });
 
+  it("maps an attach_failed eviction reason to handle_close when releasing the coordinator session", async () => {
+    const agent = createTestCoordinatorAgent() as any;
+
+    try {
+      const handle = await agent.ensureOpenCodeCoordinatorSession();
+      const evictionHandler = (handle.setEvictionHandler as any).mock.calls[0]?.[0] as ((reason: string) => void) | undefined;
+      expect(evictionHandler).toBeTypeOf("function");
+
+      evictionHandler?.("attach_failed");
+
+      expect(handle.close).toHaveBeenCalledWith("handle_close");
+      expect(handle.close).not.toHaveBeenCalledWith("attach_failed");
+    } finally {
+      agent.shutdown();
+    }
+  });
+
   it("keeps OpenCode eviction handlers bound to the handle instance that registered them", async () => {
     const agent = createTestCoordinatorAgent() as any;
 
@@ -403,7 +432,7 @@ describe("CoordinatorAgent", () => {
     }
   });
 
-  it("uses project-root workspace binding for the OpenCode coordinator MCP launch", async () => {
+  it("starts the OpenCode coordinator through the shared runtime lease", async () => {
     mockState.eventBatches.push([
       { type: "session.idle", properties: { sessionID: "session-1" } },
     ]);
@@ -419,17 +448,7 @@ describe("CoordinatorAgent", () => {
       const startCalls = vi.mocked(startOpenCodeSession).mock.calls;
       expect(startCalls.length).toBeGreaterThan(0);
       expect(startCalls[0]?.[0]?.leaseKind).toBe("shared");
-      const launch = startCalls[0]?.[0]?.dynamicMcpLaunch as {
-        cmdArgs?: string[];
-        env?: Record<string, string>;
-      };
-      expect(Array.isArray(launch?.cmdArgs)).toBe(true);
-      const workspaceFlagIndex = launch.cmdArgs!.indexOf("--workspace-root");
-      expect(workspaceFlagIndex).toBeGreaterThanOrEqual(0);
-      expect(launch.cmdArgs![workspaceFlagIndex + 1]).toBe("/tmp/ade-project");
-      expect(launch.env?.ADE_WORKSPACE_ROOT).toBe("/tmp/ade-project");
-      expect(launch.env?.ADE_RUN_ID).toBe("run-1");
-      expect(launch.env?.ADE_MISSION_ID).toBeFalsy();
+      expect(Object.keys(startCalls[0]?.[0] ?? {}).sort()).toEqual(expect.arrayContaining(["directory", "leaseKind", "ownerId", "ownerKind"]));
     } finally {
       agent.shutdown();
     }

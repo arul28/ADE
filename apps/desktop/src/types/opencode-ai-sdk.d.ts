@@ -5,7 +5,6 @@ declare module "@opencode-ai/sdk" {
     snapshot?: boolean;
     provider?: Record<string, any>;
     agent?: Record<string, any>;
-    mcp?: Record<string, any>;
   };
   export type Event = any;
   export type FilePartInput = Record<string, unknown>;

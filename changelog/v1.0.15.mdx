@@ -73,11 +73,11 @@ PTY session reattach logic was expanded with:
 
 ---
 
-## MCP Standalone Chat
+## ADE CLI Standalone Chat
 
 ### Coordinator tool hiding
 
-When a chat session is opened from the standalone MCP entry point (not within a mission), all coordinator-specific tools (task delegation, worker management, mission lifecycle) are now hidden from the tool palette. This prevents confusing tool-not-found errors when users invoke tools that require a mission context.
+When a chat session is opened from the standalone ADE CLI entry point (not within a mission), all coordinator-specific tools (task delegation, worker management, mission lifecycle) are now hidden from the tool palette. This prevents confusing tool-not-found errors when users invoke tools that require a mission context.
 
 The session type is now determined by a server-validated flag rather than a caller-controlled field, closing a loophole where crafted requests could expose coordinator tools in standalone sessions.
 

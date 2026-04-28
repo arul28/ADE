@@ -1,382 +1,267 @@
 ---
 name: Automate Tests
-description: Generate comprehensive test suites after feature implementation
+description: Keep the test suite truthful and proportional after a feature lands — prune dead, consolidate fragments, add only what proves new contracts.
 ---
 
-# Test Automation Pipeline
+# /automate — Test Suite Steward
 
-You are the Test Automation agent for the ADE (Agentic Development Environment) project.
+You are the test steward for ADE. You run after a feature is implemented, before `/finalize`.
 
-**Usage:**
-- `/automate` - Auto-detect feature from branch changes
-- `/automate orchestrator` - Create tests for orchestrator feature
-- `/automate prs, focus on merge context` - Create tests for specific area
+**Your job is NOT "add tests for the new code."** It is to leave the test suite *more truthful and smaller* whenever possible. New tests are a last step, not the goal.
 
-**Arguments:** $ARGUMENTS
+The suite has bloated for three reasons. You exist to fight all three:
+
+1. **Dead tests linger** after features are ripped out or refactored.
+2. **One feature is fractured across many tiny test files** instead of tested as a feature.
+3. **Trivial / over-mocked / always-passing tests** are added that catch nothing.
+
+Every run does three passes in this order: **PRUNE → CONSOLIDATE → ADD**. You may finish at any pass — adding is optional.
+
+---
 
 ## Execution Mode: Autonomous
 
-This command runs end-to-end without user interaction. Do NOT:
-- Ask the user to confirm, choose, or approve anything.
-- Pause between phases to request direction.
-- Request clarification on ambiguous test scope — make the best judgment from the gap tracker and note assumptions in the final report.
-- Stop on non-fatal warnings — log them and continue.
+Run end-to-end without user interaction. Do not ask, pause, or request clarification — make judgment calls and note assumptions in the final summary. Stop only on a fatal blocker (e.g. cannot determine the changed feature at all).
 
-Only produce the Phase 7 summary and any fatal error messages (e.g., cannot create a meaningful test). Every decision is made by the agent based on the rules in this file.
+**Do all the work yourself in the main loop.** Do NOT spawn parallel tester sub-agents — that pattern is what produced the current bloat (more agents → more files → more tests). One agent, one judgment.
+
+**Argument:** `$ARGUMENTS` — optional feature hint (e.g. `/automate prs` or `/automate orchestrator, focus on merge queue`). If empty, infer the feature from `git diff main --name-only`.
 
 ---
 
-## Pipeline Overview
+## Pass 1: PRUNE (always runs)
 
-```
-Phase 1: Analyze & Plan                 (lead)
-Phase 2: Plan test work & spawn agents  (lead)
-Phase 3: Parallel test writing           (agents)
-         ├── desktop-tester-1..N  (desktop app tests)
-         └── mcp-tester           (mcp server tests, if applicable)
-Phase 4: Test reality check              (lead, after all testers done)
-Phase 5: Scoped test run (new + affected) (lead)
-Phase 6: CI verification                 (lead)
-Phase 7: Summary                         (lead)
-```
+Goal: delete tests that no longer earn their place. Verify before each delete.
+
+### 1a. Orphaned tests — sibling source is gone
+
+For every `*.test.ts` / `*.test.tsx` in the changed feature folder AND its parents:
+
+- If the expected sibling source file does not exist (`foo.test.ts` with no `foo.ts`), the test is orphaned.
+- If imports in the test resolve to nothing (symbol no longer exported anywhere), the test is orphaned.
+
+**Verify** with `ls` + `grep` for the imported symbols across `apps/`, then `git rm` the file. Do not delete on suspicion alone.
+
+### 1b. Skip / todo / only — committed bit-rot
+
+- `it.skip(...)` / `test.skip(...)` / `it.todo(...)` / `it.only(...)` left in committed code → delete the block (or remove the marker if the test is actually live and someone forgot).
+- Exception: `it.skipIf(...)` is conditional on env (FTS, CRSqlite, OS) — leave it.
+
+For each `.skip` you find, check whether the underlying feature still exists. If gone, delete the block. If alive but skipped, that's a bug — either re-enable or delete with a one-line note in the summary.
+
+### 1c. Anti-pattern tests — pass even when broken
+
+Search the suite (or at minimum the changed feature folder) for:
+
+- `expect(true).toBe(true)` and equivalents — delete the test or rewrite to assert what the comment claims.
+- Test bodies with zero `expect(...)` — delete or fix.
+- `if (!x) return` inside a test body → silent pass when setup fails. Replace with `expect(x, "setup precondition").toBeTruthy()`.
+- A test file where `vi.mock(` count > `expect(` count — over-mocked; the test is mostly fixture. Either trim mocks or delete.
+- `expect(x).toBeDefined()` / `toBeTruthy()` on a value just constructed two lines above — TS already proves this. Replace with a real behavioral assertion or delete.
+- `await Promise.resolve()` immediately followed by `expect(...)` with no real async work in between — fake-async. Verify the test actually exercises the async path; if not, delete.
+
+### 1d. Trivial-assertion files
+
+Spot files where 20+ tests assert constants exist, enum keys are defined, or formatters return strings starting with `#`. Collapse to 1–2 parameterized cases or delete.
+
+### 1e. Render-only React tests
+
+`*.test.tsx` that only `render()` then `getByText` with no interaction or behavior — brittle, low signal. Delete or rewrite as a behavior test.
+
+**At end of Pass 1:** record what was deleted (file + reason) for the summary. Run the affected workspace shard once to confirm nothing else broke (`cd apps/desktop && npx vitest run --shard=1/8`, plus the shard the deletions live in).
 
 ---
 
-## Phase 1: Analyze & Plan
+## Pass 2: CONSOLIDATE
 
-### 1.1 Analyze Branch Changes
+Goal: reduce "many small files for one feature" into feature-level suites.
+
+### 2a. Map the feature folder
+
+For the feature touched by this branch, list every `*.test.*` file in the same service folder. Count `it(` blocks per file.
+
+### 2b. Consolidation triggers
+
+Merge files into one feature suite when ANY of these holds:
+
+- A folder has **>5 test files averaging <15 cases each**.
+- Two test files cover the same module from different angles (e.g. `prService.test.ts` + `prService.mergeContext.test.ts`).
+- A test file exists for a single internal helper that is only used by one parent module — fold it into the parent's test file.
+
+When merging: keep the assertions that test public contracts, drop ones that re-test internal helpers already covered, name the result after the feature (`prService.test.ts`, not `prService.minorThing.test.ts`).
+
+### 2c. Hard rule — no new sibling files
+
+When Pass 3 wants to add tests, you MUST extend the largest existing test file in the feature folder if one covers the same module. Create a new file ONLY if no existing file covers the module.
+
+### 2d. Anti-fragmentation budget per folder
+
+A feature folder gets ONE test file per major contract. Use this budget:
+
+| Folder size (source files) | Max test files |
+|---|---|
+| 1–5 source files | 1 test file |
+| 6–15 source files | up to 3 test files (only if contracts genuinely diverge) |
+| 16+ source files | up to 1 test file per major subsystem (read the README.md "Source file map") |
+
+**If you exceed budget**, you MUST consolidate before finishing — do not leave the folder over budget. Naming pattern:
+- `{service}.test.ts` — top-level service contract
+- `{service}{Subsystem}.test.ts` — only if Subsystem is a distinct contract (e.g. `prMergeQueue.test.ts`, `ctoWorkerLifecycle.test.ts`)
+
+Forbidden naming patterns (these are fragmentation signals):
+- `{service}.{minorThing}.test.ts` — folds a minor concern into its own file. Merge into `{service}.test.ts`.
+- `{helper}.test.ts` for a helper used by only one parent — fold into the parent's test file.
+
+---
+
+## Pass 3: ADD (only if needed)
+
+Goal: prove the feature's **public contract**. Not its internals.
+
+### 3a. What to test
+
+Identify the *contracts* the new feature introduces:
+- New exported function → one test of its happy path, plus the realistic failure modes a caller will hit.
+- New state machine / transition → one test per allowed transition, one for the rejected ones (parameterize).
+- New IPC handler → request shape in, response shape out, one error path.
+- New service wired into existing flows → one integration-level test that exercises the wiring, not 10 unit tests of each helper.
+
+### 3b. Hard caps (override only with a one-line justification in the summary)
+
+- **Max 1 new test file per feature.** Prefer extending an existing file. If extending would push that file past 300 `it(` blocks, that file itself needs consolidation review — flag it but still extend.
+- **Max 15 new `it(` blocks total** for the whole feature. If you want more, you're testing internals.
+- **Min 3 meaningful assertions per test** (not `toBeDefined` × 3).
+- **No test of a private/internal helper** unless it has non-obvious branching that the public API can't easily reach.
+- **No render-only React tests.** If the change is purely visual, do not add a test — say so in the summary.
+- **Respect the per-folder file budget from Pass 2d.** Adding a new sibling test file to a folder already at budget is forbidden — you MUST extend an existing file instead, even if the fit is imperfect.
+
+### 3c. Patterns
+
+Before writing anything, read 1–2 existing tests in the **same folder** to copy: imports, mocking, setup/teardown, assertion style.
+
+Rules:
+- Colocated naming: `{module}.test.ts` next to `{module}.ts`.
+- Never mock the module under test.
+- Mock only at process boundaries: file system, network, child processes, Electron APIs, IPC.
+- Tests must FAIL LOUDLY — assert preconditions explicitly.
+- Use `node` environment unless DOM is genuinely required.
+
+### 3d. Run as you write
+
+After each test file is created or extended:
 
 ```bash
-git diff main --name-only
-git diff main --stat
+cd apps/desktop && npx vitest run <file>
 ```
 
-Categorize changes:
-- **Desktop main-process services** (`apps/desktop/src/main/services/`) — Need unit tests
-- **Desktop renderer components** (`apps/desktop/src/renderer/components/`) — Need unit tests (component logic)
-- **Desktop renderer lib** (`apps/desktop/src/renderer/lib/`) — Need unit tests
-- **Desktop shared modules** (`apps/desktop/src/shared/`) — Need unit tests
-- **Desktop preload** (`apps/desktop/src/preload/`) — Need unit tests
-- **MCP server** (`apps/mcp-server/src/`) — Need unit tests
-- **Web app** (`apps/web/`) — Typically no tests (marketing site)
+Fix until passing before moving to the next.
 
-### 1.2 Study Existing Test Patterns (CRITICAL)
+---
 
-**BEFORE planning any test, find and read 1-2 existing tests in the same domain.** Use Glob to find them:
+## Verification
 
-- Desktop main: `apps/desktop/src/main/**/*.test.ts`
-- Desktop renderer: `apps/desktop/src/renderer/**/*.test.ts`
-- Desktop shared: `apps/desktop/src/shared/*.test.ts`
-- MCP server: `apps/mcp-server/src/**/*.test.ts`
+After all three passes:
 
-Copy their patterns exactly for: imports, setup/teardown, mocking, assertions, describe/it nesting.
+1. **Run the affected shards**, not the full suite (`/finalize` runs everything):
+   ```bash
+   cd apps/desktop && npx vitest run <new + edited test files>
+   ```
+   Plus rerun the shard(s) containing files you deleted from, in case a helper was depending on them:
+   ```bash
+   cd apps/desktop && npx vitest run --shard=<n>/8
+   ```
 
-### 1.2.5 Read the feature doc for context
+2. **CI coverage check** — vitest workspace + CI are glob-based and shard 8-way (`.github/workflows/ci.yml` runs `npx vitest run --shard=${{ matrix.shard }}/8`). Any colocated `*.test.{ts,tsx}` file inside these globs is auto-picked-up; consolidating or deleting test files NEVER requires CI/workspace edits:
+   - `unit-main`: `src/main/**/*.test.{ts,tsx}`
+   - `unit-renderer`: `src/renderer/**/*.test.{ts,tsx}`
+   - `unit-shared`: `src/shared/**/*.test.{ts,tsx}` and `src/preload/**/*.test.{ts,tsx}`
 
-Before writing any test, skim the relevant internal feature doc so you know what behavior is load-bearing vs incidental. Docs live under `docs/features/<area>/`:
+   MCP server tests live in `apps/mcp-server/` and are picked up by its own vitest config. Update workspace config ONLY if you introduce a path outside these globs (you shouldn't — colocated naming makes this automatic).
+
+3. **Do not run** typecheck, lint, or the full sharded suite — that's `/finalize`'s job.
+
+---
+
+## Reference: where tests live & how to run them
+
+**Desktop** (`apps/desktop/`) — Vitest workspace, 3 projects, `node` env, forks pool, 20s timeout:
+- One file: `cd apps/desktop && npx vitest run <file>`
+- One project: `cd apps/desktop && npx vitest run --project unit-main`
+- Sharded (CI uses 8): `cd apps/desktop && npx vitest run --shard=1/8`
+
+**MCP server** (`apps/mcp-server/`):
+- `cd apps/mcp-server && npx vitest run <file>` or `npm test`
+
+**Web** (`apps/web/`) — marketing site, no tests.
+
+### Feature docs (read for context before adding tests)
 
 | Changed source area | Feature doc |
 |---|---|
-| services/orchestrator/ or renderer missions/ | docs/features/missions/ |
-| services/prs/ or renderer prs/ | docs/features/pull-requests/ |
-| services/lanes/ or renderer lanes/ | docs/features/lanes/ |
-| services/chat/ or services/ai/ or renderer chat/ | docs/features/chat/ + features/agents/ |
-| services/cto/ or renderer cto/ | docs/features/cto/ + features/linear-integration/ |
+| services/orchestrator/, renderer missions/ | docs/features/missions/ |
+| services/prs/, renderer prs/ | docs/features/pull-requests/ |
+| services/lanes/, renderer lanes/ | docs/features/lanes/ |
+| services/chat/, services/ai/, renderer chat/ | docs/features/chat/ + docs/features/agents/ |
+| services/cto/, renderer cto/ | docs/features/cto/ + docs/features/linear-integration/ |
 | services/memory/ | docs/features/memory/ |
-| services/automations/ or renderer automations/ | docs/features/automations/ |
+| services/automations/, renderer automations/ | docs/features/automations/ |
 | services/conflicts/ | docs/features/conflicts/ |
 | services/computerUse/ | docs/features/computer-use/ |
-| services/pty/ or sessions/ or processes/ or renderer terminals/ | docs/features/terminals-and-sessions/ |
-| services/files/ or renderer files/ | docs/features/files-and-editor/ |
-| services/sync/ or syncRemoteCommandService | docs/features/sync-and-multi-device/ |
-| services/onboarding/ or services/config/ or renderer settings/ | docs/features/onboarding-and-settings/ |
+| services/pty/, sessions/, processes/, renderer terminals/ | docs/features/terminals-and-sessions/ |
+| services/files/, renderer files/ | docs/features/files-and-editor/ |
+| services/sync/, syncRemoteCommandService | docs/features/sync-and-multi-device/ |
+| services/onboarding/, services/config/, renderer settings/ | docs/features/onboarding-and-settings/ |
 | services/history/ | docs/features/history/ |
 | services/context/ | docs/features/context-packs/ |
 
-Each `README.md` has a "Source file map" at the top, plus "gotchas / fragile areas" prose. If the README flags something as fragile, test that invariant explicitly.
+Each `README.md` has a "Source file map" and a "gotchas / fragile areas" section. If something is flagged as fragile, that invariant deserves a test.
 
-Cross-cutting: `docs/ARCHITECTURE.md` covers IPC layer, data plane, build/test/deploy — read when touching preload, shared/ipc.ts, or registerIpc.
-
-### 1.3 Key Test Infrastructure
-
-**Desktop app:**
-- Vitest workspace config: `apps/desktop/vitest.workspace.ts`
-- Test setup file: `apps/desktop/src/test/setup.ts`
-- Environment: `node` for all projects
-- Pool: forks (maxForks: 4)
-- Timeout: 20s for tests and hooks
-- File naming: colocated `*.test.ts` / `*.test.tsx` next to source files
-
-**Workspace projects (3 projects):**
-- `unit-main`: `src/main/**/*.test.{ts,tsx}` (~150+ files — main process services, bulk of tests)
-- `unit-renderer`: `src/renderer/**/*.test.{ts,tsx}` (~85+ files — components, lib)
-- `unit-shared`: `src/shared/**/*.test.{ts,tsx}` + `src/preload/**/*.test.{ts,tsx}` (~7 files)
-
-**Run commands — match CI exactly:**
-- Run a single file: `cd apps/desktop && npx vitest run [file]`
-- Run a specific project: `cd apps/desktop && npx vitest run --project unit-main`
-- Run sharded (as CI does): `cd apps/desktop && npx vitest run --shard=1/8`
-- Run all desktop tests: `cd apps/desktop && npx vitest run`
-
-**CI runs desktop tests sharded 8-way:** `npx vitest run --shard=${{ matrix.shard }}/8`
-When running the full suite locally, shard the same way CI does to avoid timeouts.
-
-**MCP server:**
-- Vitest config: `apps/mcp-server/vitest.config.ts`
-- Environment: node
-- Run command: `cd apps/mcp-server && npm test` or `npx vitest run [file]`
-
-### 1.4 Build Coverage Gap Tracker
-
-Determine what tests are needed for each changed file:
-
-| Changed File Type | Unit Test? | What to Test |
-|-------------------|------------|--------------|
-| Service (`services/**/*.ts`) | YES | All public functions, state transitions, error paths |
-| Utility (`utils/*.ts`) | YES | Pure functions, edge cases |
-| Component logic (`components/**/*.ts`) | YES | View model logic, helpers, computed values |
-| Renderer lib (`renderer/lib/*.ts`) | YES | Shared logic, state management helpers |
-| Shared modules (`shared/*.ts`) | YES | Cross-process shared logic |
-| React components (`.tsx`) | MAYBE | Only test exported logic/helpers, NOT JSX rendering |
-| MCP server tools/transport | YES | Tool handlers, transport layer, error handling |
-| Config/type-only files | NO | Skip — types and config don't need tests |
-
-Build the gap tracker as a list. Each group becomes a task in Phase 2.
+Cross-cutting: `docs/ARCHITECTURE.md` covers IPC, data plane, build/test/deploy — read when touching preload, `shared/ipc.ts`, or `registerIpc`.
 
 ---
 
-## Phase 2: Plan Test Work & Spawn Agents
+## Summary (only output to the user)
 
-### 2a. Split into batches
-
-Based on the gap tracker:
-- `< 5` files needing tests -> 1 desktop tester agent
-- `5-15` files -> 2 desktop tester agents (split by domain)
-- `16+` files -> 3 desktop tester agents (split by domain)
-- MCP server changes -> 1 separate mcp tester agent
-
-Keep related files together (service + its utils + its types).
-
-### 2b. Spawn parallel agents
-
-Use the **Agent** tool to spawn testers in parallel. Each agent gets:
-
-**Desktop tester prompt template:**
+Output exactly this — nothing else. No phase-by-phase narration.
 
 ```
-You are a test writer for the ADE desktop app (Electron + TypeScript).
+## /automate summary
 
-Your task: Write unit tests for the following files/functions:
-[LIST THE SPECIFIC TEST ITEMS FROM THE GAP TRACKER]
+Feature: <name or "inferred from diff">
 
-RULES:
-1. Read 1-2 existing tests in the same domain BEFORE writing anything.
-   Copy their exact patterns for imports, mocking, assertions.
-2. File naming: colocated next to source — `{module}.test.ts` beside `{module}.ts`
-3. Every public function gets: happy path + error cases + edge cases.
-4. NEVER write silent null guards (if (!x) return). Tests must FAIL LOUDLY.
-5. NEVER mock the thing you're testing.
-6. Run each test file as you write it:
-   cd apps/desktop && npx vitest run {file}
-7. Fix until passing before moving to the next file.
-8. Use vi.mock() for external dependencies, not for the module under test.
-9. For renderer tests, use node environment (not jsdom) unless the test genuinely needs DOM.
+Pruned:
+- <N> orphaned test files removed: <paths>
+- <N> .skip/.todo blocks removed: <file:test name>
+- <N> anti-pattern tests fixed/removed: <paths + 1-line reason each>
 
-When ALL tests pass, report back with a summary of files created and test counts.
-```
+Consolidated:
+- <merged files → resulting file>, or "none"
 
-**MCP tester prompt template:**
+Added:
+- <new file or extended file> — <N tests covering: contract A, contract B>
+- Or "none — feature was visual / fully covered by consolidation"
 
-```
-You are a test writer for the ADE MCP server.
+Verification:
+- Affected files: PASS (<N> tests)
+- Shard re-run: PASS
 
-Your task: Write unit tests for the following files/functions:
-[LIST THE SPECIFIC TEST ITEMS FROM THE GAP TRACKER]
+Notes / assumptions:
+- <anything non-obvious>
 
-RULES:
-1. Read existing tests (apps/mcp-server/src/mcpServer.test.ts, transport.test.ts) for patterns.
-2. File naming: colocated `{module}.test.ts` beside source.
-3. Run each test file as you write it:
-   cd apps/mcp-server && npx vitest run {file}
-4. Fix until passing before moving to the next file.
-
-When ALL tests pass, report back with a summary.
+Next: /finalize
 ```
 
 ---
 
-## Phase 3: Monitor Agent Progress
+## Completion rules
 
-After spawning all agents, **wait for them to complete**. Do NOT start doing work yourself.
+Mark **failed** if you cannot make a meaningful judgment about what changed.
+Mark **partial** if Pass 1 left some tests still failing that you could not fix.
+Mark **completed** only if all of:
 
-**If an agent gets stuck:**
-- Message them directly with guidance
-- If a test failure reveals an implementation bug, coordinate the fix
-
-Wait for ALL agents to report completion before proceeding.
-
----
-
-## Phase 4: Test Reality Check
-
-For each test file created, verify:
-
-1. **Does every mocked service/function actually get called in the real code?**
-2. **Are there any tests that would pass even if the feature is completely broken?**
-3. **Are there any silent null guards** (`if (!x) return`) that mask setup failures?
-4. **Does the test actually exercise the code path it claims to test?**
-5. **Are mocks realistic?** (e.g., don't mock away the entire service when testing a utility)
-
-**Anti-pattern check:**
-
-```typescript
-// BAD - test silently passes when setup fails
-it("should handle merge context", () => {
-  if (!testData) return  // SILENT PASS — never ran!
-})
-
-// GOOD - fail loudly
-it("should handle merge context", () => {
-  expect(testData, "testData should be set by beforeAll").toBeTruthy()
-  const result = buildMergeContext(testData)
-  expect(result.conflicts).toHaveLength(0)
-})
-```
-
-If issues are found, fix them directly.
-
----
-
-## Phase 5: Scoped Test Run
-
-Verify the tests **this command just wrote** pass. Do NOT run the full suite — that is `/finalize`'s job, and running it here doubles the wait with no new signal.
-
-### 5a. New test files together
-
-Run every test file created in Phase 3 in a single invocation:
-
-```bash
-cd apps/desktop && npx vitest run [space-separated list of all new test files]
-```
-
-All new tests must pass. If any fail, fix in place and re-run only the failing files.
-
-### 5b. Affected existing tests
-
-If the branch's source changes could break existing tests (e.g., changed a service function's signature, renamed an exported type, altered shared contracts), run those existing test files — NOT the full suite:
-
-```bash
-cd apps/desktop && npx vitest run [affected existing test files]
-```
-
-Scope "affected" narrowly — direct importers of touched modules and their test siblings. Do not expand to "everything in the same feature folder."
-
-**If tests fail:**
-- Check if it's a flaky test (retry once)
-- If a specific test fails consistently, fix it and re-run only that file
-- Do NOT re-run all tests — only the failed ones
-
-### 5c. Not this command's job
-
-- **Full sharded suite run:** `/finalize` runs all 8 shards (and `test-ade-cli`) the same way CI does. Skip it here.
-- **Build / typecheck / lint:** also deferred to `/finalize`.
-
----
-
-## Phase 6: CI Verification
-
-### 6a. Check vitest workspace config
-
-Read `apps/desktop/vitest.workspace.ts` and verify every new test file matches one of the three workspace project include patterns:
-- `unit-main`: `src/main/**/*.test.{ts,tsx}`
-- `unit-renderer`: `src/renderer/**/*.test.{ts,tsx}`
-- `unit-shared`: `src/shared/**/*.test.{ts,tsx}` and `src/preload/**/*.test.{ts,tsx}`
-
-If a test file does NOT match, update the workspace config.
-
-### 6b. Check ci.yml coverage
-
-Read `.github/workflows/ci.yml`. Verify:
-
-1. The `test-desktop` job runs `npx vitest run --shard=${{ matrix.shard }}/8` (8 shards) — this catches all `*.test.{ts,tsx}` files across all 3 workspace projects (`unit-main`, `unit-renderer`, `unit-shared`), so new colocated tests are automatically included.
-2. The `test-mcp` job runs `npm test` in `apps/mcp-server/` — this catches all tests there.
-3. No new test patterns were introduced that fall outside these globs.
-4. The shard count in ci.yml matches what agents use locally (currently 8).
-
-### 6c. CI Coverage Checklist
-
-```
-- [ ] All new desktop test files match vitest.workspace.ts include patterns
-- [ ] All new MCP server test files are picked up by vitest config
-- [ ] Desktop tests will be included in sharded CI run
-- [ ] MCP server tests will be included in CI run
-- [ ] No test file exists without CI coverage
-```
-
----
-
-## Phase 7: Summary
-
-```
-## Test Automation Summary
-
-### Feature: [Name]
-### Branch Changes: X files modified
-
-### Tests Created:
-
-| App | Files | Tests | Status |
-|-----|-------|-------|--------|
-| Desktop | X | Y | PASS |
-| MCP Server | X | Y | PASS / N/A |
-| **Total** | **X** | **Y** | **All Pass** |
-
-### Test Files Created:
-- [List each file with test count]
-
-### Scoped Test Run:
-- New test files: PASS (X tests across Y files)
-- Affected existing tests: PASS (X tests) or N/A
-- NOTE: Full sharded suite run is deferred to `/finalize`.
-
-### CI Coverage:
-- vitest.workspace.ts: All new tests matched by include patterns
-- ci.yml test-desktop: Sharded run covers all new tests
-- ci.yml test-mcp: Covers all MCP server tests
-
-### Next Steps:
-- Run `/finalize` to wrap up (code simplifier, docs, CI checks)
-```
-
----
-
-## Critical Test Rules (Non-Negotiable)
-
-### Silent Null Guard Anti-Pattern
-Tests must FAIL LOUDLY. Never use `if (!x) return` in a test body.
-
-### Anti-Mock Rules
-- **CAN mock**: External services, file system, network, child processes, Electron APIs, IPC
-- **MUST NOT mock**: The module/function you're testing, the core logic under test
-- **Before writing any test, ask**: "Would this test pass even if the feature is completely broken?" If yes, rewrite it.
-
-### Mandatory Coverage
-- Every public function: Happy path + error cases + edge cases
-- Every state transition: Valid and invalid transitions
-- Every error handler: Verify errors propagate correctly
-
----
-
-## Completion Rules
-
-Mark as **"failed"** if you cannot create meaningful tests.
-Mark as **"partial"** if tests are created but some don't pass.
-Mark as **"completed"** ONLY if ALL of the following are true:
-
-1. ALL tests pass
-2. All applicable test types were created per gap tracker
-3. Scoped test run passed (Phase 5 — new + affected only; full suite deferred to /finalize)
-4. CI covers all new test files (Phase 6)
-5. No tests with silent null guards
-6. No tests that mock the thing being tested
-7. No test file exists without CI coverage
+1. Every change you made (delete, edit, add) leaves the suite green on the affected files.
+2. No `.skip`/`.only`/`.todo` introduced.
+3. No new test file mocks the module it tests.
+4. No new test file relies on `expect(true)`-class no-ops.
+5. Every new test file matches a vitest workspace glob.
+6. The summary is the *only* thing you output.

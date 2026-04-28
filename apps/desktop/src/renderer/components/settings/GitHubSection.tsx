@@ -1,10 +1,23 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import type { GitHubStatus } from "../../../shared/types";
-import { GithubLogo, CheckCircle, Warning, ArrowsClockwise, ShieldCheck, LinkBreak, Key, Shield, GitPullRequest, Eye, GitBranch, UsersThree } from "@phosphor-icons/react";
+import { GithubLogo, CheckCircle, Warning, ArrowsClockwise, ShieldCheck, LinkBreak, Key, Shield, GitPullRequest, Eye, GitBranch, ArrowSquareOut } from "@phosphor-icons/react";
 import { getGitHubTokenAccessState, REQUIRED_GITHUB_CLASSIC_SCOPES } from "../../../shared/githubScopes";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
+
+const GITHUB_CLASSIC_TOKEN_NEW_URL = "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
+const GITHUB_CLASSIC_TOKENS_URL = "https://github.com/settings/tokens";
+const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = "https://github.com/settings/personal-access-tokens/new?name=ADE&description=ADE%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&workflows=write";
+const GITHUB_FINE_GRAINED_TOKENS_URL = "https://github.com/settings/personal-access-tokens";
+
+const REQUIRED_GITHUB_FINE_GRAINED_PERMISSIONS = [
+  "Contents: Read and write",
+  "Pull requests: Read and write",
+  "Metadata: Read",
+  "Actions: Read and write",
+  "Workflows: Write",
+] as const;
 
 function detectTokenType(token: string): TokenType {
   if (token.startsWith("github_pat_")) return "fine-grained";
@@ -49,12 +62,25 @@ export function GitHubSection() {
       .then((status) => {
         setGithubStatus(status);
         setGithubTokenDraft("");
-        const accessState = getGitHubTokenAccessState(status.scopes ?? []);
-        setSaveNotice(
-          accessState.hasRequiredAccess
-            ? "GitHub token saved and verified."
-            : "GitHub token saved. Additional GitHub permissions are still required.",
-        );
+        if (status.connected) {
+          setSaveNotice("GitHub token saved and verified.");
+          return;
+        }
+        // Token was persisted, but it isn't actually usable. Surface the reason
+        // through `actionError` (red) rather than the green "saved" notice so
+        // the user is not misled into thinking they are done.
+        if (!status.userLogin) {
+          setActionError("Token saved, but authentication failed. Re-check the token value.");
+        } else if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
+          const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repo";
+          setActionError(
+            `Token saved, but it cannot access ${repoLabel}` +
+              (status.repoAccessError ? ` (${status.repoAccessError})` : "") +
+              ". Grant this repo Contents (read), Pull requests (read/write), and Metadata (read) on the fine-grained token.",
+          );
+        } else {
+          setActionError("Token saved, but it is missing required permissions. See the diagnostic below.");
+        }
       })
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setGithubBusy(false));
@@ -77,19 +103,33 @@ export function GitHubSection() {
   const handleRefreshStatus = () => {
     setGithubBusy(true);
     setActionError(null);
+    // forceRefresh: the user explicitly asked us to re-check, so bypass the
+    // 30s status cache. Required for the "fix permissions on github.com →
+    // come back and click REFRESH" recovery flow.
     window.ade.github
-      .getStatus()
+      .getStatus({ forceRefresh: true })
       .then((status) => setGithubStatus(status))
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setGithubBusy(false));
   };
 
-  const isConnected = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
+  // `tokenAuthenticated` = the token was decryptable AND identified a user. Not enough to claim
+  // the integration "works" — fine-grained tokens authenticate the user even when they can't
+  // read the active repo. `isConnected` (from the backend) is the real "GitHub is usable" gate.
+  const tokenAuthenticated = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
+  const isConnected = Boolean(githubStatus?.connected);
+  const isFineGrainedToken = githubStatus?.tokenType === "fine-grained";
+  const hasInspectableScopes = !isFineGrainedToken || (githubStatus?.scopes?.length ?? 0) > 0;
   const accessState = getGitHubTokenAccessState(githubStatus?.scopes ?? []);
-  const hasFullAccess = isConnected && accessState.hasRequiredAccess;
-  const hasMissingScopes = isConnected && !accessState.hasRequiredAccess;
-  const statusColor = hasFullAccess ? COLORS.success : isConnected ? COLORS.warning : COLORS.textMuted;
-  const statusLabel = hasFullAccess ? "CONNECTED" : isConnected ? "LIMITED ACCESS" : "NOT CONNECTED";
+  const repoProbeFailed =
+    tokenAuthenticated && githubStatus?.repoAccessOk === false;
+  const hasMissingScopes =
+    tokenAuthenticated && hasInspectableScopes && !accessState.hasRequiredAccess;
+  const statusColor = isConnected ? COLORS.success : tokenAuthenticated ? COLORS.warning : COLORS.textMuted;
+  const statusLabel = isConnected ? "CONNECTED" : tokenAuthenticated ? "LIMITED ACCESS" : "NOT CONNECTED";
+  const openExternal = (url: string) => {
+    void window.ade.app.openExternal(url);
+  };
 
   const sectionGap: CSSProperties = {
     display: "flex",
@@ -120,7 +160,9 @@ export function GitHubSection() {
   const inputStyle: CSSProperties = {
     height: 40,
     background: COLORS.recessedBg,
-    border: `1px solid ${COLORS.border}`,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: COLORS.border,
     borderRadius: 8,
     padding: "0 14px",
     fontSize: 12,
@@ -158,13 +200,19 @@ export function GitHubSection() {
     lineHeight: "18px",
   };
 
+  const linkButtonStyle: CSSProperties = {
+    ...outlineButton({ height: 30 }),
+    fontSize: 10,
+    padding: "0 10px",
+  };
+
   return (
     <div style={sectionGap}>
       {saveNotice ? <div style={noticeStyle}>{saveNotice}</div> : null}
       {actionError ? <div style={errorStyle}>{actionError}</div> : null}
 
       <div style={cardStyle({
-        borderColor: hasFullAccess ? `${COLORS.success}30` : isConnected ? `${COLORS.warning}30` : undefined,
+        borderColor: isConnected ? `${COLORS.success}30` : tokenAuthenticated ? `${COLORS.warning}30` : undefined,
       })}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -180,7 +228,7 @@ export function GitHubSection() {
           ) : null}
         </div>
 
-        {isConnected ? (
+        {tokenAuthenticated ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div
               style={{
@@ -213,18 +261,34 @@ export function GitHubSection() {
             </div>
 
             <div>
-              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>TOKEN SCOPES</div>
-              <div style={{ display: "grid", gap: 6 }}>
-                {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => {
-                  const present = accessState.requirements[scope].present;
-                  return (
-                    <div key={scope} style={scopeRowStyle(present)}>
-                      {present ? <CheckCircle size={14} weight="fill" /> : <Warning size={14} weight="fill" />}
-                      <span>{scope}</span>
-                    </div>
-                  );
-                })}
+              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>
+                {isFineGrainedToken && !hasInspectableScopes ? "TOKEN PERMISSIONS" : "TOKEN SCOPES"}
               </div>
+              {isFineGrainedToken && !hasInspectableScopes ? (
+                <div style={{ display: "grid", gap: 6 }}>
+                  {REQUIRED_GITHUB_FINE_GRAINED_PERMISSIONS.map((permission) => (
+                    <div key={permission} style={{ ...scopeRowStyle(false), color: COLORS.textSecondary }}>
+                      <ShieldCheck size={14} weight="fill" />
+                      <span>{permission}</span>
+                    </div>
+                  ))}
+                  <div style={{ ...infoBoxStyle, marginTop: 4 }}>
+                    GitHub does not expose granted fine-grained PAT permissions through the OAuth scopes header. Confirm this token was created with the permissions above.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 6 }}>
+                  {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => {
+                    const present = accessState.requirements[scope].present;
+                    return (
+                      <div key={scope} style={scopeRowStyle(present)}>
+                        {present ? <CheckCircle size={14} weight="fill" /> : <Warning size={14} weight="fill" />}
+                        <span>{scope}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {hasMissingScopes ? (
@@ -232,6 +296,23 @@ export function GitHubSection() {
                 Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
                 {" "}
                 Regenerate the token with the required permissions.
+              </div>
+            ) : null}
+
+            {repoProbeFailed ? (
+              <div style={errorStyle}>
+                Token authenticated as <strong>{githubStatus?.userLogin}</strong>, but cannot access{" "}
+                <strong>{githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "this repo"}</strong>
+                {githubStatus?.repoAccessError ? ` (${githubStatus.repoAccessError})` : ""}.
+                {isFineGrainedToken ? (
+                  <>
+                    {" "}
+                    Fine-grained tokens must explicitly include this repository under
+                    {" "}<em>Repository access</em>, with Contents (Read), Pull requests (Read and write), and Metadata (Read) permissions.
+                  </>
+                ) : (
+                  <> Make sure the token has access to this repository.</>
+                )}
               </div>
             ) : null}
 
@@ -268,6 +349,14 @@ export function GitHubSection() {
                 <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 10 }}>
                   Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token
                 </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+                  <button type="button" style={linkButtonStyle} onClick={() => openExternal(GITHUB_CLASSIC_TOKEN_NEW_URL)}>
+                    <ArrowSquareOut size={12} weight="bold" /> Create classic token
+                  </button>
+                  <button type="button" style={linkButtonStyle} onClick={() => openExternal(GITHUB_CLASSIC_TOKENS_URL)}>
+                    Manage tokens
+                  </button>
+                </div>
                 <div style={{ ...LABEL_STYLE, marginBottom: 6, letterSpacing: "0.05em" }}>REQUIRED SCOPES</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => (
@@ -301,15 +390,17 @@ export function GitHubSection() {
                 <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px", marginBottom: 10 }}>
                   Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token
                 </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+                  <button type="button" style={linkButtonStyle} onClick={() => openExternal(GITHUB_FINE_GRAINED_TOKEN_NEW_URL)}>
+                    <ArrowSquareOut size={12} weight="bold" /> Create fine-grained token
+                  </button>
+                  <button type="button" style={linkButtonStyle} onClick={() => openExternal(GITHUB_FINE_GRAINED_TOKENS_URL)}>
+                    Manage tokens
+                  </button>
+                </div>
                 <div style={{ ...LABEL_STYLE, marginBottom: 6, letterSpacing: "0.05em" }}>REQUIRED PERMISSIONS</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  {[
-                    "Contents: Read & Write",
-                    "Pull requests: Read & Write",
-                    "Metadata: Read",
-                    "Workflows: Read & Write",
-                    "Members (org): Read",
-                  ].map((perm) => (
+                  {REQUIRED_GITHUB_FINE_GRAINED_PERMISSIONS.map((perm) => (
                     <span key={perm} style={{
                       display: "inline-block",
                       fontSize: 10,
@@ -367,7 +458,7 @@ export function GitHubSection() {
         </div>
         <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "20px", marginBottom: 14 }}>
           ADE needs a few GitHub permissions to work on your behalf. Either token type works — fine-grained tokens are recommended for tighter control.
-          Fine-grained tokens also need Metadata: Read so ADE can inspect repository metadata alongside the other permissions below.
+          Fine-grained tokens also need Metadata: Read. Workflows has write-only access in GitHub's fine-grained token form.
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -385,13 +476,13 @@ export function GitHubSection() {
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Eye size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
             <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-              <strong style={{ color: COLORS.textPrimary }}>Workflows</strong> — inspect CI check results and trigger re-runs
+              <strong style={{ color: COLORS.textPrimary }}>Workflows</strong> — push lane changes that edit GitHub workflow files
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <UsersThree size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
+            <Eye size={16} weight="duotone" style={{ color: COLORS.info, flexShrink: 0 }} />
             <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-              <strong style={{ color: COLORS.textPrimary }}>Organization</strong> — read org members to suggest reviewers
+              <strong style={{ color: COLORS.textPrimary }}>Actions</strong> — inspect workflow runs and trigger failed job re-runs
             </span>
           </div>
         </div>

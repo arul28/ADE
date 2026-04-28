@@ -100,6 +100,17 @@ export type GitCommitSummary = {
   pushed: boolean;
 };
 
+export type GitFileHistoryEntry = {
+  commitSha: string;
+  shortSha: string;
+  authorName: string;
+  authoredAt: string;
+  subject: string;
+  path: string;
+  previousPath?: string | null;
+  changeType: "added" | "modified" | "deleted" | "renamed" | "copied" | "unknown";
+};
+
 export type GitListCommitFilesArgs = {
   laneId: string;
   commitSha: string;
@@ -108,6 +119,12 @@ export type GitListCommitFilesArgs = {
 export type GitGetCommitMessageArgs = {
   laneId: string;
   commitSha: string;
+};
+
+export type GitGetFileHistoryArgs = {
+  laneId: string;
+  path: string;
+  limit?: number;
 };
 
 export type GitStashSummary = {
@@ -167,6 +184,10 @@ export type GitBranchSummary = {
   isCurrent: boolean;
   isRemote: boolean;
   upstream: string | null;
+  ownedByLaneId?: string | null;
+  ownedByLaneName?: string | null;
+  profiledInCurrentLane?: boolean;
+  hasOpenPr?: boolean;
 };
 
 export type GitListBranchesArgs = {
@@ -176,6 +197,10 @@ export type GitListBranchesArgs = {
 export type GitCheckoutBranchArgs = {
   laneId: string;
   branchName: string;
+  mode?: "existing" | "create";
+  startPoint?: string;
+  baseRef?: string;
+  acknowledgeActiveWork?: boolean;
 };
 
 export type GitHubRepoRef = {
@@ -187,10 +212,20 @@ export type GitHubStatus = {
   tokenStored: boolean;
   tokenDecryptionFailed: boolean;
   storageScope: "app";
+  tokenType?: "classic" | "fine-grained" | "unknown";
   repo: GitHubRepoRef | null;
   userLogin: string | null;
   scopes: string[];
   checkedAt: string | null;
+  // null = no repo to probe / probe not run; true/false = result of GET /repos/{owner}/{repo}.
+  // Required because fine-grained tokens pass /user validation even when the user forgot to
+  // grant the active repo, which then 403s every PR-tab call.
+  repoAccessOk: boolean | null;
+  repoAccessError: string | null;
+  // Single source of truth for "GitHub is usable here" — UI banners and badges read this so
+  // they cannot disagree (the bug we just fixed: Settings said CONNECTED while the AppShell
+  // banner stayed up).
+  connected: boolean;
 };
 
 export type ListOperationsArgs = {

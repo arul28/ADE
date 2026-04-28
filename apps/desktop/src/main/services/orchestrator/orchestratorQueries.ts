@@ -807,8 +807,8 @@ const BLOCKING_WARNING_PATTERNS: Array<{ pattern: RegExp; category: BlockingWarn
   { pattern: /unauthorized/i, category: 'missing_auth' },
 ];
 
-// External MCP auth warnings that should NOT be treated as blocking
-const EXTERNAL_MCP_NOISE_PATTERNS: RegExp[] = [
+// Provider connector auth warnings that should NOT be treated as blocking.
+const PROVIDER_CONNECTOR_NOISE_PATTERNS: RegExp[] = [
   /claude\.ai\s+\S+:needs-auth/i,
   /claude\.ai\s+Gmail/i,
   /claude\.ai\s+Google Calendar/i,
@@ -827,8 +827,7 @@ export function classifyBlockingWarnings(args: {
   if (summary) textsToScan.push(summary);
 
   for (const text of textsToScan) {
-    // Skip external MCP noise
-    const isExternalNoise = EXTERNAL_MCP_NOISE_PATTERNS.some(p => p.test(text));
+    const isExternalNoise = PROVIDER_CONNECTOR_NOISE_PATTERNS.some(p => p.test(text));
     if (isExternalNoise) continue;
 
     for (const { pattern, category } of BLOCKING_WARNING_PATTERNS) {

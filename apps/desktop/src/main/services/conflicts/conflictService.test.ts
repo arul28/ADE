@@ -151,6 +151,47 @@ function insertPrediction(args: {
   );
 }
 
+async function setupAdditionalInstructionsResolver(prefix: string, projectId: string) {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
+  const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+  await seedProjectAndLane(db, projectId, repoRoot);
+
+  insertPrediction({
+    db,
+    projectId,
+    laneAId: "lane-1",
+    laneBId: "lane-target",
+    laneASha: laneHeadSha,
+    overlaps: ["src/a.ts"]
+  });
+
+  const lanes = [
+    createLaneSummary(repoRoot, { id: "lane-1", name: "Source lane", branchRef: "feature/lane-1" }),
+    createLaneSummary(repoRoot, { id: "lane-target", name: "Target lane", branchRef: "main" })
+  ];
+
+  return createConflictService({
+    db,
+    logger: createLogger(),
+    projectId,
+    projectRoot: repoRoot,
+    laneService: {
+      list: async () => lanes,
+      getLaneBaseAndBranch: ({ laneId }: { laneId: string }) => {
+        const lane = lanes.find((entry) => entry.id === laneId) ?? lanes[0]!;
+        return { worktreePath: lane.worktreePath, baseRef: lane.baseRef, branchRef: lane.branchRef };
+      }
+    } as any,
+    projectConfigService: {
+      get: () => ({
+        local: { providers: { contextTools: { conflictResolvers: {} } } },
+        effective: { providerMode: "guest", providers: {} }
+      })
+    } as any,
+  });
+}
+
 describe("conflictService conflict context integrity", () => {
   it("passes relevant file contexts into subscription conflict proposal jobs", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-ctx-"));
@@ -643,6 +684,45 @@ describe("conflictService conflict context integrity", () => {
     expect(canceled.error).toContain("User canceled");
   });
 
+  it("appends additionalInstructions to the prompt file when provided", async () => {
+    const service = await setupAdditionalInstructionsResolver(
+      "ade-conflicts-additional-instructions-",
+      "proj-additional-instructions",
+    );
+
+    const prepared = await service.prepareResolverSession({
+      provider: "claude",
+      sourceLaneIds: ["lane-1"],
+      targetLaneId: "lane-target",
+      scenario: "single-merge",
+      additionalInstructions: "Please preserve all existing imports and do not rename variables.",
+    });
+
+    expect(prepared.promptFilePath).toBeTruthy();
+    const promptContent = fs.readFileSync(prepared.promptFilePath, "utf8");
+    expect(promptContent).toContain("## Operator instructions");
+    expect(promptContent).toContain("Please preserve all existing imports and do not rename variables.");
+  });
+
+  it("does not append operator instructions section when additionalInstructions is empty", async () => {
+    const service = await setupAdditionalInstructionsResolver(
+      "ade-conflicts-no-additional-instructions-",
+      "proj-no-additional-instructions",
+    );
+
+    const prepared = await service.prepareResolverSession({
+      provider: "claude",
+      sourceLaneIds: ["lane-1"],
+      targetLaneId: "lane-target",
+      scenario: "single-merge",
+      additionalInstructions: "   ",
+    });
+
+    expect(prepared.promptFilePath).toBeTruthy();
+    const promptContent = fs.readFileSync(prepared.promptFilePath, "utf8");
+    expect(promptContent).not.toContain("## Operator instructions");
+  });
+
   it("short-circuits external resolver when context is insufficient", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-external-insufficient-"));
     const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
@@ -883,8 +963,8 @@ describe("conflictService conflict context integrity", () => {
         insert into pull_requests(
           id, lane_id, project_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
           title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
-          last_synced_at, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          last_synced_at, created_at, updated_at, creation_strategy
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         "pr-2",
@@ -905,7 +985,8 @@ describe("conflictService conflict context integrity", () => {
         0,
         now,
         now,
-        now
+        now,
+        "pr_target"
       ]
     );
     db.run(

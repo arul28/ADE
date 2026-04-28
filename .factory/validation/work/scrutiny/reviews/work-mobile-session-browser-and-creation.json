@@ -1,0 +1,28 @@
+{
+  "featureId": "work-mobile-session-browser-and-creation",
+  "reviewedAt": "2026-04-16T14:59:55Z",
+  "commitId": "f9d2f129d63d49c7d4d9f7beb478a40c17ff4d52",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature substantially improves the Work root by merging chat and terminal sessions, adding explicit root-state notices, and making new chat creation lane-aware, but it does not fully preserve the promised filter context because the Activity section ignores the active search and lane/status filters. It also leaves newly broadened live-session copy chat-specific even when the live items are terminal sessions.",
+    "issues": [
+      {
+        "file": "apps/ios/ADE/Views/Work/WorkRootScreen.swift",
+        "line": 124,
+        "severity": "blocking",
+        "description": "`activityFeed` is built from `liveChatSessions`, and `liveChatSessions` is derived from `mergedSessions` rather than the already-filtered `displaySessions` (`WorkRootScreen.swift:124-145`). The root always renders that feed whenever it is non-empty (`WorkRootScreen.swift:190-196`), so applying a lane filter or search still leaves unrelated activity rows from other sessions visible above the filtered browser. That breaks the feature's stated requirement to preserve search/filter/lane context and means the Work root does not consistently honor the mobile triage filters promised by `VAL-WORK-001` and `VAL-WORK-009`."
+      },
+      {
+        "file": "apps/ios/ADE/Views/Work/WorkRootComponents.swift",
+        "line": 107,
+        "severity": "non_blocking",
+        "description": "After this feature expanded the root browser to include terminal sessions, the live banner copy still hard-codes chat-only wording (`\"1 chat is live\"`, `\"X chats are live\"`, `\"X chats need input\"`) at `WorkRootComponents.swift:107-114`, even though the count it receives comes from `liveSessions` and includes terminal rows (`WorkRootScreen.swift:101-108,170-186`). The browser remains functional, but the banner now mislabels terminal-only live work and weakens the scannability/clarity this feature was supposed to improve."
+      }
+    ]
+  },
+  "sharedStateObservations": [],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the Work browser/root-state/new-chat refactor largely lands, but the Activity section bypasses the active Work filters and shows out-of-scope sessions, so the root does not fully preserve the promised triage context. Non-blocking: the live banner still speaks about chats even when the live rows are terminal sessions."
+}

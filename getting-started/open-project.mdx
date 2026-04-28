@@ -31,12 +31,10 @@ When ADE opens a repository for the first time, it creates a `.ade/` directory a
 .ade/
   artifacts/           ← packs, proofs, and mission outputs
     packs/
-      project/         ← project-wide context pack
-      lanes/           ← per-lane context packs
-      features/        ← per-feature context packs (Linear-linked)
+      lanes/           ← lane artifacts and compatibility snapshots
+      features/        ← feature artifacts (Linear-linked)
       conflicts/       ← conflict resolution context
       missions/        ← mission plans and phase snapshots
-  context/             ← generated PRD and architecture docs
   cto/                 ← CTO identity, memory, and configuration
   worktrees/           ← git worktrees for lanes (one per lane)
   db/                  ← SQLite database for lanes, sessions, history
@@ -50,7 +48,7 @@ Add `.ade/` to your `.gitignore` if it is not already there. The `.ade/` directo
 
 ## First-Run Onboarding
 
-When ADE opens a new repository, it launches the **project setup wizard** — a 7-step flow that configures your development tools, AI providers, GitHub integration, and context documents.
+When ADE opens a new repository, it launches the **project setup wizard** — a 6-step flow that configures your development tools, AI providers, GitHub integration, semantic search, and Linear.
 
 <Steps>
   <Step title="Dev tools check">
@@ -66,8 +64,6 @@ When ADE opens a new repository, it launches the **project setup wizard** — a 
   <Step title="Background helpers">
     Enable optional background services:
     - **Auto-titling** — generates descriptive names for lanes and sessions based on their content
-    - **Context doc generation** — creates baseline PRD and architecture docs from your codebase (see step 7)
-    - **Auto-refresh** — keeps lane packs and context docs up to date automatically after commits
   </Step>
   <Step title="GitHub">
     Authenticate with GitHub for PR management, CI sync, and stacked PR workflows. ADE uses the GitHub CLI (`gh`) for authentication — if you are already logged in via `gh auth login`, ADE detects this automatically.
@@ -77,13 +73,6 @@ When ADE opens a new repository, it launches the **project setup wizard** — a 
   </Step>
   <Step title="Linear">
     Connect Linear for bidirectional issue tracking with the CTO agent. This step is optional — skip it if you do not use Linear. See [Linear Integration](/cto/linear) for details.
-  </Step>
-  <Step title="Context docs">
-    Generate baseline PRD and architecture documents from your codebase. ADE scans your repository's documentation files (README, docs/, etc.), code structure, and dependency graph to produce two structured documents:
-    - **PRD.ade.md** — what the project is, who it is for, and its feature areas
-    - **ARCHITECTURE.ade.md** — system shape, core services, data model, and key patterns
-
-    These documents become part of the Project Pack and are injected into every agent session as foundational context.
   </Step>
 </Steps>
 

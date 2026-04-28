@@ -18,23 +18,30 @@ function makeMinimalConfig(processes: Array<{
   id: string;
   command: string[];
   cwd?: string;
-}>) {
+  restart?: "never" | "on-failure" | "always" | "on_crash";
+  dependsOn?: string[];
+  readiness?: { type: "none" } | { type: "port"; port: number } | { type: "logRegex"; pattern: string };
+}>, options: {
+  stackButtons?: Array<{ id: string; name: string; processIds: string[]; startOrder: "parallel" | "dependency" }>;
+} = {}) {
   const defs = processes.map((p) => ({
     id: p.id,
     name: p.id,
     command: p.command,
     cwd: p.cwd ?? ".",
     env: {},
+    groupIds: [],
     autostart: false,
-    restart: "never" as const,
+    restart: p.restart ?? "never" as const,
     gracefulShutdownMs: 1000,
-    dependsOn: [],
-    readiness: { type: "none" as const },
+    dependsOn: p.dependsOn ?? [],
+    readiness: p.readiness ?? { type: "none" as const },
   }));
   return {
     effective: {
       processes: defs,
-      stackButtons: [],
+      stackButtons: options.stackButtons ?? [],
+      processGroups: [],
       laneOverlayPolicies: [],
     },
     local: {},
@@ -63,7 +70,7 @@ function makeLaneSummary(tmpDir: string, laneId: string) {
   };
 }
 
-function createPtyHarness(tmpDir: string) {
+function createPtyHarness(tmpDir: string, options: { deferDisposeExit?: boolean } = {}) {
   const sessionStore = new Map<string, { id: string; laneId: string; ptyId: string | null; transcriptPath: string }>();
   const dataListeners = new Set<(event: { laneId: string; ptyId: string; sessionId: string; data: string }) => void>();
   const exitListeners = new Set<(event: { laneId: string; ptyId: string; sessionId: string; exitCode: number | null }) => void>();
@@ -95,6 +102,7 @@ function createPtyHarness(tmpDir: string) {
       if (!sessionId) return;
       const session = sessionStore.get(sessionId);
       if (!session) return;
+      if (options.deferDisposeExit) return;
       for (const listener of exitListeners) {
         listener({
           laneId: session.laneId,
@@ -204,6 +212,7 @@ describe("processService PTY-backed run commands", () => {
     try {
       await service.start({ laneId: "lane-env", processId: "print-env" });
       expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
+        allowNewSessionId: true,
         env: expect.objectContaining({
           PORT: "3001",
           PORT_RANGE_START: "3001",
@@ -216,6 +225,65 @@ describe("processService PTY-backed run commands", () => {
       service.disposeAll();
       db.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a managed process to use an explicit absolute cwd outside the lane worktree", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-absolute-cwd-"));
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-absolute");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    const dbPath = path.join(projectRoot, "kv.sqlite");
+    const projectId = "proj-absolute-cwd";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(projectRoot);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, projectRoot, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-absolute", projectId, "Lane Absolute", null, "worktree", "main", "feature/absolute", laneRoot, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "absolute-proc", command: ["scripts/dogfood.sh", "code-review"], cwd: projectRoot },
+    ]);
+
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => laneRoot,
+        list: async () => [makeLaneSummary(laneRoot, "lane-absolute")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const resolvedProjectRoot = fs.realpathSync(projectRoot);
+      await service.start({ laneId: "lane-absolute", processId: "absolute-proc" });
+      expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
+        allowExternalCwd: true,
+        cwd: resolvedProjectRoot,
+      }));
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 
@@ -348,6 +416,608 @@ describe("processService PTY-backed run commands", () => {
       expect(runRow!.exit_code).toBe(42);
       expect(runRow!.termination_reason).toBe("crashed");
       expect(events.some((event) => event.type === "runtime" && event.runtime.status === "crashed")).toBe(true);
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows multiple concurrent runs for the same command and stops them together", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-multi-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-multi";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-multi", projectId, "Lane Multi", null, "worktree", "main", "feature/multi", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([{ id: "web", command: ["npm", "run", "dev"] }]);
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-multi")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const first = await service.start({ laneId: "lane-multi", processId: "web" });
+      const second = await service.start({ laneId: "lane-multi", processId: "web" });
+
+      expect(first.runId).not.toBe(second.runId);
+      expect(first.sessionId).not.toBe(second.sessionId);
+
+      const live = service.listRuntime("lane-multi").filter((runtime) => runtime.processId === "web");
+      expect(live).toHaveLength(2);
+      expect(live.every((runtime) => runtime.status === "running")).toBe(true);
+
+      await service.stop({ laneId: "lane-multi", processId: "web" });
+
+      const stopped = service.listRuntime("lane-multi").filter((runtime) => runtime.processId === "web");
+      expect(stopped).toHaveLength(2);
+      expect(stopped.every((runtime) => runtime.status === "exited")).toBe(true);
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stop({ runId }) targets only the specified run and leaves siblings running", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-stop-runid-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-stop-runid";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-stop", projectId, "Lane Stop", null, "worktree", "main", "feature/stop", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([{ id: "web", command: ["npm", "run", "dev"] }]);
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-stop")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const first = await service.start({ laneId: "lane-stop", processId: "web" });
+      const second = await service.start({ laneId: "lane-stop", processId: "web" });
+      expect(first.runId).not.toBe(second.runId);
+
+      await service.stop({ laneId: "lane-stop", processId: "web", runId: first.runId });
+
+      const afterFirstStop = service.listRuntime("lane-stop").filter((r) => r.processId === "web");
+      const firstEntry = afterFirstStop.find((r) => r.runId === first.runId);
+      const secondEntry = afterFirstStop.find((r) => r.runId === second.runId);
+      expect(firstEntry).toBeTruthy();
+      expect(secondEntry).toBeTruthy();
+      expect(firstEntry!.status).toBe("exited");
+      expect(secondEntry!.status).toBe("running");
+
+      await service.stop({ laneId: "lane-stop", processId: "web", runId: second.runId });
+
+      const afterSecondStop = service.listRuntime("lane-stop").filter((r) => r.processId === "web");
+      expect(afterSecondStop.find((r) => r.runId === second.runId)!.status).toBe("exited");
+      expect(afterSecondStop.every((r) => r.status === "exited")).toBe(true);
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stop returns null when there is no matching active run", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-stop-null-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-stop-null";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-null", projectId, "Lane Null", null, "worktree", "main", "feature/null", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([{ id: "web", command: ["npm", "run", "dev"] }]);
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-null")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const result = await service.stop({ laneId: "lane-null", processId: "web" });
+      expect(result).toBeNull();
+
+      await service.start({ laneId: "lane-null", processId: "web" });
+      await service.stop({ laneId: "lane-null", processId: "web" });
+
+      const secondResult = await service.stop({ laneId: "lane-null", processId: "web" });
+      expect(secondResult).toBeNull();
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("listRuntime returns every run sorted most-recent first", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-listruntime-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-listruntime";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-order", projectId, "Lane Order", null, "worktree", "main", "feature/order", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "web", command: ["npm", "run", "web"] },
+      { id: "api", command: ["npm", "run", "api"] },
+    ]);
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-order")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const webFirst = await service.start({ laneId: "lane-order", processId: "web" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const apiRun = await service.start({ laneId: "lane-order", processId: "api" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const webLatest = await service.start({ laneId: "lane-order", processId: "web" });
+
+      const runtimes = service.listRuntime("lane-order");
+      expect(runtimes).toHaveLength(3);
+      const orderedIds = runtimes.map((r) => r.runId);
+      expect(orderedIds[0]).toBe(webLatest.runId);
+      expect(orderedIds).toContain(webFirst.runId);
+      expect(orderedIds).toContain(apiRun.runId);
+      expect(orderedIds.indexOf(webLatest.runId)).toBeLessThan(orderedIds.indexOf(apiRun.runId));
+      expect(orderedIds.indexOf(apiRun.runId)).toBeLessThan(orderedIds.indexOf(webFirst.runId));
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restart issues a new runId and leaves the old run exited", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-restart-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-restart";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService, emitExit } = createPtyHarness(tmpDir, { deferDisposeExit: true });
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-restart", projectId, "Lane Restart", null, "worktree", "main", "feature/restart", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([{ id: "web", command: ["npm", "run", "dev"] }]);
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-restart")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const original = await service.start({ laneId: "lane-restart", processId: "web" });
+      const restartPromise = service.restart({ laneId: "lane-restart", processId: "web" });
+      await Promise.resolve();
+
+      expect(ptyService.dispose).toHaveBeenCalledWith({
+        ptyId: original.ptyId,
+        sessionId: original.sessionId,
+      });
+      expect(ptyService.create).toHaveBeenCalledTimes(1);
+
+      emitExit(String(original.sessionId), null);
+      const restarted = await restartPromise;
+
+      expect(restarted.runId).not.toBe(original.runId);
+      expect(restarted.status).toBe("running");
+
+      const runtimes = service.listRuntime("lane-restart").filter((r) => r.processId === "web");
+      expect(runtimes).toHaveLength(2);
+      const oldRuntime = runtimes.find((r) => r.runId === original.runId);
+      const newRuntime = runtimes.find((r) => r.runId === restarted.runId);
+      expect(oldRuntime).toBeTruthy();
+      expect(newRuntime).toBeTruthy();
+      expect(oldRuntime!.status).toBe("exited");
+      expect(newRuntime!.status).toBe("running");
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("starts dependency-ordered stacks in dependency order and stops them in reverse", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-stack-order-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-stack-order";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-stack", projectId, "Lane Stack", null, "worktree", "main", "feature/stack", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "api", command: ["npm", "run", "api"], dependsOn: ["db"] },
+      { id: "db", command: ["npm", "run", "db"] },
+    ], {
+      stackButtons: [{ id: "full", name: "Full", processIds: ["api", "db"], startOrder: "dependency" }],
+    });
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-stack")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      await service.startStack({ laneId: "lane-stack", stackId: "full" });
+
+      expect(
+        ptyService.create.mock.calls.map((call: any[]) => [call[0].command, ...call[0].args].join(" ")),
+      ).toEqual(["npm run db", "npm run api"]);
+
+      await service.stopStack({ laneId: "lane-stack", stackId: "full" });
+
+      const disposedSessionIds = ptyService.dispose.mock.calls.map((call: any[]) => call[0].sessionId);
+      const runtimes = service.listRuntime("lane-stack");
+      const api = runtimes.find((runtime) => runtime.processId === "api");
+      const dbRuntime = runtimes.find((runtime) => runtime.processId === "db");
+      expect(disposedSessionIds).toEqual([api?.sessionId, dbRuntime?.sessionId]);
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps log-regex readiness in starting until matching output arrives", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-readiness-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-readiness";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService, emitData } = createPtyHarness(tmpDir);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-ready", projectId, "Lane Ready", null, "worktree", "main", "feature/ready", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "web", command: ["npm", "run", "web"], readiness: { type: "logRegex", pattern: "ready on http" } },
+    ]);
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-ready")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const started = await service.start({ laneId: "lane-ready", processId: "web" });
+      expect(started.status).toBe("starting");
+      expect(started.readiness).toBe("unknown");
+
+      emitData(String(started.sessionId), "still booting\n");
+      expect(service.listRuntime("lane-ready").find((runtime) => runtime.runId === started.runId)?.status).toBe("starting");
+
+      emitData(String(started.sessionId), "ready on http://localhost:3000\n");
+      const ready = service.listRuntime("lane-ready").find((runtime) => runtime.runId === started.runId);
+      expect(ready?.status).toBe("running");
+      expect(ready?.readiness).toBe("ready");
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-restarts failed processes when restart policy requests it", async () => {
+    vi.useFakeTimers();
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-autorestart-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-autorestart";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService, emitExit } = createPtyHarness(tmpDir);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-retry", projectId, "Lane Retry", null, "worktree", "main", "feature/retry", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "worker", command: ["npm", "run", "worker"], restart: "on-failure" },
+    ]);
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-retry")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const failed = await service.start({ laneId: "lane-retry", processId: "worker" });
+      emitExit(String(failed.sessionId), 1);
+      expect(ptyService.create).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(400);
+
+      expect(ptyService.create).toHaveBeenCalledTimes(2);
+      const runtimes = service.listRuntime("lane-retry").filter((runtime) => runtime.processId === "worker");
+      expect(runtimes.some((runtime) => runtime.runId === failed.runId && runtime.status === "crashed")).toBe(true);
+      expect(runtimes.some((runtime) => runtime.runId !== failed.runId && runtime.status === "running")).toBe(true);
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("getLogTail({ runId }) returns only the specified run's transcript", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-logtail-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-logtail";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService, emitData } = createPtyHarness(tmpDir);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-tail", projectId, "Lane Tail", null, "worktree", "main", "feature/tail", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "web", command: ["npm", "run", "dev"] },
+      { id: "api", command: ["npm", "run", "api"] },
+    ]);
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-tail")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      const first = await service.start({ laneId: "lane-tail", processId: "web" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const second = await service.start({ laneId: "lane-tail", processId: "web" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const api = await service.start({ laneId: "lane-tail", processId: "api" });
+
+      emitData(String(first.sessionId), "first run log\n");
+      emitData(String(second.sessionId), "second run log\n");
+      emitData(String(api.sessionId), "api run log\n");
+
+      const firstTail = service.getLogTail({
+        laneId: "lane-tail",
+        processId: "web",
+        runId: first.runId,
+      });
+      const secondTail = service.getLogTail({
+        laneId: "lane-tail",
+        processId: "web",
+        runId: second.runId,
+      });
+
+      expect(firstTail).toContain("first run log");
+      expect(firstTail).not.toContain("second run log");
+      expect(secondTail).toContain("second run log");
+      expect(secondTail).not.toContain("first run log");
+
+      const defaultTail = service.getLogTail({ laneId: "lane-tail", processId: "web" });
+      expect(defaultTail).toContain("second run log");
+      expect(defaultTail).not.toContain("first run log");
+
+      const mismatchedRunTail = service.getLogTail({
+        laneId: "lane-tail",
+        processId: "web",
+        runId: api.runId,
+      });
+      expect(mismatchedRunTail).toContain("second run log");
+      expect(mismatchedRunTail).not.toContain("api run log");
     } finally {
       service.disposeAll();
       db.close();

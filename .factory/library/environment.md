@@ -23,3 +23,14 @@ Environment variables, external dependencies, and setup notes.
 - Development team: configured in Xcode project settings
 - Code signing disabled for tests (CODE_SIGNING_ALLOWED = NO)
 - Asset catalog warning: BrandMark.imageset references missing logo.png (cosmetic only)
+
+## Mission-specific environment notes
+- Mission simulator target: `platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1`
+- Desktop parity work may also touch `apps/desktop/`; `npm` must be available in addition to `xcodebuild`
+- Live synced-behavior validation may launch a local ADE desktop host and pair the simulator against it
+- When ADE desktop is running locally for validation, the observed/default sync host port is `8787`
+
+## Validation baseline
+- The build path is executable locally
+- The iOS test path is executable locally
+- The mission starts with 2 baseline failing iOS tests and must fix them in the foundation milestone before treating the suite as green

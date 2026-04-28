@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160" fill="none">
+  <rect x="60" y="60" width="60" height="40" rx="8" fill="var(--color-surface-2, rgba(255,255,255,0.05))" stroke="var(--color-accent, #A78BFA)" stroke-opacity="0.6"/>
+  <rect x="200" y="60" width="60" height="40" rx="8" fill="var(--color-accent, #A78BFA)" fill-opacity="0.18" stroke="var(--color-accent, #A78BFA)" stroke-opacity="0.8"/>
+  <path d="M120 80 L 200 80" stroke="var(--color-accent, #A78BFA)" stroke-width="2" marker-end="url(#arrow)"/>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="var(--color-accent, #A78BFA)"/>
+    </marker>
+  </defs>
+  <text x="78" y="84" font-family="var(--font-mono, monospace)" font-size="10" fill="var(--color-muted-fg, #908FA0)">trigger</text>
+  <text x="217" y="84" font-family="var(--font-mono, monospace)" font-size="10" fill="var(--color-fg, #F0F0F2)">action</text>
+</svg>

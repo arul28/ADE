@@ -54,6 +54,6 @@ The isolated scope lives in `infra/scripts/review-missions-stabilization.sh` and
 
 - `apps/desktop/src/renderer/components/graph/WorkspaceGraphPage.test.tsx`
 - `apps/desktop/src/renderer/components/run/RunPage.test.tsx`
-- `apps/mcp-server/src/mcpServer.ts`
+- `apps/ade-cli/src/adeRpcServer.ts`
 
 Those failures are intentionally documented here so mission stabilization verification can proceed without trying to rewrite or discard unrelated work already present in the tree.

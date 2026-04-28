@@ -20,7 +20,7 @@ Stored as `StoredArtifactRow`:
 
 - `id` — UUID.
 - `artifact_kind` — one of `screenshot`, `video_recording`, `browser_trace`, `browser_verification`, `console_logs`.
-- `backend_style` — `mcp` | `cli` | `local`.
+- `backend_style` — `ade-cli` | `cli` | `local`.
 - `backend_name` — human-readable backend name (e.g. `"Ghost OS"`, `"agent-browser"`, `"ADE local"`).
 - `source_tool_name` — the tool or command that produced the artifact (e.g. `"ghost_screenshot"`, `"screenshotPath"`).
 - `original_type` — original kind hint from the source (for traceability).

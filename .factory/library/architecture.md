@@ -47,3 +47,35 @@ Architectural decisions, patterns discovered, and conventions.
 - `LaneDetailPayload`: Full detail (lane + runtime + stack + children + state + suggestions + conflicts + commits + changes + stashes + sessions)
 - Lane types: "primary", "worktree", "attached"
 - Runtime buckets: "running", "awaiting-input", "ended", "none"
+
+## Mission parity architecture
+
+This mission is about bringing the existing iOS tabs to mobile-first parity with desktop behavior for the surfaces that already exist on iOS.
+
+### Scope boundaries
+- In scope tabs: `Lanes`, `Work`, `Files`, `PRs`, `Settings`
+- Out of scope product surfaces: dedicated `CTO`, dedicated `Missions`
+- `Files` is read-only mobile parity, not Monaco editing parity
+- `Settings` is core mobile settings only, not full desktop settings parity
+
+### Worker boundary split
+- `ios-worker`: SwiftUI/UI-only work inside `apps/ios/ADE/`
+- `sync-parity-worker`: desktop sync-host/shared payload work plus iOS `SyncService` / `RemoteModels` / `Database` changes when parity requires it
+
+### Current tab state snapshot
+- `Lanes` is the benchmark tab and should be used as the quality reference for structure, state handling, and shared component patterns
+- `Work` is the weakest major tab: feature-rich but extremely monolithic and currently the biggest performance/UX problem
+- `Files` is functionally deep but still monolithic and must end as a read-only mobile browsing/search/diff surface
+- `PRs` is functionally broad but monolithic; mobile list/detail/workflow adaptation is required
+- `Settings` currently centers on sync/pairing + appearance and needs to become a coherent mobile settings shell
+
+### Shared parity pressure points
+- `ContentView.swift` owns root tab selection and cross-tab navigation requests (`settingsPresented`, `requestedFilesNavigation`, `requestedLaneNavigation`, `requestedPrNavigation`)
+- Many parity gaps are contract gaps, not just renderer gaps; backend expansion is allowed when it is needed to support the existing iOS tabs
+- Preserve cached/offline readability and explicit live-action gating when extending contracts
+
+### Quality bar for this mission
+- Prefer shared `Views/Components/` primitives over tab-local duplication
+- Keep large SwiftUI files split into focused files under per-tab folders
+- Preserve source-tab context when navigating away and back
+- Avoid expensive derived work in SwiftUI `body`; cache or precompute where possible
