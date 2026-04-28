@@ -101,6 +101,7 @@ export type OrchestratorExecutorKind =
   | "claude"
   | "codex"
   | "cursor"
+  | "droid"
   | "opencode"
   | "shell"
   | "manual"

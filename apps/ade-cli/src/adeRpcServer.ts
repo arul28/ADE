@@ -1460,6 +1460,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
         modelId: { type: "string" },
         reasoningEffort: { type: "string" },
         permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"] },
+        droidPermissionMode: { type: "string", enum: ["read-only", "auto-low", "auto-medium", "auto-high"] },
         title: { type: "string" },
         initialPrompt: { type: "string" },
         openInUi: { type: "boolean" }

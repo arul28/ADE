@@ -2,6 +2,7 @@ import React from "react";
 import { Claude, Codex, Cursor, OpenCode } from "@lobehub/icons";
 import type { TerminalToolType } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { DroidLogo } from "../shared/ProviderLogos";
 
 type LogoProps = { size?: number; className?: string };
 
@@ -49,6 +50,7 @@ const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   "codex-chat": CodexLogo,
   "codex-orchestrated": CodexLogo,
   cursor: CursorAgentLogo,
+  "droid-chat": DroidLogo,
   "opencode-chat": OpenCodeLogo,
   "opencode-orchestrated": OpenCodeLogo,
   shell: ShellLogo,

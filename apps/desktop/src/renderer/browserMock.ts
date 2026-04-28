@@ -368,20 +368,23 @@ function isMockChatToolType(toolType: unknown): boolean {
         || normalized === "claude-chat"
         || normalized === "opencode-chat"
         || normalized === "cursor"
+        || normalized === "droid"
+        || normalized.startsWith("droid")
         || normalized.endsWith("-chat")
       ),
   );
 }
 
-function inferMockChatProvider(session: any): "claude" | "codex" | "cursor" | "opencode" {
+function inferMockChatProvider(session: any): "claude" | "codex" | "cursor" | "droid" | "opencode" {
   const metadataProvider = String(session?.resumeMetadata?.provider ?? "").trim().toLowerCase();
-  if (metadataProvider === "claude" || metadataProvider === "codex" || metadataProvider === "cursor" || metadataProvider === "opencode") {
+  if (metadataProvider === "claude" || metadataProvider === "codex" || metadataProvider === "cursor" || metadataProvider === "droid" || metadataProvider === "opencode") {
     return metadataProvider;
   }
   const toolType = String(session?.toolType ?? "").trim().toLowerCase();
   if (toolType.startsWith("claude")) return "claude";
   if (toolType.startsWith("codex")) return "codex";
   if (toolType === "cursor" || toolType.startsWith("cursor")) return "cursor";
+  if (toolType === "droid-chat" || toolType.startsWith("droid")) return "droid";
   return "opencode";
 }
 
@@ -398,17 +401,19 @@ function latestMockDoneEvent(events: any[]): any | null {
   return null;
 }
 
-function fallbackMockModelForProvider(provider: "claude" | "codex" | "cursor" | "opencode"): string {
+function fallbackMockModelForProvider(provider: "claude" | "codex" | "cursor" | "droid" | "opencode"): string {
   if (provider === "claude") return "sonnet";
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "auto";
+  if (provider === "droid") return "claude-opus-4-6";
   return "opencode/mock";
 }
 
-function fallbackMockModelIdForProvider(provider: "claude" | "codex" | "cursor" | "opencode"): string {
+function fallbackMockModelIdForProvider(provider: "claude" | "codex" | "cursor" | "droid" | "opencode"): string {
   if (provider === "claude") return DEFAULT_BROWSER_MOCK_CLAUDE_MODEL;
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "cursor/auto";
+  if (provider === "droid") return "droid/claude-opus-4-6";
   return "opencode/mock";
 }
 
@@ -450,6 +455,7 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
     codexSandbox: session.resumeMetadata?.codexSandbox ?? undefined,
     codexConfigSource: session.resumeMetadata?.codexConfigSource ?? undefined,
     opencodePermissionMode: session.resumeMetadata?.opencodePermissionMode ?? undefined,
+    droidPermissionMode: session.resumeMetadata?.droidPermissionMode ?? undefined,
     cursorModeSnapshot: session.resumeMetadata?.cursorModeSnapshot ?? undefined,
     cursorModeId: session.resumeMetadata?.cursorModeId ?? null,
     cursorConfigValues: session.resumeMetadata?.cursorConfigValues ?? null,
@@ -2008,7 +2014,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
 
   const BROWSER_MOCK_PROVIDER_CONNECTION = (
-    provider: "claude" | "codex" | "cursor",
+    provider: "claude" | "codex" | "cursor" | "droid",
   ) => ({
     provider,
     authAvailable: false,
@@ -2023,13 +2029,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
 
   const BROWSER_MOCK_AI_STATUS: any = {
     mode: "guest",
-    availableProviders: { claude: false, codex: false, cursor: false },
-    models: { claude: [], codex: [], cursor: [] },
+    availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+    models: { claude: [], codex: [], cursor: [], droid: [] },
     features: [],
     providerConnections: {
       claude: BROWSER_MOCK_PROVIDER_CONNECTION("claude"),
       codex: BROWSER_MOCK_PROVIDER_CONNECTION("codex"),
       cursor: BROWSER_MOCK_PROVIDER_CONNECTION("cursor"),
+      droid: BROWSER_MOCK_PROVIDER_CONNECTION("droid"),
     },
   };
 

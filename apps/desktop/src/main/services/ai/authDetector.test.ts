@@ -219,6 +219,53 @@ describe("authDetector", () => {
     );
   });
 
+  it("treats droid exec list-tools as a valid authenticated probe", async () => {
+    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-droid-auth-"));
+    process.env.HOME = tempHomeDir;
+    // Create a fake droid binary in a known bin dir so resolveDroidExecutable
+    // (which uses fs.statSync against real paths) finds it without falling
+    // through to the real CI PATH.
+    const droidBinDir = path.join(tempHomeDir, ".local", "bin");
+    fs.mkdirSync(droidBinDir, { recursive: true });
+    const fakeDroidPath = path.join(droidBinDir, "droid");
+    fs.writeFileSync(fakeDroidPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // Strip PATH so resolveExecutableFromKnownLocations skips real binaries
+    // on the CI runner and uses the temp home's known dirs.
+    process.env.PATH = "";
+
+    spawnMock.mockImplementation((command: string, args: string[] = []) => {
+      if (args[0] === "--version") {
+        if (command === "droid" || command.endsWith("/droid")) return fakeChild({ status: 0, stdout: "0.70.0\n" });
+        return fakeError();
+      }
+      if (command === "which") {
+        if (args[0] === "droid") return fakeChild({ status: 0, stdout: `${fakeDroidPath}\n` });
+        return fakeChild({ status: 1 });
+      }
+      if ((command === "droid" || command.endsWith("/droid")) && args[0] === "exec" && args[1] === "--list-tools") {
+        return fakeChild({ status: 0, stdout: "Available tools for Claude Opus 4.6\n" });
+      }
+      if ((command === "droid" || command.endsWith("/droid")) && args[0] === "account") {
+        return fakeChild({ status: 1, stderr: "unknown command 'account'\n" });
+      }
+      if ((command === "droid" || command.endsWith("/droid")) && args[0] === "whoami") {
+        return fakeChild({ status: 1, stderr: "unknown command 'whoami'\n" });
+      }
+      return fakeChild({ status: 1 });
+    });
+
+    const statuses = await detectCliAuthStatuses();
+    const droid = statuses.find((entry) => entry.cli === "droid");
+
+    expect(droid).toEqual({
+      cli: "droid",
+      installed: true,
+      path: fakeDroidPath,
+      authenticated: true,
+      verified: true,
+    });
+  });
+
   it("does not report openai-compatible local providers when no models are loaded", async () => {
     vi.stubGlobal(
       "fetch",

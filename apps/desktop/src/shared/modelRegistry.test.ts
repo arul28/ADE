@@ -3,6 +3,8 @@ import {
   createDynamicLocalModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
   decodeOpenCodeRegistryId,
+  droidCliLineGroupFromModelId,
+  droidCliLineGroupLabel,
   encodeOpenCodeRegistryId,
   ensureOpenCodeBaseURL,
   getAvailableModels,
@@ -245,6 +247,31 @@ describe("modelRegistry", () => {
     expect(resolveModelAlias("   ")).toBeUndefined();
     expect(resolveModelDescriptor("")).toBeUndefined();
     expect(resolveModelDescriptor("   ")).toBeUndefined();
+  });
+
+  it("resolves dynamic droid custom model ids with parentheses", () => {
+    const descriptor = getModelById("droid/custom:gpt-5.4(xhigh)");
+    expect(descriptor).toBeTruthy();
+    expect(descriptor?.family).toBe("factory");
+    expect(descriptor?.providerModelId).toBe("custom:gpt-5.4(xhigh)");
+  });
+
+  it("formats Droid custom thinking models with the ACP display label", () => {
+    const descriptor = getModelById("droid/custom:claude-sonnet-4-6-thinking-32000");
+    expect(descriptor).toBeTruthy();
+    expect(descriptor?.displayName).toBe("Claude Sonnet 4.6 (High)");
+  });
+
+  it("keeps Droid custom models in their own picker group", () => {
+    expect(droidCliLineGroupFromModelId("custom:claude-sonnet-4-6-thinking-32000")).toBe("custom");
+    expect(droidCliLineGroupFromModelId("custom:gpt-5.4(xhigh)")).toBe("custom");
+    expect(droidCliLineGroupLabel("custom")).toBe("Custom models");
+  });
+
+  it("uses compact Droid factory labels that match the CLI picker", () => {
+    const descriptor = getModelById("droid/claude-sonnet-4-6");
+    expect(descriptor).toBeTruthy();
+    expect(descriptor?.displayName).toBe("Sonnet 4.6 (1.2x)");
   });
 
   describe("ensureOpenCodeBaseURL", () => {

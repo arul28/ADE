@@ -1341,7 +1341,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     const providersRaw = isRecord(permissionsRaw.providers) ? permissionsRaw.providers : null;
     if (providersRaw) {
       const providers: NonNullable<NonNullable<AiConfig["permissions"]>["providers"]> = {};
-      const providerMode = (key: "claude" | "codex" | "cursor" | "opencode") => {
+      const providerMode = (key: "claude" | "codex" | "cursor" | "droid" | "opencode") => {
         const mode = asString(providersRaw[key])?.trim();
         if (mode === "default" || mode === "plan" || mode === "edit" || mode === "full-auto" || mode === "config-toml") {
           providers[key] = mode;
@@ -1350,6 +1350,7 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       providerMode("claude");
       providerMode("codex");
       providerMode("cursor");
+      providerMode("droid");
       providerMode("opencode");
       const codexSandbox = asString(providersRaw.codexSandbox)?.trim();
       if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {

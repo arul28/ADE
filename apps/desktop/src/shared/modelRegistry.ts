@@ -17,7 +17,8 @@ export type ProviderFamily =
   | "openrouter"
   | "ollama"
   | "lmstudio"
-  | "cursor";
+  | "cursor"
+  | "factory";
 
 export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio">;
 
@@ -61,6 +62,8 @@ export type ModelDescriptor = {
   openCodeProviderId?: string;
   /** OpenCode server routing: model id as reported by OpenCode (may contain `/`). */
   openCodeModelId?: string;
+  /** True when the model was injected via a local proxy (e.g. vibeproxy in ~/.factory/config.json). */
+  customProxy?: boolean;
 };
 
 export type DynamicLocalModelDescriptorOptions = {
@@ -75,10 +78,10 @@ export type DynamicLocalModelDescriptorOptions = {
 };
 
 export type WorkerExecutionPath = "cli" | "api" | "local";
-export type ModelProviderGroup = "claude" | "codex" | "opencode" | "cursor";
+export type ModelProviderGroup = "claude" | "codex" | "opencode" | "cursor" | "droid";
 
 export function isModelProviderGroup(value: string | null | undefined): value is ModelProviderGroup {
-  return value === "claude" || value === "codex" || value === "opencode" || value === "cursor";
+  return value === "claude" || value === "codex" || value === "opencode" || value === "cursor" || value === "droid";
 }
 
 // ---------------------------------------------------------------------------
@@ -705,7 +708,7 @@ export function cursorCliLineGroupFromSdkId(providerModelId: string): CursorCliL
   if (/claude|sonnet|opus|haiku/.test(s)) return "anthropic";
   if (/gemini/.test(s)) return "google";
   if (/grok/.test(s)) return "grok";
-  if (/^gpt|^o\d|codex/.test(s)) return "openai";
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "openai";
   return "other";
 }
 
@@ -737,7 +740,7 @@ function colorForCursorSdkId(providerModelId: string): string {
   if (/composer/.test(s)) return "#8B5CF6";
   if (/gemini/.test(s)) return "#4285F4";
   if (/grok/.test(s)) return "#1DA1F2";
-  if (/^gpt|^o\d|codex/.test(s)) return "#10A37F";
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "#10A37F";
   return "#71717A";
 }
 
@@ -794,6 +797,221 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
 }
 
 // ---------------------------------------------------------------------------
+// Factory Droid CLI — dynamic descriptors (`droid/<modelId>`)
+// ---------------------------------------------------------------------------
+
+export type DroidCliLineGroup = "anthropic" | "openai" | "google" | "other" | "custom";
+
+export const DROID_CLI_LINE_ORDER: DroidCliLineGroup[] = ["anthropic", "openai", "google", "other", "custom"];
+
+export function droidCliLineGroupFromModelId(providerModelId: string): DroidCliLineGroup {
+  const s = providerModelId.trim().toLowerCase();
+  if (s.startsWith("custom:")) return "custom";
+  if (/claude|sonnet|opus|haiku/.test(s)) return "anthropic";
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "openai";
+  if (/gemini/.test(s)) return "google";
+  return "other";
+}
+
+export function droidCliLineGroupLabel(group: DroidCliLineGroup): string {
+  const labels: Record<DroidCliLineGroup, string> = {
+    anthropic: "Anthropic (Droid)",
+    openai: "OpenAI (Droid)",
+    google: "Google (Droid)",
+    other: "Other (Droid)",
+    custom: "Custom models",
+  };
+  return labels[group] ?? "Droid";
+}
+
+function colorForDroidModelId(providerModelId: string): string {
+  const s = providerModelId.toLowerCase();
+  if (/claude|sonnet|opus|haiku/.test(s)) return "#D97706";
+  if (/gemini/.test(s)) return "#4285F4";
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "#10A37F";
+  return "#71717A";
+}
+
+function titleCaseDroidToken(token: string): string {
+  if (!token.length) return token;
+  const knownLabels: Record<string, string> = {
+    claude: "Claude",
+    codex: "Codex",
+    gemini: "Gemini",
+    glm: "GLM",
+    gpt: "GPT",
+    kimi: "Kimi",
+    minimax: "MiniMax",
+    openai: "OpenAI",
+  };
+  const known = knownLabels[token.toLowerCase()];
+  if (known) return known;
+  if (/^[A-Z0-9.]+$/.test(token)) return token;
+  return token.charAt(0).toUpperCase() + token.slice(1);
+}
+
+function humanizeDroidModelStem(stem: string): string {
+  const normalized = stem
+    .replace(/[_/]+/g, "-")
+    .replace(/\s+/g, "-")
+    .trim();
+  if (!normalized.length) return stem.trim();
+
+  const rawTokens = normalized.split("-").filter(Boolean);
+  const mergedTokens: string[] = [];
+  for (let index = 0; index < rawTokens.length;) {
+    const token = rawTokens[index]!;
+    if (/^\d+$/.test(token)) {
+      const parts = [token];
+      let nextIndex = index + 1;
+      while (nextIndex < rawTokens.length && /^\d+$/.test(rawTokens[nextIndex]!)) {
+        parts.push(rawTokens[nextIndex]!);
+        nextIndex += 1;
+      }
+      mergedTokens.push(parts.join("."));
+      index = nextIndex;
+      continue;
+    }
+    mergedTokens.push(token);
+    index += 1;
+  }
+
+  return mergedTokens.map(titleCaseDroidToken).join(" ");
+}
+
+function normalizeDroidEffortLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized.length) return value.trim();
+  if (normalized === "xhigh") return "XHigh";
+  if (normalized === "high") return "High";
+  if (normalized === "medium") return "Medium";
+  if (normalized === "low") return "Low";
+  if (normalized === "max") return "Max";
+  if (normalized === "off") return "Off";
+  if (normalized === "none") return "None";
+  return value.trim().replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
+  "claude-opus-4-5-20251101": "Opus 4.5 (2x)",
+  "claude-opus-4-6": "Opus 4.6 (2x)",
+  "claude-opus-4-6-fast": "Opus 4.6 Fast Mode (12x)",
+  "claude-sonnet-4-5-20250929": "Sonnet 4.5 (1.2x)",
+  "claude-sonnet-4-6": "Sonnet 4.6 (1.2x)",
+  "claude-haiku-4-5-20251001": "Haiku 4.5 (0.4x)",
+  "gpt-5.1": "GPT-5.1 (0.5x)",
+  "gpt-5.1-codex": "GPT-5.1-Codex (0.5x)",
+  "gpt-5.1-codex-max": "GPT-5.1-Codex-Max (0.5x)",
+  "gpt-5.2": "GPT-5.2 (0.7x)",
+  "gpt-5.2-codex": "GPT-5.2-Codex (0.7x)",
+  "gpt-5.3-codex": "GPT-5.3-Codex (0.7x)",
+  "gpt-5.3-codex-fast": "GPT-5.3-Codex Fast",
+  "gpt-5.4": "GPT-5.4",
+  "gpt-5.4-fast": "GPT-5.4 Fast",
+  "gpt-5.4-mini": "GPT-5.4 Mini",
+  "gemini-3-pro-preview": "Gemini 3 Pro",
+  "gemini-3.1-pro-preview": "Gemini 3.1 Pro (0.8x)",
+  "gemini-3-flash-preview": "Gemini 3 Flash (0.2x)",
+  "glm-4.7": "Droid Core (GLM-4.7) (0.25x)",
+  "glm-5": "Droid Core (GLM-5) (0.4x)",
+  "glm-5.1": "Droid Core (GLM-5.1)",
+  "kimi-k2.5": "Droid Core (Kimi K2.5) (0.25x)",
+  "minimax-m2.5": "Droid Core (MiniMax M2.5) (0.12x)",
+};
+
+function formatDroidCliFallbackDisplayName(providerModelId: string): string {
+  const trimmed = providerModelId.trim();
+  const knownCompact = KNOWN_DROID_COMPACT_DISPLAY_NAMES[trimmed.toLowerCase()];
+  if (knownCompact) return knownCompact;
+  if (!trimmed.toLowerCase().startsWith("custom:")) {
+    return formatCursorSdkFallbackDisplayName(trimmed);
+  }
+
+  const rawTail = trimmed.slice("custom:".length).trim();
+  let baseModel = rawTail;
+  let effort: string | null = null;
+
+  const indexedEffortMatch = rawTail.match(/^(.*)\(([^)]+)\)-\d+$/i);
+  if (indexedEffortMatch) {
+    baseModel = indexedEffortMatch[1]!.replace(/[-_]+$/g, "");
+    effort = indexedEffortMatch[2] ?? null;
+  } else {
+    const effortMatch = rawTail.match(/^(.*)\(([^)]+)\)$/i);
+    if (effortMatch) {
+      baseModel = effortMatch[1]!.replace(/[-_]+$/g, "");
+      effort = effortMatch[2] ?? null;
+    } else {
+      const thinkingMatch = rawTail.match(/^(.*?)-thinking-\d+$/i);
+      if (thinkingMatch) {
+        baseModel = thinkingMatch[1]!;
+        effort = "High";
+      }
+    }
+  }
+
+  const display = humanizeDroidModelStem(baseModel);
+  if (!effort) return display;
+  return `${display} (${normalizeDroidEffortLabel(effort)})`;
+}
+
+export function parseDynamicDroidModelRef(modelId: string): { providerModelId: string } | null {
+  const trimmed = modelId.trim();
+  const lower = trimmed.toLowerCase();
+  if (!lower.startsWith("droid/")) return null;
+  const providerModelId = trimmed.slice("droid/".length).trim();
+  if (!providerModelId.length) return null;
+  if (!/^[\w.:()+-]+$/i.test(providerModelId)) return null;
+  return { providerModelId };
+}
+
+export function createDynamicDroidCliModelDescriptor(
+  providerModelId: string,
+  cliDisplayName?: string | null,
+  options?: { customProxy?: boolean },
+): ModelDescriptor {
+  const trimmedProviderModelId = providerModelId.trim();
+  const id = `droid/${trimmedProviderModelId}`;
+  const knownCompact = KNOWN_DROID_COMPACT_DISPLAY_NAMES[trimmedProviderModelId.toLowerCase()];
+  const display =
+    knownCompact
+      ? knownCompact
+      : typeof cliDisplayName === "string" && cliDisplayName.trim().length
+      ? cliDisplayName.trim()
+      : formatDroidCliFallbackDisplayName(trimmedProviderModelId);
+  return {
+    id,
+    shortId: trimmedProviderModelId,
+    displayName: display,
+    family: "factory",
+    authTypes: ["cli-subscription"],
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+    capabilities: ALL_CAPS,
+    color: colorForDroidModelId(trimmedProviderModelId),
+    providerRoute: "droid-cli",
+    providerModelId: trimmedProviderModelId,
+    cliCommand: "droid",
+    isCliWrapped: true,
+    ...(options?.customProxy ? { customProxy: true } : {}),
+  };
+}
+
+export function sortDroidCliDescriptorsForPicker(descriptors: ModelDescriptor[]): ModelDescriptor[] {
+  const rank = (g: DroidCliLineGroup) => {
+    const i = DROID_CLI_LINE_ORDER.indexOf(g);
+    return i === -1 ? DROID_CLI_LINE_ORDER.length : i;
+  };
+  return [...descriptors].sort((a, b) => {
+    const ga = droidCliLineGroupFromModelId(a.providerModelId);
+    const gb = droidCliLineGroupFromModelId(b.providerModelId);
+    const ra = rank(ga);
+    const rb = rank(gb);
+    if (ra !== rb) return ra - rb;
+    return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
 
@@ -818,7 +1036,9 @@ export function getModelById(id: string): ModelDescriptor | undefined {
   const openCode = parseDynamicOpenCodeModelRef(normalized);
   if (openCode) return createDynamicOpenCodeModelDescriptor(openCode.modelId);
   const cursor = parseDynamicCursorModelRef(normalized);
-  return cursor ? createDynamicCursorCliModelDescriptor(cursor.providerModelId) : undefined;
+  if (cursor) return createDynamicCursorCliModelDescriptor(cursor.providerModelId);
+  const droid = parseDynamicDroidModelRef(normalized);
+  return droid ? createDynamicDroidCliModelDescriptor(droid.providerModelId) : undefined;
 }
 
 export function getAvailableModels(
@@ -832,6 +1052,7 @@ export function getAvailableModels(
     anthropic: "claude",
     google: "gemini",
     cursor: "cursor",
+    factory: "droid",
   };
 
   const hasMappedCli = (family: ProviderFamily): boolean => {
@@ -954,6 +1175,11 @@ export function resolveModelDescriptorForProvider(
       const direct = getModelById(prefixed);
       if (direct && !direct.deprecated) return direct;
     }
+    if (providerHint === "droid") {
+      const prefixed = normalized.includes("/") ? normalized : `droid/${normalized}`;
+      const direct = getModelById(prefixed);
+      if (direct && !direct.deprecated) return direct;
+    }
     return undefined;
   }
 
@@ -977,16 +1203,17 @@ export function resolveModelIdForProvider(
 
 export function resolveCliProviderForModel(
   descriptor: ModelDescriptor,
-): "claude" | "codex" | "cursor" | null {
+): "claude" | "codex" | "cursor" | "droid" | null {
   if (!descriptor.isCliWrapped) return null;
   if (descriptor.family === "cursor") return "cursor";
+  if (descriptor.family === "factory") return "droid";
   if (descriptor.family === "anthropic") return "claude";
   if (descriptor.family === "openai") return "codex";
   return null;
 }
 
 /**
- * Resolve a model descriptor to its provider group ("claude" | "codex" | "cursor" | "opencode").
+ * Resolve a model descriptor to its provider group ("claude" | "codex" | "cursor" | "droid" | "opencode").
  * CLI-wrapped models map to their CLI runtime; all others map to "opencode".
  */
 export function resolveProviderGroupForModel(
@@ -997,7 +1224,7 @@ export function resolveProviderGroupForModel(
 
 /**
  * Resolve the chat session provider and model ref for a model descriptor.
- * CLI-wrapped models route to their native runtime (claude/codex/cursor);
+ * CLI-wrapped models route to their native runtime (claude/codex/cursor/droid);
  * everything else goes through the OpenCode runtime.
  */
 export function resolveChatProviderForDescriptor(
@@ -1015,7 +1242,7 @@ export function getRuntimeModelRefForDescriptor(
   if (provider === "claude") {
     return descriptor.shortId;
   }
-  if (provider === "codex" || provider === "cursor") {
+  if (provider === "codex" || provider === "cursor" || provider === "droid") {
     return descriptor.providerModelId;
   }
   return descriptor.id;
@@ -1035,6 +1262,7 @@ function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescript
     if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
     if (provider === "codex") return descriptor.isCliWrapped && descriptor.family === "openai";
     if (provider === "cursor") return descriptor.isCliWrapped && descriptor.family === "cursor";
+    if (provider === "droid") return descriptor.isCliWrapped && descriptor.family === "factory";
     return !descriptor.isCliWrapped;
   });
 }
@@ -1115,6 +1343,15 @@ export function pickDefaultCursorDescriptorFromCliList(models: ModelDescriptor[]
   ]);
 }
 
+export function pickDefaultDroidDescriptorFromCliList(models: ModelDescriptor[]): ModelDescriptor | undefined {
+  return pickPreferredModel(models, [
+    (m) => /sonnet/i.test(m.providerModelId) || /sonnet/i.test(m.displayName),
+    (m) => /opus/i.test(m.providerModelId),
+    (m) => /gpt-5\.1-codex/i.test(m.providerModelId),
+    (m) => /codex/i.test(m.providerModelId),
+  ]);
+}
+
 function pickDefaultModelForProvider(
   provider: ModelProviderGroup,
   models: ModelDescriptor[],
@@ -1122,6 +1359,7 @@ function pickDefaultModelForProvider(
   if (provider === "claude") return pickDefaultClaudeModel(models);
   if (provider === "codex") return pickDefaultCodexModel(models);
   if (provider === "cursor") return pickDefaultCursorDescriptorFromCliList(models);
+  if (provider === "droid") return pickDefaultDroidDescriptorFromCliList(models);
   return pickDefaultOpenCodeModel(models);
 }
 
@@ -1131,6 +1369,11 @@ export function getDefaultModelDescriptor(
   const models = listProviderModelsInternal(provider);
   if (provider === "cursor" && models.length === 0) {
     return pickDefaultCursorDescriptorFromCliList([createDynamicCursorCliModelDescriptor("auto", "Auto")]);
+  }
+  if (provider === "droid" && models.length === 0) {
+    return pickDefaultDroidDescriptorFromCliList([
+      createDynamicDroidCliModelDescriptor("claude-sonnet-4-5-20250929"),
+    ]);
   }
   return pickDefaultModelForProvider(provider, models);
 }

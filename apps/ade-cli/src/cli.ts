@@ -1513,7 +1513,7 @@ function buildChatPlan(args: string[]): CliPlan {
   const withSession = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(sessionId ? { sessionId } : {}) });
   if (sub === "list" || sub === "ls") return { kind: "execute", label: "chat list", steps: [actionStep("result", "chat", "listSessions", collectGenericObjectArgs(args))] };
   if (sub === "show" || sub === "status") return { kind: "execute", label: "chat status", steps: [actionStep("result", "chat", "getSessionSummary", withSession())] };
-  if (sub === "create" || sub === "spawn") return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), modelId: readValue(args, ["--model", "--model-id"]), permissionMode: readValue(args, ["--permission-mode", "--permissions"]), surface: readValue(args, ["--surface"]) ?? "work" }))] };
+  if (sub === "create" || sub === "spawn") return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), modelId: readValue(args, ["--model", "--model-id"]), permissionMode: readValue(args, ["--permission-mode", "--permissions"]), droidPermissionMode: readValue(args, ["--droid-permission-mode", "--droid-autonomy", "--autonomy"]), surface: readValue(args, ["--surface"]) ?? "work" }))] };
   if (sub === "send") return { kind: "execute", label: "chat send", steps: [actionStep("result", "chat", "sendMessage", withSession({ sessionId: requireValue(sessionId, "sessionId"), text: requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text") }))] };
   if (sub === "interrupt") return { kind: "execute", label: "chat interrupt", steps: [actionStep("result", "chat", "interrupt", withSession({ sessionId: requireValue(sessionId, "sessionId") }))] };
   if (sub === "resume") return { kind: "execute", label: "chat resume", steps: [actionStep("result", "chat", "resumeSession", withSession())] };
@@ -2045,12 +2045,14 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "-b", "-m", "-q", "-t",
   "--additional-instructions", "--app", "--arg", "--arg-json", "--arg-value",
   "--arg-value-json", "--args-list-json", "--attempt", "--attempt-id",
-  "--automation", "--base", "--base-branch", "--base-ref", "--body", "--branch",
+  "--automation", "--autonomy",
+  "--base", "--base-branch", "--base-ref", "--body", "--branch",
   "--branch-name", "--branch-ref", "--category", "--color", "--cols",
   "--command", "--comment", "--comment-id", "--commit", "--compare-ref",
   "--caption", "--compare-to", "--content", "--context-file", "--cwd", "--data",
   "--depth", "--desc",
-  "--description", "--domain", "--duration-sec", "--enabled", "--event",
+  "--description", "--domain", "--droid-autonomy", "--droid-permission-mode",
+  "--duration-sec", "--enabled", "--event",
   "--from", "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
   "--input", "--input-json", "--instructions",
   "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",

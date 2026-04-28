@@ -245,6 +245,30 @@ describe("AgentChatComposer", () => {
     });
   });
 
+  it("renders Droid autonomy controls without OpenCode permission labels", () => {
+    const onDroidPermissionModeChange = vi.fn();
+    renderComposer({
+      sessionProvider: "droid",
+      modelId: "droid/gpt-5.2",
+      availableModelIds: ["droid/gpt-5.2"],
+      droidPermissionMode: "auto-low",
+      onDroidPermissionModeChange,
+    });
+
+    const autonomySelect = screen.getByRole("combobox", { name: "Autonomy" }) as HTMLSelectElement;
+    expect(Array.from(autonomySelect.options).map((option) => option.value)).toEqual([
+      "read-only",
+      "auto-low",
+      "auto-medium",
+      "auto-high",
+    ]);
+    expect(screen.queryByRole("combobox", { name: "Permissions" })).toBeNull();
+
+    fireEvent.change(autonomySelect, { target: { value: "auto-high" } });
+
+    expect(onDroidPermissionModeChange).toHaveBeenCalledWith("auto-high");
+  });
+
   it("can hide native permission controls for fixed-mode surfaces", () => {
     renderComposer({
       sessionProvider: "codex",
