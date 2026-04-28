@@ -98,6 +98,14 @@ struct WorkToolCardView: View {
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(toolDisplayName(toolCard.toolName)), \(toolCard.status.rawValue)")
+    .adeInspectable(
+      "Work.Chat.ToolCard",
+      metadata: [
+        "toolCardId": toolCard.id,
+        "toolName": toolCard.toolName,
+        "status": toolCard.status.rawValue
+      ]
+    )
   }
 
   /// Single-line compact row used once the tool completes — matches the

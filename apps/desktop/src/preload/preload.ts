@@ -595,6 +595,18 @@ import type {
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
+  IosSimulatorDevice,
+  IosSimulatorEventPayload,
+  IosInspectorSnapshot,
+  IosSimulatorInspectPointArgs,
+  IosSimulatorInspectResult,
+  IosSimulatorLaunchArgs,
+  IosSimulatorScreenshot,
+  IosSimulatorSelectResult,
+  IosSimulatorSession,
+  IosSimulatorStartStreamArgs,
+  IosSimulatorStatus,
+  IosSimulatorStreamStatus,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -1746,6 +1758,40 @@ contextBridge.exposeInMainWorld("ade", {
       ) => cb(payload);
       ipcRenderer.on(IPC.computerUseEvent, listener);
       return () => ipcRenderer.removeListener(IPC.computerUseEvent, listener);
+    },
+  },
+  iosSimulator: {
+    getStatus: async (): Promise<IosSimulatorStatus> =>
+      ipcRenderer.invoke(IPC.iosSimulatorGetStatus),
+    listDevices: async (): Promise<IosSimulatorDevice[]> =>
+      ipcRenderer.invoke(IPC.iosSimulatorListDevices),
+    launch: async (args: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> =>
+      ipcRenderer.invoke(IPC.iosSimulatorLaunch, args),
+    screenshot: async (args: { deviceUdid?: string | null } = {}): Promise<IosSimulatorScreenshot> =>
+      ipcRenderer.invoke(IPC.iosSimulatorScreenshot, args),
+    getInspectorSnapshot: async (args: { deviceUdid?: string | null } = {}): Promise<IosInspectorSnapshot | null> =>
+      ipcRenderer.invoke(IPC.iosSimulatorGetInspectorSnapshot, args),
+    inspectPoint: async (args: IosSimulatorInspectPointArgs): Promise<IosSimulatorInspectResult> =>
+      ipcRenderer.invoke(IPC.iosSimulatorInspectPoint, args),
+    startStream: async (args: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> =>
+      ipcRenderer.invoke(IPC.iosSimulatorStartStream, args),
+    stopStream: async (): Promise<IosSimulatorStreamStatus> =>
+      ipcRenderer.invoke(IPC.iosSimulatorStopStream),
+    getStreamStatus: async (): Promise<IosSimulatorStreamStatus> =>
+      ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
+    tap: async (args: { deviceUdid?: string | null; x: number; y: number }): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.iosSimulatorTap, args),
+    typeText: async (args: { deviceUdid?: string | null; text: string }): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.iosSimulatorTypeText, args),
+    selectPoint: async (args: { deviceUdid?: string | null; x: number; y: number }): Promise<IosSimulatorSelectResult> =>
+      ipcRenderer.invoke(IPC.iosSimulatorSelectPoint, args),
+    onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: IosSimulatorEventPayload,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.iosSimulatorEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.iosSimulatorEvent, listener);
     },
   },
   pty: {

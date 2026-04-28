@@ -550,6 +550,7 @@ import type { createReviewService } from "../review/reviewService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
+import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -638,6 +639,7 @@ export type AppContext = {
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
+  iosSimulatorService?: ReturnType<typeof createIosSimulatorService> | null;
   githubService: ReturnType<typeof createGithubService>;
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
@@ -1750,6 +1752,14 @@ export function registerIpc({
       throw new Error("Computer-use artifact broker is not available.");
     }
     return ctx;
+  };
+
+  const ensureIosSimulator = (): AppContext & { iosSimulatorService: NonNullable<AppContext["iosSimulatorService"]> } => {
+    const ctx = getCtx();
+    if (!ctx.iosSimulatorService) {
+      throw new Error("iOS Simulator service is not available.");
+    }
+    return { ...ctx, iosSimulatorService: ctx.iosSimulatorService };
   };
 
   const resolveComputerUseOwnerSnapshotArgs = async (
@@ -4986,6 +4996,66 @@ export function registerIpc({
     } catch {
       return null;
     }
+  });
+
+  ipcMain.handle(IPC.iosSimulatorGetStatus, async () => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.getStatus();
+  });
+
+  ipcMain.handle(IPC.iosSimulatorListDevices, async () => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.listDevices();
+  });
+
+  ipcMain.handle(IPC.iosSimulatorLaunch, async (_event, arg = {}) => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.launch(arg);
+  });
+
+  ipcMain.handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.screenshot(arg);
+  });
+
+  ipcMain.handle(IPC.iosSimulatorGetInspectorSnapshot, async (_event, arg = {}) => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.getInspectorSnapshot(arg);
+  });
+
+  ipcMain.handle(IPC.iosSimulatorInspectPoint, async (_event, arg) => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.inspectPoint(arg);
+  });
+
+  ipcMain.handle(IPC.iosSimulatorStartStream, async (_event, arg = {}) => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.startStream(arg);
+  });
+
+  ipcMain.handle(IPC.iosSimulatorStopStream, async () => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.stopStream();
+  });
+
+  ipcMain.handle(IPC.iosSimulatorGetStreamStatus, async () => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.getStreamStatus();
+  });
+
+  ipcMain.handle(IPC.iosSimulatorTap, async (_event, arg) => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.tap(arg);
+  });
+
+  ipcMain.handle(IPC.iosSimulatorTypeText, async (_event, arg) => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.typeText(arg);
+  });
+
+  ipcMain.handle(IPC.iosSimulatorSelectPoint, async (_event, arg) => {
+    const ctx = ensureIosSimulator();
+    return ctx.iosSimulatorService.selectPoint(arg);
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

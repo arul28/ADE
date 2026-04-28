@@ -266,6 +266,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
+    $ ade ios-sim status | launch | select         Control ADE iOS Simulator context
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -289,6 +290,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
+    $ ade ios-sim launch --mode snapshot --text
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -444,6 +446,27 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof record --seconds 20                 Capture a short video proof
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
     $ ade proof ingest --input-json '{"artifacts":[]}' Ingest external visual proof artifacts
+`,
+  "ios-sim": `${ADE_BANNER}
+  iOS Simulator
+
+  iOS simulator commands build, launch, preview, screenshot, and select native
+  ADE iOS context. Preview, screenshots, and launch use Xcode; idb is optional
+  for low-latency video and direct pointer/text control.
+
+    $ ade ios-sim status --text                    Show Xcode/idb readiness
+    $ ade ios-sim devices --text                   List available simulators
+    $ ade ios-sim launch --mode snapshot           Build and launch ADE iOS
+    $ ade ios-sim launch --device <udid> --no-build Launch the installed app
+    $ ade ios-sim preview-start --fps 2            Start simctl screenshot preview
+    $ ade ios-sim live-start --fps 30              Start optional idb live video
+    $ ade ios-sim stream-status --text             Show live stream status
+    $ ade ios-sim stream-stop                      Stop preview/live streaming
+    $ ade ios-sim screenshot                       Capture the current simulator
+    $ ade ios-sim inspect --x 120 --y 420          Hit-test debug SwiftUI context
+    $ ade ios-sim inspector --text                 Show published SwiftUI frames
+    $ ade ios-sim select --x 120 --y 420           Add coordinate/native context
+    $ ade ios-sim tap --x 120 --y 420              Tap through idb
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -1651,6 +1674,85 @@ function buildProofPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `proof ${sub}`, steps: [actionStep("result", "computer_use_artifacts", sub, collectGenericObjectArgs(args))] };
 }
 
+function buildIosSimulatorPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "status";
+  const numericPositionals = () => args.filter((value) => /^\d+(\.\d+)?$/.test(value));
+  const readCoordinate = (flag: string, index: number): number => {
+    const value = readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
+    if (!Number.isFinite(value)) throw new CliUsageError(`${flag} is required and must be a number.`);
+    return value;
+  };
+  if (sub === "actions") return { kind: "execute", label: "iOS simulator actions", steps: [listActionsStep("actions", "ios_simulator")] };
+  if (sub === "status") return { kind: "execute", label: "iOS simulator status", steps: [actionStep("result", "ios_simulator", "getStatus", collectGenericObjectArgs(args))] };
+  if (sub === "devices" || sub === "list" || sub === "ls") return { kind: "execute", label: "iOS simulator devices", steps: [actionStep("result", "ios_simulator", "listDevices", collectGenericObjectArgs(args))] };
+  if (sub === "launch" || sub === "open") {
+    return {
+      kind: "execute",
+      label: "iOS simulator launch",
+      steps: [actionStep("result", "ios_simulator", "launch", collectGenericObjectArgs(args, {
+        deviceUdid: readValue(args, ["--device", "--udid"]),
+        chatSessionId: readValue(args, ["--chat-session", "--session"]),
+        build: !readFlag(args, ["--no-build"]),
+        mode: readValue(args, ["--mode"]) ?? "snapshot",
+      }))],
+    };
+  }
+  if (sub === "screenshot" || sub === "capture") {
+    return { kind: "execute", label: "iOS simulator screenshot", steps: [actionStep("result", "ios_simulator", "screenshot", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]) }))] };
+  }
+  if (sub === "inspector" || sub === "snapshot" || sub === "elements") {
+    return { kind: "execute", label: "iOS simulator inspector snapshot", steps: [actionStep("result", "ios_simulator", "getInspectorSnapshot", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]) }))] };
+  }
+  if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
+    return { kind: "execute", label: "iOS simulator inspect point", steps: [actionStep("result", "ios_simulator", "inspectPoint", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+      includeScreenshot: readFlag(args, ["--screenshot", "--include-screenshot"]),
+    }))] };
+  }
+  if (sub === "stream-start" || sub === "start-stream" || sub === "stream" || sub === "preview-start" || sub === "start-preview" || sub === "live-start" || sub === "start-live") {
+    const forcedBackend = sub === "preview-start" || sub === "start-preview"
+      ? "simctl-screenshot-poll"
+      : sub === "live-start" || sub === "start-live"
+        ? "idb-h264-ffmpeg-mjpeg"
+        : undefined;
+    return { kind: "execute", label: "iOS simulator stream start", steps: [actionStep("result", "ios_simulator", "startStream", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      fps: readNumberOption(args, ["--fps"], forcedBackend === "idb-h264-ffmpeg-mjpeg" ? 30 : 2),
+      backend: forcedBackend
+        ?? (readFlag(args, ["--idb", "--live"]) ? "idb-h264-ffmpeg-mjpeg" : readFlag(args, ["--simctl", "--preview"]) ? "simctl-screenshot-poll" : readValue(args, ["--backend"])),
+    }))] };
+  }
+  if (sub === "stream-stop" || sub === "stop-stream" || sub === "preview-stop" || sub === "stop-preview" || sub === "live-stop" || sub === "stop-live") {
+    return { kind: "execute", label: "iOS simulator stream stop", steps: [actionStep("result", "ios_simulator", "stopStream", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "stream-status") {
+    return { kind: "execute", label: "iOS simulator stream status", steps: [actionStep("result", "ios_simulator", "getStreamStatus", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "tap") {
+    return { kind: "execute", label: "iOS simulator tap", steps: [actionStep("result", "ios_simulator", "tap", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+    }))] };
+  }
+  if (sub === "select") {
+    return { kind: "execute", label: "iOS simulator select", steps: [actionStep("result", "ios_simulator", "selectPoint", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+    }))] };
+  }
+  if (sub === "type" || sub === "text") {
+    return { kind: "execute", label: "iOS simulator type", steps: [actionStep("result", "ios_simulator", "typeText", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      text: requireValue(readValue(args, ["--text"]) ?? args.join(" "), "text"),
+    }))] };
+  }
+  return { kind: "execute", label: `ios-sim ${sub}`, steps: [actionStep("result", "ios_simulator", sub, collectGenericObjectArgs(args))] };
+}
+
 function buildMemoryPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "search";
   if (sub === "actions") return { kind: "execute", label: "memory actions", steps: [listActionsStep("actions", "memory")] };
@@ -2114,6 +2216,8 @@ function buildCliPlan(command: string[]): CliPlan {
     "computer-use": "proof",
     artifact: "proof",
     artifacts: "proof",
+    ios: "ios-sim",
+    simulator: "ios-sim",
     setting: "settings",
     config: "settings",
     action: "actions",
@@ -2180,6 +2284,7 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "proof" || primary === "computer-use" || primary === "artifacts" || primary === "computer" || primary === "artifact") {
     return buildProofPlan(args);
   }
+  if (primary === "ios-sim" || primary === "ios" || primary === "simulator") return buildIosSimulatorPlan(args);
   if (primary === "memory") return buildMemoryPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
@@ -2952,7 +3057,8 @@ function statusWord(value: unknown): string {
 }
 
 function formatActionsList(value: unknown): string {
-  const actions = firstArray(value, ["actions"]);
+  const actionResult = isRecord(value) && isRecord(value.actions) ? value.actions : value;
+  const actions = firstArray(actionResult, ["actions"]);
   if (actions.length === 0) return "ADE actions\n(no actions)";
   const byDomain = new Map<string, JsonObject[]>();
   for (const action of actions) {

@@ -50,6 +50,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "tiling_tree",
   "graph_state",
   "computer_use_artifacts",
+  "ios_simulator",
   "automations",
   "issue",
 ] as const;
@@ -339,6 +340,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
   computer_use_artifacts: ["ingest", "listArtifacts"],
+  ios_simulator: ["getStatus", "listDevices", "launch", "screenshot", "getInspectorSnapshot", "inspectPoint", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "selectPoint"],
   automations: [
     "list",
     "get",
@@ -597,6 +599,7 @@ export function getAdeActionDomainServices(
     tiling_tree: toService(buildTilingTreeDomainService(runtime)),
     graph_state: toService(buildGraphStateDomainService(runtime)),
     computer_use_artifacts: toService(runtime.computerUseArtifactBrokerService),
+    ios_simulator: toService(runtime.iosSimulatorService),
     automations: toService(buildAutomationsDomainService(runtime)),
     issue: toService(buildIssueDomainService(runtime)),
   };

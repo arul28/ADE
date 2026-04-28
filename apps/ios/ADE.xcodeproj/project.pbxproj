@@ -68,6 +68,7 @@
 		E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002B /* WorkChatSessionView+Actions.swift */; };
 		E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */; };
 		E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002D /* WorkChatRichCardViews.swift */; };
+		E10000000000000000000047 /* ADEInspectable.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000047 /* ADEInspectable.swift */; };
 		E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */; };
 		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
 		E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000030 /* WorkMarkdownViews.swift */; };
@@ -175,6 +176,8 @@
 		B1000000000000000000001B /* LaneConnectionPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001B /* LaneConnectionPresentation.swift */; };
 		B1000000000000000000001C /* LaneRootStateViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001C /* LaneRootStateViews.swift */; };
 		B1000000000000000000001D /* LaneDetailSectionChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001D /* LaneDetailSectionChrome.swift */; };
+		B1000000000000000000001E /* LaneColorPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001E /* LaneColorPalette.swift */; };
+		B1000000000000000000001F /* LaneColorSwatchPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001F /* LaneColorSwatchPicker.swift */; };
 		C10000000000000000000001 /* ADEMobilePrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000011 /* ADEMobilePrimitives.swift */; };
 		C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000012 /* ADECodeRenderingCache.swift */; };
 		C10000000000000000000003 /* ADEStreamingShimmer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000013 /* ADEStreamingShimmer.swift */; };
@@ -264,6 +267,7 @@
 		D1000000000000000000002B /* WorkChatSessionView+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Actions.swift"; path = "ADE/Views/Work/WorkChatSessionView+Actions.swift"; sourceTree = "<group>"; };
 		D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatHeaderAndMessageViews.swift; path = ADE/Views/Work/WorkChatHeaderAndMessageViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002D /* WorkChatRichCardViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatRichCardViews.swift; path = ADE/Views/Work/WorkChatRichCardViews.swift; sourceTree = "<group>"; };
+		D10000000000000000000047 /* ADEInspectable.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEInspectable.swift; path = ADE/Debug/ADEInspectorKit/ADEInspectable.swift; sourceTree = "<group>"; };
 		D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatComposerAndInputViews.swift; path = ADE/Views/Work/WorkChatComposerAndInputViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000030 /* WorkMarkdownViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownViews.swift; path = ADE/Views/Work/WorkMarkdownViews.swift; sourceTree = "<group>"; };
@@ -388,6 +392,8 @@
 		A1000000000000000000001B /* LaneConnectionPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneConnectionPresentation.swift; path = ADE/Views/Lanes/LaneConnectionPresentation.swift; sourceTree = "<group>"; };
 		A1000000000000000000001C /* LaneRootStateViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRootStateViews.swift; path = ADE/Views/Lanes/LaneRootStateViews.swift; sourceTree = "<group>"; };
 		A1000000000000000000001D /* LaneDetailSectionChrome.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailSectionChrome.swift; path = ADE/Views/Lanes/LaneDetailSectionChrome.swift; sourceTree = "<group>"; };
+		A1000000000000000000001E /* LaneColorPalette.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneColorPalette.swift; path = ADE/Views/Lanes/LaneColorPalette.swift; sourceTree = "<group>"; };
+		A1000000000000000000001F /* LaneColorSwatchPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneColorSwatchPicker.swift; path = ADE/Views/Lanes/LaneColorSwatchPicker.swift; sourceTree = "<group>"; };
 		B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = KeychainService.swift; path = ADE/Services/KeychainService.swift; sourceTree = "<group>"; };
 		C9411193AF56B236BA32EFF5 /* ADEApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEApp.swift; path = ADE/App/ADEApp.swift; sourceTree = "<group>"; };
 		C10000000000000000000011 /* ADEMobilePrimitives.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEMobilePrimitives.swift; path = ADE/Views/Components/ADEMobilePrimitives.swift; sourceTree = "<group>"; };
@@ -455,6 +461,8 @@
 				A10000000000000000000004 /* LaneChatLaunchSheet.swift */,
 				A10000000000000000000006 /* LaneComponents.swift */,
 				A1000000000000000000001B /* LaneConnectionPresentation.swift */,
+				A1000000000000000000001E /* LaneColorPalette.swift */,
+				A1000000000000000000001F /* LaneColorSwatchPicker.swift */,
 				A10000000000000000000007 /* LaneCreateSheet.swift */,
 				A10000000000000000000008 /* LaneDetailContentSections.swift */,
 				A1000000000000000000001D /* LaneDetailSectionChrome.swift */,
@@ -603,6 +611,7 @@
 				D10000000000000000000044 /* WorkSlashCommandsSheet.swift */,
 				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
 				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
+				D10000000000000000000047 /* ADEInspectable.swift */,
 				D1000000000000000000003C /* WorkSessionGrouping.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
@@ -1026,6 +1035,8 @@
 				B1000000000000000000000E /* LaneListViewParts.swift in Sources */,
 				B1000000000000000000000F /* LaneManageSheet.swift in Sources */,
 				B1000000000000000000001C /* LaneRootStateViews.swift in Sources */,
+				B1000000000000000000001E /* LaneColorPalette.swift in Sources */,
+				B1000000000000000000001F /* LaneColorSwatchPicker.swift in Sources */,
 				B10000000000000000000010 /* LaneSessionTranscriptView.swift in Sources */,
 				B10000000000000000000011 /* LaneStackGraphSheet.swift in Sources */,
 				B10000000000000000000012 /* LaneTypes.swift in Sources */,
@@ -1102,6 +1113,7 @@
 				E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
+				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
 				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
 				E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */,

@@ -136,6 +136,7 @@ import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestra
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
+import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createSyncService } from "./services/sync/syncService";
 import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
 import {
@@ -2679,6 +2680,12 @@ app.whenReady().then(async () => {
     agentChatService.setComputerUseArtifactBrokerService(
       computerUseArtifactBrokerService,
     );
+    const iosSimulatorService = createIosSimulatorService({
+      projectRoot,
+      logger,
+      onEvent: (payload) =>
+        emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
+    });
     missionPreflightService = createMissionPreflightService({
       logger,
       projectRoot,
@@ -3352,6 +3359,7 @@ app.whenReady().then(async () => {
       automationService,
       automationPlannerService,
       computerUseArtifactBrokerService,
+      iosSimulatorService,
       orchestratorService,
       aiOrchestratorService,
       missionBudgetService,
@@ -3515,6 +3523,7 @@ app.whenReady().then(async () => {
         processService,
         ptyService,
         computerUseArtifactBrokerService,
+        iosSimulatorService,
         automationService,
         automationPlannerService,
         githubService,
@@ -3563,6 +3572,7 @@ app.whenReady().then(async () => {
       prService,
       prPollingService,
       computerUseArtifactBrokerService,
+      iosSimulatorService,
       queueLandingService,
       issueInventoryService,
       prSummaryService,
@@ -3667,6 +3677,7 @@ app.whenReady().then(async () => {
       aiIntegrationService: null,
       agentChatService: null,
       computerUseArtifactBrokerService: null,
+      iosSimulatorService: null,
       githubService: null,
       feedbackReporterService: null,
       prService: null,
@@ -3858,6 +3869,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.fileService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.iosSimulatorService?.dispose?.();
     } catch {
       // ignore
     }

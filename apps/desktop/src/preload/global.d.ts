@@ -590,6 +590,18 @@ import type {
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
+  IosSimulatorDevice,
+  IosSimulatorEventPayload,
+  IosInspectorSnapshot,
+  IosSimulatorInspectPointArgs,
+  IosSimulatorInspectResult,
+  IosSimulatorLaunchArgs,
+  IosSimulatorScreenshot,
+  IosSimulatorSelectResult,
+  IosSimulatorSession,
+  IosSimulatorStartStreamArgs,
+  IosSimulatorStatus,
+  IosSimulatorStreamStatus,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -1227,6 +1239,21 @@ declare global {
         ) => Promise<ComputerUseArtifactView>;
         readArtifactPreview: (args: { uri: string }) => Promise<string | null>;
         onEvent: (cb: (ev: ComputerUseEventPayload) => void) => () => void;
+      };
+      iosSimulator: {
+        getStatus: () => Promise<IosSimulatorStatus>;
+        listDevices: () => Promise<IosSimulatorDevice[]>;
+        launch: (args?: IosSimulatorLaunchArgs) => Promise<IosSimulatorSession>;
+        screenshot: (args?: { deviceUdid?: string | null }) => Promise<IosSimulatorScreenshot>;
+        getInspectorSnapshot: (args?: { deviceUdid?: string | null }) => Promise<IosInspectorSnapshot | null>;
+        inspectPoint: (args: IosSimulatorInspectPointArgs) => Promise<IosSimulatorInspectResult>;
+        startStream: (args?: IosSimulatorStartStreamArgs) => Promise<IosSimulatorStreamStatus>;
+        stopStream: () => Promise<IosSimulatorStreamStatus>;
+        getStreamStatus: () => Promise<IosSimulatorStreamStatus>;
+        tap: (args: { deviceUdid?: string | null; x: number; y: number }) => Promise<{ ok: true }>;
+        typeText: (args: { deviceUdid?: string | null; text: string }) => Promise<{ ok: true }>;
+        selectPoint: (args: { deviceUdid?: string | null; x: number; y: number }) => Promise<IosSimulatorSelectResult>;
+        onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => () => void;
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
