@@ -1689,6 +1689,8 @@ export function registerIpc({
 
   const ipcInvokeTimeoutMs = (channel: string): number => {
     switch (channel) {
+      case IPC.lanesDelete:
+        return 4 * 60_000;
       case IPC.iosSimulatorLaunch:
         return 10 * 60_000;
       case IPC.iosSimulatorListLaunchTargets:

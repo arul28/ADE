@@ -305,6 +305,7 @@ export function LanesPage() {
   } | null>(null);
   const branchSearchInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
+  const completedLaneDeleteRefreshesRef = useRef<Set<string>>(new Set());
 
   const [addLaneDropdownOpen, setAddLaneDropdownOpen] = useState(false);
   const addLaneDropdownRef = useRef<HTMLDivElement>(null);
@@ -327,6 +328,10 @@ export function LanesPage() {
       logRendererDebugEvent("renderer.lanes.page_unmount");
     };
   }, []);
+
+  useEffect(() => {
+    completedLaneDeleteRefreshesRef.current.clear();
+  }, [project?.rootPath]);
 
   const laneSnapshotByLaneId = useMemo(
     () => new Map(laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const)),
@@ -617,6 +622,38 @@ export function LanesPage() {
   }, []);
 
   /* ---- Effects ---- */
+
+  useEffect(() => {
+    const unsubscribe = window.ade.lanes.onDeleteEvent((event) => {
+      const { laneId, overallStatus } = event.progress;
+      if (overallStatus !== "completed") return;
+      if (completedLaneDeleteRefreshesRef.current.has(laneId)) return;
+      completedLaneDeleteRefreshesRef.current.add(laneId);
+
+      if (selectedLaneId === laneId) selectLane(null);
+      setActiveLaneIds((prev) => prev.filter((id) => id !== laneId));
+      setPinnedLaneIds((prev) => {
+        if (!prev.has(laneId)) return prev;
+        const next = new Set(prev);
+        next.delete(laneId);
+        return next;
+      });
+      setManagedLaneIds((prev) => prev.filter((id) => id !== laneId));
+      clearLaneInspectorTab(laneId);
+      setLaneActionError(null);
+
+      void refreshLanes()
+        .then(() => {
+          if (manageOpen && (selectedLaneId === laneId || managedLaneIds.includes(laneId))) {
+            setManageOpen(false);
+          }
+        })
+        .catch((err) => {
+          setLaneActionError(`Lane was deleted, but refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+    });
+    return unsubscribe;
+  }, [clearLaneInspectorTab, managedLaneIds, manageOpen, refreshLanes, selectLane, selectedLaneId]);
 
   useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
