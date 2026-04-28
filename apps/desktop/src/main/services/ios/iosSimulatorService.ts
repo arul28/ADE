@@ -185,8 +185,6 @@ type SwiftPreviewDefinition = {
   position: number;
 };
 
-let xcodeMcpBridge: XcodeMcpBridge | null = null;
-
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -257,8 +255,7 @@ function extractMcpMessages(buffer: Buffer<ArrayBufferLike>): { messages: JsonRp
   return { messages, rest: Buffer.from(rest) };
 }
 
-function closeXcodeMcpBridge(bridge: XcodeMcpBridge, reason: Error): void {
-  if (xcodeMcpBridge === bridge) xcodeMcpBridge = null;
+function disposeXcodeMcpBridge(bridge: XcodeMcpBridge, reason: Error): void {
   for (const [id, pending] of bridge.pending) {
     clearTimeout(pending.timer);
     pending.reject(reason);
@@ -283,7 +280,7 @@ function handleXcodeMcpMessage(bridge: XcodeMcpBridge, message: JsonRpcMessage):
   pending.resolve(message.result);
 }
 
-function createXcodeMcpBridge(): XcodeMcpBridge {
+function createXcodeMcpBridge(onTerminated: (bridge: XcodeMcpBridge, reason: Error) => void): XcodeMcpBridge {
   const child = spawn("xcrun", ["mcpbridge"], {
     env: {
       ...process.env,
@@ -304,11 +301,11 @@ function createXcodeMcpBridge(): XcodeMcpBridge {
     bridge.stderr = `${bridge.stderr}${chunk.toString()}`.slice(-8000);
   });
   child.once("error", (error) => {
-    closeXcodeMcpBridge(bridge, error);
+    onTerminated(bridge, error);
   });
   child.once("exit", (code, signal) => {
     const detail = bridge.stderr.trim();
-    closeXcodeMcpBridge(bridge, new Error(detail || `xcrun mcpbridge exited with ${signal ?? code ?? "unknown status"}.`));
+    onTerminated(bridge, new Error(detail || `xcrun mcpbridge exited with ${signal ?? code ?? "unknown status"}.`));
   });
   child.stdout?.on("data", (chunk: Buffer) => {
     bridge.stdoutBuffer = Buffer.concat([bridge.stdoutBuffer, chunk]);
@@ -317,14 +314,6 @@ function createXcodeMcpBridge(): XcodeMcpBridge {
     for (const message of extracted.messages) handleXcodeMcpMessage(bridge, message);
   });
   return bridge;
-}
-
-function getXcodeMcpBridge(): XcodeMcpBridge {
-  if (xcodeMcpBridge && xcodeMcpBridge.child.exitCode == null && xcodeMcpBridge.child.signalCode == null) {
-    return xcodeMcpBridge;
-  }
-  xcodeMcpBridge = createXcodeMcpBridge();
-  return xcodeMcpBridge;
 }
 
 function sendXcodeMcpRequest(bridge: XcodeMcpBridge, method: string, params: unknown, timeoutMs: number, description: string): Promise<unknown> {
@@ -376,15 +365,6 @@ async function ensureXcodeMcpInitialized(bridge: XcodeMcpBridge): Promise<void> 
     bridge.initializing = null;
   });
   return bridge.initializing;
-}
-
-async function callXcodeMcpTool(toolName: string, toolArgs: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
-  const bridge = getXcodeMcpBridge();
-  await ensureXcodeMcpInitialized(bridge);
-  return sendXcodeMcpRequest(bridge, "tools/call", {
-    name: toolName,
-    arguments: toolArgs,
-  }, timeoutMs, `Xcode MCP ${toolName}`);
 }
 
 function textFromMcpResult(result: unknown): string {
@@ -1030,7 +1010,12 @@ function normalizeLaunchArguments(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new Error("iOS Simulator launch arguments must be an array.");
   }
-  return value.map((item) => String(item));
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new Error("iOS Simulator launch arguments must be an array of strings.");
+    }
+  }
+  return value as string[];
 }
 
 function normalizeCoordinate(value: unknown, label: string): number {
@@ -1433,6 +1418,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   let controlQueue: Promise<void> = Promise.resolve();
   let activeLaunchId: string | null = null;
   let disposed = false;
+  let xcodeMcpBridge: XcodeMcpBridge | null = null;
   const tempFiles = new Set<string>();
   const toolAvailabilityCache = new Map<string, { available: boolean; checkedAt: number }>();
   let cachedStatus: { value: IosSimulatorStatus; computedAt: number; inflight: Promise<IosSimulatorStatus> | null } = {
@@ -1502,6 +1488,28 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       tempFiles.delete(filePath);
       fs.promises.unlink(filePath).catch(() => {});
     }
+  };
+
+  const onXcodeMcpBridgeTerminated = (bridge: XcodeMcpBridge, reason: Error): void => {
+    if (xcodeMcpBridge === bridge) xcodeMcpBridge = null;
+    disposeXcodeMcpBridge(bridge, reason);
+  };
+
+  const getXcodeMcpBridge = (): XcodeMcpBridge => {
+    if (xcodeMcpBridge && xcodeMcpBridge.child.exitCode == null && xcodeMcpBridge.child.signalCode == null) {
+      return xcodeMcpBridge;
+    }
+    xcodeMcpBridge = createXcodeMcpBridge(onXcodeMcpBridgeTerminated);
+    return xcodeMcpBridge;
+  };
+
+  const callXcodeMcpTool = async (toolName: string, toolArgs: Record<string, unknown>, timeoutMs: number): Promise<unknown> => {
+    const bridge = getXcodeMcpBridge();
+    await ensureXcodeMcpInitialized(bridge);
+    return sendXcodeMcpRequest(bridge, "tools/call", {
+      name: toolName,
+      arguments: toolArgs,
+    }, timeoutMs, `Xcode MCP ${toolName}`);
   };
 
   const resolveControlDeviceUdid = async (deviceUdid?: string | null): Promise<string> => {
@@ -1624,7 +1632,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const startMjpegStreamServer = async (): Promise<string> => {
     closeStreamServer();
-    const port = await getFreePort();
     streamClients = new Set<ServerResponse>();
     streamServer = http.createServer((request, response) => {
       if (!request.url?.startsWith("/ios-simulator/stream.mjpg")) {
@@ -1648,15 +1655,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         streamClients.delete(response);
       });
     });
-    await new Promise<void>((resolve, reject) => {
+    // Bind atomically to an OS-assigned port to avoid the TOCTOU race that
+    // exists when discovering a free port and re-binding it from a separate
+    // server instance.
+    const port = await new Promise<number>((resolve, reject) => {
       if (!streamServer) {
         reject(new Error("Stream server was not created."));
         return;
       }
       streamServer.once("error", reject);
-      streamServer.listen(port, "127.0.0.1", () => {
+      streamServer.listen(0, "127.0.0.1", () => {
         streamServer?.off("error", reject);
-        resolve();
+        const address = streamServer?.address();
+        const assigned = typeof address === "object" && address ? address.port : 0;
+        if (!assigned) {
+          reject(new Error("MJPEG stream server did not receive an assigned port."));
+          return;
+        }
+        resolve(assigned);
       });
     });
     return `http://127.0.0.1:${port}/ios-simulator/stream.mjpg`;
@@ -2541,6 +2557,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       throw new Error("Xcode command line tools are required for iOS Simulator control. Install Xcode and run xcode-select --install.");
     }
     const incomingChatSessionId = launchArgs.chatSessionId ?? null;
+    // Anonymous sessions (chatSessionId == null on either side) are intentionally
+    // unowned — the CLI and tests routinely launch without a chat session id,
+    // so any subsequent caller may take over without `force: true`. We only block
+    // when both sides identify a chat session and they differ.
     if (
       activeSession
       && activeSession.chatSessionId
@@ -3234,8 +3254,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (backend !== "auto" && backend !== "simctl-screenshot-poll" && backend !== "idb-h264-ffmpeg-mjpeg" && backend !== "simulator-window-capture") {
       throw new Error("stream backend must be `auto`, `simulator-window-capture`, `simctl-screenshot-poll`, or `idb-h264-ffmpeg-mjpeg`.");
     }
-    if (streamProcess || streamPollTimer) {
-      if (streamStatus.deviceUdid === device.udid && streamStatus.running) {
+    // simulator-window-capture sessions only flip `streamStatus.running` —
+    // they never set `streamProcess` or `streamPollTimer`. Include
+    // `streamStatus.running` so a duplicate startStream call for the same
+    // backend+device is a no-op instead of triggering a spurious
+    // stream-stopped/stream-started cycle.
+    if (streamProcess || streamPollTimer || streamStatus.running) {
+      if (
+        streamStatus.running
+        && streamStatus.deviceUdid === device.udid
+        && streamStatus.backend === backend
+      ) {
         return streamStatus;
       }
       await stopStream();
@@ -3374,7 +3403,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       activeLaunchId = null;
       cleanupTempFiles();
       toolAvailabilityCache.clear();
-      if (xcodeMcpBridge) closeXcodeMcpBridge(xcodeMcpBridge, new Error("iOS simulator service disposed."));
+      if (xcodeMcpBridge) {
+        const bridge = xcodeMcpBridge;
+        xcodeMcpBridge = null;
+        disposeXcodeMcpBridge(bridge, new Error("iOS simulator service disposed."));
+      }
     },
   };
 }
