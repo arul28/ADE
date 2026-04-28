@@ -114,21 +114,17 @@ function coloredChatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | nu
   const accent = resolveChatSurfaceAccent(mode, accentColor);
   const m = 1;
   return {
-    ["--chat-lane-rail-width" as string]: "3px",
-    ["--chat-lane-rail-opacity" as string]: "0.52",
     ["--chat-user-border-accent-mix" as string]: "28%",
     ["--chat-user-shadow-accent-mix" as string]: "34%",
     ...sharedSurfaceTokens(accent, m),
   };
 }
 
-/** Monochrome chat — no side rail, gray accent token, reduced glow (Slack-style base). */
+/** Monochrome chat — gray accent token, reduced glow (Slack-style base). */
 function neutralChatSurfaceVars(): CSSProperties {
   const accent = NEUTRAL_CHROME_ACCENT;
   const m = 0.85;
   return {
-    ["--chat-lane-rail-width" as string]: "0px",
-    ["--chat-lane-rail-opacity" as string]: "0",
     ["--chat-user-border-accent-mix" as string]: "20%",
     ["--chat-user-shadow-accent-mix" as string]: "24%",
     ...sharedSurfaceTokens(accent, m),

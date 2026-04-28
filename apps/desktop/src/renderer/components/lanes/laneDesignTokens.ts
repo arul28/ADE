@@ -4,9 +4,9 @@ import type { ProcessRuntimeStatus } from "../../../shared/types";
 /** Semantic palette — resolves against `[data-theme]` / `:root` in `index.css`. */
 export const COLORS = {
   pageBg: "var(--color-bg)",
-  cardBg: "color-mix(in srgb, var(--color-card) 94%, var(--color-bg) 6%)",
-  cardBgSolid: "var(--color-card)",
-  recessedBg: "var(--color-muted)",
+  cardBg: "rgba(255,255,255,0.03)",
+  cardBgSolid: "#181423",
+  recessedBg: "rgba(255,255,255,0.02)",
   hoverBg: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
   border: "var(--color-border)",
   outlineBorder: "color-mix(in srgb, var(--color-border) 88%, var(--color-fg) 12%)",

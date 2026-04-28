@@ -114,18 +114,6 @@ export function ChatSurfaceShell({
           background: "var(--color-bg)",
         }}
       >
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 z-[5]"
-          style={{
-            width: "var(--chat-lane-rail-width, 0px)",
-            opacity: "var(--chat-lane-rail-opacity, 0)",
-            borderTopLeftRadius: "var(--chat-radius-shell)",
-            borderBottomLeftRadius: "var(--chat-radius-shell)",
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--chat-accent) 72%, transparent) 0%, color-mix(in srgb, var(--chat-accent) 32%, transparent) 100%)",
-          }}
-        />
         {scaled ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={scaleWrapperStyle}>
             {inner}

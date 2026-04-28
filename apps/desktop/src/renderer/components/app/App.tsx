@@ -165,8 +165,13 @@ export function RequireProject({ children }: { children: React.ReactElement }): 
   }
 
   const hasActiveProject = Boolean(project?.rootPath);
-  if ((!hasActiveProject || showWelcome) && location.pathname !== "/project" && location.pathname !== "/onboarding") {
-    return <Navigate to="/project" replace />;
+  if (
+    (!hasActiveProject || showWelcome) &&
+    location.pathname !== "/work" &&
+    location.pathname !== "/project" &&
+    location.pathname !== "/onboarding"
+  ) {
+    return <Navigate to="/work" replace />;
   }
 
   return children;
@@ -241,7 +246,11 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
   }
 
   if (!hasActiveProject || showWelcome) {
-    return active ? <Navigate to="/project" replace /> : null;
+    return active ? (
+      <PageErrorBoundary>
+        <RunPage />
+      </PageErrorBoundary>
+    ) : null;
   }
 
   return (

@@ -276,6 +276,7 @@ function SectionCard({
   dataTestId,
   showDescription = false,
   sectionStyle,
+  headerStyle,
   bodyStyle,
 }: {
   title: string;
@@ -285,6 +286,7 @@ function SectionCard({
   dataTestId?: string;
   showDescription?: boolean;
   sectionStyle?: React.CSSProperties;
+  headerStyle?: React.CSSProperties;
   bodyStyle?: React.CSSProperties;
 }) {
   return (
@@ -310,6 +312,7 @@ function SectionCard({
           padding: "8px 10px",
           borderBottom: `1px solid ${COLORS.border}`,
           background: COLORS.recessedBg,
+          ...headerStyle,
         }}
       >
         <div style={{ minWidth: 0 }}>
@@ -2166,11 +2169,12 @@ export function LaneGitActionsPane({
                 : "Changed files. Stashes are saved snapshots below."
             }
             dataTestId="files-section"
-            sectionStyle={{ minHeight: 0, height: "100%" }}
+            sectionStyle={{ minHeight: 0, height: "100%", background: "rgba(255,255,255,0.03)" }}
+            headerStyle={{ background: "rgba(255,255,255,0.03)" }}
             bodyStyle={
               diffViewActive
-                ? { flex: 1, minHeight: 0, padding: 0, gap: 0, display: "flex", flexDirection: "column", overflow: "hidden" }
-                : { flex: 1, minHeight: 0 }
+                ? { flex: 1, minHeight: 0, padding: 0, gap: 0, display: "flex", flexDirection: "column", overflow: "hidden", background: "rgba(255,255,255,0.03)" }
+                : { flex: 1, minHeight: 0, background: "rgba(255,255,255,0.03)" }
             }
             aside={
               diffViewActive ? (

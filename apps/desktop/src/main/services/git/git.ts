@@ -1,8 +1,61 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type { ConflictFileType } from "../../../shared/types";
 import { terminateProcessTree } from "../shared/processExecution";
+import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+
+// Electron apps launched from Finder/Dock can have a stripped PATH that misses
+// where the user actually installed git (e.g. /opt/homebrew/bin on Apple
+// Silicon when shell PATH probe times out). Resolve git's absolute path once
+// and reuse it so spawn never throws ENOENT.
+let cachedGitExecutable: string | null = null;
+function resolveGitExecutable(): string {
+  if (cachedGitExecutable) return cachedGitExecutable;
+  if (process.env.ADE_GIT_EXECUTABLE && fs.existsSync(process.env.ADE_GIT_EXECUTABLE)) {
+    cachedGitExecutable = process.env.ADE_GIT_EXECUTABLE;
+    return cachedGitExecutable;
+  }
+  const fromKnown = resolveExecutableFromKnownLocations(process.platform === "win32" ? "git.exe" : "git");
+  if (fromKnown?.path) {
+    cachedGitExecutable = fromKnown.path;
+    return cachedGitExecutable;
+  }
+  // Last resort: ask the user's login shell. Slower, but only runs if the
+  // direct probe missed (e.g. git lives in an unusual nvm/asdf shim dir).
+  if (process.platform !== "win32") {
+    try {
+      const shell = process.env.SHELL?.trim() || "/bin/sh";
+      const out = execFileSync(shell, ["-lc", "command -v git"], {
+        encoding: "utf8",
+        timeout: 3_000,
+      }).trim();
+      if (out && fs.existsSync(out)) {
+        cachedGitExecutable = out;
+        return cachedGitExecutable;
+      }
+    } catch {
+      // fall through
+    }
+  }
+  // Fall back to bare "git" — spawn will surface the original ENOENT with a
+  // clearer pre-check error message wrapped around it.
+  cachedGitExecutable = process.platform === "win32" ? "git.exe" : "git";
+  return cachedGitExecutable;
+}
+
+function gitExecutableNotFoundMessage(executable: string): string {
+  if (process.platform === "darwin") {
+    return `git executable not found (tried ${executable}). Install Xcode Command Line Tools or set ADE_GIT_EXECUTABLE to git's absolute path.`;
+  }
+  if (process.platform === "win32") {
+    return `git executable not found (tried ${executable}). Install Git for Windows or set ADE_GIT_EXECUTABLE to git's absolute path.`;
+  }
+  if (process.platform === "linux") {
+    return `git executable not found (tried ${executable}). Install git with your package manager or set ADE_GIT_EXECUTABLE to git's absolute path.`;
+  }
+  return `git executable not found (tried ${executable}). Install git or set ADE_GIT_EXECUTABLE to git's absolute path.`;
+}
 
 export type GitRunOptions = {
   cwd: string;
@@ -109,7 +162,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     : DEFAULT_MAX_OUTPUT_BYTES;
 
   return await new Promise<GitRunResult>((resolve) => {
-    const child = spawn("git", args, {
+    const child = spawn(resolveGitExecutable(), args, {
       cwd: opts.cwd,
       env: { ...process.env, ...(opts.env ?? {}) },
       stdio: ["ignore", "pipe", "pipe"]
@@ -176,10 +229,15 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     });
 
     child.on("error", (error) => {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      const friendlyMessage =
+        code === "ENOENT"
+          ? gitExecutableNotFoundMessage(resolveGitExecutable())
+          : error.message;
       finish({
         exitCode: 1,
         stdout,
-        stderr: stderr.length ? stderr : error.message,
+        stderr: stderr.length ? stderr : friendlyMessage,
         stdoutTruncated,
         stderrTruncated
       });

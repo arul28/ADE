@@ -3011,7 +3011,14 @@ export function createLaneService({
         throw new Error("Cannot delete a lane with active child lanes. Delete or rebase/archive children first.");
       }
 
-      const hasWorktree = row.lane_type === "worktree" && Boolean(row.worktree_path) && fs.existsSync(row.worktree_path);
+      const worktreeMetadataPath = row.worktree_path
+        ? path.join(projectRoot, ".git", "worktrees", path.basename(row.worktree_path))
+        : "";
+      const worktreeRegistered = Boolean(worktreeMetadataPath) && fs.existsSync(worktreeMetadataPath);
+      const hasWorktree =
+        row.lane_type === "worktree" &&
+        Boolean(row.worktree_path) &&
+        (fs.existsSync(row.worktree_path) || worktreeRegistered);
       const stepNames: LaneDeleteStepName[] = [];
       if (hasWorktree) stepNames.push("git_status");
       stepNames.push("cancel_auto_rebase", "stop_processes", "stop_ptys", "stop_watchers", "cleanup_env");
@@ -3166,8 +3173,29 @@ export function createLaneService({
             const removeArgs = ["worktree", "remove"];
             if (force) removeArgs.push("--force");
             removeArgs.push(row.worktree_path);
-            await runGitOrThrow(removeArgs, { cwd: projectRoot, timeoutMs: 15_000 });
-            return { detail: row.worktree_path };
+            // 60s — large worktrees (e.g. with node_modules) can take longer than 15s
+            // to walk; a timeout here mid-remove leaves the worktree in a half-deleted
+            // state that blocks future deletes.
+            const removeRes = await runGit(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 });
+            if (removeRes.exitCode === 0) {
+              return { detail: row.worktree_path };
+            }
+            // Recovery path: a previous failed delete (or this one's first attempt)
+            // can leave the worktree dir present without its `.git` pointer file, or
+            // the dir gone with stale metadata still registered. Either way: rm the
+            // dir if any, then prune git's metadata.
+            try {
+              fs.rmSync(row.worktree_path, { recursive: true, force: true });
+            } catch (rmError) {
+              const original = (removeRes.stderr || removeRes.stdout || "").trim();
+              throw new Error(
+                `git worktree remove failed (${original}); manual cleanup also failed: ${
+                  rmError instanceof Error ? rmError.message : String(rmError)
+                }`
+              );
+            }
+            await runGitOrThrow(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+            return { detail: `${row.worktree_path} (recovered from stale state)` };
           });
         }
 
@@ -3192,7 +3220,7 @@ export function createLaneService({
             }
             const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, row.branch_ref], {
               cwd: projectRoot,
-              timeoutMs: 12_000,
+              timeoutMs: 30_000,
             });
             if (remoteRefCheck.exitCode !== 0 || remoteRefCheck.stdout.trim().length === 0) {
               return { detail: "remote branch not found" };

@@ -73,7 +73,7 @@ describe("ChatAppearancePreview", () => {
     expect(first.style.getPropertyValue("--chat-bubble-assistant-py").trim()).toBe("22px");
   });
 
-  it("renders three chat surface shells with colored chrome rail and standard border mix", () => {
+  it("renders three chat surface shells with colored chrome and standard border mix", () => {
     const { container } = render(
       <ChatAppearancePreview
         theme="dark"
@@ -90,25 +90,7 @@ describe("ChatAppearancePreview", () => {
     for (const el of shells) {
       const style = (el as HTMLElement).style;
       expect(style.getPropertyValue("--chat-user-border-accent-mix").trim()).toBe("28%");
-      expect(style.getPropertyValue("--chat-lane-rail-width").trim()).toBe("3px");
     }
-  });
-
-  it("hides the colored lane rail in no-tint (neutral) mode", () => {
-    const { container } = render(
-      <ChatAppearancePreview
-        theme="dark"
-        chatFontSizePx={14}
-        transcriptDensity="comfortable"
-        chromeTint="neutral"
-        shellGeometry="default"
-      />,
-    );
-    const first = container.querySelector("section[data-chat-chrome-tint='neutral']") as HTMLElement;
-    expect(first).toBeTruthy();
-    const style = first.style;
-    expect(style.getPropertyValue("--chat-lane-rail-width").trim()).toBe("0px");
-    expect(style.getPropertyValue("--chat-lane-rail-opacity").trim()).toBe("0");
   });
 
   it("scopes theme to the preview subtree", () => {

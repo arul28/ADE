@@ -2404,13 +2404,13 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
       if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
       if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" } as any;
-      return { exitCode: 0, stdout: "", stderr: "" } as any;
-    });
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
       if (args[0] === "worktree" && args[1] === "remove") {
         fake.calls.push("git_worktree_remove");
         return { exitCode: 0, stdout: "", stderr: "" } as any;
       }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async () => {
       return { exitCode: 0, stdout: "", stderr: "" } as any;
     });
 

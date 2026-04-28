@@ -90,8 +90,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const renderItem = (
     it: { to: string; label: string; icon: React.ElementType },
   ) => {
-    const isActive = primaryTabPath(location.pathname) === it.to;
-    const isActiveAllowed = (!showWelcome && hasActiveProject) || it.to === "/project";
+    const onWelcomeLanding = showWelcome || !hasActiveProject;
+    const isActive = !onWelcomeLanding && primaryTabPath(location.pathname) === it.to;
+    const isActiveAllowed = !showWelcome && hasActiveProject;
     const navTarget = it.to === "/prs" ? readStoredPrsRoute(project?.rootPath) ?? it.to : it.to;
 
     if (!isActiveAllowed) {
@@ -136,7 +137,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
         {/* Active indicator bar */}
         {isActive && (
           <div
-            className="absolute inset-0 rounded-lg bg-white/[0.06]"
+            className="absolute inset-0 bg-white/[0.08]"
           />
         )}
 
