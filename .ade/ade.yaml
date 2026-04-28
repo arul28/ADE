@@ -1,12 +1,5 @@
 version: 1
-processes:
-  - id: dbun9idy
-    name: dogfood code review
-    command:
-      - scripts/dogfood.sh
-      - code-review
-    cwd: .
-    gracefulShutdownMs: 7000
+processes: []
 stackButtons: []
 testSuites: []
 laneOverlayPolicies: []
@@ -42,7 +35,7 @@ ai:
 notifications:
   apns:
     enabled: true
+    env: sandbox
     keyId: 8HYA5AWCGP
     teamId: VQ372F39G6
     bundleId: com.ade.ios
-    env: sandbox

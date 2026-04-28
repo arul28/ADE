@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, nativeImage, protocol, safeStorage, shell } from "electron";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as NodePty from "node-pty";
@@ -146,6 +147,25 @@ import type { DeviceRegistryService } from "./services/sync/deviceRegistryServic
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
+
+const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
+
+function resolveAutoUpdaterCacheDir(): string {
+  const homeDir = os.homedir();
+  if (process.platform === "win32") {
+    return path.join(
+      process.env.LOCALAPPDATA || path.join(homeDir, "AppData", "Local"),
+      AUTO_UPDATER_CACHE_DIR_NAME,
+    );
+  }
+  if (process.platform === "darwin") {
+    return path.join(homeDir, "Library", "Caches", AUTO_UPDATER_CACHE_DIR_NAME);
+  }
+  return path.join(
+    process.env.XDG_CACHE_HOME || path.join(homeDir, ".cache"),
+    AUTO_UPDATER_CACHE_DIR_NAME,
+  );
+}
 
 /**
  * Electron apps launched from macOS Dock/Finder inherit a minimal PATH
@@ -1202,6 +1222,7 @@ app.whenReady().then(async () => {
     logger: updateLogger,
     currentVersion: app.getVersion(),
     globalStatePath,
+    updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
   });
 
   const initContextForProjectRoot = async ({

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { ProgressInfo } from "builder-util-runtime";
 import { autoUpdater, type UpdateInfo } from "electron-updater";
 import type { AutoUpdateSnapshot, RecentlyInstalledUpdate } from "../../../shared/types";
@@ -25,6 +27,7 @@ type CreateAutoUpdateServiceArgs = {
   releaseNotesBaseUrl?: string;
   startupDelayMs?: number;
   periodicCheckMs?: number;
+  updaterCacheDir?: string;
 };
 
 export function createEmptyAutoUpdateSnapshot(): AutoUpdateSnapshot {
@@ -64,14 +67,57 @@ function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
   };
 }
 
+function cleanupUpdaterCacheDir(args: {
+  updaterCacheDir?: string;
+  logger: Logger;
+  reason: string;
+}): void {
+  const rawCacheDir = args.updaterCacheDir?.trim();
+  if (!rawCacheDir) return;
+
+  const updaterCacheDir = path.resolve(rawCacheDir);
+  if (!fs.existsSync(updaterCacheDir)) return;
+
+  try {
+    const entries = fs.readdirSync(updaterCacheDir, { withFileTypes: true });
+    let entriesRemoved = 0;
+    for (const entry of entries) {
+      fs.rmSync(path.join(updaterCacheDir, entry.name), {
+        recursive: true,
+        force: true,
+      });
+      entriesRemoved += 1;
+    }
+    if (entriesRemoved > 0) {
+      args.logger.info("autoUpdate.cache_cleaned", {
+        reason: args.reason,
+        updaterCacheDir,
+        entriesRemoved,
+      });
+    }
+  } catch (error) {
+    args.logger.warn("autoUpdate.cache_cleanup_failed", {
+      reason: args.reason,
+      updaterCacheDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 function reconcilePersistedUpdateState(args: {
   state: GlobalState;
   currentVersion: string;
   now: string;
   releaseNotesBaseUrl: string;
-}): { state: GlobalState; changed: boolean; recentlyInstalled: RecentlyInstalledUpdate | null } {
+}): {
+  state: GlobalState;
+  changed: boolean;
+  recentlyInstalled: RecentlyInstalledUpdate | null;
+  cacheCleanupReason: string | null;
+} {
   const nextState: GlobalState = { ...args.state };
   let changed = false;
+  let cacheCleanupReason: string | null = null;
 
   if (
     nextState.recentlyInstalledUpdate
@@ -91,6 +137,9 @@ function reconcilePersistedUpdateState(args: {
           pendingInstall.releaseNotesUrl
           ?? buildReleaseNotesUrl(pendingInstall.targetVersion, args.releaseNotesBaseUrl),
       };
+      cacheCleanupReason = "installed";
+    } else {
+      cacheCleanupReason = "failed_install";
     }
     nextState.pendingInstallUpdate = undefined;
     changed = true;
@@ -100,6 +149,7 @@ function reconcilePersistedUpdateState(args: {
     state: nextState,
     changed,
     recentlyInstalled: cloneRecentlyInstalledUpdate(nextState.recentlyInstalledUpdate ?? null),
+    cacheCleanupReason,
   };
 }
 
@@ -123,6 +173,7 @@ export function createAutoUpdateService({
   releaseNotesBaseUrl = DEFAULT_RELEASE_NOTES_BASE_URL,
   startupDelayMs = 5_000,
   periodicCheckMs = 30 * 60 * 1_000,
+  updaterCacheDir,
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
   updater.autoDownload = true;
@@ -136,6 +187,13 @@ export function createAutoUpdateService({
   });
   if (initialState.changed) {
     writeGlobalState(globalStatePath, initialState.state);
+  }
+  if (initialState.cacheCleanupReason) {
+    cleanupUpdaterCacheDir({
+      updaterCacheDir,
+      logger,
+      reason: initialState.cacheCleanupReason,
+    });
   }
 
   let snapshot: AutoUpdateSnapshot = {
@@ -208,6 +266,13 @@ export function createAutoUpdateService({
 
   const onUpdateNotAvailable = () => {
     logger.info("autoUpdate.update_not_available");
+    if (snapshot.status !== "ready") {
+      cleanupUpdaterCacheDir({
+        updaterCacheDir,
+        logger,
+        reason: "not_available",
+      });
+    }
     patchSnapshot({
       status: snapshot.status === "ready" ? "ready" : "idle",
       version: snapshot.status === "ready" ? snapshot.version : null,
@@ -222,6 +287,11 @@ export function createAutoUpdateService({
 
   const onUpdateCancelled = (info: UpdateInfo) => {
     logger.warn("autoUpdate.update_cancelled", { version: info.version });
+    cleanupUpdaterCacheDir({
+      updaterCacheDir,
+      logger,
+      reason: "cancelled",
+    });
     patchSnapshot({
       ...createEmptyAutoUpdateSnapshot(),
       recentlyInstalled: snapshot.recentlyInstalled,
@@ -232,6 +302,11 @@ export function createAutoUpdateService({
     const message = err instanceof Error ? err.message : String(err ?? "unknown");
     logger.warn("autoUpdate.error", { message });
     if (snapshot.status === "ready") return;
+    cleanupUpdaterCacheDir({
+      updaterCacheDir,
+      logger,
+      reason: "error",
+    });
     patchSnapshot({
       ...createEmptyAutoUpdateSnapshot(),
       status: "error",
@@ -304,8 +379,33 @@ export function createAutoUpdateService({
         recentlyInstalledUpdate: undefined,
       });
       logger.info("autoUpdate.quit_and_install", { version: snapshot.version });
-      updater.quitAndInstall(false, true);
-      return true;
+      try {
+        updater.quitAndInstall(false, true);
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn("autoUpdate.quit_and_install_failed", {
+          version: snapshot.version,
+          message,
+        });
+        const currentState = readGlobalState(globalStatePath);
+        writeGlobalState(globalStatePath, {
+          ...currentState,
+          pendingInstallUpdate: undefined,
+        });
+        patchSnapshot({
+          ...createEmptyAutoUpdateSnapshot(),
+          status: "error",
+          error: message,
+          recentlyInstalled: snapshot.recentlyInstalled,
+        });
+        cleanupUpdaterCacheDir({
+          updaterCacheDir,
+          logger,
+          reason: "quit_and_install_failed",
+        });
+        return false;
+      }
     },
     dispose() {
       clearTimeout(startupTimer);

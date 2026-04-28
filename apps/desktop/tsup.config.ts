@@ -17,7 +17,7 @@ export default defineConfig({
   // the CJS bundle doesn't emit a bare require() that Node/Electron can't resolve.
   noExternal: ["@opencode-ai/sdk"],
   outDir: "dist",
-  sourcemap: true,
+  sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1",
   clean: true,
   // Inline build-time env variables so they're available in the packaged app.
   define: {

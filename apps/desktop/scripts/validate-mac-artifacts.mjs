@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 
 const execFileAsync = promisify(execFile);
@@ -11,6 +12,8 @@ const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
 const releaseDir = path.join(appDir, "release");
+const DEFAULT_MAX_APP_ASAR_BYTES = 650 * 1024 * 1024;
+const DEFAULT_MAX_UNPACKED_BYTES = 300 * 1024 * 1024;
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -29,6 +32,76 @@ function hasFlag(name) {
 function resolveAbsolute(input) {
   if (!input) return null;
   return path.isAbsolute(input) ? input : path.resolve(appDir, input);
+}
+
+function readByteLimit(envName, fallback) {
+  const rawValue = process.env[envName];
+  if (!rawValue) return fallback;
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`[release:mac] ${envName} must be a positive byte count, received: ${rawValue}`);
+  }
+  return parsed;
+}
+
+async function collectMatchingPaths(rootPath, predicate, matches = []) {
+  let entries;
+  try {
+    entries = await fs.readdir(rootPath, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return matches;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(rootPath, entry.name);
+    if (predicate(entryPath, entry)) {
+      matches.push(entryPath);
+    }
+    if (entry.isDirectory()) {
+      await collectMatchingPaths(entryPath, predicate, matches);
+    }
+  }
+
+  return matches;
+}
+
+async function computeRecursiveFileSize(rootPath) {
+  let totalBytes = 0;
+  let entries;
+  try {
+    entries = await fs.readdir(rootPath, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return 0;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(rootPath, entry.name);
+    if (entry.isDirectory()) {
+      totalBytes += await computeRecursiveFileSize(entryPath);
+    } else if (entry.isFile()) {
+      totalBytes += (await fs.stat(entryPath)).size;
+    }
+  }
+
+  return totalBytes;
+}
+
+function formatRelativeSample(rootPath, entries) {
+  return entries
+    .slice(0, 12)
+    .map((entry) => path.relative(rootPath, entry) || path.basename(entry))
+    .join(", ");
+}
+
+async function assertPathMissing(targetPath, description) {
+  try {
+    await fs.access(targetPath);
+  } catch {
+    return;
+  }
+  throw new Error(`[release:mac] Unexpected ${description}: ${targetPath}`);
 }
 
 async function assertPathExists(targetPath, description) {
@@ -148,6 +221,75 @@ async function validateSignedApp(appPath, description) {
   await execFileAsync("spctl", ["-a", "-vvv", "--type", "execute", appPath]);
 }
 
+async function validatePackageHygiene(appPath, description) {
+  const resourcesPath = path.join(appPath, "Contents", "Resources");
+  const appAsarPath = path.join(resourcesPath, "app.asar");
+  const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
+  const maxAppAsarBytes = readByteLimit("ADE_MAX_APP_ASAR_BYTES", DEFAULT_MAX_APP_ASAR_BYTES);
+  const maxUnpackedBytes = readByteLimit("ADE_MAX_APP_ASAR_UNPACKED_BYTES", DEFAULT_MAX_UNPACKED_BYTES);
+
+  const appAsarStat = await fs.stat(appAsarPath);
+  if (appAsarStat.size > maxAppAsarBytes) {
+    throw new Error(
+      `[release:mac] app.asar is too large for ${description}: ${appAsarStat.size} bytes ` +
+        `(limit ${maxAppAsarBytes})`
+    );
+  }
+
+  const unpackedBytes = await computeRecursiveFileSize(unpackedPath);
+  if (unpackedBytes > maxUnpackedBytes) {
+    throw new Error(
+      `[release:mac] app.asar.unpacked is too large for ${description}: ${unpackedBytes} bytes ` +
+        `(limit ${maxUnpackedBytes})`
+    );
+  }
+
+  const asarEntries = asar.listPackage(appAsarPath);
+  const sourceMapEntries = asarEntries.filter((entry) => entry.toLowerCase().endsWith(".map"));
+  if (sourceMapEntries.length > 0) {
+    throw new Error(
+      `[release:mac] app.asar contains source maps in ${description}: ` +
+        sourceMapEntries.slice(0, 12).join(", ")
+    );
+  }
+
+  const claudeBinaryPackageEntries = asarEntries.filter((entry) =>
+    entry.includes("/node_modules/@anthropic-ai/claude-agent-sdk-")
+  );
+  if (claudeBinaryPackageEntries.length > 0) {
+    throw new Error(
+      `[release:mac] app.asar contains optional Claude binary packages in ${description}: ` +
+        claudeBinaryPackageEntries.slice(0, 12).join(", ")
+    );
+  }
+
+  const diskSourceMaps = await collectMatchingPaths(resourcesPath, (entryPath, entry) =>
+    entry.isFile() && entryPath.toLowerCase().endsWith(".map")
+  );
+  if (diskSourceMaps.length > 0) {
+    throw new Error(
+      `[release:mac] packaged resources contain source maps in ${description}: ` +
+        formatRelativeSample(resourcesPath, diskSourceMaps)
+    );
+  }
+
+  await assertPathMissing(
+    path.join(unpackedPath, "node_modules", "@huggingface", "transformers", "node_modules", "onnxruntime-node", "bin", "napi-v3", "linux"),
+    "Linux ONNX Runtime payload in macOS package",
+  );
+  await assertPathMissing(
+    path.join(unpackedPath, "node_modules", "@huggingface", "transformers", "node_modules", "onnxruntime-node", "bin", "napi-v3", "win32"),
+    "Windows ONNX Runtime payload in macOS package",
+  );
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "deps"), "node-pty source dependency tree");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "src"), "node-pty source tree");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "win32-arm64"), "Windows node-pty arm64 prebuild in macOS package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "win32-x64"), "Windows node-pty x64 prebuild in macOS package");
+  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "win32-x64"), "Windows cr-sqlite payload in macOS package");
+
+  console.log(`[release:mac] Package hygiene passed for ${description}`);
+}
+
 async function validatePackagedRuntime(appPath, description) {
   const appName = path.basename(appPath, ".app");
   const executablePath = path.join(appPath, "Contents", "MacOS", appName);
@@ -172,6 +314,7 @@ async function validatePackagedRuntime(appPath, description) {
   await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
+  await validatePackageHygiene(appPath, description);
 
   const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);
   if (!nodePtyAddon) {

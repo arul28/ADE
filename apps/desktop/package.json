@@ -144,10 +144,23 @@
     },
     "files": [
       "dist/**/*",
+      "!dist/**/*.map",
       "electron.cjs",
       "package.json",
       "vendor/**/*",
-      "!node_modules/onnxruntime-node/**"
+      "!**/*.map",
+      "!node_modules/@anthropic-ai/claude-agent-sdk-*/**",
+      "!node_modules/onnxruntime-node/**",
+      "!node_modules/**/.cache/**",
+      "!node_modules/**/__tests__/**",
+      "!node_modules/**/coverage/**",
+      "!node_modules/**/demo/**",
+      "!node_modules/**/demos/**",
+      "!node_modules/**/docs/**",
+      "!node_modules/**/test/**",
+      "!node_modules/**/tests/**",
+      "!node_modules/**/*.spec.*",
+      "!node_modules/**/*.test.*"
     ],
     "asarUnpack": [
       "dist/main/packagedRuntimeSmoke.cjs",
@@ -160,10 +173,6 @@
       {
         "from": "../ade-cli/dist/cli.cjs",
         "to": "ade-cli/cli.cjs"
-      },
-      {
-        "from": "../ade-cli/dist/cli.cjs.map",
-        "to": "ade-cli/cli.cjs.map"
       },
       {
         "from": "scripts/ade-cli-macos-wrapper.sh",
