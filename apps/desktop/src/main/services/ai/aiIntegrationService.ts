@@ -38,7 +38,7 @@ import {
   peekOpenCodeInventoryCache,
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
-import { resolveOpenCodeExecutablePath, type DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";
+import type { DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";
 import { resolveOpenCodeBinary, type OpenCodeBinarySource } from "../opencode/openCodeBinaryManager";
 import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
@@ -740,7 +740,8 @@ export function createAiIntegrationService(args: {
       args.providerConnections
       && (args.providerConnections.claude.authAvailable
         || args.providerConnections.codex.authAvailable
-        || args.providerConnections.cursor.authAvailable)
+        || args.providerConnections.cursor.authAvailable
+        || args.providerConnections.droid.authAvailable)
     ) {
       return "subscription";
     }

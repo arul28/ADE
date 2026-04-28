@@ -85,6 +85,7 @@ import type {
   AgentChatDeleteArgs,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerResult,
+  AgentChatDroidPermissionMode,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatCancelDispatchedSteerResult,
   AgentChatDisposeArgs,
@@ -191,7 +192,16 @@ import {
 } from "../opencode/openCodeRuntime";
 import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
-import type { PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
+import type {
+  ClientSideConnection,
+  CloseSessionRequest,
+  CloseSessionResponse,
+  PermissionOption,
+  RequestPermissionRequest,
+  RequestPermissionResponse,
+  ResumeSessionRequest,
+  ResumeSessionResponse,
+} from "@agentclientprotocol/sdk";
 import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
 import {
@@ -253,6 +263,7 @@ type PersistedChatState = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
@@ -2008,6 +2019,15 @@ function buildExecutionModeDirective(
     ].join("\n");
   }
 
+  if (provider === "droid" && (mode === "parallel" || mode === "subagents" || mode === "teams")) {
+    return [
+      "[ADE launch directive]",
+      "Use Droid's available delegation or mission-style tools for independent subtasks when they will materially improve latency or coverage.",
+      "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
+      "If the task is tightly coupled, stay focused instead of forcing delegation.",
+    ].join("\n");
+  }
+
   return null;
 }
 
@@ -2269,6 +2289,7 @@ const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-fa
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
 const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto"]);
+const VALID_DROID_PERMISSION_MODES = new Set(["read-only", "auto-low", "auto-medium", "auto-high"]);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
@@ -2298,6 +2319,10 @@ function normalizePersistedCodexConfigSource(value: unknown): AgentChatCodexConf
 
 function normalizePersistedOpenCodePermissionMode(value: unknown): AgentChatOpenCodePermissionMode | undefined {
   return normalizePersistedEnum(value, VALID_OPENCODE_PERMISSION_MODES);
+}
+
+function normalizePersistedDroidPermissionMode(value: unknown): AgentChatDroidPermissionMode | undefined {
+  return normalizePersistedEnum(value, VALID_DROID_PERMISSION_MODES);
 }
 
 function legacyPermissionModeToClaudePermissionMode(
@@ -2378,9 +2403,58 @@ function legacyPermissionModeToOpenCodePermissionMode(
   return mode === "default" || mode === "config-toml" ? "edit" : normalizeOpenCodePermissionMode(mode);
 }
 
+function legacyPermissionModeToDroidPermissionMode(
+  mode: AgentChatSession["permissionMode"] | undefined,
+): AgentChatDroidPermissionMode | undefined {
+  switch (mode) {
+    case "plan":
+      return "read-only";
+    case "edit":
+      return "auto-low";
+    case "default":
+      return "auto-medium";
+    case "full-auto":
+      return "auto-high";
+    default:
+      return undefined;
+  }
+}
+
+function legacyOpenCodePermissionModeToDroidPermissionMode(
+  mode: AgentChatOpenCodePermissionMode | undefined,
+): AgentChatDroidPermissionMode | undefined {
+  switch (mode) {
+    case "plan":
+      return "read-only";
+    case "edit":
+      return "auto-low";
+    case "full-auto":
+      return "auto-high";
+    default:
+      return undefined;
+  }
+}
+
+function droidPermissionModeToLegacyPermissionMode(
+  mode: AgentChatDroidPermissionMode | undefined,
+): AgentChatSession["permissionMode"] | undefined {
+  switch (mode) {
+    case "read-only":
+      return "plan";
+    case "auto-low":
+      return "edit";
+    case "auto-medium":
+      return "default";
+    case "auto-high":
+      return "full-auto";
+    default:
+      return undefined;
+  }
+}
+
 function syncLegacyPermissionMode(session: Pick<
   AgentChatSession,
-  "provider" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode"
+  "provider" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
 >): AgentChatSession["permissionMode"] | undefined {
   if (session.provider === "claude") {
     if (session.interactionMode === "plan") {
@@ -2413,6 +2487,13 @@ function syncLegacyPermissionMode(session: Pick<
     return undefined;
   }
 
+  if (session.provider === "droid") {
+    return droidPermissionModeToLegacyPermissionMode(
+      session.droidPermissionMode
+        ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode),
+    );
+  }
+
   switch (session.opencodePermissionMode) {
     case "plan":
     case "edit":
@@ -2426,7 +2507,7 @@ function syncLegacyPermissionMode(session: Pick<
 function applyLegacyPermissionModeToNativeControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
   >,
   mode: AgentChatSession["permissionMode"] | undefined,
 ): void {
@@ -2443,6 +2524,11 @@ function applyLegacyPermissionModeToNativeControls(
     session.codexApprovalPolicy = legacyPermissionModeToCodexApprovalPolicy(mode);
     session.codexSandbox = legacyPermissionModeToCodexSandbox(mode);
     session.codexConfigSource = legacyPermissionModeToCodexConfigSource(mode);
+    return;
+  }
+
+  if (session.provider === "droid") {
+    session.droidPermissionMode = legacyPermissionModeToDroidPermissionMode(mode);
     return;
   }
 
@@ -2482,7 +2568,7 @@ function applyClaudePlanModeTransition(
 function hydrateNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
   >,
 ): void {
   if (session.provider === "claude") {
@@ -2492,6 +2578,10 @@ function hydrateNativePermissionControls(
     session.codexApprovalPolicy = session.codexApprovalPolicy ?? legacyPermissionModeToCodexApprovalPolicy(session.permissionMode);
     session.codexSandbox = session.codexSandbox ?? legacyPermissionModeToCodexSandbox(session.permissionMode);
     session.codexConfigSource = session.codexConfigSource ?? legacyPermissionModeToCodexConfigSource(session.permissionMode);
+  } else if (session.provider === "droid") {
+    session.droidPermissionMode = session.droidPermissionMode
+      ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
+      ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode);
   } else {
     session.opencodePermissionMode = session.opencodePermissionMode ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode);
   }
@@ -2660,6 +2750,16 @@ function resolveSessionOpenCodePermissionMode(
     ?? fallback;
 }
 
+function resolveSessionDroidPermissionMode(
+  session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
+  fallback: AgentChatDroidPermissionMode,
+): AgentChatDroidPermissionMode {
+  return session.droidPermissionMode
+    ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
+    ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode)
+    ?? fallback;
+}
+
 function applyLocalHarnessPermissionMode(args: {
   descriptor?: ModelDescriptor;
   requestedPermissionMode?: AgentChatSession["permissionMode"];
@@ -2744,6 +2844,45 @@ function cursorAcpSessionRequest<T extends Record<string, unknown>>(request: T):
     ...request,
     [CURSOR_ACP_SERVER_LIST_KEY]: [],
   } as T;
+}
+
+type AcpSessionLifecycleConnection = ClientSideConnection & {
+  unstable_closeSession?: (params: CloseSessionRequest) => Promise<CloseSessionResponse | void>;
+  unstable_resumeSession?: (params: ResumeSessionRequest) => Promise<ResumeSessionResponse>;
+};
+
+function acpSessionLifecycle(connection: ClientSideConnection): AcpSessionLifecycleConnection {
+  return connection as AcpSessionLifecycleConnection;
+}
+
+async function closeAcpSession(
+  connection: ClientSideConnection | null | undefined,
+  sessionId: string | null | undefined,
+): Promise<void> {
+  const normalizedSessionId = sessionId?.trim();
+  if (!connection || !normalizedSessionId) return;
+  const lifecycle = acpSessionLifecycle(connection);
+  if (typeof lifecycle.closeSession === "function") {
+    await lifecycle.closeSession({ sessionId: normalizedSessionId });
+    return;
+  }
+  if (typeof lifecycle.unstable_closeSession === "function") {
+    await lifecycle.unstable_closeSession({ sessionId: normalizedSessionId });
+  }
+}
+
+async function resumeAcpSession(
+  connection: ClientSideConnection,
+  request: ResumeSessionRequest,
+): Promise<ResumeSessionResponse | null> {
+  const lifecycle = acpSessionLifecycle(connection);
+  if (typeof lifecycle.resumeSession === "function") {
+    return lifecycle.resumeSession(request);
+  }
+  if (typeof lifecycle.unstable_resumeSession === "function") {
+    return lifecycle.unstable_resumeSession(request);
+  }
+  return null;
 }
 
 function normalizeCursorConfigValueRecord(
@@ -2839,19 +2978,21 @@ function resolveDroidRuntimeModelId(
 }
 
 function resolveDroidAcpLaunchSettings(
-  session: Pick<AgentChatSession, "opencodePermissionMode" | "permissionMode">,
+  session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
 ): DroidAcpLaunchSettings {
-  const mode = resolveSessionOpenCodePermissionMode(session, "edit");
-  if (mode === "plan") {
-    return { autonomy: "none" };
+  const mode = resolveSessionDroidPermissionMode(session, "auto-low");
+  switch (mode) {
+    case "read-only":
+      return { autonomy: "none" };
+    case "auto-low":
+      return { autonomy: "low" };
+    case "auto-medium":
+      return { autonomy: "medium" };
+    case "auto-high":
+      return { autonomy: "high" };
+    default:
+      return { autonomy: "low" };
   }
-  if (mode === "full-auto") {
-    return { autonomy: "high" };
-  }
-  if (mode === "edit") {
-    return { autonomy: "medium" };
-  }
-  return { autonomy: "low" };
 }
 
 function normalizeCursorReportedModelId(
@@ -2897,7 +3038,7 @@ function resolveDroidDisplayKeyForModelId(modelId: string | null | undefined): s
 function normalizeSessionNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
   >,
   config: ResolvedChatConfig,
 ): void {
@@ -2908,6 +3049,7 @@ function normalizeSessionNativePermissionControls(
     delete session.codexSandbox;
     delete session.codexConfigSource;
     delete session.opencodePermissionMode;
+    delete session.droidPermissionMode;
   } else if (session.provider === "codex") {
     delete session.interactionMode;
     session.codexConfigSource = resolveSessionCodexConfigSource(session);
@@ -2920,6 +3062,15 @@ function normalizeSessionNativePermissionControls(
     }
     delete session.claudePermissionMode;
     delete session.opencodePermissionMode;
+    delete session.droidPermissionMode;
+  } else if (session.provider === "droid") {
+    delete session.interactionMode;
+    session.droidPermissionMode = resolveSessionDroidPermissionMode(session, "auto-low");
+    delete session.claudePermissionMode;
+    delete session.codexApprovalPolicy;
+    delete session.codexSandbox;
+    delete session.codexConfigSource;
+    delete session.opencodePermissionMode;
   } else {
     delete session.interactionMode;
     session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(session, config.opencodePermissionMode);
@@ -2927,6 +3078,7 @@ function normalizeSessionNativePermissionControls(
     delete session.codexApprovalPolicy;
     delete session.codexSandbox;
     delete session.codexConfigSource;
+    delete session.droidPermissionMode;
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
@@ -5641,6 +5793,7 @@ export function createAgentChatService(args: {
       ...(managed.session.codexSandbox ? { codexSandbox: managed.session.codexSandbox } : {}),
       ...(managed.session.codexConfigSource ? { codexConfigSource: managed.session.codexConfigSource } : {}),
       ...(managed.session.opencodePermissionMode ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
+      ...(managed.session.droidPermissionMode ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
       ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
       ...(managed.session.cursorModeId !== undefined ? { cursorModeId: managed.session.cursorModeId } : {}),
       ...(managed.session.cursorConfigValues ? { cursorConfigValues: managed.session.cursorConfigValues } : {}),
@@ -5743,6 +5896,11 @@ export function createAgentChatService(args: {
       const codexSandbox = normalizePersistedCodexSandbox(record.codexSandbox);
       const codexConfigSource = normalizePersistedCodexConfigSource(record.codexConfigSource);
       const opencodePermissionMode = normalizePersistedOpenCodePermissionMode(record.opencodePermissionMode ?? (record as any).unifiedPermissionMode);
+      const droidPermissionMode = normalizePersistedDroidPermissionMode(record.droidPermissionMode)
+        ?? (provider === "droid"
+          ? legacyPermissionModeToDroidPermissionMode(permissionMode)
+            ?? legacyOpenCodePermissionModeToDroidPermissionMode(opencodePermissionMode)
+          : undefined);
       const cursorModeSnapshot = record.cursorModeSnapshot && typeof record.cursorModeSnapshot === "object"
         ? record.cursorModeSnapshot as AgentChatCursorModeSnapshot
         : undefined;
@@ -5801,6 +5959,7 @@ export function createAgentChatService(args: {
         ...(codexSandbox ? { codexSandbox } : {}),
         ...(codexConfigSource ? { codexConfigSource } : {}),
         ...(opencodePermissionMode ? { opencodePermissionMode } : {}),
+        ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(cursorModeSnapshot ? { cursorModeSnapshot } : {}),
         ...(cursorModeId !== undefined ? { cursorModeId } : {}),
         ...(cursorConfigValues ? { cursorConfigValues } : {}),
@@ -6533,7 +6692,7 @@ export function createAgentChatService(args: {
       const rt = managed.runtime;
       if (rt.acpSessionId) {
         acpHostSessionOwners.delete(rt.acpSessionId);
-        void rt.pooled?.connection.unstable_closeSession?.({ sessionId: rt.acpSessionId }).catch(() => {});
+        void closeAcpSession(rt.pooled?.connection, rt.acpSessionId).catch(() => {});
       }
       for (const [, w] of rt.permissionWaiters) {
         w.resolve({ outcome: { outcome: "cancelled" } });
@@ -6547,7 +6706,7 @@ export function createAgentChatService(args: {
       if (rt.acpSessionId) {
         acpHostSessionOwners.delete(rt.acpSessionId);
         clearDroidSessionDedup(rt.acpSessionId);
-        void rt.pooled?.connection.unstable_closeSession?.({ sessionId: rt.acpSessionId }).catch(() => {});
+        void closeAcpSession(rt.pooled?.connection, rt.acpSessionId).catch(() => {});
       }
       for (const [, w] of rt.permissionWaiters) {
         w.resolve({ outcome: { outcome: "cancelled" } });
@@ -11336,6 +11495,7 @@ export function createAgentChatService(args: {
     codexSandbox: requestedCodexSandbox,
     codexConfigSource: requestedCodexConfigSource,
     opencodePermissionMode: requestedOpenCodePermissionModeArg,
+    droidPermissionMode: requestedDroidPermissionModeArg,
     cursorModeId: requestedCursorModeId,
     cursorConfigValues: requestedCursorConfigValues,
     permissionMode: requestedPermMode,
@@ -11429,6 +11589,7 @@ export function createAgentChatService(args: {
     const effectiveCodexApprovalPolicy = identityPinned ? undefined : requestedCodexApprovalPolicy;
     const effectiveCodexSandbox = identityPinned ? undefined : requestedCodexSandbox;
     const effectiveCodexConfigSource = identityPinned ? undefined : requestedCodexConfigSource;
+    const requestedDroidPermissionMode = identityPinned ? undefined : requestedDroidPermissionModeArg;
     let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
       : requestedPermMode;
@@ -11486,6 +11647,14 @@ export function createAgentChatService(args: {
           ...(normalizedCursorConfigValues
             ? { cursorConfigValues: normalizedCursorConfigValues }
             : {}),
+        };
+      }
+      if (effectiveProvider === "droid") {
+        return {
+          droidPermissionMode: requestedDroidPermissionMode
+            ?? legacyPermissionModeToDroidPermissionMode(effectivePermissionMode)
+            ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode)
+            ?? "auto-low",
         };
       }
       return {
@@ -11667,6 +11836,7 @@ export function createAgentChatService(args: {
       codexSandbox: args.codexSandbox ?? managed.session.codexSandbox,
       codexConfigSource: args.codexConfigSource ?? managed.session.codexConfigSource,
       opencodePermissionMode: args.opencodePermissionMode ?? managed.session.opencodePermissionMode,
+      droidPermissionMode: args.droidPermissionMode ?? managed.session.droidPermissionMode,
       permissionMode: args.permissionMode ?? managed.session.permissionMode,
       cursorModeId: args.cursorModeId !== undefined ? args.cursorModeId : managed.session.cursorModeId,
       cursorConfigValues: args.cursorConfigValues !== undefined
@@ -12777,7 +12947,7 @@ export function createAgentChatService(args: {
         if (existing.acpSessionId) {
           acpHostSessionOwners.delete(existing.acpSessionId);
           try {
-            await existing.pooled?.connection.unstable_closeSession?.({ sessionId: existing.acpSessionId });
+            await closeAcpSession(existing.pooled?.connection, existing.acpSessionId);
           } catch {
             // ignore
           }
@@ -12844,12 +13014,13 @@ export function createAgentChatService(args: {
     managed.runtime = rt;
 
     const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
-    if (persistedAcp && typeof pooled.connection.unstable_resumeSession === "function") {
+    if (persistedAcp) {
       try {
-        const resumed = await pooled.connection.unstable_resumeSession({
+        const resumed = await resumeAcpSession(pooled.connection, cursorAcpSessionRequest({
           sessionId: persistedAcp,
           cwd: managed.laneWorktreePath,
-        });
+        }) as ResumeSessionRequest);
+        if (!resumed) throw new Error("Cursor ACP agent does not support session resume");
         const resumedAvailableModelIds = resumed.models?.availableModels
           ?.map((entry) => String(entry?.modelId ?? "").trim())
           .filter(Boolean) ?? [];
@@ -13151,7 +13322,7 @@ export function createAgentChatService(args: {
         if (existing.acpSessionId) {
           acpHostSessionOwners.delete(existing.acpSessionId);
           try {
-            await existing.pooled?.connection.unstable_closeSession?.({ sessionId: existing.acpSessionId });
+            await closeAcpSession(existing.pooled?.connection, existing.acpSessionId);
           } catch {
             // ignore
           }
@@ -13229,12 +13400,13 @@ export function createAgentChatService(args: {
       };
 
       const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
-      if (persistedAcp && typeof pooled.connection.unstable_resumeSession === "function") {
+      if (persistedAcp) {
         try {
-          const resumed = await pooled.connection.unstable_resumeSession(cursorAcpSessionRequest({
+          const resumed = await resumeAcpSession(pooled.connection, cursorAcpSessionRequest({
             sessionId: persistedAcp,
             cwd: managed.laneWorktreePath,
-          }) as Parameters<typeof pooled.connection.unstable_resumeSession>[0]);
+          }) as ResumeSessionRequest);
+          if (!resumed) throw new Error("Droid ACP agent does not support session resume");
           rt.acpSessionId = persistedAcp;
           applyDroidModelSnapshot(managed, rt, resumed);
           acpHostSessionOwners.set(persistedAcp, managed);
@@ -14626,6 +14798,9 @@ export function createAgentChatService(args: {
       ...(liveSession?.opencodePermissionMode || persisted?.opencodePermissionMode
         ? { opencodePermissionMode: liveSession?.opencodePermissionMode ?? persisted?.opencodePermissionMode }
         : {}),
+      ...(liveSession?.droidPermissionMode || persisted?.droidPermissionMode
+        ? { droidPermissionMode: liveSession?.droidPermissionMode ?? persisted?.droidPermissionMode }
+        : {}),
       ...(liveSession?.cursorModeSnapshot || persisted?.cursorModeSnapshot
         ? { cursorModeSnapshot: liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot }
         : {}),
@@ -15482,6 +15657,7 @@ export function createAgentChatService(args: {
     codexSandbox,
     codexConfigSource,
     opencodePermissionMode,
+    droidPermissionMode,
     cursorModeId,
     cursorConfigValues,
     permissionMode,
@@ -15647,6 +15823,10 @@ export function createAgentChatService(args: {
       managed.session.opencodePermissionMode = opencodePermissionMode;
     }
 
+    if (droidPermissionMode !== undefined && !identityPinned) {
+      managed.session.droidPermissionMode = droidPermissionMode;
+    }
+
     if (cursorModeId !== undefined) {
       managed.session.cursorModeId = typeof cursorModeId === "string"
         ? (cursorModeId.trim() || null)
@@ -15668,6 +15848,7 @@ export function createAgentChatService(args: {
       || codexSandbox !== undefined
       || codexConfigSource !== undefined
       || opencodePermissionMode !== undefined
+      || droidPermissionMode !== undefined
       || cursorModeId !== undefined
       || cursorConfigValues !== undefined
     ) {

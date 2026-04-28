@@ -800,12 +800,13 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
 // Factory Droid CLI — dynamic descriptors (`droid/<modelId>`)
 // ---------------------------------------------------------------------------
 
-export type DroidCliLineGroup = "anthropic" | "openai" | "google" | "other";
+export type DroidCliLineGroup = "anthropic" | "openai" | "google" | "other" | "custom";
 
-export const DROID_CLI_LINE_ORDER: DroidCliLineGroup[] = ["anthropic", "openai", "google", "other"];
+export const DROID_CLI_LINE_ORDER: DroidCliLineGroup[] = ["anthropic", "openai", "google", "other", "custom"];
 
 export function droidCliLineGroupFromModelId(providerModelId: string): DroidCliLineGroup {
   const s = providerModelId.trim().toLowerCase();
+  if (s.startsWith("custom:")) return "custom";
   if (/claude|sonnet|opus|haiku/.test(s)) return "anthropic";
   if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "openai";
   if (/gemini/.test(s)) return "google";
@@ -818,6 +819,7 @@ export function droidCliLineGroupLabel(group: DroidCliLineGroup): string {
     openai: "OpenAI (Droid)",
     google: "Google (Droid)",
     other: "Other (Droid)",
+    custom: "Custom models",
   };
   return labels[group] ?? "Droid";
 }
@@ -903,10 +905,16 @@ const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
   "gpt-5.2": "GPT-5.2 (0.7x)",
   "gpt-5.2-codex": "GPT-5.2-Codex (0.7x)",
   "gpt-5.3-codex": "GPT-5.3-Codex (0.7x)",
+  "gpt-5.3-codex-fast": "GPT-5.3-Codex Fast",
+  "gpt-5.4": "GPT-5.4",
+  "gpt-5.4-fast": "GPT-5.4 Fast",
+  "gpt-5.4-mini": "GPT-5.4 Mini",
+  "gemini-3-pro-preview": "Gemini 3 Pro",
   "gemini-3.1-pro-preview": "Gemini 3.1 Pro (0.8x)",
   "gemini-3-flash-preview": "Gemini 3 Flash (0.2x)",
   "glm-4.7": "Droid Core (GLM-4.7) (0.25x)",
   "glm-5": "Droid Core (GLM-5) (0.4x)",
+  "glm-5.1": "Droid Core (GLM-5.1)",
   "kimi-k2.5": "Droid Core (Kimi K2.5) (0.25x)",
   "minimax-m2.5": "Droid Core (MiniMax M2.5) (0.12x)",
 };

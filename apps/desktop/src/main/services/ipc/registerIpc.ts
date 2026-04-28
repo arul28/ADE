@@ -1450,7 +1450,7 @@ function mapPrAiPermissionMode(mode: AiPermissionMode): AgentChatPermissionMode 
 function mapPrAiPermissionModeToNativeFields(
   mode: AiPermissionMode,
   provider: string,
-): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode">> {
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode">> {
   const legacy = mapPrAiPermissionMode(mode);
   if (provider === "claude") {
     const map: Record<string, AgentChatClaudePermissionMode> = {
@@ -1466,6 +1466,11 @@ function mapPrAiPermissionModeToNativeFields(
     if (legacy === "edit") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" };
     return { codexApprovalPolicy: "on-request", codexSandbox: "read-only" };
   }
+  if (provider === "droid") {
+    if (legacy === "full-auto") return { droidPermissionMode: "auto-high" };
+    if (legacy === "edit") return { droidPermissionMode: "auto-low" };
+    return { droidPermissionMode: "read-only" };
+  }
   const umap: Record<string, AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",
     "edit": "edit",
@@ -1475,7 +1480,7 @@ function mapPrAiPermissionModeToNativeFields(
 }
 
 function deriveAiPermissionModeFromSummary(
-  summary: Pick<AgentChatSessionSummary, "provider" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode"> | null | undefined,
+  summary: Pick<AgentChatSessionSummary, "provider" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode"> | null | undefined,
 ): AiPermissionMode | null {
   if (!summary) return null;
   if (summary.provider === "claude") {
@@ -1489,6 +1494,12 @@ function deriveAiPermissionModeFromSummary(
     if (summary.codexApprovalPolicy === "never" && summary.codexSandbox === "danger-full-access") return "full_edit";
     if (summary.codexSandbox === "workspace-write") return "guarded_edit";
     if (summary.codexSandbox === "read-only") return "read_only";
+    return null;
+  }
+  if (summary.provider === "droid") {
+    if (summary.droidPermissionMode === "auto-high") return "full_edit";
+    if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "guarded_edit";
+    if (summary.droidPermissionMode === "read-only") return "read_only";
     return null;
   }
   if (summary.opencodePermissionMode === "full-auto") return "full_edit";

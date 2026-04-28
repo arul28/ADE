@@ -79,6 +79,12 @@ describe("getPermissionOptions", () => {
     expect(options.map((o) => o.value)).toEqual(["default", "plan", "full-auto", "config-toml"]);
   });
 
+  it("returns Droid autonomy options for CLI-wrapped factory", () => {
+    const options = getPermissionOptions({ family: "factory", isCliWrapped: true });
+    expect(options).toHaveLength(4);
+    expect(options.map((o) => o.value)).toEqual(["plan", "edit", "default", "full-auto"]);
+  });
+
   it("returns API/local options for CLI-wrapped codex family (family normalization only applies to guarded mode)", () => {
     // 'codex' as a family string does not match the openai CLI branch (which checks opts.family === "openai")
     const options = getPermissionOptions({ family: "codex", isCliWrapped: true });

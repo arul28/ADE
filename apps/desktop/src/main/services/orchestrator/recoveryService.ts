@@ -304,6 +304,7 @@ export function listRunningAttemptsForSession(
         executorKindRaw === "claude"
           || executorKindRaw === "codex"
           || executorKindRaw === "cursor"
+          || executorKindRaw === "droid"
           || executorKindRaw === "opencode"
           || executorKindRaw === "shell"
           || executorKindRaw === "manual"

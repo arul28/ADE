@@ -48,6 +48,7 @@ import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
+import { ModelRowLogo } from "../shared/ProviderLogos";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
@@ -1065,7 +1066,13 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
   return null;
 }
 
-function resolveModelMeta(modelId?: string, model?: string): { label: string | null; family: string | null; cliCommand: string | null } {
+function resolveModelMeta(modelId?: string, model?: string): {
+  label: string | null;
+  family: string | null;
+  cliCommand: string | null;
+  modelId: string | null;
+  providerModelId: string | null;
+} {
   const key = modelId ?? model;
   const descriptor = key ? (getModelById(key) ?? resolveModelDescriptor(key)) : undefined;
   const idHint = String(modelId ?? model ?? "").trim();
@@ -1075,6 +1082,9 @@ function resolveModelMeta(modelId?: string, model?: string): { label: string | n
     label: resolveModelLabel(modelId, model),
     family: descriptor?.family ?? (inferredCursor ? "cursor" : inferredDroid ? "factory" : null),
     cliCommand: descriptor?.cliCommand ?? (inferredCursor ? "cursor" : inferredDroid ? "droid" : null),
+    modelId: descriptor?.id ?? (idHint || null),
+    providerModelId: descriptor?.providerModelId
+      ?? (inferredCursor ? idHint.slice("cursor/".length) : inferredDroid ? idHint.slice("droid/".length) : null),
   };
 }
 
@@ -1143,7 +1153,16 @@ function ModelGlyph({
     return <CursorAgentLogo size={size} className={className} />;
   }
   if (meta.family === "factory" || meta.cliCommand === "droid") {
-    return <Robot size={size} weight="bold" className={className} />;
+    return (
+      <ModelRowLogo
+        modelFamily="factory"
+        cliCommand="droid"
+        modelId={meta.modelId ?? modelId ?? model}
+        providerModelId={meta.providerModelId ?? undefined}
+        size={size}
+        className={className}
+      />
+    );
   }
   if (meta.family === "anthropic" || meta.cliCommand === "claude") {
     return <ClaudeLogo size={size} className={className} />;

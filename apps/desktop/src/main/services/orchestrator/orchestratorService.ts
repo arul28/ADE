@@ -211,7 +211,7 @@ function projectPermissionConfigFromRecord(permissions: Record<string, unknown> 
   const providers = asRecord(permissions.providers);
   if (providers) {
     const providerPerms: NonNullable<MissionPermissionConfig["providers"]> = {};
-    const maybeMode = (key: "claude" | "codex" | "cursor" | "opencode") => {
+    const maybeMode = (key: "claude" | "codex" | "cursor" | "droid" | "opencode") => {
       const value = typeof providers[key] === "string" ? providers[key].trim() : "";
       if (VALID_PROJECT_PROVIDER_PERMISSION_MODES.has(value as AgentChatPermissionMode)) {
         providerPerms[key] = value as AgentChatPermissionMode;
@@ -220,6 +220,7 @@ function projectPermissionConfigFromRecord(permissions: Record<string, unknown> 
     maybeMode("claude");
     maybeMode("codex");
     maybeMode("cursor");
+    maybeMode("droid");
     maybeMode("opencode");
     const codexSandbox = typeof providers.codexSandbox === "string" ? providers.codexSandbox.trim() : "";
     if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
@@ -900,7 +901,7 @@ export function createOrchestratorService({
     workspaceRoot: projectRoot,
     agentChatService,
   });
-  for (const kind of ["claude", "codex", "cursor", "opencode"] as const) {
+  for (const kind of ["claude", "codex", "cursor", "droid", "opencode"] as const) {
     adapters.set(kind, sharedAdapter);
   }
   const autopilotRunLocks = new Set<string>();
@@ -3822,7 +3823,7 @@ export function createOrchestratorService({
   };
 
   const defaultAdapterFor = (kind: OrchestratorExecutorKind): OrchestratorExecutorAdapter | null => {
-    if (!["claude", "codex", "cursor", "opencode"].includes(kind)) return null;
+    if (!["claude", "codex", "cursor", "droid", "opencode"].includes(kind)) return null;
     return {
       kind,
       requiresLaneId: true,
@@ -5132,7 +5133,7 @@ export function createOrchestratorService({
         const inferredRequiresPlanApproval =
           inferredPattern === "plan_then_implement" || stepType === "analysis";
         const normalizedExecutor = normalizeExecutorKind(String(explicitExecutor ?? "manual"));
-        const isAiTeammate = ["claude", "codex", "cursor", "opencode"].includes(normalizedExecutor);
+        const isAiTeammate = ["claude", "codex", "cursor", "droid", "opencode"].includes(normalizedExecutor);
         const requiresPlanApproval = explicitRequiresPlanApproval != null
           ? explicitRequiresPlanApproval
           : runtimeConfig.teammatePlanMode === "required" && isAiTeammate
@@ -6793,7 +6794,7 @@ export function createOrchestratorService({
       }
 
       let providerStepModelId: string | null = null;
-      if (["claude", "codex", "cursor", "opencode"].includes(executorKind)) {
+      if (["claude", "codex", "cursor", "droid", "opencode"].includes(executorKind)) {
         const stepModelRaw = typeof step.metadata?.modelId === "string" ? step.metadata.modelId.trim() : "";
         const phaseModel = asRecord(step.metadata?.phaseModel);
         const phaseModelIdRaw = typeof phaseModel?.modelId === "string" ? phaseModel.modelId.trim() : "";

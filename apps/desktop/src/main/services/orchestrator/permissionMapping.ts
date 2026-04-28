@@ -103,6 +103,7 @@ export function normalizeMissionPermissions(config: MissionPermissionConfig | un
   const result: MissionProviderPermissions = {
     claude: "full-auto",
     codex: "default",
+    droid: "full-auto",
     opencode: "full-auto",
     codexSandbox: "workspace-write",
   };
@@ -134,6 +135,7 @@ export function normalizeMissionPermissions(config: MissionPermissionConfig | un
     if (p.claude && VALID_PROVIDER_MODES.has(p.claude)) result.claude = p.claude;
     if (p.codex && VALID_PROVIDER_MODES.has(p.codex)) result.codex = p.codex;
     if (p.cursor && VALID_PROVIDER_MODES.has(p.cursor)) result.cursor = p.cursor;
+    if (p.droid && VALID_PROVIDER_MODES.has(p.droid)) result.droid = p.droid;
     if (p.opencode && VALID_PROVIDER_MODES.has(p.opencode)) result.opencode = p.opencode;
     if (p.codexSandbox === "read-only" || p.codexSandbox === "workspace-write" || p.codexSandbox === "danger-full-access") {
       result.codexSandbox = p.codexSandbox;

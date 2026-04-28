@@ -7,7 +7,7 @@ import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { DelegationContract } from "./orchestrator";
 
-export type AgentChatProvider = "codex" | "claude" | "cursor" | "opencode" | (string & {});
+export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 export type AgentChatSessionProfile = "light" | "workflow";
@@ -53,6 +53,7 @@ export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-fail
 export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto";
+export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high";
 
 export type AgentChatNoticeDetailMetric = {
   label: string;
@@ -477,6 +478,7 @@ export type AgentChatSession = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
@@ -514,6 +516,7 @@ export type AgentChatSessionSummary = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -602,6 +605,7 @@ export type AgentChatCreateArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   identityKey?: AgentChatIdentityKey;
@@ -625,6 +629,7 @@ export type AgentChatHandoffArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode;
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
@@ -783,6 +788,7 @@ export type AgentChatUpdateSessionArgs = {
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
 };

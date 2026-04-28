@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  createDynamicDroidCliModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   getLocalModelIdTail,
+  parseDynamicDroidModelRef,
   parseDynamicOpenCodeModelRef,
   parseLocalProviderFromModelId,
   resolveModelDescriptor,
@@ -43,6 +45,8 @@ function catalogGroupTabIcon(key: ProviderGroupKey, size = 15) {
       return <Codex.Avatar size={size} className={cn("opacity-95", c)} />;
     case "cursor":
       return <Cursor.Avatar size={size} className={c} />;
+    case "droid":
+      return <ProviderLogo family="factory" size={size} className="opacity-90" />;
     case "opencode":
       return <OpenCode.Avatar size={size} className={c} />;
     default:
@@ -115,6 +119,10 @@ export function createUnknownModelPlaceholder(modelId: string): ModelDescriptor 
       cliCommand: "cursor",
       isCliWrapped: true,
     };
+  }
+  const droidCli = parseDynamicDroidModelRef(modelId);
+  if (droidCli) {
+    return createDynamicDroidCliModelDescriptor(droidCli.providerModelId);
   }
   const localProvider = parseLocalProviderFromModelId(modelId);
   if (localProvider) {

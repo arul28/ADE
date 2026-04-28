@@ -5468,7 +5468,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       "- add_step: Add a new corrective step (set newStep with stepKey, title, instructions, dependencyStepKeys, executorKind)",
       "- parallelize_steps: Remove a dependency from a step to unblock it (set targetStepKey + removeDependencyKey)",
       "- consolidate_steps: Merge two pending/blocked steps into one (set targetStepKey=keep, removeStepKey=discard, mergedInstructions)",
-      "- reassign_executor: Change executor kind for a pending/blocked step (set targetStepKey + newExecutorKind: 'claude'|'codex'|'cursor'|'opencode'|'manual')",
+      "- reassign_executor: Change executor kind for a pending/blocked step (set targetStepKey + newExecutorKind: 'claude'|'codex'|'cursor'|'droid'|'opencode'|'manual')",
       "- steer_worker: Send a message to a running worker with learnings from this completed step (set targetStepKey + steeringMessage)",
       "- no_change: Nothing to adjust",
       "",
@@ -5494,7 +5494,7 @@ Check all worker statuses and continue managing the mission from here. Read work
               removeStepKey: { type: "string" },
               mergedInstructions: { type: "string" },
               // For reassign_executor
-              newExecutorKind: { type: "string", enum: ["claude", "codex", "cursor", "opencode", "manual"] },
+              newExecutorKind: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "manual"] },
               // For steer_worker: message to send to running worker
               steeringMessage: { type: "string" },
               // For add_step
@@ -5505,7 +5505,7 @@ Check all worker statuses and continue managing the mission from here. Read work
                   title: { type: "string" },
                   instructions: { type: "string" },
                   dependencyStepKeys: { type: "array", items: { type: "string" } },
-                  executorKind: { type: "string", enum: ["claude", "codex", "cursor", "opencode", "manual"] }
+                  executorKind: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "manual"] }
                 }
               }
             },
@@ -5563,7 +5563,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         const title = typeof newStep.title === "string" ? newStep.title : "AI-suggested corrective step";
         const depKeys = Array.isArray(newStep.dependencyStepKeys) ? newStep.dependencyStepKeys.map(String) : [];
         const executorKind = typeof newStep.executorKind === "string" &&
-          ["claude", "codex", "cursor", "opencode", "manual"].includes(newStep.executorKind)
+          ["claude", "codex", "cursor", "droid", "opencode", "manual"].includes(newStep.executorKind)
           ? (newStep.executorKind as OrchestratorExecutorKind)
           : ("opencode" as OrchestratorExecutorKind);
         try {

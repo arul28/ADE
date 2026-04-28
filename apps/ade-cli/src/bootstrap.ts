@@ -251,7 +251,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
   const sessionService = createSessionService({ db });
   sessionService.reconcileStaleRunningSessions({
     status: "disposed",
-    excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor"],
+    excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor", "droid-chat"],
   });
 
   const projectConfigService = createProjectConfigService({

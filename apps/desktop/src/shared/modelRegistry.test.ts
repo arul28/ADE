@@ -3,6 +3,8 @@ import {
   createDynamicLocalModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
   decodeOpenCodeRegistryId,
+  droidCliLineGroupFromModelId,
+  droidCliLineGroupLabel,
   encodeOpenCodeRegistryId,
   ensureOpenCodeBaseURL,
   getAvailableModels,
@@ -258,6 +260,12 @@ describe("modelRegistry", () => {
     const descriptor = getModelById("droid/custom:claude-sonnet-4-6-thinking-32000");
     expect(descriptor).toBeTruthy();
     expect(descriptor?.displayName).toBe("Claude Sonnet 4.6 (High)");
+  });
+
+  it("keeps Droid custom models in their own picker group", () => {
+    expect(droidCliLineGroupFromModelId("custom:claude-sonnet-4-6-thinking-32000")).toBe("custom");
+    expect(droidCliLineGroupFromModelId("custom:gpt-5.4(xhigh)")).toBe("custom");
+    expect(droidCliLineGroupLabel("custom")).toBe("Custom models");
   });
 
   it("uses compact Droid factory labels that match the CLI picker", () => {

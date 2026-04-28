@@ -342,7 +342,7 @@ function resolveManagedPermissionMode(args: {
 function mapPermissionModeToNativeFields(
   provider: "claude" | "codex" | "opencode" | "cursor" | "droid",
   mode: AgentChatPermissionMode | undefined,
-): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode">> {
+): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode">> {
   if (!mode) return {};
   // "config-toml" means the worker should inherit permissions from the
   // provider/repo config (e.g. a .toml settings file). Don't rewrite it
@@ -363,6 +363,12 @@ function mapPermissionModeToNativeFields(
     if (mode === "edit") return { codexApprovalPolicy: "untrusted", codexSandbox: "workspace-write" };
     if (mode === "default") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" };
     return { codexApprovalPolicy: "on-request", codexSandbox: "read-only" };
+  }
+  if (provider === "droid") {
+    if (mode === "full-auto") return { droidPermissionMode: "auto-high" };
+    if (mode === "default") return { droidPermissionMode: "auto-medium" };
+    if (mode === "edit") return { droidPermissionMode: "auto-low" };
+    return { droidPermissionMode: "read-only" };
   }
   const umap: Record<string, import("../../../shared/types").AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",

@@ -128,7 +128,7 @@ const sectionLabelStyle: React.CSSProperties = {
 function CliLogo({ cli }: { cli: CliName }) {
   if (cli === "claude") return <ClaudeLogo size={24} />;
   if (cli === "cursor") return <CursorAgentLogo size={24} />;
-  if (cli === "droid") return <Cpu size={24} className="text-zinc-100" />;
+  if (cli === "droid") return <ProviderLogo family="factory" size={24} />;
   return <CodexLogo size={24} className="text-zinc-100" />;
 }
 
@@ -730,7 +730,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
           <section style={{ ...cardStyle(), borderLeft: `3px solid ${tone.color}` }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <Cpu size={28} className="text-zinc-100" />
+                <ProviderLogo family="factory" size={28} />
                 <div>
                   <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Factory Droid</div>
                   <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>
