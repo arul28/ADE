@@ -67,6 +67,49 @@ function normalizeChatFontSizePx(value: unknown): number {
   if (!Number.isFinite(next)) return DEFAULT_CHAT_FONT_SIZE_PX;
   return Math.max(CHAT_FONT_SIZE_MIN_PX, Math.min(CHAT_FONT_SIZE_MAX_PX, Math.round(next)));
 }
+
+function normalizeChatUserMinimapEnabled(value: unknown): boolean {
+  return value !== false;
+}
+
+/** Vertical rhythm in agent chat transcript only (row gaps + bubble padding scale). */
+export type ChatTranscriptDensity = "compact" | "comfortable" | "spacious";
+export const CHAT_TRANSCRIPT_DENSITY_IDS: ChatTranscriptDensity[] = ["compact", "comfortable", "spacious"];
+
+/** Monochrome (gray) chat chrome vs provider-colored accents and tint — default is colored. */
+export type ChatChromeTint = "neutral" | "colored";
+export const CHAT_CHROME_TINT_IDS: ChatChromeTint[] = ["neutral", "colored"];
+
+/** @deprecated Lane-accent presets were replaced by `CHAT_CHROME_TINT_IDS` / `ChatChromeTint`. Kept exported so stale importers (e.g. HMR) do not crash. */
+export const CHAT_LANE_ACCENT_EMPHASIS_IDS = ["subtle", "standard", "strong"] as const;
+/** @deprecated Use `ChatChromeTint`. */
+export type ChatLaneAccentEmphasis = (typeof CHAT_LANE_ACCENT_EMPHASIS_IDS)[number];
+
+/** Shell corner rounding presets for chat surfaces. */
+export type ChatShellGeometry = "soft" | "default" | "sharp";
+export const CHAT_SHELL_GEOMETRY_IDS: ChatShellGeometry[] = ["soft", "default", "sharp"];
+
+function normalizeChatTranscriptDensity(value: unknown): ChatTranscriptDensity {
+  if (value === "compact" || value === "spacious") return value;
+  return "comfortable";
+}
+
+function normalizeChatChromeTint(value: unknown): ChatChromeTint {
+  if (value === "neutral") return "neutral";
+  return "colored";
+}
+
+/** Migrate persisted lane-accent presets (removed) and legacy keys to chrome tint. */
+function coercePersistedChatChromeTint(parsed: Record<string, unknown>): ChatChromeTint {
+  const direct = parsed.chatChromeTint ?? parsed.chatLaneAccentEmphasis;
+  if (direct === "neutral") return "neutral";
+  return "colored";
+}
+
+function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
+  if (value === "soft" || value === "sharp") return value;
+  return "default";
+}
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type WorkViewMode = "tabs" | "grid";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
@@ -282,6 +325,10 @@ type PersistedUserPreferences = {
   agentTurnCompletionSoundVolume: number;
   agentTurnCompletionSoundQuietWhenFocused: boolean;
   chatFontSizePx: number;
+  chatUserMinimapEnabled: boolean;
+  chatTranscriptDensity: ChatTranscriptDensity;
+  chatChromeTint: ChatChromeTint;
+  chatShellGeometry: ChatShellGeometry;
 };
 
 function coerceTheme(value: unknown): ThemeId | null {
@@ -307,6 +354,10 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       agentTurnCompletionSoundVolume: normalizeAgentTurnCompletionSoundVolume(parsed.agentTurnCompletionSoundVolume),
       agentTurnCompletionSoundQuietWhenFocused: parsed.agentTurnCompletionSoundQuietWhenFocused !== false,
       chatFontSizePx: normalizeChatFontSizePx(parsed.chatFontSizePx),
+      chatUserMinimapEnabled: normalizeChatUserMinimapEnabled(parsed.chatUserMinimapEnabled),
+      chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
+      chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
+      chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
     };
   } catch {
     return null;
@@ -344,6 +395,10 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     agentTurnCompletionSoundVolume: DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME,
     agentTurnCompletionSoundQuietWhenFocused: true,
     chatFontSizePx: DEFAULT_CHAT_FONT_SIZE_PX,
+    chatUserMinimapEnabled: true,
+    chatTranscriptDensity: "comfortable",
+    chatChromeTint: "colored",
+    chatShellGeometry: "default",
   };
 }
 
@@ -367,6 +422,10 @@ function persistUserPreferencesFrom(state: {
   agentTurnCompletionSoundVolume: number;
   agentTurnCompletionSoundQuietWhenFocused: boolean;
   chatFontSizePx: number;
+  chatUserMinimapEnabled: boolean;
+  chatTranscriptDensity: ChatTranscriptDensity;
+  chatChromeTint: ChatChromeTint;
+  chatShellGeometry: ChatShellGeometry;
 }) {
   persistUserPreferences({
     theme: state.theme,
@@ -379,6 +438,10 @@ function persistUserPreferencesFrom(state: {
     agentTurnCompletionSoundVolume: state.agentTurnCompletionSoundVolume,
     agentTurnCompletionSoundQuietWhenFocused: state.agentTurnCompletionSoundQuietWhenFocused,
     chatFontSizePx: state.chatFontSizePx,
+    chatUserMinimapEnabled: state.chatUserMinimapEnabled,
+    chatTranscriptDensity: state.chatTranscriptDensity,
+    chatChromeTint: state.chatChromeTint,
+    chatShellGeometry: state.chatShellGeometry,
   });
 }
 
@@ -449,7 +512,6 @@ type AppState = {
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   selectedLaneId: string | null;
-  runLaneId: string | null;
   focusedSessionId: string | null;
   projectRevision: number;
   theme: ThemeId;
@@ -459,6 +521,10 @@ type AppState = {
   agentTurnCompletionSoundVolume: number;
   agentTurnCompletionSoundQuietWhenFocused: boolean;
   chatFontSizePx: number;
+  chatUserMinimapEnabled: boolean;
+  chatTranscriptDensity: ChatTranscriptDensity;
+  chatChromeTint: ChatChromeTint;
+  chatShellGeometry: ChatShellGeometry;
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
@@ -481,7 +547,6 @@ type AppState = {
   selectLane: (laneId: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
-  selectRunLane: (laneId: string | null) => void;
   focusSession: (sessionId: string | null) => void;
   setTheme: (theme: ThemeId) => void;
   setCodeBlockCopyButtonPosition: (position: CodeBlockCopyButtonPosition) => void;
@@ -489,6 +554,12 @@ type AppState = {
   setAgentTurnCompletionSoundVolume: (volume: number) => void;
   setAgentTurnCompletionSoundQuietWhenFocused: (quiet: boolean) => void;
   setChatFontSizePx: (px: number) => void;
+  setChatUserMinimapEnabled: (enabled: boolean) => void;
+  setChatTranscriptDensity: (density: ChatTranscriptDensity) => void;
+  setChatChromeTint: (tint: ChatChromeTint) => void;
+  setChatShellGeometry: (geometry: ChatShellGeometry) => void;
+  /** Resets only theme + chat font size (narrow restore — per product spec). */
+  resetThemeAndChatFontDefaults: () => void;
   setTerminalPreferences: (
     next:
       | Partial<TerminalPreferences>
@@ -592,7 +663,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   laneSnapshots: [],
   lanes: [],
   selectedLaneId: null,
-  runLaneId: null,
   focusedSessionId: null,
   projectRevision: 0,
   theme: initialUserPreferences.theme,
@@ -602,6 +672,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   agentTurnCompletionSoundVolume: initialUserPreferences.agentTurnCompletionSoundVolume,
   agentTurnCompletionSoundQuietWhenFocused: initialUserPreferences.agentTurnCompletionSoundQuietWhenFocused,
   chatFontSizePx: initialUserPreferences.chatFontSizePx,
+  chatUserMinimapEnabled: initialUserPreferences.chatUserMinimapEnabled,
+  chatTranscriptDensity: initialUserPreferences.chatTranscriptDensity,
+  chatChromeTint: initialUserPreferences.chatChromeTint,
+  chatShellGeometry: initialUserPreferences.chatShellGeometry,
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
@@ -642,7 +716,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [laneId]: _, ...rest } = prev.laneInspectorTabs;
       return { laneInspectorTabs: rest };
     }),
-  selectRunLane: (laneId) => set({ runLaneId: laneId }),
   focusSession: (sessionId) => set({ focusedSessionId: sessionId }),
   setTheme: (theme) =>
     set((prev) => {
@@ -678,6 +751,40 @@ export const useAppStore = create<AppState>((set, get) => ({
       const value = normalizeChatFontSizePx(px);
       persistUserPreferencesFrom({ ...prev, chatFontSizePx: value });
       return { chatFontSizePx: value };
+    }),
+  setChatUserMinimapEnabled: (enabled) =>
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, chatUserMinimapEnabled: enabled });
+      return { chatUserMinimapEnabled: enabled };
+    }),
+  setChatTranscriptDensity: (density) =>
+    set((prev) => {
+      const value = normalizeChatTranscriptDensity(density);
+      persistUserPreferencesFrom({ ...prev, chatTranscriptDensity: value });
+      return { chatTranscriptDensity: value };
+    }),
+  setChatChromeTint: (tint) =>
+    set((prev) => {
+      const value = normalizeChatChromeTint(tint);
+      persistUserPreferencesFrom({ ...prev, chatChromeTint: value });
+      return { chatChromeTint: value };
+    }),
+  setChatShellGeometry: (geometry) =>
+    set((prev) => {
+      const value = normalizeChatShellGeometry(geometry);
+      persistUserPreferencesFrom({ ...prev, chatShellGeometry: value });
+      return { chatShellGeometry: value };
+    }),
+  resetThemeAndChatFontDefaults: () =>
+    set((prev) => {
+      const nextTheme: ThemeId = "dark";
+      const nextFont = DEFAULT_CHAT_FONT_SIZE_PX;
+      persistUserPreferencesFrom({
+        ...prev,
+        theme: nextTheme,
+        chatFontSizePx: nextFont,
+      });
+      return { theme: nextTheme, chatFontSizePx: nextFont };
     }),
   setTerminalPreferences: (next) =>
     set((prev) => {
@@ -803,9 +910,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
       const selected = get().selectedLaneId;
-      const runLane = get().runLaneId;
       const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;
-      const nextRunLane = runLane && lanes.some((l) => l.id === runLane) ? runLane : nextSelected;
       set((prev) => {
         const allowed = new Set(lanes.map((lane) => lane.id));
         const nextTabs: Record<string, LaneInspectorTab> = {};
@@ -834,7 +939,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           laneSnapshots: nextSnapshots,
           lanes,
           selectedLaneId: nextSelected,
-          runLaneId: nextRunLane,
           laneInspectorTabs: nextTabs,
           laneWorkViewByScope: nextLaneWorkViews,
         };
@@ -937,7 +1041,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         laneSnapshots: [],
         lanes: [],
         selectedLaneId: null,
-        runLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
         keybindings: null,
@@ -988,7 +1091,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         laneSnapshots: [],
         lanes: [],
         selectedLaneId: null,
-        runLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
         keybindings: null,
@@ -1063,7 +1165,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         laneSnapshots: [],
         lanes: [],
         selectedLaneId: null,
-        runLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
         keybindings: null,

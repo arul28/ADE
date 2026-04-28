@@ -208,7 +208,7 @@ function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): AggregatedFile[
 
 function FlatPre({ children }: { children: React.ReactNode }) {
   return (
-    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[11px] leading-[1.55] text-fg/55">
+    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55] text-fg/55">
       {children}
     </pre>
   );
@@ -217,7 +217,7 @@ function FlatPre({ children }: { children: React.ReactNode }) {
 function DiffBody({ diff }: { diff: string }) {
   const lines = diff.split(/\r?\n/);
   return (
-    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[11px] leading-[1.55] text-fg/65">
+    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55] text-fg/65">
       {lines.map((line, index) => {
         let tone = "text-fg/65";
         if (line.startsWith("+")) tone = "text-emerald-400/85";
@@ -265,11 +265,11 @@ function ToolCallRow({
         className="flex w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
       >
         {workLogStatusGlyph(entry.status)}
-        <span className={cn("shrink-0 font-mono text-[11px] font-medium tracking-tight", kindTone)}>
+        <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", kindTone)}>
           {kindSlug}
         </span>
         {argText ? (
-          <span className="min-w-0 truncate font-mono text-[11px] text-fg/40">{argText}</span>
+          <span className="min-w-0 truncate font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40">{argText}</span>
         ) : null}
       </button>
       {open && navigationSuggestions.length > 0 && onNavigateSuggestion ? (
@@ -279,7 +279,7 @@ function ToolCallRow({
               key={`${suggestion.surface}:${suggestion.href}`}
               type="button"
               onClick={() => onNavigateSuggestion(suggestion)}
-              className="rounded-[6px] border border-accent/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-accent/85 transition-colors hover:border-accent/40 hover:text-accent"
+              className="rounded-[6px] border border-accent/20 px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-semibold text-accent/85 transition-colors hover:border-accent/40 hover:text-accent"
             >
               {suggestion.label}
             </button>
@@ -331,7 +331,7 @@ function ToolCallsPanel({
   const Caret = panelOpen ? CaretDown : CaretRight;
 
   return (
-    <div className="w-full min-w-0 font-sans text-[11px]">
+    <div className="w-full min-w-0 font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
       <button
         type="button"
         onClick={() => setPanelOpen((v) => !v)}
@@ -340,15 +340,15 @@ function ToolCallsPanel({
       >
         <Caret size={9} weight="bold" className="shrink-0 text-violet-400/45" />
         <span className="shrink-0 font-medium text-fg/45">Tool calls</span>
-        <span className="shrink-0 text-[10px] tabular-nums text-fg/30">({entries.length})</span>
+        <span className="shrink-0 text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/30">({entries.length})</span>
         {panelOpen ? null : (
-          <span className="ml-1 flex min-w-0 flex-1 items-center justify-end gap-1.5">
+          <span className="ml-1 flex min-w-0 flex-1 items-center gap-1.5">
             {workLogStatusGlyph(latest.status)}
-            <span className={cn("shrink-0 font-mono text-[11px] font-medium tracking-tight", latestTone)}>
+            <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", latestTone)}>
               {latestSlug}
             </span>
             {latestArg ? (
-              <span className="min-w-0 max-w-[min(52ch,50%)] truncate font-mono text-[10px] text-fg/38">{latestArg}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/38">{latestArg}</span>
             ) : null}
           </span>
         )}
@@ -388,7 +388,7 @@ function FilesChangedPanel({
           className="flex flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
         >
           <Caret size={10} weight="bold" className="text-fg/35" />
-          <span className="font-sans text-[11px] font-medium text-fg/70">
+          <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/70">
             {files.length} {fileWord} changed
           </span>
         </button>
@@ -396,7 +396,7 @@ function FilesChangedPanel({
           <button
             type="button"
             onClick={onUndo}
-            className="font-sans text-[11px] text-fg/40 transition-colors hover:text-fg/65"
+            className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40 transition-colors hover:text-fg/65"
           >
             Undo
           </button>
@@ -416,31 +416,31 @@ function FilesChangedPanel({
                   aria-expanded={expanded}
                   className="flex w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
                 >
-                  <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[8px] font-bold tracking-wider text-fg/40">
+                  <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
                     {fileExtBadge(file.path)}
                   </span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg/65">
+                  <span className="min-w-0 flex-1 truncate font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/65">
                     {file.path}
                   </span>
                   {file.kind !== "modify" ? (
-                    <span className="shrink-0 font-sans text-[10px] text-fg/40">
+                    <span className="shrink-0 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/40">
                       {formatFileAction(file.kind)}
                     </span>
                   ) : null}
                   {file.additions > 0 ? (
-                    <span className="shrink-0 font-mono text-[11px] text-emerald-400/80">
+                    <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-emerald-400/80">
                       +{file.additions}
                     </span>
                   ) : null}
                   {file.deletions > 0 ? (
-                    <span className="shrink-0 font-mono text-[11px] text-red-400/80">
+                    <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-red-400/80">
                       −{file.deletions}
                     </span>
                   ) : null}
                 </button>
                 {expanded && file.diff.trim().length ? <DiffBody diff={file.diff} /> : null}
                 {expanded && !file.diff.trim().length ? (
-                  <div className="mt-1 ml-[18px] border-t border-white/[0.05] pt-2 font-mono text-[11px] text-fg/35">
+                  <div className="mt-1 ml-[18px] border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/35">
                     No diff payload available.
                   </div>
                 ) : null}

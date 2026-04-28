@@ -1,51 +1,32 @@
 import React from "react";
-import { CaretDown, CaretRight, Folder, FolderOpen, X } from "@phosphor-icons/react";
-import type { LaneSummary, ProcessGroupDefinition, ProcessRestartPolicy, StackButtonDefinition } from "../../../shared/types";
+import { Folder, FolderOpen, Plus, X } from "@phosphor-icons/react";
+import type { LaneSummary, ProcessGroupDefinition } from "../../../shared/types";
 import { COLORS, LABEL_STYLE, MONO_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { useClickOutside } from "../../hooks/useClickOutside";
 import { parseCommandLine } from "../../lib/shell";
 
 export type AddCommandInitialValues = {
   name: string;
   command: string;
-  stackId: string | null;
   cwd: string;
   env: string;
   autostart: boolean;
-  restart: ProcessRestartPolicy;
   gracefulShutdownMs: string;
   dependsOn: string;
-  readinessType: "none" | "port" | "logRegex";
-  readinessPort: string;
-  readinessPattern: string;
   groupIds: string[];
 };
 
-type AddCommandSubmitArgs = {
-  name: string;
-  command: string;
-  stackId: string | null;
-  newStackName: string | null;
-  cwd: string;
-  env: string;
-  autostart: boolean;
-  restart: ProcessRestartPolicy;
-  gracefulShutdownMs: string;
-  dependsOn: string;
-  readinessType: "none" | "port" | "logRegex";
-  readinessPort: string;
-  readinessPattern: string;
-  groupIds: string[];
+export type AddCommandSubmitPayload = AddCommandInitialValues & {
   newGroupNames: string[];
 };
 
 type AddCommandDialogProps = {
-  stacks: StackButtonDefinition[];
   groups: ProcessGroupDefinition[];
   lanes: LaneSummary[];
   defaultLaneId: string | null;
   open: boolean;
   onClose: () => void;
-  onSubmit: (cmd: AddCommandSubmitArgs) => void;
+  onSubmit: (cmd: AddCommandSubmitPayload) => void | Promise<void>;
   initialValues?: AddCommandInitialValues | null;
   title?: string;
   submitLabel?: string;
@@ -182,7 +163,7 @@ function DirectoryPickerDialog({
         justifyContent: "center",
         background: "rgba(0,0,0,0.6)",
       }}
-      onClick={(event) => {
+      onPointerDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
@@ -382,7 +363,6 @@ function DirectoryPickerDialog({
 }
 
 export function AddCommandDialog({
-  stacks,
   groups,
   lanes,
   defaultLaneId,
@@ -395,23 +375,32 @@ export function AddCommandDialog({
 }: AddCommandDialogProps) {
   const [name, setName] = React.useState("");
   const [command, setCommand] = React.useState("");
-  const [stackId, setStackId] = React.useState<string>("__none__");
-  const [newStackName, setNewStackName] = React.useState("");
   const [cwd, setCwd] = React.useState(".");
   const [envText, setEnvText] = React.useState("");
   const [autostart, setAutostart] = React.useState(false);
-  const [restart, setRestart] = React.useState<ProcessRestartPolicy>("never");
   const [gracefulShutdownMs, setGracefulShutdownMs] = React.useState("7000");
   const [dependsOn, setDependsOn] = React.useState("");
-  const [readinessType, setReadinessType] = React.useState<"none" | "port" | "logRegex">("none");
-  const [readinessPort, setReadinessPort] = React.useState("");
-  const [readinessPattern, setReadinessPattern] = React.useState("");
   const [selectedGroupIds, setSelectedGroupIds] = React.useState<string[]>([]);
-  const [newGroupNames, setNewGroupNames] = React.useState("");
-  const [showAdvanced, setShowAdvanced] = React.useState(false);
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [pickerLaneId, setPickerLaneId] = React.useState<string | null>(defaultLaneId);
+  const [groupPickerOpen, setGroupPickerOpen] = React.useState(false);
+  const groupPickerRef = React.useRef<HTMLDivElement>(null);
+  const [submitting, setSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
   const nameRef = React.useRef<HTMLInputElement>(null);
+  const nameFieldId = React.useId();
+  const commandFieldId = React.useId();
+
+  const assignedGroups = React.useMemo(
+    () => groups.filter((group) => selectedGroupIds.includes(group.id)),
+    [groups, selectedGroupIds],
+  );
+  const availableGroups = React.useMemo(
+    () => groups.filter((group) => !selectedGroupIds.includes(group.id)),
+    [groups, selectedGroupIds],
+  );
+
+  useClickOutside(groupPickerRef, () => setGroupPickerOpen(false), groupPickerOpen);
 
   const dialogTitle = title ?? "Add command";
   const dialogSubmitLabel = submitLabel ?? "Add command";
@@ -425,15 +414,6 @@ export function AddCommandDialog({
       return error instanceof Error ? error.message : String(error);
     }
   }, [command]);
-  const newStackNameError = showAdvanced && stackId === "__new__" && !newStackName.trim()
-    ? "New stack name is required."
-    : null;
-  const readinessError = React.useMemo(() => {
-    if (!showAdvanced) return null;
-    if (readinessType === "port" && !readinessPort.trim()) return "Readiness port is required.";
-    if (readinessType === "logRegex" && !readinessPattern.trim()) return "Readiness pattern is required.";
-    return null;
-  }, [readinessPattern, readinessPort, readinessType, showAdvanced]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -441,47 +421,25 @@ export function AddCommandDialog({
     if (values) {
       setName(values.name);
       setCommand(values.command);
-      setStackId(values.stackId ?? "__none__");
       setCwd(values.cwd || ".");
       setEnvText(values.env || "");
       setAutostart(values.autostart ?? false);
-      setRestart(values.restart ?? "never");
       setGracefulShutdownMs(values.gracefulShutdownMs || "7000");
       setDependsOn(values.dependsOn || "");
-      setReadinessType(values.readinessType ?? "none");
-      setReadinessPort(values.readinessPort || "");
-      setReadinessPattern(values.readinessPattern || "");
       setSelectedGroupIds(values.groupIds ?? []);
-      setShowAdvanced(
-        Boolean(values.stackId)
-        || Boolean(values.cwd && values.cwd !== ".")
-        || Boolean(values.env?.trim())
-        || Boolean(values.autostart)
-        || (values.restart ?? "never") !== "never"
-        || (values.gracefulShutdownMs || "7000") !== "7000"
-        || Boolean(values.dependsOn?.trim())
-        || (values.readinessType ?? "none") !== "none"
-        || (values.groupIds?.length ?? 0) > 0,
-      );
     } else {
       setName("");
       setCommand("");
-      setStackId("__none__");
       setCwd(".");
       setEnvText("");
       setAutostart(false);
-      setRestart("never");
       setGracefulShutdownMs("7000");
       setDependsOn("");
-      setReadinessType("none");
-      setReadinessPort("");
-      setReadinessPattern("");
       setSelectedGroupIds([]);
-      setShowAdvanced(false);
     }
-    setNewStackName("");
-    setNewGroupNames("");
     setPickerLaneId(defaultLaneId);
+    setSubmitting(false);
+    setSubmitError(null);
     window.setTimeout(() => nameRef.current?.focus(), 50);
   }, [defaultLaneId, initialValues, open]);
 
@@ -506,40 +464,41 @@ export function AddCommandDialog({
     display: "block",
   };
 
-  const toggleGroup = (groupId: string) => {
-    setSelectedGroupIds((current) =>
-      current.includes(groupId) ? current.filter((id) => id !== groupId) : [...current, groupId],
-    );
+  const removeFromGroup = (groupId: string) => {
+    setSelectedGroupIds((current) => current.filter((id) => id !== groupId));
   };
 
-  const canSubmit = Boolean(name.trim() && command.trim() && !commandError && !newStackNameError && !readinessError);
+  const addToGroup = (groupId: string) => {
+    setSelectedGroupIds((current) => (current.includes(groupId) ? current : [...current, groupId]));
+    setGroupPickerOpen(false);
+  };
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const canSubmit = Boolean(name.trim() && command.trim() && !commandError && !submitting);
+
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    event.stopPropagation();
     if (!canSubmit) return;
-    onSubmit({
-      name: name.trim(),
-      command: command.trim(),
-      stackId: showAdvanced ? (stackId === "__none__" || stackId === "__new__" ? null : stackId) : null,
-      newStackName: showAdvanced && stackId === "__new__" ? newStackName.trim() || null : null,
-      cwd: showAdvanced ? normalizeRelativeCwd(cwd) : ".",
-      env: showAdvanced ? envText.trim() : "",
-      autostart: showAdvanced ? autostart : false,
-      restart: showAdvanced ? restart : "never",
-      gracefulShutdownMs: showAdvanced ? gracefulShutdownMs.trim() || "7000" : "7000",
-      dependsOn: showAdvanced ? dependsOn.trim() : "",
-      readinessType: showAdvanced ? readinessType : "none",
-      readinessPort: showAdvanced ? readinessPort.trim() : "",
-      readinessPattern: showAdvanced ? readinessPattern.trim() : "",
-      groupIds: showAdvanced ? selectedGroupIds : [],
-      newGroupNames: showAdvanced
-        ? newGroupNames
-            .split(",")
-            .map((value) => value.trim())
-            .filter(Boolean)
-        : [],
-    });
-    onClose();
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await onSubmit({
+        name: name.trim(),
+        command: command.trim(),
+        cwd: normalizeRelativeCwd(cwd),
+        env: envText.trim(),
+        autostart,
+        gracefulShutdownMs: gracefulShutdownMs.trim() || "7000",
+        dependsOn: dependsOn.trim(),
+        groupIds: selectedGroupIds,
+        newGroupNames: [],
+      });
+      onClose();
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -554,8 +513,9 @@ export function AddCommandDialog({
           justifyContent: "center",
           background: "rgba(0,0,0,0.6)",
         }}
-        onClick={(event) => {
-          if (event.target === event.currentTarget) onClose();
+        data-testid="add-command-dialog-backdrop"
+        onPointerDown={(event) => {
+          if (!submitting && event.target === event.currentTarget) onClose();
         }}
       >
         <div
@@ -593,13 +553,15 @@ export function AddCommandDialog({
             <button
               type="button"
               onClick={onClose}
+              disabled={submitting}
               style={{
                 background: "transparent",
                 border: "none",
                 color: COLORS.textMuted,
-                cursor: "pointer",
+                cursor: submitting ? "default" : "pointer",
                 padding: 2,
                 display: "flex",
+                opacity: submitting ? 0.5 : 1,
               }}
             >
               <X size={16} weight="bold" />
@@ -608,23 +570,41 @@ export function AddCommandDialog({
 
           <form onSubmit={handleSubmit} style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
             <div>
-              <label style={labelStyle}>Name</label>
+              <label htmlFor={nameFieldId} style={labelStyle} aria-label="Name, required">
+                Name{" "}
+                <span style={{ color: COLORS.danger }} aria-hidden="true">
+                  *
+                </span>
+              </label>
               <input
+                id={nameFieldId}
                 ref={nameRef}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="e.g. Dev server"
                 style={inputStyle}
+                disabled={submitting}
+                required
+                aria-required="true"
               />
             </div>
 
             <div>
-              <label style={labelStyle}>Command</label>
+              <label htmlFor={commandFieldId} style={labelStyle} aria-label="Command, required">
+                Command{" "}
+                <span style={{ color: COLORS.danger }} aria-hidden="true">
+                  *
+                </span>
+              </label>
               <input
+                id={commandFieldId}
                 value={command}
                 onChange={(event) => setCommand(event.target.value)}
                 placeholder="e.g. npm run dev"
                 style={inputStyle}
+                disabled={submitting}
+                required
+                aria-required="true"
               />
               <div
                 style={{
@@ -639,236 +619,238 @@ export function AddCommandDialog({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowAdvanced((value) => !value)}
+            <div>
+              <label style={labelStyle}>Working directory</label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
+                <input
+                  value={cwd}
+                  onChange={(event) => setCwd(event.target.value)}
+                  style={inputStyle}
+                  disabled={submitting}
+                />
+                <button type="button" onClick={() => setPickerOpen(true)} disabled={submitting} style={outlineButton({ height: 32, opacity: submitting ? 0.5 : 1 })}>
+                  <FolderOpen size={14} weight="bold" />
+                  Browse
+                </button>
+              </div>
+              <div style={{ marginTop: 6, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+                Stored relative to the lane root. If another lane does not have this folder yet, the command can still
+                save and will fail only when you launch it there.
+              </div>
+            </div>
+
+            <div>
+              <label style={labelStyle}>Environment</label>
+              <textarea
+                value={envText}
+                onChange={(event) => setEnvText(event.target.value)}
+                placeholder={"KEY=value\nANOTHER=value"}
+                rows={4}
+                disabled={submitting}
+                style={{
+                  ...inputStyle,
+                  height: "auto",
+                  minHeight: 88,
+                  padding: 10,
+                  resize: "vertical",
+                }}
+              />
+            </div>
+
+            <div>
+              <label style={labelStyle}>Graceful shutdown (ms)</label>
+              <input
+                value={gracefulShutdownMs}
+                onChange={(event) => setGracefulShutdownMs(event.target.value)}
+                placeholder="7000"
+                style={inputStyle}
+                disabled={submitting}
+              />
+            </div>
+
+            <div>
+              <label style={labelStyle}>Depends on</label>
+              <input
+                value={dependsOn}
+                onChange={(event) => setDependsOn(event.target.value)}
+                placeholder="comma-separated process ids"
+                style={inputStyle}
+                disabled={submitting}
+              />
+            </div>
+
+            <label
               style={{
-                background: "transparent",
-                border: "none",
-                color: COLORS.textMuted,
-                cursor: "pointer",
-                padding: 0,
                 display: "flex",
                 alignItems: "center",
-                gap: 4,
+                gap: 8,
                 fontFamily: MONO_FONT,
                 fontSize: 11,
+                color: COLORS.textSecondary,
+                cursor: "pointer",
               }}
             >
-              {showAdvanced ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
-              Advanced runtime options
-            </button>
+              <input type="checkbox" checked={autostart} onChange={(event) => setAutostart(event.target.checked)} disabled={submitting} />
+              Start automatically when the lane opens
+            </label>
 
-            {showAdvanced ? (
-              <>
+            <div>
+              <label style={labelStyle}>Groups</label>
+              <div
+                style={{
+                  border: `1px solid ${COLORS.border}`,
+                  background: COLORS.pageBg,
+                  padding: "10px 12px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                }}
+              >
                 <div>
-                  <label style={labelStyle}>Stack</label>
-                  <select
-                    value={stackId}
-                    onChange={(event) => setStackId(event.target.value)}
-                    style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}
-                  >
-                    <option value="__none__">No stack</option>
-                    {stacks.map((stack) => (
-                      <option key={stack.id} value={stack.id}>
-                        {stack.name}
-                      </option>
-                    ))}
-                    <option value="__new__">+ New stack...</option>
-                  </select>
-                </div>
-
-                {stackId === "__new__" ? (
-                  <div>
-                    <label style={labelStyle}>New stack name</label>
-                    <input
-                      value={newStackName}
-                      onChange={(event) => setNewStackName(event.target.value)}
-                      placeholder="e.g. SST dev"
-                      style={{
-                        ...inputStyle,
-                        border: `1px solid ${newStackNameError ? COLORS.danger : COLORS.outlineBorder}`,
-                      }}
-                    />
-                    {newStackNameError ? (
-                      <div style={{ marginTop: 6, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.danger }}>
-                        {newStackNameError}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                <div>
-                  <label style={labelStyle}>Working directory</label>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
-                    <input value={cwd} onChange={(event) => setCwd(event.target.value)} style={inputStyle} />
-                    <button type="button" onClick={() => setPickerOpen(true)} style={outlineButton({ height: 32 })}>
-                      <FolderOpen size={14} weight="bold" />
-                      Browse
-                    </button>
-                  </div>
-                  <div style={{ marginTop: 6, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
-                    Stored relative to the lane root. If another lane does not have this folder yet, the command can still
-                    save and will fail only when you launch it there.
-                  </div>
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Environment</label>
-                  <textarea
-                    value={envText}
-                    onChange={(event) => setEnvText(event.target.value)}
-                    placeholder={"KEY=value\nANOTHER=value"}
-                    rows={4}
+                  <div
                     style={{
-                      ...inputStyle,
-                      height: "auto",
-                      minHeight: 88,
-                      padding: 10,
-                      resize: "vertical",
+                      fontFamily: MONO_FONT,
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: COLORS.textDim,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                      marginBottom: 6,
                     }}
-                  />
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Restart policy</label>
-                  <select
-                    value={restart}
-                    onChange={(event) => setRestart(event.target.value as ProcessRestartPolicy)}
-                    style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}
                   >
-                    <option value="never">Never restart</option>
-                    <option value="on-failure">Restart on failure</option>
-                    <option value="always">Always restart</option>
-                    <option value="on_crash">Restart on crash</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Readiness check</label>
-                  <select
-                    value={readinessType}
-                    onChange={(event) => setReadinessType(event.target.value as "none" | "port" | "logRegex")}
-                    style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}
-                  >
-                    <option value="none">None</option>
-                    <option value="port">Port</option>
-                    <option value="logRegex">Log pattern</option>
-                  </select>
-                </div>
-
-                {readinessType === "port" ? (
-                  <div>
-                    <label style={labelStyle}>Readiness port</label>
-                    <input
-                      value={readinessPort}
-                      onChange={(event) => setReadinessPort(event.target.value)}
-                      placeholder="e.g. 3000"
-                      style={inputStyle}
-                    />
+                    In these groups
                   </div>
-                ) : null}
-
-                {readinessType === "logRegex" ? (
-                  <div>
-                    <label style={labelStyle}>Readiness pattern</label>
-                    <input
-                      value={readinessPattern}
-                      onChange={(event) => setReadinessPattern(event.target.value)}
-                      placeholder="e.g. ready on http"
-                      style={inputStyle}
-                    />
-                  </div>
-                ) : null}
-
-                <div>
-                  <label style={labelStyle}>Graceful shutdown (ms)</label>
-                  <input
-                    value={gracefulShutdownMs}
-                    onChange={(event) => setGracefulShutdownMs(event.target.value)}
-                    placeholder="7000"
-                    style={inputStyle}
-                  />
+                  {assignedGroups.length === 0 ? (
+                    <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                      Not in any group yet.
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                      {assignedGroups.map((group) => (
+                        <span
+                          key={group.id}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            fontFamily: MONO_FONT,
+                            fontSize: 10,
+                            color: COLORS.textSecondary,
+                            background: COLORS.cardBgSolid,
+                            border: `1px solid ${COLORS.border}`,
+                            padding: "2px 4px 2px 8px",
+                          }}
+                        >
+                          <span>{group.name}</span>
+                          <button
+                            type="button"
+                            title={`Remove from ${group.name}`}
+                            aria-label={`Remove from ${group.name}`}
+                            disabled={submitting}
+                            onClick={() => removeFromGroup(group.id)}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              background: "transparent",
+                              border: "none",
+                              padding: 2,
+                              cursor: submitting ? "default" : "pointer",
+                              color: COLORS.textMuted,
+                              opacity: submitting ? 0.45 : 1,
+                            }}
+                          >
+                            <X size={12} weight="bold" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
-                <div>
-                  <label style={labelStyle}>Depends on</label>
-                  <input
-                    value={dependsOn}
-                    onChange={(event) => setDependsOn(event.target.value)}
-                    placeholder="comma-separated process ids"
-                    style={inputStyle}
-                  />
-                </div>
-
-                <label
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    fontFamily: MONO_FONT,
-                    fontSize: 11,
-                    color: COLORS.textSecondary,
-                    cursor: "pointer",
-                  }}
-                >
-                  <input type="checkbox" checked={autostart} onChange={(event) => setAutostart(event.target.checked)} />
-                  Start automatically when the lane opens
-                </label>
-
-                {readinessError ? (
-                  <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.danger }}>
-                    {readinessError}
-                  </div>
-                ) : null}
-
-                <div>
-                  <label style={labelStyle}>Groups</label>
-                  {groups.length > 0 ? (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-                      {groups.map((group) => {
-                        const active = selectedGroupIds.includes(group.id);
-                        return (
+                {groups.length > 0 ? (
+                  <div ref={groupPickerRef} style={{ position: "relative", alignSelf: "flex-start" }}>
+                    <button
+                      type="button"
+                      title={availableGroups.length === 0 ? "Already in every group" : "Add to another group"}
+                      disabled={submitting || availableGroups.length === 0}
+                      onClick={() => availableGroups.length > 0 && setGroupPickerOpen((open) => !open)}
+                      style={{
+                        ...outlineButton({ height: 26, padding: "0 10px", fontSize: 10 }),
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        opacity: submitting || availableGroups.length === 0 ? 0.45 : 1,
+                        cursor: submitting || availableGroups.length === 0 ? "default" : "pointer",
+                      }}
+                    >
+                      <Plus size={12} weight="bold" />
+                      Add to group
+                    </button>
+                    {groupPickerOpen && availableGroups.length > 0 ? (
+                      <div
+                        style={{
+                          position: "absolute",
+                          top: "100%",
+                          left: 0,
+                          marginTop: 4,
+                          zIndex: 60,
+                          minWidth: 180,
+                          maxHeight: 220,
+                          overflowY: "auto",
+                          padding: "4px 0",
+                          background: COLORS.cardBgSolid,
+                          border: `1px solid ${COLORS.border}`,
+                          boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                        }}
+                      >
+                        {availableGroups.map((group) => (
                           <button
                             key={group.id}
                             type="button"
-                            onClick={() => toggleGroup(group.id)}
+                            onClick={() => addToGroup(group.id)}
                             style={{
-                              height: 28,
-                              padding: "0 10px",
-                              background: active ? COLORS.accentSubtle : COLORS.recessedBg,
-                              border: `1px solid ${active ? COLORS.accentBorder : COLORS.outlineBorder}`,
-                              color: active ? COLORS.textPrimary : COLORS.textSecondary,
-                              cursor: "pointer",
+                              display: "block",
+                              width: "100%",
+                              textAlign: "left",
+                              background: "transparent",
+                              border: "none",
+                              padding: "7px 12px",
                               fontFamily: MONO_FONT,
-                              fontSize: 10,
-                              fontWeight: 700,
-                              textTransform: "uppercase",
-                              letterSpacing: "0.08em",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: COLORS.textSecondary,
+                              cursor: "pointer",
+                            }}
+                            onMouseEnter={(event) => {
+                              event.currentTarget.style.background = COLORS.hoverBg;
+                            }}
+                            onMouseLeave={(event) => {
+                              event.currentTarget.style.background = "transparent";
                             }}
                           >
                             {group.name}
                           </button>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                  <input
-                    value={newGroupNames}
-                    onChange={(event) => setNewGroupNames(event.target.value)}
-                    placeholder="New groups, comma separated"
-                    style={inputStyle}
-                  />
-                </div>
-              </>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            {submitError ? (
+              <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger, lineHeight: 1.5 }}>
+                {submitError}
+              </div>
             ) : null}
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 4 }}>
-              <button type="button" onClick={onClose} style={outlineButton()}>
+              <button type="button" onClick={onClose} disabled={submitting} style={outlineButton({ opacity: submitting ? 0.5 : 1 })}>
                 Cancel
               </button>
               <button type="submit" disabled={!canSubmit} style={primaryButton({ opacity: canSubmit ? 1 : 0.5 })}>
-                {dialogSubmitLabel}
+                {submitting ? "Saving..." : dialogSubmitLabel}
               </button>
             </div>
           </form>

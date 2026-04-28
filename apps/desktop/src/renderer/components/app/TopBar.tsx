@@ -883,7 +883,9 @@ export function TopBar() {
               <div className="flex min-w-0 items-center gap-2">
                 <DeviceMobile size={16} weight="regular" className="shrink-0 opacity-85" />
                 <div className="min-w-0">
-                  <div id="phone-sync-title" className="truncate text-[13px] font-semibold">Phone sync</div>
+                  <div id="phone-sync-title" className="truncate text-[13px] font-semibold">
+                    Connect to the ADE mobile app
+                  </div>
                   <div className="truncate text-[11px] text-white/55">{syncLabel}</div>
                 </div>
               </div>

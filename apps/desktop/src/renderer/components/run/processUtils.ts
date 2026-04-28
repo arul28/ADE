@@ -23,3 +23,14 @@ export function formatProcessStatus(runtime: Pick<ProcessRuntime, "status" | "la
   }
   return runtime.status;
 }
+
+export function formatEndedAt(
+  value: string | null,
+  locale: string | undefined = typeof navigator !== "undefined" ? navigator.language : undefined,
+  options: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" },
+): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString(locale, options);
+}

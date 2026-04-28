@@ -22,6 +22,7 @@ stream plus session metadata.
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
 | `ChatSubagentsPanel.tsx`, `ChatSubagentStrip.tsx` | Claude background subagent panels. |
 | `ChatComputerUsePanel.tsx` | Computer-use backend status. |
+| `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer mounted in place of the work-log when the header toggle is on: tool-readiness checklist, device + target pickers, three-backend live preview, `interact` vs `inspect` mode, hit-test overlay, and selection emission as `IosElementContextItem`. See [iOS Simulator feature](../ios-simulator/README.md). |
 | `ChatTerminalDrawer.tsx` | Collapsible terminal drawer at the bottom of the chat. |
 | `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. |
 | `ChatProposedPlanCard.tsx` | Plan approval card inline in the transcript. |
@@ -178,6 +179,16 @@ and a footer that contains the composer.
 
 - Pasted and dropped images are written to a temp location via
   `ade.agentChat.saveTempAttachment` (10 MB cap).
+- iOS Simulator selections add `IosElementContextItem` chips to the
+  composer instead of plain attachments. Each chip is a `data-ios-context`
+  node in a contenteditable rich-input variant; submission serialises
+  the chips back into the prompt via `formatIosElementContextForPrompt`
+  so the model sees a structured tag with `componentId`, source
+  file/line, and any metadata. When the same selection produced a
+  paired screenshot within 10 s, the chip carries an
+  `attachmentPath` so the chip and image stay linked. See the
+  [iOS Simulator feature](../ios-simulator/README.md) for the upstream
+  flow.
 - `inferAttachmentType` and `mergeAttachments` in `shared/types/chat.ts`
   dedupe attachments by path (last-write wins).
 - MIME-type validation happens per provider. Claude enforces

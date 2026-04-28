@@ -505,6 +505,13 @@ struct ADEConnectionDot: View {
     .accessibilityLabel("Computer connection · \(accessibilityLabel)")
     .accessibilityHint("Opens computer connection settings.")
     .accessibilityShowsLargeContentViewer()
+    .adeInspectable(
+      "Root.Toolbar.ConnectionButton",
+      metadata: [
+        "label": "Computer connection · \(accessibilityLabel)",
+        "role": "button"
+      ]
+    )
   }
 
   fileprivate func openSettings() {
@@ -538,6 +545,13 @@ struct ADEProjectHomeButton: View {
     .accessibilityLabel("Projects")
     .accessibilityHint("Opens the ADE project menu.")
     .accessibilityShowsLargeContentViewer()
+    .adeInspectable(
+      "Root.Toolbar.ProjectsButton",
+      metadata: [
+        "label": "Projects",
+        "role": "button"
+      ]
+    )
   }
 
   fileprivate func openProjectHome() {
@@ -558,6 +572,15 @@ struct ADEProjectHomeButton: View {
 struct ADERootToolbarControls: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var drawer: AttentionDrawerModel
+
+  /// Disambiguator folded into inspector ids so two simultaneous instances of
+  /// this control (e.g. the active and incoming root tab during a transition)
+  /// don't emit colliding element ids. Callers typically pass the screen title.
+  let scopeKey: String?
+
+  init(scopeKey: String? = nil) {
+    self.scopeKey = scopeKey
+  }
 
   private var connectionTint: Color {
     switch syncService.connectionState {
@@ -727,6 +750,14 @@ struct ADERootToolbarControls: View {
     }
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
+    .adeInspectable(
+      "Root.Toolbar.\(icon)",
+      key: scopeKey,
+      metadata: [
+        "label": accessibilityLabel,
+        "role": "button"
+      ]
+    )
   }
 }
 
@@ -777,7 +808,7 @@ struct ADERootTopBar<Actions: View>: View {
         Spacer(minLength: 0)
         actions
         if showsGlobalControls {
-          ADERootToolbarControls()
+          ADERootToolbarControls(scopeKey: title)
         }
       }
     }

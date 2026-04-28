@@ -143,6 +143,15 @@ struct WorkChatMessageBubble: View {
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Assistant message. \(message.markdown)")
+    .adeInspectable(
+      "Work.Chat.MessageBubble.Assistant",
+      metadata: [
+        "messageId": message.id,
+        "role": message.role,
+        "turnId": message.turnId ?? "",
+        "itemId": message.itemId ?? ""
+      ]
+    )
   }
 
   private var userRow: some View {
@@ -177,6 +186,15 @@ struct WorkChatMessageBubble: View {
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Your message. \(message.markdown)")
+    .adeInspectable(
+      "Work.Chat.MessageBubble.User",
+      metadata: [
+        "messageId": message.id,
+        "role": message.role,
+        "turnId": message.turnId ?? "",
+        "itemId": message.itemId ?? ""
+      ]
+    )
   }
 
   var deliveryBadge: WorkDeliveryBadge.State? {

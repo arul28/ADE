@@ -1,29 +1,30 @@
 import type { CSSProperties } from "react";
 import type { ProcessRuntimeStatus } from "../../../shared/types";
 
+/** Semantic palette — resolves against `[data-theme]` / `:root` in `index.css`. */
 export const COLORS = {
-  pageBg: "#0C0B10",
-  cardBg: "rgba(255,255,255,0.03)",
-  cardBgSolid: "#1C1926",
-  recessedBg: "rgba(255,255,255,0.03)",
-  hoverBg: "rgba(255,255,255,0.06)",
-  border: "rgba(255,255,255,0.06)",
-  outlineBorder: "rgba(255,255,255,0.08)",
-  borderMuted: "rgba(255,255,255,0.04)",
-  accent: "#A78BFA",
-  accentSubtle: "rgba(167, 139, 250, 0.12)",
-  accentBorder: "rgba(167, 139, 250, 0.20)",
-  textPrimary: "#F0F0F2",
-  textSecondary: "#A8A8B4",
-  textMuted: "#908FA0",
-  textDim: "#5E5A70",
-  success: "#22C55E",
-  danger: "#EF4444",
-  warning: "#F59E0B",
-  info: "#3B82F6",
-  entryChat: "#8B5CF6",
-  entryCli: "#F97316",
-  entryShell: "#22C55E",
+  pageBg: "var(--color-bg)",
+  cardBg: "color-mix(in srgb, var(--color-card) 94%, var(--color-bg) 6%)",
+  cardBgSolid: "var(--color-card)",
+  recessedBg: "var(--color-muted)",
+  hoverBg: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
+  border: "var(--color-border)",
+  outlineBorder: "color-mix(in srgb, var(--color-border) 88%, var(--color-fg) 12%)",
+  borderMuted: "color-mix(in srgb, var(--color-border) 55%, transparent)",
+  accent: "var(--color-accent)",
+  accentSubtle: "var(--color-accent-muted)",
+  accentBorder: "color-mix(in srgb, var(--color-accent) 24%, transparent)",
+  textPrimary: "var(--color-fg)",
+  textSecondary: "var(--color-secondary-fg)",
+  textMuted: "var(--color-muted-fg)",
+  textDim: "color-mix(in srgb, var(--color-muted-fg) 88%, var(--color-bg) 12%)",
+  success: "var(--color-success)",
+  danger: "var(--color-error)",
+  warning: "var(--color-warning)",
+  info: "var(--color-info)",
+  entryChat: "var(--color-accent)",
+  entryCli: "var(--color-warning)",
+  entryShell: "var(--color-success)",
 } as const;
 
 export const SPACING = {
@@ -71,8 +72,8 @@ export function inlineBadge(color: string, overrides?: CSSProperties): CSSProper
     fontWeight: 500,
     fontFamily: SANS_FONT,
     color,
-    background: `${color}10`,
-    border: "1px solid transparent",
+    background: `color-mix(in srgb, ${color} 14%, transparent)`,
+    border: `1px solid color-mix(in srgb, ${color} 28%, transparent)`,
     borderRadius: 6,
     ...overrides,
   };
@@ -93,8 +94,8 @@ export function laneSurfaceTint(
 } {
   if (color == null || String(color).trim() === "") {
     return {
-      background: "rgba(255, 255, 255, 0.02)",
-      border: "1px solid rgba(255, 255, 255, 0.05)",
+      background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+      border: "1px solid color-mix(in srgb, var(--color-border) 72%, transparent)",
       borderLeftAccent: "2px solid transparent",
       text: null,
     };
@@ -121,8 +122,8 @@ export function outlineButton(overrides?: CSSProperties): CSSProperties {
     fontWeight: 500,
     fontFamily: SANS_FONT,
     color: COLORS.textSecondary,
-    background: "rgba(255,255,255,0.03)",
-    border: "1px solid rgba(255,255,255,0.06)",
+    background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 85%, transparent)",
     borderRadius: 8,
     cursor: "pointer",
     ...overrides,
@@ -140,7 +141,7 @@ export function primaryButton(overrides?: CSSProperties): CSSProperties {
     fontSize: 12,
     fontWeight: 500,
     fontFamily: SANS_FONT,
-    color: COLORS.pageBg,
+    color: "var(--color-bg)",
     background: "var(--color-fg)",
     border: "none",
     borderRadius: 8,
@@ -161,7 +162,7 @@ export function dangerButton(overrides?: CSSProperties): CSSProperties {
     fontWeight: 500,
     fontFamily: SANS_FONT,
     color: COLORS.danger,
-    background: `${COLORS.danger}10`,
+    background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
     border: "1px solid transparent",
     borderRadius: 8,
     cursor: "pointer",
@@ -171,10 +172,10 @@ export function dangerButton(overrides?: CSSProperties): CSSProperties {
 
 export function cardStyle(overrides?: CSSProperties): CSSProperties {
   return {
-    background: "rgba(255,255,255,0.03)",
+    background: "color-mix(in srgb, var(--color-card) 90%, var(--color-bg) 10%)",
     backdropFilter: "blur(20px)",
     WebkitBackdropFilter: "blur(20px)",
-    border: "1px solid rgba(255,255,255,0.06)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 88%, transparent)",
     borderRadius: 16,
     padding: 20,
     ...overrides,
@@ -183,8 +184,8 @@ export function cardStyle(overrides?: CSSProperties): CSSProperties {
 
 export function recessedStyle(overrides?: CSSProperties): CSSProperties {
   return {
-    background: "rgba(255,255,255,0.01)",
-    border: "1px solid rgba(255,255,255,0.04)",
+    background: "color-mix(in srgb, var(--color-muted) 92%, var(--color-bg) 8%)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 75%, transparent)",
     borderRadius: 12,
     padding: 12,
     ...overrides,

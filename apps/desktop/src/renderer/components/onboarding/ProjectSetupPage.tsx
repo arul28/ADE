@@ -146,7 +146,7 @@ export function ProjectSetupPage() {
           <div
             style={{
               height: 3,
-              background: `linear-gradient(90deg, ${COLORS.accent}, ${COLORS.accent}60, transparent)`,
+              background: `linear-gradient(90deg, ${COLORS.accent}, color-mix(in srgb, var(--color-accent) 60%, transparent), transparent)`,
             }}
           />
 
@@ -169,7 +169,7 @@ export function ProjectSetupPage() {
                     height: "100%",
                     width: `${((stepIndex + 1) / STEP_ORDER.length) * 100}%`,
                     borderRadius: 2,
-                    background: `linear-gradient(90deg, ${COLORS.accent}, ${COLORS.accent}CC)`,
+                    background: "linear-gradient(90deg, var(--color-accent), color-mix(in srgb, var(--color-accent) 80%, transparent))",
                     transition: "width 0.3s ease",
                   }}
                 />
@@ -210,12 +210,12 @@ export function ProjectSetupPage() {
                         gap: 10,
                         padding: "8px 10px",
                         borderRadius: 10,
-                        border: `1px solid ${active ? `${COLORS.accent}30` : "transparent"}`,
-                        background: active ? `${COLORS.accent}10` : "transparent",
+                        border: `1px solid ${active ? "color-mix(in srgb, var(--color-accent) 30%, transparent)" : "transparent"}`,
+                        background: active ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : "transparent",
                         cursor: "pointer",
                         textAlign: "left",
                         transition: "all 0.15s ease",
-                        ...(active ? { boxShadow: `0 0 12px ${COLORS.accent}15` } : {}),
+                        ...(active ? { boxShadow: `0 0 12px color-mix(in srgb, var(--color-accent) 15%, transparent)` } : {}),
                       }}
                     >
                       <div style={{ flexShrink: 0, marginTop: 2, position: "relative" }}>
@@ -226,7 +226,7 @@ export function ProjectSetupPage() {
                             size={18}
                             color={active ? COLORS.accent : COLORS.textDim}
                             weight={active ? "fill" : "regular"}
-                            style={active ? { filter: `drop-shadow(0 0 4px ${COLORS.accent}60)` } : {}}
+                            style={active ? { filter: `drop-shadow(0 0 4px color-mix(in srgb, var(--color-accent) 60%, transparent))` } : {}}
                           />
                         )}
                       </div>
@@ -251,7 +251,7 @@ export function ProjectSetupPage() {
           style={{
             minWidth: 0,
             padding: 24,
-            background: "rgba(18, 17, 24, 0.9)",
+            background: "color-mix(in srgb, var(--color-surface) 92%, var(--color-bg) 8%)",
             border: `1px solid ${COLORS.border}`,
             borderRadius: 16,
             backdropFilter: "blur(22px)",
@@ -263,7 +263,7 @@ export function ProjectSetupPage() {
               style={{
                 height: 2,
                 borderRadius: 1,
-                background: `linear-gradient(90deg, ${COLORS.accent}80, ${COLORS.accent}20, transparent)`,
+                background: `linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 80%, transparent), color-mix(in srgb, var(--color-accent) 20%, transparent), transparent)`,
                 marginBottom: 16,
               }}
             />

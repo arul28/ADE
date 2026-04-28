@@ -4,7 +4,7 @@ import { ArrowClockwise, CaretDown, Play, Rocket, Stop, Terminal } from "@phosph
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
-import type { StackButtonDefinition } from "../../../shared/types";
+import type { ProcessGroupDefinition } from "../../../shared/types";
 
 type QuickRunMenuProps = {
   laneId: string | null;
@@ -94,6 +94,15 @@ async function startAllWithTrust(laneId: string): Promise<void> {
   }
 }
 
+async function buildLaneByProcessId(groupId: string, laneId: string): Promise<Record<string, string> | null> {
+  const snapshot = await window.ade.projectConfig.get();
+  const processIds = snapshot.effective.processes
+    .filter((proc) => (proc.groupIds ?? []).includes(groupId))
+    .map((proc) => proc.id);
+  if (processIds.length === 0) return null;
+  return Object.fromEntries(processIds.map((id) => [id, laneId]));
+}
+
 export function QuickRunMenu({
   laneId,
   align = "start",
@@ -104,9 +113,8 @@ export function QuickRunMenu({
 }: QuickRunMenuProps) {
   const navigate = useNavigate();
   const selectLane = useAppStore((s) => s.selectLane);
-  const selectRunLane = useAppStore((s) => s.selectRunLane);
   const [open, setOpen] = React.useState(false);
-  const [stacks, setStacks] = React.useState<StackButtonDefinition[]>([]);
+  const [groups, setGroups] = React.useState<ProcessGroupDefinition[]>([]);
   const [loading, setLoading] = React.useState(false);
 
   React.useEffect(() => {
@@ -117,11 +125,11 @@ export function QuickRunMenu({
       .get()
       .then((snapshot) => {
         if (cancelled) return;
-        setStacks(snapshot.effective.stackButtons ?? []);
+        setGroups(snapshot.effective.processGroups ?? []);
       })
       .catch(() => {
         if (cancelled) return;
-        setStacks([]);
+        setGroups([]);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -134,9 +142,8 @@ export function QuickRunMenu({
   const syncLaneSelection = React.useCallback(() => {
     if (!laneId) return false;
     selectLane(laneId);
-    selectRunLane(laneId);
     return true;
-  }, [laneId, selectLane, selectRunLane]);
+  }, [laneId, selectLane]);
 
   const handleOpenRun = React.useCallback(() => {
     if (!syncLaneSelection()) return;
@@ -210,46 +217,68 @@ export function QuickRunMenu({
           />
 
           <DropdownMenu.Separator style={{ height: 1, margin: "6px 0", background: COLORS.border }} />
-          <div style={menuSectionLabelStyle}>Stacks</div>
+          <div style={menuSectionLabelStyle}>Process groups</div>
           {loading ? (
             <div style={{ padding: "6px 10px", color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 10 }}>
-              Loading stack actions...
+              Loading group actions...
             </div>
-          ) : stacks.length === 0 ? (
+          ) : groups.length === 0 ? (
             <div style={{ padding: "6px 10px", color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 10 }}>
-              No stack buttons configured.
+              No groups configured.
             </div>
           ) : (
-            stacks.map((stack) => (
-              <React.Fragment key={stack.id}>
-                <div style={{ ...menuSectionLabelStyle, paddingTop: 8 }}>
-                  {stack.name} · {stack.startOrder === "dependency" ? "dependency order" : "parallel order"}
-                </div>
+            groups.map((group) => (
+              <React.Fragment key={group.id}>
+                <div style={{ ...menuSectionLabelStyle, paddingTop: 8 }}>{group.name}</div>
                 <QuickRunItem
                   icon={<Play size={12} weight="fill" />}
-                  label={`Start ${stack.name}`}
+                  label={`Start ${group.name}`}
                   onSelect={async () => {
                     if (!syncLaneSelection()) return;
                     if (!laneId) return;
-                    await window.ade.processes.startStack({ laneId, stackId: stack.id });
+                    const laneByProcessId = await buildLaneByProcessId(group.id, laneId);
+                    if (!laneByProcessId) return;
+                    try {
+                      await window.ade.processes.startGroup({ groupId: group.id, laneByProcessId });
+                    } catch (err) {
+                      if (isTrustError(err)) {
+                        await window.ade.projectConfig.confirmTrust();
+                        await window.ade.processes.startGroup({ groupId: group.id, laneByProcessId });
+                      } else {
+                        throw err;
+                      }
+                    }
                   }}
                 />
                 <QuickRunItem
                   icon={<Stop size={12} weight="fill" />}
-                  label={`Stop ${stack.name}`}
+                  label={`Stop ${group.name}`}
                   onSelect={async () => {
                     syncLaneSelection();
                     if (!laneId) return;
-                    await window.ade.processes.stopStack({ laneId, stackId: stack.id });
+                    const laneByProcessId = await buildLaneByProcessId(group.id, laneId);
+                    if (!laneByProcessId) return;
+                    await window.ade.processes.stopGroup({ groupId: group.id, laneByProcessId });
                   }}
                 />
                 <QuickRunItem
                   icon={<ArrowClockwise size={12} weight="bold" />}
-                  label={`Restart ${stack.name}`}
+                  label={`Restart ${group.name}`}
                   onSelect={async () => {
                     syncLaneSelection();
                     if (!laneId) return;
-                    await window.ade.processes.restartStack({ laneId, stackId: stack.id });
+                    const laneByProcessId = await buildLaneByProcessId(group.id, laneId);
+                    if (!laneByProcessId) return;
+                    try {
+                      await window.ade.processes.restartGroup({ groupId: group.id, laneByProcessId });
+                    } catch (err) {
+                      if (isTrustError(err)) {
+                        await window.ade.projectConfig.confirmTrust();
+                        await window.ade.processes.restartGroup({ groupId: group.id, laneByProcessId });
+                      } else {
+                        throw err;
+                      }
+                    }
                   }}
                 />
               </React.Fragment>

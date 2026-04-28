@@ -7,6 +7,8 @@ export type FilesWorkspace = {
   kind: "primary" | "worktree" | "attached";
   laneId: string | null;
   name: string;
+  /** Stored branch ref for this lane workspace (e.g. refs/heads/foo). */
+  branchRef?: string;
   rootPath: string;
   isReadOnlyByDefault: boolean;
   mobileReadOnly?: boolean;

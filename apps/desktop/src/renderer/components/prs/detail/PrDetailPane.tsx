@@ -111,7 +111,7 @@ function MarkdownBody({ markdown }: { markdown: string }) {
             <blockquote style={{
               margin: "8px 0",
               padding: "4px 14px",
-              borderLeft: `3px solid ${COLORS.accent}40`,
+              borderLeft: `3px solid color-mix(in srgb, var(--color-accent) 40%, transparent)`,
               color: COLORS.textMuted,
               fontStyle: "italic",
             }}>
@@ -1941,7 +1941,7 @@ export function PrDetailPane({
                     background: COLORS.recessedBg, border: `1px solid ${COLORS.accent}`, borderRadius: 8, outline: "none",
                   }}
                 />
-                <button type="button" onClick={() => void handleUpdateTitle()} style={outlineButton({ height: 28, padding: "0 8px", color: COLORS.success, borderColor: `${COLORS.success}40` })}>
+                <button type="button" onClick={() => void handleUpdateTitle()} style={outlineButton({ height: 28, padding: "0 8px", color: COLORS.success, borderColor: "color-mix(in srgb, var(--color-success) 40%, transparent)" })}>
                   <Check size={14} weight="bold" />
                 </button>
                 <button type="button" onClick={() => setEditingTitle(false)} style={outlineButton({ height: 28, padding: "0 8px" })}>
@@ -1967,12 +1967,12 @@ export function PrDetailPane({
             <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, fontWeight: 500 }}>{pr.repoOwner}/{pr.repoName}</span>
               <span style={{ color: COLORS.border }}>|</span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: `${COLORS.accent}12`, padding: "2px 8px", borderRadius: 6, border: `1px solid ${COLORS.accent}20` }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", padding: "2px 8px", borderRadius: 6, border: "1px solid color-mix(in srgb, var(--color-accent) 20%, transparent)" }}>
                 <GitBranch size={12} style={{ color: COLORS.accent }} />
                 <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.accent }}>{pr.headBranch}</span>
               </span>
               <ArrowRight size={10} style={{ color: COLORS.textDim }} />
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: `${COLORS.info}12`, padding: "2px 8px", borderRadius: 6, border: `1px solid ${COLORS.info}20` }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "color-mix(in srgb, var(--color-info) 12%, transparent)", padding: "2px 8px", borderRadius: 6, border: "1px solid color-mix(in srgb, var(--color-info) 20%, transparent)" }}>
                 <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.info }}>{pr.baseBranch}</span>
               </span>
             </div>
@@ -2014,7 +2014,7 @@ export function PrDetailPane({
                   <span style={{
                     fontSize: 10, fontFamily: MONO_FONT, padding: "1px 6px", fontVariantNumeric: "tabular-nums",
                     borderRadius: 10,
-                    background: isActive ? `${tabColor}28` : `${COLORS.textDim}30`,
+                    background: isActive ? `${tabColor}28` : "color-mix(in srgb, var(--color-muted-fg) 30%, transparent)",
                     color: isActive ? tabColor : COLORS.textMuted,
                     fontWeight: 600,
                   }}>
@@ -2035,14 +2035,14 @@ export function PrDetailPane({
                 type="button"
                 data-tour="prs.stackingIndicator"
                 onClick={() => onOpenQueueView(queueContext.groupId)}
-                style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}
+                style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)" })}
                 title={queueContext.label ?? "Open queue"}
               >
                 <Layers size={14} /> Queue
               </button>
             ) : null}
             {onShowInGraph ? (
-              <button type="button" onClick={() => onShowInGraph(pr.laneId)} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.info, borderColor: `${COLORS.info}40` })}>
+              <button type="button" onClick={() => onShowInGraph(pr.laneId)} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.info, borderColor: "color-mix(in srgb, var(--color-info) 40%, transparent)" })}>
                 <GitBranch size={14} /> Graph
               </button>
             ) : null}
@@ -2055,7 +2055,7 @@ export function PrDetailPane({
 
       {/* ===== ERROR BAR ===== */}
       {actionError && (
-        <div style={{ padding: "10px 20px", background: `${COLORS.danger}0C`, borderBottom: `1px solid ${COLORS.danger}20`, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ padding: "10px 20px", background: "color-mix(in srgb, var(--color-error) 5%, transparent)", borderBottom: "1px solid color-mix(in srgb, var(--color-error) 20%, transparent)", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <XCircle size={14} weight="fill" />
             <span>{actionError}</span>
@@ -2066,8 +2066,8 @@ export function PrDetailPane({
       {actionResult && (
         <div style={{
           padding: "10px 20px",
-          background: actionResult.success ? `${COLORS.success}0C` : `${COLORS.danger}0C`,
-          borderBottom: `1px solid ${actionResult.success ? `${COLORS.success}20` : `${COLORS.danger}20`}`,
+          background: actionResult.success ? "color-mix(in srgb, var(--color-success) 5%, transparent)" : "color-mix(in srgb, var(--color-error) 5%, transparent)",
+          borderBottom: `1px solid ${actionResult.success ? "color-mix(in srgb, var(--color-success) 20%, transparent)" : "color-mix(in srgb, var(--color-error) 20%, transparent)"}`,
           fontFamily: SANS_FONT, fontSize: 12,
           color: actionResult.success ? COLORS.success : COLORS.danger,
           display: "flex", alignItems: "center", gap: 8,
@@ -2304,7 +2304,7 @@ function CommentAvatar({ author, avatarUrl, size = 24 }: { author: string; avata
           (e.target as HTMLImageElement).nextElementSibling?.setAttribute("style", "display:flex");
         }}
       />
-      <div style={{ display: "none", width: size, height: size, borderRadius: "50%", background: `${COLORS.accent}20`, alignItems: "center", justifyContent: "center" }}>
+      <div style={{ display: "none", width: size, height: size, borderRadius: "50%", background: "color-mix(in srgb, var(--color-accent) 20%, transparent)", alignItems: "center", justifyContent: "center" }}>
         <UserCircle size={size} weight="fill" style={{ color: COLORS.accent, opacity: 0.7 }} />
       </div>
       {isBot(author) && (
@@ -2622,11 +2622,11 @@ function OverviewTab(props: OverviewTabProps) {
             <div style={{
               ...cardStyle({ padding: 0, overflow: "hidden" }),
               flexShrink: 0,
-              borderColor: `${COLORS.info}30`,
-              background: `linear-gradient(135deg, ${COLORS.info}08 0%, transparent 60%)`,
+              borderColor: "color-mix(in srgb, var(--color-info) 30%, transparent)",
+              background: `linear-gradient(135deg, color-mix(in srgb, var(--color-info) 8%, transparent) 0%, transparent 60%)`,
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
-                <Warning size={18} weight="fill" style={{ color: COLORS.info, flexShrink: 0, filter: `drop-shadow(0 0 4px ${COLORS.info}40)` }} />
+                <Warning size={18} weight="fill" style={{ color: COLORS.info, flexShrink: 0, filter: `drop-shadow(0 0 4px color-mix(in srgb, var(--color-info) 40%, transparent))` }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
                     PR target differs from lane base
@@ -2642,7 +2642,7 @@ function OverviewTab(props: OverviewTabProps) {
                     style={outlineButton({
                       height: 30, padding: "0 14px",
                       color: COLORS.info,
-                      borderColor: `${COLORS.info}40`,
+                      borderColor: "color-mix(in srgb, var(--color-info) 40%, transparent)",
                     })}
                   >
                     <ArrowsClockwise size={13} weight="bold" /> View Rebase Details
@@ -2663,13 +2663,23 @@ function OverviewTab(props: OverviewTabProps) {
             <div style={{
               ...cardStyle({ padding: 0, overflow: "hidden" }),
               flexShrink: 0,
-              borderColor: hasConflicts ? `${COLORS.danger}30` : `${COLORS.warning}30`,
+              borderColor: hasConflicts ? "color-mix(in srgb, var(--color-error) 30%, transparent)" : "color-mix(in srgb, var(--color-warning) 30%, transparent)",
               background: hasConflicts
-                ? `linear-gradient(135deg, ${COLORS.danger}08 0%, transparent 60%)`
-                : `linear-gradient(135deg, ${COLORS.warning}08 0%, transparent 60%)`,
+                ? "linear-gradient(135deg, color-mix(in srgb, var(--color-error) 8%, transparent) 0%, transparent 60%)"
+                : "linear-gradient(135deg, color-mix(in srgb, var(--color-warning) 8%, transparent) 0%, transparent 60%)",
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
-                <Warning size={18} weight="fill" style={{ color: hasConflicts ? COLORS.danger : COLORS.warning, flexShrink: 0, filter: `drop-shadow(0 0 4px ${hasConflicts ? COLORS.danger : COLORS.warning}40)` }} />
+                <Warning
+                  size={18}
+                  weight="fill"
+                  style={{
+                    color: hasConflicts ? COLORS.danger : COLORS.warning,
+                    flexShrink: 0,
+                    filter: hasConflicts
+                      ? "drop-shadow(0 0 4px color-mix(in srgb, var(--color-error) 25%, transparent))"
+                      : "drop-shadow(0 0 4px color-mix(in srgb, var(--color-warning) 25%, transparent))",
+                  }}
+                />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
                     {hasConflicts
@@ -2687,7 +2697,7 @@ function OverviewTab(props: OverviewTabProps) {
                     style={outlineButton({
                       height: 30, padding: "0 14px",
                       color: hasConflicts ? COLORS.danger : COLORS.warning,
-                      borderColor: hasConflicts ? `${COLORS.danger}40` : `${COLORS.warning}40`,
+                      borderColor: hasConflicts ? "color-mix(in srgb, var(--color-error) 40%, transparent)" : "color-mix(in srgb, var(--color-warning) 40%, transparent)",
                     })}
                   >
                     <ArrowsClockwise size={13} weight="bold" /> View Rebase Details
@@ -2700,7 +2710,7 @@ function OverviewTab(props: OverviewTabProps) {
 
         {/* ---- AI Review Summary ---- */}
         {aiSummary && (
-          <div style={{ ...cardStyle(), borderColor: `${COLORS.accent}30`, background: `linear-gradient(135deg, ${COLORS.accent}08 0%, transparent 60%)` }}>
+          <div style={{ ...cardStyle(), borderColor: "color-mix(in srgb, var(--color-accent) 30%, transparent)", background: `linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 8%, transparent) 0%, transparent 60%)` }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
               <Sparkle size={16} weight="fill" style={{ color: COLORS.accent, filter: "drop-shadow(0 0 6px rgba(167,139,250,0.5))" }} />
               <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.accent }}>AI Review Summary</span>
@@ -2714,7 +2724,7 @@ function OverviewTab(props: OverviewTabProps) {
               {aiSummary.summary}
             </div>
             {aiSummary.potentialIssues.length > 0 && (
-              <div style={{ marginBottom: 12, padding: 12, background: `${COLORS.warning}08`, borderRadius: 10, border: `1px solid ${COLORS.warning}15` }}>
+              <div style={{ marginBottom: 12, padding: 12, background: "color-mix(in srgb, var(--color-warning) 8%, transparent)", borderRadius: 10, border: "1px solid color-mix(in srgb, var(--color-warning) 15%, transparent)" }}>
                 <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.warning, marginBottom: 8, display: "block" }}>Potential Issues</span>
                 {aiSummary.potentialIssues.map((issue, i) => (
                   <div key={i} style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, padding: "4px 0", display: "flex", gap: 8, lineHeight: 1.5 }}>
@@ -2725,7 +2735,7 @@ function OverviewTab(props: OverviewTabProps) {
               </div>
             )}
             {aiSummary.recommendations.length > 0 && (
-              <div style={{ padding: 12, background: `${COLORS.info}08`, borderRadius: 10, border: `1px solid ${COLORS.info}15` }}>
+              <div style={{ padding: 12, background: "color-mix(in srgb, var(--color-info) 8%, transparent)", borderRadius: 10, border: "1px solid color-mix(in srgb, var(--color-info) 15%, transparent)" }}>
                 <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.info, marginBottom: 8, display: "block" }}>Recommendations</span>
                 {aiSummary.recommendations.map((rec, i) => (
                   <div key={i} style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, padding: "4px 0", display: "flex", gap: 8, lineHeight: 1.5 }}>
@@ -2792,28 +2802,28 @@ function OverviewTab(props: OverviewTabProps) {
                         )}
                         <span style={{ fontFamily: SANS_FONT, fontSize: isComment ? 13 : 12, fontWeight: 600, color: COLORS.textPrimary }}>{ev.author}</span>
                         {authorIsBot && (
-                          <span style={{ fontFamily: SANS_FONT, fontSize: 9, fontWeight: 700, color: COLORS.textMuted, background: `${COLORS.textMuted}18`, padding: "1px 5px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>bot</span>
+                          <span style={{ fontFamily: SANS_FONT, fontSize: 9, fontWeight: 700, color: COLORS.textMuted, background: "color-mix(in srgb, var(--color-muted-fg) 18%, transparent)", padding: "1px 5px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>bot</span>
                         )}
                         <span style={inlineBadge(col, { padding: "1px 8px", fontSize: 10 })}>
                           {activityEventLabel(ev)}
                         </span>
                         {isComment && typeof ev.metadata?.path === "string" && (
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}14`, padding: "2px 8px", borderRadius: 6 }}>
+                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
                             {String(ev.metadata.path)}{typeof ev.metadata?.line === "number" ? `:${ev.metadata.line}` : ""}
                           </span>
                         )}
                         {ev.type === "deployment" && typeof ev.metadata?.environment === "string" && (
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.success, background: `${COLORS.success}14`, padding: "2px 8px", borderRadius: 6 }}>
+                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
                             {String(ev.metadata.environment)}
                           </span>
                         )}
                         {ev.type === "commit" && typeof ev.metadata?.shortSha === "string" && (
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}14`, padding: "2px 8px", borderRadius: 6 }}>
+                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
                             {String(ev.metadata.shortSha)}
                           </span>
                         )}
                         {ev.type === "force_push" && (
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.warning, background: `${COLORS.warning}14`, padding: "2px 8px", borderRadius: 6 }}>
+                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.warning, background: "color-mix(in srgb, var(--color-warning) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
                             {typeof ev.metadata?.beforeSha === "string" ? `${String(ev.metadata.beforeSha).slice(0, 7)} → ${String(ev.metadata?.afterSha ?? "").slice(0, 7)}` : "branch updated"}
                           </span>
                         )}
@@ -2850,7 +2860,7 @@ function OverviewTab(props: OverviewTabProps) {
                 background: "rgba(255,255,255,0.02)", border: `1px solid ${COLORS.border}`, borderRadius: 10, outline: "none",
                 transition: "border-color 150ms ease",
               }}
-              onFocus={(e) => { e.currentTarget.style.borderColor = `${COLORS.accent}50`; }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = "color-mix(in srgb, var(--color-accent) 50%, transparent)"; }}
               onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.border; }}
             />
             {!props.commentDraft && (
@@ -2867,7 +2877,7 @@ function OverviewTab(props: OverviewTabProps) {
               ...primaryButton({
                 height: 34, padding: "0 20px", fontSize: 13, fontWeight: 600,
                 opacity: actionBusy || !props.commentDraft.trim() ? 0.4 : 1,
-                boxShadow: actionBusy || !props.commentDraft.trim() ? "none" : `0 2px 8px ${COLORS.accent}30`,
+                boxShadow: actionBusy || !props.commentDraft.trim() ? "none" : `0 2px 8px color-mix(in srgb, var(--color-accent) 30%, transparent)`,
               }),
             }}>
               <ChatText size={14} weight="fill" /> Comment
@@ -2876,7 +2886,7 @@ function OverviewTab(props: OverviewTabProps) {
         </div>
 
         {/* ---- Merge Readiness Section ---- */}
-        <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: canMerge && !hasMergeWarnings ? `${COLORS.success}30` : someChecksFailing ? `${COLORS.danger}20` : hasMergeWarnings ? `${COLORS.warning}20` : COLORS.border }}>
+        <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: canMerge && !hasMergeWarnings ? "color-mix(in srgb, var(--color-success) 30%, transparent)" : someChecksFailing ? "color-mix(in srgb, var(--color-error) 20%, transparent)" : hasMergeWarnings ? "color-mix(in srgb, var(--color-warning) 20%, transparent)" : COLORS.border }}>
           <div style={{ padding: "12px 16px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", gap: 8 }}>
             <GitMerge size={16} weight="bold" style={{ color: canMerge && !hasMergeWarnings ? COLORS.success : hasMergeWarnings ? COLORS.warning : COLORS.textMuted }} />
             <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 700, color: COLORS.textPrimary }}>Merge Readiness</span>
@@ -2972,7 +2982,7 @@ function OverviewTab(props: OverviewTabProps) {
               style={{
                 padding: "16px",
                 borderTop: `1px solid ${COLORS.border}`,
-                background: canMerge && !hasMergeWarnings ? `${COLORS.success}06` : (isBypassMerge || hasMergeWarnings) ? `${COLORS.warning}06` : "transparent",
+                background: canMerge && !hasMergeWarnings ? "color-mix(in srgb, var(--color-success) 6%, transparent)" : (isBypassMerge || hasMergeWarnings) ? "color-mix(in srgb, var(--color-warning) 6%, transparent)" : "transparent",
               }}
             >
               {/* Merge method selector */}
@@ -2988,8 +2998,16 @@ function OverviewTab(props: OverviewTabProps) {
                         flex: 1, height: 30, border: "none", borderRadius: 6, cursor: "pointer",
                         fontFamily: SANS_FONT, fontSize: 12, fontWeight: isActive ? 600 : 400,
                         color: isActive ? COLORS.textPrimary : COLORS.textMuted,
-                        background: isActive ? `${mergeAccentColor ?? COLORS.success}18` : "transparent",
-                        boxShadow: isActive ? `0 0 0 1px ${mergeAccentColor ?? COLORS.success}30` : "none",
+                        background: isActive
+                          ? (mergeAccentColor
+                            ? `color-mix(in srgb, ${mergeAccentColor} 9%, transparent)`
+                            : "color-mix(in srgb, var(--color-success) 9%, transparent)")
+                          : "transparent",
+                        boxShadow: isActive
+                          ? (mergeAccentColor
+                            ? `0 0 0 1px color-mix(in srgb, ${mergeAccentColor} 19%, transparent)`
+                            : "0 0 0 1px color-mix(in srgb, var(--color-success) 19%, transparent)")
+                          : "none",
                         transition: "all 120ms ease",
                         textTransform: "capitalize",
                       }}
@@ -3009,8 +3027,8 @@ function OverviewTab(props: OverviewTabProps) {
                     marginBottom: 14,
                     padding: 12,
                     borderRadius: 10,
-                    border: `1px solid ${COLORS.warning}24`,
-                    background: `${COLORS.warning}08`,
+                    border: "1px solid color-mix(in srgb, var(--color-warning) 24%, transparent)",
+                    background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
                     cursor: actionBusy ? "default" : "pointer",
                   }}
                 >
@@ -3074,7 +3092,7 @@ function OverviewTab(props: OverviewTabProps) {
           )}
           {pr.state === "closed" && (
             <div style={{ padding: "16px", borderTop: `1px solid ${COLORS.border}` }}>
-              <button type="button" disabled={actionBusy} onClick={() => void props.onReopen()} style={outlineButton({ color: COLORS.success, borderColor: `${COLORS.success}40`, height: 36 })}>
+              <button type="button" disabled={actionBusy} onClick={() => void props.onReopen()} style={outlineButton({ color: COLORS.success, borderColor: "color-mix(in srgb, var(--color-success) 40%, transparent)", height: 36 })}>
                 <ArrowsClockwise size={14} /> Reopen PR
               </button>
             </div>
@@ -3086,7 +3104,7 @@ function OverviewTab(props: OverviewTabProps) {
       <div style={{ width: 250, borderLeft: `1px solid ${COLORS.border}`, overflow: "auto", padding: 18, flexShrink: 0, display: "flex", flexDirection: "column", gap: 0, background: `linear-gradient(180deg, rgba(167,139,250,0.02) 0%, transparent 40%)` }}>
         {/* Quick actions */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 14, marginBottom: 2, borderBottom: `1px solid ${COLORS.border}` }}>
-          <button type="button" onClick={props.onAiSummary} disabled={aiSummaryBusy} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40`, width: "100%", justifyContent: "center" })}>
+          <button type="button" onClick={props.onAiSummary} disabled={aiSummaryBusy} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)", width: "100%", justifyContent: "center" })}>
             <Sparkle size={13} weight="fill" />
             {aiSummaryBusy ? "Analyzing..." : "AI Review"}
           </button>
@@ -3234,7 +3252,12 @@ function OverviewTab(props: OverviewTabProps) {
                 ...primaryButton({
                   background: props.reviewEvent === "APPROVE" ? `linear-gradient(135deg, ${COLORS.success} 0%, #16a34a 100%)` : props.reviewEvent === "REQUEST_CHANGES" ? `linear-gradient(135deg, ${COLORS.warning} 0%, #d97706 100%)` : `linear-gradient(135deg, ${COLORS.accent} 0%, #7c3aed 100%)`,
                   height: 36,
-                  boxShadow: `0 2px 12px ${props.reviewEvent === "APPROVE" ? COLORS.success : props.reviewEvent === "REQUEST_CHANGES" ? COLORS.warning : COLORS.accent}30`,
+                  boxShadow:
+                    props.reviewEvent === "APPROVE"
+                      ? "0 2px 12px color-mix(in srgb, var(--color-success) 19%, transparent)"
+                      : props.reviewEvent === "REQUEST_CHANGES"
+                        ? "0 2px 12px color-mix(in srgb, var(--color-warning) 19%, transparent)"
+                        : "0 2px 12px color-mix(in srgb, var(--color-accent) 19%, transparent)",
                 }),
                 color: "#fff",
               }}>
@@ -3261,8 +3284,8 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ ...LABEL_STYLE, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary }}>Files Changed ({files.length})</span>
-          <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.success, background: `${COLORS.success}12`, padding: "2px 8px", borderRadius: 6 }}>+{totalAdd}</span>
-          <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.danger, background: `${COLORS.danger}12`, padding: "2px 8px", borderRadius: 6 }}>-{totalDel}</span>
+          <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 12%, transparent)", padding: "2px 8px", borderRadius: 6 }}>+{totalAdd}</span>
+          <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 12%, transparent)", padding: "2px 8px", borderRadius: 6 }}>-{totalDel}</span>
         </div>
       </div>
       {files.length === 0 ? (
@@ -3311,9 +3334,9 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                         let bg: string = "transparent";
                         if (line.startsWith("+")) { color = "#4ade80"; bg = "rgba(34,197,94,0.12)"; }
                         else if (line.startsWith("-")) { color = "#f87171"; bg = "rgba(239,68,68,0.12)"; }
-                        else if (line.startsWith("@@")) { color = COLORS.accent; bg = `${COLORS.accent}0A`; }
+                        else if (line.startsWith("@@")) { color = COLORS.accent; bg = "color-mix(in srgb, var(--color-accent) 4%, transparent)"; }
                         return (
-                          <div key={i} style={{ color, background: bg, padding: "1px 14px", minHeight: "1.7em", borderLeft: line.startsWith("+") ? `3px solid ${COLORS.success}50` : line.startsWith("-") ? `3px solid ${COLORS.danger}50` : "3px solid transparent" }}>
+                            <div key={i} style={{ color, background: bg, padding: "1px 14px", minHeight: "1.7em", borderLeft: line.startsWith("+") ? "3px solid color-mix(in srgb, var(--color-success) 50%, transparent)" : line.startsWith("-") ? "3px solid color-mix(in srgb, var(--color-error) 50%, transparent)" : "3px solid transparent" }}>
                             {line}
                           </div>
                         );
@@ -3487,11 +3510,11 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {showIssueResolverAction && (
-              <button type="button" onClick={onOpenIssueResolver} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}>
+              <button type="button" onClick={onOpenIssueResolver} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)" })}>
                 <Sparkle size={14} weight="fill" /> Resolve issues with agent
               </button>
             )}
-            <button type="button" disabled={actionBusy} onClick={onRerunChecks} style={outlineButton({ height: 30, color: COLORS.warning, borderColor: `${COLORS.warning}40` })}>
+            <button type="button" disabled={actionBusy} onClick={onRerunChecks} style={outlineButton({ height: 30, color: COLORS.warning, borderColor: "color-mix(in srgb, var(--color-warning) 40%, transparent)" })}>
               <ArrowsClockwise size={14} /> Re-run Failed
             </button>
           </div>
@@ -3541,7 +3564,7 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "space-between",
                     padding: "10px 16px",
-                    background: item.conclusion === "failure" ? `${COLORS.danger}06` : "transparent",
+                    background: item.conclusion === "failure" ? "color-mix(in srgb, var(--color-error) 6%, transparent)" : "transparent",
                     cursor: hasSteps ? "pointer" : "default",
                     transition: "background 100ms ease",
                   }}
@@ -3687,7 +3710,7 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
             {/* Vertical timeline line with gradient */}
             <div style={{
               position: "absolute", left: 11, top: 4, bottom: 4, width: 2,
-              background: `linear-gradient(180deg, ${COLORS.accent}40 0%, ${COLORS.border} 50%, ${COLORS.textDim}20 100%)`,
+              background: `linear-gradient(180deg, color-mix(in srgb, var(--color-accent) 40%, transparent) 0%, ${COLORS.border} 50%, color-mix(in srgb, var(--color-muted-fg) 20%, transparent) 100%)`,
               borderRadius: 1,
             }} />
             {timeline.map((event, idx) => {
@@ -3717,22 +3740,22 @@ function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraf
                         </span>
                       ) : null}
                       {event.type === "comment" && typeof event.metadata?.path === "string" ? (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}14`, padding: "2px 8px", borderRadius: 6 }}>
+                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
                           {String(event.metadata.path)}{typeof event.metadata?.line === "number" ? `:${event.metadata.line}` : ""}
                         </span>
                       ) : null}
                       {event.type === "deployment" && typeof event.metadata?.environment === "string" ? (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.success, background: `${COLORS.success}14`, padding: "2px 8px", borderRadius: 6 }}>
+                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
                           {String(event.metadata.environment)}
                         </span>
                       ) : null}
                       {event.type === "commit" && typeof event.metadata?.shortSha === "string" ? (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: `${COLORS.accent}14`, padding: "2px 8px", borderRadius: 6 }}>
+                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
                           {String(event.metadata.shortSha)}
                         </span>
                       ) : null}
                       {event.type === "force_push" && (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.warning, background: `${COLORS.warning}14`, padding: "2px 8px", borderRadius: 6 }}>
+                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.warning, background: "color-mix(in srgb, var(--color-warning) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
                           {typeof event.metadata?.beforeSha === "string" ? `${String(event.metadata.beforeSha).slice(0, 7)} → ${String(event.metadata?.afterSha ?? "").slice(0, 7)}` : "branch updated"}
                         </span>
                       )}

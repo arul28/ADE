@@ -1,9 +1,8 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
-import { Brain, GearSix, GraduationCap, Lightning, Stack, Database, FolderSimple, Plus, Plugs, Palette, DeviceMobile } from "@phosphor-icons/react";
+import { Brain, GearSix, Lightning, Stack, Database, FolderSimple, Plus, Plugs, Palette, DeviceMobile } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
-import { OnboardingSection } from "../settings/OnboardingSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { MemoryHealthTab } from "../settings/MemoryHealthTab";
@@ -19,7 +18,6 @@ import { PhaseCardEditor } from "../missions/PhaseCardEditor";
 
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
-  { id: "onboarding", label: "Onboarding & Help", icon: GraduationCap },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "workspace", label: "Workspace", icon: FolderSimple },
   { id: "ai", label: "AI", icon: Brain },
@@ -43,6 +41,9 @@ const TAB_ALIASES: Record<string, SectionId> = {
   linear: "integrations",
   "computer-use": "integrations",
   keybindings: "general",
+  onboarding: "general",
+  help: "general",
+  tours: "general",
 };
 
 function padIndex(i: number): string {
@@ -61,8 +62,8 @@ const SECTION_LABEL: React.CSSProperties = {
 const SETTINGS_INPUT: React.CSSProperties = {
   height: 28,
   width: "100%",
-  background: "rgba(255,255,255,0.03)",
-  border: "1px solid rgba(255,255,255,0.06)",
+  background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--color-border) 65%, transparent)",
   padding: "0 8px",
   fontSize: 11,
   color: COLORS.textPrimary,
@@ -99,7 +100,7 @@ function PhaseProfileSettingsCard({
   const isReadOnly = profile.isBuiltIn;
 
   return (
-    <div style={{ ...cardStyle({ padding: 12 }), marginBottom: 8, background: "rgba(255,255,255,0.03)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 16 }}>
+    <div style={{ ...cardStyle({ padding: 12 }), marginBottom: 8, background: "color-mix(in srgb, var(--color-fg) 4%, transparent)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid color-mix(in srgb, var(--color-border) 55%, transparent)", borderRadius: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
@@ -138,7 +139,7 @@ function PhaseProfileSettingsCard({
       </div>
 
       {expanded && (
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid color-mix(in srgb, var(--color-border) 55%, transparent)" }}>
           {!isReadOnly && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
               <label>
@@ -414,12 +415,12 @@ function PhaseProfilesSection() {
       </div>
 
       {notice && (
-        <div style={{ padding: "6px 10px", marginBottom: 8, fontSize: 11, border: `1px solid ${COLORS.success}30`, background: `${COLORS.success}15`, color: COLORS.success, borderRadius: 8 }}>
+        <div style={{ padding: "6px 10px", marginBottom: 8, fontSize: 11, border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)", background: "color-mix(in srgb, var(--color-success) 15%, transparent)", color: COLORS.success, borderRadius: 8 }}>
           {notice}
         </div>
       )}
       {error && (
-        <div style={{ padding: "6px 10px", marginBottom: 8, fontSize: 11, border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, color: COLORS.danger, borderRadius: 8 }}>
+        <div style={{ padding: "6px 10px", marginBottom: 8, fontSize: 11, border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 15%, transparent)", color: COLORS.danger, borderRadius: 8 }}>
           {error}
         </div>
       )}
@@ -493,10 +494,10 @@ export function SettingsPage() {
         style={{
           width: 200,
           flexShrink: 0,
-          background: "rgba(255,255,255,0.02)",
+          background: "var(--shell-sidebar-bg)",
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
-          borderRight: "1px solid rgba(255,255,255,0.06)",
+          borderRight: "1px solid var(--shell-sidebar-border)",
           paddingTop: 16,
           paddingBottom: 16,
           paddingLeft: 8,
@@ -518,13 +519,13 @@ export function SettingsPage() {
             gap: 10,
             padding: "8px 10px",
             border: "none",
-            borderLeft: isActive ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+            borderLeft: isActive ? "3px solid var(--shell-sidebar-item-active-rail)" : "3px solid transparent",
             background: isActive
-              ? "rgba(167,139,250,0.10)"
+              ? "var(--shell-sidebar-item-active-bg)"
               : isHovered
-                ? "rgba(255,255,255,0.04)"
+                ? "var(--shell-sidebar-item-hover-bg)"
                 : "transparent",
-            color: isActive ? COLORS.textPrimary : COLORS.textMuted,
+            color: isActive ? "var(--shell-sidebar-item-active-fg)" : isHovered ? "var(--shell-sidebar-item-hover-fg)" : "var(--shell-sidebar-item-fg)",
             fontFamily: SANS_FONT,
             fontSize: 11,
             fontWeight: 600,
@@ -562,7 +563,6 @@ export function SettingsPage() {
         }}
       >
         {section === "general" && <GeneralSection />}
-        {section === "onboarding" && <OnboardingSection />}
         {section === "appearance" && <AppearanceSection />}
         {section === "workspace" && <WorkspaceSettingsSection />}
         {section === "ai" && <AiSettingsSection />}

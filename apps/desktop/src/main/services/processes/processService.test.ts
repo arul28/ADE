@@ -20,9 +20,11 @@ function makeMinimalConfig(processes: Array<{
   cwd?: string;
   restart?: "never" | "on-failure" | "always" | "on_crash";
   dependsOn?: string[];
+  groupIds?: string[];
   readiness?: { type: "none" } | { type: "port"; port: number } | { type: "logRegex"; pattern: string };
 }>, options: {
   stackButtons?: Array<{ id: string; name: string; processIds: string[]; startOrder: "parallel" | "dependency" }>;
+  processGroups?: Array<{ id: string; name: string }>;
 } = {}) {
   const defs = processes.map((p) => ({
     id: p.id,
@@ -30,7 +32,7 @@ function makeMinimalConfig(processes: Array<{
     command: p.command,
     cwd: p.cwd ?? ".",
     env: {},
-    groupIds: [],
+    groupIds: p.groupIds ?? [],
     autostart: false,
     restart: p.restart ?? "never" as const,
     gracefulShutdownMs: 1000,
@@ -41,7 +43,7 @@ function makeMinimalConfig(processes: Array<{
     effective: {
       processes: defs,
       stackButtons: options.stackButtons ?? [],
-      processGroups: [],
+      processGroups: options.processGroups ?? [],
       laneOverlayPolicies: [],
     },
     local: {},
@@ -805,6 +807,67 @@ describe("processService PTY-backed run commands", () => {
       const api = runtimes.find((runtime) => runtime.processId === "api");
       const dbRuntime = runtimes.find((runtime) => runtime.processId === "db");
       expect(disposedSessionIds).toEqual([api?.sessionId, dbRuntime?.sessionId]);
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("starts processes in a group in parallel using per-process lanes", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-group-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-group";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-group", projectId, "Lane Group", null, "worktree", "main", "feature/group", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig(
+      [
+        { id: "alpha", command: ["npm", "run", "alpha"], groupIds: ["grp-a"] },
+        { id: "beta", command: ["npm", "run", "beta"], groupIds: ["grp-a"] },
+      ],
+      { processGroups: [{ id: "grp-a", name: "A" }] },
+    );
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-group")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      await service.startGroup({
+        groupId: "grp-a",
+        laneByProcessId: { alpha: "lane-group", beta: "lane-group" },
+      });
+
+      const launched = ptyService.create.mock.calls.map((call: any[]) => [call[0].command, ...call[0].args].join(" "));
+      expect(launched.sort()).toEqual(["npm run alpha", "npm run beta"].sort());
     } finally {
       service.disposeAll();
       db.close();

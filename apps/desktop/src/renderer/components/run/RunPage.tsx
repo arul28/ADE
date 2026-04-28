@@ -1,33 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Folder, FolderOpen, Play, Plus, Stop, Terminal } from "@phosphor-icons/react";
+import { CaretDown, CaretUp, Folder, FolderOpen, Play, Plus, Stop, Terminal, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { CommandCard } from "./CommandCard";
 import { CommandPalette } from "../app/CommandPalette";
-import { ProcessMonitor, type RunShellSession } from "./ProcessMonitor";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
-import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
-import { RunStackTabs } from "./RunStackTabs";
+import { AddCommandDialog, type AddCommandInitialValues, type AddCommandSubmitPayload } from "./AddCommandDialog";
 import { RunNetworkPanel } from "./RunNetworkPanel";
 import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { toRelativeTime } from "../graph/graphHelpers";
 import type {
   ConfigProcessDefinition,
-  ConfigProcessReadiness,
-  ConfigStackButtonDefinition,
   ProcessDefinition,
   ProcessEvent,
   ProcessGroupDefinition,
+  ProcessRestartPolicy,
   ProcessRuntime,
   ProjectConfigSnapshot,
   ConfigProcessGroupDefinition,
-  StackButtonDefinition,
 } from "../../../shared/types";
 
 function generateId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
+
+type RunShellSession = {
+  sessionId: string;
+  ptyId: string;
+  title: string;
+  laneId: string;
+};
 
 function parseEnvText(text: string): Record<string, string> | undefined {
   const trimmed = text.trim();
@@ -60,22 +63,6 @@ function parseDependsOnCsv(value: string): string[] | undefined {
     .map((entry) => entry.trim())
     .filter(Boolean);
   return ids.length > 0 ? ids : undefined;
-}
-
-function buildReadinessConfig(args: {
-  readinessType: "none" | "port" | "logRegex";
-  readinessPort: string;
-  readinessPattern: string;
-}): ConfigProcessReadiness | undefined {
-  if (args.readinessType === "port") {
-    const port = Number.parseInt(args.readinessPort.trim(), 10);
-    return Number.isInteger(port) && port > 0 ? { type: "port", port } : undefined;
-  }
-  if (args.readinessType === "logRegex") {
-    const pattern = args.readinessPattern.trim();
-    return pattern ? { type: "logRegex", pattern } : undefined;
-  }
-  return undefined;
 }
 
 function normalizeRelativePath(value: string): string {
@@ -155,20 +142,7 @@ function normalizeCommandForConfig(commandLine: string, cwd: string | undefined,
 
 function buildProcessConfigDefinition(
   processId: string,
-  cmd: {
-    name: string;
-    command: string;
-    cwd: string;
-    env: string;
-    autostart: boolean;
-    restart: AddCommandInitialValues["restart"];
-    gracefulShutdownMs: string;
-    dependsOn: string;
-    readinessType: AddCommandInitialValues["readinessType"];
-    readinessPort: string;
-    readinessPattern: string;
-    groupIds: string[];
-  },
+  cmd: AddCommandSubmitPayload & { restart?: ProcessRestartPolicy },
   allGroupIds: string[],
   projectRoot: string | null,
 ): { process: ConfigProcessDefinition; localOnly: boolean } {
@@ -183,10 +157,10 @@ function buildProcessConfigDefinition(
       cwd,
       env: parseEnvText(cmd.env),
       autostart: cmd.autostart ? true : undefined,
-      restart: cmd.restart === "never" ? undefined : cmd.restart,
+      restart: cmd.restart == null || cmd.restart === "never" ? undefined : cmd.restart,
       gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
       dependsOn: parseDependsOnCsv(cmd.dependsOn),
-      readiness: buildReadinessConfig(cmd),
+      readiness: { type: "none" },
       groupIds: allGroupIds.length > 0 ? allGroupIds : undefined,
     },
     localOnly: command.localOnly || cwdLocalOnly
@@ -204,43 +178,47 @@ function removeProcess(processes: ConfigProcessDefinition[] | undefined, process
   return (processes ?? []).filter((entry) => entry.id !== processId);
 }
 
-function upsertStackButton(
-  stackButtons: ConfigStackButtonDefinition[] | undefined,
-  stack: ConfigStackButtonDefinition,
-): ConfigStackButtonDefinition[] {
-  const existing = stackButtons ?? [];
-  return existing.some((entry) => entry.id === stack.id)
-    ? existing.map((entry) => (entry.id === stack.id ? stack : entry))
-    : [...existing, stack];
-}
-
-function uniqueProcessIds(ids: string[]): string[] {
-  return Array.from(new Set(ids.filter(Boolean)));
-}
-
 const RUN_PAGE_LANE_STORAGE_KEY = "ade.runPageLaneSelections.v1";
+const LANE_RUNTIME_BAR_OPEN_KEY = "ade.run.laneRuntimeBarOpen";
+
+function readLaneRuntimeBarOpenFromStorage(): boolean {
+  try {
+    return window.localStorage.getItem(LANE_RUNTIME_BAR_OPEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeLaneRuntimeBarOpenToStorage(open: boolean) {
+  try {
+    window.localStorage.setItem(LANE_RUNTIME_BAR_OPEN_KEY, open ? "true" : "false");
+  } catch {
+    // ignore persistence failures
+  }
+}
 
 type PersistedRunPageLaneState = {
-  lastLaneId: string | null;
   commandLaneIds: Record<string, string>;
 };
 
 function readRunPageLaneState(projectRoot: string | null): PersistedRunPageLaneState {
-  if (!projectRoot) return { lastLaneId: null, commandLaneIds: {} };
+  if (!projectRoot) return { commandLaneIds: {} };
   try {
     const raw = window.localStorage.getItem(RUN_PAGE_LANE_STORAGE_KEY);
-    if (!raw) return { lastLaneId: null, commandLaneIds: {} };
-    const parsed = JSON.parse(raw) as Record<string, PersistedRunPageLaneState>;
+    if (!raw) return { commandLaneIds: {} };
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
     const state = parsed[projectRoot];
-    if (!state || typeof state !== "object") return { lastLaneId: null, commandLaneIds: {} };
+    if (!state || typeof state !== "object") return { commandLaneIds: {} };
+    const record = state as Record<string, unknown>;
     return {
-      lastLaneId: typeof state.lastLaneId === "string" ? state.lastLaneId : null,
       commandLaneIds: Object.fromEntries(
-        Object.entries(state.commandLaneIds ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+        Object.entries((record.commandLaneIds as Record<string, unknown>) ?? {}).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
       ),
     };
   } catch {
-    return { lastLaneId: null, commandLaneIds: {} };
+    return { commandLaneIds: {} };
   }
 }
 
@@ -248,8 +226,8 @@ function writeRunPageLaneState(projectRoot: string | null, state: PersistedRunPa
   if (!projectRoot) return;
   try {
     const raw = window.localStorage.getItem(RUN_PAGE_LANE_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) as Record<string, PersistedRunPageLaneState> : {};
-    parsed[projectRoot] = state;
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    parsed[projectRoot] = { commandLaneIds: state.commandLaneIds };
     window.localStorage.setItem(RUN_PAGE_LANE_STORAGE_KEY, JSON.stringify(parsed));
   } catch {
     // ignore persistence failures
@@ -257,7 +235,6 @@ function writeRunPageLaneState(projectRoot: string | null, state: PersistedRunPa
 }
 
 function runPageLaneStateEqual(left: PersistedRunPageLaneState, right: PersistedRunPageLaneState): boolean {
-  if (left.lastLaneId !== right.lastLaneId) return false;
   const leftEntries = Object.entries(left.commandLaneIds);
   const rightEntries = Object.entries(right.commandLaneIds);
   if (leftEntries.length !== rightEntries.length) return false;
@@ -285,7 +262,7 @@ function WelcomeScreen() {
         alignItems: "center",
         justifyContent: "center",
         height: "100%",
-        background: `radial-gradient(circle at 50% 30%, ${COLORS.accent}15 0%, ${COLORS.pageBg} 40%)`,
+        background: `radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--color-accent) 15%, transparent) 0%, ${COLORS.pageBg} 40%)`,
         gap: 32,
         padding: 48,
       }}
@@ -311,17 +288,17 @@ function WelcomeScreen() {
         style={{
           ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
           gap: 12,
-          boxShadow: `0 4px 20px ${COLORS.accent}40`,
+          boxShadow: `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
           transition: "transform 0.2s ease, box-shadow 0.2s ease",
           marginTop: -16,
         }}
         onMouseEnter={(event) => {
           event.currentTarget.style.transform = "translateY(-2px)";
-          event.currentTarget.style.boxShadow = `0 6px 24px ${COLORS.accent}60`;
+          event.currentTarget.style.boxShadow = `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
         }}
         onMouseLeave={(event) => {
           event.currentTarget.style.transform = "none";
-          event.currentTarget.style.boxShadow = `0 4px 20px ${COLORS.accent}40`;
+          event.currentTarget.style.boxShadow = `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
         }}
       >
         <FolderOpen size={20} weight="regular" />
@@ -369,7 +346,7 @@ function WelcomeScreen() {
                     width: 32,
                     height: 32,
                     borderRadius: 8,
-                    background: `${COLORS.accent}15`,
+                    background: "color-mix(in srgb, var(--color-accent) 15%, transparent)",
                     color: COLORS.accent,
                     flexShrink: 0,
                   }}
@@ -387,7 +364,7 @@ function WelcomeScreen() {
                     <span
                       style={{
                         fontSize: 10,
-                        background: `${COLORS.accent}20`,
+                        background: "color-mix(in srgb, var(--color-accent) 20%, transparent)",
                         color: COLORS.accent,
                         padding: "2px 6px",
                         borderRadius: 10,
@@ -415,9 +392,6 @@ function WelcomeScreen() {
 export function RunPage() {
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
-  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
-  const runLaneId = useAppStore((s) => s.runLaneId);
-  const selectRunLane = useAppStore((s) => s.selectRunLane);
   const showWelcome = useAppStore((s) => s.showWelcome);
 
   const projectRoot = project?.rootPath ?? null;
@@ -425,8 +399,10 @@ export function RunPage() {
   const [config, setConfig] = useState<ProjectConfigSnapshot | null>(null);
   const [definitions, setDefinitions] = useState<ProcessDefinition[]>([]);
   const [runtime, setRuntime] = useState<ProcessRuntime[]>([]);
-  const [selectedStackId, setSelectedStackId] = useState<string | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const newGroupInputRef = useRef<HTMLInputElement>(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editingProcess, setEditingProcess] = useState<{ id: string; values: AddCommandInitialValues } | null>(null);
@@ -434,22 +410,15 @@ export function RunPage() {
   const [runShellSessions, setRunShellSessions] = useState<RunShellSession[]>([]);
   const [shellBusy, setShellBusy] = useState(false);
   const [networkDrawerOpen, setNetworkDrawerOpen] = useState(false);
-  const [monitorFocusTarget, setMonitorFocusTarget] = useState<{ kind: "process" | "shell"; id: string } | null>(null);
-  const [monitorFocusSequence, setMonitorFocusSequence] = useState(0);
+  const [laneRuntimeBarOpen, setLaneRuntimeBarOpen] = useState(readLaneRuntimeBarOpenFromStorage);
   const runtimeRefreshTimerRef = useRef<number | null>(null);
   const runShellSessionsRef = useRef<RunShellSession[]>([]);
 
-  const persistedDefaultLaneId = persistedLaneState.lastLaneId;
-  const defaultLaneId = runLaneId ?? persistedDefaultLaneId ?? selectedLaneId ?? lanes[0]?.id ?? null;
-  const processDefinitions = useMemo(() => Object.fromEntries(definitions.map((definition) => [definition.id, definition])), [definitions]);
-  const processNames = useMemo(() => Object.fromEntries(definitions.map((definition) => [definition.id, definition.name])), [definitions]);
-  const stacks = useMemo<StackButtonDefinition[]>(() => config?.effective.stackButtons ?? [], [config?.effective.stackButtons]);
-  const groups = useMemo<ProcessGroupDefinition[]>(() => config?.effective.processGroups ?? [], [config?.effective.processGroups]);
-
-  const selectedStack = useMemo(
-    () => stacks.find((stack) => stack.id === selectedStackId) ?? null,
-    [selectedStackId, stacks],
+  const fallbackRunLaneId = useMemo(
+    () => lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null,
+    [lanes],
   );
+  const groups = useMemo<ProcessGroupDefinition[]>(() => config?.effective.processGroups ?? [], [config?.effective.processGroups]);
 
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedGroupId) ?? null,
@@ -458,17 +427,16 @@ export function RunPage() {
 
   const commandLaneMap = useMemo(() => {
     const allowed = new Set(lanes.map((lane) => lane.id));
-    const fallbackLaneId = defaultLaneId ?? lanes[0]?.id ?? null;
     const map: Record<string, string> = {};
     for (const definition of definitions) {
       const persistedLaneId = persistedLaneState.commandLaneIds[definition.id];
       const laneId = persistedLaneId && allowed.has(persistedLaneId)
         ? persistedLaneId
-        : fallbackLaneId;
+        : fallbackRunLaneId;
       if (laneId) map[definition.id] = laneId;
     }
     return map;
-  }, [defaultLaneId, definitions, lanes, persistedLaneState.commandLaneIds]);
+  }, [definitions, fallbackRunLaneId, lanes, persistedLaneState.commandLaneIds]);
 
   const refreshLanePersistence = useCallback((updater: (current: PersistedRunPageLaneState) => PersistedRunPageLaneState) => {
     setPersistedLaneState((current) => {
@@ -486,28 +454,22 @@ export function RunPage() {
   useEffect(() => {
     if (!projectRoot) return;
     const allowed = new Set(lanes.map((lane) => lane.id));
+    const defIds = new Set(definitions.map((definition) => definition.id));
     refreshLanePersistence((current) => {
-      const nextCommandLaneIds: Record<string, string> = {};
-      for (const definition of definitions) {
-        const laneId = commandLaneMap[definition.id];
-        if (laneId && allowed.has(laneId)) nextCommandLaneIds[definition.id] = laneId;
+      const next: Record<string, string> = { ...current.commandLaneIds };
+      let changed = false;
+      for (const [processId, laneId] of Object.entries(next)) {
+        if (!defIds.has(processId) || !allowed.has(laneId)) {
+          delete next[processId];
+          changed = true;
+        }
       }
-      const nextLastLaneId = current.lastLaneId && allowed.has(current.lastLaneId)
-        ? current.lastLaneId
-        : defaultLaneId;
-      return {
-        lastLaneId: nextLastLaneId ?? null,
-        commandLaneIds: nextCommandLaneIds,
-      };
+      if (!changed) return current;
+      return { commandLaneIds: next };
     });
-  }, [commandLaneMap, defaultLaneId, definitions, lanes, projectRoot, refreshLanePersistence]);
+  }, [definitions, lanes, projectRoot, refreshLanePersistence]);
 
   runShellSessionsRef.current = runShellSessions;
-
-  const focusMonitor = useCallback((target: { kind: "process" | "shell"; id: string } | null) => {
-    setMonitorFocusTarget(target);
-    setMonitorFocusSequence((current) => current + 1);
-  }, []);
 
   const disposeRunShellSessions = useCallback(async (sessions: RunShellSession[]) => {
     if (sessions.length === 0) return;
@@ -593,18 +555,8 @@ export function RunPage() {
   }, [groups, selectedGroupId]);
 
   useEffect(() => {
-    if (stacks.length === 0) {
-      if (selectedStackId !== null) setSelectedStackId(null);
-      return;
-    }
-    if (selectedStackId && !stacks.some((stack) => stack.id === selectedStackId)) {
-      setSelectedStackId(null);
-    }
-  }, [selectedStackId, stacks]);
-
-  useEffect(() => {
     setActionError(null);
-  }, [defaultLaneId]);
+  }, [fallbackRunLaneId]);
 
   useEffect(() => {
     if (runtimeRefreshTimerRef.current != null) {
@@ -641,27 +593,17 @@ export function RunPage() {
   }, []);
 
   const resolveProcessLaneId = useCallback((processId: string): string | null => {
-    return commandLaneMap[processId] ?? defaultLaneId ?? null;
-  }, [commandLaneMap, defaultLaneId]);
+    return commandLaneMap[processId] ?? fallbackRunLaneId ?? null;
+  }, [commandLaneMap, fallbackRunLaneId]);
 
   const selectProcessLane = useCallback((processId: string, laneId: string) => {
-    selectRunLane(laneId);
     refreshLanePersistence((current) => ({
-      lastLaneId: laneId,
       commandLaneIds: {
         ...current.commandLaneIds,
         [processId]: laneId,
       },
     }));
-  }, [refreshLanePersistence, selectRunLane]);
-
-  const selectDefaultLane = useCallback((laneId: string | null) => {
-    selectRunLane(laneId);
-    refreshLanePersistence((current) => ({
-      ...current,
-      lastLaneId: laneId,
-    }));
-  }, [refreshLanePersistence, selectRunLane]);
+  }, [refreshLanePersistence]);
 
   const startProcess = useCallback(async (processId: string, laneId: string, allowTrustRetry = true): Promise<ProcessRuntime> => {
     try {
@@ -684,25 +626,12 @@ export function RunPage() {
     if (!laneId) return;
     try {
       setActionError(null);
-      const started = await startProcess(processId, laneId);
-      focusMonitor({ kind: "process", id: started.runId });
+      await startProcess(processId, laneId);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
       console.error("[RunPage] handleRun failed:", error);
     }
-  }, [focusMonitor, resolveProcessLaneId, startProcess]);
-
-  const handleStop = useCallback(async (processId: string) => {
-    const laneId = resolveProcessLaneId(processId);
-    if (!laneId) return;
-    try {
-      setActionError(null);
-      await window.ade.processes.stop({ laneId, processId });
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
-      console.error("[RunPage] handleStop failed:", error);
-    }
-  }, [resolveProcessLaneId]);
+  }, [resolveProcessLaneId, startProcess]);
 
   const handleKillRuntime = useCallback(async (runtimeItem: ProcessRuntime) => {
     try {
@@ -718,90 +647,30 @@ export function RunPage() {
     }
   }, []);
 
-  const runDefinitions = useCallback(async (targetDefinitions: ProcessDefinition[]) => {
-    const launchTargets = targetDefinitions
-      .map((definition) => ({
-        definition,
-        laneId: resolveProcessLaneId(definition.id),
-      }))
-      .filter((entry): entry is { definition: ProcessDefinition; laneId: string } => Boolean(entry.laneId));
-    if (launchTargets.length === 0) return;
-
-    try {
-      setActionError(null);
-      const settled = await Promise.allSettled(
-        launchTargets.map((entry) => startProcess(entry.definition.id, entry.laneId, false)),
-      );
-      const successes = settled
-        .filter((result): result is PromiseFulfilledResult<ProcessRuntime> => result.status === "fulfilled")
-        .map((result) => result.value);
-      const failures = launchTargets.flatMap((entry, index) => {
-        const result = settled[index];
-        return result?.status === "rejected" ? [{ entry, reason: result.reason }] : [];
-      });
-      const trustFailures = failures.filter((failure) =>
-        failure.reason instanceof Error && failure.reason.message.includes("ADE_TRUST_REQUIRED")
-      );
-
-      let retrySuccesses: ProcessRuntime[] = [];
-      if (trustFailures.length > 0) {
-        await window.ade.projectConfig.confirmTrust();
-        const retrySettled = await Promise.allSettled(
-          trustFailures.map((failure) => startProcess(failure.entry.definition.id, failure.entry.laneId, false)),
-        );
-        retrySuccesses = retrySettled
-          .filter((result): result is PromiseFulfilledResult<ProcessRuntime> => result.status === "fulfilled")
-          .map((result) => result.value);
-        const retryFailure = retrySettled.find((result) => result.status === "rejected");
-        if (retryFailure?.status === "rejected") {
-          setActionError(retryFailure.reason instanceof Error ? retryFailure.reason.message : String(retryFailure.reason));
-        }
-      }
-
-      const firstFailure = failures.find((failure) =>
-        !(failure.reason instanceof Error && failure.reason.message.includes("ADE_TRUST_REQUIRED"))
-      );
-      if (firstFailure) {
-        setActionError(firstFailure.reason instanceof Error ? firstFailure.reason.message : String(firstFailure.reason));
-      }
-
-      const first = successes[0] ?? retrySuccesses[0] ?? null;
-      if (first) focusMonitor({ kind: "process", id: first.runId });
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
-      console.error("[RunPage] runDefinitions failed:", error);
+  const buildLaneMapForSelectedGroup = useCallback((): Record<string, string> | null => {
+    if (!selectedGroupId) return null;
+    const laneByProcessId: Record<string, string> = {};
+    for (const definition of definitions) {
+      if (!(definition.groupIds ?? []).includes(selectedGroupId)) continue;
+      const laneId = resolveProcessLaneId(definition.id);
+      if (laneId) laneByProcessId[definition.id] = laneId;
     }
-  }, [focusMonitor, resolveProcessLaneId, startProcess]);
+    return laneByProcessId;
+  }, [definitions, resolveProcessLaneId, selectedGroupId]);
 
-  const stopDefinitions = useCallback(async (targetDefinitions: ProcessDefinition[]) => {
+  const handleRunGroupAll = useCallback(async () => {
+    if (!selectedGroupId) return;
+    const laneByProcessId = buildLaneMapForSelectedGroup();
+    if (!laneByProcessId || Object.keys(laneByProcessId).length === 0) return;
+    const args = { groupId: selectedGroupId, laneByProcessId };
     try {
       setActionError(null);
-      await Promise.all(
-        targetDefinitions.map(async (definition) => {
-          const laneId = resolveProcessLaneId(definition.id);
-          if (!laneId) return;
-          await window.ade.processes.stop({ laneId, processId: definition.id });
-        }),
-      );
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
-      console.error("[RunPage] stopDefinitions failed:", error);
-    }
-  }, [resolveProcessLaneId]);
-
-  const startStackById = useCallback(async (stackId: string) => {
-    if (!defaultLaneId) return;
-    try {
-      setActionError(null);
-      await window.ade.processes.startStack({ laneId: defaultLaneId, stackId });
-      const stack = stacks.find((entry) => entry.id === stackId);
-      const firstProcessId = stack?.processIds[0] ?? null;
-      if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
+      await window.ade.processes.startGroup(args);
     } catch (error) {
       if (error instanceof Error && error.message.includes("ADE_TRUST_REQUIRED")) {
         try {
           await window.ade.projectConfig.confirmTrust();
-          await window.ade.processes.startStack({ laneId: defaultLaneId, stackId });
+          await window.ade.processes.startGroup(args);
           return;
         } catch (retryError) {
           setActionError(retryError instanceof Error ? retryError.message : String(retryError));
@@ -810,33 +679,44 @@ export function RunPage() {
       }
       setActionError(error instanceof Error ? error.message : String(error));
     }
-  }, [defaultLaneId, focusMonitor, stacks]);
+  }, [buildLaneMapForSelectedGroup, selectedGroupId]);
 
-  const stopStackById = useCallback(async (stackId: string) => {
-    if (!defaultLaneId) return;
+  const handleStopGroupAll = useCallback(async () => {
+    if (!selectedGroupId) return;
+    const laneByProcessId = buildLaneMapForSelectedGroup();
+    if (!laneByProcessId || Object.keys(laneByProcessId).length === 0) return;
     try {
       setActionError(null);
-      await window.ade.processes.stopStack({ laneId: defaultLaneId, stackId });
+      await window.ade.processes.stopGroup({ groupId: selectedGroupId, laneByProcessId });
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     }
-  }, [defaultLaneId]);
+  }, [buildLaneMapForSelectedGroup, selectedGroupId]);
 
-  const restartStackById = useCallback(async (stackId: string) => {
-    if (!defaultLaneId) return;
+  useEffect(() => {
+    if (creatingGroup) newGroupInputRef.current?.focus();
+  }, [creatingGroup]);
+
+  const handleCreateGroup = useCallback(async () => {
+    const trimmed = newGroupName.trim();
+    if (!trimmed || !config) return;
     try {
       setActionError(null);
-      await window.ade.processes.restartStack({ laneId: defaultLaneId, stackId });
-      const stack = stacks.find((entry) => entry.id === stackId);
-      const firstProcessId = stack?.processIds[0] ?? null;
-      if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
+      const newGroup: ConfigProcessGroupDefinition = { id: generateId(), name: trimmed };
+      const shared = { ...config.shared };
+      shared.processGroups = [...(shared.processGroups ?? []), newGroup];
+      await window.ade.projectConfig.save({ shared, local: config.local });
+      await refreshDefinitions();
+      setSelectedGroupId(newGroup.id);
+      setCreatingGroup(false);
+      setNewGroupName("");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     }
-  }, [defaultLaneId, focusMonitor, stacks]);
+  }, [config, newGroupName, refreshDefinitions]);
 
   const handleLaunchShell = useCallback(async () => {
-    const laneId = defaultLaneId;
+    const laneId = fallbackRunLaneId;
     if (!laneId || shellBusy) return;
     setShellBusy(true);
     setActionError(null);
@@ -853,13 +733,12 @@ export function RunPage() {
       });
       const session: RunShellSession = { sessionId: result.sessionId, ptyId: result.ptyId, title, laneId };
       setRunShellSessions((current) => [...current, session]);
-      focusMonitor({ kind: "shell", id: session.sessionId });
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
       setShellBusy(false);
     }
-  }, [defaultLaneId, focusMonitor, shellBusy]);
+  }, [fallbackRunLaneId, shellBusy]);
 
   const handleCloseRunShell = useCallback(async (sessionId: string) => {
     const target = runShellSessionsRef.current.find((session) => session.sessionId === sessionId);
@@ -872,24 +751,10 @@ export function RunPage() {
     }
   }, []);
 
-  const saveProcessToConfig = useCallback(async (cmd: {
-    name: string;
-    command: string;
-    stackId: string | null;
-    newStackName: string | null;
-    cwd: string;
-    env: string;
-    autostart: boolean;
-    restart: AddCommandInitialValues["restart"];
-    gracefulShutdownMs: string;
-    dependsOn: string;
-    readinessType: AddCommandInitialValues["readinessType"];
-    readinessPort: string;
-    readinessPattern: string;
-    groupIds: string[];
-    newGroupNames: string[];
-  }) => {
-    if (!config) return;
+  const saveProcessToConfig = useCallback(async (cmd: AddCommandSubmitPayload) => {
+    if (!config) {
+      throw new Error("Run configuration is still loading. Try again in a moment.");
+    }
     const processId = generateId();
     const createdGroups: ConfigProcessGroupDefinition[] = cmd.newGroupNames.map((name) => ({
       id: generateId(),
@@ -908,62 +773,14 @@ export function RunPage() {
       shared.processGroups = [...(shared.processGroups ?? []), ...createdGroups];
     }
 
-    let targetStackId = cmd.stackId;
-    if (cmd.newStackName) {
-      const newStack: ConfigStackButtonDefinition = {
-        id: generateId(),
-        name: cmd.newStackName,
-        processIds: [processId],
-      };
-      targetStackId = newStack.id;
-      if (localOnly) {
-        local.stackButtons = upsertStackButton(local.stackButtons, newStack);
-      } else {
-        shared.stackButtons = upsertStackButton(shared.stackButtons, newStack);
-      }
-    } else if (targetStackId) {
-      if (localOnly) {
-        const effectiveStack = config.effective.stackButtons.find((stack) => stack.id === targetStackId);
-        if (effectiveStack) {
-          local.stackButtons = upsertStackButton(local.stackButtons, {
-            ...effectiveStack,
-            processIds: uniqueProcessIds([...(effectiveStack.processIds ?? []), processId]),
-          });
-        }
-      } else {
-        shared.stackButtons = (shared.stackButtons ?? []).map((stack) =>
-          stack.id === targetStackId
-            ? { ...stack, processIds: uniqueProcessIds([...(stack.processIds ?? []), processId]) }
-            : stack,
-        );
-      }
-    }
-
     await window.ade.projectConfig.save({ shared, local });
     await Promise.all([refreshDefinitions(), refreshRuntime()]);
   }, [config, projectRoot, refreshDefinitions, refreshRuntime]);
 
-  const updateProcessInConfig = useCallback(async (
-    processId: string,
-    cmd: {
-      name: string;
-      command: string;
-      stackId: string | null;
-      newStackName: string | null;
-      cwd: string;
-      env: string;
-      autostart: boolean;
-      restart: AddCommandInitialValues["restart"];
-      gracefulShutdownMs: string;
-      dependsOn: string;
-      readinessType: AddCommandInitialValues["readinessType"];
-      readinessPort: string;
-      readinessPattern: string;
-      groupIds: string[];
-      newGroupNames: string[];
-    },
-  ) => {
-    if (!config) return;
+  const updateProcessInConfig = useCallback(async (processId: string, cmd: AddCommandSubmitPayload & { restart?: ProcessRestartPolicy }) => {
+    if (!config) {
+      throw new Error("Run configuration is still loading. Try again in a moment.");
+    }
     const shared = { ...config.shared };
     const local = { ...config.local };
     const createdGroups: ConfigProcessGroupDefinition[] = cmd.newGroupNames.map((name) => ({
@@ -971,7 +788,11 @@ export function RunPage() {
       name,
     }));
     const allGroupIds = [...cmd.groupIds, ...createdGroups.map((group) => group.id)];
-    const { process: nextProcess, localOnly } = buildProcessConfigDefinition(processId, cmd, allGroupIds, projectRoot);
+    const existingProcess =
+      (config.local.processes ?? []).find((entry) => entry.id === processId) ??
+      (config.shared.processes ?? []).find((entry) => entry.id === processId);
+    const cmdForBuild = { ...cmd, restart: cmd.restart ?? existingProcess?.restart };
+    const { process: nextProcess, localOnly } = buildProcessConfigDefinition(processId, cmdForBuild, allGroupIds, projectRoot);
     const existingLocal = (config.local.processes ?? []).some((entry) => entry.id === processId);
     const targetLocal = existingLocal || localOnly;
 
@@ -980,10 +801,6 @@ export function RunPage() {
       local.processGroups = [...(local.processGroups ?? []), ...createdGroups];
       if (localOnly) {
         shared.processes = removeProcess(shared.processes, processId);
-        shared.stackButtons = (shared.stackButtons ?? []).map((stack) => ({
-          ...stack,
-          processIds: (stack.processIds ?? []).filter((id) => id !== processId),
-        }));
       }
     } else {
       shared.processes = upsertProcess(shared.processes, nextProcess);
@@ -991,62 +808,27 @@ export function RunPage() {
       local.processes = removeProcess(local.processes, processId);
     }
 
-    if (cmd.newStackName) {
-      const newStack = { id: generateId(), name: cmd.newStackName, processIds: [processId] };
-      if (targetLocal) {
-        for (const stack of config.effective.stackButtons.filter((entry) => entry.processIds.includes(processId))) {
-          local.stackButtons = upsertStackButton(local.stackButtons, {
-            ...stack,
-            processIds: stack.processIds.filter((id) => id !== processId),
-          });
-        }
-        local.stackButtons = upsertStackButton(local.stackButtons, newStack);
-      } else {
-        shared.stackButtons = [
-          ...(shared.stackButtons ?? []).map((stack) => ({
-            ...stack,
-            processIds: (stack.processIds ?? []).filter((id) => id !== processId),
-          })),
-          newStack,
-        ];
-      }
-    } else if (cmd.stackId) {
-      if (targetLocal) {
-        for (const stack of config.effective.stackButtons.filter((entry) => entry.processIds.includes(processId) || entry.id === cmd.stackId)) {
-          local.stackButtons = upsertStackButton(local.stackButtons, {
-            ...stack,
-            processIds: uniqueProcessIds(
-              stack.id === cmd.stackId
-                ? [...stack.processIds.filter((id) => id !== processId), processId]
-                : stack.processIds.filter((id) => id !== processId),
-            ),
-          });
-        }
-      } else {
-        shared.stackButtons = (shared.stackButtons ?? []).map((stack) => {
-          const withoutProcess = (stack.processIds ?? []).filter((id) => id !== processId);
-          return stack.id === cmd.stackId
-            ? { ...stack, processIds: uniqueProcessIds([...withoutProcess, processId]) }
-            : { ...stack, processIds: withoutProcess };
-        });
-      }
-    } else if (targetLocal) {
-      for (const stack of config.effective.stackButtons.filter((entry) => entry.processIds.includes(processId))) {
-        local.stackButtons = upsertStackButton(local.stackButtons, {
-          ...stack,
-          processIds: stack.processIds.filter((id) => id !== processId),
-        });
-      }
-    } else {
-      shared.stackButtons = (shared.stackButtons ?? []).map((stack) => ({
-        ...stack,
-        processIds: (stack.processIds ?? []).filter((id) => id !== processId),
-      }));
-    }
-
     await window.ade.projectConfig.save({ shared, local });
     await Promise.all([refreshDefinitions(), refreshRuntime()]);
   }, [config, projectRoot, refreshDefinitions, refreshRuntime]);
+
+  const handleAddProcessToGroup = useCallback(async (processId: string, groupId: string) => {
+    const definition = definitions.find((entry) => entry.id === processId);
+    if (!definition || (definition.groupIds ?? []).includes(groupId)) return;
+    const nextGroupIds = [...new Set([...(definition.groupIds ?? []), groupId])];
+    await updateProcessInConfig(processId, {
+      name: definition.name,
+      command: commandArrayToLine(definition.command),
+      cwd: definition.cwd || ".",
+      env: envToText(definition.env),
+      autostart: definition.autostart,
+      restart: definition.restart,
+      gracefulShutdownMs: String(definition.gracefulShutdownMs ?? 7000),
+      dependsOn: (definition.dependsOn ?? []).join(", "),
+      groupIds: nextGroupIds,
+      newGroupNames: [],
+    });
+  }, [definitions, updateProcessInConfig]);
 
   const handleDeleteProcess = useCallback(async (processId: string) => {
     if (!config) return;
@@ -1054,89 +836,32 @@ export function RunPage() {
     const local = { ...config.local };
     shared.processes = (shared.processes ?? []).filter((processEntry) => processEntry.id !== processId);
     local.processes = (local.processes ?? []).filter((processEntry) => processEntry.id !== processId);
-    shared.stackButtons = (shared.stackButtons ?? []).map((stack) => ({
-      ...stack,
-      processIds: (stack.processIds ?? []).filter((id) => id !== processId),
-    }));
-    local.stackButtons = (local.stackButtons ?? []).map((stack) => ({
-      ...stack,
-      processIds: (stack.processIds ?? []).filter((id) => id !== processId),
-    }));
     await window.ade.projectConfig.save({ shared, local });
     await Promise.all([refreshDefinitions(), refreshRuntime()]);
   }, [config, refreshDefinitions, refreshRuntime]);
 
-  const handleCreateStack = useCallback(async (name: string) => {
-    if (!config) return;
-    const shared = { ...config.shared };
-    const newStack: ConfigStackButtonDefinition = { id: generateId(), name, processIds: [] };
-    shared.stackButtons = [...(shared.stackButtons ?? []), newStack];
-    await window.ade.projectConfig.save({ shared, local: config.local });
-    await refreshDefinitions();
-  }, [config, refreshDefinitions]);
-
-  const handleRenameStack = useCallback(async (stackId: string, name: string) => {
-    if (!config) return;
-    const shared = { ...config.shared };
-    shared.stackButtons = (shared.stackButtons ?? []).map((stack) => (stack.id === stackId ? { ...stack, name } : stack));
-    await window.ade.projectConfig.save({ shared, local: config.local });
-    await refreshDefinitions();
-  }, [config, refreshDefinitions]);
-
-  const handleDeleteStack = useCallback(async (stackId: string) => {
-    if (!config) return;
-    const shared = { ...config.shared };
-    shared.stackButtons = (shared.stackButtons ?? []).filter((stack) => stack.id !== stackId);
-    await window.ade.projectConfig.save({ shared, local: config.local });
-    if (selectedStackId === stackId) setSelectedStackId(null);
-    await refreshDefinitions();
-  }, [config, refreshDefinitions, selectedStackId]);
-
-  const handleUpdateStackStartOrder = useCallback(async (stackId: string, startOrder: "parallel" | "dependency") => {
-    if (!config) return;
-    const shared = { ...config.shared };
-    shared.stackButtons = (shared.stackButtons ?? []).map((stack) =>
-      stack.id === stackId ? { ...stack, startOrder } : stack,
-    );
-    await window.ade.projectConfig.save({ shared, local: config.local });
-    await refreshDefinitions();
-  }, [config, refreshDefinitions]);
-
   const handleEditProcess = useCallback((processId: string) => {
     const definition = definitions.find((entry) => entry.id === processId);
     if (!definition) return;
-    const currentStack = stacks.find((stack) => stack.processIds.includes(processId));
     setEditingProcess({
       id: processId,
       values: {
         name: definition.name,
         command: commandArrayToLine(definition.command),
-        stackId: currentStack?.id ?? null,
         cwd: definition.cwd || ".",
         env: envToText(definition.env),
         autostart: definition.autostart,
-        restart: definition.restart,
         gracefulShutdownMs: String(definition.gracefulShutdownMs ?? 7000),
         dependsOn: (definition.dependsOn ?? []).join(", "),
-        readinessType: definition.readiness.type,
-        readinessPort: definition.readiness.type === "port" ? String(definition.readiness.port ?? "") : "",
-        readinessPattern: definition.readiness.type === "logRegex" ? definition.readiness.pattern ?? "" : "",
         groupIds: definition.groupIds ?? [],
       },
     });
-  }, [definitions, stacks]);
+  }, [definitions]);
 
   const filteredDefinitions = useMemo(() => {
-    let next = definitions;
-    if (selectedStackId) {
-      const ids = new Set(stacks.find((stack) => stack.id === selectedStackId)?.processIds ?? []);
-      next = next.filter((definition) => ids.has(definition.id));
-    }
-    if (selectedGroupId) {
-      next = next.filter((definition) => (definition.groupIds ?? []).includes(selectedGroupId));
-    }
-    return next;
-  }, [definitions, selectedGroupId, selectedStackId, stacks]);
+    if (!selectedGroupId) return definitions;
+    return definitions.filter((definition) => (definition.groupIds ?? []).includes(selectedGroupId));
+  }, [definitions, selectedGroupId]);
 
   const groupCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -1177,38 +902,10 @@ export function RunPage() {
           Run
         </h1>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }} data-tour="run.laneSelector">
-          <span style={LABEL_STYLE}>Default lane</span>
-          <select
-            value={defaultLaneId ?? ""}
-            onChange={(event) => selectDefaultLane(event.target.value || null)}
-            style={{
-              height: 28,
-              minWidth: 140,
-              padding: "0 8px",
-              appearance: "none",
-              fontFamily: MONO_FONT,
-              fontSize: 11,
-              color: COLORS.textPrimary,
-              background: COLORS.recessedBg,
-              border: `1px solid ${COLORS.outlineBorder}`,
-              outline: "none",
-              cursor: "pointer",
-            }}
-          >
-            <option value="">No lane</option>
-            {lanes.map((lane) => (
-              <option key={lane.id} value={lane.id}>
-                {lane.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
         {filteredDefinitions.length > 0 ? (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 700, color: COLORS.textPrimary }}>
-              {selectedStack?.name ?? selectedGroup?.name ?? "All commands"}
+              {selectedGroup?.name ?? "All commands"}
             </span>
             <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
               ({filteredDefinitions.length})
@@ -1218,71 +915,75 @@ export function RunPage() {
 
         <div style={{ flex: 1 }} />
 
-        {filteredDefinitions.length > 0 ? (
-          <>
-            <button
-              type="button"
-              data-tour="run.runButton"
-              onClick={() => {
-                if (selectedStackId) {
-                  void startStackById(selectedStackId);
-                  return;
-                }
-                void runDefinitions(filteredDefinitions);
-              }}
-              style={primaryButton({ height: 28, fontSize: 10 })}
-            >
-              <Play size={12} weight="fill" />
-              {selectedStack ? "Run stack" : "Run view"}
-            </button>
-            <button
-              type="button"
-              data-tour="run.stopButton"
-              onClick={() => {
-                if (selectedStackId) {
-                  void stopStackById(selectedStackId);
-                  return;
-                }
-                void stopDefinitions(filteredDefinitions);
-              }}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-                height: 28,
-                padding: "0 12px",
-                fontSize: 10,
-                fontWeight: 700,
-                fontFamily: MONO_FONT,
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-                color: COLORS.danger,
-                background: `${COLORS.danger}18`,
-                border: `1px solid ${COLORS.danger}30`,
-                cursor: "pointer",
-              }}
-            >
-              <Stop size={12} weight="fill" />
-              {selectedStack ? "Stop stack" : "Stop view"}
-            </button>
-          </>
-        ) : null}
+        <button
+          type="button"
+          id="run-lane-runtime-toggle"
+          data-tour="run.runtimeBar"
+          aria-expanded={laneRuntimeBarOpen}
+          aria-controls="run-lane-runtime-panel"
+          onClick={() => {
+            setLaneRuntimeBarOpen((prev) => {
+              const next = !prev;
+              writeLaneRuntimeBarOpenToStorage(next);
+              return next;
+            });
+          }}
+          style={{
+            ...outlineButton(),
+            gap: 6,
+          }}
+        >
+          {laneRuntimeBarOpen ? <CaretUp size={14} weight="bold" /> : <CaretDown size={14} weight="bold" />}
+          Advanced
+        </button>
 
         <button
           type="button"
           data-tour="run.newShell"
           onClick={() => void handleLaunchShell()}
-          disabled={!defaultLaneId || shellBusy}
+          disabled={!fallbackRunLaneId || shellBusy}
           style={{
             ...outlineButton(),
-            opacity: defaultLaneId && !shellBusy ? 1 : 0.45,
-            cursor: defaultLaneId && !shellBusy ? "pointer" : "default",
+            opacity: fallbackRunLaneId && !shellBusy ? 1 : 0.45,
+            cursor: fallbackRunLaneId && !shellBusy ? "pointer" : "default",
           }}
         >
           <Terminal size={14} weight="bold" />
           {shellBusy ? "Opening shell..." : "New shell"}
         </button>
+
+        {selectedGroupId ? (
+          <>
+            <button
+              type="button"
+              data-tour="run.groupRunAll"
+              onClick={() => void handleRunGroupAll()}
+              disabled={!fallbackRunLaneId}
+              style={{
+                ...outlineButton(),
+                opacity: fallbackRunLaneId ? 1 : 0.45,
+                cursor: fallbackRunLaneId ? "pointer" : "default",
+              }}
+            >
+              <Play size={14} weight="fill" />
+              Run all
+            </button>
+            <button
+              type="button"
+              data-tour="run.groupStopAll"
+              onClick={() => void handleStopGroupAll()}
+              disabled={!fallbackRunLaneId}
+              style={{
+                ...outlineButton(),
+                opacity: fallbackRunLaneId ? 1 : 0.45,
+                cursor: fallbackRunLaneId ? "pointer" : "default",
+              }}
+            >
+              <Stop size={14} weight="fill" />
+              Stop all
+            </button>
+          </>
+        ) : null}
 
         <button type="button" data-tour="run.addCommand" onClick={() => setAddDialogOpen(true)} style={outlineButton()}>
           <Plus size={14} weight="bold" />
@@ -1290,29 +991,16 @@ export function RunPage() {
         </button>
       </div>
 
-      <div data-tour="run.runtimeBar">
-        <LaneRuntimeBar laneId={defaultLaneId} onOpenPreviewRouting={() => setNetworkDrawerOpen(true)} />
-      </div>
-
-      <div data-tour="run.stackTabs">
-        <RunStackTabs
-          stacks={stacks}
-          selectedStackId={selectedStackId}
-          onSelectStack={setSelectedStackId}
-          onCreateStack={handleCreateStack}
-          onRenameStack={handleRenameStack}
-          onDeleteStack={handleDeleteStack}
-          onStartStack={(stackId) => {
-            void startStackById(stackId);
-          }}
-          onStopStack={(stackId) => {
-            void stopStackById(stackId);
-          }}
-          onRestartStack={(stackId) => {
-            void restartStackById(stackId);
-          }}
-          onUpdateStackStartOrder={handleUpdateStackStartOrder}
-        />
+      <div
+        id="run-lane-runtime-panel"
+        role="region"
+        aria-labelledby="run-lane-runtime-toggle"
+        hidden={!laneRuntimeBarOpen}
+        style={{ flexShrink: 0 }}
+      >
+        {laneRuntimeBarOpen ? (
+          <LaneRuntimeBar laneId={fallbackRunLaneId} onOpenPreviewRouting={() => setNetworkDrawerOpen(true)} />
+        ) : null}
       </div>
 
       <div
@@ -1323,8 +1011,8 @@ export function RunPage() {
           gap: 8,
           padding: "10px 20px",
           borderBottom: `1px solid ${COLORS.border}`,
-          overflowX: "auto",
           flexShrink: 0,
+          overflowX: "auto",
         }}
       >
         <button
@@ -1343,10 +1031,21 @@ export function RunPage() {
             textTransform: "uppercase",
             letterSpacing: "0.08em",
             whiteSpace: "nowrap",
+            flexShrink: 0,
           }}
         >
-          All groups
+          All commands
         </button>
+        <div
+          role="separator"
+          aria-hidden="true"
+          style={{
+            width: 2,
+            height: 28,
+            background: "#FFFFFF",
+            flexShrink: 0,
+          }}
+        />
         {groups.map((group) => (
           <button
             key={group.id}
@@ -1365,12 +1064,77 @@ export function RunPage() {
               textTransform: "uppercase",
               letterSpacing: "0.08em",
               whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
             {group.name}
             <span style={{ marginLeft: 6, color: COLORS.textDim }}>{groupCounts[group.id] ?? 0}</span>
           </button>
         ))}
+        {creatingGroup ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <input
+              ref={newGroupInputRef}
+              value={newGroupName}
+              onChange={(event) => setNewGroupName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void handleCreateGroup();
+                if (event.key === "Escape") {
+                  setCreatingGroup(false);
+                  setNewGroupName("");
+                }
+              }}
+              placeholder="Group name"
+              style={{
+                width: 160,
+                height: 28,
+                padding: "0 10px",
+                background: COLORS.recessedBg,
+                border: `1px solid ${COLORS.outlineBorder}`,
+                color: COLORS.textPrimary,
+                fontFamily: MONO_FONT,
+                fontSize: 11,
+                outline: "none",
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => void handleCreateGroup()}
+              disabled={!newGroupName.trim()}
+              style={{
+                ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }),
+                opacity: newGroupName.trim() ? 1 : 0.45,
+              }}
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCreatingGroup(false);
+                setNewGroupName("");
+              }}
+              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            data-tour="run.newGroup"
+            onClick={() => setCreatingGroup(true)}
+            disabled={!config}
+            style={{
+              ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }),
+              opacity: config ? 1 : 0.45,
+              flexShrink: 0,
+            }}
+          >
+            <Plus size={12} weight="bold" />
+            New group
+          </button>
+        )}
       </div>
 
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
@@ -1379,9 +1143,9 @@ export function RunPage() {
             style={{
               margin: "20px 20px 0",
               padding: "10px 12px",
-              border: `1px solid ${COLORS.danger}40`,
+              border: "1px solid color-mix(in srgb, var(--color-error) 40%, transparent)",
               borderLeft: `3px solid ${COLORS.danger}`,
-              background: `${COLORS.danger}12`,
+              background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
               color: COLORS.textPrimary,
               fontFamily: MONO_FONT,
               fontSize: 11,
@@ -1403,7 +1167,7 @@ export function RunPage() {
                 No commands in this view
               </div>
               <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim, textAlign: "center", maxWidth: 340 }}>
-                Add a command, group it, or switch stacks. Every Run click opens a fresh terminal session.
+                Add a command or assign groups. Every Run click opens a fresh terminal session.
               </div>
               <button type="button" onClick={() => setAddDialogOpen(true)} style={primaryButton()}>
                 <Plus size={14} weight="bold" />
@@ -1427,9 +1191,10 @@ export function RunPage() {
                     runtimes={laneRuntimes}
                     onSelectLane={selectProcessLane}
                     onRun={handleRun}
-                    onStop={handleStop}
                     onEdit={handleEditProcess}
                     onDelete={handleDeleteProcess}
+                    onAddToGroup={handleAddProcessToGroup}
+                    onKillRuntime={handleKillRuntime}
                   />
                 );
               })}
@@ -1455,44 +1220,95 @@ export function RunPage() {
         ) : null}
       </div>
 
-      <div data-tour="run.processMonitor">
-        <ProcessMonitor
-          runtimes={runtime}
-          processDefinitions={processDefinitions}
-          processNames={processNames}
-          lanes={lanes}
-          shellSessions={runShellSessions}
-          focusTarget={monitorFocusTarget}
-          focusSequence={monitorFocusSequence}
-          onKill={handleKillRuntime}
-          onCloseShell={(sessionId) => {
-            void handleCloseRunShell(sessionId);
+      {runShellSessions.length > 0 ? (
+        <div
+          data-tour="run.shellSessions"
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 10,
+            padding: "10px 20px",
+            borderTop: `1px solid ${COLORS.border}`,
+            background: COLORS.recessedBg,
           }}
-        />
-      </div>
+        >
+          <span
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: 9,
+              fontWeight: 700,
+              color: COLORS.textDim,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}
+          >
+            Shells
+          </span>
+          {runShellSessions.map((session) => {
+            const shellLaneName = lanes.find((item) => item.id === session.laneId)?.name ?? session.laneId;
+            return (
+              <div
+                key={session.sessionId}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "4px 10px",
+                  background: COLORS.pageBg,
+                  border: `1px solid ${COLORS.border}`,
+                }}
+              >
+                <Terminal size={14} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
+                <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary }}>{session.title}</span>
+                <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>{shellLaneName}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleCloseRunShell(session.sessionId);
+                  }}
+                  aria-label={`Close ${session.title}`}
+                  style={{
+                    width: 26,
+                    height: 26,
+                    background: "transparent",
+                    border: "none",
+                    color: COLORS.textMuted,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <X size={14} weight="bold" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
 
       <AddCommandDialog
-        stacks={stacks}
         groups={groups}
         lanes={lanes}
-        defaultLaneId={defaultLaneId}
+        defaultLaneId={fallbackRunLaneId}
         open={addDialogOpen}
         onClose={() => setAddDialogOpen(false)}
         onSubmit={saveProcessToConfig}
       />
 
       <AddCommandDialog
-        stacks={stacks}
         groups={groups}
         lanes={lanes}
-        defaultLaneId={defaultLaneId}
+        defaultLaneId={fallbackRunLaneId}
         open={editingProcess !== null}
         onClose={() => setEditingProcess(null)}
-        onSubmit={(cmd) => {
-          if (editingProcess) {
-            void updateProcessInConfig(editingProcess.id, cmd);
-            setEditingProcess(null);
+        onSubmit={async (cmd) => {
+          if (!editingProcess) {
+            throw new Error("No command is selected for editing.");
           }
+          await updateProcessInConfig(editingProcess.id, cmd);
         }}
         initialValues={editingProcess?.values ?? null}
         title="Edit command"

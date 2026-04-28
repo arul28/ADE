@@ -41,23 +41,23 @@ export function ManualInputResponseModal({
   const statusTone = useMemo(() => {
     if (workerDeliveryFailure) {
       return {
-        border: `${COLORS.warning}35`,
-        background: `${COLORS.warning}12`,
+        border: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
+        background: "color-mix(in srgb, var(--color-warning) 12%, transparent)",
         color: COLORS.warning,
         copy: "A worker message could not be delivered live. ADE kept the note on the worker thread and is asking how you want the mission to recover.",
       };
     }
     if (canProceedWithoutAnswer) {
       return {
-        border: `${COLORS.accent}35`,
-        background: `${COLORS.accent}12`,
+        border: "color-mix(in srgb, var(--color-accent) 35%, transparent)",
+        background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
         color: COLORS.accent,
         copy: "Optional question. The mission can continue, but your answer will tighten the result.",
       };
     }
     return {
-      border: `${COLORS.warning}35`,
-      background: `${COLORS.warning}12`,
+      border: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
+      background: "color-mix(in srgb, var(--color-warning) 12%, transparent)",
       color: COLORS.warning,
       copy: `${ownerLabel ?? "ADE"} is waiting on this answer before it should keep going.`,
     };
@@ -286,7 +286,7 @@ export function ManualInputResponseModal({
               SKIP QUESTION
             </button>
             <button
-              style={outlineButton({ borderColor: `${COLORS.warning}40`, color: COLORS.warning })}
+              style={outlineButton({ borderColor: "color-mix(in srgb, var(--color-warning) 40%, transparent)", color: COLORS.warning })}
               onClick={() => void handleSemanticAction("cancel_run", "Cancel the run.")}
               disabled={submitting}
             >

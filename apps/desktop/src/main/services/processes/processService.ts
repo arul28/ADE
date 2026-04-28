@@ -11,6 +11,7 @@ import type {
   ProcessEvent,
   ProcessRuntime,
   ProcessRuntimeStatus,
+  ProcessGroupArgs,
   ProcessStackArgs,
   StackStartOrder,
   StackButtonDefinition,
@@ -754,6 +755,60 @@ export function createProcessService({
     return stack;
   };
 
+  /** Members of a process group from effective config; throws if the group id is unknown. */
+  const groupProcessIds = (effective: EffectiveProjectConfig, groupId: string): string[] => {
+    if (!effective.processGroups.some((g) => g.id === groupId)) {
+      throw new Error(`Process group not found: ${groupId}`);
+    }
+    return effective.processes.filter((p) => (p.groupIds ?? []).includes(groupId)).map((p) => p.id);
+  };
+
+  /**
+   * Group bulk runs use the same PTY/start path as stacks, with start order **parallel**
+   * (definition order only affects fork order inside `Promise.all`). Per-process **dependsOn**
+   * is not topologically sorted across mixed lanes — use single-lane stacks if you need strict
+   * dependency sequencing for a bundle.
+   */
+  const runStartGroupParallel = async (
+    laneByProcessId: Record<string, string>,
+    processIds: string[],
+  ): Promise<void> => {
+    const config = projectConfigService.getExecutableConfig();
+    const byId = new Map(config.processes.map((proc) => [proc.id, proc] as const));
+    const known = processIds.filter((id) => byId.has(id));
+    const ordered = sortByDefinitions(known, byId);
+    await Promise.all(
+      ordered.map(async (processId) => {
+        const laneId = laneByProcessId[processId];
+        if (!laneId) {
+          throw new Error(`Missing lane mapping for process '${processId}' in group run`);
+        }
+        const overlay = await getLaneOverlay(laneId, config);
+        const allowedIds = applyProcessFilter([processId], overlay);
+        if (!allowedIds.includes(processId)) return;
+        await startByDefinition(laneId, byId.get(processId)!, { overlay });
+      }),
+    );
+  };
+
+  const runStopGroupParallel = async (
+    laneByProcessId: Record<string, string>,
+    processIds: string[],
+    intent: ManagedTerminationReason,
+  ): Promise<void> => {
+    const config = projectConfigService.get();
+    const byId = new Map(config.effective.processes.map((proc) => [proc.id, proc] as const));
+    const known = processIds.filter((id) => byId.has(id));
+    const ordered = sortByDefinitions(known, byId).reverse();
+    await Promise.all(
+      ordered.map((processId) => {
+        const laneId = laneByProcessId[processId];
+        if (!laneId) return Promise.resolve();
+        return stopEntries(listActiveEntriesForLaneProcess(laneId, processId), intent).catch(() => null);
+      }),
+    );
+  };
+
   const unsubscribePtyData = ptyService.onData((event) => {
     const runId = ptyToRunId.get(event.ptyId) ?? sessionToRunId.get(event.sessionId);
     if (!runId) return;
@@ -835,6 +890,34 @@ export function createProcessService({
       await runStopSet(arg.laneId, stack.processIds, "stopped", stack.startOrder);
       await stopped;
       await runStartSet(arg.laneId, stack.processIds, stack.startOrder);
+    },
+
+    async startGroup(arg: ProcessGroupArgs): Promise<void> {
+      const effective = projectConfigService.get().effective;
+      const processIds = groupProcessIds(effective, arg.groupId);
+      if (processIds.length === 0) return;
+      await runStartGroupParallel(arg.laneByProcessId, processIds);
+    },
+
+    async stopGroup(arg: ProcessGroupArgs): Promise<void> {
+      const effective = projectConfigService.get().effective;
+      const processIds = groupProcessIds(effective, arg.groupId);
+      if (processIds.length === 0) return;
+      await runStopGroupParallel(arg.laneByProcessId, processIds, "stopped");
+    },
+
+    async restartGroup(arg: ProcessGroupArgs): Promise<void> {
+      const effective = projectConfigService.get().effective;
+      const processIds = groupProcessIds(effective, arg.groupId);
+      if (processIds.length === 0) return;
+      const targets = processIds.flatMap((processId) => {
+        const laneId = arg.laneByProcessId[processId];
+        return laneId ? listActiveEntriesForLaneProcess(laneId, processId) : [];
+      });
+      const stopped = waitForEntriesStopped(targets);
+      await runStopGroupParallel(arg.laneByProcessId, processIds, "stopped");
+      await stopped;
+      await runStartGroupParallel(arg.laneByProcessId, processIds);
     },
 
     async startAll(arg: { laneId: string }): Promise<void> {

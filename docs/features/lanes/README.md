@@ -17,7 +17,7 @@ Core services (`apps/desktop/src/main/services/lanes/`):
 
 | File | Responsibility |
 |------|---------------|
-| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, mission role tagging, startup repair routines |
+| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, mission role tagging, startup repair routines, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, and cleans the pack directory + DB rows. |
 | `autoRebaseService.ts` | Auto-rebase worker for stacked lanes, attention state, head-change handlers. Consults `resolvePrRebaseMode` to determine whether a lane with a linked PR should auto-rebase (`pr_target` strategy) or only surface manual attention (`lane_base` strategy). |
 | `rebaseSuggestionService.ts` | Emits rebase suggestions when a parent lane advances, dismiss/defer lifecycle. Each suggestion may include up to 20 `RebaseTargetCommit` entries showing the behind commits the rebase would pull in. |
 | `laneEnvironmentService.ts` | Environment init pipeline: env files, docker services, dependencies, mount points, copy paths (Phase 5 W1) |
@@ -45,7 +45,7 @@ Renderer components:
 | `renderer/components/lanes/LaneRebaseBanner.tsx` | Inline banner driven by `rebaseSuggestionService` |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Env init step progress inside create dialog |
 | `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation / attach dialogs and shared dialog chrome |
-| `renderer/components/lanes/ManageLaneDialog.tsx` | Unified delete / archive / adopt-attached dialog. Supports single-lane and batch (multi-select) modes, three delete modes (`worktree`, `local_branch`, `remote_branch`) with a typed confirmation phrase, remote-branch name input, dirty-state warnings, and a busy/status/error triplet threaded through from `LanesPage`. Covered by `ManageLaneDialog.test.tsx`. |
+| `renderer/components/lanes/ManageLaneDialog.tsx` | Unified delete / archive / adopt-attached dialog. Supports single-lane and batch (multi-select) modes, three delete scopes (`worktree`, `local_branch`, `remote_branch`), a typed confirmation phrase, remote-branch name input, dirty-state warnings, and a live multi-step progress strip wired to `lanes.delete.event` (`stop_processes` / `stop_ptys` / `stop_watchers` / `cancel_auto_rebase` / `cleanup_env` / `git_status` / `git_worktree_remove` / `git_branch_delete` / `git_remote_branch_delete` / `pack_dir_remove` / `database_cleanup`). The dialog calls `lanes.getDeleteRisk` on open to surface dirty state, unpushed commits, running processes / PTYs / watchers, and remote-branch existence before the user confirms; while a delete is running, the user can cancel each lane through `lanes.cancelDelete` until the irreversible filesystem step (`git_worktree_remove`) starts. |
 | `renderer/components/lanes/MonacoDiffView.tsx` | Monaco-based side-by-side file diff |
 | `renderer/components/run/LaneRuntimeBar.tsx` | Compact lane runtime status bar (health, preview, port, proxy, oauth) |
 | `renderer/components/run/RunPage.tsx`, `RunNetworkPanel.tsx` | Runtime dashboards that consume lane runtime services |
@@ -206,8 +206,23 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
    primary lane.
 7. **Archive** — `archive` sets `archived_at` and `status = 'archived'`
    but keeps the worktree on disk. `unarchive` reverses it.
-8. **Delete** — `deleteLane` removes the worktree and the row. Can
-   optionally delete the branch too.
+8. **Delete** — `delete({ laneId, deleteBranch?, deleteRemoteBranch?,
+   remoteBranchName?, force? })` runs an explicit teardown pipeline
+   and emits `lanes.delete.event` per step. Steps execute in order:
+   `stop_processes` → `stop_ptys` → `stop_watchers` →
+   `cancel_auto_rebase` → `cleanup_env` → `git_status` →
+   `git_worktree_remove` → `git_branch_delete` (only when
+   `deleteBranch`) → `git_remote_branch_delete` (only when
+   `deleteRemoteBranch`) → `pack_dir_remove` → `database_cleanup`.
+   `getDeleteRisk(laneId)` returns the preflight `LaneDeleteRisk`
+   the dialog renders before confirmation. `cancelDelete(laneId)` is
+   honored cooperatively until the first irreversible filesystem step
+   (`git_worktree_remove`) starts; after that the call no-ops with
+   `{ cancelled: false, reason: "uncancellable_step_in_progress" }`.
+   Teardown depends on optional injected services
+   (`processService`, `ptyService`, `autoRebaseService`,
+   `rebaseSuggestionService`, `fileWatcherService`); when one is not
+   wired, the corresponding step is `skipped` rather than `failed`.
 
 ## Lane color
 
@@ -290,6 +305,9 @@ Lane management (selected):
 | `ade.lanes.attach` | `(args: AttachLaneArgs) => LaneSummary` |
 | `ade.lanes.importBranch` | `(args: { branchRef: string }) => LaneSummary` |
 | `ade.lanes.rename` / `.updateAppearance` / `.reparent` / `.archive` / `.delete` | lane edit operations |
+| `ade.lanes.delete.risk` | `(args: { laneId }) => LaneDeleteRisk` — preflight read for the manage dialog: dirty state, unpushed commit count, remote-branch existence, active processes/PTYs/watchers, env-init flag. |
+| `ade.lanes.delete.cancel` | `(args: { laneId }) => { cancelled, reason? }` — cooperative cancel during the early teardown steps. After `git_worktree_remove` starts the lane is unrecoverable and cancel is a no-op. |
+| `ade.lanes.delete.event` (push) | `LaneDeleteEvent` carrying `LaneDeleteProgress` — `steps[]` with per-step status (`pending` / `running` / `completed` / `failed` / `skipped`) plus `overallStatus` (`running` / `completed` / `failed` / `cancelled`) and `cancellable`. |
 | `ade.lanes.getStackChain` | `(args: { laneId: string }) => StackChainItem[]` |
 | `ade.lanes.rebaseStart` / `.rebaseAbort` / `.rebaseRollback` / `.rebasePush` | rebase run lifecycle |
 | `ade.lanes.listRebaseSuggestions` / `.dismissRebaseSuggestion` / `.deferRebaseSuggestion` | rebase suggestion lifecycle |

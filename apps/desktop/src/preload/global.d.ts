@@ -376,6 +376,7 @@ import type {
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
+  ProcessGroupArgs,
   ProcessRuntime,
   ProcessStackArgs,
   ProjectConfigCandidate,
@@ -542,6 +543,8 @@ import type {
   InitLaneEnvArgs,
   GetLaneEnvStatusArgs,
   GetLaneOverlayArgs,
+  LaneDeleteEvent,
+  LaneDeleteRisk,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
   LaneOverlayOverrides,
@@ -590,6 +593,32 @@ import type {
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
+  IosSimulatorDevice,
+  IosSimulatorDragArgs,
+  IosSimulatorEventPayload,
+  IosSimulatorListPreviewsArgs,
+  IosSimulatorOpenPreviewWorkspaceArgs,
+  IosSimulatorPreviewCapability,
+  IosSimulatorPreviewTarget,
+  IosSimulatorRenderPreviewArgs,
+  IosSimulatorRenderPreviewResult,
+  IosScreenSnapshot,
+  IosScreenSnapshotArgs,
+  IosInspectorSnapshot,
+  IosSimulatorInspectPointArgs,
+  IosSimulatorInspectResult,
+  IosSimulatorLaunchArgs,
+  IosSimulatorLaunchTarget,
+  IosSimulatorListLaunchTargetsArgs,
+  IosSimulatorScreenshot,
+  IosSimulatorSelectResult,
+  IosSimulatorSession,
+  IosSimulatorShutdownArgs,
+  IosSimulatorShutdownResult,
+  IosSimulatorStartStreamArgs,
+  IosSimulatorStatus,
+  IosSimulatorStreamStatus,
+  IosSimulatorWindowSource,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -1049,6 +1078,9 @@ declare global {
         updateAppearance: (args: UpdateLaneAppearanceArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
         delete: (args: DeleteLaneArgs) => Promise<void>;
+        cancelDelete: (args: { laneId: string }) => Promise<{ cancelled: boolean; reason?: string }>;
+        getDeleteRisk: (args: { laneId: string }) => Promise<LaneDeleteRisk>;
+        onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => () => void;
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
         getChildren: (laneId: string) => Promise<LaneSummary[]>;
         rebaseStart: (args: RebaseStartArgs) => Promise<RebaseStartResult>;
@@ -1227,6 +1259,31 @@ declare global {
         ) => Promise<ComputerUseArtifactView>;
         readArtifactPreview: (args: { uri: string }) => Promise<string | null>;
         onEvent: (cb: (ev: ComputerUseEventPayload) => void) => () => void;
+      };
+      iosSimulator: {
+        getStatus: () => Promise<IosSimulatorStatus>;
+        listDevices: () => Promise<IosSimulatorDevice[]>;
+        listLaunchTargets: (args?: IosSimulatorListLaunchTargetsArgs) => Promise<IosSimulatorLaunchTarget[]>;
+        launch: (args?: IosSimulatorLaunchArgs) => Promise<IosSimulatorSession>;
+        shutdown: (args?: IosSimulatorShutdownArgs) => Promise<IosSimulatorShutdownResult>;
+        screenshot: (args?: { deviceUdid?: string | null }) => Promise<IosSimulatorScreenshot>;
+        getScreenSnapshot: (args?: IosScreenSnapshotArgs) => Promise<IosScreenSnapshot>;
+        getInspectorSnapshot: (args?: { deviceUdid?: string | null }) => Promise<IosInspectorSnapshot | null>;
+        inspectPoint: (args: IosSimulatorInspectPointArgs) => Promise<IosSimulatorInspectResult>;
+        getPreviewCapability: (args?: IosSimulatorListPreviewsArgs) => Promise<IosSimulatorPreviewCapability>;
+        listPreviewTargets: (args?: IosSimulatorListPreviewsArgs) => Promise<IosSimulatorPreviewTarget[]>;
+        renderPreview: (args: IosSimulatorRenderPreviewArgs) => Promise<IosSimulatorRenderPreviewResult>;
+        openPreviewWorkspace: (args?: IosSimulatorOpenPreviewWorkspaceArgs) => Promise<{ ok: true; path: string }>;
+        startStream: (args?: IosSimulatorStartStreamArgs) => Promise<IosSimulatorStreamStatus>;
+        stopStream: () => Promise<IosSimulatorStreamStatus>;
+        getStreamStatus: () => Promise<IosSimulatorStreamStatus>;
+        listSimulatorWindowSources: () => Promise<IosSimulatorWindowSource[]>;
+        tap: (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }) => Promise<{ ok: true }>;
+        typeText: (args: { deviceUdid?: string | null; projectRoot?: string | null; text: string }) => Promise<{ ok: true }>;
+        drag: (args: IosSimulatorDragArgs) => Promise<{ ok: true }>;
+        swipe: (args: IosSimulatorDragArgs) => Promise<{ ok: true }>;
+        selectPoint: (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }) => Promise<IosSimulatorSelectResult>;
+        onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => () => void;
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
@@ -1595,6 +1652,9 @@ declare global {
         startStack: (args: ProcessStackArgs) => Promise<void>;
         stopStack: (args: ProcessStackArgs) => Promise<void>;
         restartStack: (args: ProcessStackArgs) => Promise<void>;
+        startGroup: (args: ProcessGroupArgs) => Promise<void>;
+        stopGroup: (args: ProcessGroupArgs) => Promise<void>;
+        restartGroup: (args: ProcessGroupArgs) => Promise<void>;
         startAll: (args: { laneId: string }) => Promise<void>;
         stopAll: (args: { laneId: string }) => Promise<void>;
         getLogTail: (args: GetProcessLogTailArgs) => Promise<string>;

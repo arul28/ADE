@@ -65,11 +65,15 @@ ade shell start --lane lane-id -- npm test
 ade chat create --lane lane-id --model gpt-5.5
 ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id
+ade help ios-sim preview-render
+ade ios-sim devices --text
+ade --socket ios-sim launch --target target-id --text
+ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
 ade actions list
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ```
 
-Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade actions list --text` to discover the full service-backed action catalog, and use `ade actions run <domain.action>` only when there is no typed command for the workflow yet.
+Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet.
 
 Output modes are explicit:
 

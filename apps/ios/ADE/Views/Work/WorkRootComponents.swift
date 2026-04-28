@@ -761,6 +761,15 @@ struct WorkSessionRow: View {
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "work-container-\(session.id)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityLabel)
+    .adeInspectable(
+      "Work.Session.Row",
+      metadata: [
+        "sessionId": session.id,
+        "laneId": session.laneId,
+        "laneName": session.laneName,
+        "title": chatSummary?.title ?? session.title
+      ]
+    )
   }
 
   var providerTintColor: Color {

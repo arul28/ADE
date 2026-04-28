@@ -733,6 +733,13 @@ private struct WorkChatComposerDraftInput: View {
         .buttonStyle(.plain)
         .disabled(!canCompose)
         .accessibilityLabel("Insert @ mention")
+        .adeInspectable(
+          "Work.Chat.Composer.MentionsButton",
+          metadata: [
+            "label": "Insert @ mention",
+            "role": "button"
+          ]
+        )
 
         // / slash-command button
         Button(action: onOpenSlash) {
@@ -746,6 +753,13 @@ private struct WorkChatComposerDraftInput: View {
         .buttonStyle(.plain)
         .disabled(!canCompose)
         .accessibilityLabel("Insert slash command")
+        .adeInspectable(
+          "Work.Chat.Composer.SlashButton",
+          metadata: [
+            "label": "Insert slash command",
+            "role": "button"
+          ]
+        )
 
         WorkProofComposerButton(
           count: artifactCount,
@@ -808,6 +822,13 @@ private struct WorkChatComposerDraftInput: View {
     .buttonStyle(.plain)
     .accessibilityLabel(sending ? "Sending message" : "Send message")
     .disabled(!isSendEnabled)
+    .adeInspectable(
+      "Work.Chat.Composer.SendButton",
+      metadata: [
+        "label": sending ? "Sending message" : "Send message",
+        "role": "button"
+      ]
+    )
   }
 
   private func restoreUnsentDraft(_ text: String) {
@@ -849,6 +870,13 @@ private struct WorkChatComposerDraftInput: View {
     .buttonStyle(.plain)
     .accessibilityLabel(interruptInFlight ? "Interrupting turn" : "Stop turn")
     .disabled(interruptInFlight)
+    .adeInspectable(
+      "Work.Chat.Composer.StopButton",
+      metadata: [
+        "label": interruptInFlight ? "Interrupting turn" : "Stop turn",
+        "role": "button"
+      ]
+    )
   }
 }
 
@@ -904,6 +932,13 @@ private struct WorkProofComposerButton: View {
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
     .accessibilityHint("Opens the proof drawer")
+    .adeInspectable(
+      "Work.Chat.Composer.ProofButton",
+      metadata: [
+        "label": accessibilityLabel,
+        "role": "button"
+      ]
+    )
   }
 
   private var accessibilityLabel: String {

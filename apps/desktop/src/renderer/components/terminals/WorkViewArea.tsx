@@ -8,6 +8,7 @@ import {
   Clipboard,
   Code,
   Columns,
+  DotsSixVertical,
   GitBranch,
   GridFour,
   List,
@@ -28,6 +29,7 @@ import { isChatToolType, primarySessionLabel, truncateSessionLabel, formatToolTy
 import { sessionStatusDot } from "../../lib/terminalAttention";
 import type { WorkTabGroup } from "./useWorkSessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { useFloatingPaneEmbeddedChrome, type FloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { PaneTilingLayout, type PaneConfig } from "../ui/PaneTilingLayout";
 import { cn } from "../ui/cn";
 import { resolveTrackedCliResumeCommand } from "./cliLaunch";
@@ -316,6 +318,39 @@ function ModeSwitcherPills({
   );
 }
 
+function WorkPaneEmbeddedChromeLeading({ chrome }: { chrome: FloatingPaneEmbeddedChrome | null }) {
+  if (!chrome?.minimizable) return null;
+  const { onMinimizeToggle, minimized, dragHandleProps } = chrome;
+  return (
+    <div className="flex shrink-0 items-center gap-0.5">
+      {dragHandleProps?.draggable ? (
+        <DotsSixVertical
+          size={10}
+          weight="regular"
+          className="pointer-events-none text-muted-fg/30 shrink-0"
+          aria-hidden
+        />
+      ) : null}
+      <button
+        type="button"
+        className={cn(
+          "flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
+          minimized ? "text-accent" : "text-muted-fg/50 hover:text-fg"
+        )}
+        onClick={(event) => {
+          event.stopPropagation();
+          onMinimizeToggle();
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        title={minimized ? "Expand pane" : "Minimize pane"}
+        aria-label={minimized ? "Expand pane" : "Minimize pane"}
+      >
+        {minimized ? <CaretRight size={12} weight="regular" /> : <CaretDown size={12} weight="regular" />}
+      </button>
+    </div>
+  );
+}
+
 export function WorkViewArea({
   gridLayoutId,
   lanes,
@@ -383,6 +418,8 @@ export function WorkViewArea({
     runningCount: sessionsPaneRunningCount,
     listLoading: sessionsListLoading,
   };
+  const workEmbeddedChrome = useFloatingPaneEmbeddedChrome();
+  const glassHeaderDragProps = workEmbeddedChrome?.dragHandleProps ?? {};
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -492,9 +529,16 @@ export function WorkViewArea({
 
   if (viewMode === "grid") {
     return (
-      <div className="flex h-full flex-col">
-        <div className="ade-work-glass-header flex w-max max-w-full min-w-0 items-center gap-3 self-start px-3 py-1.5">
+      <div className="flex h-full min-w-0 flex-col">
+        <div
+          className={cn(
+            "ade-work-glass-header flex w-full min-w-0 max-w-full shrink-0 items-center gap-3 px-3 py-1.5",
+            workEmbeddedChrome?.dragHandleProps?.draggable && "cursor-grab active:cursor-grabbing"
+          )}
+          {...glassHeaderDragProps}
+        >
           <SessionsPaneExpandAffordance {...expandSessionsProps} />
+          <WorkPaneEmbeddedChromeLeading chrome={workEmbeddedChrome} />
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           <span className="text-[11px] font-medium text-muted-fg">Grid</span>
           <span className="ade-liquid-glass-pill inline-flex items-center px-1.5 text-[10px] text-muted-fg/60 rounded">
@@ -587,17 +631,25 @@ export function WorkViewArea({
 
   if (!hasGroupedTabs) {
     return (
-      <div className="flex h-full flex-col">
+      <div className="flex h-full min-w-0 flex-col">
         <div
-          className="ade-work-glass-header flex min-h-10 w-max max-w-full min-w-0 items-center gap-0 self-start px-1.5 py-1.5"
+          className={cn(
+            "ade-work-glass-header flex min-h-10 w-full min-w-0 max-w-full shrink-0 items-center gap-0 px-1.5 py-1.5",
+            workEmbeddedChrome?.dragHandleProps?.draggable && "cursor-grab active:cursor-grabbing"
+          )}
           style={{
             minHeight: 40,
             maxHeight: 44,
           }}
+          {...glassHeaderDragProps}
         >
           <SessionsPaneExpandAffordance {...expandSessionsProps} />
-          <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
-          <div className="flex min-h-0 min-w-0 max-w-full items-center gap-0 overflow-y-hidden overflow-x-auto scrollbar-none">
+          <WorkPaneEmbeddedChromeLeading chrome={workEmbeddedChrome} />
+          <div className="shrink-0">
+            <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
+          </div>
+          <div className="ade-work-tab-strip-scroll min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
+            <div className="flex w-max min-w-0 flex-nowrap items-center gap-0">
             {visibleSessions.map((session) => {
               const isActive = activeSession?.id === session.id;
               const dot = sessionStatusDot(session);
@@ -689,6 +741,7 @@ export function WorkViewArea({
                 <Plus size={11} weight="bold" />
               </button>
             </SmartTooltip>
+            </div>
           </div>
         </div>
 
@@ -698,17 +751,22 @@ export function WorkViewArea({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-w-0 flex-col">
       <div
-        className="ade-work-glass-header flex min-h-10 w-max max-w-full min-w-0 items-center gap-1.5 self-start px-2 py-1.5"
+        className={cn(
+          "ade-work-glass-header flex min-h-10 w-full min-w-0 max-w-full shrink-0 items-center gap-1.5 px-2 py-1.5",
+          workEmbeddedChrome?.dragHandleProps?.draggable && "cursor-grab active:cursor-grabbing"
+        )}
         style={{ minHeight: 40, maxHeight: 44 }}
+        {...glassHeaderDragProps}
       >
         <SessionsPaneExpandAffordance {...expandSessionsProps} />
+        <WorkPaneEmbeddedChromeLeading chrome={workEmbeddedChrome} />
         <div className="shrink-0">
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
         </div>
-        <div className="min-w-0 max-w-full self-stretch overflow-y-hidden overflow-x-auto scrollbar-none">
-          <div className="flex h-full min-w-0 max-w-full items-center gap-1.5">
+        <div className="ade-work-tab-strip-scroll min-w-0 flex-1 self-stretch overflow-x-auto overflow-y-hidden">
+          <div className="flex h-full min-w-0 w-max flex-nowrap items-center gap-1.5">
             {resolvedTabGroups.map((group) => {
               const hasActive = group.sessionIds.includes(activeSession?.id ?? "");
               const groupTint = group.kind === "lane" && group.laneColor
@@ -776,9 +834,10 @@ export function WorkViewArea({
                     {!group.collapsed ? (
                       <div
                         id={`tab-group-${group.id}`}
-                        className="flex min-h-8 min-w-0 items-center gap-0.5 overflow-y-hidden overflow-x-auto py-0.5 pr-0.5 pl-0.5 scrollbar-none"
+                        className="ade-work-tab-strip-scroll flex min-h-8 min-w-0 items-center overflow-x-auto overflow-y-hidden py-0.5 pr-0.5 pl-0.5"
                         role="tablist"
                       >
+                        <div className="flex w-max min-w-0 flex-nowrap items-center gap-0.5">
                         {group.sessions.map((session) => {
                           const isActive = activeSession?.id === session.id;
                           const dot = sessionStatusDot(session);
@@ -856,6 +915,7 @@ export function WorkViewArea({
                             </SmartTooltip>
                           );
                         })}
+                        </div>
                       </div>
                     ) : null}
                   </div>

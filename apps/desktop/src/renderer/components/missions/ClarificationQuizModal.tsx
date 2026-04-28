@@ -368,8 +368,8 @@ function QuestionView({
       {question.context && (
         <div
           style={{
-            background: `${COLORS.info}0D`,
-            border: `1px solid ${COLORS.info}25`,
+            background: "color-mix(in srgb, var(--color-info) 5%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-info) 25%, transparent)",
             padding: "8px 12px",
           }}
         >
@@ -386,8 +386,8 @@ function QuestionView({
       {question.impact && (
         <div
           style={{
-            background: `${COLORS.warning}0D`,
-            border: `1px solid ${COLORS.warning}25`,
+            background: "color-mix(in srgb, var(--color-warning) 5%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-warning) 25%, transparent)",
             padding: "8px 12px",
             display: "flex",
             alignItems: "flex-start",
@@ -430,7 +430,7 @@ function QuestionView({
                     fontFamily: MONO_FONT,
                     fontWeight: 600,
                     color: isSelected ? COLORS.accent : COLORS.textSecondary,
-                    background: isSelected ? `${COLORS.accent}18` : COLORS.recessedBg,
+                    background: isSelected ? "color-mix(in srgb, var(--color-accent) 18%, transparent)" : COLORS.recessedBg,
                     border: `1px solid ${isSelected ? COLORS.accent : COLORS.outlineBorder}`,
                     cursor: "pointer",
                     transition: "all 0.15s ease",
@@ -477,7 +477,7 @@ function QuestionView({
         <div
           style={{
             background: COLORS.recessedBg,
-            border: `1px solid ${draft.useDefault ? `${COLORS.success}40` : COLORS.outlineBorder}`,
+            border: `1px solid ${draft.useDefault ? "color-mix(in srgb, var(--color-success) 40%, transparent)" : COLORS.outlineBorder}`,
             padding: "8px 12px",
             display: "flex",
             alignItems: "center",
@@ -499,7 +499,7 @@ function QuestionView({
               height: 26,
               padding: "0 10px",
               fontSize: 9,
-              ...(draft.useDefault ? { color: COLORS.success, borderColor: `${COLORS.success}40` } : {}),
+              ...(draft.useDefault ? { color: COLORS.success, borderColor: "color-mix(in srgb, var(--color-success) 40%, transparent)" } : {}),
             })}
           >
             {draft.useDefault ? "DEFAULT SELECTED" : "USE DEFAULT"}
@@ -522,8 +522,8 @@ function QuestionView({
             textTransform: "uppercase",
             letterSpacing: "0.5px",
             color: draft.markedConfusing ? COLORS.warning : COLORS.textDim,
-            background: draft.markedConfusing ? `${COLORS.warning}12` : "transparent",
-            border: `1px solid ${draft.markedConfusing ? `${COLORS.warning}30` : "transparent"}`,
+            background: draft.markedConfusing ? "color-mix(in srgb, var(--color-warning) 12%, transparent)" : "transparent",
+            border: `1px solid ${draft.markedConfusing ? "color-mix(in srgb, var(--color-warning) 30%, transparent)" : "transparent"}`,
             cursor: "pointer",
           }}
         >
@@ -569,8 +569,8 @@ function SummaryView({
             key={i}
             onClick={() => onEditQuestion(i)}
             style={{
-              background: hasAns ? `${COLORS.success}08` : COLORS.recessedBg,
-              border: `1px solid ${hasAns ? `${COLORS.success}30` : COLORS.border}`,
+              background: hasAns ? "color-mix(in srgb, var(--color-success) 8%, transparent)" : COLORS.recessedBg,
+              border: `1px solid ${hasAns ? "color-mix(in srgb, var(--color-success) 30%, transparent)" : COLORS.border}`,
               padding: 12,
               cursor: "pointer",
               transition: "border-color 0.15s ease",
@@ -585,8 +585,8 @@ function SummaryView({
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    background: hasAns ? `${COLORS.success}20` : `${COLORS.accent}18`,
-                    border: `1px solid ${hasAns ? `${COLORS.success}40` : COLORS.accentBorder}`,
+                    background: hasAns ? "color-mix(in srgb, var(--color-success) 20%, transparent)" : "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+                    border: `1px solid ${hasAns ? "color-mix(in srgb, var(--color-success) 40%, transparent)" : COLORS.accentBorder}`,
                     fontFamily: MONO_FONT,
                     fontSize: 9,
                     fontWeight: 700,

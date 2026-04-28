@@ -34,6 +34,8 @@ export type PaneConfig = {
   dataTour?: string;
   /** When set (e.g. work grid tiles), FloatingPane applies subtle lane-colored header/border chrome. */
   laneAccentColor?: string | null;
+  /** Hides the FloatingPane title row while expanded; UIs in the body can use `useFloatingPaneEmbeddedChrome`. */
+  hideHeaderWhenExpanded?: boolean;
   onPaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
   onPaneContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
   children: React.ReactNode;
@@ -399,6 +401,7 @@ export function PaneTilingLayout({
           onPaneMouseDown={config.onPaneMouseDown}
           onPaneContextMenu={config.onPaneContextMenu}
           minimizeBehavior="css"
+          hideHeaderWhenExpanded={config.hideHeaderWhenExpanded ?? false}
         >
           {config.children}
         </FloatingPane>

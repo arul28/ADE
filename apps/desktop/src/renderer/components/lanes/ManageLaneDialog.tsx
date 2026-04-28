@@ -1,11 +1,46 @@
-import React from "react";
-import { ArrowSquareOut, GitBranch, WarningCircle, Archive, Trash, CircleNotch, Palette } from "@phosphor-icons/react";
+import React, { useEffect, useState } from "react";
+import {
+  ArrowSquareOut,
+  GitBranch,
+  WarningCircle,
+  Archive,
+  Trash,
+  CircleNotch,
+  Palette,
+  Terminal,
+  Cpu,
+  Eye,
+  Cube,
+  CheckCircle,
+  X,
+  Minus
+} from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
-import type { LaneSummary } from "../../../shared/types";
+import type {
+  LaneDeleteProgress,
+  LaneDeleteRisk,
+  LaneDeleteStep,
+  LaneDeleteStepName,
+  LaneSummary
+} from "../../../shared/types";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { SECTION_CLASS_NAME, LABEL_CLASS_NAME, INPUT_CLASS_NAME } from "./laneDialogTokens";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, laneColorName } from "./laneColorPalette";
+
+const STEP_LABELS: Record<LaneDeleteStepName, string> = {
+  git_status: "Checking dirty state",
+  cancel_auto_rebase: "Cancelling auto-rebase",
+  stop_processes: "Stopping processes",
+  stop_ptys: "Closing terminal sessions",
+  stop_watchers: "Stopping file watchers",
+  cleanup_env: "Cleaning environment",
+  git_worktree_remove: "Removing worktree",
+  git_branch_delete: "Deleting local branch",
+  git_remote_branch_delete: "Deleting remote branch",
+  pack_dir_remove: "Cleaning pack folder",
+  database_cleanup: "Updating database"
+};
 
 export function ManageLaneDialog({
   open,
@@ -59,6 +94,7 @@ export function ManageLaneDialog({
   const allPrimary = lanes.length > 0 && lanes.every((l) => l.laneType === "primary");
   const hasAttached = lanes.some((l) => l.laneType === "attached");
   const hasAnyDirty = lanes.some((l) => l.status.dirty);
+  const singleLane = !isBatch ? lanes[0] ?? null : null;
 
   const isAttached = !isBatch && lanes[0]?.laneType === "attached";
   const hasNonAttached = lanes.some((l) => l.laneType !== "attached" && l.laneType !== "primary");
@@ -78,7 +114,69 @@ export function ManageLaneDialog({
     : hasAttached
       ? "Unlink + delete local and remote branch"
       : "Delete local and remote branch";
-  const confirmMatch = deleteConfirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
+
+  const [deleteRisk, setDeleteRisk] = useState<LaneDeleteRisk | null>(null);
+  const [deleteProgress, setDeleteProgress] = useState<LaneDeleteProgress | null>(null);
+
+  // Reset transient state when dialog closes or active lane changes.
+  useEffect(() => {
+    if (!open) {
+      setDeleteRisk(null);
+      setDeleteProgress(null);
+    }
+  }, [open]);
+
+  // Fetch pre-flight risk for the single-lane case.
+  useEffect(() => {
+    if (!open || !singleLane || singleLane.laneType === "primary") {
+      setDeleteRisk(null);
+      return;
+    }
+    let cancelled = false;
+    void window.ade.lanes
+      .getDeleteRisk({ laneId: singleLane.id })
+      .then((risk) => {
+        if (!cancelled) setDeleteRisk(risk);
+      })
+      .catch(() => {
+        // best-effort — pre-flight is informational only
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, singleLane?.id]);
+
+  // Stream live delete progress for the active lane.
+  useEffect(() => {
+    if (!open || !singleLane) return;
+    const unsubscribe = window.ade.lanes.onDeleteEvent((event) => {
+      if (event.progress.laneId !== singleLane.id) return;
+      setDeleteProgress(event.progress);
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [open, singleLane?.id]);
+
+  const requiresTypeConfirm =
+    isBatch ||
+    !deleteRisk ||
+    deleteForce ||
+    deleteRisk.dirty ||
+    deleteMode === "remote_branch" ||
+    (deleteMode === "local_branch" && deleteRisk.hasUnpushedCommits);
+
+  const confirmMatch = !requiresTypeConfirm || deleteConfirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
+  const showStaticBusy = laneActionBusy && !deleteProgress;
+
+  const handleCancelDelete = async (): Promise<void> => {
+    if (!singleLane) return;
+    try {
+      await window.ade.lanes.cancelDelete({ laneId: singleLane.id });
+    } catch {
+      // Cancellation is best-effort — surfaced via the next progress event if honored.
+    }
+  };
 
   return (
     <LaneDialogShell
@@ -186,7 +284,6 @@ export function ManageLaneDialog({
 
             {/* Delete mode selector */}
             <span className={LABEL_CLASS_NAME}>Scope</span>
-            {/* tour anchor — closest viable: scope picker serves as the in-dialog tab switch. */}
             <div data-tour="lanes.manageDialog.tabs" className="mt-2 mb-3 inline-flex rounded-lg border border-white/[0.06] bg-white/[0.02] p-0.5">
               {([
                 { value: "worktree" as const, label: worktreeDeleteLabel },
@@ -209,6 +306,16 @@ export function ManageLaneDialog({
               ))}
             </div>
 
+            {/* Pre-flight panel — single lane only, after risk loads */}
+            {singleLane && deleteRisk ? (
+              <PreflightPanel
+                risk={deleteRisk}
+                deleteMode={deleteMode}
+                remoteName={deleteRemoteName}
+                lane={singleLane}
+              />
+            ) : null}
+
             {/* Remote name */}
             {deleteMode === "remote_branch" && (
               <div className="mb-3">
@@ -229,21 +336,26 @@ export function ManageLaneDialog({
               Force delete (skip safety checks)
             </label>
 
-            {/* Confirmation */}
-            <div className="mb-3">
-              <span className={LABEL_CLASS_NAME}>
-                Type <span className="normal-case tracking-normal text-red-400">{deletePhrase}</span> to confirm
-              </span>
-              <input
-                data-tour="lanes.manageDialog.confirm"
-                value={deleteConfirmText}
-                onChange={(event) => setDeleteConfirmText(event.target.value)}
-                disabled={laneActionBusy}
-                className={`${INPUT_CLASS_NAME} ${confirmMatch ? "!border-red-500/30" : ""}`}
-              />
-            </div>
+            {/* Confirmation — only required when risk is non-trivial */}
+            {requiresTypeConfirm ? (
+              <div className="mb-3">
+                <span className={LABEL_CLASS_NAME}>
+                  Type <span className="normal-case tracking-normal text-red-400">{deletePhrase}</span> to confirm
+                </span>
+                <input
+                  data-tour="lanes.manageDialog.confirm"
+                  value={deleteConfirmText}
+                  onChange={(event) => setDeleteConfirmText(event.target.value)}
+                  disabled={laneActionBusy}
+                  className={`${INPUT_CLASS_NAME} ${confirmMatch ? "!border-red-500/30" : ""}`}
+                />
+              </div>
+            ) : null}
 
-            {laneActionBusy && (laneActionKind === "delete" || laneActionKind === "archive" || laneActionKind == null) && (
+            {/* Live progress strip — replaces the static busy indicator while delete is streaming */}
+            {deleteProgress ? (
+              <DeleteProgressStrip progress={deleteProgress} />
+            ) : showStaticBusy && (laneActionKind === "delete" || laneActionKind === "archive" || laneActionKind == null) ? (
               <div className="mb-3 flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-xs text-muted-fg" role="status" aria-live="polite">
                 <CircleNotch
                   size={14}
@@ -251,7 +363,7 @@ export function ManageLaneDialog({
                 />
                 <span>{laneActionStatus ?? "Working..."}</span>
               </div>
-            )}
+            ) : null}
 
             {/* Error */}
             {laneActionError && (laneActionKind === "delete" || laneActionKind === "archive" || laneActionKind == null) && (
@@ -261,25 +373,195 @@ export function ManageLaneDialog({
               </div>
             )}
 
-            <Button
-              size="sm"
-              variant="primary"
-              data-tour="lanes.manageDialog.delete"
-              className="bg-red-600 hover:bg-red-500"
-              disabled={laneActionBusy || !confirmMatch}
-              onClick={onDelete}
-            >
-              {laneActionBusy && laneActionKind === "delete" ? <CircleNotch size={13} className="animate-spin" /> : <Trash size={13} />}
-              {laneActionBusy && laneActionKind === "delete"
-                ? "Deleting..."
-                : isBatch
-                  ? `Delete ${lanes.length} lanes`
-                  : "Delete lane"}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="primary"
+                data-tour="lanes.manageDialog.delete"
+                className="bg-red-600 hover:bg-red-500"
+                disabled={laneActionBusy || !confirmMatch}
+                onClick={onDelete}
+              >
+                {laneActionBusy && laneActionKind === "delete" ? <CircleNotch size={13} className="animate-spin" /> : <Trash size={13} />}
+                {laneActionBusy && laneActionKind === "delete"
+                  ? "Deleting..."
+                  : isBatch
+                    ? `Delete ${lanes.length} lanes`
+                    : "Delete lane"}
+              </Button>
+
+              {/* Cancel — visible only while a streaming delete is running */}
+              {deleteProgress?.overallStatus === "running" ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!deleteProgress?.cancellable}
+                  title={deleteProgress?.cancellable ? "Cancel pending delete" : "Past the point of no return"}
+                  onClick={() => { void handleCancelDelete(); }}
+                >
+                  {deleteProgress?.cancellable ? "Cancel" : "Cancel (unavailable)"}
+                </Button>
+              ) : null}
+            </div>
           </section>
         </div>
       )}
     </LaneDialogShell>
+  );
+}
+
+function PreflightPanel({
+  risk,
+  deleteMode,
+  remoteName,
+  lane
+}: {
+  risk: LaneDeleteRisk;
+  deleteMode: "worktree" | "local_branch" | "remote_branch";
+  remoteName: string;
+  lane: LaneSummary;
+}) {
+  const willStop: { icon: React.ReactNode; label: string }[] = [];
+  if (risk.runningProcessCount > 0) {
+    willStop.push({
+      icon: <Cpu size={12} className="text-accent" />,
+      label: `${risk.runningProcessCount} running ${risk.runningProcessCount === 1 ? "process" : "processes"}`
+    });
+  }
+  if (risk.activePtyCount > 0) {
+    willStop.push({
+      icon: <Terminal size={12} className="text-accent" />,
+      label: `${risk.activePtyCount} terminal ${risk.activePtyCount === 1 ? "session" : "sessions"}`
+    });
+  }
+  if (risk.activeWatcherCount > 0) {
+    willStop.push({
+      icon: <Eye size={12} className="text-accent" />,
+      label: `${risk.activeWatcherCount} file ${risk.activeWatcherCount === 1 ? "watcher" : "watchers"}`
+    });
+  }
+
+  const willRemove: { icon: React.ReactNode; label: string }[] = [];
+  if (lane.laneType === "worktree") {
+    willRemove.push({
+      icon: <Cube size={12} className="text-red-300/80" />,
+      label: `Worktree at ${lane.worktreePath}`
+    });
+  }
+  if (deleteMode !== "worktree" && risk.branchRef) {
+    const unpushed = risk.hasUnpushedCommits ? ` (${risk.unpushedCommitCount} unpushed)` : "";
+    willRemove.push({
+      icon: <GitBranch size={12} className="text-red-300/80" />,
+      label: `Local branch: ${risk.branchRef}${unpushed}`
+    });
+  }
+  if (deleteMode === "remote_branch" && risk.branchRef && risk.remoteBranchExists) {
+    willRemove.push({
+      icon: <GitBranch size={12} className="text-red-300/80" />,
+      label: `Remote branch: ${remoteName.trim() || "origin"}/${risk.branchRef}`
+    });
+  }
+
+  const idle = willStop.length === 0;
+
+  return (
+    <div className="mb-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+      {idle ? (
+        <div className="text-[11px] text-muted-fg/70">Nothing running on this lane.</div>
+      ) : (
+        <>
+          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-fg/70">What will be stopped</div>
+          <div className="mt-1.5 space-y-1">
+            {willStop.map((item, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs text-fg/85">
+                {item.icon}
+                <span>{item.label}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {willRemove.length > 0 ? (
+        <>
+          <div className={`text-[10px] font-medium uppercase tracking-wide text-muted-fg/70 ${idle ? "" : "mt-3"}`}>What will be removed</div>
+          <div className="mt-1.5 space-y-1">
+            {willRemove.map((item, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs text-fg/85">
+                {item.icon}
+                <span className="truncate">{item.label}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function DeleteProgressStrip({ progress }: { progress: LaneDeleteProgress }) {
+  let tone: string;
+  switch (progress.overallStatus) {
+    case "completed":
+      tone = "border-emerald-500/15 bg-emerald-500/[0.04]";
+      break;
+    case "failed":
+      tone = "border-red-500/15 bg-red-500/[0.06]";
+      break;
+    case "cancelled":
+      tone = "border-amber-500/15 bg-amber-500/[0.04]";
+      break;
+    default:
+      tone = "border-white/[0.08] bg-white/[0.04]";
+      break;
+  }
+  return (
+    <div className={`mb-3 rounded-lg border px-3 py-2 ${tone}`} role="status" aria-live="polite">
+      <div className="space-y-1">
+        {progress.steps.map((step) => (
+          <ProgressStepRow key={step.name} step={step} />
+        ))}
+      </div>
+      {progress.overallStatus === "cancelled" ? (
+        <div className="mt-2 text-[11px] text-amber-300">Delete cancelled. The lane was not removed.</div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProgressStepRow({ step }: { step: LaneDeleteStep }) {
+  const label = STEP_LABELS[step.name] ?? step.name;
+  let icon: React.ReactNode;
+  let textTone: string;
+  switch (step.status) {
+    case "completed":
+      icon = <CheckCircle size={12} className="text-emerald-400" weight="fill" />;
+      textTone = "text-fg/85";
+      break;
+    case "failed":
+      icon = <X size={12} className="text-red-400" weight="bold" />;
+      textTone = "text-red-300";
+      break;
+    case "running":
+      icon = <CircleNotch size={12} className="animate-spin text-accent" />;
+      textTone = "text-fg";
+      break;
+    case "skipped":
+      icon = <Minus size={12} className="text-muted-fg/60" />;
+      textTone = "text-muted-fg/60";
+      break;
+    default:
+      icon = <span className="inline-block h-2 w-2 rounded-full bg-muted-fg/30" />;
+      textTone = "text-muted-fg/70";
+      break;
+  }
+  const duration = step.durationMs != null ? `${(step.durationMs / 1000).toFixed(1)}s` : null;
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="flex h-3 w-3 items-center justify-center">{icon}</span>
+      <span className={`flex-1 ${textTone}`}>{label}</span>
+      {step.detail ? <span className="text-[11px] text-muted-fg/60">{step.detail}</span> : null}
+      {duration ? <span className="text-[11px] text-muted-fg/50 tabular-nums">{duration}</span> : null}
+    </div>
   );
 }
 

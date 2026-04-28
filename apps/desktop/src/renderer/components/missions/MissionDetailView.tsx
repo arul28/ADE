@@ -81,7 +81,7 @@ export function MissionDetailView() {
           <motion.div
             initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
             className="px-4 py-2 text-[11px] flex items-center justify-between"
-            style={{ borderBottom: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}
+            style={{ borderBottom: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 18%, transparent)", color: COLORS.danger }}
           >
             <span>{error}</span>
             <button onClick={() => setError(null)} style={{ color: COLORS.danger }}><X className="h-3 w-3" /></button>

@@ -1,19 +1,25 @@
-import React, { useId, useMemo, useState } from "react";
+import React, { useId, useState } from "react";
 import {
   AGENT_TURN_COMPLETION_SOUND_IDS,
+  CHAT_FONT_SIZE_MAX_PX,
+  CHAT_FONT_SIZE_MIN_PX,
+  CHAT_CHROME_TINT_IDS,
+  CHAT_SHELL_GEOMETRY_IDS,
+  CHAT_TRANSCRIPT_DENSITY_IDS,
   CODE_BLOCK_COPY_POSITION_IDS,
-  DEFAULT_CHAT_FONT_SIZE_PX,
   DEFAULT_TERMINAL_FONT_FAMILY,
   THEME_IDS,
   useAppStore,
 } from "../../state/appStore";
 import type {
   AgentTurnCompletionSound,
+  ChatChromeTint,
+  ChatShellGeometry,
+  ChatTranscriptDensity,
   CodeBlockCopyButtonPosition,
   ThemeId,
 } from "../../state/appStore";
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
-import { ChatMarkdown } from "../chat/chatMarkdown";
 import {
   TERMINAL_FONT_FAMILY_OPTIONS,
   TERMINAL_FONT_SIZE_OPTIONS,
@@ -25,8 +31,10 @@ import {
   MONO_FONT,
   cardStyle,
   LABEL_STYLE,
+  outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import { ChatAppearancePreview } from "./ChatAppearancePreview";
 
 const sectionLabelStyle: React.CSSProperties = {
   ...LABEL_STYLE,
@@ -79,7 +87,7 @@ export function ThemeSwatch({
         gap: 14,
         padding: 14,
         flex: 1,
-        background: selected ? `${COLORS.accent}08` : hovered ? COLORS.hoverBg : COLORS.cardBg,
+        background: selected ? "color-mix(in srgb, var(--color-accent) 8%, transparent)" : hovered ? COLORS.hoverBg : COLORS.cardBg,
         border: selected
           ? `1px solid ${COLORS.accent}`
           : `1px solid ${hovered ? COLORS.outlineBorder : COLORS.border}`,
@@ -144,29 +152,6 @@ export function ThemeSwatch({
   );
 }
 
-const PREVIEW_MARKDOWN = [
-  "Here's a **sample** reply with a list:",
-  "",
-  "- First item",
-  "- Second item",
-  "",
-  "Inline `code` and a block:",
-  "",
-  "```ts",
-  "export function greet(name: string) {",
-  '  return `Hello, ${name}`;',
-  "}",
-  "```",
-  "",
-].join("\n");
-
-/** Font-size swatches: 3 discrete sizes mapping to whole-pixel integer scales so `transform: scale` stays crisp. */
-const CHAT_FONT_SIZE_SWATCHES: { px: number; label: string; hint: string }[] = [
-  { px: 13, label: "Small", hint: "Compact" },
-  { px: 14, label: "Default", hint: "Original sizing" },
-  { px: 16, label: "Large", hint: "Easier to read" },
-];
-
 /** Label a copy-position id for display. */
 const COPY_POSITION_META: Record<CodeBlockCopyButtonPosition, { label: string; hint: string }> = {
   top: { label: "Top", hint: "Stays pinned to the top corner" },
@@ -174,11 +159,28 @@ const COPY_POSITION_META: Record<CodeBlockCopyButtonPosition, { label: string; h
   auto: { label: "Auto-float", hint: "Tracks the viewport as you scroll" },
 };
 
+const TRANSCRIPT_DENSITY_LABEL: Record<ChatTranscriptDensity, string> = {
+  compact: "Compact",
+  comfortable: "Comfortable",
+  spacious: "Spacious",
+};
+
+const CHAT_CHROME_TINT_LABEL: Record<ChatChromeTint, string> = {
+  neutral: "No tint",
+  colored: "Colored mode",
+};
+
+const SHELL_GEOMETRY_LABEL: Record<ChatShellGeometry, string> = {
+  soft: "Soft",
+  default: "Default",
+  sharp: "Sharp",
+};
+
 /** Pill-button selected state matching ThemeSwatch language. Keeps the 'disabled-looking' 0.55 opacity out. */
 function pillToggleStyle(selected: boolean): React.CSSProperties {
   return {
     ...primaryButton({ height: 32, padding: "0 14px", fontSize: 10 }),
-    background: selected ? `${COLORS.accent}12` : COLORS.cardBg,
+    background: selected ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : COLORS.cardBg,
     color: selected ? COLORS.accent : COLORS.textPrimary,
     border: `1px solid ${selected ? COLORS.accent : COLORS.border}`,
     boxShadow: selected ? `inset 3px 0 0 ${COLORS.accent}` : "none",
@@ -187,7 +189,7 @@ function pillToggleStyle(selected: boolean): React.CSSProperties {
 }
 
 export function AppearanceSection() {
-  const chatFontGroupId = useId();
+  const chatFontSliderId = useId();
   const agentSoundSelectId = useId();
   const volumeSliderId = useId();
   const quietToggleId = useId();
@@ -198,6 +200,15 @@ export function AppearanceSection() {
 
   const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
   const setChatFontSizePx = useAppStore((s) => s.setChatFontSizePx);
+  const resetThemeAndChatFontDefaults = useAppStore((s) => s.resetThemeAndChatFontDefaults);
+  const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
+  const setChatTranscriptDensity = useAppStore((s) => s.setChatTranscriptDensity);
+  const chatChromeTint = useAppStore((s) => s.chatChromeTint);
+  const setChatChromeTint = useAppStore((s) => s.setChatChromeTint);
+  const chatShellGeometry = useAppStore((s) => s.chatShellGeometry);
+  const setChatShellGeometry = useAppStore((s) => s.setChatShellGeometry);
+  const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
+  const setChatUserMinimapEnabled = useAppStore((s) => s.setChatUserMinimapEnabled);
 
   const codeBlockCopyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const setCodeBlockCopyButtonPosition = useAppStore((s) => s.setCodeBlockCopyButtonPosition);
@@ -216,7 +227,6 @@ export function AppearanceSection() {
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
 
-  const previewScale = useMemo(() => chatFontSizePx / DEFAULT_CHAT_FONT_SIZE_PX, [chatFontSizePx]);
   const volumePercent = Math.round(agentTurnCompletionSoundVolume * 100);
   const soundIsOff = agentTurnCompletionSound === "off";
 
@@ -232,47 +242,123 @@ export function AppearanceSection() {
       </section>
 
       <section>
-        <div style={sectionLabelStyle}>Chat font size</div>
-        <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            Scales the agent chat transcript and composer together. Three sizes keep text crisp at integer scales.
-          </div>
-          <div
-            role="radiogroup"
-            aria-labelledby={chatFontGroupId}
-            style={{ display: "flex", flexWrap: "wrap", gap: 8 }}
+        <div style={{ ...sectionLabelStyle, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <span>Chat typography & transcript</span>
+          <button
+            type="button"
+            onClick={() => resetThemeAndChatFontDefaults()}
+            style={outlineButton({ height: 30, padding: "0 12px", fontSize: 10 })}
+            title="Sets theme to dark and chat font to 14px"
           >
-            <span id={chatFontGroupId} style={{ position: "absolute", left: -9999 }}>Chat font size</span>
-            {CHAT_FONT_SIZE_SWATCHES.map((swatch) => {
-              const selected = chatFontSizePx === swatch.px;
-              return (
-                <button
-                  key={swatch.px}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  onClick={() => setChatFontSizePx(swatch.px)}
-                  style={{
-                    ...pillToggleStyle(selected),
-                    height: 44,
-                    minWidth: 120,
-                    padding: "0 16px",
-                    display: "inline-flex",
-                    flexDirection: "column",
-                    alignItems: "flex-start",
-                    justifyContent: "center",
-                    gap: 2,
-                  }}
-                >
-                  <span style={{ fontSize: 11, fontWeight: 700 }}>
-                    {swatch.label} ({swatch.px}px)
-                  </span>
-                  <span style={{ fontSize: 9, fontWeight: 400, opacity: 0.7, color: COLORS.textMuted }}>
-                    {swatch.hint}
-                  </span>
-                </button>
-              );
-            })}
+            Restore theme & font defaults
+          </button>
+        </div>
+        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, marginBottom: 12, lineHeight: 1.5 }}>
+          Restore affects theme and chat font size only. Density, tint, geometry, and other controls stay as set.
+        </div>
+        <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+            Font size applies to the agent chat transcript and composer using shared CSS sizing (no whole-surface zoom).
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gap: 16,
+              alignItems: "start",
+            }}
+          >
+            <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+              <label htmlFor={chatFontSliderId} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
+                Chat font size ({chatFontSizePx}px)
+              </label>
+              <input
+                id={chatFontSliderId}
+                type="range"
+                min={CHAT_FONT_SIZE_MIN_PX}
+                max={CHAT_FONT_SIZE_MAX_PX}
+                step={1}
+                value={chatFontSizePx}
+                onChange={(e) => setChatFontSizePx(Number(e.target.value))}
+                style={{ width: "100%", maxWidth: 420, accentColor: COLORS.accent }}
+              />
+            </div>
+
+            <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+              <div style={{ ...LABEL_STYLE, marginBottom: 0 }}>Transcript density</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {CHAT_TRANSCRIPT_DENSITY_IDS.map((id) => {
+                  const selected = chatTranscriptDensity === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setChatTranscriptDensity(id)}
+                      style={{
+                        ...pillToggleStyle(selected),
+                        height: 36,
+                        minWidth: 110,
+                        padding: "0 14px",
+                      }}
+                    >
+                      {TRANSCRIPT_DENSITY_LABEL[id]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+              <div style={{ ...LABEL_STYLE, marginBottom: 0 }}>Chat tint</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {CHAT_CHROME_TINT_IDS.map((id) => {
+                  const selected = chatChromeTint === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setChatChromeTint(id)}
+                      style={{
+                        ...pillToggleStyle(selected),
+                        height: 36,
+                        minWidth: 112,
+                        padding: "0 14px",
+                      }}
+                    >
+                      {CHAT_CHROME_TINT_LABEL[id]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+              <div style={{ ...LABEL_STYLE, marginBottom: 0 }}>Chat shell corners</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {CHAT_SHELL_GEOMETRY_IDS.map((id) => {
+                  const selected = chatShellGeometry === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setChatShellGeometry(id)}
+                      style={{
+                        ...pillToggleStyle(selected),
+                        height: 36,
+                        minWidth: 88,
+                        padding: "0 14px",
+                      }}
+                    >
+                      {SHELL_GEOMETRY_LABEL[id]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           <div>
@@ -282,24 +368,17 @@ export function AppearanceSection() {
                 border: `1px solid ${COLORS.border}`,
                 background: COLORS.recessedBg,
                 padding: 14,
-                maxHeight: 280,
-                overflow: "auto",
+                overflowX: "auto",
+                maxWidth: "100%",
               }}
             >
-              <div
-                style={{
-                  transform: `scale(${previewScale})`,
-                  transformOrigin: "top left",
-                  // Downscale previews must not exceed the parent width; only expand the wrapper when scaling up.
-                  width: previewScale >= 1 ? `${100 / previewScale}%` : "100%",
-                  maxWidth: previewScale >= 1 ? `${100 / previewScale}%` : "100%",
-                }}
-              >
-                <div style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim, marginBottom: 8, letterSpacing: "0.06em" }}>
-                  Sample assistant reply
-                </div>
-                <ChatMarkdown>{PREVIEW_MARKDOWN}</ChatMarkdown>
-              </div>
+              <ChatAppearancePreview
+                theme={theme}
+                chatFontSizePx={chatFontSizePx}
+                transcriptDensity={chatTranscriptDensity}
+                chromeTint={chatChromeTint}
+                shellGeometry={chatShellGeometry}
+              />
             </div>
           </div>
         </div>
@@ -349,6 +428,41 @@ export function AppearanceSection() {
                   </button>
                 );
               })}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>User message minimap</div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
+              Compact strip on the agent chat timeline to jump between your prompts in long threads. Hover for previews.
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button
+                type="button"
+                aria-pressed={chatUserMinimapEnabled}
+                onClick={() => setChatUserMinimapEnabled(true)}
+                style={{
+                  ...pillToggleStyle(chatUserMinimapEnabled),
+                  height: 36,
+                  minWidth: 100,
+                  padding: "0 14px",
+                }}
+              >
+                Show
+              </button>
+              <button
+                type="button"
+                aria-pressed={!chatUserMinimapEnabled}
+                onClick={() => setChatUserMinimapEnabled(false)}
+                style={{
+                  ...pillToggleStyle(!chatUserMinimapEnabled),
+                  height: 36,
+                  minWidth: 100,
+                  padding: "0 14px",
+                }}
+              >
+                Hide
+              </button>
             </div>
           </div>
 

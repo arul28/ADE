@@ -13,7 +13,6 @@ function resetStore() {
     projectHydrated: true,
     showWelcome: false,
     selectedLaneId: "lane-1",
-    runLaneId: null,
     focusedSessionId: null,
     lanes: [],
     laneInspectorTabs: {},

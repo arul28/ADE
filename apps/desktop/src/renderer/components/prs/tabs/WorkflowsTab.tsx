@@ -67,9 +67,9 @@ function outcomeColor(outcome: string): string {
 function cleanupBadgeStyle(cleanupState: string | null | undefined): React.CSSProperties | null {
   switch (cleanupState) {
     case "required":
-      return inlineBadge(COLORS.warning, { background: `${COLORS.warning}18`, fontWeight: 600 });
+      return inlineBadge(COLORS.warning, { background: "color-mix(in srgb, var(--color-warning) 18%, transparent)", fontWeight: 600 });
     case "completed":
-      return inlineBadge(COLORS.success, { background: `${COLORS.success}18`, fontWeight: 600 });
+      return inlineBadge(COLORS.success, { background: "color-mix(in srgb, var(--color-success) 18%, transparent)", fontWeight: 600 });
     case "declined":
       return inlineBadge(COLORS.textSecondary, { background: "rgba(255,255,255,0.06)", fontWeight: 600 });
     default:
@@ -429,7 +429,7 @@ function IntegrationWorkflowsTab({
         ) : (
           <div style={{ display: "grid", gap: 16 }}>
             {actionError ? (
-              <div style={{ ...cardStyle({ borderColor: `${COLORS.danger}40`, background: "rgba(239,68,68,0.06)" }), fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger }}>
+              <div style={{ ...cardStyle({ borderColor: "color-mix(in srgb, var(--color-error) 40%, transparent)", background: "rgba(239,68,68,0.06)" }), fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger }}>
                 {actionError}
               </div>
             ) : null}

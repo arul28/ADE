@@ -138,13 +138,20 @@ Renderer — onboarding:
 Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
-  container with eight top-level sections.
+  container. The current top-level sections are General, Appearance,
+  Workspace, AI, Mobile Push, Integrations, Memory, Lane Templates,
+  and Usage. Onboarding / Help / Tours route deep links land in
+  General (`TAB_ALIASES`); tutorial replay and tour entry points live
+  under the Help menu in the top bar, not as a Settings tab. The
+  legacy `OnboardingSection` was removed — its surface lives in the
+  top-bar Help menu and the onboarding store.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
-  — theme, AI mode, task routing, terminal preferences, keybindings
-  link, and the embedded `AdeCliSection` (compact form) so the most
-  common terminal-CLI install/repair affordance lives next to the
-  other day-one settings without forcing a tab switch into
-  Integrations.
+  — AI mode, task routing, terminal preferences, keybindings link,
+  and the embedded `AdeCliSection` (compact form) so the most common
+  terminal-CLI install/repair affordance lives next to the other
+  day-one settings without forcing a tab switch into Integrations.
+  Visual chat / theme controls now live in the dedicated Appearance
+  tab (`AppearanceSection.tsx`).
 - `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
   — surfaces `ade.cli.getStatus` / `ade.cli.install` / `ade.cli.uninstall`.
   In compact form (used by `GeneralSection` and the onboarding
@@ -166,9 +173,6 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
-- `apps/desktop/src/renderer/components/settings/OnboardingSection.tsx`
-  — surfaces the first-session tutorial and per-tab tour progress,
-  plus replay controls.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
   — multi-device sync management. Surfaces the phone-pairing PIN (set
   / clear / reveal), the QR payload (v2) with its LAN / Tailscale /
@@ -228,19 +232,19 @@ OpenClaw is intentionally excluded from first-run setup.
 
 ## Settings responsibilities
 
-Eight top-level tabs, organized to match the kind of thing the user
-is changing rather than which service backs it:
+Top-level tabs, organized to match the kind of thing the user is
+changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `GeneralSection.tsx` (embeds `AdeCliSection` in compact form) | Theme, AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link, and the `ade` CLI install / status surface |
-| Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx` | Project identity, paths, skill files |
+| General | `GeneralSection.tsx` (embeds `AdeCliSection` in compact form) | AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link, and the `ade` CLI install / status surface. Receives the legacy `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` deep links via `TAB_ALIASES`. |
+| Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, agent-turn completion sound + volume + quiet-when-focused, chat font size (`chatFontSizePx`), chat transcript density (`chatTranscriptDensity` — `compact` / `comfortable` / `spacious`), chat chrome tint (`chatChromeTint` — `colored` default vs `neutral` for monochrome chrome; the legacy `chatLaneAccentEmphasis` preset slug is still read so older user-pref blobs migrate cleanly), chat shell geometry (`chatShellGeometry` — `soft` / `default` / `sharp` corners), and the user-message minimap toggle (`chatUserMinimapEnabled` — drives the inline `ChatUserMinimap`). Persisted to `localStorage` under `ade.userPreferences.v1`. |
+| Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx` | Project identity, paths, skill files. (`SyncDevicesSection.tsx` — multi-device sync, host transfer, peer status, pairing PIN, Tailscale discovery — is mounted from the top bar's Sync popover, not as a Settings tab.) |
 | AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, AI feature flags |
-| Sync | `SyncDevicesSection.tsx` | Multi-device sync, host-role transfer, peer status, pairing PIN, Tailscale tailnet discovery |
+| Mobile Push | `MobilePushPanel.tsx` | APNs registration, paired-device push tokens, per-category preferences |
 | Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness. The GitHub section reads `status.connected` (the backend's single "GitHub is usable" gate) to decide between CONNECTED / LIMITED ACCESS / NOT CONNECTED, surfaces a dedicated repo-probe error when a fine-grained token authenticates as a user but cannot access the active repo, and the REFRESH button calls `getStatus({ forceRefresh: true })` so users who fix permissions on github.com see the change immediately. See [`pull-requests/README.md`](../pull-requests/README.md#github-connectivity-model) for the full status-shape and `connected` derivation. |
 | Memory | `MemoryHealthTab.tsx` | Memory health, browser, embedding health |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
-| Onboarding | `OnboardingSection.tsx` | First-session tutorial + per-tab tour progress and replay controls |
 | Usage | `SettingsUsageSection.tsx`, `UsageGuardrailsSection.tsx` | Cost visibility and guardrails |
 
 The Settings page itself (`SettingsPage.tsx`) has a legacy alias
@@ -305,8 +309,12 @@ Onboarding and settings follow a simple rule:
   runtime. Passing the wrong boolean flips the "first-run" surface on
   a well-used project.
 - **Deep links.** Settings tabs accept `?tab=<id>` via
-  `useSearchParams`; unknown tab IDs fall back to `general` through
-  `TAB_ALIASES`.
+  `useSearchParams`; legacy ids `onboarding`, `help`, `tours`,
+  `context`, `providers`, `github`, `linear`, `computer-use`, and
+  `keybindings` resolve to their canonical tab through `TAB_ALIASES`
+  (most route to **General**; provider/GitHub/Linear/computer-use
+  route to **Integrations**). The dedicated Onboarding tab no longer
+  exists — its settings moved into General + the top-bar Help menu.
 
 ## Cross-links
 

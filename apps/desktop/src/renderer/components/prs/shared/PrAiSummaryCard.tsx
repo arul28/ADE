@@ -238,8 +238,8 @@ export const PrAiSummaryCard = memo(function PrAiSummaryCard({
           role="alert"
           className="mt-3 rounded-[6px] border px-3 py-2 text-[11px]"
           style={{
-            borderColor: `${COLORS.danger}40`,
-            background: `${COLORS.danger}10`,
+            borderColor: "color-mix(in srgb, var(--color-error) 40%, transparent)",
+            background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
             color: COLORS.danger,
             fontFamily: SANS_FONT,
           }}

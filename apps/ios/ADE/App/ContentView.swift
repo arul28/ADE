@@ -32,6 +32,7 @@ struct ContentView: View {
       .tabBarMinimizeBehavior(.onScrollDown)
       .adeScreenBackground()
       .adeNavigationGlass()
+      .adeInspectorHost()
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .sensoryFeedback(.selection, trigger: selectedTab)
       .environmentObject(syncService.attentionDrawer)

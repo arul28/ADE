@@ -138,8 +138,8 @@ export function GitHubSection() {
   };
 
   const noticeStyle: CSSProperties = {
-    background: `${COLORS.success}12`,
-    border: `1px solid ${COLORS.success}30`,
+    background: "color-mix(in srgb, var(--color-success) 12%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)",
     padding: "8px 12px",
     fontSize: 11,
     fontFamily: MONO_FONT,
@@ -148,8 +148,8 @@ export function GitHubSection() {
   };
 
   const errorStyle: CSSProperties = {
-    background: `${COLORS.danger}12`,
-    border: `1px solid ${COLORS.danger}30`,
+    background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
     padding: "8px 12px",
     fontSize: 11,
     fontFamily: MONO_FONT,
@@ -176,7 +176,7 @@ export function GitHubSection() {
   const inputFocusedStyle: CSSProperties = tokenFocused
     ? {
         borderColor: COLORS.accent,
-        boxShadow: `0 0 0 3px ${COLORS.accent}22`,
+        boxShadow: `0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent)`,
       }
     : {};
 
@@ -190,8 +190,8 @@ export function GitHubSection() {
   });
 
   const infoBoxStyle: CSSProperties = {
-    background: `${COLORS.info}08`,
-    border: `1px solid ${COLORS.info}20`,
+    background: "color-mix(in srgb, var(--color-info) 8%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-info) 20%, transparent)",
     borderRadius: 0,
     padding: "10px 14px",
     fontSize: 11,
@@ -212,7 +212,7 @@ export function GitHubSection() {
       {actionError ? <div style={errorStyle}>{actionError}</div> : null}
 
       <div style={cardStyle({
-        borderColor: isConnected ? `${COLORS.success}30` : tokenAuthenticated ? `${COLORS.warning}30` : undefined,
+        borderColor: isConnected ? "color-mix(in srgb, var(--color-success) 30%, transparent)" : tokenAuthenticated ? "color-mix(in srgb, var(--color-warning) 30%, transparent)" : undefined,
       })}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -365,7 +365,7 @@ export function GitHubSection() {
                       fontSize: 10,
                       fontFamily: MONO_FONT,
                       color: COLORS.accent,
-                      background: `${COLORS.accent}12`,
+                      background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
                       padding: "3px 8px",
                       borderRadius: 4,
                       fontWeight: 500,
@@ -406,7 +406,7 @@ export function GitHubSection() {
                       fontSize: 10,
                       fontFamily: MONO_FONT,
                       color: COLORS.success,
-                      background: `${COLORS.success}10`,
+                      background: "color-mix(in srgb, var(--color-success) 10%, transparent)",
                       padding: "3px 8px",
                       borderRadius: 4,
                       fontWeight: 500,

@@ -69,6 +69,10 @@ import {
   createComputerUseArtifactBrokerService,
   type ComputerUseArtifactBrokerService,
 } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
+import {
+  createIosSimulatorService,
+  type IosSimulatorService,
+} from "../../desktop/src/main/services/ios/iosSimulatorService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import {
   createAutomationService,
@@ -163,6 +167,7 @@ export type AdeRuntime = {
   automationService?: ReturnType<typeof createAutomationService> | null;
   automationPlannerService?: ReturnType<typeof createAutomationPlannerService> | null;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
+  iosSimulatorService?: IosSimulatorService | null;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   missionBudgetService?: ReturnType<typeof createMissionBudgetService> | null;
@@ -462,6 +467,10 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     orchestratorService,
     logger,
   });
+  const iosSimulatorService = createIosSimulatorService({
+    projectRoot,
+    logger,
+  });
 
   const aiOrchestratorService = createAiOrchestratorService({
     db,
@@ -563,6 +572,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     automationService,
     automationPlannerService,
     computerUseArtifactBrokerService,
+    iosSimulatorService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,
@@ -570,6 +580,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
       swallow(() => automationService.dispose());
       swallow(() => processService.disposeAll());
+      swallow(() => iosSimulatorService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
       swallow(() => testService.disposeAll());

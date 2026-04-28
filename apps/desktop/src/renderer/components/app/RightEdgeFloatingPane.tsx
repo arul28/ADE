@@ -644,8 +644,14 @@ export function RightEdgeFloatingPane() {
           onOpenSettings={() => navigate("/settings?tab=lane-templates")}
           onSelectFile={handleSelectFile}
           onSelectCommit={handleSelectCommit}
+          onClearDiffSelection={() => {
+            setSelectedPath(null);
+            setSelectedMode(null);
+            setSelectedCommit(null);
+          }}
           selectedPath={selectedPath}
           selectedMode={selectedMode}
+          selectedCommit={selectedCommit}
           selectedCommitSha={selectedCommit?.sha ?? null}
         />
       );

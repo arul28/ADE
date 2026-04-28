@@ -54,6 +54,13 @@ type FormatterId =
   | "chat-list"
   | "tests-runs"
   | "proof-list"
+  | "ios-sim-status"
+  | "ios-sim-devices"
+  | "ios-sim-apps"
+  | "ios-sim-stream"
+  | "ios-sim-snapshot"
+  | "ios-sim-selection"
+  | "ios-sim-preview"
   | "actions-list"
   | "action-result"
   | "automation-run-detail";
@@ -266,6 +273,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
+    $ ade ios-sim devices | apps | launch | tap   Control iOS Simulator apps, capture, and input
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -289,6 +297,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
+    $ ade ios-sim apps --text
+    $ ade ios-sim launch --target <id> --text
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -307,6 +317,330 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
 
   Start with: ade doctor --text
 `;
+
+const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
+  status: `${ADE_BANNER}
+  iOS Simulator: status
+
+  Shows macOS support, Xcode/idb/ffmpeg readiness, the active booted device,
+  and the drawer's active simulator session. Start here when a simulator action
+  fails or when an agent needs to know whether ADE owns a running session.
+
+    $ ade --socket ios-sim status --text
+
+  Flags:
+    --text                 Compact human-readable readiness summary.
+    --json                 Full JSON payload with tool install hints.
+`,
+  devices: `${ADE_BANNER}
+  iOS Simulator: devices
+
+  Lists available iOS simulator devices. Aliases: list, ls.
+
+    $ ade --socket ios-sim devices --text
+
+  Flags:
+    --text                 Compact table.
+    --json                 Full device records.
+`,
+  apps: `${ADE_BANNER}
+  iOS Simulator: apps
+
+  Lists launchable app targets from Xcode projects, DerivedData, and apps
+  already installed on the selected simulator. Aliases: targets, launchable,
+  launchables.
+
+    $ ade --socket ios-sim apps --device <udid> --text
+
+  Flags:
+    --device, --udid <id>  Simulator device to inspect.
+    --project-root <path>  ADE project root to scan for iOS projects.
+    --text                 Compact table with target ids.
+`,
+  launch: `${ADE_BANNER}
+  iOS Simulator: launch
+
+  Boots the simulator, resolves/builds/installs a target, launches the app, and
+  claims the ADE drawer session. Use --socket when the drawer and agents should
+  share one long-lived simulator service. Alias: open.
+
+    $ ade --socket ios-sim launch --target <id> --text
+    $ ade --socket ios-sim launch --bundle-id com.example.app --no-build --text
+
+  Flags:
+    --device, --udid <id>       Simulator device.
+    --target, --target-id <id>  Target id from "ios-sim apps".
+    --bundle-id, --bundle <id>  Launch an installed app by bundle id.
+    --app-bundle, --app <path>  Install/launch a built .app bundle.
+    --project, --xcodeproj <p>  Xcode project path.
+    --scheme <name>             Xcode scheme.
+    --project-root <path>       ADE project root.
+    --chat-session <id>         Owner chat session for the single-owner lock.
+    --no-build                  Skip xcodebuild.
+    --mode snapshot|live        Inspector launch mode; default live.
+    --foreground                Bring Simulator.app forward instead of background.
+    --arg KEY=VALUE             Extra service args for advanced launch options.
+`,
+  shutdown: `${ADE_BANNER}
+  iOS Simulator: shutdown
+
+  Stops streams, releases the drawer session, and tears down the idb companion.
+  Aliases: stop, teardown, end, end-session.
+
+    $ ade --socket ios-sim shutdown --text
+    $ ade --socket ios-sim shutdown --force --text
+
+  Flags:
+    --force, -f            Release a session owned by another chat.
+    --device, --udid <id>  Optional device context for cleanup.
+`,
+  actions: `${ADE_BANNER}
+  iOS Simulator: actions
+
+  Lists every callable ios_simulator action exposed through ADE's generic action
+  bridge. Use this when a typed subcommand is missing a niche argument.
+
+    $ ade --socket ios-sim actions --text
+    $ ade actions run ios_simulator.getStatus --text
+`,
+  screenshot: `${ADE_BANNER}
+  iOS Simulator: screenshot
+
+  Captures a one-shot PNG from the simulator via simctl. Alias: capture.
+
+    $ ade --socket ios-sim screenshot --device <udid> --text
+
+  Flags:
+    --device, --udid <id>  Simulator device; defaults to the active session or booted device.
+`,
+  snapshot: `${ADE_BANNER}
+  iOS Simulator: snapshot
+
+  Captures screenshot + ADEInspector/accessibility elements for the current
+  simulator screen. Use this before asking an agent to find the current screen
+  in SwiftUI code. Aliases: screen, elements.
+
+    $ ade --socket ios-sim snapshot --text
+
+  Flags:
+    --device, --udid <id>  Simulator device.
+    --project-root <path>  Project root for source matching.
+    --arg x=<n> --arg y=<n> Optional hit-test point in screenshot pixels.
+`,
+  inspector: `${ADE_BANNER}
+  iOS Simulator: inspector
+
+  Reads the DEBUG ADEInspector snapshot published by the launched app. This is
+  lower-level than "snapshot" and does not include screenshot/accessibility fallback.
+
+    $ ade --socket ios-sim inspector --text
+
+  Flags:
+    --device, --udid <id>  Simulator device.
+`,
+  inspect: `${ADE_BANNER}
+  iOS Simulator: inspect
+
+  Hit-tests a point and returns the best matching context item without committing
+  it to the drawer composer. Aliases: hit-test, hover.
+
+    $ ade --socket ios-sim inspect --x 120 --y 420 --screenshot --text
+
+  Flags:
+    --x <n> --y <n>        Required screenshot-pixel coordinates.
+    --device, --udid <id>  Simulator device.
+    --project-root <path>  Project root for Swift source matching.
+    --screenshot           Include screenshot data in the context result.
+`,
+  "preview-status": `${ADE_BANNER}
+  iOS Simulator: preview-status
+
+  Checks Xcode Preview Lab readiness: Xcode version, mcpbridge availability,
+  Xcode running state, selected project window, setup warnings, and docs URL.
+  Alias: preview-doctor.
+
+    $ ade --socket ios-sim preview-status --source apps/ios/ADE/Views/Home.swift --line 42 --text
+
+  Flags:
+    --project-root <path>  ADE project root.
+    --source, --file <p>   Swift file used to bias preview discovery.
+    --line <n>             Source line used to bias preview discovery.
+`,
+  previews: `${ADE_BANNER}
+  iOS Simulator: previews
+
+  Lists discoverable #Preview and PreviewProvider definitions, ranked around a
+  selected Swift file when supplied. Aliases: preview-list, list-previews.
+
+    $ ade --socket ios-sim previews --source apps/ios/ADE/Views/Home.swift --text
+
+  Flags:
+    --project-root <path>  ADE project root.
+    --source, --file <p>   Swift file to rank nearby previews.
+    --line <n>             Optional source line.
+`,
+  "preview-render": `${ADE_BANNER}
+  iOS Simulator: preview-render
+
+  Renders a SwiftUI preview through Xcode MCP and returns the snapshot path/data.
+  This is the final command agents should run after finding or adding a preview.
+  Aliases: render-preview, preview.
+
+    $ ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
+
+  Flags:
+    --source, --file <p>   Required Swift source file. Absolute, project-relative,
+                           or Xcode-project-relative paths are accepted.
+    --index <n>            Preview definition index in the file; default 0.
+    --tab, --tab-identifier <id> Xcode window tab from preview-status.
+    --timeout <sec>        Render timeout, 5-240 seconds; default 120.
+    --project-root <path>  ADE project root.
+`,
+  "preview-open": `${ADE_BANNER}
+  iOS Simulator: preview-open
+
+  Opens apps/ios/ADE.xcodeproj in Xcode so Xcode MCP Preview Lab can connect.
+  Aliases: open-preview-workspace, open-xcode.
+
+    $ ade ios-sim preview-open --project-root <path> --text
+
+  Flags:
+    --project-root <path>  ADE project root.
+`,
+  "stream-start": `${ADE_BANNER}
+  iOS Simulator: stream-start
+
+  Starts a visual stream. Prefer window-start for the drawer UI, live-start for
+  exact-screen MJPEG when idb+ffmpeg are installed, and preview-start as a
+  simctl screenshot-poll fallback. Aliases: start-stream, stream, window-start,
+  start-window, mirror-start, live-start, start-live, preview-start, start-preview.
+
+    $ ade --socket ios-sim window-start --fps 60 --text
+    $ ade --socket ios-sim live-start --fps 30 --text
+    $ ade --socket ios-sim preview-start --fps 8 --text
+
+  Flags:
+    --device, --udid <id>  Simulator device.
+    --fps <n>              Target fps.
+    --backend auto|simulator-window-capture|idb-h264-ffmpeg-mjpeg|simctl-screenshot-poll
+    --window, --mirror     Force window capture.
+    --idb, --live          Force idb H.264 -> MJPEG.
+    --simctl, --preview    Force simctl screenshot polling.
+`,
+  "stream-status": `${ADE_BANNER}
+  iOS Simulator: stream-status
+
+  Shows running backend, fps, latency, stream URL, frame count, and last error.
+
+    $ ade --socket ios-sim stream-status --text
+`,
+  "stream-stop": `${ADE_BANNER}
+  iOS Simulator: stream-stop
+
+  Stops the visual stream without necessarily releasing the simulator session.
+  Aliases: stop-stream, preview-stop, stop-preview, live-stop, stop-live.
+
+    $ ade --socket ios-sim stream-stop --text
+`,
+  select: `${ADE_BANNER}
+  iOS Simulator: select
+
+  Hit-tests a point, emits a drawer selection event, and attaches the resulting
+  iOS context to the active chat composer. Use --socket so the drawer receives it.
+
+    $ ade --socket ios-sim select --x 120 --y 420 --text
+
+  Flags:
+    --x <n> --y <n>        Required screenshot-pixel coordinates.
+    --device, --udid <id>  Simulator device.
+    --project-root <path>  Project root for Swift source matching.
+`,
+  tap: `${ADE_BANNER}
+  iOS Simulator: tap
+
+  Sends a tap through idb to the active launched app.
+
+    $ ade --socket ios-sim tap --x 120 --y 420 --text
+    $ ade --socket ios-sim tap 120 420 --text
+
+  Flags:
+    --x <n> --y <n>        Required point coordinates.
+    --device, --udid <id>  Simulator device.
+    --project-root <path>  Project root.
+`,
+  drag: `${ADE_BANNER}
+  iOS Simulator: drag / swipe
+
+  Sends a swipe through idb. "swipe" is an alias of drag.
+
+    $ ade --socket ios-sim drag --start-x 120 --start-y 700 --end-x 120 --end-y 250 --text
+    $ ade --socket ios-sim swipe 120 700 120 250 --duration-ms 250 --text
+
+  Flags:
+    --start-x <n> --start-y <n> Required start coordinates.
+    --end-x <n> --end-y <n>     Required end coordinates.
+    --duration-ms <n>           Swipe duration in milliseconds.
+    --device, --udid <id>       Simulator device.
+    --project-root <path>       Project root.
+`,
+  type: `${ADE_BANNER}
+  iOS Simulator: type
+
+  Types text through idb into the active launched app. Alias: text.
+
+    $ ade --socket ios-sim type "hello" --text
+    $ ade --socket ios-sim type --value "hello" --text
+
+  Flags:
+    --value, --message <v> Text to type. --text <value> is also accepted for
+                           compatibility, but --text by itself controls ADE's
+                           human-readable output mode.
+    --device, --udid <id>  Simulator device.
+    --project-root <path>  Project root.
+`,
+};
+
+const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
+  list: "devices",
+  ls: "devices",
+  targets: "apps",
+  launchable: "apps",
+  launchables: "apps",
+  open: "launch",
+  stop: "shutdown",
+  teardown: "shutdown",
+  end: "shutdown",
+  "end-session": "shutdown",
+  capture: "screenshot",
+  screen: "snapshot",
+  elements: "snapshot",
+  "hit-test": "inspect",
+  hover: "inspect",
+  "preview-doctor": "preview-status",
+  "preview-list": "previews",
+  "list-previews": "previews",
+  "render-preview": "preview-render",
+  preview: "preview-render",
+  "open-preview-workspace": "preview-open",
+  "open-xcode": "preview-open",
+  "start-stream": "stream-start",
+  stream: "stream-start",
+  "window-start": "stream-start",
+  "start-window": "stream-start",
+  "mirror-start": "stream-start",
+  "start-mirror": "stream-start",
+  "live-start": "stream-start",
+  "start-live": "stream-start",
+  "preview-start": "stream-start",
+  "start-preview": "stream-start",
+  "stop-stream": "stream-stop",
+  "preview-stop": "stream-stop",
+  "stop-preview": "stream-stop",
+  "live-stop": "stream-stop",
+  "stop-live": "stream-stop",
+  swipe: "drag",
+  text: "type",
+};
 
 const HELP_BY_COMMAND: Record<string, string> = {
   lanes: `${ADE_BANNER}
@@ -444,6 +778,55 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof record --seconds 20                 Capture a short video proof
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
     $ ade proof ingest --input-json '{"artifacts":[]}' Ingest external visual proof artifacts
+`,
+  "ios-sim": `${ADE_BANNER}
+  iOS Simulator
+
+  iOS simulator commands build, launch, mirror, inspect, and control the ADE
+  drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
+  surface. For drawer/shared session state, prefer desktop socket mode
+  (--socket) so launch/select/tap operate on the same long-lived ADE service.
+  Launch keeps Simulator.app in the background by default; use --foreground only
+  when you need the native Simulator window in front. idb is optional for direct
+  pointer/text control and the exact-screen MJPEG live stream.
+
+  Single-owner lock: a launched session is owned by one --chat-session at a time.
+  If another session tries to launch with a different chatSessionId, the call
+  fails with code IOS_SIMULATOR_OWNED_BY_OTHER_SESSION. Run "ios-sim shutdown"
+  (or "shutdown --force") to release before re-launching from a different chat.
+
+  Discovery and lifecycle:
+    $ ade ios-sim status --text                    Show Xcode/idb readiness (getStatus)
+    $ ade ios-sim devices --text                   List installed/available simulators (listDevices)
+    $ ade ios-sim apps --device <udid> --text      List launchable apps (listLaunchTargets)
+    $ ade --socket ios-sim launch --target <id>    Build/install/launch and update drawer state
+    $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
+    $ ade --socket ios-sim shutdown                Tear down session, streams, idb companion (alias: stop)
+    $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
+    $ ade ios-sim actions --text                   List every callable ios_simulator action
+
+  Capture and inspection:
+    $ ade ios-sim screenshot --text                One-shot PNG via simctl (screenshot)
+    $ ade ios-sim snapshot --text                  Screenshot + selectable elements (getScreenSnapshot)
+    $ ade ios-sim inspector --text                 Published ADEInspector frames (getInspectorSnapshot)
+    $ ade ios-sim inspect --x 120 --y 420 --text   Hit-test a point in the inspector (inspectPoint)
+    $ ade ios-sim preview-status --text           Xcode MCP readiness for Preview Lab
+    $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
+    $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
+
+  Streaming:
+    $ ade ios-sim window-start --fps 60            Simulator.app window capture backend
+    $ ade ios-sim live-start --fps 30              Exact-screen idb MJPEG live stream
+    $ ade ios-sim preview-start --fps 8            simctl screenshot-poll fallback
+    $ ade ios-sim stream-status --text             Backend/fps/latency/URL (getStreamStatus)
+    $ ade ios-sim stream-stop                      Stop preview/live streaming (stopStream)
+
+  Input and selection:
+    $ ade --socket ios-sim select --x 120 --y 420  Add UI context to drawer chat (selectPoint)
+    $ ade ios-sim tap 120 420                      Tap through idb (tap)
+    $ ade ios-sim drag 120 700 120 250             Drag through idb (drag)
+    $ ade ios-sim swipe 120 700 120 250            Swipe through idb (swipe)
+    $ ade ios-sim type "hello" --text              Type into the launched app (typeText)
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -658,11 +1041,49 @@ function readFlag(args: string[], names: string[]): boolean {
   return false;
 }
 
+function readCommandTextValue(args: string[], names: string[]): string | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (!token) continue;
+    const matchedName = names.find((name) => token === name || token.startsWith(`${name}=`));
+    if (!matchedName) continue;
+    if (token.includes("=")) {
+      args.splice(index, 1);
+      return token.slice(token.indexOf("=") + 1);
+    }
+    const value = args[index + 1];
+    if (value == null || value === "--" || value.startsWith("-")) {
+      continue;
+    }
+    args.splice(index, 2);
+    return value;
+  }
+  return null;
+}
+
 function firstPositional(args: string[]): string | null {
   const index = args.findIndex((arg) => arg !== "--" && !arg.startsWith("-"));
   if (index < 0) return null;
   const [value] = args.splice(index, 1);
   return value ?? null;
+}
+
+function peekFirstPositional(args: string[]): string | null {
+  return args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
+}
+
+function buildIosSimulatorHelp(args: string[]): string {
+  const rawSubcommand = peekFirstPositional(args)?.toLowerCase() ?? "";
+  const canonical = rawSubcommand
+    ? IOS_SIMULATOR_HELP_ALIASES[rawSubcommand] ?? rawSubcommand
+    : "";
+  if (canonical && IOS_SIMULATOR_SUBCOMMAND_HELP[canonical]) {
+    return IOS_SIMULATOR_SUBCOMMAND_HELP[canonical];
+  }
+  if (rawSubcommand && !IOS_SIMULATOR_SUBCOMMAND_HELP[canonical]) {
+    return `${HELP_BY_COMMAND["ios-sim"]}\n  Unknown iOS simulator subcommand '${rawSubcommand}'. Run 'ade ios-sim actions --text' to list raw service actions.\n`;
+  }
+  return HELP_BY_COMMAND["ios-sim"];
 }
 
 function collectGenericObjectArgs(args: string[], base: JsonObject = {}): JsonObject {
@@ -1651,6 +2072,145 @@ function buildProofPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `proof ${sub}`, steps: [actionStep("result", "computer_use_artifacts", sub, collectGenericObjectArgs(args))] };
 }
 
+function buildIosSimulatorPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "status";
+  if (sub === "help") return { kind: "help", text: buildIosSimulatorHelp(args) };
+  const numericPositionals = () => args.filter((value) => /^\d+(\.\d+)?$/.test(value));
+  const readCoordinate = (flag: string, index: number): number => {
+    const value = readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
+    if (!Number.isFinite(value)) throw new CliUsageError(`${flag} is required and must be a number.`);
+    return value;
+  };
+  if (sub === "actions") return { kind: "execute", label: "iOS simulator actions", steps: [listActionsStep("actions", "ios_simulator")] };
+  if (sub === "status") return { kind: "execute", label: "iOS simulator status", steps: [actionStep("result", "ios_simulator", "getStatus", collectGenericObjectArgs(args))] };
+  if (sub === "devices" || sub === "list" || sub === "ls") return { kind: "execute", label: "iOS simulator devices", steps: [actionStep("result", "ios_simulator", "listDevices", collectGenericObjectArgs(args))] };
+  if (sub === "apps" || sub === "targets" || sub === "launchable" || sub === "launchables") {
+    return { kind: "execute", label: "iOS simulator launchable apps", steps: [actionStep("result", "ios_simulator", "listLaunchTargets", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]), projectRoot: readValue(args, ["--project-root", "--root"]) }))] };
+  }
+  if (sub === "launch" || sub === "open") {
+    return {
+      kind: "execute",
+      label: "iOS simulator launch",
+      steps: [actionStep("result", "ios_simulator", "launch", collectGenericObjectArgs(args, {
+        deviceUdid: readValue(args, ["--device", "--udid"]),
+        projectRoot: readValue(args, ["--project-root", "--root"]),
+        targetId: readValue(args, ["--target", "--target-id"]),
+        bundleId: readValue(args, ["--bundle-id", "--bundle"]),
+        appBundlePath: readValue(args, ["--app-bundle", "--app"]),
+        projectPath: readValue(args, ["--project", "--xcodeproj"]),
+        scheme: readValue(args, ["--scheme"]),
+        chatSessionId: readValue(args, ["--chat-session", "--session"]) ?? process.env.ADE_CHAT_SESSION_ID,
+        build: !readFlag(args, ["--no-build"]),
+        mode: readValue(args, ["--mode"]) ?? "live",
+        keepSimulatorInBackground: !readFlag(args, ["--foreground"]),
+      }))],
+    };
+  }
+  if (sub === "screenshot" || sub === "capture") {
+    return { kind: "execute", label: "iOS simulator screenshot", steps: [actionStep("result", "ios_simulator", "screenshot", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]) }))] };
+  }
+  if (sub === "inspector") {
+    return { kind: "execute", label: "iOS simulator inspector snapshot", steps: [actionStep("result", "ios_simulator", "getInspectorSnapshot", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]) }))] };
+  }
+  if (sub === "preview-status" || sub === "preview-doctor") {
+    return { kind: "execute", label: "iOS simulator preview status", steps: [actionStep("result", "ios_simulator", "getPreviewCapability", collectGenericObjectArgs(args, { projectRoot: readValue(args, ["--project-root", "--root"]), sourceFile: readValue(args, ["--source", "--file"]), sourceLine: readNumberOption(args, ["--line"]) }))] };
+  }
+  if (sub === "previews" || sub === "preview-list" || sub === "list-previews") {
+    return { kind: "execute", label: "iOS simulator previews", steps: [actionStep("result", "ios_simulator", "listPreviewTargets", collectGenericObjectArgs(args, { projectRoot: readValue(args, ["--project-root", "--root"]), sourceFile: readValue(args, ["--source", "--file"]), sourceLine: readNumberOption(args, ["--line"]) }))] };
+  }
+  if (sub === "preview-render" || sub === "render-preview" || sub === "preview") {
+    return { kind: "execute", label: "iOS simulator preview render", steps: [actionStep("result", "ios_simulator", "renderPreview", collectGenericObjectArgs(args, {
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      sourceFilePath: requireValue(readValue(args, ["--source", "--file"]), "sourceFilePath"),
+      previewDefinitionIndexInFile: readNumberOption(args, ["--index"], 0),
+      tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
+      timeoutSec: readNumberOption(args, ["--timeout"], 120),
+    }))] };
+  }
+  if (sub === "preview-open" || sub === "open-preview-workspace" || sub === "open-xcode") {
+    return { kind: "execute", label: "iOS simulator preview open", steps: [actionStep("result", "ios_simulator", "openPreviewWorkspace", collectGenericObjectArgs(args, { projectRoot: readValue(args, ["--project-root", "--root"]) }))] };
+  }
+  if (sub === "snapshot" || sub === "screen" || sub === "elements") {
+    return { kind: "execute", label: "iOS simulator screen snapshot", steps: [actionStep("result", "ios_simulator", "getScreenSnapshot", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]), projectRoot: readValue(args, ["--project-root", "--root"]) }))] };
+  }
+  if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
+    return { kind: "execute", label: "iOS simulator inspect point", steps: [actionStep("result", "ios_simulator", "inspectPoint", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+      includeScreenshot: readFlag(args, ["--screenshot", "--include-screenshot"]),
+    }))] };
+  }
+  if (sub === "stream-start" || sub === "start-stream" || sub === "stream" || sub === "preview-start" || sub === "start-preview" || sub === "live-start" || sub === "start-live" || sub === "window-start" || sub === "start-window" || sub === "mirror-start" || sub === "start-mirror") {
+    const forcedBackend = sub === "preview-start" || sub === "start-preview"
+      ? "simctl-screenshot-poll"
+      : sub === "window-start" || sub === "start-window" || sub === "mirror-start" || sub === "start-mirror"
+        ? "simulator-window-capture"
+        : sub === "live-start" || sub === "start-live"
+        ? "idb-h264-ffmpeg-mjpeg"
+        : undefined;
+    return { kind: "execute", label: "iOS simulator stream start", steps: [actionStep("result", "ios_simulator", "startStream", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      fps: readNumberOption(args, ["--fps"], forcedBackend === "simulator-window-capture" ? 60 : forcedBackend === "idb-h264-ffmpeg-mjpeg" ? 30 : 8),
+      backend: forcedBackend
+        ?? (readFlag(args, ["--window", "--mirror"]) ? "simulator-window-capture" : readFlag(args, ["--idb", "--live"]) ? "idb-h264-ffmpeg-mjpeg" : readFlag(args, ["--simctl", "--preview"]) ? "simctl-screenshot-poll" : readValue(args, ["--backend"]) ?? "auto"),
+    }))] };
+  }
+  if (sub === "stream-stop" || sub === "stop-stream" || sub === "preview-stop" || sub === "stop-preview" || sub === "live-stop" || sub === "stop-live") {
+    return { kind: "execute", label: "iOS simulator stream stop", steps: [actionStep("result", "ios_simulator", "stopStream", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "stream-status") {
+    return { kind: "execute", label: "iOS simulator stream status", steps: [actionStep("result", "ios_simulator", "getStreamStatus", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "tap") {
+    return { kind: "execute", label: "iOS simulator tap", steps: [actionStep("result", "ios_simulator", "tap", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+    }))] };
+  }
+  if (sub === "drag" || sub === "swipe") {
+    return { kind: "execute", label: `iOS simulator ${sub}`, steps: [actionStep("result", "ios_simulator", sub, collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      startX: readCoordinate("--start-x", 0),
+      startY: readCoordinate("--start-y", 1),
+      endX: readCoordinate("--end-x", 2),
+      endY: readCoordinate("--end-y", 3),
+      durationMs: readNumberOption(args, ["--duration-ms", "--duration"]),
+    }))] };
+  }
+  if (sub === "select") {
+    return { kind: "execute", label: "iOS simulator select", steps: [actionStep("result", "ios_simulator", "selectPoint", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+    }))] };
+  }
+  if (sub === "type" || sub === "text") {
+    return { kind: "execute", label: "iOS simulator type", steps: [actionStep("result", "ios_simulator", "typeText", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      text: requireValue(
+        readValue(args, ["--value", "--message", "--input-text"])
+          ?? readCommandTextValue(args, ["--text"])
+          ?? args.filter((arg) => arg !== "--text").join(" "),
+        "text",
+      ),
+    }))] };
+  }
+  if (sub === "shutdown" || sub === "stop" || sub === "teardown" || sub === "end" || sub === "end-session") {
+    return { kind: "execute", label: "iOS simulator shutdown", steps: [actionStep("result", "ios_simulator", "shutdown", collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+    }))] };
+  }
+  return { kind: "execute", label: `ios-sim ${sub}`, steps: [actionStep("result", "ios_simulator", sub, collectGenericObjectArgs(args))] };
+}
+
 function buildMemoryPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "search";
   if (sub === "actions") return { kind: "execute", label: "memory actions", steps: [listActionsStep("actions", "memory")] };
@@ -2043,19 +2603,19 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   // callers) belong here. Boolean-only flags consumed via readFlag must be
   // excluded, otherwise the next positional would be swallowed as their value.
   "-b", "-m", "-q", "-t",
-  "--additional-instructions", "--app", "--arg", "--arg-json", "--arg-value",
+  "--additional-instructions", "--app", "--app-bundle", "--arg", "--arg-json", "--arg-value",
   "--arg-value-json", "--args-list-json", "--attempt", "--attempt-id",
-  "--automation", "--autonomy",
-  "--base", "--base-branch", "--base-ref", "--body", "--branch",
-  "--branch-name", "--branch-ref", "--category", "--color", "--cols",
+  "--automation", "--autonomy", "--backend", "--base", "--base-branch", "--base-ref", "--body", "--branch",
+  "--branch-name", "--branch-ref", "--bundle", "--bundle-id", "--category", "--color", "--cols",
   "--command", "--comment", "--comment-id", "--commit", "--compare-ref",
   "--caption", "--compare-to", "--content", "--context-file", "--cwd", "--data",
-  "--depth", "--desc",
+  "--depth", "--desc", "--device", "--duration", "--duration-ms",
   "--description", "--domain", "--droid-autonomy", "--droid-permission-mode",
   "--duration-sec", "--enabled", "--event",
-  "--from", "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
-  "--input", "--input-json", "--instructions",
+  "--end-x", "--end-y", "--file", "--fps", "--from", "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
+  "--index", "--input", "--input-json", "--input-text", "--instructions",
   "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",
+  "--line",
   "--max-log-bytes", "--max-prompt-chars", "--max-rounds", "--memory",
   "--memory-id", "--merge-method", "--message", "--method", "--mode", "--model",
   "--model-id", "--name", "--new", "--new-path", "--number", "--old",
@@ -2068,9 +2628,10 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--root-lane", "--round", "--rounds", "--rows", "--rule", "--run", "--run-id", "--scalar",
   "--scalar-json", "--scope", "--seconds", "--session", "--session-id", "--set",
   "--set-json", "--sha", "--source", "--source-lane", "--stack", "--stack-id",
-  "--start-point", "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
-  "--thread", "--thread-id", "--timeout-ms", "--title", "--tool-type",
-  "--url", "--workspace", "--workspace-id", "--workspace-root",
+  "--scheme", "--start-point", "--start-x", "--start-y", "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
+  "--tab", "--tab-identifier", "--target", "--target-id", "--thread", "--thread-id", "--timeout", "--timeout-ms", "--title", "--tool-type",
+  "--udid", "--url", "--value", "--workspace", "--workspace-id", "--workspace-root",
+  "--x", "--xcodeproj", "--y",
 ]);
 
 function hasHelpFlag(args: string[]): boolean {
@@ -2114,6 +2675,8 @@ function buildCliPlan(command: string[]): CliPlan {
     "computer-use": "proof",
     artifact: "proof",
     artifacts: "proof",
+    ios: "ios-sim",
+    simulator: "ios-sim",
     setting: "settings",
     config: "settings",
     action: "actions",
@@ -2122,11 +2685,17 @@ function buildCliPlan(command: string[]): CliPlan {
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
+    if (primaryHelpKey === "ios-sim") {
+      return { kind: "help", text: buildIosSimulatorHelp(args) };
+    }
     return { kind: "help", text: HELP_BY_COMMAND[primaryHelpKey] ?? TOP_LEVEL_HELP };
   }
   if (primary === "help") {
     const topic = (firstPositional(args) ?? "").toLowerCase();
     const key = aliases[topic] ?? topic;
+    if (key === "ios-sim") {
+      return { kind: "help", text: buildIosSimulatorHelp(args) };
+    }
     return { kind: "help", text: key && HELP_BY_COMMAND[key] ? HELP_BY_COMMAND[key] : TOP_LEVEL_HELP };
   }
   if (primary === "version" || primary === "--version" || primary === "-v") {
@@ -2180,6 +2749,7 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "proof" || primary === "computer-use" || primary === "artifacts" || primary === "computer" || primary === "artifact") {
     return buildProofPlan(args);
   }
+  if (primary === "ios-sim" || primary === "ios" || primary === "simulator") return buildIosSimulatorPlan(args);
   if (primary === "memory") return buildMemoryPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
@@ -2952,7 +3522,8 @@ function statusWord(value: unknown): string {
 }
 
 function formatActionsList(value: unknown): string {
-  const actions = firstArray(value, ["actions"]);
+  const actionResult = isRecord(value) && isRecord(value.actions) ? value.actions : value;
+  const actions = firstArray(actionResult, ["actions"]);
   if (actions.length === 0) return "ADE actions\n(no actions)";
   const byDomain = new Map<string, JsonObject[]>();
   for (const action of actions) {
@@ -3132,6 +3703,134 @@ function formatProofList(value: unknown): string {
   );
 }
 
+function formatIosSimStatus(value: unknown): string {
+  const status = isRecord(value) ? value : {};
+  const tools = Array.isArray(status.tools) ? status.tools.filter(isRecord) : [];
+  const activeDevice = isRecord(status.activeDevice) ? status.activeDevice : {};
+  const activeSession = isRecord(status.activeSession) ? status.activeSession : {};
+  return [
+    renderKeyValues("ADE iOS simulator", [
+      ["supported", status.supported],
+      ["platform", status.platform],
+      ["active device", activeDevice.name ? `${activeDevice.name} (${activeDevice.state})` : null],
+      ["active app", activeSession.bundleId],
+      ["mode", activeSession.mode],
+      ["chat session", activeSession.chatSessionId],
+    ]),
+    "",
+    renderTable(
+      ["tool", "ready", "detail"],
+      tools.map((tool) => [tool.name, tool.available ? "yes" : "no", tool.detail]),
+      "Tools\n(none)",
+    ),
+  ].join("\n");
+}
+
+function formatIosSimDevices(value: unknown): string {
+  const devices = Array.isArray(value) ? value.filter(isRecord) : firstArray(value, ["devices", "items"]);
+  return renderTable(
+    ["udid", "device", "runtime", "state"],
+    devices.map((device) => [device.udid, device.name, device.runtime, device.state]),
+    "ADE iOS simulators\n(no installed simulators)",
+  );
+}
+
+function formatIosSimApps(value: unknown): string {
+  const targets = Array.isArray(value) ? value.filter(isRecord) : firstArray(value, ["targets", "apps", "items"]);
+  return renderTable(
+    ["target", "kind", "name", "bundle"],
+    targets.map((target) => [target.id, target.kind, target.name, target.bundleId ?? target.detail]),
+    "ADE iOS launchable apps\n(no apps)",
+  );
+}
+
+function formatIosSimStream(value: unknown): string {
+  const status = isRecord(value) ? value : {};
+  return renderKeyValues("ADE iOS simulator stream", [
+    ["running", status.running],
+    ["backend", status.backend],
+    ["device", status.deviceUdid],
+    ["fps", status.fps ?? status.targetFps],
+    ["frames", status.frameCount],
+    ["avg latency ms", status.averageLatencyMs],
+    ["started", status.startedAt],
+    ["last frame", status.lastFrameAt],
+    ["stream url", status.streamUrl],
+    ["error", status.lastError],
+  ]);
+}
+
+function formatIosSimSnapshot(value: unknown): string {
+  const snapshot = isRecord(value) ? value : {};
+  const screenshot = isRecord(snapshot.screenshot) ? snapshot.screenshot : snapshot;
+  const screen = isRecord(snapshot.screen) ? snapshot.screen : {};
+  const providers = Array.isArray(snapshot.providers) ? snapshot.providers.filter(isRecord) : [];
+  const elements = Array.isArray(snapshot.elements) ? snapshot.elements.filter(isRecord) : [];
+  const providerSummary = providers.map((provider) => `${provider.source}:${provider.available ? provider.elementCount ?? "ok" : "unavailable"}`).join(", ");
+  return [
+    renderKeyValues("ADE iOS simulator snapshot", [
+      ["device", snapshot.deviceUdid],
+      ["captured", snapshot.capturedAt],
+      ["screenshot", screenshot.width && screenshot.height ? `${screenshot.width}x${screenshot.height}` : null],
+      ["screen", screen.width && screen.height ? `${screen.width}x${screen.height} @${screen.scale ?? 1}x` : null],
+      ["elements", elements.length],
+      ["providers", providerSummary],
+    ]),
+    elements.length ? "" : "",
+    elements.length
+      ? renderTable(
+          ["id", "source", "label", "source file"],
+          elements.slice(0, 20).map((element) => [
+            element.id,
+            element.source,
+            element.label ?? element.identifier ?? element.componentId,
+            element.sourceFile ? `${element.sourceFile}${element.sourceLine ? `:${element.sourceLine}` : ""}` : "",
+          ]),
+          "",
+        )
+      : "",
+  ].filter(Boolean).join("\n");
+}
+
+function formatIosSimSelection(value: unknown): string {
+  const item = firstRecord(value, ["item", "selection"]) ?? (isRecord(value) ? value : {});
+  const metadata = isRecord(item.metadata) ? item.metadata : {};
+  return renderKeyValues("ADE iOS simulator selection", [
+    ["component", item.componentId],
+    ["source", isRecord(value) ? value.source ?? metadata.screenElementSource : metadata.screenElementSource],
+    ["file", item.sourceFile ? `${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}` : null],
+    ["identifier", item.accessibilityIdentifier],
+    ["chat session", metadata.chatSessionId],
+    ["selected", item.selectedAt],
+  ]);
+}
+
+function formatIosSimPreview(value: unknown): string {
+  if (Array.isArray(value)) {
+    const targets = value.filter(isRecord);
+    return renderTable(
+      ["index", "title", "file", "kind"],
+      targets.map((target) => [target.previewDefinitionIndexInFile, target.title, target.sourceFilePath ?? target.sourceFile, target.kind]),
+      "ADE iOS previews\n(no #Preview definitions found)",
+    );
+  }
+  const record = isRecord(value) ? value : {};
+  const capability = isRecord(record.capability) ? record.capability : record;
+  const steps = Array.isArray(capability.setupSteps) ? capability.setupSteps.join("; ") : null;
+  const selectedWindow = isRecord(capability.selectedWindow) ? capability.selectedWindow : {};
+  return renderKeyValues("ADE iOS Preview Lab", [
+    ["supported", capability.supported ?? record.ok],
+    ["xcode", capability.xcodeVersion],
+    ["mcpbridge", capability.mcpbridgeAvailable],
+    ["xcode running", capability.xcodeRunning],
+    ["xcode tab", selectedWindow.tabIdentifier],
+    ["snapshot", record.previewSnapshotPath],
+    ["rendered", record.renderedAt],
+    ["setup", steps],
+    ["error", record.error ?? capability.error],
+  ]);
+}
+
 function formatTextOutput(value: unknown, formatter: FormatterId | undefined): string {
   if (typeof value === "string") return value;
   if (isRecord(value) && typeof value.visual === "string" && (!formatter || formatter === "lanes")) return value.visual;
@@ -3231,6 +3930,20 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
       return formatTestsRuns(value);
     case "proof-list":
       return formatProofList(value);
+    case "ios-sim-status":
+      return formatIosSimStatus(value);
+    case "ios-sim-devices":
+      return formatIosSimDevices(value);
+    case "ios-sim-apps":
+      return formatIosSimApps(value);
+    case "ios-sim-stream":
+      return formatIosSimStream(value);
+    case "ios-sim-snapshot":
+      return formatIosSimSnapshot(value);
+    case "ios-sim-selection":
+      return formatIosSimSelection(value);
+    case "ios-sim-preview":
+      return formatIosSimPreview(value);
     case "actions-list":
       return formatActionsList(value);
     case "automation-run-detail":
@@ -3262,6 +3975,13 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "chat list") return "chat-list";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
+  if (label === "ios simulator status") return "ios-sim-status";
+  if (label === "ios simulator devices") return "ios-sim-devices";
+  if (label === "ios simulator launchable apps") return "ios-sim-apps";
+  if (label === "ios simulator stream start" || label === "ios simulator stream status" || label === "ios simulator stream stop") return "ios-sim-stream";
+  if (label === "ios simulator screen snapshot" || label === "ios simulator inspector snapshot" || label === "ios simulator screenshot") return "ios-sim-snapshot";
+  if (label === "ios simulator select" || label === "ios simulator inspect point") return "ios-sim-selection";
+  if (label === "ios simulator preview status" || label === "ios simulator previews" || label === "ios simulator preview render" || label === "ios simulator preview open") return "ios-sim-preview";
   if (label === "actions list") return "actions-list";
   if (label.endsWith("actions")) return "actions-list";
   return "action-result";

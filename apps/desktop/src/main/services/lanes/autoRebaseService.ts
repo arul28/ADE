@@ -42,6 +42,7 @@ export type AutoRebaseService = {
   refreshActiveRebaseNeeds: (reason?: string) => Promise<void>;
   recordAttentionStatus: (status: AttentionStatusInput) => Promise<void>;
   dismissStatus: (args: { laneId: string }) => Promise<void>;
+  cancelForLane: (laneId: string) => void;
   dispose: () => void;
 };
 
@@ -704,6 +705,20 @@ export function createAutoRebaseService(args: {
     queueByRoot.clear();
   };
 
+  const cancelForLane = (laneId: string): void => {
+    const trimmed = laneId.trim();
+    if (!trimmed) return;
+    const queue = queueByRoot.get(trimmed);
+    if (queue) {
+      if (queue.timer) clearTimeout(queue.timer);
+      queue.timer = null;
+      queue.pending = false;
+      queueByRoot.delete(trimmed);
+    }
+    clearStatus(trimmed);
+    db.setJson(dismissalKeyForLane(trimmed), null);
+  };
+
   return {
     listStatuses,
     onHeadChanged,
@@ -711,6 +726,7 @@ export function createAutoRebaseService(args: {
     refreshActiveRebaseNeeds,
     recordAttentionStatus,
     dismissStatus,
+    cancelForLane,
     dispose
   };
 }

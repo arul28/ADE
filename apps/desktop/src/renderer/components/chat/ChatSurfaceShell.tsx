@@ -1,6 +1,8 @@
 import type { CSSProperties, ReactNode, Ref } from "react";
+import type { ChatChromeTint, ChatShellGeometry } from "../../state/appStore";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { ChatChromeTintContext } from "./chatAppearance";
 import { chatSurfaceVars } from "./chatSurfaceTheme";
 
 export type ChatSurfaceShellLayoutVariant = "standard" | "mobile";
@@ -16,8 +18,12 @@ export function ChatSurfaceShell({
   bodyClassName,
   footerClassName,
   containerRef,
-  /** Uniform scale for header, transcript, and composer (CSS transform — works in Firefox; `zoom` does not). */
+  /** Legacy transform scale — prefer `--chat-font-size` on `[data-chat-appearance-root]` (usually `1`). */
   contentScale = 1,
+  chromeTint = "colored",
+  shellGeometry = "default",
+  /** When true, shell grows with content (e.g. settings live preview) instead of filling a fixed-height parent. */
+  autoHeight = false,
 }: {
   mode: ChatSurfaceMode;
   accentColor?: string | null;
@@ -30,6 +36,9 @@ export function ChatSurfaceShell({
   footerClassName?: string;
   containerRef?: Ref<HTMLElement>;
   contentScale?: number;
+  chromeTint?: ChatChromeTint;
+  shellGeometry?: ChatShellGeometry;
+  autoHeight?: boolean;
 }) {
   const scale = Number.isFinite(contentScale) && contentScale > 0 ? contentScale : 1;
   const scaled = Math.abs(scale - 1) > 0.001;
@@ -60,7 +69,12 @@ export function ChatSurfaceShell({
           {header}
         </div>
       ) : null}
-      <div className={cn("relative min-h-0 flex-1 overflow-hidden", bodyClassName)}>
+      <div
+        className={cn(
+          autoHeight ? "relative flex-none overflow-visible" : "relative min-h-0 flex-1 overflow-hidden",
+          bodyClassName,
+        )}
+      >
         {children}
       </div>
       {footer ? (
@@ -77,26 +91,49 @@ export function ChatSurfaceShell({
     </>
   );
 
+  const geometryAttr =
+    shellGeometry !== "default"
+      ? ({ "data-chat-shell-geometry": shellGeometry } as const)
+      : {};
+
   return (
-    <section
-      ref={containerRef}
-      data-chat-shell-layout={layoutVariant}
-      className={cn(
-        "relative flex h-full min-h-0 flex-col overflow-hidden",
-        className,
-      )}
-      style={{
-        ...chatSurfaceVars(mode, accentColor),
-        background: "var(--color-bg)",
-      }}
-    >
-      {scaled ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={scaleWrapperStyle}>
-          {inner}
-        </div>
-      ) : (
-        inner
-      )}
-    </section>
+    <ChatChromeTintContext.Provider value={chromeTint}>
+      <section
+        ref={containerRef}
+        data-chat-shell-layout={layoutVariant}
+        data-chat-chrome-tint={chromeTint}
+        {...geometryAttr}
+        className={cn(
+          "relative flex flex-col",
+          /* autoHeight: grow with transcript (e.g. settings preview) — avoid min-h-0 or the shell can clip when nested in grid/flex. */
+          autoHeight ? "h-auto min-h-min overflow-visible" : "min-h-0 h-full overflow-hidden",
+          className,
+        )}
+        style={{
+          ...chatSurfaceVars(mode, accentColor, { chromeTint }),
+          background: "var(--color-bg)",
+        }}
+      >
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 z-[5]"
+          style={{
+            width: "var(--chat-lane-rail-width, 0px)",
+            opacity: "var(--chat-lane-rail-opacity, 0)",
+            borderTopLeftRadius: "var(--chat-radius-shell)",
+            borderBottomLeftRadius: "var(--chat-radius-shell)",
+            background:
+              "linear-gradient(180deg, color-mix(in srgb, var(--chat-accent) 72%, transparent) 0%, color-mix(in srgb, var(--chat-accent) 32%, transparent) 100%)",
+          }}
+        />
+        {scaled ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={scaleWrapperStyle}>
+            {inner}
+          </div>
+        ) : (
+          inner
+        )}
+      </section>
+    </ChatChromeTintContext.Provider>
   );
 }

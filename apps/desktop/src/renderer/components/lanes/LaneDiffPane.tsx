@@ -307,7 +307,7 @@ export function LaneDiffPane({
                   fontFamily: MONO_FONT,
                   fontSize: 11,
                   ...(idx === arr.length - 1
-                    ? { fontWeight: 600, color: COLORS.textPrimary, background: `${COLORS.accent}15`, padding: "2px 4px" }
+                    ? { fontWeight: 600, color: COLORS.textPrimary, background: "color-mix(in srgb, var(--color-accent) 15%, transparent)", padding: "2px 4px" }
                     : { color: COLORS.textDim }),
                 }}>{segment}</span>
                 {idx < arr.length - 1 && <span style={{ color: COLORS.outlineBorder }}>/</span>}

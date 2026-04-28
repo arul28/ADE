@@ -100,6 +100,15 @@ idle. This avoids churn when the user briefly toggles views.
 `stopAllForSender(senderId)` fires on window close and tears down
 every subscription owned by that sender.
 
+`stopAllForWorkspace(workspaceId)` is the lane-teardown entry point.
+The lane delete pipeline calls it during the `stop_watchers` step
+(see [`features/lanes/README.md`](../lanes/README.md)) so chokidar
+releases its file handles on the worktree before
+`git worktree remove` runs. The companion `countActiveForWorkspace`
+returns the live watcher count for the same workspace and feeds the
+preflight `LaneDeleteRisk` so the manage dialog can warn before
+the user confirms.
+
 ### Event shape and debounce
 
 Chokidar emits per-file events (`add`, `change`, `unlink`, plus

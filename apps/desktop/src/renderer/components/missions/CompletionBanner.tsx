@@ -17,9 +17,9 @@ const BANNER_CONFIG: Partial<Record<OrchestratorRunStatus, {
   color: string;
   label: string;
 }>> = {
-  succeeded: { bg: `${COLORS.success}08`, border: `${COLORS.success}30`, color: COLORS.success, label: "Completed" },
-  failed: { bg: `${COLORS.danger}08`, border: `${COLORS.danger}30`, color: COLORS.danger, label: "Failed" },
-  paused: { bg: `${COLORS.warning}08`, border: `${COLORS.warning}30`, color: COLORS.warning, label: "Paused" },
+  succeeded: { bg: "color-mix(in srgb, var(--color-success) 8%, transparent)", border: "color-mix(in srgb, var(--color-success) 30%, transparent)", color: COLORS.success, label: "Completed" },
+  failed: { bg: "color-mix(in srgb, var(--color-error) 8%, transparent)", border: "color-mix(in srgb, var(--color-error) 30%, transparent)", color: COLORS.danger, label: "Failed" },
+  paused: { bg: "color-mix(in srgb, var(--color-warning) 8%, transparent)", border: "color-mix(in srgb, var(--color-warning) 30%, transparent)", color: COLORS.warning, label: "Paused" },
   canceled: { bg: "#71717A08", border: "#71717A30", color: "#71717A", label: "Canceled" },
 };
 

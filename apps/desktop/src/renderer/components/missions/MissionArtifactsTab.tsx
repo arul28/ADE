@@ -162,9 +162,9 @@ export function MissionArtifactsTab({
                   height: 24,
                   padding: "0 8px",
                   fontSize: 9,
-                  background: groupMode === mode ? `${COLORS.accent}14` : COLORS.cardBg,
+                  background: groupMode === mode ? "color-mix(in srgb, var(--color-accent) 14%, transparent)" : COLORS.cardBg,
                   color: groupMode === mode ? COLORS.accent : COLORS.textMuted,
-                  border: `1px solid ${groupMode === mode ? `${COLORS.accent}35` : COLORS.border}`,
+                  border: `1px solid ${groupMode === mode ? "color-mix(in srgb, var(--color-accent) 35%, transparent)" : COLORS.border}`,
                 })}
                 onClick={() => setGroupMode(mode)}
               >
@@ -265,8 +265,8 @@ export function MissionArtifactsTab({
                           type="button"
                           className="w-full rounded-sm px-3 py-2 text-left"
                           style={{
-                            background: selected ? `${COLORS.accent}12` : COLORS.recessedBg,
-                            border: `1px solid ${selected ? `${COLORS.accent}35` : COLORS.border}`,
+                            background: selected ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : COLORS.recessedBg,
+                            border: `1px solid ${selected ? "color-mix(in srgb, var(--color-accent) 35%, transparent)" : COLORS.border}`,
                           }}
                           onClick={() => setSelectedArtifactId(artifact.id)}
                         >

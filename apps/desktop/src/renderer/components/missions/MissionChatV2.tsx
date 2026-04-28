@@ -29,6 +29,7 @@ import { ChatChannelList, type Channel } from "./ChatChannelList";
 import { ChatMessageArea } from "./ChatMessageArea";
 import { ChatInput, type QuickTarget } from "./ChatInput";
 import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
+import { useAppStore } from "../../state/appStore";
 import { useMissionsStore } from "./useMissionsStore";
 
 const BG_PAGE = COLORS.pageBg;
@@ -169,6 +170,8 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   const selectedChannel = useMemo(() => channels.find((c) => c.id === selectedChannelId) ?? channels[0], [channels, selectedChannelId]);
   const missionSurfaceMode = selectedChannel?.kind === "global" ? "mission-feed" : "mission-thread";
   const missionSurfaceAccent = useMemo(() => resolveMissionSurfaceAccent(selectedChannel), [selectedChannel]);
+  const chatChromeTint = useAppStore((s) => s.chatChromeTint);
+  const chatShellGeometry = useAppStore((s) => s.chatShellGeometry);
 
   const participants = useMemo<MentionParticipant[]>(() => [], []);
   const quickTargets = useMemo<QuickTarget[]>(() => [], []);
@@ -587,6 +590,9 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         <ChatSurfaceShell
           mode={missionSurfaceMode}
           accentColor={missionSurfaceAccent}
+          chromeTint={chatChromeTint}
+          shellGeometry={chatShellGeometry}
+          contentScale={1}
           className="m-2 rounded-[var(--chat-radius-shell)]"
           bodyClassName="flex min-h-0 flex-1 flex-col"
           footer={(
@@ -639,7 +645,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
                     <button
                       type="button"
                       className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em]"
-                      style={{ border: `1px solid ${COLORS.accent}30`, color: COLORS.accent }}
+                      style={{ border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", color: COLORS.accent }}
                       onClick={() => void refreshSelectedMessages()}
                     >
                       Retry
@@ -649,7 +655,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
                     <button
                       type="button"
                       className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] disabled:opacity-55"
-                      style={{ border: `1px solid ${COLORS.accent}30`, color: COLORS.accent }}
+                      style={{ border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", color: COLORS.accent }}
                       onClick={loadOlderSelectedMessages}
                       disabled={threadMessagesLoadingMore}
                       aria-label={threadMessagesLoadingMore ? "Loading older mission thread messages" : "Load older mission thread messages"}

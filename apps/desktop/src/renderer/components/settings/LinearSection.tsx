@@ -267,8 +267,8 @@ export function LinearSection() {
       {isConnected ? (
         <div style={{
           padding: 20,
-          background: `linear-gradient(135deg, ${COLORS.success}08, ${COLORS.success}04)`,
-          border: `1px solid ${COLORS.success}25`,
+          background: `linear-gradient(135deg, color-mix(in srgb, var(--color-success) 8%, transparent), color-mix(in srgb, var(--color-success) 4%, transparent))`,
+          border: "1px solid color-mix(in srgb, var(--color-success) 25%, transparent)",
           borderRadius: 14,
         }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
@@ -484,7 +484,7 @@ export function LinearSection() {
         <div style={{
           display: "flex", alignItems: "center", gap: 8,
           padding: "10px 14px", borderRadius: 10,
-          background: `${COLORS.danger}08`, border: `1px solid ${COLORS.danger}20`,
+          background: "color-mix(in srgb, var(--color-error) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 20%, transparent)",
           fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: "17px",
         }}>
           <XCircle size={14} weight="fill" style={{ flexShrink: 0 }} />

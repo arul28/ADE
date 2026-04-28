@@ -71,13 +71,13 @@ function ensureKeyframes() {
       border-radius: 999px;
       background: #FAFAFA;
       border: 2px solid ${COLORS.accent};
-      box-shadow: 0 0 6px ${COLORS.accent}40;
+      box-shadow: 0 0 6px color-mix(in srgb, var(--color-accent) 40%, transparent);
       cursor: pointer;
       margin-top: -${(THUMB_SIZE - TRACK_HEIGHT) / 2}px;
       transition: box-shadow 0.15s ease;
     }
     input[type="range"].pipeline-range::-webkit-slider-thumb:hover {
-      box-shadow: 0 0 10px ${COLORS.accent}70;
+      box-shadow: 0 0 10px color-mix(in srgb, var(--color-accent) 70%, transparent);
     }
     input[type="range"].pipeline-range::-webkit-slider-runnable-track {
       height: ${TRACK_HEIGHT}px;
@@ -94,7 +94,7 @@ function ensureKeyframes() {
     }
     select.pipeline-select:focus {
       outline: none;
-      border-color: ${COLORS.accent}60;
+      border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
     }
   `;
   document.head.appendChild(style);
@@ -355,7 +355,7 @@ export function PrPipelineSettings({
               fontSize: 11,
               fontWeight: 700,
               color: COLORS.accent,
-              background: `${COLORS.accent}14`,
+              background: "color-mix(in srgb, var(--color-accent) 14%, transparent)",
               padding: "2px 8px",
               borderRadius: 4,
               minWidth: 24,
@@ -390,7 +390,7 @@ export function PrPipelineSettings({
               height: TRACK_HEIGHT,
               width: `${fillPct}%`,
               borderRadius: 999,
-              background: `linear-gradient(90deg, ${COLORS.accent}80, ${COLORS.accent})`,
+              background: `linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 80%, transparent), ${COLORS.accent})`,
               transform: "translateY(-50%)",
               pointerEvents: "none",
               zIndex: 1,

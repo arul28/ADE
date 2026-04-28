@@ -491,20 +491,6 @@ describe("AgentChatComposer", () => {
     expect(screen.getByRole("combobox", { name: "Permissions" })).toBeTruthy();
   });
 
-  it("shows inline proof toggle and wires callback", () => {
-    const onToggleProof = vi.fn();
-    renderComposer({
-      onToggleProof,
-      proofOpen: false,
-      proofArtifactCount: 3,
-    });
-
-    const proofButton = screen.getByLabelText("Open proof drawer");
-    fireEvent.click(proofButton);
-    expect(onToggleProof).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("3")).toBeTruthy();
-  });
-
   it("marks the textarea layout variant in grid-tile mode", () => {
     const { container } = renderComposer({
       layoutVariant: "grid-tile",

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { COLORS } from "../../lanes/laneDesignTokens";
 import { derivePrActivityState, formatCompactCount, getPrEdgeColor } from "./prVisuals";
 
 describe("prVisuals", () => {
@@ -49,21 +50,18 @@ describe("prVisuals", () => {
   });
 
   it("uses merged, review, draft, and ci-running colors in the expected priority order", () => {
-    expect(getPrEdgeColor({ state: "merged", checksStatus: "passing", reviewStatus: "approved" })).toBe("#22C55E");
-    expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "requested" })).toBe("#F59E0B");
-    expect(getPrEdgeColor({ state: "open", checksStatus: "pending", reviewStatus: "approved" })).toBe("#3B82F6");
-    expect(getPrEdgeColor({ state: "draft", checksStatus: "none", reviewStatus: "none" })).toBe("#A78BFA");
-    expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "changes_requested" })).toBe("#EF4444");
+    expect(getPrEdgeColor({ state: "merged", checksStatus: "passing", reviewStatus: "approved" })).toBe(COLORS.success);
+    expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "requested" })).toBe(COLORS.warning);
+    expect(getPrEdgeColor({ state: "open", checksStatus: "pending", reviewStatus: "approved" })).toBe(COLORS.info);
+    expect(getPrEdgeColor({ state: "draft", checksStatus: "none", reviewStatus: "none" })).toBe(COLORS.accent);
+    expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "changes_requested" })).toBe(COLORS.danger);
   });
 
   it("returns info color for getPrEdgeColor when ciRunning flag is explicitly set", () => {
-    // ciRunning should take priority over other statuses (except merged, draft, changes_requested)
-    expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "approved", ciRunning: true })).toBe("#3B82F6");
-    expect(getPrEdgeColor({ state: "open", checksStatus: "failing", reviewStatus: "approved", ciRunning: true })).toBe("#3B82F6");
-    // But merged still wins
-    expect(getPrEdgeColor({ state: "merged", checksStatus: "pending", reviewStatus: "approved", ciRunning: true })).toBe("#22C55E");
-    // And changes_requested still wins
-    expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "changes_requested", ciRunning: true })).toBe("#EF4444");
+    expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "approved", ciRunning: true })).toBe(COLORS.info);
+    expect(getPrEdgeColor({ state: "open", checksStatus: "failing", reviewStatus: "approved", ciRunning: true })).toBe(COLORS.info);
+    expect(getPrEdgeColor({ state: "merged", checksStatus: "pending", reviewStatus: "approved", ciRunning: true })).toBe(COLORS.success);
+    expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "changes_requested", ciRunning: true })).toBe(COLORS.danger);
   });
 
   describe("formatCompactCount", () => {

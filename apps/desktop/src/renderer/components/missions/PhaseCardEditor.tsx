@@ -141,7 +141,7 @@ export function PhaseCardEditor({
     <div
       className="p-2"
       style={{
-        background: isDisabled ? `${COLORS.recessedBg}80` : COLORS.recessedBg,
+        background: isDisabled ? "color-mix(in srgb, var(--color-muted) 80%, transparent)" : COLORS.recessedBg,
         border: `1px solid ${isDisabled ? COLORS.border + "60" : COLORS.border}`,
         opacity: isDisabled ? 0.5 : 1,
         transition: "opacity 0.15s ease",

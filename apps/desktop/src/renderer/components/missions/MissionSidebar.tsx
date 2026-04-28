@@ -101,8 +101,8 @@ export function MissionSidebar() {
           <span
             className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-[1px]"
             style={{
-              background: `${COLORS.accent}18`,
-              border: `1px solid ${COLORS.accent}30`,
+              background: "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
               color: COLORS.accent,
               fontFamily: MONO_FONT,
             }}
@@ -178,7 +178,7 @@ export function MissionSidebar() {
               className="px-1.5 py-1 text-xs"
               style={
                 missionListView === "list"
-                  ? { background: `${COLORS.accent}18`, color: COLORS.textPrimary }
+                  ? { background: "color-mix(in srgb, var(--color-accent) 18%, transparent)", color: COLORS.textPrimary }
                   : { color: COLORS.textMuted }
               }
               onClick={() => setMissionListView("list")}
@@ -190,7 +190,7 @@ export function MissionSidebar() {
               className="px-1.5 py-1 text-xs"
               style={
                 missionListView === "board"
-                  ? { background: `${COLORS.accent}18`, color: COLORS.textPrimary }
+                  ? { background: "color-mix(in srgb, var(--color-accent) 18%, transparent)", color: COLORS.textPrimary }
                   : { color: COLORS.textMuted }
               }
               onClick={() => setMissionListView("board")}
@@ -208,7 +208,7 @@ export function MissionSidebar() {
           <div className="px-2 py-8 text-center text-xs" style={{ color: COLORS.textDim }}>
             {missions.length === 0 ? (
               <div className="flex flex-col items-center gap-2">
-                <Rocket size={28} weight="regular" style={{ color: `${COLORS.accent}40` }} />
+                <Rocket size={28} weight="regular" style={{ color: "color-mix(in srgb, var(--color-accent) 40%, transparent)" }} />
                 <p>No missions yet. Missions coordinate your AI agents to accomplish complex tasks.</p>
                 <button onClick={() => openMissionCreateDialog()} style={primaryButton()}>
                   START MISSION
@@ -345,7 +345,7 @@ function MissionSidebarStatusBlock(props: {
               {(phaseName || stepTitle) && (
                 <div className="flex flex-wrap items-center gap-1.5">
                   {phaseName ? (
-                    <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.6px]" style={{ background: `${COLORS.accent}16`, border: `1px solid ${COLORS.accent}28`, color: COLORS.accent, fontFamily: MONO_FONT }}>
+                    <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.6px]" style={{ background: "color-mix(in srgb, var(--color-accent) 16%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 28%, transparent)", color: COLORS.accent, fontFamily: MONO_FONT }}>
                       {phaseName}
                     </span>
                   ) : null}
@@ -434,9 +434,9 @@ function MissionBoardCard(props: {
         isSelected
           ? {
               background: "#A78BFA12",
-              borderTop: `1px solid ${COLORS.accent}30`,
-              borderRight: `1px solid ${COLORS.accent}30`,
-              borderBottom: `1px solid ${COLORS.accent}30`,
+              borderTop: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
+              borderRight: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
+              borderBottom: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
               borderLeft: `3px solid ${COLORS.accent}`,
             }
           : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
@@ -524,7 +524,7 @@ function MissionListItem(props: {
       onContextMenu={(event) => onContextMenu(m, event)}
       className={cn("w-full text-left px-2.5 py-2 transition-colors", isActive && !isSelected && "ade-glow-pulse-blue")}
       style={isSelected
-        ? { background: "#A78BFA12", borderTop: `1px solid ${COLORS.accent}30`, borderRight: `1px solid ${COLORS.accent}30`, borderBottom: `1px solid ${COLORS.accent}30`, borderLeft: `3px solid ${COLORS.accent}` }
+        ? { background: "#A78BFA12", borderTop: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", borderRight: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", borderBottom: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", borderLeft: `3px solid ${COLORS.accent}` }
         : { border: "1px solid transparent" }}
     >
       <div className="flex items-start gap-2">
@@ -609,8 +609,8 @@ function MissionInterventionBadge({ count }: { count: number }) {
       className="shrink-0 px-1 py-0.5 text-[10px] font-bold"
       style={{
         color: COLORS.warning,
-        background: `${COLORS.warning}18`,
-        border: `1px solid ${COLORS.warning}30`,
+        background: "color-mix(in srgb, var(--color-warning) 18%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
         fontFamily: MONO_FONT,
       }}
       title={`${count} pending intervention${count === 1 ? "" : "s"}`}

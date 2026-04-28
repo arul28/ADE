@@ -364,7 +364,7 @@ function InterventionBanner({
   return (
     <div
       style={{
-        background: `${COLORS.warning}0C`,
+        background: "color-mix(in srgb, var(--color-warning) 5%, transparent)",
         borderLeft: `3px solid ${COLORS.warning}`,
         padding: "6px 10px",
         display: "flex",
@@ -411,8 +411,8 @@ function InterventionBanner({
             textTransform: "uppercase",
             letterSpacing: "1px",
             color: COLORS.warning,
-            background: `${COLORS.warning}14`,
-            border: `1px solid ${COLORS.warning}35`,
+            background: "color-mix(in srgb, var(--color-warning) 14%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-warning) 35%, transparent)",
             cursor: "pointer",
           }}
         >

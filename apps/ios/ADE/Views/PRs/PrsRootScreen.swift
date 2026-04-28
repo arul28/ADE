@@ -556,7 +556,7 @@ struct PRsTabView: View {
         // Global triad (laptop/grid/bell) — kept in PRs tab for parity with
         // every other tab. The user doesn't have to context-switch tabs to
         // reach connection status, project home, or attention.
-        ADERootToolbarControls()
+        ADERootToolbarControls(scopeKey: "PRs")
       }
     }
     .padding(.horizontal, 16)

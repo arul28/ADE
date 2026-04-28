@@ -242,6 +242,17 @@ struct PrFileDiffCard: View {
     }
     .padding(14)
     .prGlassCard(cornerRadius: 18)
+    .adeInspectable(
+      "PR.Detail.FileDiffCard",
+      metadata: [
+        "label": accessibilityLabel,
+        "filename": file.filename,
+        "status": file.status,
+        "additions": String(file.additions),
+        "deletions": String(file.deletions),
+        "role": "row"
+      ]
+    )
   }
 
   private var accessibilityLabel: String {

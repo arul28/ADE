@@ -504,6 +504,16 @@ private struct WorkerRowCard: View {
       }
       .disabled(isWaking)
     }
+    .adeInspectable(
+      "CTO.Team.WorkerRow",
+      metadata: [
+        "label": "\(agent.name), \(agent.role), status \(agent.status)",
+        "agentId": agent.id,
+        "agentName": agent.name,
+        "role": "row",
+        "status": agent.status
+      ]
+    )
   }
 
   private var avatar: some View {
@@ -526,8 +536,26 @@ private struct WorkerRowCard: View {
       MiniActionButton(label: isWaking ? "…" : "Wake", action: onWake)
         .disabled(isWaking)
         .accessibilityLabel("Wake \(agent.name)")
+        .adeInspectable(
+          "CTO.Team.WakeButton",
+          metadata: [
+            "label": "Wake \(agent.name)",
+            "agentId": agent.id,
+            "agentName": agent.name,
+            "role": "button"
+          ]
+        )
       MiniActionButton(label: "Details", action: onDetails)
         .accessibilityLabel("Details for \(agent.name)")
+        .adeInspectable(
+          "CTO.Team.DetailsButton",
+          metadata: [
+            "label": "Details for \(agent.name)",
+            "agentId": agent.id,
+            "agentName": agent.name,
+            "role": "button"
+          ]
+        )
     }
   }
 }

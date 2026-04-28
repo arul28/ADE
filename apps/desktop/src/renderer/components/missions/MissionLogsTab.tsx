@@ -157,7 +157,7 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
               onClick={() => toggleChannel(channel)}
               className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
               style={active
-                ? { background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}35`, color: COLORS.accent, fontFamily: MONO_FONT }
+                ? { background: "color-mix(in srgb, var(--color-accent) 18%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 35%, transparent)", color: COLORS.accent, fontFamily: MONO_FONT }
                 : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }
               }
             >
@@ -187,13 +187,13 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
       </div>
 
       {exportNotice ? (
-        <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.accent}10`, border: `1px solid ${COLORS.accent}25`, color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
+        <div className="px-2 py-1 text-[10px]" style={{ background: "color-mix(in srgb, var(--color-accent) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)", color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
           {exportNotice}
         </div>
       ) : null}
 
       {error ? (
-        <div className="px-2 py-1 text-[10px]" style={{ background: `${COLORS.danger}14`, border: `1px solid ${COLORS.danger}30`, color: COLORS.danger, fontFamily: MONO_FONT }}>
+        <div className="px-2 py-1 text-[10px]" style={{ background: "color-mix(in srgb, var(--color-error) 14%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", color: COLORS.danger, fontFamily: MONO_FONT }}>
           {error}
         </div>
       ) : null}
@@ -218,14 +218,14 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
                   className="px-3 py-2"
                   style={{
                     borderBottom: `1px solid ${COLORS.border}`,
-                    background: focused ? `${COLORS.warning}10` : "transparent",
+                    background: focused ? "color-mix(in srgb, var(--color-warning) 10%, transparent)" : "transparent",
                   }}
                 >
                   <div className="flex items-center gap-2 text-[10px]" style={{ fontFamily: MONO_FONT }}>
                     <span style={{ color: COLORS.textMuted }}>{formatWhen(entry.at)}</span>
                     <span
                       className="px-1 py-0.5 uppercase tracking-[1px]"
-                      style={{ background: `${COLORS.accent}15`, border: `1px solid ${COLORS.accent}25`, color: COLORS.accent }}
+                      style={{ background: "color-mix(in srgb, var(--color-accent) 15%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)", color: COLORS.accent }}
                     >
                       {CHANNEL_LABELS[entry.channel]}
                     </span>

@@ -53,7 +53,7 @@ The mock’s default data is **demonstration data**. To mirror the **current** l
 
 4. **While that file exists**, the browser mock prefers exported DB-backed rows and uses built-in demo data only for domains that were not exported. Delete the generated file to restore the full built-in demos.
 
-**Scope:** The export covers project metadata, lanes, lane status snapshots, PR summaries and cached PR detail snapshots, queue landing state, integration workflow rows, rebase signals, history operations, terminal sessions, chat transcript event histories, process definitions/runtime, automation run/ingress history, CTO memory state, usage summaries, and mission summaries when those tables have rows.
+**Scope:** The export covers project metadata, lanes, lane status snapshots, PR summaries and cached PR detail snapshots, queue landing state, integration workflow rows, rebase signals, history operations, terminal sessions, chat transcript event histories, process definitions/runtime, automation run/ingress history, CTO memory state, usage summaries, and mission summaries when those tables have rows. It also walks each lane `worktree_path` on disk and embeds **`filesTreeByWorkspace`** (depth-1 `listTree` slices per directory, for the Files tab in Vite) plus **`filesContentsByWorkspace`** for a bounded set of small text files so `readFile` can open real sources in the browser mock.
 
 It is still a static browser snapshot, not a main-process replacement. Actions that need GitHub, git, PTYs, file contents, live process control, computer use, or fresh backend computation are no-ops or safe defaults. Re-run `npm run dev:vite` or `npm run export:browser-mock-ade` after the desktop app changes the database.
 

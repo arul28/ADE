@@ -26,9 +26,13 @@ import {
   ShieldCheck,
   CopySimple,
   Brain,
+  Image,
+  Code,
+  Paperclip,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
+  AgentChatCompletionStatus,
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatNoticeDetail,
@@ -45,6 +49,14 @@ import { formatTime } from "../../lib/format";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
+import {
+  CHAT_ASSISTANT_MESSAGE_CARD_STYLE,
+  CHAT_TRANSCRIPT_GLASS_CARD_CLASS,
+  CHAT_USER_MESSAGE_CARD_STYLE,
+  CHAT_WORK_LOG_CARD_CLASS,
+} from "./chatTranscriptChrome";
+import { useAppStore } from "../../state/appStore";
+import { transcriptRowGapPx, useChatChromeTint } from "./chatAppearance";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
@@ -62,6 +74,16 @@ import {
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
+import { ChatUserMinimap } from "./ChatUserMinimap";
+import {
+  CHAT_TIMELINE_ROW_GAP_PX,
+  buildMinimapDisplayEntries,
+  collectUserMessageMinimapSourceEntries,
+  computeActiveDisplayIndex,
+  computeActiveFullUserOrdinal,
+  computeRowStartOffsets,
+  computeScrollTopForRow,
+} from "./chatUserMinimap.logic";
 import { readPendingInputRequest, buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
 import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/types";
 
@@ -158,6 +180,41 @@ function formatTurnDiffAction(status: TurnDiffFile["status"]): string {
   }
 }
 
+function approvalToneClass(state: PendingInputResolution | null): string {
+  if (state === "accepted") return "text-emerald-300/70";
+  if (state === "declined") return "text-red-300/70";
+  return "text-fg/45";
+}
+
+function doneStatusToneClass(status: Extract<AgentChatEvent, { type: "done" }>["status"]): string {
+  if (status === "completed") return "border-white/[0.04] bg-[#141220]/60 text-fg/45";
+  if (status === "failed") return "border-red-500/12 bg-red-500/[0.04] text-red-300";
+  return "border-amber-500/12 bg-amber-500/[0.04] text-amber-300";
+}
+
+function completionReportToneClass(status: AgentChatCompletionStatus): string {
+  if (status === "completed") return "border-emerald-400/15 bg-emerald-400/[0.05] text-emerald-200";
+  if (status === "blocked") return "border-red-500/15 bg-red-500/[0.05] text-red-200";
+  return "border-amber-500/15 bg-amber-500/[0.05] text-amber-200";
+}
+
+function turnStatusToneClass(args: { isFailure: boolean; isInterrupted: boolean }): string {
+  if (args.isFailure) return "border-red-500/14 bg-red-500/[0.05] text-red-300";
+  if (args.isInterrupted) return "border-amber-500/14 bg-amber-500/[0.05] text-amber-300";
+  return "border-border/14 bg-surface-recessed/70 text-muted-fg/55";
+}
+
+function approvalWaitingLabel(args: {
+  isPlanApproval: boolean;
+  isAskUser: boolean;
+  isPermissionRequest: boolean;
+}): string {
+  if (args.isPlanApproval) return "Presenting plan for approval";
+  if (args.isAskUser) return "Waiting for input";
+  if (args.isPermissionRequest) return "Permission request";
+  return "Approval required";
+}
+
 function hasNoticeDetail(detail: string | AgentChatNoticeDetail | undefined): boolean {
   if (detail == null) return false;
   if (typeof detail === "string") return detail.trim().length > 0;
@@ -179,11 +236,11 @@ function isNoticeMessageRedundantWithDetail(message: string, detail: string | Ag
 
 function renderNoticeDetail(detail: string | AgentChatNoticeDetail): React.ReactNode {
   if (typeof detail === "string") {
-    return <div className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg/60">{detail}</div>;
+    return <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/60">{detail}</div>;
   }
 
   return (
-    <div className="space-y-3 text-[11px] leading-relaxed text-fg/60">
+    <div className="space-y-3 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/60">
       {detail.title?.trim() ? <div className="font-medium text-fg/75">{detail.title.trim()}</div> : null}
       {detail.summary?.trim() ? <div className="whitespace-pre-wrap break-words">{detail.summary.trim()}</div> : null}
       {detail.metrics?.length ? (
@@ -193,7 +250,7 @@ function renderNoticeDetail(detail: string | AgentChatNoticeDetail): React.React
               key={`${metric.label}:${metric.value}`}
               className="rounded-lg border border-border/12 bg-black/10 px-2.5 py-2"
             >
-              <div className="text-[10px] uppercase tracking-[0.14em] text-muted-fg/55">{metric.label}</div>
+              <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55">{metric.label}</div>
               <div className={cn("mt-1 text-sm font-medium", metric.tone ? chatChipToneClass(metric.tone) : "text-fg/75")}>
                 {metric.value}
               </div>
@@ -203,7 +260,7 @@ function renderNoticeDetail(detail: string | AgentChatNoticeDetail): React.React
       ) : null}
       {detail.sections?.map((section) => (
         <div key={section.title} className="space-y-1.5">
-          <div className="text-[10px] uppercase tracking-[0.14em] text-muted-fg/55">{section.title}</div>
+          <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55">{section.title}</div>
           <div className="space-y-1.5">
             {section.items.map((item, index) => (
               typeof item === "string" ? (
@@ -246,7 +303,7 @@ function renderSubagentUsage(usage: {
 } | undefined): React.ReactNode {
   if (!usage) return null;
   return (
-    <div className="flex flex-wrap gap-3 border-t border-violet-500/8 pt-2.5 font-mono text-[10px] text-muted-fg/45">
+    <div className="flex flex-wrap gap-3 border-t border-violet-500/8 pt-2.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
       {usage.totalTokens != null ? (
         <span>{formatTokenCount(usage.totalTokens)} tokens</span>
       ) : null}
@@ -260,14 +317,12 @@ function renderSubagentUsage(usage: {
   );
 }
 
-const GLASS_CARD_CLASS =
-  "ade-liquid-glass overflow-hidden rounded-[14px]";
+const GLASS_CARD_CLASS = CHAT_TRANSCRIPT_GLASS_CARD_CLASS;
 
-const WORK_LOG_CARD_CLASS =
-  "ade-chat-work-card overflow-hidden rounded-[14px]";
+const WORK_LOG_CARD_CLASS = CHAT_WORK_LOG_CARD_CLASS;
 
 const RECESSED_BLOCK_CLASS =
-  "ade-chat-recessed overflow-auto whitespace-pre-wrap break-words rounded-[10px] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
+  "ade-chat-recessed overflow-auto whitespace-pre-wrap break-words rounded-[10px] px-4 py-3 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.6] text-fg/78";
 
 function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
   if (toolName.startsWith("functions.")) {
@@ -283,19 +338,13 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
   return null;
 }
 
-const MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "color-mix(in srgb, var(--chat-accent) 26%, rgba(255,255,255,0.14))",
-  boxShadow: "0 18px 28px -24px color-mix(in srgb, var(--chat-accent) 34%, transparent), 0 10px 26px -22px rgba(0,0,0,0.52)",
-};
+const MESSAGE_CARD_STYLE = CHAT_USER_MESSAGE_CARD_STYLE;
 
 const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
   borderColor: "color-mix(in srgb, var(--chat-glass-border) 100%, transparent)",
 };
 
-const ASSISTANT_MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "color-mix(in srgb, var(--chat-glass-border) 100%, transparent)",
-  boxShadow: "0 16px 32px -26px rgba(0, 0, 0, 0.5)",
-};
+const ASSISTANT_MESSAGE_CARD_STYLE = CHAT_ASSISTANT_MESSAGE_CARD_STYLE;
 
 function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
   if (event.deliveryState === "failed") {
@@ -325,6 +374,60 @@ function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_
     };
   }
   return null;
+}
+
+const IOS_SIMULATOR_CONTEXT_PREFIX = "Selected iOS simulator context:";
+
+function UserMessageSendConfirmations({
+  event,
+}: {
+  event: Extract<AgentChatEvent, { type: "user_message" }>;
+}) {
+  if (event.deliveryState === "queued") return null;
+
+  const attachments = event.attachments ?? [];
+  const hasImage = attachments.some((a) => a.type === "image");
+  const hasFile = attachments.some((a) => a.type === "file");
+  const showFilesRow = hasImage || hasFile;
+  const showSimRow = event.text.startsWith(IOS_SIMULATOR_CONTEXT_PREFIX);
+
+  if (!showFilesRow && !showSimRow) return null;
+
+  const attachmentCount = attachments.length;
+  const attachmentLabel = attachmentCount <= 1 ? "Attachment analyzed" : "Attachments analyzed";
+
+  return (
+    <div className="mt-2 flex flex-col gap-1" data-testid="user-message-send-confirmations">
+      {showFilesRow ? (
+        <motion.div
+          className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
+          data-testid="user-message-attachment-analyzed"
+          initial={{ opacity: 0, y: 2 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.15, ease: "easeOut" }}
+        >
+          {hasImage ? (
+            <Image size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
+          ) : (
+            <Paperclip size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
+          )}
+          <span>{attachmentLabel}</span>
+        </motion.div>
+      ) : null}
+      {showSimRow ? (
+        <motion.div
+          className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
+          data-testid="user-message-simulator-analyzed"
+          initial={{ opacity: 0, y: 2 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.15, ease: "easeOut" }}
+        >
+          <Code size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
+          <span>Attachments from simulator analyzed</span>
+        </motion.div>
+      ) : null}
+    </div>
+  );
 }
 
 type RenderEnvelope = {
@@ -367,7 +470,7 @@ function MessageCopyButton({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
+        "inline-flex items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
         className,
       )}
       onClick={handleCopy}
@@ -641,12 +744,24 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation, laneId?: string | null) => void;
   workspaceLaneId?: string | null;
 }) {
+  const chromeTint = useChatChromeTint();
+  const neu = chromeTint === "neutral";
   const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
     onOpenWorkspacePath?.(path, workspaceLaneId ?? null);
   }, [onOpenWorkspacePath, workspaceLaneId]);
 
   return (
-    <div className="ade-prose-themed prose prose-invert max-w-none text-[13px] leading-[1.8] text-fg/96 prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-fg prose-p:my-3 prose-p:text-fg/88 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-blockquote:text-fg/76 prose-hr:my-5 prose-hr:border-white/[0.08]">
+    <div
+      className={cn(
+        "ade-prose-themed prose prose-invert min-w-0 max-w-full text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
+        neu
+          ? "text-white/92 prose-headings:text-white/95 prose-p:text-white/88 prose-li:text-white/86 prose-strong:text-white prose-blockquote:text-white/76"
+          : "text-fg/96 prose-headings:text-fg prose-p:text-fg/88 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:text-fg/76",
+        "prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight",
+        "prose-p:my-3 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1",
+        "prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-white/[0.08]",
+      )}
+    >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         urlTransform={chatMarkdownUrlTransform}
@@ -656,27 +771,45 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
           h3: ({ children }) => <h3 className="text-[0.9rem]">{children}</h3>,
           ul: ({ children }) => <ul className="my-3 list-disc space-y-1.5 pl-5">{children}</ul>,
           ol: ({ children }) => <ol className="my-3 list-decimal space-y-1.5 pl-5">{children}</ol>,
-          li: ({ children }) => <li className="pl-1 text-fg/88">{children}</li>,
+          li: ({ children }) => (
+            <li className={neu ? "pl-1 text-white/86" : "pl-1 text-fg/88"}>{children}</li>
+          ),
           blockquote: ({ children }) => (
-            <blockquote className="border-l-2 border-white/20 pl-4 italic text-fg/72">
+            <blockquote
+              className={neu ? "border-l-2 border-white/20 pl-4 italic text-white/74" : "border-l-2 border-white/20 pl-4 italic text-fg/72"}
+            >
               {children}
             </blockquote>
           ),
           table: ({ children }) => (
             <div className="my-4 overflow-x-auto rounded-xl border border-white/[0.06] bg-[#0A090E]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
-              <table className="min-w-full border-separate border-spacing-0 text-[12px]">{children}</table>
+              <table className="min-w-full border-separate border-spacing-0 text-[length:calc(var(--chat-font-size)*12/14)]">{children}</table>
             </div>
           ),
           thead: ({ children, node: _, ...props }) => <thead className="bg-white/[0.04]" {...props}>{children}</thead>,
           tbody: ({ children, node: _, ...props }) => <tbody {...props}>{children}</tbody>,
           tr: ({ children, node: _, ...props }) => <tr className="align-top" {...props}>{children}</tr>,
           th: ({ children, node: _, ...props }) => (
-            <th className="border-b border-white/[0.06] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl" {...props}>
+            <th
+              className={
+                neu
+                  ? "break-words border-b border-white/[0.06] px-3 py-2 text-left font-medium text-white/88 first:rounded-tl-xl last:rounded-tr-xl"
+                  : "break-words border-b border-white/[0.06] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl"
+              }
+              {...props}
+            >
               {children}
             </th>
           ),
           td: ({ children, node: _, ...props }) => (
-            <td className="border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0" {...props}>
+            <td
+              className={
+                neu
+                  ? "break-words border-b border-white/[0.05] px-3 py-2 align-top text-white/82 last:border-r-0"
+                  : "break-words border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0"
+              }
+              {...props}
+            >
               {children}
             </td>
           ),
@@ -691,12 +824,18 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             const workspacePath = !isBlock ? parseWorkspacePathLocation(text) : null;
             const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(text));
             return isBlock ? (
-              <code className="font-mono text-[11px] text-fg/82">{children}</code>
+              <code className={neu ? "font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/84" : "font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82"}>
+                {children}
+              </code>
             ) : pathIsClickable ? (
               <span
                 role="button"
                 tabIndex={0}
-                className="inline-flex cursor-pointer items-center rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 font-mono text-[11px] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100"
+                className={
+                  neu
+                    ? "inline-flex cursor-pointer items-center rounded-md border border-white/14 bg-white/[0.06] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/22 hover:bg-white/[0.1] hover:text-white"
+                    : "inline-flex cursor-pointer items-center rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100"
+                }
                 onClick={() => openWorkspacePath(workspacePath!)}
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openWorkspacePath(workspacePath!); } }}
                 title="Open file in Files"
@@ -704,7 +843,15 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
                 {children}
               </span>
             ) : (
-              <code className="rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[11px] text-fg/90">{children}</code>
+              <code
+                className={
+                  neu
+                    ? "rounded-md border border-white/[0.1] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/90"
+                    : "rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
+                }
+              >
+                {children}
+              </code>
             );
           },
           a: ({ children, href }) => {
@@ -713,7 +860,11 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
               return (
                 <button
                   type="button"
-                  className="inline-flex items-center rounded-sm border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 font-sans text-[12px] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/22 hover:bg-sky-500/[0.1] hover:text-sky-100"
+                  className={
+                    neu
+                      ? "inline-flex items-center rounded-sm border border-white/12 bg-white/[0.06] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
+                      : "inline-flex items-center rounded-sm border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/22 hover:bg-sky-500/[0.1] hover:text-sky-100"
+                  }
                   onClick={() => openWorkspacePath(workspacePath)}
                   title="Open file in Files"
                 >
@@ -726,7 +877,11 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
                 href={href}
                 target="_blank"
                 rel="noreferrer"
-                className="text-accent underline decoration-accent/30 underline-offset-2 transition-colors hover:text-accent/80 hover:decoration-accent/50"
+                className={
+                  neu
+                    ? "text-white/85 underline decoration-white/28 underline-offset-2 transition-colors hover:text-white hover:decoration-white/45"
+                    : "text-accent underline decoration-accent/30 underline-offset-2 transition-colors hover:text-accent/80 hover:decoration-accent/50"
+                }
               >
                 {children}
               </a>
@@ -785,7 +940,7 @@ function CollapsibleCard({
         type="button"
         aria-expanded={isOpen}
         aria-controls={panelId}
-        className="flex w-full items-center gap-2.5 px-4 py-3 text-left font-sans text-[11px] transition-colors hover:bg-white/[0.02]"
+        className="flex w-full items-center gap-2.5 px-4 py-3 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors hover:bg-white/[0.02]"
         onClick={() => {
           if (forceOpen === true) {
             setUserCollapsed((v) => !v);
@@ -885,7 +1040,7 @@ function MinimalThought({ text, isLive }: { text: string; isLive: boolean }) {
   const preview = summarizeInlineText(trimmed, 96);
   const Caret = open ? CaretDown : CaretRight;
   return (
-    <div className="font-sans text-[11px]">
+    <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
       <button
         type="button"
         aria-expanded={open}
@@ -912,7 +1067,7 @@ function MinimalThought({ text, isLive }: { text: string; isLive: boolean }) {
         )}
       </button>
       {open ? (
-        <div className="mt-1.5 pl-4 text-fg/55 text-[12px] leading-relaxed">
+        <div className="mt-1.5 pl-4 text-fg/55 text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed">
           <MarkdownBlock markdown={trimmed.length ? text : "…"} />
         </div>
       ) : null}
@@ -930,7 +1085,7 @@ function MinimalMemoryNotice({
   const [open, setOpen] = useState(false);
   const Caret = open ? CaretDown : CaretRight;
   return (
-    <div className="font-sans text-[11px]">
+    <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
       <button
         type="button"
         aria-expanded={open}
@@ -942,7 +1097,7 @@ function MinimalMemoryNotice({
         <span className="font-medium text-fg/45">Memory</span>
       </button>
       {open ? (
-        <div className="mt-1.5 space-y-2 pl-4 text-[12px] leading-relaxed text-fg/55">
+        <div className="mt-1.5 space-y-2 pl-4 text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/55">
           {message.trim() && !isNoticeMessageRedundantWithDetail(message, detail) ? (
             <div className="text-fg/50">{message}</div>
           ) : null}
@@ -979,25 +1134,25 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
     >
     <CollapsibleCard
       summary={
-        <div className="flex items-center gap-2 font-sans text-[11px]">
+        <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
           <span className={cn("inline-flex", (event.status ?? "completed") === "running" && "ade-tool-bounce")}>
             <StatusIcon status={event.status ?? "completed"} />
           </span>
-          <span className={cn("ade-chat-status-pill inline-flex items-center gap-1.5 border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider", meta.badgeCls)}>
+          <span className={cn("ade-chat-status-pill inline-flex items-center gap-1.5 border px-2 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider", meta.badgeCls)}>
             <ToolIcon size={11} weight="bold" />
             {meta.label}
           </span>
           {sourceChip ? (
-            <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]", chatChipToneClass(sourceChip.tone))}>
+            <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.16em]", chatChipToneClass(sourceChip.tone))}>
               {sourceChip.label}
             </span>
           ) : null}
           {toolDisplay.secondaryLabel ? (
             <span className="font-bold text-fg/75">{toolDisplay.secondaryLabel}</span>
           ) : null}
-          {preview.length && !event.tool.includes("memory") ? <span className="max-w-[360px] truncate text-[10px] text-fg/35">{preview}</span> : null}
+          {preview.length && !event.tool.includes("memory") ? <span className="max-w-[360px] truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/35">{preview}</span> : null}
           {event.status ? (
-            <span className={cn("text-[10px] uppercase tracking-wider", statusColorClass(event.status))}>
+            <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-wider", statusColorClass(event.status))}>
               {event.status}
             </span>
           ) : null}
@@ -1012,7 +1167,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
             <button
               key={`${suggestion.surface}:${suggestion.href}`}
               type="button"
-              className="rounded-[8px] border border-accent/20 bg-accent/[0.08] px-2.5 py-1 font-mono text-[10px] font-semibold text-accent/85 transition-colors hover:bg-accent/[0.14] hover:text-accent"
+              className="rounded-[8px] border border-accent/20 bg-accent/[0.08] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-semibold text-accent/85 transition-colors hover:bg-accent/[0.14] hover:text-accent"
               onClick={() => navigate(suggestion.href)}
             >
               {suggestion.label}
@@ -1026,7 +1181,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
       {isTruncated ? (
         <button
           type="button"
-          className="mt-1.5 font-mono text-[10px] text-accent/60 hover:text-accent"
+          className="mt-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-accent/60 hover:text-accent"
           onClick={() => setExpanded((v) => !v)}
         >
           {expanded ? "collapse" : `show all (${resultStr.length} chars)`}
@@ -1188,16 +1343,16 @@ function CommandEventCard({
   const hasOutput = outputTrimmed.length > 0;
   const timelineVerb = commandTimelineVerb(event.status);
   const timelineSummary = (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
       <span className="inline-flex h-3 w-3 items-center justify-center">
         <ChatStatusGlyph status={event.status === "running" ? "working" : event.status} size={11} />
       </span>
       <Terminal size={11} weight="regular" className="text-fg/34" />
       <span className="font-medium text-fg/62">{timelineVerb}</span>
       <span className="min-w-0 flex-1 truncate text-fg/76">{event.command}</span>
-      {event.durationMs != null ? <span className="text-[10px] text-fg/28">{Math.max(0, event.durationMs)}ms</span> : null}
+      {event.durationMs != null ? <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-fg/28">{Math.max(0, event.durationMs)}ms</span> : null}
       {event.exitCode != null ? (
-        <span className={cn("text-[10px]", event.exitCode === 0 ? "text-emerald-300/60" : "text-red-300/65")}>
+        <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)]", event.exitCode === 0 ? "text-emerald-300/60" : "text-red-300/65")}>
           {event.exitCode === 0 ? "pass" : `exit ${event.exitCode}`}
         </span>
       ) : null}
@@ -1206,12 +1361,12 @@ function CommandEventCard({
 
   const commandBody = (
     <>
-      <div className="rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[11px] text-fg/80">
+      <div className="rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80">
         <span className="select-none text-amber-500/40">$ </span>
         {event.command}
       </div>
       {hasOutput ? (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[11px] leading-[1.5] text-fg/60">
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60">
           {event.output}
         </pre>
       ) : null}
@@ -1239,7 +1394,7 @@ function FileChangeEventCard({
   const basename = basenamePathLabel(event.path);
   const dirname = dirnamePathLabel(event.path);
   const summary = (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
       <span className="inline-flex h-3 w-3 items-center justify-center">
         <ChatStatusGlyph status={event.status === "running" ? "working" : (event.status ?? "completed")} size={11} />
       </span>
@@ -1248,7 +1403,7 @@ function FileChangeEventCard({
       <span className="truncate text-fg/78">{basename}</span>
       {additions > 0 ? <span className="text-emerald-300/70">+{additions}</span> : null}
       {deletions > 0 || event.kind === "delete" ? <span className="text-red-300/70">-{deletions}</span> : null}
-      {dirname ? <span className="truncate text-[10px] text-fg/26">{dirname}</span> : null}
+      {dirname ? <span className="truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/26">{dirname}</span> : null}
     </div>
   );
 
@@ -1261,7 +1416,7 @@ function FileChangeEventCard({
       {hasDiff ? (
         <DiffPreview diff={event.diff} />
       ) : (
-        <div className="font-mono text-[11px] text-muted-fg/40">No diff payload available.</div>
+        <div className="font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/40">No diff payload available.</div>
       )}
     </InlineDisclosureRow>
   );
@@ -1433,20 +1588,20 @@ function InlineQuestionRequestCard({
     const useGrid = question.options.length >= 3;
 
     return (
-      <div className="rounded-[calc(var(--chat-radius-card)-4px)] border border-amber-400/14 bg-amber-400/[0.045] p-4">
+      <div className="rounded-[max(0px,calc(var(--chat-radius-card)-4px))] border border-amber-400/14 bg-amber-400/[0.045] p-4">
         {question.header ? (
-          <div className="mb-1.5 font-mono text-[9.5px] font-bold uppercase tracking-widest text-amber-200/80">
+          <div className="mb-1.5 font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-widest text-amber-200/80">
             {question.header}
           </div>
         ) : null}
-        <div className="text-[14px] font-semibold leading-[1.45] text-fg/92">{question.questionText}</div>
+        <div className="text-[length:calc(var(--chat-font-size)*14/14)] font-semibold leading-[1.45] text-fg/92">{question.questionText}</div>
         {question.multiSelect ? (
-          <div className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/8 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/80">
+          <div className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/8 px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest text-amber-200/80">
             <ListChecks size={10} weight="bold" /> Pick all that apply
           </div>
         ) : null}
         {question.impact ? (
-          <div className="mt-2 text-[11.5px] leading-relaxed text-fg/55">{question.impact}</div>
+          <div className="mt-2 text-[length:calc(var(--chat-font-size)*11.5/14)] leading-relaxed text-fg/55">{question.impact}</div>
         ) : null}
         {question.options.length ? (
           <div
@@ -1465,7 +1620,7 @@ function InlineQuestionRequestCard({
                   disabled={isResponding}
                   data-testid={`inline-question-option-${question.id}-${option.value}`}
                   className={cn(
-                    "group relative flex w-full flex-col items-start gap-1 rounded-[calc(var(--chat-radius-card)-6px)] border px-3.5 py-3 text-left transition-colors disabled:pointer-events-none disabled:opacity-45",
+                    "group relative flex w-full flex-col items-start gap-1 rounded-[max(0px,calc(var(--chat-radius-card)-6px))] border px-3.5 py-3 text-left transition-colors disabled:pointer-events-none disabled:opacity-45",
                     active
                       ? "border-amber-300/55 bg-amber-300/12 shadow-[inset_0_0_0_1px_rgba(252,211,77,0.18)]"
                       : "border-amber-300/18 bg-amber-300/[0.03] hover:border-amber-300/35 hover:bg-amber-300/8",
@@ -1490,17 +1645,17 @@ function InlineQuestionRequestCard({
                           : <span className="block h-1.5 w-1.5 rounded-full bg-black" />
                       ) : null}
                     </span>
-                    <span className="flex-1 text-[12.5px] font-semibold uppercase tracking-wider text-fg/90">
+                    <span className="flex-1 text-[length:calc(var(--chat-font-size)*12.5/14)] font-semibold uppercase tracking-wider text-fg/90">
                       {option.label}
                       {option.recommended ? (
-                        <span className="ml-1.5 inline-block rounded-full bg-emerald-300/14 px-1.5 py-px font-mono text-[8.5px] font-bold uppercase tracking-widest text-emerald-200/90">
+                        <span className="ml-1.5 inline-block rounded-full bg-emerald-300/14 px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*8.5/14)] font-bold uppercase tracking-widest text-emerald-200/90">
                           (Recommended)
                         </span>
                       ) : null}
                     </span>
                   </div>
                   {option.description ? (
-                    <span className="ml-6 text-[11.5px] font-medium leading-relaxed text-fg/55">
+                    <span className="ml-6 text-[length:calc(var(--chat-font-size)*11.5/14)] font-medium leading-relaxed text-fg/55">
                       {option.description}
                     </span>
                   ) : null}
@@ -1511,16 +1666,16 @@ function InlineQuestionRequestCard({
         ) : null}
         {focused && focused.preview ? (
           <div
-            className="mt-3 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-300/14 bg-black/22 p-3 text-[11.5px] leading-relaxed text-fg/78"
+            className="mt-3 rounded-[max(0px,calc(var(--chat-radius-card)-8px))] border border-amber-300/14 bg-black/22 p-3 text-[length:calc(var(--chat-font-size)*11.5/14)] leading-relaxed text-fg/78"
             data-testid={`inline-question-preview-${question.id}`}
           >
-            <div className="mb-1 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/60">
+            <div className="mb-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest text-amber-200/60">
               Preview · {focused.label}
             </div>
             {focused.previewFormat === "html" ? (
-              <div className="whitespace-pre-wrap break-words font-mono text-[11px] text-fg/70">{focused.preview}</div>
+              <div className="whitespace-pre-wrap break-words font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/70">{focused.preview}</div>
             ) : (
-              <div className="prose prose-invert max-w-none text-[11.5px] [&_p]:my-1">
+              <div className="prose prose-invert max-w-none text-[length:calc(var(--chat-font-size)*11.5/14)] [&_p]:my-1">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{focused.preview}</ReactMarkdown>
               </div>
             )}
@@ -1532,7 +1687,7 @@ function InlineQuestionRequestCard({
             value={drafts[question.id] ?? ""}
             disabled={isResponding}
             placeholder={question.options.length ? "Optional response" : "Response"}
-            className="mt-3 w-full rounded-[var(--chat-radius-card)] border border-white/10 bg-black/22 px-3 py-2 text-[12.5px] text-fg/85 outline-none placeholder:text-fg/30 focus:border-amber-300/40 focus:bg-black/28"
+            className="mt-3 w-full rounded-[var(--chat-radius-card)] border border-white/10 bg-black/22 px-3 py-2 text-[length:calc(var(--chat-font-size)*12.5/14)] text-fg/85 outline-none placeholder:text-fg/30 focus:border-amber-300/40 focus:bg-black/28"
             onChange={(event) => setDrafts((prev) => ({ ...prev, [question.id]: event.target.value }))}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
@@ -1547,7 +1702,7 @@ function InlineQuestionRequestCard({
           />
         ) : null}
         {question.defaultAssumption ? (
-          <div className="mt-2 text-[10.5px] text-fg/40">Default: {question.defaultAssumption}</div>
+          <div className="mt-2 text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/40">Default: {question.defaultAssumption}</div>
         ) : null}
       </div>
     );
@@ -1560,20 +1715,20 @@ function InlineQuestionRequestCard({
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
             <ChatStatusGlyph status="waiting" size={11} />
           </span>
-          <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-amber-200">
+          <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-widest text-amber-200">
             Input needed{source ? ` · ${source}` : ""}
           </span>
         </div>
         {isPaged ? (
-          <span className="font-mono text-[9.5px] font-bold uppercase tracking-widest text-fg/50">
+          <span className="font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-widest text-fg/50">
             {questions.filter(isAnswered).length} of {questions.length} answered
           </span>
         ) : null}
       </div>
 
       <div className="mb-3">
-        <div className="text-[13.5px] font-semibold text-fg/92">{title || (isPaged ? "Questions from Claude" : "Question")}</div>
-        {description ? <div className="mt-1 text-[12px] leading-relaxed text-fg/62">{description}</div> : null}
+        <div className="text-[length:calc(var(--chat-font-size)*13.5/14)] font-semibold text-fg/92">{title || (isPaged ? "Questions from Claude" : "Question")}</div>
+        {description ? <div className="mt-1 text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/62">{description}</div> : null}
       </div>
 
       {isPaged ? (
@@ -1597,7 +1752,7 @@ function InlineQuestionRequestCard({
                 data-testid={`inline-question-tab-${q.id}`}
                 onClick={() => setPage(index)}
                 className={cn(
-                  "group inline-flex max-w-[180px] items-center gap-1.5 rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[9.5px] font-bold uppercase tracking-widest transition-colors disabled:pointer-events-none disabled:opacity-45",
+                  "group inline-flex max-w-[180px] items-center gap-1.5 rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-widest transition-colors disabled:pointer-events-none disabled:opacity-45",
                   active
                     ? "border-amber-300/55 bg-amber-300/14 text-amber-100"
                     : answered
@@ -1607,7 +1762,7 @@ function InlineQuestionRequestCard({
               >
                 <span
                   className={cn(
-                    "inline-flex h-3.5 w-3.5 flex-none items-center justify-center rounded-full border text-[9px]",
+                    "inline-flex h-3.5 w-3.5 flex-none items-center justify-center rounded-full border text-[length:calc(var(--chat-font-size)*9/14)]",
                     active
                       ? "border-amber-200/70 bg-amber-200/25 text-amber-100"
                       : answered
@@ -1634,7 +1789,7 @@ function InlineQuestionRequestCard({
               disabled={isResponding || safePage === 0}
               onClick={() => setPage(Math.max(safePage - 1, 0))}
               data-testid="inline-question-prev"
-              className="inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-border/20 px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/65 transition-colors hover:bg-border/10 disabled:pointer-events-none disabled:opacity-30"
+              className="inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-border/20 px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider text-fg/65 transition-colors hover:bg-border/10 disabled:pointer-events-none disabled:opacity-30"
             >
               <CaretLeft size={11} weight="bold" /> Back
             </button>
@@ -1643,11 +1798,11 @@ function InlineQuestionRequestCard({
               disabled={isResponding || safePage >= questions.length - 1}
               onClick={() => setPage(Math.min(safePage + 1, questions.length - 1))}
               data-testid="inline-question-next"
-              className="inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-amber-300/24 bg-amber-300/[0.06] px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-100/90 transition-colors hover:bg-amber-300/12 disabled:pointer-events-none disabled:opacity-30"
+              className="inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-amber-300/24 bg-amber-300/[0.06] px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider text-amber-100/90 transition-colors hover:bg-amber-300/12 disabled:pointer-events-none disabled:opacity-30"
             >
               Next <CaretRight size={11} weight="bold" />
             </button>
-            <span className="ml-1 font-mono text-[10px] font-bold uppercase tracking-widest text-fg/40">
+            <span className="ml-1 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-widest text-fg/40">
               {safePage + 1} / {questions.length}
             </span>
             <span className="flex-1" />
@@ -1657,7 +1812,7 @@ function InlineQuestionRequestCard({
           type="button"
           disabled={isResponding || !canSend}
           className={cn(
-            "rounded-[var(--chat-radius-pill)] border px-3.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors disabled:pointer-events-none disabled:opacity-40",
+            "rounded-[var(--chat-radius-pill)] border px-3.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider transition-colors disabled:pointer-events-none disabled:opacity-40",
             canSend
               ? "border-amber-300/45 bg-amber-300/16 text-amber-100 hover:bg-amber-300/24"
               : "border-amber-300/24 bg-amber-300/8 text-amber-100/60",
@@ -1669,7 +1824,7 @@ function InlineQuestionRequestCard({
         <button
           type="button"
           disabled={isResponding}
-          className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/45 transition-colors hover:bg-border/10 disabled:pointer-events-none disabled:opacity-40"
+          className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider text-fg/45 transition-colors hover:bg-border/10 disabled:pointer-events-none disabled:opacity-40"
           onClick={() => onApproval?.(itemId, "decline")}
         >
           Decline
@@ -1709,24 +1864,31 @@ function renderEvent(
     }
     return (
       <motion.div
-        className="flex justify-end"
+        className="flex min-w-0 w-full justify-end"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
       >
-        <div className={cn(GLASS_CARD_CLASS, "ade-chat-message-card-user group relative max-w-[82%] px-4 py-2.5")} style={MESSAGE_CARD_STYLE}>
+        <div
+          className={cn(
+            GLASS_CARD_CLASS,
+            "ade-chat-message-card-user group relative min-w-0 max-w-[82%] px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
+          )}
+          style={MESSAGE_CARD_STYLE}
+        >
           {deliveryChip ? (
-            <span className={cn("mb-1 inline-flex items-center border px-1.5 py-0.5 font-sans text-[9px] font-medium", deliveryChip.className)}>
+            <span className={cn("mb-1 inline-flex items-center border px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium", deliveryChip.className)}>
               {deliveryChip.label}
             </span>
           ) : null}
           <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             <MessageCopyButton value={event.text} />
           </div>
-          <div className="whitespace-pre-wrap break-words text-[13px] leading-[1.7] text-white">{event.text}</div>
+          <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">{event.text}</div>
           {event.attachments?.length ? (
             <ChatAttachmentTray attachments={event.attachments} mode={options?.surfaceMode ?? "standard"} className="mt-1 px-0 py-0" />
           ) : null}
+          <UserMessageSendConfirmations event={event} />
         </div>
       </motion.div>
     );
@@ -1736,7 +1898,7 @@ function renderEvent(
   if (event.type === "text") {
     return (
       <motion.div
-        className="flex justify-start"
+        className="flex min-w-0 w-full justify-start"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
@@ -1744,21 +1906,21 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "ade-chat-message-card-assistant group relative max-w-[min(104ch,78%)] px-5 py-4",
+            "ade-chat-message-card-assistant group relative min-w-0 max-w-[min(104ch,78%)] px-[length:var(--chat-bubble-assistant-px)] py-[length:var(--chat-bubble-assistant-py)]",
             options?.turnActive && "ade-glow-pulse",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
         >
           <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
           {options?.turnActive && (
-            <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[14px]">
+            <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-card)]">
               <div className="absolute inset-0 ade-streaming-shimmer" />
             </div>
           )}
           <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             <MessageCopyButton value={event.text} />
           </div>
-          <div>
+          <div className="min-w-0">
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         </div>
@@ -1782,12 +1944,12 @@ function renderEvent(
     return (
       <InlineDisclosureRow
         summary={
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
             <span className="inline-flex h-1.5 w-1.5 rounded-full bg-violet-400/80" />
             <ListChecks size={11} weight="regular" className="text-fg/34" />
             <span className="font-medium text-fg/62">Plan updated</span>
             <span className="text-fg/76">{completedCount}/{event.steps.length || 0} complete</span>
-            {event.steps[0]?.text ? <span className="truncate text-[10px] text-fg/34">{summarizeInlineText(event.steps[0].text, 96)}</span> : null}
+            {event.steps[0]?.text ? <span className="truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/34">{summarizeInlineText(event.steps[0].text, 96)}</span> : null}
           </div>
         }
       >
@@ -1799,7 +1961,7 @@ function renderEvent(
                   <PlanStepIcon status={step.status} />
                 </div>
                 <div className={cn(
-                  "flex-1 text-[12px]",
+                  "flex-1 text-[length:calc(var(--chat-font-size)*12/14)]",
                   step.status === "completed" ? "text-fg/45 line-through decoration-fg/15" : "text-fg/80"
                 )}>
                   {step.text}
@@ -1807,11 +1969,11 @@ function renderEvent(
               </div>
             ))
           ) : (
-            <div className="font-mono text-[11px] text-muted-fg/40">No plan steps yet.</div>
+            <div className="font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/40">No plan steps yet.</div>
           )}
         </div>
         {event.explanation ? (
-          <div className="mt-2 border-t border-white/[0.05] pt-2 text-[11px] text-muted-fg/50">{event.explanation}</div>
+          <div className="mt-2 border-t border-white/[0.05] pt-2 text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/50">{event.explanation}</div>
         ) : null}
       </InlineDisclosureRow>
     );
@@ -1826,13 +1988,13 @@ function renderEvent(
       <InlineDisclosureRow
         defaultOpen={Boolean(activeItem)}
         summary={
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
             <span className="inline-flex h-1.5 w-1.5 rounded-full bg-cyan-400/80" />
             <ListChecks size={11} weight="regular" className="text-fg/34" />
             <span className="font-medium text-fg/62">Task list</span>
             <span className="text-fg/76">{completedCount}/{totalCount} complete</span>
             {activeItem?.description ? (
-              <span className="truncate text-[10px] text-fg/34">
+              <span className="truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/34">
                 {summarizeInlineText(activeItem.description, 96)}
               </span>
             ) : null}
@@ -1853,13 +2015,13 @@ function renderEvent(
                   )}
                 </div>
                 <div className={cn(
-                  "flex-1 text-[12px]",
+                  "flex-1 text-[length:calc(var(--chat-font-size)*12/14)]",
                   item.status === "completed" ? "text-fg/45 line-through decoration-fg/15" : "text-fg/80"
                 )}>
                   {item.description}
                 </div>
                 <span className={cn(
-                  "inline-flex shrink-0 items-center border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em]",
+                  "inline-flex shrink-0 items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.16em]",
                   todoItemStatusClass(item.status),
                 )}>
                   {item.status.replace("_", " ")}
@@ -1867,7 +2029,7 @@ function renderEvent(
               </div>
             ))
           ) : (
-            <div className="font-mono text-[11px] text-muted-fg/40">No items yet.</div>
+            <div className="font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/40">No items yet.</div>
           )}
         </div>
       </InlineDisclosureRow>
@@ -1913,20 +2075,20 @@ function renderEvent(
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className={cn(
-                "font-mono text-[9px] font-bold uppercase tracking-[0.18em]",
+                "font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em]",
                 isFailed ? "text-red-300/60" : "text-cyan-300/50",
               )}>
                 Web Search
               </span>
               {event.action ? (
-                <span className="font-mono text-[9px] text-fg/25">{event.action}</span>
+                <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/25">{event.action}</span>
               ) : null}
               {isRunning ? (
-                <span className="font-mono text-[9px] text-cyan-400/40">searching...</span>
+                <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-cyan-400/40">searching...</span>
               ) : null}
             </div>
             <div className={cn(
-              "mt-1.5 text-[13px] leading-relaxed",
+              "mt-1.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-relaxed",
               isFailed ? "text-red-200/70" : "text-fg/80",
             )}>
               <MagnifyingGlass size={12} weight="bold" className="mr-1.5 inline text-fg/30" />
@@ -1948,14 +2110,14 @@ function renderEvent(
         ) : (
           <ShieldCheck size={13} weight="bold" className="text-indigo-400/60" />
         )}
-        <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-indigo-300/55">
+        <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-indigo-300/55">
           {isStarted ? "Guardian reviewing" : "Guardian approved"}
         </span>
         {event.action ? (
-          <span className="font-mono text-[9px] text-fg/30">{event.action}</span>
+          <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">{event.action}</span>
         ) : null}
         {event.review ? (
-          <span className="flex-1 truncate text-[11px] text-fg/45">{event.review}</span>
+          <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*11/14)] text-fg/45">{event.review}</span>
         ) : null}
       </div>
     );
@@ -1969,11 +2131,11 @@ function renderEvent(
         <div className="px-4 py-3">
           <div className="mb-2 flex items-center gap-2">
             <ListChecks size={13} weight="bold" className="text-amber-400/50" />
-            <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-amber-300/45">
+            <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-amber-300/45">
               Plan
             </span>
           </div>
-          <div className="prose prose-invert prose-sm max-w-none text-[12px] leading-relaxed text-fg/70">
+          <div className="prose prose-invert prose-sm min-w-0 max-w-full text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/70">
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         </div>
@@ -1997,12 +2159,12 @@ function renderEvent(
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-violet-300/55">Agent</span>
+              <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-violet-300/55">Agent</span>
               {event.background ? (
-                <span className="rounded-md border border-violet-500/12 bg-violet-500/[0.06] px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-violet-300/50">background</span>
+                <span className="rounded-md border border-violet-500/12 bg-violet-500/[0.06] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.16em] text-violet-300/50">background</span>
               ) : null}
             </div>
-            <div className="mt-0.5 truncate text-[12px] text-fg/70">{event.description}</div>
+            <div className="mt-0.5 truncate text-[length:calc(var(--chat-font-size)*12/14)] text-fg/70">{event.description}</div>
           </div>
         </div>
       </motion.div>
@@ -2016,25 +2178,25 @@ function renderEvent(
       <InlineDisclosureRow
         defaultOpen={false}
         summary={
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
             <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-violet-500/10">
               <ChatStatusGlyph status="working" size={11} />
             </div>
             <span className="font-medium text-fg/62">Agent running</span>
             {event.lastToolName?.trim() ? (
-              <span className="rounded-md border border-violet-500/10 bg-violet-500/[0.05] px-1.5 py-0.5 text-[9px] text-violet-300/55">
+              <span className="rounded-md border border-violet-500/10 bg-violet-500/[0.05] px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] text-violet-300/55">
                 {replaceInternalToolNames(event.lastToolName.trim())}
               </span>
             ) : null}
-            {summaryText ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryText}</span> : null}
+            {summaryText ? <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">{summaryText}</span> : null}
           </div>
         }
       >
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] text-muted-fg/45">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
             {event.description?.trim() ? <span>{event.description.trim()}</span> : null}
           </div>
-          <div className="text-[12px] leading-relaxed text-fg/70">
+          <div className="text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/70">
             {event.summary.trim() || "Waiting for the next progress update."}
           </div>
           {renderSubagentUsage(event.usage)}
@@ -2053,7 +2215,7 @@ function renderEvent(
       <InlineDisclosureRow
         defaultOpen={defaultOpen}
         summary={
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
             <div className={cn(
               "flex h-5 w-5 shrink-0 items-center justify-center rounded-md",
               isSuccess ? "bg-emerald-500/10" : isStopped ? "bg-amber-500/10" : "bg-red-500/10",
@@ -2072,12 +2234,12 @@ function renderEvent(
             )}>
               {isSuccess ? "Agent finished" : isStopped ? "Agent stopped" : "Agent failed"}
             </span>
-            {summaryTruncated ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryTruncated}</span> : null}
+            {summaryTruncated ? <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">{summaryTruncated}</span> : null}
           </div>
         }
       >
         <div className="space-y-3">
-          <div className="text-[12px] leading-relaxed text-fg/70">{event.summary}</div>
+          <div className="text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/70">{event.summary}</div>
           {renderSubagentUsage(event.usage)}
         </div>
       </InlineDisclosureRow>
@@ -2092,9 +2254,9 @@ function renderEvent(
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[var(--chat-accent-faint)] bg-[var(--chat-accent-faint)]">
             <ChatCircleText size={13} weight="bold" className="text-[var(--chat-accent)]" />
           </span>
-          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-[var(--chat-accent)]">Agent Question</span>
+          <span className="font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-bold uppercase tracking-widest text-[var(--chat-accent)]">Agent Question</span>
         </div>
-        <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] px-4 py-3 text-[12.5px] leading-[1.65] text-fg/85">
+        <div className="rounded-[max(0px,calc(var(--chat-radius-card)-6px))] border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] px-4 py-3 text-[length:calc(var(--chat-font-size)*12.5/14)] leading-[1.65] text-fg/85">
           {event.question}
         </div>
         {event.options?.length ? (
@@ -2103,7 +2265,7 @@ function renderEvent(
               <button
                 key={option.value}
                 type="button"
-                className="border border-accent/40 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/15"
+                className="border border-accent/40 bg-transparent px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/15"
                 onClick={() => options?.onApproval?.(event.itemId, "accept", option.value)}
               >
                 {option.label}
@@ -2111,7 +2273,7 @@ function renderEvent(
             ))}
           </div>
         ) : null}
-        <div className="mt-2 font-mono text-[9px] text-muted-fg/35">or type a custom answer</div>
+        <div className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/35">or type a custom answer</div>
       </div>
     );
   }
@@ -2124,16 +2286,16 @@ function renderEvent(
       <InlineDisclosureRow
         defaultOpen={summaryText.length <= 120}
         summary={
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
             <span className="inline-flex h-1.5 w-1.5 rounded-full bg-white/30" />
             <Info size={11} weight="regular" className="text-fg/34" />
             <span className="font-medium text-fg/62">Tool summary</span>
-            <span className="text-[10px] text-fg/35">{toolCount} tool{toolCount === 1 ? "" : "s"}</span>
-            <span className="flex-1 truncate text-[10px] text-fg/45">{summarizeInlineText(summaryText, 100)}</span>
+            <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-fg/35">{toolCount} tool{toolCount === 1 ? "" : "s"}</span>
+            <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">{summarizeInlineText(summaryText, 100)}</span>
           </div>
         }
       >
-        <div className="text-[12px] leading-relaxed text-fg/65">{summaryText}</div>
+        <div className="text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/65">{summaryText}</div>
       </InlineDisclosureRow>
     );
   }
@@ -2149,17 +2311,17 @@ function renderEvent(
           <div className="flex h-4 w-4 items-center justify-center rounded-full bg-amber-400/10">
             <Lightning size={9} weight="fill" className="text-amber-400/70" />
           </div>
-          <span className="font-mono text-[10px] font-medium tracking-wide text-amber-300/60">
+          <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-medium tracking-wide text-amber-300/60">
             Context compacted
           </span>
           {freedLabel ? (
             <>
               <span className="text-amber-400/20">&middot;</span>
-              <span className="font-mono text-[9px] text-amber-300/40">{freedLabel}</span>
+              <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-amber-300/40">{freedLabel}</span>
             </>
           ) : null}
           <span className={cn(
-            "rounded-md px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-widest",
+            "rounded-md px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-widest",
             isAuto ? "bg-amber-500/8 text-amber-300/35" : "bg-violet-500/8 text-violet-300/40",
           )}>
             {isAuto ? "auto" : "manual"}
@@ -2193,12 +2355,12 @@ function renderEvent(
         <CollapsibleCard
           defaultOpen={false}
           summary={
-            <div className="flex items-center gap-2 font-sans text-[11px]">
+            <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
               <NoticeIcon size={12} weight="bold" className={style.text} />
-              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
+              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
                 {event.noticeKind.replace("_", " ")}
               </span>
-              <span className="flex-1 truncate text-[10px] text-fg/55">{event.message}</span>
+              <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/55">{event.message}</span>
             </div>
           }
           className={style.border}
@@ -2210,11 +2372,11 @@ function renderEvent(
 
     return (
       <div className={cn(
-        "inline-flex items-center gap-2 px-1 py-1 font-sans text-[10px]",
+        "inline-flex items-center gap-2 px-1 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
         style.text,
       )}>
         <NoticeIcon size={11} weight="bold" />
-        <span className="text-[9px] font-bold uppercase tracking-[0.16em]">{event.noticeKind.replace("_", " ")}</span>
+        <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{event.noticeKind.replace("_", " ")}</span>
         <span className="normal-case tracking-normal text-fg/45">{event.message}</span>
       </div>
     );
@@ -2259,7 +2421,7 @@ function renderEvent(
       <CollapsibleCard
         defaultOpen={event.status === "failed"}
         summary={
-          <div className="flex items-center gap-2 font-mono text-[12px] text-fg/50">
+          <div className="flex items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*12/14)] text-fg/50">
             {event.status === "running" ? (
               <ThinkingDots />
             ) : event.status === "failed" ? (
@@ -2278,20 +2440,20 @@ function renderEvent(
       >
         <div className="space-y-3">
           <div>
-            <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Arguments</div>
+            <div className="mb-1 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.16em] text-muted-fg/35">Arguments</div>
             {argCount ? (
               <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
                 {formatStructuredValue(args)}
               </pre>
             ) : (
-              <div className="rounded-[calc(var(--chat-radius-card)-6px)] border border-white/[0.04] bg-black/20 px-4 py-2 font-mono text-[10px] text-muted-fg/40">
+              <div className="rounded-[max(0px,calc(var(--chat-radius-card)-6px))] border border-white/[0.04] bg-black/20 px-4 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40">
                 No arguments
               </div>
             )}
           </div>
           {resultText ? (
             <div>
-              <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-fg/35">Result</div>
+              <div className="mb-1 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.16em] text-muted-fg/35">Result</div>
               <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
                 {resultText}
               </pre>
@@ -2319,7 +2481,7 @@ function renderEvent(
     // Build expandable args display
     const kvPairs = Object.entries(safeArgs);
     const argsDisplay = kvPairs.length > 0 ? (
-      <div className="space-y-1 border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[11px]">
+      <div className="space-y-1 border border-border/10 bg-surface-recessed/90 px-4 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)]">
         {kvPairs.map(([k, v]) => {
           const val = typeof v === "string" ? v : JSON.stringify(v);
           const isLongStr = typeof v === "string" && v.includes("\n");
@@ -2327,7 +2489,7 @@ function renderEvent(
             <div key={k} className={isLongStr ? "flex flex-col gap-0.5" : "flex items-start gap-2"}>
               <span className="flex-shrink-0 text-muted-fg/40">{k}</span>
               {isLongStr ? (
-                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] text-fg/55 leading-[1.5]">{val}</pre>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*10/14)] text-fg/55 leading-[1.5]">{val}</pre>
               ) : (
                 <span className="min-w-0 break-all text-fg/65">{val}</span>
               )}
@@ -2336,7 +2498,7 @@ function renderEvent(
         })}
       </div>
     ) : (
-      <div className="border border-border/10 bg-surface-recessed/90 px-4 py-2 font-mono text-[10px] text-muted-fg/40">
+      <div className="border border-border/10 bg-surface-recessed/90 px-4 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40">
         No arguments
       </div>
     );
@@ -2345,7 +2507,7 @@ function renderEvent(
       <CollapsibleCard
         defaultOpen={false}
         summary={
-          <div className="flex items-center gap-2 font-mono text-[12px] text-fg/50">
+          <div className="flex items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*12/14)] text-fg/50">
             <CaretRight size={10} weight="bold" className="text-fg/30" />
             <ToolIcon size={13} weight="regular" className="text-fg/40" />
             <span className="truncate">{label}</span>
@@ -2365,7 +2527,6 @@ function renderEvent(
 
   /* ── Approval request ── */
   if (event.type === "approval_request") {
-    const handleApproval = options?.onApproval ? (d: AgentChatApprovalDecision) => options.onApproval?.(event.itemId, d) : undefined;
     const isResponding = options?.respondingApprovalIds?.has(event.itemId) ?? false;
     const isPending = options?.pendingApprovalIds?.has(event.itemId) ?? true;
     const resolvedState = options?.resolvedInputStates?.get(event.itemId) ?? null;
@@ -2394,13 +2555,6 @@ function renderEvent(
     const isPermissionRequest = requestKind === "permissions";
     const isPlanApproval = requestKind === "plan_approval";
     const isAskUser = ((normalizedTool === "askuser" || normalizedTool === "ask_user") && question.length > 0) || isQuestionRequest;
-    const detailText = (() => {
-      if (event.detail == null || isAskUser) return "";
-      if (!request) return formatStructuredValue(event.detail);
-      const detailWithoutRequest = { ...detail };
-      delete detailWithoutRequest.request;
-      return Object.keys(detailWithoutRequest).length ? formatStructuredValue(detailWithoutRequest) : "";
-    })();
     let bodyText: string;
     if (isQuestionRequest) {
       bodyText = requestDescription || primaryQuestionText || question || event.description;
@@ -2439,12 +2593,8 @@ function renderEvent(
           {isResolved ? (
             <span
               className={cn(
-                "inline-flex items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-wider",
-                resolvedState === "accepted"
-                  ? "text-emerald-300/70"
-                  : resolvedState === "declined"
-                    ? "text-red-300/70"
-                    : "text-fg/45",
+                "inline-flex items-center gap-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider",
+                approvalToneClass(resolvedState),
               )}
             >
               {resolvedState === "accepted" ? (
@@ -2459,14 +2609,8 @@ function renderEvent(
           ) : (
             <>
               <ChatStatusGlyph status="waiting" size={11} />
-              <span className="font-mono text-[10px] uppercase tracking-wider text-fg/50">
-                {isPlanApproval
-                  ? "Presenting plan for approval"
-                  : isAskUser
-                    ? "Waiting for input"
-                    : isPermissionRequest
-                      ? "Permission request"
-                      : "Approval required"}
+              <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-wider text-fg/50">
+                {approvalWaitingLabel({ isPlanApproval, isAskUser, isPermissionRequest })}
               </span>
             </>
           )}
@@ -2488,9 +2632,9 @@ function renderEvent(
             <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-red-500/10">
               <Warning size={13} weight="bold" className="text-red-400/90" />
             </div>
-            <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">Error</span>
+            <span className="font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-bold uppercase tracking-widest text-fg/85">Error</span>
             {event.errorInfo && typeof event.errorInfo !== "string" && event.errorInfo.category ? (
-              <span className="inline-flex items-center rounded-md border border-red-500/12 bg-red-500/[0.06] px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-red-300/70">
+              <span className="inline-flex items-center rounded-md border border-red-500/12 bg-red-500/[0.06] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.16em] text-red-300/70">
                 {event.errorInfo.category}
               </span>
             ) : null}
@@ -2498,14 +2642,14 @@ function renderEvent(
               <MessageCopyButton value={errorCopyValue} className="opacity-0 group-hover:opacity-100 focus-within:opacity-100" />
             </div>
           </div>
-          <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg/80">{event.message}</div>
+          <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/80">{event.message}</div>
           {event.detail?.trim().length ? (
-            <div className="mt-2 whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-8px)] border border-red-500/10 bg-red-500/[0.04] px-3 py-2 text-[11px] leading-relaxed text-fg/68">
+            <div className="mt-2 whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-8px)] border border-red-500/10 bg-red-500/[0.04] px-3 py-2 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
               {event.detail}
             </div>
           ) : null}
           {event.errorInfo ? (
-            <div className="mt-2 font-mono text-[10px] text-muted-fg/40">
+            <div className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40">
               {typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}
             </div>
           ) : null}
@@ -2520,7 +2664,7 @@ function renderEvent(
     return (
       <span
         className={cn(
-          "font-sans text-[12px] italic",
+          "font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic",
           animate ? "ade-shimmer-text" : "text-fg/35",
         )}
       >
@@ -2539,18 +2683,14 @@ function renderEvent(
     return (
       <div
         className={cn(
-          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
-          isFailure
-            ? "border-red-500/14 bg-red-500/[0.05] text-red-300"
-            : isInterrupted
-              ? "border-amber-500/14 bg-amber-500/[0.05] text-amber-300"
-              : "border-border/14 bg-surface-recessed/70 text-muted-fg/55"
+          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.16em]",
+          turnStatusToneClass({ isFailure, isInterrupted }),
         )}
       >
         <Warning size={11} weight="bold" />
         <span>{event.turnStatus}</span>
         {event.message ? (
-          <span className="truncate text-[9px] normal-case tracking-normal text-fg/55">
+          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] normal-case tracking-normal text-fg/55">
             {event.message}
           </span>
         ) : null}
@@ -2569,7 +2709,7 @@ function renderEvent(
     return (
       <div
         className={cn(
-          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em]",
+          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.16em]",
           isFailure
             ? "border-red-500/14 bg-red-500/[0.05] text-red-300"
             : "border-border/14 bg-surface-recessed/70 text-muted-fg/55"
@@ -2578,7 +2718,7 @@ function renderEvent(
         <Warning size={11} weight="bold" />
         <span>{label}</span>
         {detail ? (
-          <span className="truncate text-[9px] normal-case tracking-normal text-fg/55">
+          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] normal-case tracking-normal text-fg/55">
             {detail}
           </span>
         ) : null}
@@ -2600,16 +2740,12 @@ function renderEvent(
     if (event.status === "completed" && !hasUsageData) {
       return null;
     }
-    const statusTone = event.status === "completed"
-      ? "border-white/[0.04] bg-[#141220]/60 text-fg/45"
-      : event.status === "failed"
-        ? "border-red-500/12 bg-red-500/[0.04] text-red-300"
-        : "border-amber-500/12 bg-amber-500/[0.04] text-amber-300";
+    const statusTone = doneStatusToneClass(event.status);
 
     return (
-      <div className={cn("flex items-center justify-center gap-3 rounded-xl border px-4 py-2 font-sans text-[10px]", statusTone)}>
+      <div className={cn("flex items-center justify-center gap-3 rounded-xl border px-4 py-2 font-sans text-[length:calc(var(--chat-font-size)*10/14)]", statusTone)}>
         <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
-          <span className="font-medium text-fg/35 uppercase tracking-wide text-[9px]">Usage</span>
+          <span className="font-medium text-fg/35 uppercase tracking-wide text-[length:calc(var(--chat-font-size)*9/14)]">Usage</span>
           {modelLabel ? (
             <span className="inline-flex items-center gap-1.5 text-fg/30">
               <ModelGlyph modelId={event.modelId} model={event.model} size={11} className="shrink-0 text-violet-400/40" />
@@ -2622,7 +2758,7 @@ function renderEvent(
           {cacheCreation ? <span className="text-violet-400/30">New cache <span className="font-medium text-violet-400/45">{cacheCreation}</span></span> : null}
           {costLabel ? <span className="font-medium text-violet-300/35">{costLabel}</span> : null}
           {event.status !== "completed" ? (
-            <span className="text-[9px] font-medium uppercase tracking-wide text-current">{event.status}</span>
+            <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium uppercase tracking-wide text-current">{event.status}</span>
           ) : null}
         </div>
       </div>
@@ -2632,17 +2768,17 @@ function renderEvent(
   /* ── Turn diff summary (minimal inline indicator — detail lives in bottom Tasks panel) ── */
   if (event.type === "turn_diff_summary") {
     return (
-      <details className="group rounded-lg border border-white/[0.04] bg-white/[0.02] px-3 py-2 font-mono text-[10px] text-fg/32">
+      <details className="group rounded-lg border border-white/[0.04] bg-white/[0.02] px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/32">
         <summary className="flex cursor-pointer list-none items-center gap-2 text-left outline-none">
           <FileCode size={10} />
           <span>{event.files.length} file{event.files.length !== 1 ? "s" : ""} changed</span>
           {event.totalAdditions > 0 && <span className="text-emerald-400/50">+{event.totalAdditions}</span>}
           {event.totalDeletions > 0 && <span className="text-red-400/50">-{event.totalDeletions}</span>}
-          <span className="ml-auto rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-fg/42 group-open:text-fg/60">
+          <span className="ml-auto rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] text-fg/42 group-open:text-fg/60">
             View files
           </span>
         </summary>
-        <div className="mt-2 space-y-1.5 text-[11px] text-fg/55">
+        <div className="mt-2 space-y-1.5 text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55">
           {event.files.map((file) => (
             <div
               key={`${event.turnId}:${file.path}:${file.status}`}
@@ -2652,7 +2788,7 @@ function renderEvent(
               <span className="text-fg/58">{basenamePathLabel(file.path)}</span>
               {file.additions > 0 ? <span className="text-emerald-300/70">+{file.additions}</span> : null}
               {file.deletions > 0 || file.status === "D" ? <span className="text-red-300/70">-{file.deletions}</span> : null}
-              <span className="ml-auto truncate font-mono text-[9px] text-fg/34">{dirnamePathLabel(file.path) ?? ""}</span>
+              <span className="ml-auto truncate font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/34">{dirnamePathLabel(file.path) ?? ""}</span>
             </div>
           ))}
         </div>
@@ -2662,23 +2798,19 @@ function renderEvent(
 
   /* ── Completion report ── */
   if (event.type === "completion_report") {
-    const statusTone = event.report.status === "completed"
-      ? "border-emerald-400/15 bg-emerald-400/[0.05] text-emerald-200"
-      : event.report.status === "blocked"
-        ? "border-red-500/15 bg-red-500/[0.05] text-red-200"
-        : "border-amber-500/15 bg-amber-500/[0.05] text-amber-200";
+    const statusTone = completionReportToneClass(event.report.status);
     return (
       <div className={cn("rounded-lg border px-3 py-2.5", statusTone)}>
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em]">
+        <div className="flex flex-wrap items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em]">
           <span>Completion</span>
           <span className="text-current/80">{event.report.status}</span>
           {event.report.artifacts.length > 0 ? (
             <span className="text-current/70">{event.report.artifacts.length} artifact{event.report.artifacts.length === 1 ? "" : "s"}</span>
           ) : null}
         </div>
-        <div className="mt-2 text-[12px] leading-5 text-fg/85">{event.report.summary}</div>
+        <div className="mt-2 text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-fg/85">{event.report.summary}</div>
         {event.report.blockerDescription ? (
-          <div className="mt-2 text-[11px] leading-5 text-fg/65">{event.report.blockerDescription}</div>
+          <div className="mt-2 text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-fg/65">{event.report.blockerDescription}</div>
         ) : null}
       </div>
     );
@@ -2688,7 +2820,7 @@ function renderEvent(
   return (
     <div className="flex items-center gap-3 py-0.5">
       <div className="h-px flex-1 bg-white/6" />
-      <span className="font-sans text-[10px] text-muted-fg/20">event</span>
+      <span className="font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/20">event</span>
       <div className="h-px flex-1 bg-white/6" />
     </div>
   );
@@ -2869,11 +3001,11 @@ function TurnDivider({ summary }: { summary: TurnSummary }) {
     <div className="my-4 flex flex-col items-center gap-1">
       <div className="flex w-full items-center gap-3">
         <span className="h-px flex-1 bg-white/[0.05]" />
-        <span className="font-sans text-[11px] text-fg/35">{label}</span>
+        <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/35">{label}</span>
         <span className="h-px flex-1 bg-white/[0.05]" />
       </div>
       {(taskLine || agentLine) ? (
-        <div className="flex flex-col items-center gap-0.5 font-sans text-[11px] text-fg/40">
+        <div className="flex flex-col items-center gap-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40">
           {taskLine ? <span>· {taskLine}</span> : null}
           {agentLine ? <span>· {agentLine}</span> : null}
         </div>
@@ -2967,7 +3099,7 @@ const EventRow = React.memo(function EventRow({
         <div className="my-3 flex items-center gap-4">
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
           <span
-            className="ade-liquid-glass-pill inline-flex items-center rounded-full px-3.5 py-1.5 font-sans text-[10px] text-fg/42"
+            className="ade-liquid-glass-pill inline-flex items-center rounded-full px-3.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/42"
             title={turnModel?.label ?? undefined}
           >
             <span className="text-fg/35">{turnDividerLabel ?? "Turn"}</span>
@@ -3040,8 +3172,6 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
 
 /** Estimated height per message row (px) used before real measurement. */
 const ESTIMATED_ROW_HEIGHT = 80;
-/** Gap between rows from `space-y-3` (Tailwind 0.75rem = 12px). */
-const ROW_GAP = 12;
 /** Number of extra rows to render above/below the visible viewport. */
 const OVERSCAN = 10;
 /** Minimum number of rows before virtualization kicks in. */
@@ -3060,7 +3190,7 @@ export function calculateVirtualWindow({
   containerHeight,
   rowHeight,
   overscan = OVERSCAN,
-  rowGap = ROW_GAP,
+  rowGap = CHAT_TIMELINE_ROW_GAP_PX,
 }: {
   rowCount: number;
   scrollTop: number;
@@ -3123,7 +3253,7 @@ export function reconcileMeasuredScrollTop({
   nextHeight,
   scrollTop,
   rowHeight,
-  rowGap = ROW_GAP,
+  rowGap = CHAT_TIMELINE_ROW_GAP_PX,
 }: {
   index: number;
   previousHeight: number;
@@ -3160,7 +3290,7 @@ export function AgentChatMessageList({
   pendingApprovalIds,
   sessionId,
   sessionEnded = false,
-  }: {
+}: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
   className?: string;
@@ -3174,6 +3304,8 @@ export function AgentChatMessageList({
   sessionId?: string | null;
   sessionEnded?: boolean;
 }) {
+  const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
+  const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
@@ -3424,6 +3556,7 @@ export function AgentChatMessageList({
           nextHeight: height,
           scrollTop: scrollEl.scrollTop,
           rowHeight,
+          rowGap: timelineRowGapPx,
         });
         if (adjustedScrollTop !== scrollEl.scrollTop) {
           scrollEl.scrollTop = adjustedScrollTop;
@@ -3439,7 +3572,7 @@ export function AgentChatMessageList({
         }, 80);
       }
     }
-  }, [rowHeight, shouldVirtualize]);
+  }, [rowHeight, shouldVirtualize, timelineRowGapPx]);
 
   // Compute the visible window of rows when virtualization is active.
   // measurementTick forces recomputation when row heights are measured so
@@ -3455,9 +3588,10 @@ export function AgentChatMessageList({
       scrollTop,
       containerHeight,
       rowHeight,
+      rowGap: timelineRowGapPx,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight, measurementTick]);
+  }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight, measurementTick, timelineRowGapPx]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
@@ -3466,7 +3600,7 @@ export function AgentChatMessageList({
     // own gesture (wheel / trackpad / keyboard) should break auto-follow.
     if (programmaticScrollCountRef.current > 0) {
       programmaticScrollCountRef.current -= 1;
-      if (shouldVirtualize) setScrollTop(target.scrollTop);
+      setScrollTop(target.scrollTop);
       return;
     }
     const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
@@ -3478,16 +3612,59 @@ export function AgentChatMessageList({
       stickToBottomRef.current = nextStick;
       setStickToBottom(nextStick);
     }
-    if (shouldVirtualize) {
-      setScrollTop(target.scrollTop);
-    }
-  }, [shouldVirtualize]);
+    setScrollTop(target.scrollTop);
+  }, []);
 
   const jumpToLatest = useCallback(() => {
     stickToBottomRef.current = true;
     setStickToBottom(true);
     scrollToBottomSoon();
   }, [scrollToBottomSoon]);
+
+  const fullUserMinimapEntries = useMemo(
+    () => collectUserMessageMinimapSourceEntries(groupedRows),
+    [groupedRows],
+  );
+
+  const minimapDisplayEntries = useMemo(
+    () => buildMinimapDisplayEntries(groupedRows),
+    [groupedRows],
+  );
+
+  const rowStartOffsetsForMinimap = useMemo(() => {
+    void measurementTick;
+    return computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
+  }, [groupedRows, rowHeight, measurementTick, timelineRowGapPx]);
+
+  const activeFullUserOrdinal = useMemo(
+    () => computeActiveFullUserOrdinal(scrollTop, fullUserMinimapEntries, rowStartOffsetsForMinimap),
+    [scrollTop, fullUserMinimapEntries, rowStartOffsetsForMinimap],
+  );
+
+  const activeMinimapDisplayIndex = useMemo(
+    () => computeActiveDisplayIndex(activeFullUserOrdinal, minimapDisplayEntries),
+    [activeFullUserOrdinal, minimapDisplayEntries],
+  );
+
+  const jumpToRowFromMinimap = useCallback(
+    (rowIndex: number) => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
+      const targetTop = computeScrollTopForRow(rowIndex, offsets);
+      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      const clamped = Math.max(0, Math.min(maxScroll, targetTop));
+      stickToBottomRef.current = false;
+      setStickToBottom(false);
+      const before = el.scrollTop;
+      el.scrollTop = clamped;
+      if (el.scrollTop !== before) {
+        programmaticScrollCountRef.current += 1;
+      }
+      setScrollTop(el.scrollTop);
+    },
+    [groupedRows, rowHeight, timelineRowGapPx],
+  );
 
   const latestWorkLogIndex = useMemo(() => {
     for (let i = groupedRows.length - 1; i >= 0; i -= 1) {
@@ -3569,14 +3746,14 @@ export function AgentChatMessageList({
     if (!shouldVirtualize) return 0;
     let h = 0;
     for (let i = endIndex; i < groupedRows.length; i++) {
-      h += rowHeight(i) + ROW_GAP;
+      h += rowHeight(i) + timelineRowGapPx;
     }
     // The trailing gap accounts for the space between the last rendered row
     // and the first unrendered row — keep it so the total content fills
     // totalHeight exactly (offsetTop already includes the gap before the
     // first rendered row via the offsets array).
     return Math.max(0, h);
-  }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
+  }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
   const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
     <motion.div
@@ -3586,11 +3763,11 @@ export function AgentChatMessageList({
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
       {latestActivity ? (
-        <span className="ade-shimmer-text font-sans text-[12px] italic">
+        <span className="ade-shimmer-text font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic">
           {formatActivityText(latestActivity.activity, latestActivity.detail)}
         </span>
       ) : (
-        <span className="flex items-center gap-2 font-sans text-[12px] text-fg/35">
+        <span className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/35">
           <ThinkingDots toneClass="bg-fg/35" />
           <span>Working…</span>
         </span>
@@ -3606,9 +3783,14 @@ export function AgentChatMessageList({
 
   return (
     <div className={cn("relative h-full min-h-0", className)}>
+      <ChatUserMinimap
+        displayEntries={minimapDisplayEntries}
+        activeDisplayIndex={activeMinimapDisplayIndex}
+        onJumpToRow={jumpToRowFromMinimap}
+      />
       <div
         ref={scrollRef}
-        className="ade-chat-timeline-pane h-full min-h-0 overflow-auto px-5 pt-5 pb-8"
+        className="ade-chat-timeline-pane h-full min-h-0 min-w-0 overflow-auto pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]"
         onScroll={handleScroll}
       >
         <div ref={contentWrapperRef}>
@@ -3616,11 +3798,11 @@ export function AgentChatMessageList({
             null
           ) : shouldVirtualize ? (
             /* ── Virtualized path: only render rows in / near the viewport ── */
-            <div className="space-y-3">
+            <div className="flex flex-col gap-[length:var(--chat-row-gap)]">
               <div style={{ height: totalHeight, position: "relative" }}>
                 {/* Top spacer pushes rendered rows to their correct scroll position */}
                 <div style={{ height: offsetTop }} aria-hidden />
-                <div className="space-y-3">
+                <div className="flex flex-col gap-[length:var(--chat-row-gap)]">
                   {groupedRows.slice(startIndex, Math.min(endIndex, groupedRows.length)).map((envelope, i) =>
                     renderRow(envelope, startIndex + i, true)
                   )}
@@ -3633,7 +3815,7 @@ export function AgentChatMessageList({
             </div>
           ) : (
             /* ── Non-virtualized path: render all rows (small conversation) ── */
-            <div className="space-y-3">
+            <div className="flex flex-col gap-[length:var(--chat-row-gap)]">
               {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
               {streamingIndicator}
               {turnDivider}
@@ -3645,7 +3827,7 @@ export function AgentChatMessageList({
         <button
           type="button"
           onClick={jumpToLatest}
-          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-violet-400/30 bg-violet-500/20 px-3 py-1.5 font-sans text-[11px] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
+          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-violet-400/30 bg-violet-500/20 px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
           aria-label="Jump to latest message"
         >
           <CaretDown size={11} weight="bold" />

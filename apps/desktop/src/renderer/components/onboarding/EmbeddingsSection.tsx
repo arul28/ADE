@@ -354,8 +354,8 @@ export function EmbeddingsSection() {
         alignItems: "flex-start",
         gap: 10,
         padding: "12px 14px",
-        background: `${COLORS.success}06`,
-        border: `1px solid ${COLORS.success}15`,
+        background: "color-mix(in srgb, var(--color-success) 6%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--color-success) 15%, transparent)",
         borderRadius: 10,
       }}>
         <ShieldCheck size={16} weight="duotone" style={{ color: COLORS.success, flexShrink: 0, marginTop: 1 }} />

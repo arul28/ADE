@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowsClockwise, Check, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
+import { ArrowDown, ArrowLeft, ArrowsClockwise, Check, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
@@ -8,6 +8,7 @@ import { cn } from "../ui/cn";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
 import { CommitTimeline } from "./CommitTimeline";
+import { LaneDiffPane } from "./LaneDiffPane";
 import type {
   DiffChanges,
   FileChange,
@@ -413,7 +414,7 @@ function ActionButton({
         height: 34,
         padding: "0 10px",
         border: primary ? `1px solid ${COLORS.accent}` : `1px solid ${COLORS.outlineBorder}`,
-        background: primary ? `${COLORS.accent}14` : "transparent",
+        background: primary ? "color-mix(in srgb, var(--color-accent) 14%, transparent)" : "transparent",
         color: primary ? COLORS.textPrimary : COLORS.textSecondary,
         textAlign: "left",
         cursor: disabled ? "default" : "pointer",
@@ -451,8 +452,10 @@ export function LaneGitActionsPane({
   onResolveRebaseConflict,
   onSelectFile,
   onSelectCommit,
+  onClearDiffSelection,
   selectedPath,
   selectedMode,
+  selectedCommit = null,
   selectedCommitSha
 }: {
   laneId: string | null;
@@ -464,8 +467,12 @@ export function LaneGitActionsPane({
   onResolveRebaseConflict?: (laneId: string, parentLaneId: string | null) => void;
   onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
+  /** Clears file + commit diff selection (back to file list in this section). */
+  onClearDiffSelection?: () => void;
   selectedPath: string | null;
   selectedMode: "staged" | "unstaged" | null;
+  /** Defaults to null when omitted (e.g. floating pane / legacy call sites). */
+  selectedCommit?: GitCommitSummary | null;
   selectedCommitSha: string | null;
 }) {
   const navigate = useNavigate();
@@ -1345,6 +1352,10 @@ export function LaneGitActionsPane({
     );
   };
 
+  const diffViewActive = Boolean(
+    (selectedPath && selectedMode) || selectedCommit,
+  );
+
   return (
     <div ref={rootRef} className="flex h-full min-h-0 min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
       <div
@@ -1381,7 +1392,7 @@ export function LaneGitActionsPane({
                   fontWeight: 600,
                   fontFamily: MONO_FONT,
                   color: COLORS.accent,
-                  background: `${COLORS.accent}15`,
+                  background: "color-mix(in srgb, var(--color-accent) 15%, transparent)",
                   letterSpacing: "0.5px",
                 }}
               >
@@ -1395,7 +1406,7 @@ export function LaneGitActionsPane({
                   fontWeight: 600,
                   fontFamily: MONO_FONT,
                   color: lane.status.dirty ? COLORS.warning : "#10B981",
-                  background: lane.status.dirty ? `${COLORS.warning}15` : "#10B98115",
+                  background: lane.status.dirty ? "color-mix(in srgb, var(--color-warning) 15%, transparent)" : "#10B98115",
                   letterSpacing: "0.5px",
                 }}
               >
@@ -1449,8 +1460,8 @@ export function LaneGitActionsPane({
           className="shrink-0"
           style={{
             padding: "10px 16px",
-            background: `${COLORS.danger}12`,
-            borderBottom: `1px solid ${COLORS.danger}30`,
+            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+            borderBottom: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
           }}
         >
           <div className="flex flex-wrap items-center gap-3">
@@ -1521,8 +1532,8 @@ export function LaneGitActionsPane({
           className="shrink-0"
           style={{
             padding: "10px 16px",
-            background: `${COLORS.danger}12`,
-            borderBottom: `1px solid ${COLORS.danger}30`,
+            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+            borderBottom: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
           }}
         >
           <div className="flex flex-wrap items-center gap-3">
@@ -1633,7 +1644,7 @@ export function LaneGitActionsPane({
                 }}>
                   <button
                     type="button"
-                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
+                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: "1px solid color-mix(in srgb, var(--color-accent) 50%, transparent)" }}
                     disabled={!laneId || busyAction != null}
                     onClick={openRebaseTab}
                   >
@@ -1649,7 +1660,7 @@ export function LaneGitActionsPane({
                 }}>
                   <button
                     type="button"
-                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
+                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: "1px solid color-mix(in srgb, var(--color-accent) 50%, transparent)" }}
                     disabled={!laneId || busyAction != null}
                     onClick={() => runRebaseAndPushFlow(true)}
                   >
@@ -1716,8 +1727,8 @@ export function LaneGitActionsPane({
                 style={{
                   ...outlineButton({ height: 30, padding: "0 8px", fontSize: 10, borderRadius: 6 }),
                   color: amendCommit ? COLORS.warning : COLORS.textDim,
-                  border: `1px solid ${amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder}`,
-                  background: amendCommit ? `${COLORS.warning}10` : "transparent",
+                  border: `1px solid ${amendCommit ? "color-mix(in srgb, var(--color-warning) 40%, transparent)" : COLORS.outlineBorder}`,
+                  background: amendCommit ? "color-mix(in srgb, var(--color-warning) 10%, transparent)" : "transparent",
                 }}
                 disabled={busyAction != null}
                 onClick={() => setAmendCommit((prev) => !prev)}
@@ -1766,8 +1777,8 @@ export function LaneGitActionsPane({
                     style={{
                       ...outlineButton({ height: 26, padding: "0 6px", fontSize: 9, borderRadius: 4 }),
                       color: syncMode === mode ? COLORS.accent : COLORS.textDim,
-                      border: `1px solid ${syncMode === mode ? `${COLORS.accent}40` : "transparent"}`,
-                      background: syncMode === mode ? `${COLORS.accent}10` : "transparent",
+                      border: `1px solid ${syncMode === mode ? "color-mix(in srgb, var(--color-accent) 40%, transparent)" : "transparent"}`,
+                      background: syncMode === mode ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : "transparent",
                       opacity: !laneId || busyAction != null ? 0.5 : 1,
                     }}
                   >
@@ -1793,7 +1804,7 @@ export function LaneGitActionsPane({
                 style={{
                   ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
                   ...((nextActionHint?.action === "pull" || nextActionHint?.action === "resolve_conflicts")
-                    ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` }
+                    ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" }
                     : {}),
                 }}
                 disabled={!laneId || busyAction != null || pullBlockedByConflict}
@@ -1845,7 +1856,7 @@ export function LaneGitActionsPane({
                 type="button"
                 style={{
                   ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                  ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+                  ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
                 }}
                 disabled={!laneId || busyAction != null}
                 onClick={() => {
@@ -1869,7 +1880,7 @@ export function LaneGitActionsPane({
                 type="button"
                 style={{
                   ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                  ...(nextActionHint?.action === "rebase_push" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+                  ...(nextActionHint?.action === "rebase_push" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
                   opacity: syncButtonDisabled ? 0.45 : 1,
                 }}
                 disabled={syncButtonDisabled}
@@ -1903,7 +1914,7 @@ export function LaneGitActionsPane({
                 style={{
                   ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
                   color: showAdvanced ? COLORS.accent : COLORS.textMuted,
-                  border: `1px solid ${showAdvanced ? `${COLORS.accent}30` : COLORS.outlineBorder}`,
+                  border: `1px solid ${showAdvanced ? "color-mix(in srgb, var(--color-accent) 30%, transparent)" : COLORS.outlineBorder}`,
                 }}
                 onClick={() => setShowAdvanced((prev) => !prev)}
               >
@@ -2107,7 +2118,7 @@ export function LaneGitActionsPane({
                   fontFamily: MONO_FONT,
                   letterSpacing: "0.5px",
                   border: `1px solid ${COLORS.border}`,
-                  background: `${COLORS.info}08`,
+                  background: "color-mix(in srgb, var(--color-info) 8%, transparent)",
                   color: COLORS.info,
                   display: "flex",
                   flexWrap: "wrap",
@@ -2146,12 +2157,35 @@ export function LaneGitActionsPane({
           }}
         >
           <SectionCard
-            title="Files"
-            description="Changed files. Stashes are saved snapshots below."
+            title={diffViewActive ? "Diff" : "Files"}
+            description={
+              diffViewActive
+                ? (selectedCommit
+                    ? `${selectedCommit.shortSha ?? (selectedCommit.sha ?? "").slice(0, 7)} · ${selectedCommit.subject.trim().slice(0, 120)}`
+                    : `${selectedMode === "staged" ? "Staged" : "Unstaged"} · ${selectedPath ?? ""}`)
+                : "Changed files. Stashes are saved snapshots below."
+            }
             dataTestId="files-section"
             sectionStyle={{ minHeight: 0, height: "100%" }}
-            bodyStyle={{ flex: 1, minHeight: 0 }}
+            bodyStyle={
+              diffViewActive
+                ? { flex: 1, minHeight: 0, padding: 0, gap: 0, display: "flex", flexDirection: "column", overflow: "hidden" }
+                : { flex: 1, minHeight: 0 }
+            }
             aside={
+              diffViewActive ? (
+                <SmartTooltip content={{ label: "Back to files", description: "Leave the diff viewer and return to the file list and stashes." }}>
+                  <button
+                    type="button"
+                    style={outlineButton({ height: 24, padding: "0 10px", fontSize: 10, gap: 6 })}
+                    disabled={!onClearDiffSelection}
+                    onClick={() => onClearDiffSelection?.()}
+                  >
+                    <ArrowLeft size={12} weight="bold" />
+                    Files
+                  </button>
+                </SmartTooltip>
+              ) : (
               <div className="flex flex-wrap items-center gap-2">
                 <span title={`${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}`} style={inlineBadge(COLORS.accent, { fontSize: 9 })}>
                   {changedFileCount}
@@ -2247,8 +2281,21 @@ export function LaneGitActionsPane({
                   </SmartTooltip>
                 ) : null}
               </div>
+              )
             }
           >
+            {diffViewActive ? (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <LaneDiffPane
+                  laneId={laneId}
+                  selectedPath={selectedPath}
+                  selectedFileMode={selectedMode}
+                  selectedCommit={selectedCommit}
+                  liveSync
+                />
+              </div>
+            ) : (
+            <>
             <div
               style={{
                 display: "flex",
@@ -2364,7 +2411,7 @@ export function LaneGitActionsPane({
                         }}>
                           <button
                             type="button"
-                            style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
+                            style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 10 }), border: "1px solid color-mix(in srgb, var(--color-accent) 50%, transparent)" }}
                             disabled={!laneId || busyAction != null}
                             onClick={() => {
                               if (!laneId) return;
@@ -2461,6 +2508,8 @@ export function LaneGitActionsPane({
                 </div>
               ) : null}
             </div>
+            </>
+            )}
           </SectionCard>
 
           <SectionCard
@@ -2494,7 +2543,7 @@ export function LaneGitActionsPane({
             fontFamily: MONO_FONT,
             letterSpacing: "0.5px",
             borderTop: `1px solid ${COLORS.border}`,
-            background: error ? `${COLORS.danger}15` : `${COLORS.accent}12`,
+            background: error ? "color-mix(in srgb, var(--color-error) 15%, transparent)" : "color-mix(in srgb, var(--color-accent) 12%, transparent)",
             color: error ? COLORS.danger : COLORS.accent,
           }}
         >

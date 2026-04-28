@@ -214,13 +214,13 @@ export function PrIssueResolverModal({
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span style={{ padding: "5px 9px", borderRadius: 999, background: `${COLORS.accent}18`, color: COLORS.accent, fontFamily: MONO_FONT, fontSize: 11 }}>
+                <span style={{ padding: "5px 9px", borderRadius: 999, background: "color-mix(in srgb, var(--color-accent) 18%, transparent)", color: COLORS.accent, fontFamily: MONO_FONT, fontSize: 11 }}>
                   PR #{prNumber}
                 </span>
-                <span style={{ padding: "5px 9px", borderRadius: 999, background: `${COLORS.warning}14`, color: COLORS.warning, fontFamily: MONO_FONT, fontSize: 11 }}>
+                <span style={{ padding: "5px 9px", borderRadius: 999, background: "color-mix(in srgb, var(--color-warning) 14%, transparent)", color: COLORS.warning, fontFamily: MONO_FONT, fontSize: 11 }}>
                   {availability.failingCheckCount} failing checks
                 </span>
-                <span style={{ padding: "5px 9px", borderRadius: 999, background: `${COLORS.info}14`, color: COLORS.info, fontFamily: MONO_FONT, fontSize: 11 }}>
+                <span style={{ padding: "5px 9px", borderRadius: 999, background: "color-mix(in srgb, var(--color-info) 14%, transparent)", color: COLORS.info, fontFamily: MONO_FONT, fontSize: 11 }}>
                   {availability.actionableReviewThreadCount} review threads
                 </span>
                 <span style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 420 }}>
@@ -324,7 +324,7 @@ export function PrIssueResolverModal({
                           : "No actionable failing checks right now."}
                     </div>
                   </div>
-                  <span style={{ marginLeft: "auto", padding: "4px 8px", borderRadius: 999, background: `${COLORS.warning}18`, color: availability.hasActionableChecks ? COLORS.warning : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10 }}>
+                  <span style={{ marginLeft: "auto", padding: "4px 8px", borderRadius: 999, background: "color-mix(in srgb, var(--color-warning) 18%, transparent)", color: availability.hasActionableChecks ? COLORS.warning : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10 }}>
                     {availability.hasActionableChecks ? `${availability.failingCheckCount} actionable` : availability.pendingCheckCount > 0 ? "running" : "none"}
                   </span>
                 </div>
@@ -367,7 +367,7 @@ export function PrIssueResolverModal({
                       Unresolved, non-outdated GitHub review threads that ADE will feed into the resolver prompt.
                     </div>
                   </div>
-                  <span style={{ marginLeft: "auto", padding: "4px 8px", borderRadius: 999, background: `${COLORS.info}18`, color: availability.hasActionableComments ? COLORS.info : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10 }}>
+                  <span style={{ marginLeft: "auto", padding: "4px 8px", borderRadius: 999, background: "color-mix(in srgb, var(--color-info) 18%, transparent)", color: availability.hasActionableComments ? COLORS.info : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10 }}>
                     {availability.actionableReviewThreadCount} actionable
                   </span>
                 </div>
@@ -389,7 +389,7 @@ export function PrIssueResolverModal({
                         </div>
                         <div style={{ marginTop: 7, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                           {severity ? (
-                            <span style={{ padding: "3px 7px", borderRadius: 999, background: `${COLORS.info}18`, color: COLORS.info, fontFamily: MONO_FONT, fontSize: 10 }}>
+                            <span style={{ padding: "3px 7px", borderRadius: 999, background: "color-mix(in srgb, var(--color-info) 18%, transparent)", color: COLORS.info, fontFamily: MONO_FONT, fontSize: 10 }}>
                               {severity}
                             </span>
                           ) : null}
@@ -437,13 +437,13 @@ export function PrIssueResolverModal({
           </div>
 
           {error ? (
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "13px 14px", borderRadius: 14, border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}0D`, color: COLORS.danger }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "13px 14px", borderRadius: 14, border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 5%, transparent)", color: COLORS.danger }}>
               <Warning size={15} weight="fill" style={{ marginTop: 2, flexShrink: 0 }} />
               <span style={{ fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6 }}>{error}</span>
             </div>
           ) : null}
 
-          <div style={{ position: "sticky", bottom: 0, zIndex: 2, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", padding: "14px 0 2px", background: "linear-gradient(180deg, rgba(24,20,35,0) 0%, rgba(24,20,35,0.98) 34%, rgba(24,20,35,1) 100%)" }}>
+          <div style={{ position: "sticky", bottom: 0, zIndex: 2, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", padding: "14px 0 2px", background: "linear-gradient(180deg, color-mix(in srgb, var(--color-modal-bg) 0%, transparent) 0%, var(--color-modal-bg) 100%)" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.textMuted }}>
                 <CheckCircle size={13} weight="fill" style={{ color: COLORS.success }} />
@@ -463,7 +463,7 @@ export function PrIssueResolverModal({
                 type="button"
                 disabled={!canCopy}
                 onClick={() => void onCopyPrompt({ scope, additionalInstructions })}
-                style={outlineButton({ height: 38, padding: "0 14px", color: COLORS.info, borderColor: `${COLORS.info}35`, opacity: canCopy ? 1 : 0.5 })}
+                style={outlineButton({ height: 38, padding: "0 14px", color: COLORS.info, borderColor: "color-mix(in srgb, var(--color-info) 35%, transparent)", opacity: canCopy ? 1 : 0.5 })}
               >
                 <CopySimple size={14} />
                 {copyBusy ? "Copying..." : "Copy prompt"}

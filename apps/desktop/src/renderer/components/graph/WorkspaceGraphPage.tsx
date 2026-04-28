@@ -2440,13 +2440,10 @@ function GraphInner() {
           await window.ade.lanes.archive({ laneId: lane.id });
           await refreshLanes();
         } else if (action === "delete") {
-          const confirmText = await requestTextInput({
-            title: `Type delete ${lane.name} to confirm`,
-            validate: (value) => (value ? null : "Confirmation text is required")
-          });
-          if (confirmText?.trim().toLowerCase() !== `delete ${lane.name}`.toLowerCase()) return;
-          await window.ade.lanes.delete({ laneId: lane.id, force: true, deleteBranch: false });
-          await refreshLanes();
+          // Route through the canonical Manage Lane dialog for pre-flight, tiered
+          // confirmation, streaming progress, and cancel — instead of the old
+          // text-input confirmation + silent delete.
+          navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single&action=manage`);
         } else if (action === "rebase") {
           await runLaneRebase(lane.id, false);
           await refreshLanes();

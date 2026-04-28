@@ -1490,6 +1490,12 @@ export type ProcessStackArgs = {
   stackId: string;
 };
 
+/** Bulk run for a process group: each process starts/stops on its resolved lane (Run UI lane picker). */
+export type ProcessGroupArgs = {
+  groupId: string;
+  laneByProcessId: Record<string, string>;
+};
+
 export type GetProcessLogTailArgs = {
   laneId: string;
   processId: string;

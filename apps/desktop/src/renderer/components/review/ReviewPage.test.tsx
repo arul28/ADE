@@ -45,7 +45,6 @@ function resetStore() {
     projectHydrated: true,
     showWelcome: false,
     selectedLaneId: "lane-review",
-    runLaneId: null,
     focusedSessionId: null,
     lanes: [
       { id: "lane-review", name: "feature/review-tab", branchRef: "refs/heads/feature/review-tab", baseRef: "main", laneType: "worktree", color: null, worktreePath: "/Users/arul/ADE", status: {} as any },

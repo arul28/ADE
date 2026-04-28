@@ -245,6 +245,65 @@ export type DeleteLaneArgs = {
   force?: boolean;
 };
 
+export type LaneDeleteStepName =
+  | "stop_processes"
+  | "stop_ptys"
+  | "stop_watchers"
+  | "cancel_auto_rebase"
+  | "cleanup_env"
+  | "git_status"
+  | "git_worktree_remove"
+  | "git_branch_delete"
+  | "git_remote_branch_delete"
+  | "pack_dir_remove"
+  | "database_cleanup";
+
+export type LaneDeleteStepStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "skipped";
+
+export type LaneDeleteStep = {
+  name: LaneDeleteStepName;
+  status: LaneDeleteStepStatus;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  detail?: string;
+  errorMessage?: string;
+};
+
+export type LaneDeleteOverallStatus = "running" | "completed" | "failed" | "cancelled";
+
+export type LaneDeleteProgress = {
+  laneId: string;
+  steps: LaneDeleteStep[];
+  startedAt: string;
+  completedAt?: string;
+  overallStatus: LaneDeleteOverallStatus;
+  cancellable: boolean;
+};
+
+export type LaneDeleteEvent = {
+  type: "lane-delete";
+  progress: LaneDeleteProgress;
+};
+
+export type LaneDeleteRisk = {
+  laneId: string;
+  branchRef: string | null;
+  dirty: boolean;
+  hasUnpushedCommits: boolean;
+  unpushedCommitCount: number;
+  remoteBranchExists: boolean;
+  runningProcessCount: number;
+  activePtyCount: number;
+  activeWatcherCount: number;
+  envInitialized: boolean;
+};
+
 export type StackChainItem = {
   laneId: string;
   laneName: string;

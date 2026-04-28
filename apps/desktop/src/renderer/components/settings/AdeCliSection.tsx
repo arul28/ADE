@@ -176,8 +176,8 @@ function codeStyle(): CSSProperties {
 
 function infoBoxStyle(): CSSProperties {
   return {
-    background: `${COLORS.info}08`,
-    border: `1px solid ${COLORS.info}20`,
+    background: "color-mix(in srgb, var(--color-info) 8%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-info) 20%, transparent)",
     borderRadius: 0,
     padding: "9px 12px",
     fontSize: 11,
