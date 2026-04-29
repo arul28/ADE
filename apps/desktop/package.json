@@ -144,23 +144,10 @@
     },
     "files": [
       "dist/**/*",
-      "!dist/**/*.map",
       "electron.cjs",
       "package.json",
       "vendor/**/*",
-      "!**/*.map",
-      "!node_modules/@anthropic-ai/claude-agent-sdk-*/**",
-      "!node_modules/onnxruntime-node/**",
-      "!node_modules/**/.cache/**",
-      "!node_modules/**/__tests__/**",
-      "!node_modules/**/coverage/**",
-      "!node_modules/**/demo/**",
-      "!node_modules/**/demos/**",
-      "!node_modules/**/docs/**",
-      "!node_modules/**/test/**",
-      "!node_modules/**/tests/**",
-      "!node_modules/**/*.spec.*",
-      "!node_modules/**/*.test.*"
+      "!node_modules/onnxruntime-node/**"
     ],
     "asarUnpack": [
       "dist/main/packagedRuntimeSmoke.cjs",
