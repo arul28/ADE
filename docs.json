@@ -210,6 +210,7 @@
             "icon": "tag",
             "expanded": true,
             "pages": [
+              "changelog/v1.1.7",
               "changelog/v1.1.6",
               "changelog/v1.1.5",
               "changelog/v1.1.4",

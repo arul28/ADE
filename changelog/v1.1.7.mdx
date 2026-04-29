@@ -1,0 +1,130 @@
+---
+title: "v1.1.7"
+description: "Release notes for ADE v1.1.7 — April 29, 2026"
+---
+
+v1.1.7 is one of the largest ADE releases to date — 19 commits, 415 files, ~+48k/-16k lines. Headline beats: an in-chat **iOS Simulator** panel with auto-resolving visual stream, full **Factory Droid** ACP chat support alongside Claude / Cursor / Codex, **Windows code-signing + sync parity** for the Windows desktop build, **lane branch switching** with a first-class branch selector, **Live Activity & Lock Screen widget polish** on iOS, and a wholesale removal of the legacy context-packs system in favor of on-demand context doc generation. Plus dozens of smaller fixes across PRs, automations, terminals, sync, and the chat composer. Ships in **TestFlight build 9** of 1.1.1.
+
+---
+
+## Desktop
+
+<Tabs>
+  <Tab title="iOS Simulator">
+    A full in-chat iOS Simulator surface, attached to chat sessions and driven by the new automations action registry.
+
+    - **In-chat simulator panel.** New `ChatIosSimulatorPanel` renders a live preview directly inside the chat pane with drag-region capture, point-and-drag interaction (tap/type/swipe/select-point), per-session attach via `iosSimulatorService.attachToChatSession`, and a chat-composer toggle to open or hide the drawer per session. The `AgentChatPane` empty-state, `chatTranscriptRows`, and the new `consolidateInterruptedTerminus` helper keep the transcript clean when the panel is open.
+    - **Auto stream backend.** `ade ios-sim live-start` and the panel both default to `--backend auto`. The service resolves at startup time: prefer `idb-h264-ffmpeg-mjpeg`, fall back to `idb-mjpeg`, then to `simctl-screenshot-poll`. A per-backend startup timer (5 s for idb-mjpeg, 15 s for idb-h264) auto-promotes when no JPEG frame appears, so a missing companion or ffmpeg never strands the stream.
+    - **Window-state warnings.** New `iosSimulatorGetWindowState` IPC handler probes Simulator.app via System Events and returns `{ appRunning, visible, windowCount, minimizedWindowCount, capturable, issue }` so the renderer can warn when capture is stuck on a hidden, minimized, or missing window. Matching helpers (`prepareSimulatorWindowForCapture`, `followSimulatorWindowUnderAde`) keep the Simulator window parked behind ADE for window-capture mode.
+    - **Bounded simctl operations.** `waitForSimulatorBootStatus` (90 s) and `installAppOnSimulator` (180 s) now share a `runSimctlWithTimeout` helper. Stuck CoreSimulator failures map to actionable error messages instead of unbounded hangs.
+    - **Hardened mac-utility runner.** The `runMacUtility` helper used by the AppleScript / `osascript` plumbing now SIGTERMs the child on timeout (escalating to SIGKILL after 250 ms) and removes its event listeners on the resolve path, fixing a leak where timed-out helpers stayed resident.
+    - **CLI surface.** `ade ios-sim` gains explicit `--backend auto|simulator-window-capture|idb-mjpeg|idb-h264-ffmpeg-mjpeg|simctl-screenshot-poll`, with `--idb`/`--live` mapped to auto-pick and per-backend FPS defaults (60 window / 30 idb / 8 simctl-poll).
+    - **Action registry coverage.** Simulator actions are reachable from the desktop action registry and the chat-driven automations surface, so agents can launch, stream, tap, and screenshot without leaving chat.
+  </Tab>
+
+  <Tab title="Factory Droid Chat">
+    Factory Droid joins Claude Code and Cursor as a first-class ACP chat provider.
+
+    - **Droid ACP runtime.** `droidAcpPool` spawns `droid exec --output-format acp` and pools JSON-RPC connections by lane the same way the Cursor pool does. Authentication runs through Droid's CLI plus `FACTORY_API_KEY`. Dynamic `droid/*` model descriptors are discovered at runtime with provider-side defaults.
+    - **Shared ACP host client.** `acpHostClient` factors the JSON-RPC handshake, lifecycle probing, and steer-queue plumbing out of the Cursor pool so Droid (and any future ACP provider) reuses one well-tested client. Cursor was migrated onto it in the same PR.
+    - **End-to-end chat wiring.** `DroidRuntime` is plumbed through `agentChatService` for turn execution, steer queue, interrupts, permission prompts, and persistence. AI status, model picker grouping, providers settings, and missions permissions all learn the new `droid` provider.
+    - **Pool reliability.** Acquires are now serialized per pool key with a shared pending-init lock, so two simultaneous chat opens cannot double-spawn. Stale pool entries are evicted on child `close`/`error`. Init/handshake failures kill the process and log the stderr tail. ACP terminal cwds resolve within the lane root, and `waitForTerminalExit` is capped with a SIGKILL escalation + close wait to avoid stuck terminals.
+  </Tab>
+
+  <Tab title="Windows + Sync">
+    Windows desktop reaches feature parity with macOS for code-signing, sync, and packaging.
+
+    - **Code-signed Windows builds.** `release-core.yml` now plumbs Windows code-signing secrets into the build, configures `signtoolOptions` (electron-builder 26.x layout — `signingHashAlgorithms` and `rfc3161TimeStampServer` live under `win.signtoolOptions`), and emits validated `ADE-<ver>-win-x64.exe` + blockmap + `latest.yml` artifacts. `validate-win-artifacts.mjs` checks the produced asset set so a partial win build never makes it into a draft.
+    - **Windows install path + wrappers.** New `ade-cli-install-path.cmd` uses `setlocal enabledelayedexpansion` so `HOMEDRIVE`/`HOMEPATH` fallbacks resolve correctly, and `ade-cli-windows-wrapper.cmd` executes `cmd.exe /d /s /c "..."` so spaced paths work; the WM_SETTINGCHANGE encoded-command block is preserved as a documented rem block. `ptyService` aligns with the wrapped form.
+    - **`forceHostRole` lock.** `syncService` carries a `forceHostRole` flag so a desktop hosting phone sync can't be silently demoted to viewer by stale on-disk state. `main.ts` serializes `reconcileSyncHostContexts` so async runs land in order.
+    - **Sync host backpressure.** `syncHostService.send()` centralizes the backpressure check; the previous `CONNECTING` silent fall-through is gone — callers now get an explicit error instead of a swallowed promise. `encodedEnvelopeBytes()` exposes envelope size for upstream throttling, and dedup-by-deviceId on hello/state read prevents stuck duplicate peers.
+    - **Project icon override + atomic config.** `setProjectIconOverride` is wrapped in try/catch, `iconSearchRoots` is cached by mtime, and `.ade/ade.yaml` writes use atomic write-rename so a crash mid-write can't corrupt project state.
+    - **Browser mock snapshot.** `export-browser-mock-ade-snapshot.mjs` produces the renderer mock fixtures used by the mock-mode browser preview; output is gitignored.
+  </Tab>
+
+  <Tab title="Lanes + PRs">
+    Lane branch switching, deep-link stability, and PR-flow polish.
+
+    - **Lane branch selector.** Lanes now expose an explicit branch switch flow. `gitOperationsService` and `laneService.switchBranch` clean up stale per-PR rows on swap (UPDATE → DELETE; `lane_id` is `NOT NULL`). `branchSwitch` test suites cover the new contract end-to-end.
+    - **CLI checkout flags.** `ade git checkout-branch` learns `--start-point` / `--from` / `--base-ref`. `adeRpcServer.git.checkout_branch` declares its required schema fields, keeps optionals optional, and rejects unknown checkout modes with `invalidParams`.
+    - **Lane URL deep-link stability.** The lane deep-link `useEffect` now reads from a single `urlLaneDeeplinks` memo (laneId / laneIds / focus / inspectorTab parsed in one place), with a content-stable `availableLaneIdsKey` string trigger and a derived `availableLaneIds` array. Drops the inline split round-trip while keeping referential stability across lane refreshes.
+    - **Lane picker.** Branch creation in the lane picker is now expandable inline.
+    - **Tabs keep work surface alive.** `PersistentWorkSurface` and `WorkViewArea` now keep terminals and chat panes mounted across tab reroutes — the HTML `hidden` attribute strips from the a11y tree, so the redundant `aria-hidden` was dropped. `AgentChatPane`'s 5-second `refreshAvailableModels` poll suspends when mounted-but-hidden in a background tab; streaming subscriptions stay live so background sessions remain in sync.
+    - **PR draft filter on iOS.** Mirrors the desktop draft filter for the phone PR list.
+  </Tab>
+
+  <Tab title="Automations">
+    Per-action overrides, lane-mode execution, and a renderer chrome rewrite landed in v1.1.6 carry forward; this release adds the polish.
+
+    - **Composer iOS-sim toggle.** The chat composer learns a per-session toggle to open or hide the simulator drawer; `eager-create attach` is gated behind that toggle so opening a session that doesn't need the simulator stays cheap.
+    - **Clipboard image paste fallback.** `AgentChatComposer` reads `clipboardData.items` when `clipboardData.files` is empty, so screenshot / image paste works on macOS where the file path comes through `items` only. Includes a contract test pinning the fallback.
+    - **`AgentChatMessageList` chip parser.** Token-boundary check tightened so `subagentStoppedCount` chips and similar markers no longer match inside unrelated word sequences.
+    - **`ChatWorkLogBlock` empty-output guard.** A `trim()` check on `entry.output` keeps the work-log row from rendering an empty pill.
+    - **`TerminalView` WebGL restore.** `pendingWebGLRestore` now survives renderer changes, so a context loss during a re-render still restores the WebGL renderer correctly.
+  </Tab>
+
+  <Tab title="Context + Cleanup">
+    The legacy context-packs system is gone; context-doc generation replaces it on demand.
+
+    - **`contextDocBuilder` / `contextDocService`.** New main-process service builds a project context doc on demand from current code state. Replaces the prior `contextPacks` plumbing in the chat service, orchestrator, prompts, and settings UI. `chat/context.mdx` documents the new flow on the Mintlify side.
+    - **Removed.** `contextDocBuilder` (old), `contextShared`, `ContextSection`, `context-packs/*` docs, plus dependent-file cleanups in the orchestrator, chat service, prompts, and feature docs.
+    - **Settings UI.** Context-pack settings panels are gone; chat now picks context per turn rather than per pack.
+    - **Web index entry.** Removed an unused `apps/web` index entry that referenced the old packs surface.
+  </Tab>
+
+  <Tab title="Quality">
+    CI fixes, review remediation, and a tighter test surface.
+
+    - **Build-win signtool layout.** `signingHashAlgorithms` / `rfc3161TimeStampServer` moved under `win.signtoolOptions` to match electron-builder 26.x. Restores green builds on the `build-win-release` job.
+    - **`build-mac-release` validation.** `validate-mac-artifacts.mjs` checks the produced asset set so an asymmetric desktop release can't slip through; the release pipeline gates on it.
+    - **`ptyService` test alignment.** Test now expects the wrapped `cmd.exe /d /s /c "..."` form introduced for Windows path safety.
+    - **Health-sweep test budget.** `aiOrchestratorService` health-sweep test bumps wait budget 40 → 200 (1 s → 5 s) and per-test timeout 10 s → 15 s for CI loadiness.
+    - **`subagentStoppedCount` render guard.** `AgentChatMessageList` now uses `(count ?? 0) > 0` so the literal `0` can never reach the DOM.
+    - **`runMacUtility` listener leak.** Event listeners are removed and the timeout is cleared on every resolve path; SIGTERM/SIGKILL fire on timeout instead of leaving the child running.
+    - **`simulatorWindowName` regex tightening.** Word-boundary anchors so `ios` doesn't match unrelated window titles like "kiosk", reducing false thumbnails in the picker.
+  </Tab>
+</Tabs>
+
+---
+
+## iOS
+
+<Tabs>
+  <Tab title="Live Activity + Lock Screen">
+    Widget surfaces get a polish pass after several rounds of feedback.
+
+    - **Attention overrides cooldown.** `LiveActivityCoordinator` lets explicit attention signals override the dismissal cooldown, so an agent flagging an issue isn't suppressed by a recent dismissal.
+    - **Awaiting / idle fallback.** `ADESharedModels` derives awaiting-input and idle counts from agents when keys are absent in the shared snapshot — older snapshots produced by previous app versions decode cleanly instead of showing zeros.
+    - **Preview fixtures scrubbed.** `ADEWidgetPreviewData` no longer carries real workspace data; previews now use synthetic content.
+    - **Dead failed-agent UI removed.** `ADEWorkspaceWidgetViews` had unreachable failed-agent branches; gone.
+    - **Layout pass.** `ADELiveActivityViews`, `ADELockScreenWidget`, and `ADEWorkspaceWidgetViews` get a layout / spacing / typography pass across compact, expanded, and lock-screen variants.
+    - **Control widget + previews.** `ADEControlWidget` cleanup; `ADELiveActivityPreviews` adds previews for the new states; `ADELiveActivity` plumbs a few more attention payloads through to the Live Activity view.
+  </Tab>
+
+  <Tab title="Sync + Pairing">
+    Multi-host pairing keeps tightening.
+
+    - **Profile dedup with recency.** `shouldPreferProfile` picks the newer / Tailscale-preferring / has-last-successful-address profile when two map to the same storage key. Used during legacy `[HostConnectionProfile]`-array migration so collisions don't fall to last-write-wins, plus a paranoia dedup pass before encoding.
+    - **Cross-key dedup.** `deduplicatedProfiles` now matches on `hostIdentity`, `lastHostDeviceId`, `hostName:port`, and `lastSuccessfulAddress:port` simultaneously, so duplicate profiles across keys collapse into one.
+    - **Tailnet detection.** `profileHasTailnetRoute` checks `tailscaleAddress`, `lastSuccessfulAddress` (via `syncIsTailscaleRoute`), and `savedAddressCandidates`, treating tailnet routes encoded in any field as equivalent.
+    - **Dead reconnect path removed.** `reconnectToSavedHost` and its only helper `profile(forSavedHost:)` are gone — both unreachable post-rebase, flagged by Greptile.
+    - **Reduced-load support.** New iOS support for the host's reduced-load mode, with desktop-side test coverage in `iosSyncReducedLoad` paths.
+    - **Saved-host count in pairing.** `SettingsPairingSection` shows the saved-host count so the user can see what's about to be cleared.
+    - **Legacy host key prune.** `SyncService` prunes legacy host keys on load and removes the stale saved profile on a failure path. `KeychainService` token lookup is scoped to the active host.
+  </Tab>
+
+  <Tab title="Chat + Work">
+    Refinements to the iOS chat composer and Work surface.
+
+    - **Composer state extraction.** `WorkChatComposerDraftInput` extracts draft state into a `WorkChatComposerDraftState: ObservableObject` and splits TextField + SendButton into sibling subviews (`WorkChatComposerTextField`, `WorkChatComposerSendButton`). Stop button stays on the parent. Token insertion behavior preserved (auto-spacing); restore-on-failure preserved.
+    - **Timeline tool-group fallback.** `WorkTimelineHelpers` now emits a tool-group when no file paths can be extracted, so the timeline doesn't render an empty container.
+    - **Work session refinements.** Carry-overs from #216: session grouping, Work-surface keep-alive parity with the desktop tab fix, smaller polish on the Work / Chat split.
+  </Tab>
+
+  <Tab title="Other">
+    Smaller fixes that did not warrant their own section.
+
+    - **Mobile UI fixes.** Layout polish across Work and Lanes from a hand pass on the device after the renderer changes landed.
+    - **Tests.** `ADETests` rebalanced — 256 lines of churn covering the composer extraction, profile dedup, Live Activity coordinator, and timeline fallback.
+  </Tab>
+</Tabs>
