@@ -642,6 +642,7 @@ declare global {
         revealPath: (path: string) => Promise<void>;
         openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
+        readClipboardImage: () => Promise<{ data: string; filename: string; mimeType: string } | null>;
         getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
         writeClipboardImage: (path: string) => Promise<void>;
         openPathInEditor: (args: {
@@ -1265,6 +1266,7 @@ declare global {
         listDevices: () => Promise<IosSimulatorDevice[]>;
         listLaunchTargets: (args?: IosSimulatorListLaunchTargetsArgs) => Promise<IosSimulatorLaunchTarget[]>;
         launch: (args?: IosSimulatorLaunchArgs) => Promise<IosSimulatorSession>;
+        attachToChatSession: (args: { chatSessionId: string | null; callerChatSessionId?: string | null }) => Promise<IosSimulatorSession | null>;
         shutdown: (args?: IosSimulatorShutdownArgs) => Promise<IosSimulatorShutdownResult>;
         screenshot: (args?: { deviceUdid?: string | null }) => Promise<IosSimulatorScreenshot>;
         getScreenSnapshot: (args?: IosScreenSnapshotArgs) => Promise<IosScreenSnapshot>;

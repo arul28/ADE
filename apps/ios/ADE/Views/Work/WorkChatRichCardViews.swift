@@ -215,12 +215,13 @@ struct WorkToolCallsPanelView: View {
         .padding(.top, 4)
       }
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .background(ADEColor.surfaceBackground.opacity(0.85), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 14))
     .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(ADEColor.glassBorder.opacity(0.6), lineWidth: 0.5)
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .strokeBorder(ADEColor.glassBorder.opacity(0.9), lineWidth: 1)
     )
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool calls cluster, \(group.count) calls, \(isExpanded ? "expanded" : "collapsed")")
@@ -230,17 +231,17 @@ struct WorkToolCallsPanelView: View {
     Button(action: onToggle) {
       HStack(alignment: .center, spacing: 10) {
         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-          .font(.system(size: 10, weight: .semibold))
+          .font(.system(size: 12, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
         Circle()
           .fill(headerDotTint)
-          .frame(width: 6, height: 6)
+          .frame(width: 7, height: 7)
         Text("Tool calls (\(group.count))")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
         if !isExpanded, let breadcrumb = lastBreadcrumb {
           Text("· \(breadcrumb)")
-            .font(.caption2)
+            .font(.caption)
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
             .truncationMode(.middle)

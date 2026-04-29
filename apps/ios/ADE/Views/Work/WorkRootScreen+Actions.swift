@@ -120,7 +120,8 @@ extension WorkRootScreen {
       }
       if isLive {
         let now = Date()
-        if now.timeIntervalSince(lastCoalescedChatSummaryRefresh) >= 2.6 {
+        let minimumSummaryRefreshInterval = syncService.prefersReducedSyncLoad ? 8.0 : 2.6
+        if now.timeIntervalSince(lastCoalescedChatSummaryRefresh) >= minimumSummaryRefreshInterval {
           lastCoalescedChatSummaryRefresh = now
           await refreshChatSummaries(for: loadedLanes)
         }
@@ -138,9 +139,31 @@ extension WorkRootScreen {
 
   @MainActor
   func refreshChatSummaries(for lanes: [LaneSummary]) async {
+    let lanesToRefresh: [LaneSummary] = {
+      let activeLanes = lanes.filter { $0.archivedAt == nil }
+      guard syncService.prefersReducedSyncLoad else { return activeLanes }
+      let relevantLaneIds = Set((sessions + Array(optimisticSessions.values)).map(\.laneId))
+      let candidates = activeLanes.filter { relevantLaneIds.contains($0.id) }
+      // prefix(6) without prioritization can drop the lane the user is
+      // looking at OR a lane currently awaiting input. Order so the selected
+      // lane is first, then lanes with awaiting-input / live sessions, then
+      // the remainder, before truncating.
+      let allSessions = sessions + Array(optimisticSessions.values)
+      let priorityLaneIds: Set<String> = Set(allSessions.compactMap { session in
+        let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+        return (status == "awaiting-input" || status == "active") ? session.laneId : nil
+      })
+      let selected = selectedLaneId
+      let prioritized = candidates.sorted { lhs, rhs in
+        let lhsRank = laneRefreshPriorityRank(laneId: lhs.id, selectedLaneId: selected, priorityLaneIds: priorityLaneIds)
+        let rhsRank = laneRefreshPriorityRank(laneId: rhs.id, selectedLaneId: selected, priorityLaneIds: priorityLaneIds)
+        return lhsRank < rhsRank
+      }
+      return Array(prioritized.prefix(6))
+    }()
     var updated: [String: AgentChatSessionSummary] = [:]
     await withTaskGroup(of: [(String, AgentChatSessionSummary)].self) { group in
-      for lane in lanes where lane.archivedAt == nil {
+      for lane in lanesToRefresh {
         group.addTask {
           do {
             let summaries = try await syncService.listChatSessions(laneId: lane.id)
@@ -195,7 +218,7 @@ extension WorkRootScreen {
           transcriptCache[session.id] = nextTranscript
         }
       }
-      try? await Task.sleep(nanoseconds: 900_000_000)
+      try? await Task.sleep(nanoseconds: syncService.prefersReducedSyncLoad ? 1_800_000_000 : 900_000_000)
     }
   }
 
@@ -371,4 +394,17 @@ extension WorkRootScreen {
     )
   }
 
+}
+
+/// Lower rank = higher priority. Selected lane > priority lanes (live /
+/// awaiting-input) > everything else, so reduced-mode prefix(6) keeps the
+/// most user-visible refreshes instead of dropping them.
+fileprivate func laneRefreshPriorityRank(
+  laneId: String,
+  selectedLaneId: String,
+  priorityLaneIds: Set<String>
+) -> Int {
+  if selectedLaneId != "all" && laneId == selectedLaneId { return 0 }
+  if priorityLaneIds.contains(laneId) { return 1 }
+  return 2
 }

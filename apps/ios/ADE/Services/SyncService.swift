@@ -167,6 +167,7 @@ enum SyncRequestTimeout {
 
 private let syncTerminalSubscriptionMaxBytes = 80_000
 private let syncChatSubscriptionMaxBytes = 2_000_000
+private let syncReducedLoadChatSubscriptionMaxBytes = 160_000
 private let syncTerminalBufferMaxCharacters = 80_000
 private let chatEventHistoryMaxEvents = 1_000
 
@@ -363,6 +364,7 @@ private struct SyncNetworkPathSnapshot: Equatable, Sendable {
   let usesCellular: Bool
   let usesWiredEthernet: Bool
   let isExpensive: Bool
+  let isConstrained: Bool
 }
 
 private func syncLogAddressList(_ addresses: [String]) -> String {
@@ -382,7 +384,7 @@ private func syncLogPathSummary(_ snapshot: SyncNetworkPathSnapshot?) -> String 
     snapshot.usesCellular ? "cellular" : nil,
     snapshot.usesWiredEthernet ? "wired" : nil,
   ].compactMap { $0 }
-  return "satisfied=\(snapshot.isSatisfied) interfaces=\(interfaces.isEmpty ? "none" : interfaces.joined(separator: "+")) expensive=\(snapshot.isExpensive)"
+  return "satisfied=\(snapshot.isSatisfied) interfaces=\(interfaces.isEmpty ? "none" : interfaces.joined(separator: "+")) expensive=\(snapshot.isExpensive) constrained=\(snapshot.isConstrained)"
 }
 
 private let syncAmbiguousRouteAuthFailureKey = "ADEAmbiguousRouteAuthFailure"
@@ -414,6 +416,32 @@ func syncShouldRoamToTailnet(
   let connectedOverTailnet = currentAddress.map(syncIsTailscaleRoute) ?? false
   guard !connectedOverTailnet else { return false }
   return usesCellular || (!usesWiFi && !usesWiredEthernet)
+}
+
+func syncPrefersReducedNetworkLoad(
+  currentAddress: String?,
+  usesWiFi: Bool,
+  usesCellular: Bool,
+  usesWiredEthernet: Bool,
+  isExpensive: Bool,
+  isConstrained: Bool
+) -> Bool {
+  if currentAddress.map(syncIsTailscaleRoute) == true { return true }
+  if isConstrained || isExpensive || usesCellular { return true }
+  return !usesWiFi && !usesWiredEthernet
+}
+
+func syncShouldUseReducedNetworkLoad(
+  initialPreference: Bool,
+  isConstrained: Bool,
+  forcedReduced: Bool,
+  healthySampleCount: Int,
+  poorSampleCount: Int
+) -> Bool {
+  if isConstrained || forcedReduced { return true }
+  if poorSampleCount > 0 { return true }
+  if healthySampleCount >= 3 { return false }
+  return initialPreference
 }
 
 enum SyncUserFacingError {
@@ -606,6 +634,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var lastSyncAt: Date?
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastError: String?
+  @Published private(set) var prefersReducedSyncLoad = false
   @Published private(set) var terminalBufferRevision = 0
   @Published private(set) var chatEventNotificationRevision = 0
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
@@ -646,6 +675,10 @@ final class SyncService: ObservableObject {
   private struct PendingRequest {
     let completion: (Result<Any, Error>) -> Void
     let timeoutTask: Task<Void, Never>
+    /// Monotonic timestamp captured via `ProcessInfo.processInfo.systemUptime`
+    /// — RTT calculations must not be skewed by user-initiated wall-clock
+    /// adjustments (DST, NTP step, manual time changes).
+    let startedAt: TimeInterval
   }
 
   private var pending: [String: PendingRequest] = [:]
@@ -692,6 +725,13 @@ final class SyncService: ObservableObject {
   private var supportsChatStreaming = false
   private var projectSelectionTask: Task<Void, Never>?
   private var projectSelectionGeneration: UInt64 = 0
+  private var healthyConnectionSampleCount = 0
+  private var poorConnectionSampleCount = 0
+  /// Monotonic deadline (seconds since boot, sourced from
+  /// `ProcessInfo.processInfo.systemUptime`) for the forced reduced-load
+  /// window. Wall-clock independent so daylight savings / NTP steps cannot
+  /// abruptly extend or skip the window.
+  private var forceReducedSyncLoadUntil: TimeInterval?
 
   /// Process-wide singleton populated by the first `init` and consumed by
   /// `AppDelegate`, Live Activity intents, and the `@EnvironmentObject`
@@ -1285,6 +1325,7 @@ final class SyncService: ObservableObject {
     hostName = activeHostProfile?.hostName
     latestRemoteDbVersion = activeHostProfile?.lastRemoteDbVersion ?? 0
     remoteCommandDescriptors = loadRemoteCommandDescriptors()
+    refreshReducedSyncLoad()
     if let initializationError = database.initializationError {
       lastError = initializationError.localizedDescription
       connectionState = .error
@@ -1310,7 +1351,8 @@ final class SyncService: ObservableObject {
         usesWiFi: path.usesInterfaceType(.wifi),
         usesCellular: path.usesInterfaceType(.cellular),
         usesWiredEthernet: path.usesInterfaceType(.wiredEthernet),
-        isExpensive: path.isExpensive
+        isExpensive: path.isExpensive,
+        isConstrained: path.isConstrained
       )
       Task { @MainActor in
         self?.handleNetworkPathChange(snapshot)
@@ -1728,9 +1770,83 @@ final class SyncService: ObservableObject {
     )
   }
 
+  private func refreshReducedSyncLoad() {
+    let route = currentAddress
+      ?? activeHostProfile?.lastSuccessfulAddress
+      ?? activeHostProfile?.tailscaleAddress
+    let nowMonotonic = ProcessInfo.processInfo.systemUptime
+    let forcedReduced = forceReducedSyncLoadUntil.map { $0 > nowMonotonic } ?? false
+    if forceReducedSyncLoadUntil != nil && !forcedReduced {
+      forceReducedSyncLoadUntil = nil
+      poorConnectionSampleCount = 0
+    }
+    let next: Bool
+    if let snapshot = lastNetworkPathSnapshot {
+      let initialPreference = syncPrefersReducedNetworkLoad(
+        currentAddress: route,
+        usesWiFi: snapshot.usesWiFi,
+        usesCellular: snapshot.usesCellular,
+        usesWiredEthernet: snapshot.usesWiredEthernet,
+        isExpensive: snapshot.isExpensive,
+        isConstrained: snapshot.isConstrained
+      )
+      next = syncShouldUseReducedNetworkLoad(
+        initialPreference: initialPreference,
+        isConstrained: snapshot.isConstrained,
+        forcedReduced: forcedReduced,
+        healthySampleCount: healthyConnectionSampleCount,
+        poorSampleCount: poorConnectionSampleCount
+      )
+    } else {
+      next = syncShouldUseReducedNetworkLoad(
+        initialPreference: route.map(syncIsTailscaleRoute) ?? false,
+        isConstrained: false,
+        forcedReduced: forcedReduced,
+        healthySampleCount: healthyConnectionSampleCount,
+        poorSampleCount: poorConnectionSampleCount
+      )
+    }
+    if prefersReducedSyncLoad != next {
+      prefersReducedSyncLoad = next
+      restoreChatEventSubscriptions()
+    }
+  }
+
+  private func recordConnectionLoadSample(latencyMs: Int? = nil, syncLag: Int? = nil, roundTripSeconds: TimeInterval? = nil) {
+    let latencyPoor = latencyMs.map { $0 >= 900 } ?? false
+    let latencyHealthy = latencyMs.map { $0 <= 250 } ?? false
+    let lagPoor = syncLag.map { $0 >= 100 } ?? false
+    let lagHealthy = syncLag.map { $0 <= 10 } ?? true
+    let roundTripPoor = roundTripSeconds.map { $0 >= 5.0 } ?? false
+    let roundTripHealthy = roundTripSeconds.map { $0 <= 0.9 } ?? false
+
+    if latencyPoor || lagPoor || roundTripPoor {
+      poorConnectionSampleCount = min(poorConnectionSampleCount + 1, 3)
+      healthyConnectionSampleCount = 0
+      refreshReducedSyncLoad()
+      return
+    }
+
+    if (latencyHealthy || roundTripHealthy) && lagHealthy {
+      healthyConnectionSampleCount = min(healthyConnectionSampleCount + 1, 5)
+      if healthyConnectionSampleCount >= 2 {
+        poorConnectionSampleCount = 0
+      }
+      refreshReducedSyncLoad()
+    }
+  }
+
+  private func markConnectionLoadStrained(duration: TimeInterval = 60) {
+    forceReducedSyncLoadUntil = ProcessInfo.processInfo.systemUptime + duration
+    poorConnectionSampleCount = max(poorConnectionSampleCount, 1)
+    healthyConnectionSampleCount = 0
+    refreshReducedSyncLoad()
+  }
+
   private func handleNetworkPathChange(_ snapshot: SyncNetworkPathSnapshot) {
     let previous = lastNetworkPathSnapshot
     lastNetworkPathSnapshot = snapshot
+    refreshReducedSyncLoad()
     guard previous != nil else { return }
     guard canReconnectToSavedHost,
           allowAutoReconnect,
@@ -4398,6 +4514,7 @@ final class SyncService: ObservableObject {
       connectionState = .connecting
       hostName = activeHostProfile?.hostName
       currentAddress = socketHost
+      refreshReducedSyncLoad()
     }
 
     guard let urlString = syncWebSocketURLString(host: socketHost, port: socketPort),
@@ -4592,6 +4709,7 @@ final class SyncService: ObservableObject {
     hostName = remoteHostName ?? activeHostProfile?.hostName
     connectionState = .connected
     currentAddress = connectedHost
+    refreshReducedSyncLoad()
     lastError = nil
     lastSyncAt = Date()
     saveRemoteCommandDescriptors(commandDescriptors)
@@ -4712,15 +4830,24 @@ final class SyncService: ObservableObject {
     syncConnectLog.error(
       "incoming message failed type=\(type, privacy: .public) error=\(String(describing: error), privacy: .public)"
     )
-    allowAutoReconnect = false
-    autoReconnectAwaitingLiveDiscovery = false
     let friendlyError = SyncUserFacingError.error(from: error)
+    // Tear the socket down before flipping reduced-load preferences. The
+    // restoreChatEventSubscriptions() side-effect inside refreshReducedSyncLoad
+    // would otherwise enqueue chat_subscribe frames on a socket that is about
+    // to be cancelled, surfacing as send-on-closed errors and orphaned subs.
     teardownSocket(reason: friendlyError.localizedDescription)
+    markConnectionLoadStrained()
     lastError = friendlyError.localizedDescription
-    connectionState = .error
+    connectionState = syncIsMessageTooLongError(error) ? .error : .disconnected
     setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
     failPendingRequests(with: friendlyError)
-    cancelReconnectLoop()
+    if syncIsMessageTooLongError(error) {
+      allowAutoReconnect = false
+      setAutoReconnectPausedByUser(true)
+      cancelReconnectLoop()
+    } else {
+      scheduleReconnectIfNeeded(after: reconnectDelay())
+    }
   }
 
   private func handleIncoming(_ text: String) throws {
@@ -4772,6 +4899,11 @@ final class SyncService: ObservableObject {
         updateProfile { profile in
           profile.hostName = brain["deviceName"] as? String
           profile.lastHostDeviceId = brain["deviceId"] as? String
+        }
+        if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
+          let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
+          let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
+          recordConnectionLoadSample(latencyMs: latencyMs, syncLag: syncLag)
         }
       }
       resolve(requestId: requestId, result: .success(payload))
@@ -4869,6 +5001,7 @@ final class SyncService: ObservableObject {
     request.timeoutTask.cancel()
     switch result {
     case .success(let payload):
+      recordConnectionLoadSample(roundTripSeconds: ProcessInfo.processInfo.systemUptime - request.startedAt)
       request.completion(.success(payload))
     case .failure(let error):
       request.completion(.failure(SyncUserFacingError.error(from: error)))
@@ -4879,11 +5012,12 @@ final class SyncService: ObservableObject {
     requestId: String,
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
+    timeoutNanoseconds: UInt64 = SyncRequestTimeout.defaultTimeoutNanoseconds,
     send: () -> Void
   ) async throws -> Any {
     try await withCheckedThrowingContinuation { continuation in
       let timeoutTask = Task { @MainActor [weak self] in
-        try? await Task.sleep(nanoseconds: SyncRequestTimeout.defaultTimeoutNanoseconds)
+        try? await Task.sleep(nanoseconds: timeoutNanoseconds)
         guard !Task.isCancelled else { return }
         self?.handlePendingRequestTimeout(
           requestId: requestId,
@@ -4895,7 +5029,8 @@ final class SyncService: ObservableObject {
         completion: { result in
           continuation.resume(with: result)
         },
-        timeoutTask: timeoutTask
+        timeoutTask: timeoutTask,
+        startedAt: ProcessInfo.processInfo.systemUptime
       )
       send()
     }
@@ -5005,6 +5140,7 @@ final class SyncService: ObservableObject {
     socket?.cancel(with: closeCode, reason: reason?.data(using: .utf8))
     socket = nil
     currentAddress = nil
+    refreshReducedSyncLoad()
     pendingProjectCatalogChunks.removeAll()
     connectionGeneration &+= 1
   }
@@ -5016,7 +5152,9 @@ final class SyncService: ObservableObject {
     reconnectDelayNanoseconds: UInt64? = nil
   ) {
     let friendlyError = SyncUserFacingError.error(from: error)
+    // Tear down before marking load strained — see handleIncomingFailure.
     teardownSocket(reason: friendlyError.localizedDescription)
+    markConnectionLoadStrained()
     lastError = friendlyError.localizedDescription
     self.connectionState = connectionState
     if phase == .failed {
@@ -5041,8 +5179,13 @@ final class SyncService: ObservableObject {
   ) {
     guard pending[requestId] != nil else { return }
     if disconnectOnTimeout {
+      // handleTransportFailure tears the socket down before flipping the
+      // reduced-load preference, so we must NOT call markConnectionLoadStrained
+      // here — calling it pre-teardown re-subscribes chat events on the
+      // doomed socket. The transport-failure path strains the load itself.
       handleTransportFailure(timeoutError)
     } else {
+      markConnectionLoadStrained()
       resolve(requestId: requestId, result: .failure(timeoutError))
     }
   }
@@ -5220,7 +5363,7 @@ final class SyncService: ObservableObject {
   private func chatSubscriptionPayload(sessionId: String) -> [String: Any] {
     [
       "sessionId": sessionId,
-      "maxBytes": syncChatSubscriptionMaxBytes,
+      "maxBytes": prefersReducedSyncLoad ? syncReducedLoadChatSubscriptionMaxBytes : syncChatSubscriptionMaxBytes,
     ]
   }
 

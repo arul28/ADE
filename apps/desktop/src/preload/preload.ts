@@ -653,6 +653,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.appOpenPath, { path }),
     writeClipboardText: async (text: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
+    readClipboardImage: async (): Promise<{ data: string; filename: string; mimeType: string } | null> =>
+      ipcRenderer.invoke(IPC.appReadClipboardImage),
     getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
       ipcRenderer.invoke(IPC.appGetImageDataUrl, { path }),
     writeClipboardImage: async (path: string): Promise<void> =>
@@ -1798,6 +1800,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.iosSimulatorListLaunchTargets, args),
     launch: async (args: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> =>
       ipcRenderer.invoke(IPC.iosSimulatorLaunch, args),
+    attachToChatSession: async (args: { chatSessionId: string | null; callerChatSessionId?: string | null }): Promise<IosSimulatorSession | null> =>
+      ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args),
     shutdown: async (args: IosSimulatorShutdownArgs = {}): Promise<IosSimulatorShutdownResult> =>
       ipcRenderer.invoke(IPC.iosSimulatorShutdown, args),
     screenshot: async (args: { deviceUdid?: string | null } = {}): Promise<IosSimulatorScreenshot> =>

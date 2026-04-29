@@ -157,6 +157,7 @@ struct PRsTabView: View {
     let statusItems = allGitHubPrs.filter { matchesGitHubStatus($0, status: status) }
     return PrGitHubFilterCounts(
       open: scopedItems.filter { matchesGitHubStatus($0, status: .open) }.count,
+      draft: scopedItems.filter { matchesGitHubStatus($0, status: .draft) }.count,
       merged: scopedItems.filter { matchesGitHubStatus($0, status: .merged) }.count,
       closed: scopedItems.filter { matchesGitHubStatus($0, status: .closed) }.count,
       all: scopedItems.count,
@@ -1030,7 +1031,9 @@ struct PRsTabView: View {
     case .all:
       return true
     case .open:
-      return item.state == "open" || item.isDraft
+      return item.state == "open" && !item.isDraft
+    case .draft:
+      return item.isDraft
     case .merged:
       return item.state == "merged"
     case .closed:
@@ -1054,7 +1057,9 @@ struct PRsTabView: View {
     case .all:
       return true
     case .open:
-      return item.state == "open" || item.state == "draft"
+      return item.state == "open"
+    case .draft:
+      return item.state == "draft"
     case .merged:
       return item.state == "merged"
     case .closed:

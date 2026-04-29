@@ -72,7 +72,7 @@ struct WorkRootScreen: View {
   }
 
   var isLive: Bool {
-    workStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+    syncService.connectionState == .connected || syncService.connectionState == .syncing
   }
 
   var isLoadingSkeleton: Bool {
@@ -197,7 +197,7 @@ struct WorkRootScreen: View {
     NavigationStack(path: $path) {
       ScrollViewReader { proxy in
       List {
-        if isLoadingSkeleton {
+        if isLoadingSkeleton && sessions.isEmpty && optimisticSessions.isEmpty {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
               .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))

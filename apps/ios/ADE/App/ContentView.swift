@@ -123,10 +123,6 @@ struct ContentView: View {
 private struct ProjectHomeView: View {
   @EnvironmentObject private var syncService: SyncService
 
-  private var primaryProject: MobileProjectSummary? {
-    syncService.activeProject ?? syncService.projects.first
-  }
-
   private var attachedComputerLabel: String {
     let trimmedHost = syncService.hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
     let host = (trimmedHost?.isEmpty == false) ? trimmedHost! : nil
@@ -161,7 +157,6 @@ private struct ProjectHomeView: View {
           VStack(spacing: 30) {
             welcomeHero
             attachedComputerBanner
-            openProjectButton
             projectSection
           }
           .frame(maxWidth: 520)
@@ -242,30 +237,7 @@ private struct ProjectHomeView: View {
     .accessibilityHint("Opens computer connection settings.")
   }
 
-  private var openProjectButton: some View {
-    Button {
-      if let primaryProject {
-        syncService.selectProject(primaryProject)
-      } else {
-        syncService.settingsPresented = true
-      }
-    } label: {
-      Label("OPEN PROJECT", systemImage: "folder")
-        .font(.system(.subheadline, design: .rounded).weight(.semibold))
-        .foregroundStyle(Color(red: 0.08, green: 0.08, blue: 0.10))
-        .frame(width: 220, height: 52)
-        .background(Color.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .stroke(Color.white.opacity(0.10), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.16), radius: 18, x: 0, y: 12)
-    }
-    .buttonStyle(.plain)
-    .accessibilityHint(primaryProject == nil ? "Opens computer connection settings." : "Opens the most recent project.")
-  }
-
-  private var projectSection: some View {
+private var projectSection: some View {
     VStack(spacing: 14) {
       Text("DESKTOP TABS")
         .font(.system(.caption, design: .rounded).weight(.semibold))

@@ -2112,6 +2112,22 @@ export function registerIpc({
     clipboard.writeText(text);
   });
 
+  ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
+    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+    const image = clipboard.readImage();
+    if (image.isEmpty()) return null;
+    const png = image.toPNG();
+    if (!png.byteLength) return null;
+    if (png.byteLength > MAX_ATTACHMENT_BYTES) {
+      throw new Error("Clipboard image must be 10 MB or smaller.");
+    }
+    return {
+      data: png.toString("base64"),
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    };
+  });
+
   ipcMain.handle(IPC.appGetImageDataUrl, async (_event, arg: { path: string }): Promise<{ dataUrl: string }> => {
     const filePath = resolveAllowedRendererPath(arg?.path);
     // Use async fs APIs and a size pre-check so a 10 MB image read never
@@ -5042,6 +5058,18 @@ export function registerIpc({
     ensureIosSimulator().listLaunchTargets(arg));
 
   ipcMain.handle(IPC.iosSimulatorLaunch, async (_event, arg = {}) => ensureIosSimulator().launch(arg));
+
+  ipcMain.handle(IPC.iosSimulatorAttachToChatSession, async (_event, arg) => {
+    // Tolerate null/undefined payloads (treated as detach) and reject malformed
+    // shapes with a clear error rather than throwing on a property dereference.
+    if (arg !== undefined && arg !== null && typeof arg !== "object") {
+      throw new Error("iosSimulatorAttachToChatSession requires { chatSessionId } payload.");
+    }
+    const payload = (arg ?? {}) as { chatSessionId?: string | null; callerChatSessionId?: string | null };
+    const chatSessionId = payload.chatSessionId ?? null;
+    const callerChatSessionId = payload.callerChatSessionId ?? chatSessionId;
+    return ensureIosSimulator().attachToChatSession(chatSessionId, callerChatSessionId);
+  });
 
   ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => ensureIosSimulator().shutdown(arg));
 

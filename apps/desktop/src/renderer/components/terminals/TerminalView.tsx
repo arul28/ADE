@@ -49,6 +49,8 @@ type CachedRuntime = {
   exitCode: number | null;
   renderer: TerminalRendererMode;
   rendererAddon: { dispose: () => void } | null;
+  rendererResetInFlight: boolean;
+  lastRendererResetAt: number;
   health: TerminalHealthCounters;
   lastDims: { cols: number; rows: number } | null;
   pendingForceResize: boolean;
@@ -75,6 +77,10 @@ type CachedRuntime = {
   inputEnabled: boolean;
   active: boolean;
   visible: boolean;
+  // Set when a webgl→dom fallback is in flight and the runtime turned
+  // invisible before the webgl restore could run. Persists across renderer
+  // changes so the restore can be retried on the next visibility-true.
+  pendingWebGLRestore: boolean;
   invalidFitRetryTimer: ReturnType<typeof setTimeout> | null;
   fitWarningLogged: boolean;
 };
@@ -88,6 +94,7 @@ const MIN_VALID_ROWS = 6;
 const MIN_HOST_WIDTH_PX = 120;
 const MIN_HOST_HEIGHT_PX = 48;
 const INVALID_FIT_RETRY_MS = 90;
+const RENDERER_RESET_COOLDOWN_MS = 250;
 const runtimeCache = new Map<string, CachedRuntime>();
 let parkedRoot: HTMLDivElement | null = null;
 
@@ -705,6 +712,62 @@ async function initRendererChain(runtime: CachedRuntime) {
   await setRenderer(runtime, "dom");
 }
 
+function resetWebglRenderer(runtime: CachedRuntime, afterReset: () => void): boolean {
+  if (runtime.disposed || runtime.renderer !== "webgl" || runtime.rendererResetInFlight) return false;
+  const now = Date.now();
+  if (
+    runtime.lastRendererResetAt > 0
+    && now - runtime.lastRendererResetAt < RENDERER_RESET_COOLDOWN_MS
+  ) return false;
+
+  runtime.rendererResetInFlight = true;
+  runtime.lastRendererResetAt = now;
+
+  void setRenderer(runtime, "dom")
+    .then(async () => {
+      if (runtime.disposed) return;
+      // Visibility may have flipped to false while we were swapping to DOM.
+      // Defer the webgl restore until the runtime becomes visible again
+      // instead of dropping it permanently — `runtime.renderer === "dom"`
+      // here so a subsequent caller would not retry without this flag.
+      if (!runtime.visible) {
+        runtime.pendingWebGLRestore = true;
+        return;
+      }
+      const restored = await setRenderer(runtime, "webgl");
+      if (!restored && !runtime.disposed) {
+        incrementHealth(runtime, "rendererFallbacks");
+      }
+    })
+    .catch(() => {
+      if (!runtime.disposed) {
+        incrementHealth(runtime, "rendererFallbacks");
+      }
+    })
+    .finally(() => {
+      runtime.rendererResetInFlight = false;
+      if (runtime.disposed || !runtime.visible) return;
+      clearTextureAtlas(runtime);
+      afterReset();
+    });
+
+  return true;
+}
+
+function flushPendingWebGLRestore(runtime: CachedRuntime): void {
+  if (!runtime.pendingWebGLRestore || runtime.disposed || !runtime.visible) return;
+  if (runtime.renderer === "webgl") {
+    runtime.pendingWebGLRestore = false;
+    return;
+  }
+  runtime.pendingWebGLRestore = false;
+  void setRenderer(runtime, "webgl").then((restored) => {
+    if (!restored && !runtime.disposed) {
+      incrementHealth(runtime, "rendererFallbacks");
+    }
+  });
+}
+
 function createRuntime(args: {
   ptyId: string;
   sessionId: string;
@@ -748,6 +811,8 @@ function createRuntime(args: {
     exitCode: null,
     renderer: "dom",
     rendererAddon: null,
+    rendererResetInFlight: false,
+    lastRendererResetAt: 0,
     health: { fitFailures: 0, zeroDimFits: 0, rendererFallbacks: 0, droppedChunks: 0, fitRecoveries: 0 },
     lastDims: null,
     pendingForceResize: false,
@@ -774,6 +839,7 @@ function createRuntime(args: {
     inputEnabled: true,
     active: true,
     visible: true,
+    pendingWebGLRestore: false,
     invalidFitRetryTimer: null,
     fitWarningLogged: false
   };
@@ -1119,20 +1185,24 @@ export function TerminalView({
     };
     const onWorkSurfaceRevealed = () => {
       if (!mountConfigRef.current.isVisible) return;
+      const redraw = () => {
+        requestAnimationFrame(() => {
+          schedule(true);
+          try {
+            runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
+            if (mountConfigRef.current.isActive) {
+              runtime.term.focus();
+              runtime.term.scrollToBottom();
+            }
+          } catch {
+            // ignore redraw failures after disposal
+          }
+        });
+      };
       clearTextureAtlas(runtime);
       flushPendingFrameWrites(runtime);
-      requestAnimationFrame(() => {
-        schedule(true);
-        try {
-          runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
-          if (mountConfigRef.current.isActive) {
-            runtime.term.focus();
-            runtime.term.scrollToBottom();
-          }
-        } catch {
-          // ignore redraw failures after disposal
-        }
-      });
+      resetWebglRenderer(runtime, redraw);
+      redraw();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onWindowFocus);
@@ -1244,11 +1314,24 @@ export function TerminalView({
     }
 
     if (isVisible) {
+      const redraw = () => {
+        requestAnimationFrame(() => {
+          scheduleFit(runtime, false);
+          try {
+            runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
+          } catch {
+            // ignore redraw failures after disposal
+          }
+        });
+      };
       clearTextureAtlas(runtime);
       flushPendingFrameWrites(runtime);
-      requestAnimationFrame(() => {
-        scheduleFit(runtime, false);
-      });
+      // Replay a webgl restore that was deferred when the runtime turned
+      // invisible mid-fallback. Without this, runtime.renderer stays "dom"
+      // and resetWebglRenderer's webgl-only guard would silently skip retry.
+      flushPendingWebGLRestore(runtime);
+      resetWebglRenderer(runtime, redraw);
+      redraw();
     }
 
     if (!isActive) {

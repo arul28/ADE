@@ -62,13 +62,13 @@ struct WorkReasoningCard: View {
         isExpanded.toggle()
       }
     } label: {
-      HStack(spacing: 6) {
+      HStack(spacing: 8) {
         Image(systemName: "chevron.right")
-          .font(.system(size: 9, weight: .bold))
+          .font(.system(size: 12, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
           .rotationEffect(isExpanded ? .degrees(90) : .degrees(0))
         Image(systemName: "brain.head.profile")
-          .font(.system(size: 11, weight: .semibold))
+          .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(headerTint)
           .symbolEffect(
             .pulse,
@@ -76,20 +76,20 @@ struct WorkReasoningCard: View {
             isActive: isLive && !reduceMotion
           )
         Text(headerTitle)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
         if isLive {
           WorkThinkingDots()
             .frame(height: 6)
         }
       }
-      .padding(.horizontal, 9)
-      .padding(.vertical, 5)
-      .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule(style: .continuous))
+      .padding(.horizontal, 12)
+      .padding(.vertical, 7)
+      .background(ADEColor.surfaceBackground.opacity(0.85), in: Capsule(style: .continuous))
       .glassEffect()
       .overlay(
         Capsule(style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+          .stroke(ADEColor.glassBorder.opacity(0.9), lineWidth: 1)
       )
       .contentShape(Capsule())
     }

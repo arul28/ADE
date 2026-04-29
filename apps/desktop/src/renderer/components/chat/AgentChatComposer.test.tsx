@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, type RenderResult } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { AgentChatComposer } from "./AgentChatComposer";
 
@@ -63,7 +63,10 @@ beforeEach(() => {
   installMatchMediaMock();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  delete (window as any).ade;
+});
 
 function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
   const props: ComponentProps<typeof AgentChatComposer> = {
@@ -476,6 +479,51 @@ describe("AgentChatComposer", () => {
 
     expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("attaches a native clipboard image when macOS Cmd+V does not expose paste files", async () => {
+    const originalPlatform = navigator.platform;
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
+    const readClipboardImage = vi.fn().mockResolvedValue({
+      data: "abc123",
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    });
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-clipboard.png" });
+    (window as any).ade = {
+      app: { readClipboardImage },
+      agentChat: { saveTempAttachment },
+    };
+
+    try {
+      const props = renderComposer({
+        turnActive: false,
+        draft: "",
+      });
+
+      fireEvent.keyDown(screen.getByPlaceholderText("Type to vibecode..."), {
+        key: "v",
+        metaKey: true,
+      });
+
+      await waitFor(() => expect(readClipboardImage).toHaveBeenCalledTimes(1));
+      expect(saveTempAttachment).toHaveBeenCalledWith({
+        data: "abc123",
+        filename: "clipboard.png",
+      });
+      expect(props.onAddAttachment).toHaveBeenCalledWith({
+        path: "/tmp/ade-clipboard.png",
+        type: "image",
+      });
+    } finally {
+      Object.defineProperty(navigator, "platform", {
+        configurable: true,
+        value: originalPlatform,
+      });
+    }
   });
 
   it("hides native permission controls until a model is selected", () => {

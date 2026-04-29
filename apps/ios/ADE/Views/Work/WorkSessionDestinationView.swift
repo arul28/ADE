@@ -51,6 +51,17 @@ struct WorkSessionDestinationView: View {
     return chatSummary?.title ?? session?.title ?? "Session"
   }
 
+  var hostReachable: Bool {
+    syncService.connectionState == .connected || syncService.connectionState == .syncing
+  }
+
+  /// Live polling/load gates require BOTH the parent's "session is live" flag
+  /// AND a reachable host. Using `hostReachable` alone enables chat actions
+  /// for sessions the parent considers ended/archived.
+  var isLiveAndReachable: Bool {
+    isLive && hostReachable
+  }
+
   /// Trailing nav-bar control scoped to the session's lane. The visible branch
   /// icon keeps it distinct from in-transcript overflow menus.
   @ViewBuilder
@@ -150,7 +161,7 @@ struct WorkSessionDestinationView: View {
           artifactRefreshError: artifactRefreshError,
           sending: $sending,
           errorMessage: $errorMessage,
-          isLive: isLive,
+          isLive: isLiveAndReachable,
           transitionNamespace: transitionNamespace,
           onOpenLane: showsLaneActions ? openSessionLane : nil,
           onSend: sendMessage,
@@ -196,7 +207,7 @@ struct WorkSessionDestinationView: View {
 
   var pollingKey: String {
     let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
-    return "\(session?.id ?? sessionId)-\(status)-\(isLive)"
+    return "\(session?.id ?? sessionId)-\(status)-\(isLiveAndReachable)"
   }
 
   var liveChatObservationKey: String {
@@ -233,11 +244,13 @@ struct WorkSessionDestinationView: View {
       if let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
         chatSummary = fetchedSummary
       }
-      if isLive, let currentSession = session ?? initialSession, isChatSession(currentSession) {
+      if isLiveAndReachable, let currentSession = session ?? initialSession, isChatSession(currentSession) {
         try? await syncService.subscribeToChatEvents(sessionId: sessionId)
       }
-      await refreshArtifacts(force: true)
-      await loadTranscript(forceRemote: isLive)
+      if !syncService.prefersReducedSyncLoad {
+        await refreshArtifacts(force: true)
+      }
+      await loadTranscript(forceRemote: isLiveAndReachable, preferLightweight: syncService.prefersReducedSyncLoad)
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
@@ -245,7 +258,7 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
-  func loadTranscript(forceRemote: Bool) async {
+  func loadTranscript(forceRemote: Bool, preferLightweight: Bool = false) async {
     if forceRemote, let currentSession = session ?? initialSession, isChatSession(currentSession) {
       try? await syncService.subscribeToChatEvents(sessionId: sessionId)
     }
@@ -254,13 +267,20 @@ struct WorkSessionDestinationView: View {
     var fallbackTranscript: [WorkChatEnvelope] = []
     var eventTranscript: [WorkChatEnvelope] = []
     var fetchedFallbackEntries: [AgentChatTranscriptEntry] = []
+    // Track whether the fallback fetch genuinely produced data so that a
+    // skipped or failed fetch preserves the previous fallbackEntries instead
+    // of clobbering them with [], which would erase artifact and tool history
+    // in the fallback render path.
+    var fetchedFallbackEntriesAvailable = false
 
-    if let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
+    let shouldFetchFallback = !preferLightweight || (liveTranscript.isEmpty && transcript.isEmpty)
+    if shouldFetchFallback, let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
       fetchedFallbackEntries = response.entries
+      fetchedFallbackEntriesAvailable = true
       fallbackTranscript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
     }
 
-    if forceRemote {
+    if forceRemote && !preferLightweight {
       try? await syncService.subscribeTerminal(sessionId: sessionId)
       let raw = syncService.terminalBuffers[sessionId] ?? ""
       let parsed = parseWorkChatTranscript(raw)
@@ -281,7 +301,7 @@ struct WorkSessionDestinationView: View {
     if !mergedTranscript.isEmpty, mergedTranscript != transcript {
       transcript = mergedTranscript
     }
-    if fallbackEntries != fetchedFallbackEntries {
+    if fetchedFallbackEntriesAvailable, fallbackEntries != fetchedFallbackEntries {
       fallbackEntries = fetchedFallbackEntries
     }
 
@@ -293,8 +313,11 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func refreshChatStateAfterAction(forceRemote: Bool = true) async {
-    await loadTranscript(forceRemote: forceRemote)
-    await refreshArtifacts(force: true)
+    let preferLightweight = syncService.prefersReducedSyncLoad
+    await loadTranscript(forceRemote: forceRemote, preferLightweight: preferLightweight)
+    if !preferLightweight {
+      await refreshArtifacts(force: true)
+    }
     if let refreshedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
       chatSummary = refreshedSummary
     }
@@ -310,7 +333,8 @@ struct WorkSessionDestinationView: View {
     else { return }
 
     let now = Date()
-    guard force || now.timeIntervalSince(lastArtifactRefreshAt) >= 0.8 else { return }
+    let minimumRefreshInterval = syncService.prefersReducedSyncLoad ? 15.0 : 0.8
+    guard force || now.timeIntervalSince(lastArtifactRefreshAt) >= minimumRefreshInterval else { return }
     guard !artifactRefreshInFlight else { return }
 
     artifactRefreshInFlight = true
@@ -419,13 +443,13 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func pollIfNeeded() async {
-    guard isLive,
+    guard isLiveAndReachable,
           let session,
           isChatSession(session)
     else { return }
     let initialStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     guard initialStatus == "active" || initialStatus == "awaiting-input" else { return }
-    while !Task.isCancelled, isLive,
+    while !Task.isCancelled, isLiveAndReachable,
       {
         let status = normalizedWorkChatSessionStatus(session: self.session, summary: self.chatSummary)
         return status == "active" || status == "awaiting-input"
@@ -433,9 +457,10 @@ struct WorkSessionDestinationView: View {
       syncTranscriptFromLiveEvents()
       let now = Date()
       if now.timeIntervalSince(lastTranscriptRemoteRefreshAt) >= 8 {
-        await loadTranscript(forceRemote: true)
+        await loadTranscript(forceRemote: true, preferLightweight: syncService.prefersReducedSyncLoad)
       }
-      if now.timeIntervalSince(lastSessionRowRefreshAt) >= 5 {
+      let sessionRefreshInterval = syncService.prefersReducedSyncLoad ? 10.0 : 5.0
+      if now.timeIntervalSince(lastSessionRowRefreshAt) >= sessionRefreshInterval {
         lastSessionRowRefreshAt = now
         if let refreshedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
           chatSummary = refreshedSummary
@@ -444,10 +469,11 @@ struct WorkSessionDestinationView: View {
           self.session = refreshedSession
         }
       }
-      if now.timeIntervalSince(lastArtifactRefreshAt) >= 12 {
+      let artifactRefreshInterval = syncService.prefersReducedSyncLoad ? 30.0 : 12.0
+      if now.timeIntervalSince(lastArtifactRefreshAt) >= artifactRefreshInterval {
         await refreshArtifacts(force: false)
       }
-      try? await Task.sleep(nanoseconds: 1_700_000_000)
+      try? await Task.sleep(nanoseconds: syncService.prefersReducedSyncLoad ? 3_000_000_000 : 1_700_000_000)
     }
   }
 }

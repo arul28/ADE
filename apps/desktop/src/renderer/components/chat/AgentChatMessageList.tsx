@@ -378,6 +378,47 @@ function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_
 
 const IOS_SIMULATOR_CONTEXT_PREFIX = "Selected iOS simulator context:";
 
+/**
+ * Mirror the cyan chip pill the composer renders when an iOS-inspect packet is
+ * staged. Sent user messages keep the same backtick-wrapped label tokens at the
+ * front of `event.text`, so we can re-promote them to the same chip treatment
+ * here. Without this they render as inline-code-styled text and reviewers can't
+ * tell the message actually carried packet context (vs. the user just typing
+ * the label by hand).
+ */
+function parseLeadingIosContextChips(text: string): { chips: string[]; rest: string } {
+  const chips: string[] = [];
+  let i = 0;
+  while (i < text.length && text[i] === "`") {
+    const close = text.indexOf("`", i + 1);
+    if (close === -1) break;
+    const inner = text.slice(i + 1, close);
+    if (!inner.length || inner.includes("`") || inner.includes("\n")) break;
+    // Promote only when the closing backtick is followed by a valid token
+    // boundary — whitespace, end-of-string, or an accepted punctuation char.
+    // Adjacent non-space text (e.g. `ctx`message) is plain code, not a chip.
+    const next = text[close + 1];
+    const atValidBoundary =
+      next === undefined
+      || next === " "
+      || next === "\t"
+      || next === "\n"
+      || next === ","
+      || next === "."
+      || next === ":"
+      || next === ";";
+    if (!atValidBoundary) break;
+    chips.push(inner);
+    i = close + 1;
+    if (next === " ") {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  return { chips, rest: text.slice(i) };
+}
+
 function UserMessageSendConfirmations({
   event,
 }: {
@@ -1884,7 +1925,33 @@ function renderEvent(
           <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             <MessageCopyButton value={event.text} />
           </div>
-          <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">{event.text}</div>
+          {(() => {
+            const parsed = parseLeadingIosContextChips(event.text);
+            if (!parsed.chips.length) {
+              return (
+                <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">
+                  {event.text}
+                </div>
+              );
+            }
+            return (
+              <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">
+                <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
+                  {parsed.chips.map((label, idx) => (
+                    <span
+                      key={`ios-chip-${idx}`}
+                      className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline"
+                      title={label}
+                      data-testid="user-message-ios-context-chip"
+                    >
+                      <span className="max-w-[200px] truncate">{label}</span>
+                    </span>
+                  ))}
+                </span>
+                {parsed.rest}
+              </div>
+            );
+          })()}
           {event.attachments?.length ? (
             <ChatAttachmentTray attachments={event.attachments} mode={options?.surfaceMode ?? "standard"} className="mt-1 px-0 py-0" />
           ) : null}

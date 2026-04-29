@@ -2549,6 +2549,27 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
+  const attachToChatSession = (chatSessionId: string | null, callerChatSessionId: string | null = chatSessionId): IosSimulatorSession | null => {
+    if (!activeSession) return null;
+    // Ownership check applies symmetrically: callers passing null to detach
+    // must still be the current owner, otherwise an unrelated chat could free
+    // another chat's simulator binding. The caller's own chat id is supplied
+    // via callerChatSessionId; for attach calls it is the same as the new
+    // chatSessionId, for detach calls (chatSessionId === null) it identifies
+    // the chat requesting the detach.
+    if (
+      activeSession.chatSessionId
+      && callerChatSessionId
+      && activeSession.chatSessionId !== callerChatSessionId
+    ) {
+      throw new IosSimulatorOwnedBySessionError(activeSession);
+    }
+    if (activeSession.chatSessionId === chatSessionId) return activeSession;
+    activeSession = { ...activeSession, chatSessionId };
+    emit({ type: "session-updated", session: activeSession });
+    return activeSession;
+  };
+
   const launch = async (launchArgs: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> => {
     if (process.platform !== "darwin") {
       throw new Error("iOS Simulator control is only available on macOS.");
@@ -2604,10 +2625,21 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
       currentStep = "open-simulator";
       emitLaunchProgress(launchId, "open-simulator", "running", "Preparing Simulator.app in the background...", null, { deviceUdid: device.udid });
-      const openArgs = launchArgs.keepSimulatorInBackground === false
-        ? ["-a", "Simulator"]
-        : ["-g", "-a", "Simulator"];
+      const keepInBackground = launchArgs.keepSimulatorInBackground !== false;
+      const openArgs = keepInBackground
+        ? ["-gj", "-a", "Simulator"]
+        : ["-a", "Simulator"];
       spawn("open", openArgs, { detached: true, stdio: "ignore" }).unref();
+      if (keepInBackground) {
+        // `simctl boot`/`launch` can still steal focus on some macOS versions even
+        // with `open -gj`. Force-hide Simulator.app via System Events so the user
+        // never sees it pop in front of ADE during the launch sequence.
+        spawn(
+          "osascript",
+          ["-e", 'tell application "System Events" to if exists process "Simulator" then set visible of process "Simulator" to false'],
+          { detached: true, stdio: "ignore" },
+        ).unref();
+      }
       emitLaunchProgress(launchId, "open-simulator", "complete", "Simulator.app is ready in the background.", null, { deviceUdid: device.udid });
 
       currentStep = "resolve-target";
@@ -2683,6 +2715,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         env: childEnv,
         timeoutMs: 60_000,
       });
+      if (launchArgs.keepSimulatorInBackground !== false) {
+        // simctl launch frequently activates Simulator.app — re-hide it so ADE
+        // stays in front for the remainder of the session.
+        spawn(
+          "osascript",
+          ["-e", 'tell application "System Events" to if exists process "Simulator" then set visible of process "Simulator" to false'],
+          { detached: true, stdio: "ignore" },
+        ).unref();
+      }
       emitLaunchProgress(launchId, "launch-app", "complete", "App launched.", bundleId, { deviceUdid: device.udid, targetId: target.target.id });
       emitLaunchProgress(launchId, "ready", "complete", "iOS simulator drawer is ready.", device.name, { deviceUdid: device.udid, targetId: target.target.id });
       emit({ type: "session-started", session });
@@ -3375,6 +3416,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     listDevices,
     listLaunchTargets,
     launch,
+    attachToChatSession,
     shutdown,
     screenshot,
     getScreenSnapshot,

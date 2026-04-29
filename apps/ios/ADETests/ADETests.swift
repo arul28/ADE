@@ -293,6 +293,50 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testSyncReducedLoadStartsConservativeThenPromotesOnHealthySamples() {
+    XCTAssertTrue(
+      syncPrefersReducedNetworkLoad(
+        currentAddress: "100.75.20.63",
+        usesWiFi: true,
+        usesCellular: false,
+        usesWiredEthernet: false,
+        isExpensive: false,
+        isConstrained: false
+      )
+    )
+
+    XCTAssertFalse(
+      syncShouldUseReducedNetworkLoad(
+        initialPreference: true,
+        isConstrained: false,
+        forcedReduced: false,
+        healthySampleCount: 3,
+        poorSampleCount: 0
+      )
+    )
+  }
+
+  func testSyncReducedLoadStaysOnForConstrainedOrStrainedLinks() {
+    XCTAssertTrue(
+      syncShouldUseReducedNetworkLoad(
+        initialPreference: false,
+        isConstrained: true,
+        forcedReduced: false,
+        healthySampleCount: 5,
+        poorSampleCount: 0
+      )
+    )
+    XCTAssertTrue(
+      syncShouldUseReducedNetworkLoad(
+        initialPreference: false,
+        isConstrained: false,
+        forcedReduced: false,
+        healthySampleCount: 5,
+        poorSampleCount: 1
+      )
+    )
+  }
+
   @MainActor
   func testSyncAutomaticReconnectPrefersSavedTailnetDuringRoam() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
