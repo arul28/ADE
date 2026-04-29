@@ -216,6 +216,52 @@ func buildPullRequestTimeline(pr: PullRequestListItem, snapshot: PullRequestSnap
   }
 }
 
+func filterPullRequestListItems(
+  _ items: [PullRequestListItem],
+  query: String,
+  state: PrGitHubStatusFilter
+) -> [PullRequestListItem] {
+  let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return items.filter { item in
+    matchesPullRequestListItemStatus(item, state: state)
+      && matchesPullRequestListItemSearch(item, query: normalizedQuery)
+  }
+}
+
+func matchesPullRequestListItemStatus(_ item: PullRequestListItem, state: PrGitHubStatusFilter) -> Bool {
+  switch state {
+  case .all:
+    return true
+  case .open:
+    return item.state == "open"
+  case .draft:
+    return item.state == "draft"
+  case .merged:
+    return item.state == "merged"
+  case .closed:
+    return item.state == "closed"
+  }
+}
+
+func matchesPullRequestListItemSearch(_ item: PullRequestListItem, query: String) -> Bool {
+  guard !query.isEmpty else { return true }
+  let haystack = [
+    item.title,
+    item.headBranch,
+    item.baseBranch,
+    item.laneName,
+    item.repoOwner,
+    item.repoName,
+    item.adeKind,
+    item.workflowDisplayState,
+    "#\(item.githubPrNumber)",
+    "\(item.githubPrNumber)",
+  ]
+  .compactMap { $0?.lowercased() }
+  .joined(separator: " ")
+  return haystack.contains(query)
+}
+
 func buildPullRequestTimeline(
   pr: PullRequestListItem,
   snapshot: PullRequestSnapshot,

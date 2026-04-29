@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
+import { At, CaretDown, Check, DeviceMobile, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -38,6 +38,30 @@ import { modifierKeyLabel } from "../../lib/platform";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
+
+type PasteShortcutEvent = {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+};
+
+function isMacPlatform(): boolean {
+  return typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
+}
+
+function isMacPasteShortcut(event: PasteShortcutEvent): boolean {
+  return (
+    isMacPlatform()
+    && event.key.toLowerCase() === "v"
+    && event.metaKey
+    && !event.ctrlKey
+    && !event.altKey
+    && !event.shiftKey
+  );
+}
 
 type ExecutionModeOption = {
   value: AgentChatExecutionMode;
@@ -502,6 +526,9 @@ export function AgentChatComposer({
   parallelSlotExecutionMode = null,
   onParallelSlotExecutionModeChange,
   showParallelChatToggle = false,
+  showIosSimulatorToggle = false,
+  iosSimulatorOpen = false,
+  onToggleIosSimulator,
 }: {
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
@@ -590,6 +617,9 @@ export function AgentChatComposer({
   parallelSlotExecutionMode?: AgentChatExecutionMode | null;
   onParallelSlotExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
   showParallelChatToggle?: boolean;
+  showIosSimulatorToggle?: boolean;
+  iosSimulatorOpen?: boolean;
+  onToggleIosSimulator?: () => void;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -620,6 +650,8 @@ export function AgentChatComposer({
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
   const fileAddInProgressRef = useRef(false);
+  const clipboardImagePasteHandledRef = useRef(0);
+  const clipboardImagePasteFallbackTimerRef = useRef<number | null>(null);
   const useRichIosComposer = iosElementContextItems.length > 0;
   const canAttach = !parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS;
   const attachBlockedReason = parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
@@ -645,6 +677,14 @@ export function AgentChatComposer({
     }
     textareaRef.current?.focus({ preventScroll: true });
   }, [resizeTextarea, shouldAutofocus, useRichIosComposer]);
+  useEffect(() => {
+    return () => {
+      if (clipboardImagePasteFallbackTimerRef.current != null) {
+        window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);
+        clipboardImagePasteFallbackTimerRef.current = null;
+      }
+    };
+  }, []);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
@@ -753,6 +793,28 @@ export function AgentChatComposer({
           setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
         }
       }
+    } finally {
+      fileAddInProgressRef.current = false;
+    }
+  };
+
+  const addNativeClipboardImageAttachment = async () => {
+    if (!canAttach) return;
+    if (turnActive) return;
+    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
+    if (fileAddInProgressRef.current) return;
+    fileAddInProgressRef.current = true;
+    setAttachError(null);
+    try {
+      const payload = await window.ade.app.readClipboardImage();
+      if (!payload) return;
+      const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
+        data: payload.data,
+        filename: payload.filename || "clipboard.png",
+      });
+      onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, payload.mimeType) });
+    } catch {
+      setAttachError("Unable to attach clipboard image.");
     } finally {
       fileAddInProgressRef.current = false;
     }
@@ -1582,6 +1644,17 @@ export function AgentChatComposer({
   /* ── Keyboard handler for composer input ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
+    if (isMacPasteShortcut(event)) {
+      const handledPasteGeneration = clipboardImagePasteHandledRef.current;
+      if (clipboardImagePasteFallbackTimerRef.current != null) {
+        window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);
+      }
+      clipboardImagePasteFallbackTimerRef.current = window.setTimeout(() => {
+        clipboardImagePasteFallbackTimerRef.current = null;
+        if (clipboardImagePasteHandledRef.current !== handledPasteGeneration) return;
+        void addNativeClipboardImageAttachment();
+      }, CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS);
+    }
 
     /* Command menu keyboard navigation */
     if (commandMenuTrigger) {
@@ -1630,18 +1703,28 @@ export function AgentChatComposer({
   const handlePaste = (event: React.ClipboardEvent<HTMLElement>) => {
     if (!canAttach) return;
     const collected: File[] = [];
+    let hasImageItem = false;
     if (event.clipboardData.files.length) {
       for (const file of Array.from(event.clipboardData.files)) collected.push(file);
     }
     if (!collected.length && event.clipboardData.items?.length) {
       for (const item of Array.from(event.clipboardData.items)) {
+        if (item.type.startsWith("image/")) hasImageItem = true;
         if (item.kind !== "file") continue;
         const file = item.getAsFile();
         if (file) collected.push(file);
       }
     }
-    if (!collected.length) return;
+    if (!collected.length) {
+      if (hasImageItem) {
+        event.preventDefault();
+        clipboardImagePasteHandledRef.current += 1;
+        void addNativeClipboardImageAttachment();
+      }
+      return;
+    }
     event.preventDefault();
+    clipboardImagePasteHandledRef.current += 1;
     const dt = new DataTransfer();
     for (const file of collected) dt.items.add(file);
     void addFileAttachments(dt.files);
@@ -2282,6 +2365,31 @@ export function AgentChatComposer({
                   aria-label="Configure parallel models"
                 >
                   <SquareSplitHorizontal className="h-3 w-3" size={14} weight="regular" />
+                </button>
+              </SmartTooltip>
+            ) : null}
+
+            {showIosSimulatorToggle && onToggleIosSimulator ? (
+              <SmartTooltip
+                content={{
+                  label: iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator",
+                  description: "Boot, inspect, and capture the iOS simulator alongside this chat.",
+                  effect: iosSimulatorOpen ? "Hides the simulator drawer." : "Opens the simulator drawer for this lane.",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={onToggleIosSimulator}
+                  className={cn(
+                    "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                    iosSimulatorOpen
+                      ? "border-cyan-300/22 bg-cyan-500/10 text-cyan-100/80"
+                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
+                  )}
+                  aria-label={iosSimulatorOpen ? "Close iOS simulator drawer" : "Open iOS simulator drawer"}
+                  aria-pressed={iosSimulatorOpen}
+                >
+                  <DeviceMobile className="h-3 w-3" size={14} weight={iosSimulatorOpen ? "fill" : "regular"} />
                 </button>
               </SmartTooltip>
             ) : null}

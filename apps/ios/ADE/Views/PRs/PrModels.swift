@@ -71,6 +71,7 @@ enum PrWorkflowKindFilter: String, CaseIterable, Identifiable {
 
 enum PrGitHubStatusFilter: String, CaseIterable, Identifiable {
   case open
+  case draft
   case merged
   case closed
   case all
@@ -80,6 +81,7 @@ enum PrGitHubStatusFilter: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .open: return "Open"
+    case .draft: return "Draft"
     case .merged: return "Merged"
     case .closed: return "Closed"
     case .all: return "All"
@@ -121,6 +123,7 @@ enum PrGitHubSortOption: String, CaseIterable, Identifiable {
 
 struct PrGitHubFilterCounts: Equatable {
   let open: Int
+  let draft: Int
   let merged: Int
   let closed: Int
   let all: Int

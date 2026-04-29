@@ -100,6 +100,7 @@ const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
+const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
@@ -753,6 +754,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const sentAt = nowIso();
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      if (isPeerBackpressured(peer)) {
+        args.logger.debug("sync_host.heartbeat_deferred_backpressure", {
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          bufferedAmount: peer.ws.bufferedAmount,
+        });
+        continue;
+      }
       if (peer.awaitingHeartbeatAt) {
         peer.missedHeartbeatCount += 1;
         if (peer.missedHeartbeatCount >= 2) {
@@ -1096,7 +1104,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   function send<TPayload>(ws: WebSocket, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): void {
+    if (ws.readyState !== WebSocket.OPEN) return;
     ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }));
+  }
+
+  function isPeerBackpressured(peer: PeerState): boolean {
+    return peer.ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES;
   }
 
   function sendAndWait<TPayload>(
@@ -1421,6 +1434,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      if (isPeerBackpressured(peer)) continue;
       for (const sessionId of peer.subscribedChatSessionIds) {
         const session = args.sessionService.get(sessionId);
         if (!session?.transcriptPath) continue;
@@ -1441,6 +1455,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   function broadcastChatEvent(event: AgentChatEventEnvelope): void {
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      if (isPeerBackpressured(peer)) continue;
       if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
       if (!rememberChatEventSent(peer, event)) continue;
       send(peer.ws, "chat_event", event);
@@ -1452,6 +1467,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const currentDbVersion = args.db.sync.getDbVersion();
     for (const peer of peers) {
       if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) continue;
+      if (isPeerBackpressured(peer)) continue;
       if (currentDbVersion <= peer.lastKnownServerDbVersion) continue;
       const changes = args.db.sync
         .exportChangesSince(peer.lastKnownServerDbVersion)
@@ -2394,6 +2410,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       };
       for (const peer of peers) {
         if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
+        if (isPeerBackpressured(peer)) continue;
         send(peer.ws, "terminal_data", payload);
       }
     },
@@ -2407,6 +2424,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       };
       for (const peer of peers) {
         if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
+        if (isPeerBackpressured(peer)) continue;
         send(peer.ws, "terminal_exit", payload);
       }
     },

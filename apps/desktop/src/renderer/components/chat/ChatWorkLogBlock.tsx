@@ -112,7 +112,23 @@ function workLogEntryKindSlug(entry: ChatWorkLogEntry): string {
   return entry.label.replace(/\s+/g, "_").toLowerCase() || "tool";
 }
 
-function workLogStatusGlyph(status: EntryStatus) {
+function entryHasResolvedPayload(entry: ChatWorkLogEntry): boolean {
+  if (entry.result !== undefined) return true;
+  if (typeof entry.output === "string" && entry.output.length > 0) return true;
+  if (entry.changedFiles && entry.changedFiles.length > 0) return true;
+  return false;
+}
+
+function resolvedEntryStatus(entry: ChatWorkLogEntry): EntryStatus {
+  if (entry.status === "failed") return "failed";
+  if (entry.status === "interrupted") return "interrupted";
+  if (entry.status === "completed") return "completed";
+  if (entry.status === "running" && entryHasResolvedPayload(entry)) return "completed";
+  return entry.status;
+}
+
+function workLogStatusGlyph(entry: ChatWorkLogEntry) {
+  const status = resolvedEntryStatus(entry);
   if (status === "completed") {
     return <Check size={12} weight="bold" className="shrink-0 text-emerald-400" aria-hidden />;
   }
@@ -130,7 +146,8 @@ function workLogStatusGlyph(status: EntryStatus) {
   );
 }
 
-function workLogEntryKindToneClass(status: EntryStatus): string {
+function workLogEntryKindToneClass(entry: ChatWorkLogEntry): string {
+  const status = resolvedEntryStatus(entry);
   if (status === "failed") return "text-red-300/80";
   if (status === "running") return "text-violet-200/75";
   if (status === "interrupted") return "text-amber-200/75";
@@ -252,7 +269,7 @@ function ToolCallRow({
 
   const kindSlug = workLogEntryKindSlug(entry);
   const argText = replaceInternalToolNames(entryArgText(entry));
-  const kindTone = workLogEntryKindToneClass(entry.status);
+  const kindTone = workLogEntryKindToneClass(entry);
 
   const detailBody = useMemo(() => buildEntryDetail(entry), [entry]);
 
@@ -264,7 +281,7 @@ function ToolCallRow({
         aria-expanded={open}
         className="flex w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
       >
-        {workLogStatusGlyph(entry.status)}
+        {workLogStatusGlyph(entry)}
         <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", kindTone)}>
           {kindSlug}
         </span>
@@ -327,7 +344,7 @@ function ToolCallsPanel({
   const latest = entries[entries.length - 1]!;
   const latestArg = replaceInternalToolNames(entryArgText(latest));
   const latestSlug = workLogEntryKindSlug(latest);
-  const latestTone = workLogEntryKindToneClass(latest.status);
+  const latestTone = workLogEntryKindToneClass(latest);
   const Caret = panelOpen ? CaretDown : CaretRight;
 
   return (
@@ -343,7 +360,7 @@ function ToolCallsPanel({
         <span className="shrink-0 text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/30">({entries.length})</span>
         {panelOpen ? null : (
           <span className="ml-1 flex min-w-0 flex-1 items-center gap-1.5">
-            {workLogStatusGlyph(latest.status)}
+            {workLogStatusGlyph(latest)}
             <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", latestTone)}>
               {latestSlug}
             </span>

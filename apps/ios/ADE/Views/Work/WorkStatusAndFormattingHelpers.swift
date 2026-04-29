@@ -232,7 +232,10 @@ func workChatStatusTint(_ status: String) -> Color {
   switch status {
   case "awaiting-input": return ADEColor.warning
   case "active": return ADEColor.success
-  case "idle": return ADEColor.accent
+  // Match desktop, where idle/needs-attention chats render as amber. Previously
+  // idle was rendered with the purple accent, which read as "running" and
+  // diverged from the desktop status-dot semantics.
+  case "idle": return ADEColor.warning
   default: return ADEColor.textSecondary
   }
 }

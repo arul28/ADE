@@ -92,6 +92,7 @@ struct PrGitHubFiltersCard: View {
   private func statusLabel(_ filter: PrGitHubStatusFilter) -> String {
     switch filter {
     case .open: return "Open"
+    case .draft: return "Draft"
     case .merged: return "Merged"
     case .closed: return "Closed"
     case .all: return "All"
@@ -101,6 +102,7 @@ struct PrGitHubFiltersCard: View {
   private func statusIcon(_ filter: PrGitHubStatusFilter) -> String {
     switch filter {
     case .open: return "arrow.triangle.pull"
+    case .draft: return "pencil.and.outline"
     case .merged: return "arrow.merge"
     case .closed: return "xmark.circle"
     case .all: return "circle.dashed"
@@ -110,6 +112,7 @@ struct PrGitHubFiltersCard: View {
   private func statusTint(_ filter: PrGitHubStatusFilter) -> Color {
     switch filter {
     case .open: return PrsGlass.openTop
+    case .draft: return PrsGlass.draftTop
     case .merged: return PrsGlass.mergedTop
     case .closed: return PrsGlass.closedTop
     case .all: return PrsGlass.accentTop
@@ -119,6 +122,7 @@ struct PrGitHubFiltersCard: View {
   private func statusCount(_ filter: PrGitHubStatusFilter) -> Int {
     switch filter {
     case .open: return counts.open
+    case .draft: return counts.draft
     case .merged: return counts.merged
     case .closed: return counts.closed
     case .all: return counts.all

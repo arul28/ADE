@@ -120,7 +120,8 @@ extension WorkRootScreen {
       }
       if isLive {
         let now = Date()
-        if now.timeIntervalSince(lastCoalescedChatSummaryRefresh) >= 2.6 {
+        let minimumSummaryRefreshInterval = syncService.prefersReducedSyncLoad ? 8.0 : 2.6
+        if now.timeIntervalSince(lastCoalescedChatSummaryRefresh) >= minimumSummaryRefreshInterval {
           lastCoalescedChatSummaryRefresh = now
           await refreshChatSummaries(for: loadedLanes)
         }
@@ -138,9 +139,16 @@ extension WorkRootScreen {
 
   @MainActor
   func refreshChatSummaries(for lanes: [LaneSummary]) async {
+    let lanesToRefresh: [LaneSummary] = {
+      let activeLanes = lanes.filter { $0.archivedAt == nil }
+      guard syncService.prefersReducedSyncLoad else { return activeLanes }
+      let relevantLaneIds = Set((sessions + Array(optimisticSessions.values)).map(\.laneId))
+      let prioritized = activeLanes.filter { relevantLaneIds.contains($0.id) }
+      return Array(prioritized.prefix(6))
+    }()
     var updated: [String: AgentChatSessionSummary] = [:]
     await withTaskGroup(of: [(String, AgentChatSessionSummary)].self) { group in
-      for lane in lanes where lane.archivedAt == nil {
+      for lane in lanesToRefresh {
         group.addTask {
           do {
             let summaries = try await syncService.listChatSessions(laneId: lane.id)
@@ -195,7 +203,7 @@ extension WorkRootScreen {
           transcriptCache[session.id] = nextTranscript
         }
       }
-      try? await Task.sleep(nanoseconds: 900_000_000)
+      try? await Task.sleep(nanoseconds: syncService.prefersReducedSyncLoad ? 1_800_000_000 : 900_000_000)
     }
   }
 

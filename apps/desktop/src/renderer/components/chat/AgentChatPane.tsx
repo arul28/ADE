@@ -3031,6 +3031,9 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = false;
       touchSession(created.id);
       setSelectedSessionId(created.id);
+      void window.ade.iosSimulator
+        .attachToChatSession({ chatSessionId: created.id })
+        .catch(() => { /* attach is best-effort; sim may not be running or already owned */ });
       if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
         window.ade.agentChat.warmupModel({
           sessionId: created.id,
@@ -4465,6 +4468,15 @@ export function AgentChatPane({
             showParallelChatToggle={Boolean(
               embeddedWorkLayout && forceDraft && !lockSessionId && !initialSessionId && selectedSessionId == null,
             )}
+            showIosSimulatorToggle={Boolean(showWorkspaceChrome && laneId && iosSimulatorAvailable)}
+            iosSimulatorOpen={iosSimulatorOpen}
+            onToggleIosSimulator={() => {
+              setIosSimulatorOpen((current) => {
+                const next = !current;
+                if (next) setProofDrawerOpen(false);
+                return next;
+              });
+            }}
             parallelChatMode={parallelChatMode}
             onParallelChatModeChange={(enabled) => {
               if (enabled && attachments.length > PARALLEL_CHAT_MAX_ATTACHMENTS) {
@@ -4724,8 +4736,9 @@ export function AgentChatPane({
                   key="empty-state"
                   initial={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } }}
-                  className="absolute inset-0 flex flex-col items-center justify-center px-6"
+                  className="absolute inset-0 flex min-h-0 overflow-hidden"
                 >
+                  <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-6">
                   <div className="flex w-full max-w-[820px] flex-col items-center gap-4 text-center">
                     <motion.div
                       className="relative"
@@ -4786,6 +4799,18 @@ export function AgentChatPane({
                       {composerWithTypographyRoot}
                     </div>
                   </div>
+                  </div>
+                  {iosSimulatorOpen ? (
+                    layoutVariant === "grid-tile" ? (
+                      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
+                        {iosSimulatorPanelContent}
+                      </div>
+                    ) : (
+                      <div className="flex h-full w-[52%] min-w-[520px] max-w-[980px] shrink-0 flex-col border-l border-white/[0.06] bg-surface/80">
+                        {iosSimulatorPanelContent}
+                      </div>
+                    )
+                  ) : null}
                 </motion.div>
               )}
             </AnimatePresence>
