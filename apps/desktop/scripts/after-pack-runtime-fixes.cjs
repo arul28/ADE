@@ -54,23 +54,9 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform) {
     path.join("node_modules", "node-pty", "src"),
   ];
   const platformPayload = {
-    darwin: [
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "audio-capture", "arm64-linux"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "audio-capture", "arm64-win32"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "audio-capture", "x64-linux"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "audio-capture", "x64-win32"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "arm64-linux"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "x64-linux"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "tree-sitter-bash", "arm64-linux"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "tree-sitter-bash", "arm64-win32"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "tree-sitter-bash", "x64-linux"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "tree-sitter-bash", "x64-win32"),
-      path.join("node_modules", "@huggingface", "transformers", "node_modules", "onnxruntime-node", "bin", "napi-v3", "linux"),
-      path.join("node_modules", "@huggingface", "transformers", "node_modules", "onnxruntime-node", "bin", "napi-v3", "win32"),
-      path.join("node_modules", "node-pty", "prebuilds", "win32-arm64"),
-      path.join("node_modules", "node-pty", "prebuilds", "win32-x64"),
-      path.join("vendor", "crsqlite", "win32-x64"),
-    ],
+    // afterPack runs per-arch on darwin; pruning here would race the
+    // electron-universal merge and ENOENT on deleted paths.
+    darwin: [],
     win32: [
       path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "audio-capture", "arm64-darwin"),
       path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "audio-capture", "arm64-linux"),
