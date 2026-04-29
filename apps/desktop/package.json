@@ -154,6 +154,7 @@
       "node_modules/node-pty/**/*",
       "node_modules/sql.js/**/*",
       "node_modules/@huggingface/transformers/node_modules/onnxruntime-node/**",
+      "node_modules/@anthropic-ai/**",
       "vendor/crsqlite/**"
     ],
     "extraResources": [
