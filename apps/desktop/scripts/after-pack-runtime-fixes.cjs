@@ -41,6 +41,9 @@ function removeIfPresent(rootPath, relativePath) {
 }
 
 function pruneUnneededRuntimePayload(runtimeRoot, platform) {
+  // afterPack runs per-arch on darwin; pruning here would race the
+  // electron-universal merge and ENOENT on deleted paths.
+  if (platform === "darwin") return;
   const commonNonRuntimePayload = [
     path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-darwin-arm64"),
     path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-darwin-x64"),
@@ -54,8 +57,6 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform) {
     path.join("node_modules", "node-pty", "src"),
   ];
   const platformPayload = {
-    // afterPack runs per-arch on darwin; pruning here would race the
-    // electron-universal merge and ENOENT on deleted paths.
     darwin: [],
     win32: [
       path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "audio-capture", "arm64-darwin"),
