@@ -194,7 +194,7 @@ function formatIosElementContextForPrompt(items: IosElementContextItem[]): strin
   });
   return [
     "iOS visual inspect context attached by the user.",
-    "Each packet came from the user clicking a UI element in the real iOS Simulator or dragging a capture area in an Xcode SwiftUI preview. Image attachments/crops are visual evidence for the same packet and use the same screenshot coordinate space.",
+    "Each packet came from the user clicking a UI element in the real iOS Simulator, dragging a simulator screenshot region, or dragging a capture area in an Xcode SwiftUI preview. Image attachments/crops are visual evidence for the same packet and use the same screenshot coordinate space.",
     "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked best guesses, not proof; prefer nearbyElements and the screenshot when the source is missing or only candidate quality.",
     "When the packet surface is xcode-preview, treat it as fast fixture/mock-data feedback rather than live app state. Keep SwiftUI changes previewable with nearby #Preview definitions and deterministic mock fixtures.",
     ...rows,
@@ -4747,67 +4747,84 @@ export function AgentChatPane({
                   exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
                 >
-                  <div className="flex min-w-0 flex-1 flex-col items-center justify-center px-6">
-                  <div className="flex w-full max-w-[820px] flex-col items-center gap-4 text-center">
-                    <motion.div
-                      className="relative"
-                      exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
-                    >
-                      <div
-                        className="pointer-events-none absolute top-1/2 left-1/2 h-[560px] w-[560px] -translate-x-1/2 -translate-y-1/2 rounded-full"
-                        style={{ background: "var(--color-accent)", opacity: 0.08, filter: "blur(140px)" }}
-                      />
-                      <img
-                        src="./logo.png"
-                        alt="ADE"
-                        className="relative z-10 h-[300px] w-[560px] max-w-[78vw] object-contain"
-                        style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
-                      />
-                    </motion.div>
-
-                    <h2 className="font-sans text-[18px] font-semibold tracking-tight text-fg/80">
-                      Start a new conversation
-                    </h2>
-
-                    {/* Lane selector pill */}
-                    {showWorkspaceChrome && availableLanes && availableLanes.length > 0 && onLaneChange ? (
-                      <motion.div
-                        className="flex justify-center"
-                        exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                      >
-                        <LaneCombobox
-                          lanes={availableLanes}
-                          value={laneId ?? ""}
-                          onChange={onLaneChange}
-                          variant="pill"
-                          aria-label="Select lane"
-                        />
-                      </motion.div>
-                    ) : showWorkspaceChrome && laneDisplayLabel ? (
-                      <motion.div
-                        className="flex items-center gap-2 rounded-full px-4 py-1.5"
-                        style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
-                        exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                      >
-                        {laneAccentColor ? (
-                          <LaneAccentDot lane={{ color: laneAccentColor }} size={8} />
-                        ) : (
-                          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: draftAccent }} />
-                        )}
-                        <span
-                          className="text-[11px] font-medium"
-                          style={laneAccentColor ? { color: laneAccentColor } : { color: "rgba(255,255,255,0.6)" }}
+                  <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
+                    <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-6">
+                      <div className="flex w-full max-w-[820px] flex-col items-center gap-4 text-center">
+                        <motion.div
+                          className="relative"
+                          exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                         >
-                          {laneDisplayLabel}
-                        </span>
-                      </motion.div>
-                    ) : null}
+                          <div
+                            className={cn(
+                              "pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full",
+                              iosSimulatorOpen ? "h-[360px] w-[360px]" : "h-[560px] w-[560px]",
+                            )}
+                            style={{ background: "var(--color-accent)", opacity: 0.08, filter: "blur(140px)" }}
+                          />
+                          <img
+                            src="./logo.png"
+                            alt="ADE"
+                            className={cn(
+                              "relative z-10 object-contain",
+                              iosSimulatorOpen
+                                ? "h-[180px] w-[360px] max-w-full"
+                                : "h-[300px] w-[560px] max-w-[78vw]",
+                            )}
+                            style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
+                          />
+                        </motion.div>
 
-                    {/* Inline composer for empty state */}
-                    <div className="w-full max-w-[820px]">
-                      {composerWithTypographyRoot}
+                        <h2 className="font-sans text-[18px] font-semibold tracking-tight text-fg/80">
+                          Start a new conversation
+                        </h2>
+
+                        {/* Lane selector pill */}
+                        {showWorkspaceChrome && availableLanes && availableLanes.length > 0 && onLaneChange ? (
+                          <motion.div
+                            className="flex justify-center"
+                            exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                          >
+                            <LaneCombobox
+                              lanes={availableLanes}
+                              value={laneId ?? ""}
+                              onChange={onLaneChange}
+                              variant="pill"
+                              aria-label="Select lane"
+                            />
+                          </motion.div>
+                        ) : showWorkspaceChrome && laneDisplayLabel ? (
+                          <motion.div
+                            className="flex items-center gap-2 rounded-full px-4 py-1.5"
+                            style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+                            exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                          >
+                            {laneAccentColor ? (
+                              <LaneAccentDot lane={{ color: laneAccentColor }} size={8} />
+                            ) : (
+                              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: draftAccent }} />
+                            )}
+                            <span
+                              className="text-[11px] font-medium"
+                              style={laneAccentColor ? { color: laneAccentColor } : { color: "rgba(255,255,255,0.6)" }}
+                            >
+                              {laneDisplayLabel}
+                            </span>
+                          </motion.div>
+                        ) : null}
+
+                        {/* Inline composer for empty state (only when sim drawer closed) */}
+                        {!iosSimulatorOpen ? (
+                          <div className="w-full max-w-[820px]">
+                            {composerWithTypographyRoot}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
-                  </div>
+                    {iosSimulatorOpen ? (
+                      <div className="shrink-0 border-t border-white/[0.06] px-3 py-3">
+                        {composerWithTypographyRoot}
+                      </div>
+                    ) : null}
                   </div>
                   {iosSimulatorOpen ? (
                     layoutVariant === "grid-tile" ? (

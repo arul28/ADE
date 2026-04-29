@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, nativeImage, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, Menu, MenuItem, nativeImage, protocol, safeStorage, shell } from "electron";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";

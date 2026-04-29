@@ -618,6 +618,7 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
+  IosSimulatorWindowState,
   IosSimulatorWindowSource,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
@@ -1279,6 +1280,7 @@ declare global {
         startStream: (args?: IosSimulatorStartStreamArgs) => Promise<IosSimulatorStreamStatus>;
         stopStream: () => Promise<IosSimulatorStreamStatus>;
         getStreamStatus: () => Promise<IosSimulatorStreamStatus>;
+        getSimulatorWindowState: () => Promise<IosSimulatorWindowState>;
         listSimulatorWindowSources: () => Promise<IosSimulatorWindowSource[]>;
         tap: (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }) => Promise<{ ok: true }>;
         typeText: (args: { deviceUdid?: string | null; projectRoot?: string | null; text: string }) => Promise<{ ok: true }>;

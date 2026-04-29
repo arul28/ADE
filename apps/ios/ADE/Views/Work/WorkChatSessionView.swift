@@ -665,16 +665,7 @@ private struct WorkChatComposerDraftInput: View {
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
-  @State private var draft = ""
-  @FocusState private var composerFocused: Bool
-
-  private var trimmedDraft: String {
-    draft.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private var sendEnabled: Bool {
-    canSend && !trimmedDraft.isEmpty
-  }
+  @StateObject private var draftState = WorkChatComposerDraftState()
 
   /// Brand color for the active chat surface, used on the Send pill. Mirrors
   /// desktop's provider-level chat accents: Claude amber, Codex warm white,
@@ -688,26 +679,11 @@ private struct WorkChatComposerDraftInput: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      TextField("Type to vibecode…", text: $draft, axis: .vertical)
-        .textFieldStyle(.plain)
-        .lineLimit(1...6)
-        .font(.body)
-        .foregroundStyle(ADEColor.textPrimary)
-        .tint(ADEColor.accent)
-        .disabled(!canCompose)
-        .autocorrectionDisabled(false)
-        .textInputAutocapitalization(.sentences)
-        .focused($composerFocused)
-        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-        .onChange(of: pendingInsert) { _, token in
-          guard let token, !token.isEmpty else { return }
-          if !draft.isEmpty && !draft.hasSuffix(" ") && !draft.hasSuffix("\n") {
-            draft += " "
-          }
-          draft += token
-          pendingInsert = nil
-          composerFocused = true
-        }
+      WorkChatComposerTextField(
+        draftState: draftState,
+        canCompose: canCompose,
+        pendingInsert: $pendingInsert
+      )
 
       HStack(alignment: .center, spacing: 8) {
         WorkComposerChipStrip(
@@ -772,72 +748,16 @@ private struct WorkChatComposerDraftInput: View {
         if showInterrupt {
           stopButton
         } else {
-          sendButton
+          WorkChatComposerSendButton(
+            draftState: draftState,
+            canSend: canSend,
+            sending: sending,
+            accent: sendAccent,
+            onSend: onSend,
+            onSent: onSent
+          )
         }
       }
-    }
-  }
-
-  @ViewBuilder
-  private var sendButton: some View {
-    let isSendEnabled = sendEnabled
-    let accent = sendAccent
-    Button {
-      let text = trimmedDraft
-      draft = ""
-      Task { @MainActor in
-        let sent = await onSend(text)
-        if sent {
-          onSent()
-        } else {
-          restoreUnsentDraft(text)
-        }
-      }
-    } label: {
-      HStack(spacing: 5) {
-        if sending {
-          ProgressView()
-            .controlSize(.mini)
-            .tint(isSendEnabled ? Color.white : ADEColor.textSecondary)
-        } else {
-          Image(systemName: "paperplane.fill")
-            .font(.system(size: 12, weight: .bold))
-        }
-        Text("Send")
-          .font(.caption.weight(.semibold))
-      }
-      .foregroundStyle(isSendEnabled ? Color.white : ADEColor.textSecondary)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(
-        Capsule(style: .continuous)
-          .fill(isSendEnabled ? accent : ADEColor.surfaceBackground.opacity(0.85))
-      )
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(isSendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
-      )
-      .shadow(color: isSendEnabled ? accent.opacity(0.4) : .clear, radius: 8, y: 2)
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(sending ? "Sending message" : "Send message")
-    .disabled(!isSendEnabled)
-    .adeInspectable(
-      "Work.Chat.Composer.SendButton",
-      metadata: [
-        "label": sending ? "Sending message" : "Send message",
-        "role": "button"
-      ]
-    )
-  }
-
-  private func restoreUnsentDraft(_ text: String) {
-    let currentDraft = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard currentDraft != text else { return }
-    if currentDraft.isEmpty {
-      draft = text
-    } else {
-      draft = "\(text)\n\(draft)"
     }
   }
 
@@ -874,6 +794,130 @@ private struct WorkChatComposerDraftInput: View {
       "Work.Chat.Composer.StopButton",
       metadata: [
         "label": interruptInFlight ? "Interrupting turn" : "Stop turn",
+        "role": "button"
+      ]
+    )
+  }
+}
+
+private final class WorkChatComposerDraftState: ObservableObject {
+  @Published var text = ""
+
+  var trimmedText: String {
+    text.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  var hasSendableText: Bool {
+    !trimmedText.isEmpty
+  }
+
+  func consumeSendableText() -> String {
+    let value = trimmedText
+    text = ""
+    return value
+  }
+
+  func insertToken(_ token: String) {
+    if !text.isEmpty && !text.hasSuffix(" ") && !text.hasSuffix("\n") {
+      text += " "
+    }
+    text += token
+  }
+
+  func restoreUnsentText(_ value: String) {
+    let currentDraft = trimmedText
+    guard currentDraft != value else { return }
+    if currentDraft.isEmpty {
+      text = value
+    } else {
+      text = "\(value)\n\(text)"
+    }
+  }
+}
+
+private struct WorkChatComposerTextField: View {
+  @ObservedObject var draftState: WorkChatComposerDraftState
+  let canCompose: Bool
+  @Binding var pendingInsert: String?
+  @FocusState private var composerFocused: Bool
+
+  var body: some View {
+    TextField("Type to vibecode…", text: $draftState.text, axis: .vertical)
+      .textFieldStyle(.plain)
+      .lineLimit(1...6)
+      .font(.body)
+      .foregroundStyle(ADEColor.textPrimary)
+      .tint(ADEColor.accent)
+      .disabled(!canCompose)
+      .autocorrectionDisabled(false)
+      .textInputAutocapitalization(.sentences)
+      .focused($composerFocused)
+      .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+      .onChange(of: pendingInsert) { _, token in
+        guard let token, !token.isEmpty else { return }
+        draftState.insertToken(token)
+        pendingInsert = nil
+        composerFocused = true
+      }
+  }
+}
+
+private struct WorkChatComposerSendButton: View {
+  @ObservedObject var draftState: WorkChatComposerDraftState
+  let canSend: Bool
+  let sending: Bool
+  let accent: Color
+  let onSend: @MainActor (String) async -> Bool
+  let onSent: () -> Void
+
+  private var sendEnabled: Bool {
+    canSend && draftState.hasSendableText
+  }
+
+  var body: some View {
+    Button {
+      let text = draftState.consumeSendableText()
+      Task { @MainActor in
+        let sent = await onSend(text)
+        if sent {
+          onSent()
+        } else {
+          draftState.restoreUnsentText(text)
+        }
+      }
+    } label: {
+      HStack(spacing: 5) {
+        if sending {
+          ProgressView()
+            .controlSize(.mini)
+            .tint(sendEnabled ? Color.white : ADEColor.textSecondary)
+        } else {
+          Image(systemName: "paperplane.fill")
+            .font(.system(size: 12, weight: .bold))
+        }
+        Text("Send")
+          .font(.caption.weight(.semibold))
+      }
+      .foregroundStyle(sendEnabled ? Color.white : ADEColor.textSecondary)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 8)
+      .background(
+        Capsule(style: .continuous)
+          .fill(sendEnabled ? accent : ADEColor.surfaceBackground.opacity(0.85))
+      )
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(sendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
+      )
+      .shadow(color: sendEnabled ? accent.opacity(0.4) : .clear, radius: 8, y: 2)
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(sending ? "Sending message" : "Send message")
+    .disabled(!sendEnabled)
+    .adeInspectable(
+      "Work.Chat.Composer.SendButton",
+      metadata: [
+        "label": sending ? "Sending message" : "Send message",
         "role": "button"
       ]
     )

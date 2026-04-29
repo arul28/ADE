@@ -154,6 +154,10 @@ export function MissionPromptInput({
           rows={4}
           className="w-full px-3 py-2 text-xs outline-none resize-none"
           style={inputStyle}
+          spellCheck
+          autoCorrect="on"
+          autoCapitalize="sentences"
+          autoComplete="on"
         />
 
         {/* Slash command autocomplete */}

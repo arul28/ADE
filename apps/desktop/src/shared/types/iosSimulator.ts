@@ -110,12 +110,33 @@ export type IosSimulatorStreamStatus = {
   averageLatencyMs?: number | null;
 };
 
-export type IosSimulatorStreamBackend = "simctl-screenshot-poll" | "idb-h264-ffmpeg-mjpeg" | "simulator-window-capture";
+export type IosSimulatorStreamBackend =
+  | "simctl-screenshot-poll"
+  | "idb-mjpeg"
+  | "idb-h264-ffmpeg-mjpeg"
+  | "simulator-window-capture";
 
 export type IosSimulatorWindowSource = {
   id: string;
   name: string;
   thumbnailDataUrl: string | null;
+};
+
+export type IosSimulatorWindowIssue =
+  | "not-running"
+  | "hidden"
+  | "minimized"
+  | "no-window"
+  | "unknown";
+
+export type IosSimulatorWindowState = {
+  appRunning: boolean;
+  visible: boolean | null;
+  windowCount: number | null;
+  minimizedWindowCount: number | null;
+  capturable: boolean | null;
+  issue: IosSimulatorWindowIssue | null;
+  message: string | null;
 };
 
 export type IosSimulatorPreviewWindow = {

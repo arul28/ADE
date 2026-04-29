@@ -1,10 +1,15 @@
 import fs from "node:fs";
 import os from "node:os";
+import { EventEmitter } from "node:events";
+import type { ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
+  __testSetIosSimulatorProcessHooks,
   createIosSimulatorService,
   IosSimulatorOwnedBySessionError,
   parseXcodePreviewWindows,
+  resolveIosSimulatorStreamBackend,
+  shouldOpenSimulatorAppForLaunch,
 } from "./iosSimulatorService";
 import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE } from "../../../shared/types/iosSimulator";
 import type { Logger } from "../logging/logger";
@@ -15,6 +20,31 @@ const noopLogger: Logger = {
   warn: () => {},
   error: () => {},
 };
+
+function mockChildProcess(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  child.stdout = new EventEmitter() as ChildProcess["stdout"];
+  child.stderr = new EventEmitter() as ChildProcess["stderr"];
+  child.stdin = new EventEmitter() as ChildProcess["stdin"];
+  Object.defineProperty(child, "exitCode", { configurable: true, value: 0 });
+  Object.defineProperty(child, "signalCode", { configurable: true, value: null });
+  child.kill = vi.fn(() => true) as unknown as ChildProcess["kill"];
+  child.unref = vi.fn(() => child) as unknown as ChildProcess["unref"];
+  return child;
+}
+
+const simulatorDevicesJson = JSON.stringify({
+  devices: {
+    "com.apple.CoreSimulator.SimRuntime.iOS-26-3": [
+      {
+        name: "iPhone 17 Pro",
+        udid: "device-1",
+        state: "Booted",
+        isAvailable: true,
+      },
+    ],
+  },
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -116,6 +146,109 @@ describe("iosSimulatorService shutdown contract", () => {
       service.dispose();
       platformSpy.mockRestore();
     }
+  });
+});
+
+describe("iosSimulatorService background Simulator.app launch behavior", () => {
+  it("keeps Simulator.app capturable in the background by default during launch", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "ps") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "listapps") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "install") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "launch") return { stdout: "com.example.app: 123\n", stderr: "" };
+      if (command === "/usr/libexec/PlistBuddy" && commandArgs[1]?.includes("CFBundleIdentifier")) {
+        return { stdout: "com.example.app\n", stderr: "" };
+      }
+      if (command === "/usr/libexec/PlistBuddy" && commandArgs[1]?.includes("CFBundleDisplayName")) {
+        return { stdout: "Example\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const spawnMock = vi.fn<[string, string[], unknown?], ChildProcess>(() => mockChildProcess());
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      spawn: spawnMock as unknown as typeof nodeSpawn,
+      commandExists: () => true,
+    });
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-launch-hidden-`);
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await service.launch({
+        projectRoot,
+        appBundlePath: "/tmp/Example.app",
+        bundleId: "com.example.app",
+        build: false,
+      });
+      const spawnCalls = spawnMock.mock.calls;
+      expect(spawnCalls.filter(([command, commandArgs]) => command === "open" && commandArgs.join(" ") === "-g -a Simulator")).toHaveLength(2);
+      expect(spawnCalls.some(([command]) => command === "osascript")).toBe(false);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("opens Simulator.app only when foreground launch is requested", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "ps") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "listapps") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "install") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "launch") return { stdout: "com.example.app: 123\n", stderr: "" };
+      if (command === "/usr/libexec/PlistBuddy" && commandArgs[1]?.includes("CFBundleIdentifier")) {
+        return { stdout: "com.example.app\n", stderr: "" };
+      }
+      if (command === "/usr/libexec/PlistBuddy" && commandArgs[1]?.includes("CFBundleDisplayName")) {
+        return { stdout: "Example\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const spawnMock = vi.fn<[string, string[], unknown?], ChildProcess>(() => mockChildProcess());
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      spawn: spawnMock as unknown as typeof nodeSpawn,
+      commandExists: () => true,
+    });
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-launch-foreground-`);
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await service.launch({
+        projectRoot,
+        appBundlePath: "/tmp/Example.app",
+        bundleId: "com.example.app",
+        build: false,
+        keepSimulatorInBackground: false,
+      });
+      expect(spawnMock).toHaveBeenCalledWith("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" });
+      expect(spawnMock.mock.calls.some(([command]) => command === "osascript")).toBe(false);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("documents launch and stream backend defaults with pure helpers", () => {
+    expect(shouldOpenSimulatorAppForLaunch(undefined)).toBe(false);
+    expect(shouldOpenSimulatorAppForLaunch(true)).toBe(false);
+    expect(shouldOpenSimulatorAppForLaunch(false)).toBe(true);
+    expect(resolveIosSimulatorStreamBackend("auto", { idb: true, idbCompanion: true, ffmpeg: true })).toBe("idb-h264-ffmpeg-mjpeg");
+    expect(resolveIosSimulatorStreamBackend("auto", { idb: true, idbCompanion: true, ffmpeg: false })).toBe("idb-mjpeg");
+    expect(resolveIosSimulatorStreamBackend("auto", { idb: true, idbCompanion: false, ffmpeg: true })).toBe("simctl-screenshot-poll");
+    expect(resolveIosSimulatorStreamBackend("simulator-window-capture", { idb: true, idbCompanion: true, ffmpeg: true })).toBe("simulator-window-capture");
+    expect(resolveIosSimulatorStreamBackend("idb-h264-ffmpeg-mjpeg", { idb: true, idbCompanion: true, ffmpeg: true })).toBe("idb-h264-ffmpeg-mjpeg");
   });
 });
 

@@ -62,6 +62,10 @@ const COMPANION_IDLE_STOP_MS = 30_000;
 const TOOL_STATUS_CACHE_MS = 10_000;
 const STATUS_THROTTLE_MS = 500;
 const DEVICE_LIST_THROTTLE_MS = 500;
+const SIMCTL_BOOTSTATUS_TIMEOUT_MS = 90_000;
+const SIMCTL_INSTALL_TIMEOUT_MS = 180_000;
+const IDB_MJPEG_STARTUP_TIMEOUT_MS = 5_000;
+const IDB_H264_STARTUP_TIMEOUT_MS = 15_000;
 const INSTALL_HINT_XCODE = "Install Xcode from the App Store, then run xcode-select --install.";
 const INSTALL_HINT_XCODE_CLI = "Run xcode-select --install to install the Xcode command line tools.";
 const INSTALL_HINT_IDB = "Install Facebook idb: brew tap facebook/fb && brew install idb-companion && pipx install fb-idb.";
@@ -69,6 +73,10 @@ const INSTALL_HINT_IDB_COMPANION = "Install idb_companion: brew tap facebook/fb 
 const INSTALL_HINT_FFMPEG = "Install ffmpeg: brew install ffmpeg.";
 const XCODE_MCP_SESSION_ID = "906026e2-d248-4770-8654-032d0e1fbb54";
 const XCODE_MCP_APPROVAL_TIMEOUT_MS = 90_000;
+
+type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
+type SpawnProcess = typeof spawn;
+type CommandExistsProbe = typeof commandExists;
 
 export class IosSimulatorOwnedBySessionError extends Error {
   readonly code: typeof IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE = IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE;
@@ -202,7 +210,13 @@ function runtimeVersionScore(runtime: string): number {
     + Number(match[3] ?? 0);
 }
 
-async function run(command: string, args: string[], options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}): Promise<{ stdout: string; stderr: string }> {
+function isTerminatedByTimeout(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const record = error as { killed?: unknown; signal?: unknown };
+  return record.killed === true && record.signal === "SIGTERM";
+}
+
+const defaultRunCommand: RunCommand = async (command, args, options = {}) => {
   const result = await execFile(command, args, {
     cwd: options.cwd,
     env: options.env,
@@ -213,6 +227,40 @@ async function run(command: string, args: string[], options: { cwd?: string; tim
     stdout: result.stdout?.toString() ?? "",
     stderr: result.stderr?.toString() ?? "",
   };
+};
+
+let run: RunCommand = defaultRunCommand;
+let spawnProcess: SpawnProcess = spawn;
+let commandExistsProbe: CommandExistsProbe = commandExists;
+
+export function __testSetIosSimulatorProcessHooks(hooks: {
+  run?: RunCommand;
+  spawn?: SpawnProcess;
+  commandExists?: CommandExistsProbe;
+}): () => void {
+  const previous = { run, spawnProcess, commandExistsProbe };
+  if (hooks.run) run = hooks.run;
+  if (hooks.spawn) spawnProcess = hooks.spawn;
+  if (hooks.commandExists) commandExistsProbe = hooks.commandExists;
+  return () => {
+    run = previous.run;
+    spawnProcess = previous.spawnProcess;
+    commandExistsProbe = previous.commandExistsProbe;
+  };
+}
+
+export function shouldOpenSimulatorAppForLaunch(keepSimulatorInBackground?: boolean | null): boolean {
+  return keepSimulatorInBackground === false;
+}
+
+export function resolveIosSimulatorStreamBackend(
+  requestedBackend: "auto" | IosSimulatorStreamBackend,
+  tools: { idb: boolean; idbCompanion: boolean; ffmpeg: boolean },
+): IosSimulatorStreamBackend {
+  if (requestedBackend !== "auto") return requestedBackend;
+  if (tools.idb && tools.idbCompanion && tools.ffmpeg) return "idb-h264-ffmpeg-mjpeg";
+  if (tools.idb && tools.idbCompanion) return "idb-mjpeg";
+  return "simctl-screenshot-poll";
 }
 
 function encodeMcpMessage(message: JsonRpcMessage): Buffer {
@@ -281,7 +329,7 @@ function handleXcodeMcpMessage(bridge: XcodeMcpBridge, message: JsonRpcMessage):
 }
 
 function createXcodeMcpBridge(onTerminated: (bridge: XcodeMcpBridge, reason: Error) => void): XcodeMcpBridge {
-  const child = spawn("xcrun", ["mcpbridge"], {
+  const child = spawnProcess("xcrun", ["mcpbridge"], {
     env: {
       ...process.env,
       MCP_XCODE_SESSION_ID: XCODE_MCP_SESSION_ID,
@@ -1465,14 +1513,42 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     args.onEvent?.(payload);
   };
 
+  const openSimulatorAppInBackground = () => {
+    if (process.platform !== "darwin") return;
+    spawnProcess("open", ["-g", "-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
+  };
+
   const cachedCommandExists = (command: string, ttlMs = TOOL_STATUS_CACHE_MS): boolean => {
     const nowMs = Date.now();
     const cached = toolAvailabilityCache.get(command);
     if (cached && nowMs - cached.checkedAt < ttlMs) return cached.available;
-    const available = process.platform === "darwin" ? commandExists(command) : false;
+    const available = process.platform === "darwin" ? commandExistsProbe(command) : false;
     toolAvailabilityCache.set(command, { available, checkedAt: nowMs });
     return available;
   };
+
+  const runSimctlWithTimeout = async (simctlArgs: string[], timeoutMs: number, timeoutMessage: string) => {
+    try {
+      await run("xcrun", ["simctl", ...simctlArgs], { timeoutMs });
+    } catch (error) {
+      if (isTerminatedByTimeout(error)) throw new Error(timeoutMessage);
+      throw error;
+    }
+  };
+
+  const waitForSimulatorBootStatus = (device: IosSimulatorDevice) =>
+    runSimctlWithTimeout(
+      ["bootstatus", device.udid, "-b"],
+      SIMCTL_BOOTSTATUS_TIMEOUT_MS,
+      `Simulator ${device.name} did not become ready within ${Math.round(SIMCTL_BOOTSTATUS_TIMEOUT_MS / 1000)}s. CoreSimulator may be stuck; shut down that simulator and launch again.`,
+    );
+
+  const installAppOnSimulator = (device: IosSimulatorDevice, appBundle: string) =>
+    runSimctlWithTimeout(
+      ["install", device.udid, appBundle],
+      SIMCTL_INSTALL_TIMEOUT_MS,
+      `Timed out installing the app on ${device.name} after ${Math.round(SIMCTL_INSTALL_TIMEOUT_MS / 1000)}s. CoreSimulator did not respond; shut down that simulator and launch again.`,
+    );
 
   const trackTempFile = (filePath: string): string => {
     tempFiles.add(filePath);
@@ -1797,7 +1873,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const port = await getFreePort();
     const address = `127.0.0.1:${port}`;
     let stderr = "";
-    const process = spawn("idb_companion", [
+    const process = spawnProcess("idb_companion", [
       "--udid",
       deviceUdid,
       "--grpc-port",
@@ -1859,11 +1935,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return frame;
   };
 
-  const handleStreamChunk = (chunk: Buffer) => {
+  const handleStreamChunk = (chunk: Buffer, backend: IosSimulatorStreamBackend) => {
     streamBuffer = Buffer.concat([streamBuffer, chunk]);
     let frame: Buffer | null = null;
     while ((frame = extractJpegFrame()) !== null) {
-      emitFrame(frame, "idb-h264-ffmpeg-mjpeg", nowIso(), "jpeg");
+      emitFrame(frame, backend, nowIso(), "jpeg");
     }
   };
 
@@ -2101,7 +2177,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         name: "simulator_window",
         available: isDarwin,
         detail: isDarwin
-          ? "ADE can mirror the Simulator.app window through Electron/macOS window capture."
+          ? "Available for explicit native Simulator.app window capture diagnostics."
           : "Simulator window mirroring is only available on macOS.",
         installHint: isDarwin ? "" : "iOS Simulator control requires macOS.",
       },
@@ -2125,8 +2201,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         name: "ffmpeg",
         available: ffmpegAvailable,
         detail: ffmpegAvailable
-          ? "Available for idb H.264 to MJPEG stream transcoding."
-          : "Optional. Required for idb live video stream.",
+          ? "Available for the low-latency idb H.264 stream."
+          : "Optional. Needed for the default low-latency idb H.264 stream.",
         installHint: INSTALL_HINT_FFMPEG,
       },
     ];
@@ -2423,7 +2499,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const projectPath = path.join(projectRoot, ADE_IOS_PROJECT);
     const openPath = fs.existsSync(projectPath) ? projectPath : path.join(projectRoot, "apps", "ios");
     if (process.platform !== "darwin") throw new Error("Xcode preview setup is only available on macOS.");
-    spawn("open", ["-a", "Xcode", openPath], { detached: true, stdio: "ignore" }).unref();
+    spawnProcess("open", ["-a", "Xcode", openPath], { detached: true, stdio: "ignore" }).unref();
     return { ok: true, path: openPath };
   };
 
@@ -2613,34 +2689,28 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
       currentStep = "boot-simulator";
       if (device.state === "Booted") {
-        emitLaunchProgress(launchId, "boot-simulator", "skipped", "Simulator already booted.", null, { deviceUdid: device.udid });
+        emitLaunchProgress(launchId, "boot-simulator", "running", "Checking simulator readiness...", device.name, { deviceUdid: device.udid });
       } else {
         emitLaunchProgress(launchId, "boot-simulator", "running", "Booting simulator...", device.name, { deviceUdid: device.udid });
         await run("xcrun", ["simctl", "boot", device.udid]).catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
           if (!/Unable to boot device in current state|current state: Booted|already booted/i.test(message)) throw error;
         });
-        emitLaunchProgress(launchId, "boot-simulator", "complete", "Simulator booted.", device.name, { deviceUdid: device.udid });
       }
+      await waitForSimulatorBootStatus(device);
+      emitLaunchProgress(launchId, "boot-simulator", "complete", "Simulator services are ready.", device.name, { deviceUdid: device.udid });
 
       currentStep = "open-simulator";
-      emitLaunchProgress(launchId, "open-simulator", "running", "Preparing Simulator.app in the background...", null, { deviceUdid: device.udid });
-      const keepInBackground = launchArgs.keepSimulatorInBackground !== false;
-      const openArgs = keepInBackground
-        ? ["-gj", "-a", "Simulator"]
-        : ["-a", "Simulator"];
-      spawn("open", openArgs, { detached: true, stdio: "ignore" }).unref();
-      if (keepInBackground) {
-        // `simctl boot`/`launch` can still steal focus on some macOS versions even
-        // with `open -gj`. Force-hide Simulator.app via System Events so the user
-        // never sees it pop in front of ADE during the launch sequence.
-        spawn(
-          "osascript",
-          ["-e", 'tell application "System Events" to if exists process "Simulator" then set visible of process "Simulator" to false'],
-          { detached: true, stdio: "ignore" },
-        ).unref();
+      const openSimulatorInForeground = shouldOpenSimulatorAppForLaunch(launchArgs.keepSimulatorInBackground);
+      if (openSimulatorInForeground) {
+        emitLaunchProgress(launchId, "open-simulator", "running", "Opening Simulator.app...", null, { deviceUdid: device.udid });
+        spawnProcess("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
+        emitLaunchProgress(launchId, "open-simulator", "complete", "Simulator.app is visible.", null, { deviceUdid: device.udid });
+      } else {
+        emitLaunchProgress(launchId, "open-simulator", "running", "Preparing Simulator.app behind ADE for live streaming...", null, { deviceUdid: device.udid });
+        openSimulatorAppInBackground();
+        emitLaunchProgress(launchId, "open-simulator", "complete", "Simulator.app is running behind ADE.", null, { deviceUdid: device.udid });
       }
-      emitLaunchProgress(launchId, "open-simulator", "complete", "Simulator.app is ready in the background.", null, { deviceUdid: device.udid });
 
       currentStep = "resolve-target";
       emitLaunchProgress(launchId, "resolve-target", "running", "Resolving launchable app...", null, { deviceUdid: device.udid });
@@ -2669,7 +2739,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         if (!appBundle) {
           throw new Error(`Could not find ${target.target.name}.app after building. Try launching with build=true from the project root.`);
         }
-        await run("xcrun", ["simctl", "install", device.udid, appBundle], { timeoutMs: 60_000 });
+        await installAppOnSimulator(device, appBundle);
         emitLaunchProgress(launchId, "install-app", "complete", "App installed.", bundleId, { deviceUdid: device.udid, targetId: target.target.id });
       } else {
         emitLaunchProgress(launchId, "install-app", "skipped", "App already installed.", bundleId, { deviceUdid: device.udid, targetId: target.target.id });
@@ -2715,14 +2785,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         env: childEnv,
         timeoutMs: 60_000,
       });
-      if (launchArgs.keepSimulatorInBackground !== false) {
-        // simctl launch frequently activates Simulator.app — re-hide it so ADE
-        // stays in front for the remainder of the session.
-        spawn(
-          "osascript",
-          ["-e", 'tell application "System Events" to if exists process "Simulator" then set visible of process "Simulator" to false'],
-          { detached: true, stdio: "ignore" },
-        ).unref();
+      if (!openSimulatorInForeground) {
+        // simctl launch can activate Simulator.app. Reopen it without
+        // activation so ADE can refocus while the window remains capturable.
+        openSimulatorAppInBackground();
       }
       emitLaunchProgress(launchId, "launch-app", "complete", "App launched.", bundleId, { deviceUdid: device.udid, targetId: target.target.id });
       emitLaunchProgress(launchId, "ready", "complete", "iOS simulator drawer is ready.", device.name, { deviceUdid: device.udid, targetId: target.target.id });
@@ -3175,7 +3241,101 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return streamStatus;
   };
 
-  const startIdbStream = async (device: IosSimulatorDevice, fps: number): Promise<IosSimulatorStreamStatus> => {
+  const startIdbMjpegStream = async (device: IosSimulatorDevice, fps: number): Promise<IosSimulatorStreamStatus> => {
+    if (!cachedCommandExists("idb")) {
+      throw new Error(`idb is required for live simulator streaming. ${INSTALL_HINT_IDB}`);
+    }
+    if (streamProcess && streamStatus.deviceUdid === device.udid && streamStatus.running) {
+      return streamStatus;
+    }
+    await stopStream();
+    const companion = await ensureCompanion(device.udid);
+    const streamUrl = await startMjpegStreamServer();
+    streamStatus = {
+      deviceUdid: device.udid,
+      running: true,
+      backend: "idb-mjpeg",
+      fps: null,
+      targetFps: fps,
+      frameCount: 0,
+      startedAt: nowIso(),
+      lastFrameAt: null,
+      lastError: null,
+      streamUrl,
+      averageLatencyMs: null,
+    };
+    streamBuffer = Buffer.alloc(0);
+    streamProcess = spawnProcess("idb", [
+      "--companion",
+      companion,
+      "video-stream",
+      "--fps",
+      String(fps),
+      "--format",
+      "mjpeg",
+      "--compression-quality",
+      "0.72",
+      "--udid",
+      device.udid,
+    ], {
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const child = streamProcess;
+    let stderr = "";
+    const startupTimer = setTimeout(() => {
+      if (
+        streamProcess !== child
+        || !streamStatus.running
+        || streamStatus.backend !== "idb-mjpeg"
+        || streamStatus.frameCount > 0
+      ) {
+        return;
+      }
+      const detail = "idb MJPEG produced no frames; falling back to the H.264 stream.";
+      args.logger.warn("ios_simulator.idb_mjpeg_no_frames", {
+        deviceUdid: device.udid,
+        fps,
+        stderr: stderr.trim() || null,
+      });
+      void (async () => {
+        await stopStream();
+        emit({ type: "stream-error", status: { ...streamStatus, lastError: detail } });
+        if (cachedCommandExists("ffmpeg")) {
+          await startIdbH264FfmpegStream(device, fps);
+        } else {
+          await startSimctlPreview(device, Math.min(8, fps));
+        }
+      })().catch((error) => {
+        const status = setStreamStopped(error instanceof Error ? error.message : String(error));
+        emit({ type: "stream-error", status });
+      });
+    }, IDB_MJPEG_STARTUP_TIMEOUT_MS);
+    startupTimer.unref?.();
+    child.stdout?.on("data", (chunk: Buffer) => handleStreamChunk(chunk, "idb-mjpeg"));
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr = `${stderr}${chunk.toString()}`.slice(-4000);
+    });
+    child.once("error", (error) => {
+      clearTimeout(startupTimer);
+      const status = setStreamStopped(error.message);
+      emit({ type: "stream-error", status });
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(startupTimer);
+      if (streamProcess !== child) return;
+      const detail = stderr.trim();
+      const error = code === 0 || signal === "SIGTERM"
+        ? null
+        : detail || `idb MJPEG video stream exited with code ${code ?? "unknown"}.`;
+      const status = setStreamStopped(error);
+      emit(error ? { type: "stream-error", status } : { type: "stream-stopped", status });
+    });
+    emit({ type: "stream-started", status: streamStatus });
+    return streamStatus;
+  };
+
+  const startIdbH264FfmpegStream = async (device: IosSimulatorDevice, fps: number): Promise<IosSimulatorStreamStatus> => {
     if (!cachedCommandExists("idb")) {
       throw new Error(`idb is required for live simulator streaming. ${INSTALL_HINT_IDB}`);
     }
@@ -3202,7 +3362,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       averageLatencyMs: null,
     };
     streamBuffer = Buffer.alloc(0);
-    streamProcess = spawn("idb", [
+    streamProcess = spawnProcess("idb", [
       "--companion",
       companion,
       "video-stream",
@@ -3212,9 +3372,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       "h264",
       "--udid",
       device.udid,
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    ], {
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     const child = streamProcess;
-    streamTranscoderProcess = spawn("ffmpeg", [
+    streamTranscoderProcess = spawnProcess("ffmpeg", [
       "-hide_banner",
       "-loglevel",
       "error",
@@ -3236,6 +3399,33 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const transcoder = streamTranscoderProcess;
     let stderr = "";
     let transcoderStderr = "";
+    const startupTimer = setTimeout(() => {
+      if (
+        streamProcess !== child
+        || streamTranscoderProcess !== transcoder
+        || !streamStatus.running
+        || streamStatus.backend !== "idb-h264-ffmpeg-mjpeg"
+        || streamStatus.frameCount > 0
+      ) {
+        return;
+      }
+      const detail = "idb H.264 stream produced no frames; falling back to simulator screenshots.";
+      args.logger.warn("ios_simulator.idb_h264_no_frames", {
+        deviceUdid: device.udid,
+        fps,
+        idbStderr: stderr.trim() || null,
+        ffmpegStderr: transcoderStderr.trim() || null,
+      });
+      void (async () => {
+        await stopStream();
+        emit({ type: "stream-error", status: { ...streamStatus, lastError: detail } });
+        await startSimctlPreview(device, Math.min(8, fps));
+      })().catch((error) => {
+        const status = setStreamStopped(error instanceof Error ? error.message : String(error));
+        emit({ type: "stream-error", status });
+      });
+    }, IDB_H264_STARTUP_TIMEOUT_MS);
+    startupTimer.unref?.();
     child.stdout?.on("data", (chunk: Buffer) => {
       const stdin = transcoder.stdin;
       if (stdin && !stdin.destroyed && !stdin.write(chunk)) {
@@ -3246,7 +3436,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     child.stdout?.on("end", () => {
       transcoder.stdin?.end();
     });
-    transcoder.stdout?.on("data", (chunk: Buffer) => handleStreamChunk(chunk));
+    transcoder.stdout?.on("data", (chunk: Buffer) => handleStreamChunk(chunk, "idb-h264-ffmpeg-mjpeg"));
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = `${stderr}${chunk.toString()}`.slice(-4000);
     });
@@ -3254,16 +3444,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       transcoderStderr = `${transcoderStderr}${chunk.toString()}`.slice(-4000);
     });
     child.once("error", (error) => {
+      clearTimeout(startupTimer);
       const status = setStreamStopped(error.message);
       stopChild(transcoder);
       emit({ type: "stream-error", status });
     });
     transcoder.once("error", (error) => {
+      clearTimeout(startupTimer);
       const status = setStreamStopped(error.message);
       stopChild(child);
       emit({ type: "stream-error", status });
     });
     child.once("exit", (code, signal) => {
+      clearTimeout(startupTimer);
       if (streamProcess !== child) return;
       const detail = stderr.trim();
       const error = code === 0 || signal === "SIGTERM"
@@ -3274,6 +3467,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       emit(error ? { type: "stream-error", status } : { type: "stream-stopped", status });
     });
     transcoder.once("exit", (code, signal) => {
+      clearTimeout(startupTimer);
       if (streamTranscoderProcess !== transcoder) return;
       if (signal === "SIGTERM" || code === 0) return;
       const detail = transcoderStderr.trim();
@@ -3287,13 +3481,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const startStream = async (streamArgs: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> => {
     const device = await resolveDevice(streamArgs.deviceUdid ?? activeSession?.deviceUdid);
-    const requestedFps = Math.max(1, Math.min(60, Math.round(Number(streamArgs.fps ?? 8))));
+    const backend = streamArgs.backend ?? "simctl-screenshot-poll";
+    if (backend !== "auto" && backend !== "simctl-screenshot-poll" && backend !== "idb-mjpeg" && backend !== "idb-h264-ffmpeg-mjpeg" && backend !== "simulator-window-capture") {
+      throw new Error("stream backend must be `auto`, `simulator-window-capture`, `simctl-screenshot-poll`, `idb-mjpeg`, or `idb-h264-ffmpeg-mjpeg`.");
+    }
+    const resolvedBackend = resolveIosSimulatorStreamBackend(backend, {
+      idb: cachedCommandExists("idb"),
+      idbCompanion: cachedCommandExists("idb_companion"),
+      ffmpeg: cachedCommandExists("ffmpeg"),
+    });
+    const defaultFps = resolvedBackend === "idb-mjpeg" || resolvedBackend === "idb-h264-ffmpeg-mjpeg" ? 30 : 8;
+    const requestedFps = Math.max(1, Math.min(60, Math.round(Number(streamArgs.fps ?? defaultFps))));
     if (!Number.isFinite(requestedFps)) {
       throw new Error("fps must be a number between 1 and 60.");
-    }
-    const backend = streamArgs.backend ?? "simctl-screenshot-poll";
-    if (backend !== "auto" && backend !== "simctl-screenshot-poll" && backend !== "idb-h264-ffmpeg-mjpeg" && backend !== "simulator-window-capture") {
-      throw new Error("stream backend must be `auto`, `simulator-window-capture`, `simctl-screenshot-poll`, or `idb-h264-ffmpeg-mjpeg`.");
     }
     // simulator-window-capture sessions only flip `streamStatus.running` —
     // they never set `streamProcess` or `streamPollTimer`. Include
@@ -3304,20 +3504,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (
         streamStatus.running
         && streamStatus.deviceUdid === device.udid
-        && streamStatus.backend === backend
+        && streamStatus.backend === resolvedBackend
       ) {
         return streamStatus;
       }
       await stopStream();
     }
-    if (backend === "idb-h264-ffmpeg-mjpeg") {
-      return startIdbStream(device, requestedFps);
+    if (resolvedBackend === "idb-mjpeg") {
+      return startIdbMjpegStream(device, requestedFps);
     }
-    if (backend === "simulator-window-capture") {
+    if (resolvedBackend === "idb-h264-ffmpeg-mjpeg") {
+      return startIdbH264FfmpegStream(device, requestedFps);
+    }
+    if (resolvedBackend === "simulator-window-capture") {
       return startWindowCaptureStream(device, requestedFps);
-    }
-    if (backend === "auto" && cachedCommandExists("idb") && cachedCommandExists("idb_companion") && cachedCommandExists("ffmpeg")) {
-      return startIdbStream(device, Math.max(1, Math.min(60, Math.round(Number(streamArgs.fps ?? 30)))));
     }
     return startSimctlPreview(device, requestedFps);
   };

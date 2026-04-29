@@ -2827,6 +2827,11 @@ function renderEvent(
           {event.status !== "completed" ? (
             <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium uppercase tracking-wide text-current">{event.status}</span>
           ) : null}
+          {(event.subagentStoppedCount ?? 0) > 0 ? (
+            <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/35">
+              {event.subagentStoppedCount} subagent{event.subagentStoppedCount === 1 ? "" : "s"} stopped
+            </span>
+          ) : null}
         </div>
       </div>
     );

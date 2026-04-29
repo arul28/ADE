@@ -428,8 +428,6 @@ export function TerminalsPage() {
       work.launchPtySession,
       work.toggleWorkTabGroupCollapsed,
       work.closingPtyIds,
-      work.workFocusSessionsHidden,
-      work.setWorkFocusSessionsHidden,
       work.filtered.length,
       work.runningSessions.length,
       work.loading,

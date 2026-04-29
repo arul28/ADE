@@ -510,9 +510,10 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "stream-start": `${ADE_BANNER}
   iOS Simulator: stream-start
 
-  Starts a visual stream. Prefer window-start for the drawer UI, live-start for
-  exact-screen MJPEG when idb+ffmpeg are installed, and preview-start as a
-  simctl screenshot-poll fallback. Aliases: start-stream, stream, window-start,
+  Starts a visual stream. Prefer live-start/auto for the drawer UI when
+  idb+idb_companion+ffmpeg are installed, preview-start as a simctl screenshot-poll fallback,
+  and window-start only for native Simulator.app diagnostics. Aliases:
+  start-stream, stream, window-start,
   start-window, mirror-start, live-start, start-live, preview-start, start-preview.
 
     $ ade --socket ios-sim window-start --fps 60 --text
@@ -522,9 +523,9 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --device, --udid <id>  Simulator device.
     --fps <n>              Target fps.
-    --backend auto|simulator-window-capture|idb-h264-ffmpeg-mjpeg|simctl-screenshot-poll
+    --backend auto|simulator-window-capture|idb-mjpeg|idb-h264-ffmpeg-mjpeg|simctl-screenshot-poll
     --window, --mirror     Force window capture.
-    --idb, --live          Force idb H.264 -> MJPEG.
+    --idb, --live          Prefer idb stream (auto-picks h264+ffmpeg, falls back to MJPEG).
     --simctl, --preview    Force simctl screenshot polling.
 `,
   "stream-status": `${ADE_BANNER}
@@ -786,9 +787,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
   surface. For drawer/shared session state, prefer desktop socket mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch keeps Simulator.app in the background by default; use --foreground only
-  when you need the native Simulator window in front. idb is optional for direct
-  pointer/text control and the exact-screen MJPEG live stream.
+  Launch keeps Simulator.app hidden by default; use --foreground only when you
+  need the native Simulator window in front. idb is optional for direct
+  pointer/text control and the low-latency MJPEG live stream.
 
   Single-owner lock: a launched session is owned by one --chat-session at a time.
   If another session tries to launch with a different chatSessionId, the call
@@ -815,9 +816,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Streaming:
-    $ ade ios-sim window-start --fps 60            Simulator.app window capture backend
-    $ ade ios-sim live-start --fps 30              Exact-screen idb MJPEG live stream
+    $ ade ios-sim live-start --fps 30              Low-latency idb live stream
     $ ade ios-sim preview-start --fps 8            simctl screenshot-poll fallback
+    $ ade ios-sim window-start --fps 60            Native Simulator.app window capture diagnostic
     $ ade ios-sim stream-status --text             Backend/fps/latency/URL (getStreamStatus)
     $ ade ios-sim stream-stop                      Stop preview/live streaming (stopStream)
 
@@ -2148,13 +2149,21 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
       : sub === "window-start" || sub === "start-window" || sub === "mirror-start" || sub === "start-mirror"
         ? "simulator-window-capture"
         : sub === "live-start" || sub === "start-live"
-        ? "idb-h264-ffmpeg-mjpeg"
+        ? "auto"
         : undefined;
+    const requestedBackend = forcedBackend
+      ?? (readFlag(args, ["--window", "--mirror"]) ? "simulator-window-capture" : readFlag(args, ["--idb", "--live"]) ? "auto" : readFlag(args, ["--simctl", "--preview"]) ? "simctl-screenshot-poll" : readValue(args, ["--backend"]) ?? "auto");
+    const defaultFps = requestedBackend === "simulator-window-capture"
+      ? 60
+      : requestedBackend === "idb-mjpeg" || requestedBackend === "idb-h264-ffmpeg-mjpeg"
+        ? 30
+        : requestedBackend === "simctl-screenshot-poll"
+          ? 8
+          : undefined;
     return { kind: "execute", label: "iOS simulator stream start", steps: [actionStep("result", "ios_simulator", "startStream", collectGenericObjectArgs(args, {
       deviceUdid: readValue(args, ["--device", "--udid"]),
-      fps: readNumberOption(args, ["--fps"], forcedBackend === "simulator-window-capture" ? 60 : forcedBackend === "idb-h264-ffmpeg-mjpeg" ? 30 : 8),
-      backend: forcedBackend
-        ?? (readFlag(args, ["--window", "--mirror"]) ? "simulator-window-capture" : readFlag(args, ["--idb", "--live"]) ? "idb-h264-ffmpeg-mjpeg" : readFlag(args, ["--simctl", "--preview"]) ? "simctl-screenshot-poll" : readValue(args, ["--backend"]) ?? "auto"),
+      fps: readNumberOption(args, ["--fps"], defaultFps),
+      backend: requestedBackend,
     }))] };
   }
   if (sub === "stream-stop" || sub === "stop-stream" || sub === "preview-stop" || sub === "stop-preview" || sub === "live-stop" || sub === "stop-live") {

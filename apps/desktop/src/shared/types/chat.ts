@@ -249,6 +249,9 @@ export type AgentChatEvent =
         cacheCreationTokens?: number | null;
       };
       costUsd?: number | null;
+      // Set only at render time when multiple done events from one cancellation
+      // (parent + subagents) are consolidated into a single row.
+      subagentStoppedCount?: number;
     }
   | {
       type: "activity";

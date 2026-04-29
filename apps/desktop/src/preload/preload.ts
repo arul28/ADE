@@ -623,6 +623,7 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
+  IosSimulatorWindowState,
   IosSimulatorWindowSource,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
@@ -1826,6 +1827,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.iosSimulatorStopStream),
     getStreamStatus: async (): Promise<IosSimulatorStreamStatus> =>
       ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
+    getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> =>
+      ipcRenderer.invoke(IPC.iosSimulatorGetWindowState),
     listSimulatorWindowSources: async (): Promise<IosSimulatorWindowSource[]> => {
       return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources);
     },

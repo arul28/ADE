@@ -366,7 +366,7 @@ ade.sync.*                   # device registry, PIN pairing (getPin/setPin/clear
 ade.usage.*                  # token/cost accounting
 ade.layout.* / ade.graph.*
 ade.computerUse.*
-ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: getStatus/launch/shutdown/screenshot/getScreenSnapshot/getInspectorSnapshot/inspectPoint/getPreviewCapability/listPreviewTargets/renderPreview/openPreviewWorkspace/startStream/stopStream/tap/typeText/drag/swipe/selectPoint, plus the ade.iosSimulator.event push channel
+ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: getStatus/launch/shutdown/screenshot/getScreenSnapshot/getInspectorSnapshot/inspectPoint/getPreviewCapability/listPreviewTargets/renderPreview/openPreviewWorkspace/startStream/stopStream/getStreamStatus/getWindowState/listWindowSources/tap/typeText/drag/swipe/selectPoint, plus the ade.iosSimulator.event push channel
 ade.updates.*
 ```
 
@@ -426,7 +426,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `git/` | `git.ts`, `gitOperationsService.ts`, `gitConflictState.ts` | Low-level git runner, high-level lane-scoped ops, conflict state queries. |
 | `github/` | `githubService.ts` | GitHub REST/GraphQL access; PR CRUD; checks; reviewers. |
 | `history/` | `operationService.ts` | Operation audit records (one row per mutation). |
-| `ios/` | `iosSimulatorService.ts` | macOS-only iOS Simulator backend: tool readiness probes, simctl device + app discovery, build/install/launch with progress events, screenshot + ADEInspector + accessibility hit-test, three streaming backends (Simulator-window capture, idb MJPEG, simctl screenshot poll), tap/drag/swipe/type via idb, and single-owner chat session locking. See [features/ios-simulator/README.md](./features/ios-simulator/README.md). |
+| `ios/` | `iosSimulatorService.ts` | macOS-only iOS Simulator backend: tool readiness probes, simctl device + app discovery, build/install/launch with progress events (hardened with `simctl bootstatus` and `simctl install` timeouts), screenshot + ADEInspector + accessibility hit-test, four streaming backends with `auto` resolution and runtime fallback (`idb-h264-ffmpeg-mjpeg` → `idb-mjpeg` → `simctl-screenshot-poll`, plus opt-in `simulator-window-capture` for native window-capture diagnostics), tap/drag/swipe/type via idb, and single-owner chat session locking. The macOS Simulator window placement / capture state probe (`getSimulatorWindowState`, `prepareSimulatorWindowForCapture`) lives next to the IPC handlers in `ipc/registerIpc.ts` because it depends on the active `BrowserWindow`. See [features/ios-simulator/README.md](./features/ios-simulator/README.md). |
 | `ipc/` | `registerIpc.ts` | Single registration point for all IPC handlers. |
 | `jobs/` | `jobEngine.ts` | Event-driven background scheduler for lane refresh + conflict prediction. Coalesced, debounced. |
 | `keybindings/` | `keybindingsService.ts` | User keybindings read/write. |

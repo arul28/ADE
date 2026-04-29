@@ -821,7 +821,99 @@ export function groupConsecutiveWorkLogRows(
     index += 1;
   }
 
-  return grouped;
+  return consolidateInterruptedTerminus(grouped);
+}
+
+// Collapse consecutive interrupted/failed status + done rows (parent turn + N subagents)
+// into a single done row. Cancellation in chats with subagents otherwise produces a stack of
+// near-duplicate INTERRUPTED + USAGE rows; this folds them into one summary line.
+function consolidateInterruptedTerminus(
+  rows: ChatTranscriptGroupedEnvelope[],
+): ChatTranscriptGroupedEnvelope[] {
+  const isTerminus = (env: ChatTranscriptGroupedEnvelope): boolean => {
+    const e = env.event;
+    if (e.type === "status" && (e.turnStatus === "interrupted" || e.turnStatus === "failed")) {
+      return true;
+    }
+    if (e.type === "done" && (e.status === "interrupted" || e.status === "failed")) {
+      return true;
+    }
+    return false;
+  };
+
+  const result: ChatTranscriptGroupedEnvelope[] = [];
+  let index = 0;
+  while (index < rows.length) {
+    const row = rows[index]!;
+    if (!isTerminus(row)) {
+      result.push(row);
+      index += 1;
+      continue;
+    }
+
+    let end = index;
+    while (end < rows.length && isTerminus(rows[end]!)) end += 1;
+    const cluster = rows.slice(index, end);
+    index = end;
+
+    const doneEvents = cluster
+      .map((entry) => entry.event)
+      .filter((event): event is Extract<AgentChatEvent, { type: "done" }> => event.type === "done");
+
+    // Only consolidate clusters that include at least one done event — that's the noisy
+    // cancellation pattern. Pure-status clusters keep their existing behavior so legitimately
+    // distinct signals (e.g. failed + interrupted) remain visible.
+    if (doneEvents.length === 0 || cluster.length === 1) {
+      for (const entry of cluster) result.push(entry);
+      continue;
+    }
+
+    const sumOptional = (...values: Array<number | null | undefined>): number | undefined => {
+      let total = 0;
+      let any = false;
+      for (const value of values) {
+        if (typeof value === "number" && Number.isFinite(value)) {
+          total += value;
+          any = true;
+        }
+      }
+      return any ? total : undefined;
+    };
+
+    const base = doneEvents.reduce((best, candidate) => {
+      const bestTokens = (best.usage?.inputTokens ?? 0) + (best.usage?.outputTokens ?? 0);
+      const candidateTokens = (candidate.usage?.inputTokens ?? 0) + (candidate.usage?.outputTokens ?? 0);
+      return candidateTokens > bestTokens ? candidate : best;
+    }, doneEvents[0]!);
+
+    const inputTokens = sumOptional(...doneEvents.map((event) => event.usage?.inputTokens ?? null));
+    const outputTokens = sumOptional(...doneEvents.map((event) => event.usage?.outputTokens ?? null));
+    const cacheReadTokens = sumOptional(...doneEvents.map((event) => event.usage?.cacheReadTokens ?? null));
+    const cacheCreationTokens = sumOptional(...doneEvents.map((event) => event.usage?.cacheCreationTokens ?? null));
+    const costUsd = sumOptional(...doneEvents.map((event) => event.costUsd ?? null));
+    const status = doneEvents.some((event) => event.status === "failed") ? "failed" : "interrupted";
+    const subagentStoppedCount = doneEvents.length - 1;
+
+    const lastInCluster = cluster[cluster.length - 1]!;
+    result.push({
+      key: `terminus:${lastInCluster.key}`,
+      timestamp: lastInCluster.timestamp,
+      event: {
+        ...base,
+        status,
+        usage: {
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreationTokens,
+        },
+        costUsd,
+        subagentStoppedCount: subagentStoppedCount > 0 ? subagentStoppedCount : undefined,
+      },
+    });
+  }
+
+  return result;
 }
 
 export type TurnDividerDataEntry = {

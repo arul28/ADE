@@ -249,6 +249,10 @@ export function ActionRow({
               value={value.prompt ?? ""}
               onChange={(event) => onChange({ ...value, prompt: event.target.value })}
               placeholder="Prompt for the agent session"
+              spellCheck
+              autoCorrect="on"
+              autoCapitalize="sentences"
+              autoComplete="on"
             />
           </div>
         ) : null}

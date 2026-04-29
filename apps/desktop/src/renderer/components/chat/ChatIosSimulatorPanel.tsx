@@ -14,6 +14,7 @@ import type {
   IosSimulatorStreamStatus,
   IosSimulatorStatus,
   IosSimulatorToolStatus,
+  IosSimulatorWindowState,
   IosSimulatorWindowSource,
 } from "../../../shared/types";
 import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE, inferAttachmentType } from "../../../shared/types";
@@ -166,7 +167,7 @@ const TOOL_DESCRIPTORS: Record<ToolKey, ToolDescriptor> = {
   },
   idb: {
     title: "idb",
-    description: "Optional. Enables tap, drag, and type from the live view.",
+    description: "Optional. Enables fallback streaming plus tap, drag, and type.",
     required: false,
   },
   idb_companion: {
@@ -176,7 +177,7 @@ const TOOL_DESCRIPTORS: Record<ToolKey, ToolDescriptor> = {
   },
   ffmpeg: {
     title: "ffmpeg",
-    description: "Optional. Used for the high-fps live stream backend.",
+    description: "Optional. Used for the fallback H.264 transcode stream.",
     required: false,
   },
 };
@@ -240,6 +241,7 @@ function buildDesktopCaptureConstraints(sourceId: string, maxFrameRate: number):
         minFrameRate: Math.min(30, maxFrameRate),
         maxFrameRate,
       },
+      optional: [{ cursor: "never" }],
     },
   } as unknown as MediaStreamConstraints;
 }
@@ -285,6 +287,18 @@ function previewStatusLabel(capability: IosSimulatorPreviewCapability | null, ta
 
 function frameArea(element: IosScreenElement): number {
   return Math.max(1, element.pixelFrame.width) * Math.max(1, element.pixelFrame.height);
+}
+
+function rectArea(frame: IosScreenElement["pixelFrame"]): number {
+  return Math.max(0, frame.width) * Math.max(0, frame.height);
+}
+
+function rectIntersectionArea(a: IosScreenElement["pixelFrame"], b: IosScreenElement["pixelFrame"]): number {
+  const left = Math.max(a.x, b.x);
+  const top = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  return Math.max(0, right - left) * Math.max(0, bottom - top);
 }
 
 function containsPoint(element: IosScreenElement, x: number, y: number): boolean {
@@ -336,6 +350,85 @@ function clampFrame(
     width: Math.max(1, Math.min(maxWidth, frame.width)),
     height: Math.max(1, Math.min(maxHeight, frame.height)),
   };
+}
+
+function compactElementForContext(element: IosScreenElement): Record<string, unknown> {
+  return {
+    id: element.id,
+    source: element.source,
+    label: element.label,
+    value: element.value,
+    role: element.role,
+    elementType: element.elementType,
+    identifier: element.identifier,
+    componentId: element.componentId,
+    sourceFile: element.sourceFile,
+    sourceLine: element.sourceLine,
+    screenshotFrame: element.pixelFrame,
+  };
+}
+
+function screenContextForSnapshot(snapshot: IosScreenSnapshot): Record<string, unknown> {
+  return {
+    deviceUdid: snapshot.deviceUdid,
+    capturedAt: snapshot.capturedAt,
+    screenWidth: snapshot.screen.width,
+    screenHeight: snapshot.screen.height,
+    screenScale: snapshot.screen.scale,
+    screenshotWidth: snapshot.screenshot.width,
+    screenshotHeight: snapshot.screenshot.height,
+  };
+}
+
+function shouldShowInspectElement(element: IosScreenElement, snapshot: IosScreenSnapshot, selected: IosScreenElement | null, hovered: IosScreenElement | null): boolean {
+  if (selected?.id === element.id || hovered?.id === element.id) return true;
+  const screenshotWidth = snapshot.screenshot.width ?? snapshot.screen.width;
+  const screenshotHeight = snapshot.screenshot.height ?? snapshot.screen.height;
+  if (!screenshotWidth || !screenshotHeight) return true;
+  const frame = clampFrame(element.pixelFrame, screenshotWidth, screenshotHeight);
+  if (frame.width < 4 || frame.height < 4) return false;
+  const screenArea = screenshotWidth * screenshotHeight;
+  const areaRatio = rectArea(frame) / Math.max(1, screenArea);
+  const isNearlyFullscreen = areaRatio > 0.72
+    || (frame.x <= 2 && frame.y <= 2 && frame.width >= screenshotWidth - 4 && frame.height >= screenshotHeight - 4);
+  if (isNearlyFullscreen) return false;
+  if (areaRatio > 0.35 && !element.sourceFile && !element.componentId && !element.identifier && !element.label && !element.value) {
+    return false;
+  }
+  return hasSelectableIdentity(element);
+}
+
+function visibleInspectElements(snapshot: IosScreenSnapshot, selected: IosScreenElement | null, hovered: IosScreenElement | null): IosScreenElement[] {
+  const screenshotWidth = snapshot.screenshot.width ?? snapshot.screen.width;
+  const screenshotHeight = snapshot.screenshot.height ?? snapshot.screen.height;
+  const seen = new Set<string>();
+  return snapshot.elements
+    .filter((element) => shouldShowInspectElement(element, snapshot, selected, hovered))
+    .filter((element) => {
+      const frame = screenshotWidth && screenshotHeight
+        ? clampFrame(element.pixelFrame, screenshotWidth, screenshotHeight)
+        : element.pixelFrame;
+      const signature = [
+        Math.round(frame.x / 2) * 2,
+        Math.round(frame.y / 2) * 2,
+        Math.round(frame.width / 2) * 2,
+        Math.round(frame.height / 2) * 2,
+        element.sourceFile || element.componentId || element.identifier || element.label || element.role || element.id,
+      ].join(":");
+      if (seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    })
+    .sort((a, b) => {
+      const selectedA = selected?.id === a.id ? -1 : 0;
+      const selectedB = selected?.id === b.id ? -1 : 0;
+      if (selectedA !== selectedB) return selectedA - selectedB;
+      const hoveredA = hovered?.id === a.id ? -1 : 0;
+      const hoveredB = hovered?.id === b.id ? -1 : 0;
+      if (hoveredA !== hoveredB) return hoveredA - hoveredB;
+      return frameArea(a) - frameArea(b);
+    })
+    .slice(0, 120);
 }
 
 function measureObjectContain(
@@ -527,6 +620,103 @@ function wait(ms: number): Promise<void> {
   });
 }
 
+function findByteMarker(buffer: Uint8Array, first: number, second: number, fromIndex = 0): number {
+  for (let index = Math.max(0, fromIndex); index < buffer.byteLength - 1; index += 1) {
+    if (buffer[index] === first && buffer[index + 1] === second) return index;
+  }
+  return -1;
+}
+
+type ByteBuffer = Uint8Array<ArrayBuffer>;
+
+function appendBytes(buffer: ByteBuffer, chunk: Uint8Array): ByteBuffer {
+  const next = new Uint8Array(buffer.byteLength + chunk.byteLength);
+  next.set(buffer, 0);
+  next.set(chunk, buffer.byteLength);
+  return next;
+}
+
+function extractLatestJpegFrame(buffer: ByteBuffer): { frame: ByteBuffer | null; rest: ByteBuffer } {
+  let rest = buffer;
+  let frame: ByteBuffer | null = null;
+  for (;;) {
+    const start = findByteMarker(rest, 0xff, 0xd8);
+    if (start < 0) {
+      return {
+        frame,
+        rest: rest.byteLength > 1024 * 1024 ? new Uint8Array(0) : rest,
+      };
+    }
+    if (start > 0) rest = rest.slice(start);
+    const end = findByteMarker(rest, 0xff, 0xd9, 2);
+    if (end < 0) {
+      return {
+        frame,
+        rest: rest.byteLength > 20 * 1024 * 1024 ? new Uint8Array(0) : rest,
+      };
+    }
+    frame = rest.slice(0, end + 2);
+    rest = rest.slice(end + 2);
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function canPlayMjpegStreamToCanvas(): boolean {
+  return typeof window.fetch === "function" && typeof window.createImageBitmap === "function";
+}
+
+async function drawJpegFrameToCanvas(frame: ByteBuffer, canvas: HTMLCanvasElement): Promise<{ width: number; height: number }> {
+  const bitmap = await createImageBitmap(new Blob([frame], { type: "image/jpeg" }));
+  const { width, height } = bitmap;
+  try {
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("Canvas rendering is not available for the live simulator stream.");
+    context.drawImage(bitmap, 0, 0);
+    return { width, height };
+  } finally {
+    bitmap.close();
+  }
+}
+
+async function playMjpegStreamToCanvas(
+  url: string,
+  canvas: HTMLCanvasElement,
+  signal: AbortSignal,
+  onFrame: (frame: { width: number; height: number }) => void,
+): Promise<void> {
+  if (!canPlayMjpegStreamToCanvas()) {
+    throw new Error("Low-latency MJPEG canvas playback is not available in this renderer.");
+  }
+  const response = await window.fetch(url, { cache: "no-store", signal });
+  if (!response.ok) throw new Error(`Live simulator stream returned HTTP ${response.status}.`);
+  if (!response.body) throw new Error("Live simulator stream did not expose a readable body.");
+  const reader = response.body.getReader();
+  let buffer: ByteBuffer = new Uint8Array(0);
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (signal.aborted) return;
+      if (!value) continue;
+      buffer = appendBytes(buffer, value);
+      const extracted = extractLatestJpegFrame(buffer);
+      buffer = extracted.rest;
+      if (!extracted.frame) continue;
+      const rendered = await drawJpegFrameToCanvas(extracted.frame, canvas);
+      if (signal.aborted) return;
+      onFrame(rendered);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!signal.aborted) throw new Error("Live simulator stream ended.");
+}
+
 async function cropElementDataUrl(snapshot: IosScreenSnapshot, element: IosScreenElement): Promise<string | null> {
   const screenshotWidth = snapshot.screenshot.width ?? snapshot.screen.width;
   const screenshotHeight = snapshot.screenshot.height ?? snapshot.screen.height;
@@ -635,8 +825,11 @@ export function ChatIosSimulatorPanel({
   const [previewResult, setPreviewResult] = useState<IosSimulatorRenderPreviewResult | null>(null);
   const [previewAgentHelpAction, setPreviewAgentHelpAction] = useState<PreviewAgentHelpAction>("open-simulator-in-preview");
   const [previewCaptureSelection, setPreviewCaptureSelection] = useState<PreviewCaptureSelection | null>(null);
+  const [simulatorCaptureActive, setSimulatorCaptureActive] = useState(false);
+  const [simulatorCaptureSelection, setSimulatorCaptureSelection] = useState<PreviewCaptureSelection | null>(null);
   const [liveVisual, setLiveVisual] = useState<LiveVisual | null>(null);
   const [windowScreenRect, setWindowScreenRect] = useState<WindowScreenRect | null>(null);
+  const [simulatorWindowState, setSimulatorWindowState] = useState<IosSimulatorWindowState | null>(null);
   const [streamStatus, setStreamStatus] = useState<IosSimulatorStreamStatus | null>(null);
   const [launchProgress, setLaunchProgress] = useState<IosSimulatorLaunchProgress[]>([]);
   const [hoveredElement, setHoveredElement] = useState<IosScreenElement | null>(null);
@@ -650,11 +843,18 @@ export function ChatIosSimulatorPanel({
   const [typedText, setTypedText] = useState("");
   const imageRef = useRef<HTMLImageElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const liveStreamRef = useRef<MediaStream | null>(null);
+  const mjpegPlaybackAbortRef = useRef<AbortController | null>(null);
   const videoFrameCallbackRef = useRef<number | null>(null);
   const windowScreenRectRef = useRef<WindowScreenRect | null>(null);
   const liveFrameCountRef = useRef(0);
   const liveFrameWindowStartRef = useRef(0);
+  const liveRestartTimerRef = useRef<number | null>(null);
+  const liveRestartAttemptedAtRef = useRef(0);
+  const windowCaptureRecoveryTimerRef = useRef<number | null>(null);
+  const windowCaptureRecoveryAttemptedAtRef = useRef(0);
+  const lastWindowFrameAtRef = useRef(0);
   const suppressNextSelectionEventRef = useRef(false);
   const dragStartRef = useRef<DragStart | null>(null);
   const snapshotRefreshInFlightRef = useRef(false);
@@ -664,6 +864,7 @@ export function ChatIosSimulatorPanel({
     if (selectedDeviceUdid) return devices.find((device) => device.udid === selectedDeviceUdid) ?? null;
     return status?.activeDevice ?? devices[0] ?? null;
   }, [devices, selectedDeviceUdid, status?.activeDevice]);
+  const activeSession = status?.activeSession ?? null;
 
   const visibleLaunchTargets = useMemo(() => {
     const projectTargets = launchTargets.filter((target) => target.kind === "project");
@@ -690,8 +891,13 @@ export function ChatIosSimulatorPanel({
         alt: "iOS Simulator snapshot",
       }
     : null;
-  const liveWidth = liveVisual?.width ?? videoRef.current?.videoWidth ?? imageRef.current?.naturalWidth ?? null;
-  const liveHeight = liveVisual?.height ?? videoRef.current?.videoHeight ?? imageRef.current?.naturalHeight ?? null;
+  const liveWidth = liveVisual?.width ?? videoRef.current?.videoWidth ?? canvasRef.current?.width ?? imageRef.current?.naturalWidth ?? null;
+  const liveHeight = liveVisual?.height ?? videoRef.current?.videoHeight ?? canvasRef.current?.height ?? imageRef.current?.naturalHeight ?? null;
+  const liveVisualKind = liveVisual?.kind ?? null;
+  const liveMjpegUrl = liveVisual?.kind === "mjpeg" ? liveVisual.url : null;
+  const liveWindowSourceId = liveVisual?.kind === "window" ? liveVisual.sourceId : null;
+  const liveWindowHeight = liveVisual?.kind === "window" ? liveVisual.height : null;
+  const liveWindowWidth = liveVisual?.kind === "window" ? liveVisual.width : null;
   const previewImage = useMemo(() => (
     previewResult?.dataUrl
       ? {
@@ -702,7 +908,7 @@ export function ChatIosSimulatorPanel({
       }
       : null
   ), [previewResult?.dataUrl, previewResult?.height, previewResult?.width]);
-  const liveVisualUsesSimulatorWindow = mode === "interact" && liveVisual?.kind === "window";
+  const liveVisualUsesSimulatorWindow = mode === "interact" && liveVisualKind === "window";
   let mediaWidth: number;
   let mediaHeight: number;
   if (mode === "interact") {
@@ -725,6 +931,11 @@ export function ChatIosSimulatorPanel({
       ? previewCaptureFrame(previewCaptureSelection, mediaWidth, mediaHeight)
       : null
   ), [mediaHeight, mediaWidth, previewCaptureSelection]);
+  const activeSimulatorCaptureFrame = useMemo(() => (
+    simulatorCaptureSelection && mediaWidth && mediaHeight
+      ? previewCaptureFrame(simulatorCaptureSelection, mediaWidth, mediaHeight)
+      : null
+  ), [mediaHeight, mediaWidth, simulatorCaptureSelection]);
 
   const controlAvailable = (status?.tools.find((tool) => tool.name === "idb")?.available ?? false)
     && (status?.tools.find((tool) => tool.name === "idb_companion")?.available ?? false);
@@ -794,11 +1005,11 @@ export function ChatIosSimulatorPanel({
       : "No preview target selected";
 
   const otherChatSessionId = useMemo(() => {
-    const owner = status?.activeSession?.chatSessionId ?? null;
+    const owner = activeSession?.chatSessionId ?? null;
     if (!owner) return null;
     if (!sessionId) return owner;
     return owner !== sessionId ? owner : null;
-  }, [sessionId, status?.activeSession?.chatSessionId]);
+  }, [activeSession?.chatSessionId, sessionId]);
   const ownedByOtherChat = otherChatSessionId !== null;
 
   const launchRef = useRef<(() => Promise<void>) | null>(null);
@@ -884,6 +1095,16 @@ export function ChatIosSimulatorPanel({
   }, [projectRoot, selectedElement?.sourceFile, selectedElement?.sourceLine]);
 
   const stopRendererLiveVisual = useCallback(() => {
+    if (liveRestartTimerRef.current != null) {
+      window.clearTimeout(liveRestartTimerRef.current);
+      liveRestartTimerRef.current = null;
+    }
+    if (windowCaptureRecoveryTimerRef.current != null) {
+      window.clearTimeout(windowCaptureRecoveryTimerRef.current);
+      windowCaptureRecoveryTimerRef.current = null;
+    }
+    mjpegPlaybackAbortRef.current?.abort();
+    mjpegPlaybackAbortRef.current = null;
     const video = videoRef.current as VideoFrameRequestElement | null;
     if (video && videoFrameCallbackRef.current != null && video.cancelVideoFrameCallback) {
       video.cancelVideoFrameCallback(videoFrameCallbackRef.current);
@@ -894,6 +1115,7 @@ export function ChatIosSimulatorPanel({
     if (video) video.srcObject = null;
     liveFrameCountRef.current = 0;
     liveFrameWindowStartRef.current = 0;
+    lastWindowFrameAtRef.current = 0;
     windowScreenRectRef.current = null;
     setWindowScreenRect(null);
     setLiveVisual(null);
@@ -905,6 +1127,7 @@ export function ChatIosSimulatorPanel({
     liveFrameCountRef.current = 0;
     liveFrameWindowStartRef.current = performance.now();
     const onFrame = (now: number, metadata: VideoFrameMetadata) => {
+      lastWindowFrameAtRef.current = Date.now();
       liveFrameCountRef.current += 1;
       const elapsedMs = Math.max(1, now - liveFrameWindowStartRef.current);
       if (elapsedMs >= 1_000) {
@@ -968,7 +1191,7 @@ export function ChatIosSimulatorPanel({
     });
   }, []);
 
-  const startMjpegLiveVisual = useCallback(async (device: IosSimulatorDevice) => {
+  const startDeviceBackedLiveVisual = useCallback(async (device: IosSimulatorDevice) => {
     setLiveVisual({
       kind: "mjpeg",
       status: "starting",
@@ -995,7 +1218,7 @@ export function ChatIosSimulatorPanel({
   useEffect(() => {
     const video = videoRef.current;
     const stream = liveStreamRef.current;
-    if (!video || !stream || liveVisual?.kind !== "window") return;
+    if (!video || !stream || liveVisualKind !== "window") return;
     video.srcObject = stream;
     void video.play().then(() => {
       setLiveVisual((current) => current?.kind === "window"
@@ -1012,7 +1235,7 @@ export function ChatIosSimulatorPanel({
         ? { ...current, status: "error", error: error instanceof Error ? error.message : String(error) }
         : current);
     });
-  }, [liveVisual?.kind, liveVisual?.kind === "window" ? liveVisual.sourceId : null, trackWindowVideoFrames]);
+  }, [liveVisualKind, liveWindowSourceId, trackWindowVideoFrames]);
 
   useEffect(() => {
     windowScreenRectRef.current = windowScreenRect;
@@ -1046,6 +1269,146 @@ export function ChatIosSimulatorPanel({
     }
   }, [activeDevice?.udid, projectRoot, selectedDeviceUdid]);
 
+  const scheduleDeviceBackedStreamRestart = useCallback((reason: string) => {
+    if (
+      mode !== "interact"
+      || !activeDevice
+      || !activeSession
+      || activeSession.deviceUdid !== activeDevice.udid
+      || liveVisualKind !== "mjpeg"
+    ) {
+      return;
+    }
+    if (liveRestartTimerRef.current != null) return;
+    const now = Date.now();
+    if (now - liveRestartAttemptedAtRef.current < 1_500) return;
+    liveRestartAttemptedAtRef.current = now;
+    setMessage(`${reason} Restarting live simulator stream...`);
+    liveRestartTimerRef.current = window.setTimeout(() => {
+      liveRestartTimerRef.current = null;
+      void (async () => {
+        try {
+          stopRendererLiveVisual();
+          await window.ade.iosSimulator.stopStream().catch(() => {});
+          await startDeviceBackedLiveVisual(activeDevice);
+          void refreshSnapshot({ silent: true, priority: true });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setLiveVisual({
+            kind: "mjpeg",
+            status: "error",
+            url: null,
+            width: null,
+            height: null,
+            error: `Live stream failed. ${message}`,
+          });
+          setMessage(`Live stream failed. ${message}`);
+        }
+      })();
+    }, 500);
+  }, [activeDevice, activeSession, liveVisualKind, mode, refreshSnapshot, startDeviceBackedLiveVisual, stopRendererLiveVisual]);
+
+  const scheduleWindowCaptureRecovery = useCallback((reason: string) => {
+    if (
+      mode !== "interact"
+      || !activeDevice
+      || !activeSession
+      || activeSession.deviceUdid !== activeDevice.udid
+      || liveVisualKind !== "window"
+    ) {
+      return;
+    }
+    if (windowCaptureRecoveryTimerRef.current != null) return;
+    const now = Date.now();
+    if (now - windowCaptureRecoveryAttemptedAtRef.current < 2_500) return;
+    windowCaptureRecoveryAttemptedAtRef.current = now;
+    setMessage(`${reason} Restoring Simulator window capture...`);
+    windowCaptureRecoveryTimerRef.current = window.setTimeout(() => {
+      windowCaptureRecoveryTimerRef.current = null;
+      void (async () => {
+        try {
+          stopRendererLiveVisual();
+          await window.ade.iosSimulator.stopStream().catch(() => {});
+          await startWindowCaptureVisual(activeDevice);
+          void refreshSnapshot({ silent: true, priority: true });
+        } catch (windowError) {
+          const windowMessage = windowError instanceof Error ? windowError.message : String(windowError);
+          setMessage(`Simulator window capture unavailable. Starting fallback stream... ${windowMessage}`);
+          await window.ade.iosSimulator.stopStream().catch(() => {});
+          await startDeviceBackedLiveVisual(activeDevice);
+        }
+      })().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setLiveVisual({
+          kind: "mjpeg",
+          status: "error",
+          url: null,
+          width: null,
+          height: null,
+          error: `Live stream failed. ${message}`,
+        });
+        setMessage(`Live stream failed. ${message}`);
+      });
+    }, 250);
+  }, [
+    activeDevice,
+    activeSession,
+    liveVisualKind,
+    mode,
+    refreshSnapshot,
+    startDeviceBackedLiveVisual,
+    startWindowCaptureVisual,
+    stopRendererLiveVisual,
+  ]);
+
+  const armWindowCaptureRecoveryAfterInput = useCallback(() => {
+    if (mode !== "interact" || liveVisualKind !== "window") return;
+    const previousFrameAt = lastWindowFrameAtRef.current;
+    if (windowCaptureRecoveryTimerRef.current != null) {
+      window.clearTimeout(windowCaptureRecoveryTimerRef.current);
+      windowCaptureRecoveryTimerRef.current = null;
+    }
+    windowCaptureRecoveryTimerRef.current = window.setTimeout(() => {
+      windowCaptureRecoveryTimerRef.current = null;
+      if (lastWindowFrameAtRef.current <= previousFrameAt) {
+        scheduleWindowCaptureRecovery("Simulator window capture did not update after input.");
+      }
+    }, 1_500);
+  }, [liveVisualKind, mode, scheduleWindowCaptureRecovery]);
+
+  useEffect(() => {
+    if (mode !== "interact" || liveVisualKind !== "mjpeg" || !liveMjpegUrl) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (!canPlayMjpegStreamToCanvas()) return;
+    mjpegPlaybackAbortRef.current?.abort();
+    const controller = new AbortController();
+    mjpegPlaybackAbortRef.current = controller;
+    void playMjpegStreamToCanvas(liveMjpegUrl, canvas, controller.signal, (frame) => {
+      liveFrameCountRef.current += 1;
+      setLiveVisual((current) => current?.kind === "mjpeg" && current.url === liveMjpegUrl
+        ? {
+            ...current,
+            status: "active",
+            width: frame.width || current.width,
+            height: frame.height || current.height,
+            error: null,
+          }
+        : current);
+    }).catch((error) => {
+      if (controller.signal.aborted || isAbortError(error)) return;
+      const message = error instanceof Error ? error.message : String(error);
+      setLiveVisual((current) => current?.kind === "mjpeg" && current.url === liveMjpegUrl
+        ? { ...current, status: "error", error: `Live simulator stream could not be decoded. ${message}` }
+        : current);
+      scheduleDeviceBackedStreamRestart("Live simulator stream stopped.");
+    });
+    return () => {
+      controller.abort();
+      if (mjpegPlaybackAbortRef.current === controller) mjpegPlaybackAbortRef.current = null;
+    };
+  }, [liveMjpegUrl, liveVisualKind, mode, scheduleDeviceBackedStreamRestart]);
+
   useEffect(() => {
     void refreshStatus().catch((error) => {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -1074,6 +1437,16 @@ export function ChatIosSimulatorPanel({
       }
       if (event.type === "stream-started" || event.type === "stream-status" || event.type === "stream-stopped" || event.type === "stream-error") {
         setStreamStatus(event.status);
+        if ((event.type === "stream-started" || event.type === "stream-status") && event.status.streamUrl) {
+          setLiveVisual((current) => current?.kind === "mjpeg"
+            ? {
+                ...current,
+                status: event.status.lastFrameAt ? "active" : "starting",
+                url: event.status.streamUrl ?? current.url,
+                error: null,
+              }
+            : current);
+        }
         if (event.type === "stream-error" && event.status.lastError) setMessage(event.status.lastError);
         return;
       }
@@ -1096,6 +1469,52 @@ export function ChatIosSimulatorPanel({
   }, [onAddContext, refreshStatus, sessionId]);
 
   useEffect(() => {
+    if (
+      mode !== "interact"
+      || liveVisualKind !== "mjpeg"
+      || !streamStatus?.lastError
+      || streamStatus.running
+    ) {
+      return;
+    }
+    scheduleDeviceBackedStreamRestart("Live simulator stream stopped.");
+  }, [liveVisualKind, mode, scheduleDeviceBackedStreamRestart, streamStatus?.lastError, streamStatus?.running]);
+
+  useEffect(() => {
+    if (
+      mode !== "interact"
+      || liveVisualKind !== "mjpeg"
+      || !streamStatus?.running
+      || streamStatus.backend === "simulator-window-capture"
+    ) {
+      return;
+    }
+    const startupGraceMs = streamStatus.backend === "idb-h264-ffmpeg-mjpeg"
+      ? 18_000
+      : streamStatus.backend === "idb-mjpeg"
+        ? 8_000
+        : 5_000;
+    const timer = window.setInterval(() => {
+      const lastFrameMs = streamStatus.lastFrameAt ? Date.parse(streamStatus.lastFrameAt) : 0;
+      const startedMs = streamStatus.startedAt ? Date.parse(streamStatus.startedAt) : 0;
+      const staleAfterMs = lastFrameMs ? 5_000 : startupGraceMs;
+      const referenceMs = lastFrameMs || startedMs;
+      if (referenceMs && Date.now() - referenceMs > staleAfterMs) {
+        scheduleDeviceBackedStreamRestart("Live simulator stream stalled.");
+      }
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [
+    liveVisualKind,
+    mode,
+    scheduleDeviceBackedStreamRestart,
+    streamStatus?.backend,
+    streamStatus?.lastFrameAt,
+    streamStatus?.running,
+    streamStatus?.startedAt,
+  ]);
+
+  useEffect(() => {
     void refreshLaunchTargets(selectedDeviceUdid ?? activeDevice?.udid ?? undefined).catch((error) => {
       setMessage(error instanceof Error ? error.message : String(error));
     });
@@ -1111,15 +1530,21 @@ export function ChatIosSimulatorPanel({
   }, [previewCaptureActive, previewResult?.dataUrl]);
 
   useEffect(() => {
+    if (mode !== "inspect") {
+      setSimulatorCaptureActive(false);
+      setSimulatorCaptureSelection(null);
+    }
+  }, [mode]);
+
+  useEffect(() => {
     if (mode !== "inspect" || !activeDevice || !status?.supported) return;
-    if (!status.activeSession) return;
+    if (!activeSession) return;
     void refreshSnapshot({ priority: true }).catch((error) => {
       setMessage(error instanceof Error ? error.message : String(error));
     });
-  }, [activeDevice?.udid, mode, refreshSnapshot, status?.activeSession, status?.supported]);
+  }, [activeDevice, activeSession, mode, refreshSnapshot, status?.supported]);
 
   useEffect(() => {
-    const activeSession = status?.activeSession ?? null;
     if (
       mode !== "interact"
       || !activeDevice
@@ -1136,43 +1561,27 @@ export function ChatIosSimulatorPanel({
     void (async () => {
       try {
         stopRendererLiveVisual();
-        await startWindowCaptureVisual(device);
-      } catch (windowError) {
-        if (cancelled) return;
-        const windowMessage = windowError instanceof Error ? windowError.message : String(windowError);
-        if (windowMessage.includes("Simulator.app window")) {
-          await window.ade.iosSimulator.stopStream().catch(() => {});
-          if (!cancelled) {
-            setLiveVisual({
-              kind: "mjpeg",
-              status: "error",
-              url: null,
-              width: null,
-              height: null,
-              error: windowMessage,
-            });
-            setMessage(windowMessage);
-          }
-          return;
-        }
         try {
-          await startMjpegLiveVisual(device);
-        } catch (streamError) {
-          if (!cancelled) {
-            const message = streamError instanceof Error
-              ? streamError.message
-              : windowMessage;
-            setLiveVisual({
-              kind: "mjpeg",
-              status: "error",
-              url: null,
-              width: null,
-              height: null,
-              error: `Live stream failed. ${message}`,
-            });
-            setMessage(`Live stream failed. ${windowMessage}`);
-          }
+          await startWindowCaptureVisual(device);
+        } catch (windowError) {
+          if (cancelled) return;
+          const windowMessage = windowError instanceof Error ? windowError.message : String(windowError);
+          setMessage(`Simulator window capture unavailable. Starting fallback stream... ${windowMessage}`);
+          await window.ade.iosSimulator.stopStream().catch(() => {});
+          await startDeviceBackedLiveVisual(device);
         }
+      } catch (streamError) {
+        if (cancelled) return;
+        const message = streamError instanceof Error ? streamError.message : String(streamError);
+        setLiveVisual({
+          kind: "mjpeg",
+          status: "error",
+          url: null,
+          width: null,
+          height: null,
+          error: `Live stream failed. ${message}`,
+        });
+        setMessage(`Live stream failed. ${message}`);
       }
     })();
     return () => {
@@ -1180,15 +1589,37 @@ export function ChatIosSimulatorPanel({
       stopRendererLiveVisual();
       void window.ade.iosSimulator.stopStream().catch(() => {});
     };
-  }, [activeDevice?.name, activeDevice?.runtime, activeDevice?.udid, mode, startMjpegLiveVisual, startWindowCaptureVisual, status?.activeSession?.deviceUdid, status?.supported, stopRendererLiveVisual]);
+  }, [activeDevice, activeSession, mode, startDeviceBackedLiveVisual, startWindowCaptureVisual, status?.supported, stopRendererLiveVisual]);
 
   useEffect(() => {
-    if (mode !== "interact" || liveVisual?.kind !== "window" || !status?.activeSession || snapshot) return;
+    if (mode !== "interact" || liveVisualKind !== "window" || !activeSession) {
+      setSimulatorWindowState(null);
+      return;
+    }
+    let cancelled = false;
+    const refreshSimulatorWindowState = async () => {
+      try {
+        const next = await window.ade.iosSimulator.getSimulatorWindowState();
+        if (!cancelled) setSimulatorWindowState(next);
+      } catch {
+        if (!cancelled) setSimulatorWindowState(null);
+      }
+    };
+    void refreshSimulatorWindowState();
+    const timer = window.setInterval(refreshSimulatorWindowState, 2_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeSession, liveVisualKind, mode]);
+
+  useEffect(() => {
+    if (mode !== "interact" || liveVisualKind !== "window" || !activeSession || snapshot) return;
     void refreshSnapshot({ silent: true, priority: true });
-  }, [liveVisual?.kind, mode, refreshSnapshot, snapshot, status?.activeSession]);
+  }, [activeSession, liveVisualKind, mode, refreshSnapshot, snapshot]);
 
   useEffect(() => {
-    if (mode !== "interact" || liveVisual?.kind !== "window" || !snapshot) return;
+    if (mode !== "interact" || liveVisualKind !== "window" || !snapshot) return;
     const video = videoRef.current;
     if (!video || !video.videoWidth || !video.videoHeight) return;
     const fallback = heuristicWindowScreenRect(
@@ -1211,10 +1642,11 @@ export function ChatIosSimulatorPanel({
       cancelled = true;
     };
   }, [
-    liveVisual?.kind,
-    liveVisual?.kind === "window" ? liveVisual.height : null,
-    liveVisual?.kind === "window" ? liveVisual.width : null,
+    liveVisualKind,
+    liveWindowHeight,
+    liveWindowWidth,
     mode,
+    snapshot,
     snapshot?.capturedAt,
     snapshot?.screenshot.dataUrl,
     snapshot?.screenshot.height,
@@ -1326,12 +1758,13 @@ export function ChatIosSimulatorPanel({
     const text = typedText;
     if (!text.trim()) return;
     setTypedText("");
+    armWindowCaptureRecoveryAfterInput();
     try {
       await window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [projectRoot, selectedDeviceUdid, typedText]);
+  }, [armWindowCaptureRecoveryAfterInput, projectRoot, selectedDeviceUdid, typedText]);
 
   const updateInspectBounds = useCallback(() => {
     const image = imageRef.current;
@@ -1340,6 +1773,7 @@ export function ChatIosSimulatorPanel({
   }, [mediaHeight, mediaWidth]);
 
   const handleInspectPointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (simulatorCaptureActive) return;
     const image = imageRef.current;
     if (!image || !snapshot || !mediaWidth || !mediaHeight) return;
     const point = pointerToMediaPoint(event, image, mediaWidth, mediaHeight);
@@ -1349,7 +1783,7 @@ export function ChatIosSimulatorPanel({
     }
     setBounds(point.bounds);
     setHoveredElement(bestElementAt(snapshot.elements, point.x, point.y));
-  }, [mediaHeight, mediaWidth, snapshot]);
+  }, [mediaHeight, mediaWidth, simulatorCaptureActive, snapshot]);
 
   const attachCrop = useCallback(async (element: IosScreenElement): Promise<{ dataUrl: string; path: string | null } | null> => {
     if (!snapshot) return null;
@@ -1448,6 +1882,76 @@ export function ChatIosSimulatorPanel({
     onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
     return path;
   }, [activeDevice?.udid, onAddAttachment, projectRoot, selectedDeviceUdid, snapshot]);
+
+  const attachSimulatorCapture = useCallback(async (frame: PreviewCrop["frame"]): Promise<({ path: string | null } & PreviewCrop) | null> => {
+    const screenshot = snapshot?.screenshot;
+    if (!screenshot?.dataUrl || !screenshot.width || !screenshot.height) return null;
+    const crop = await cropPreviewAreaDataUrl(screenshot.dataUrl, screenshot.width, screenshot.height, frame);
+    if (!crop) return null;
+    let attachmentPath: string | null = null;
+    if (onAddAttachment) {
+      const { path } = await window.ade.agentChat.saveTempAttachment({
+        data: stripDataUrlPrefix(crop.dataUrl),
+        filename: "ios-simulator-capture.png",
+      });
+      attachmentPath = path;
+      onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
+    }
+    return { ...crop, path: attachmentPath };
+  }, [onAddAttachment, snapshot?.screenshot]);
+
+  const addSimulatorCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
+    if (!snapshot?.screenshot.dataUrl) return;
+    const capture = await attachSimulatorCapture(frame).catch(() => null);
+    const captureFrame = capture?.frame ?? frame;
+    const overlappingElements = snapshot.elements
+      .map((element) => ({
+        element,
+        intersection: rectIntersectionArea(element.pixelFrame, captureFrame),
+      }))
+      .filter((entry) => entry.intersection > 0)
+      .sort((a, b) => b.intersection - a.intersection)
+      .slice(0, 12)
+      .map(({ element, intersection }) => ({
+        ...compactElementForContext(element),
+        relation: "inside-captured-region",
+        intersectionPx: Math.round(intersection),
+      }));
+    onAddContext({
+      kind: "ios_element",
+      id: `ios-simulator-capture:${Date.now()}`,
+      componentId: "iOS Simulator screenshot capture",
+      sourceFile: null,
+      sourceLine: null,
+      frame: {
+        x: captureFrame.x,
+        y: captureFrame.y,
+        width: captureFrame.width,
+        height: captureFrame.height,
+      },
+      metadata: {
+        iosInspectPacketVersion: 1,
+        contextSurface: "simulator",
+        screenElementSource: "simulator-region-capture",
+        sourceConfidence: "none",
+        screenSnapshotCapturedAt: snapshot.capturedAt,
+        screen: screenContextForSnapshot(snapshot),
+        attachmentPath: capture?.path ?? null,
+        selectedElement: {
+          source: "simulator-region-capture",
+          label: "Dragged simulator screenshot region",
+          screenshotFrame: captureFrame,
+        },
+        nearbyElements: overlappingElements,
+        selectionExplanation: "The user dragged a screenshot region inside the live iOS Simulator inspect snapshot. The crop is visual evidence for this exact simulator screen area; nearbyElements are overlapping inspector/accessibility frames and may help identify source.",
+      },
+      screenshotDataUrl: capture?.dataUrl ?? snapshot.screenshot.dataUrl,
+      selectedAt: new Date().toISOString(),
+    });
+    setMessage(capture?.path
+      ? "Captured simulator screenshot region and attached it to chat with screen context."
+      : "Added simulator screenshot region context.");
+  }, [attachSimulatorCapture, onAddContext, snapshot]);
 
   const buildPreviewAgentPrompt = useCallback((action: PreviewAgentHelpAction, attachmentPaths: { simulator: string | null; preview: string | null }) => {
     const selected = selectedElement;
@@ -1664,7 +2168,58 @@ export function ChatIosSimulatorPanel({
     setPreviewCaptureSelection(null);
   }, [previewCaptureSelection]);
 
+  const handleSimulatorCapturePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (!simulatorCaptureActive || !snapshot?.screenshot.dataUrl || !mediaWidth || !mediaHeight) return;
+    const image = imageRef.current;
+    if (!image) return;
+    const point = pointerToMediaPoint(event, image, mediaWidth, mediaHeight);
+    if (!point) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSimulatorCaptureSelection({
+      startX: point.x,
+      startY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+      bounds: point.bounds,
+    });
+  }, [mediaHeight, mediaWidth, simulatorCaptureActive, snapshot?.screenshot.dataUrl]);
+
+  const handleSimulatorCapturePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (!simulatorCaptureSelection || !simulatorCaptureActive || !mediaWidth || !mediaHeight) return;
+    const image = imageRef.current;
+    if (!image) return;
+    const point = pointerToClampedMediaPoint(event, image, mediaWidth, mediaHeight);
+    if (!point) return;
+    setSimulatorCaptureSelection((current) => current
+      ? { ...current, currentX: point.x, currentY: point.y, bounds: point.bounds }
+      : current);
+  }, [mediaHeight, mediaWidth, simulatorCaptureActive, simulatorCaptureSelection]);
+
+  const finishSimulatorCapture = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (!simulatorCaptureSelection || !activeSimulatorCaptureFrame) return;
+    event.preventDefault();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setSimulatorCaptureSelection(null);
+    if (activeSimulatorCaptureFrame.width < 12 || activeSimulatorCaptureFrame.height < 12) {
+      setMessage("Drag a larger simulator region to capture.");
+      return;
+    }
+    void addSimulatorCaptureContext(activeSimulatorCaptureFrame);
+  }, [activeSimulatorCaptureFrame, addSimulatorCaptureContext, simulatorCaptureSelection]);
+
+  const cancelSimulatorCapture = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (!simulatorCaptureSelection) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setSimulatorCaptureSelection(null);
+  }, [simulatorCaptureSelection]);
+
   const handleInspectClick = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (simulatorCaptureActive) return;
     const image = imageRef.current;
     if (!image || !snapshot || !mediaWidth || !mediaHeight) return;
     const point = pointerToMediaPoint(event, image, mediaWidth, mediaHeight);
@@ -1677,10 +2232,10 @@ export function ChatIosSimulatorPanel({
     const selectX = element ? element.pixelFrame.x + (element.pixelFrame.width / 2) : point.x;
     const selectY = element ? element.pixelFrame.y + (element.pixelFrame.height / 2) : point.y;
     void selectElementAt(selectX, selectY, element);
-  }, [mediaHeight, mediaWidth, selectElementAt, selectedElement, snapshot]);
+  }, [mediaHeight, mediaWidth, selectElementAt, selectedElement, simulatorCaptureActive, snapshot]);
 
   const mapLivePointToSimulatorPixel = useCallback((point: { x: number; y: number }): { x: number; y: number } | null => {
-    if (liveVisual?.kind !== "window") return point;
+    if (liveVisualKind !== "window") return point;
     if (!snapshot || !snapshot.screenshot.width || !snapshot.screenshot.height) return null;
     const rect = windowScreenRectRef.current
       ?? heuristicWindowScreenRect(
@@ -1702,15 +2257,15 @@ export function ChatIosSimulatorPanel({
       x: ((point.x - rect.x) / rect.width) * snapshot.screenshot.width,
       y: ((point.y - rect.y) / rect.height) * snapshot.screenshot.height,
     };
-  }, [liveHeight, liveVisual?.kind, liveWidth, snapshot]);
+  }, [liveHeight, liveVisualKind, liveWidth, snapshot]);
 
   const liveSimulatorPointFromPointer = useCallback((event: PointerEvent<HTMLDivElement>): { x: number; y: number } | null => {
-    const media = liveVisual?.kind === "window" ? videoRef.current : imageRef.current;
+    const media = liveVisualKind === "window" ? videoRef.current : canvasRef.current;
     if (!media || !mediaWidth || !mediaHeight) return null;
     const point = pointerToMediaPoint(event, media, mediaWidth, mediaHeight);
     if (!point) return null;
     return mapLivePointToSimulatorPixel(point);
-  }, [liveVisual?.kind, mapLivePointToSimulatorPixel, mediaHeight, mediaWidth]);
+  }, [liveVisualKind, mapLivePointToSimulatorPixel, mediaHeight, mediaWidth]);
 
   const handleSnapshotInteractPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     const point = liveSimulatorPointFromPointer(event);
@@ -1736,6 +2291,7 @@ export function ChatIosSimulatorPanel({
         const controlScale = snapshot?.screen.scale && Number.isFinite(snapshot.screen.scale) && snapshot.screen.scale > 0
           ? snapshot.screen.scale
           : 1;
+        armWindowCaptureRecoveryAfterInput();
         if (moved < 8) {
           await window.ade.iosSimulator.tap({ deviceUdid: selectedDeviceUdid, projectRoot, x: point.x / controlScale, y: point.y / controlScale });
         } else {
@@ -1753,12 +2309,13 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, snapshot?.screen.scale]);
+  }, [armWindowCaptureRecoveryAfterInput, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, snapshot?.screen.scale]);
 
   const handleVideoKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === "Enter") {
       event.preventDefault();
+      armWindowCaptureRecoveryAfterInput();
       void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text: "\n" }).catch((error) => {
         setMessage(error instanceof Error ? error.message : String(error));
       });
@@ -1766,11 +2323,12 @@ export function ChatIosSimulatorPanel({
     }
     if (event.key.length === 1) {
       event.preventDefault();
+      armWindowCaptureRecoveryAfterInput();
       void window.ade.iosSimulator.typeText({ deviceUdid: selectedDeviceUdid, projectRoot, text: event.key }).catch((error) => {
         setMessage(error instanceof Error ? error.message : String(error));
       });
     }
-  }, [projectRoot, selectedDeviceUdid]);
+  }, [armWindowCaptureRecoveryAfterInput, projectRoot, selectedDeviceUdid]);
 
   const providerSummary = snapshot?.providers.map((provider) => {
     if (provider.source === "screenshot") return "screenshot";
@@ -1809,10 +2367,17 @@ export function ChatIosSimulatorPanel({
       simulatorModeHint = "Tap to control the simulator. Click and drag to scroll or swipe.";
     }
   } else if (mode === "inspect") {
-    simulatorModeHint = selectedElement
+    simulatorModeHint = simulatorCaptureActive
+      ? "Drag a region on the simulator snapshot to attach a screenshot crop and screen context."
+      : selectedElement
       ? `Selected ${selectedSourceLabel}: ${elementLabel(selectedElement)}. Click another outline to swap, or Alt-click to select a parent.`
       : "Click a UI element outline to attach it as chat context. Alt-click to select a larger container.";
   }
+  const simulatorWindowWarning = mode === "interact"
+    && liveVisualKind === "window"
+    && simulatorWindowState?.capturable === false
+    ? simulatorWindowState.message
+    : null;
   const footerStatus = message
     ?? previewModeHint
     ?? simulatorModeHint
@@ -1836,11 +2401,15 @@ export function ChatIosSimulatorPanel({
   const showLaunchProgress = launchBusy && visibleLaunchProgress.length > 0;
   const canShowLiveVisual = mode === "interact" && liveVisual && liveVisual.status !== "error";
   const canShowSnapshot = mode === "inspect" && Boolean(snapshotImage);
-  const hasActiveSession = Boolean(status?.activeSession);
+  const hasActiveSession = Boolean(activeSession);
   const interactionDisabled = ownedByOtherChat || showSetupChecklist;
-  const elementKeys = useMemo(
-    () => (snapshot ? makeReactKeysById(snapshot.elements) : []),
-    [snapshot],
+  const inspectOverlayElements = useMemo(
+    () => (snapshot ? visibleInspectElements(snapshot, selectedElement, hoveredElement) : []),
+    [hoveredElement, selectedElement, snapshot],
+  );
+  const inspectOverlayKeys = useMemo(
+    () => makeReactKeysById(inspectOverlayElements),
+    [inspectOverlayElements],
   );
 
   let projectWindowValue: string;
@@ -2411,28 +2980,10 @@ export function ChatIosSimulatorPanel({
               />
             ) : liveVisual.url ? (
               <>
-                <img
-                  ref={imageRef}
-                  src={liveVisual.url}
-                  alt="iOS Simulator live stream"
+                <canvas
+                  ref={canvasRef}
                   className="h-full w-full object-contain"
-                  draggable={false}
-                  onLoad={(event) => {
-                    const image = event.currentTarget;
-                    setLiveVisual((current) => current?.kind === "mjpeg"
-                      ? {
-                          ...current,
-                          status: "active",
-                          width: image.naturalWidth || current.width,
-                          height: image.naturalHeight || current.height,
-                        }
-                      : current);
-                  }}
-                  onError={() => {
-                    setLiveVisual((current) => current?.kind === "mjpeg"
-                      ? { ...current, status: "error", error: "Live simulator stream could not be decoded." }
-                      : current);
-                  }}
+                  aria-label="iOS Simulator live stream"
                 />
                 {liveVisual.status === "starting" ? (
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/35 text-muted-fg/55">
@@ -2453,10 +3004,12 @@ export function ChatIosSimulatorPanel({
           </div>
         ) : canShowSnapshot && snapshotImage ? (
           <div
-            className="relative h-full min-h-[300px] cursor-crosshair"
-            onPointerMove={handleInspectPointerMove}
+            className={cn("relative h-full min-h-[300px]", simulatorCaptureActive ? "cursor-crosshair" : "cursor-pointer")}
+            onPointerMove={simulatorCaptureActive ? handleSimulatorCapturePointerMove : handleInspectPointerMove}
             onPointerLeave={() => setHoveredElement(null)}
-            onPointerDown={handleInspectClick}
+            onPointerDown={simulatorCaptureActive ? handleSimulatorCapturePointerDown : handleInspectClick}
+            onPointerUp={simulatorCaptureActive ? finishSimulatorCapture : undefined}
+            onPointerCancel={simulatorCaptureActive ? cancelSimulatorCapture : undefined}
           >
             <img
               ref={imageRef}
@@ -2501,6 +3054,25 @@ export function ChatIosSimulatorPanel({
               </div>
               <button
                 type="button"
+                className={cn(
+                  "inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-black/60 px-2 font-sans text-[10px] font-medium shadow-lg backdrop-blur transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                  simulatorCaptureActive ? "text-amber-50/90 ring-1 ring-amber-300/30" : "text-muted-fg/65 hover:text-fg/90",
+                )}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSimulatorCaptureSelection(null);
+                  setSimulatorCaptureActive((current) => !current);
+                  setHoveredElement(null);
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                disabled={!snapshot?.screenshot.dataUrl || ownedByOtherChat}
+                title="Drag a screenshot region to attach it to chat with simulator context"
+              >
+                <ImageSquare size={11} />
+                Screenshot
+              </button>
+              <button
+                type="button"
                 className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-black/60 px-2 font-sans text-[10px] font-medium text-muted-fg/65 shadow-lg backdrop-blur transition-colors hover:text-fg/90 disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(event) => {
                   event.stopPropagation();
@@ -2525,13 +3097,17 @@ export function ChatIosSimulatorPanel({
               <BracketsCurly size={11} />
               Open in preview
             </button>
-            {mode === "inspect" && bounds && snapshot ? snapshot.elements.map((element, index) => {
-              const frame = element.pixelFrame;
+            {mode === "inspect" && bounds && snapshot ? inspectOverlayElements.map((element, index) => {
+              const frame = clampFrame(
+                element.pixelFrame,
+                snapshot.screenshot.width ?? snapshot.screen.width,
+                snapshot.screenshot.height ?? snapshot.screen.height,
+              );
               const isHovered = hoveredElement?.id === element.id;
               const isSelected = selectedElement?.id === element.id;
               return (
                 <div
-                  key={elementKeys[index] ?? `${element.id}:${index}`}
+                  key={inspectOverlayKeys[index] ?? `${element.id}:${index}`}
                   className={cn(
                     "pointer-events-none absolute rounded-[3px] border",
                     isHovered || isSelected ? sourceTone(element.source) : "border-cyan-200/22 bg-cyan-400/[0.03]",
@@ -2545,6 +3121,17 @@ export function ChatIosSimulatorPanel({
                 />
               );
             }) : null}
+            {mode === "inspect" && simulatorCaptureActive && simulatorCaptureSelection && activeSimulatorCaptureFrame ? (
+              <div
+                className="pointer-events-none absolute rounded-[3px] border border-amber-200/80 bg-amber-300/12 shadow-[0_0_0_9999px_rgba(0,0,0,0.26)]"
+                style={{
+                  left: simulatorCaptureSelection.bounds.left + (activeSimulatorCaptureFrame.x * simulatorCaptureSelection.bounds.scaleX),
+                  top: simulatorCaptureSelection.bounds.top + (activeSimulatorCaptureFrame.y * simulatorCaptureSelection.bounds.scaleY),
+                  width: Math.max(1, activeSimulatorCaptureFrame.width * simulatorCaptureSelection.bounds.scaleX),
+                  height: Math.max(1, activeSimulatorCaptureFrame.height * simulatorCaptureSelection.bounds.scaleY),
+                }}
+              />
+            ) : null}
             {mode === "inspect" && bounds && hoveredElement ? (
               <div
                 className={cn(
@@ -2608,6 +3195,12 @@ export function ChatIosSimulatorPanel({
             >
               Send
             </button>
+          </div>
+        ) : null}
+        {simulatorWindowWarning ? (
+          <div className="flex items-start gap-2 rounded-md border border-amber-300/20 bg-amber-400/10 px-2 py-1.5 font-sans text-[11px] leading-4 text-amber-50/78">
+            <WarningCircle size={14} className="mt-0.5 shrink-0 text-amber-200/75" />
+            <span>{simulatorWindowWarning}</span>
           </div>
         ) : null}
         {footerStatus ? (

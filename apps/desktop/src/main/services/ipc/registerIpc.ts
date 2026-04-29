@@ -15,7 +15,7 @@ import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
 import { removeProjectIconOverride, resolveProjectIcon, setProjectIconOverride } from "../projects/projectIconResolver";
 import { runGit } from "../git/git";
-import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
+import type { AdeCleanupResult, AdeProjectSnapshot, IosSimulatorWindowState } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
 import type {
   ApplyConflictProposalArgs,
@@ -1707,6 +1707,7 @@ export function registerIpc({
       case IPC.iosSimulatorStopStream:
       case IPC.iosSimulatorShutdown:
       case IPC.iosSimulatorGetStreamStatus:
+      case IPC.iosSimulatorGetWindowState:
       case IPC.iosSimulatorListWindowSources:
       case IPC.iosSimulatorTap:
       case IPC.iosSimulatorTypeText:
@@ -5057,7 +5058,238 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorListLaunchTargets, async (_event, arg = {}) =>
     ensureIosSimulator().listLaunchTargets(arg));
 
-  ipcMain.handle(IPC.iosSimulatorLaunch, async (_event, arg = {}) => ensureIosSimulator().launch(arg));
+  const simulatorWindowName = /(?:^|\s|[(\[\-–])(simulator|iphone|ipad|apple\s*watch|apple\s*tv|vision\s*pro)(?:\s|[)\]\-–]|$)/i;
+  const runMacUtility = async (command: string, args: string[], timeoutMs = 900) => {
+    await new Promise<void>((resolve) => {
+      const child = spawn(command, args, { stdio: "ignore" });
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        child.removeAllListeners("error");
+        child.removeAllListeners("exit");
+        resolve();
+      };
+      const timeout = setTimeout(() => {
+        try { child.kill("SIGTERM"); } catch { /* already gone */ }
+        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 250);
+        finish();
+      }, timeoutMs);
+      child.once("error", finish);
+      child.once("exit", finish);
+    });
+  };
+  const runMacUtilityText = async (command: string, args: string[], timeoutMs = 900): Promise<string> => {
+    return new Promise<string>((resolve, reject) => {
+      const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      const timeout = setTimeout(() => {
+        child.kill("SIGTERM");
+        reject(new Error(`${command} timed out.`));
+      }, timeoutMs);
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once("exit", (code) => {
+        clearTimeout(timeout);
+        if (code === 0) {
+          resolve(stdout.trim());
+          return;
+        }
+        reject(new Error(stderr.trim() || `${command} exited with code ${code ?? "unknown"}.`));
+      });
+    });
+  };
+  const windowIssueMessage = (issue: IosSimulatorWindowState["issue"]): string | null => {
+    switch (issue) {
+      case "not-running":
+        return "Simulator.app is not running, so the live window stream cannot update. Launch the simulator from ADE again.";
+      case "hidden":
+        return "Simulator.app is hidden. macOS stops updating hidden window capture, so ADE's visual stream can freeze until Simulator is shown again.";
+      case "minimized":
+        return "Simulator.app is minimized. macOS stops updating minimized window capture, so ADE's visual stream can freeze until the window is restored.";
+      case "no-window":
+        return "Simulator.app is running but no simulator window is available for ADE to capture.";
+      default:
+        return null;
+    }
+  };
+  const getSimulatorWindowState = async (): Promise<IosSimulatorWindowState> => {
+    if (process.platform !== "darwin") {
+      return {
+        appRunning: false,
+        visible: null,
+        windowCount: null,
+        minimizedWindowCount: null,
+        capturable: false,
+        issue: "unknown",
+        message: null,
+      };
+    }
+    const script = [
+      'tell application "System Events"',
+      '  if not (exists process "Simulator") then return "not-running|false|0|0"',
+      '  tell process "Simulator"',
+      '    set processVisible to visible',
+      '    set windowCount to count windows',
+      '    set minimizedCount to 0',
+      '    repeat with simulatorWindow in windows',
+      '      try',
+      '        if value of attribute "AXMinimized" of simulatorWindow then set minimizedCount to minimizedCount + 1',
+      '      end try',
+      '    end repeat',
+      '    return (processVisible as text) & "|" & (windowCount as text) & "|" & (minimizedCount as text)',
+      '  end tell',
+      'end tell',
+    ].join("\n");
+    try {
+      const raw = await runMacUtilityText("osascript", ["-e", script], 900);
+      if (raw.startsWith("not-running")) {
+        const issue: IosSimulatorWindowState["issue"] = "not-running";
+        return {
+          appRunning: false,
+          visible: false,
+          windowCount: 0,
+          minimizedWindowCount: 0,
+          capturable: false,
+          issue,
+          message: windowIssueMessage(issue),
+        };
+      }
+      const [visibleRaw, windowCountRaw, minimizedCountRaw] = raw.split("|");
+      const visible = visibleRaw === "true";
+      const windowCount = Number.parseInt(windowCountRaw ?? "", 10);
+      const minimizedWindowCount = Number.parseInt(minimizedCountRaw ?? "", 10);
+      const hasWindows = Number.isFinite(windowCount) && windowCount > 0;
+      const allWindowsMinimized = hasWindows && Number.isFinite(minimizedWindowCount) && minimizedWindowCount >= windowCount;
+      const issue: IosSimulatorWindowState["issue"] = !visible
+        ? "hidden"
+        : !hasWindows
+          ? "no-window"
+          : allWindowsMinimized
+            ? "minimized"
+            : null;
+      return {
+        appRunning: true,
+        visible,
+        windowCount: Number.isFinite(windowCount) ? windowCount : null,
+        minimizedWindowCount: Number.isFinite(minimizedWindowCount) ? minimizedWindowCount : null,
+        capturable: issue === null,
+        issue,
+        message: windowIssueMessage(issue),
+      };
+    } catch {
+      return {
+        appRunning: true,
+        visible: null,
+        windowCount: null,
+        minimizedWindowCount: null,
+        capturable: null,
+        issue: "unknown",
+        message: null,
+      };
+    }
+  };
+  const focusBrowserWindow = (window: BrowserWindow | null) => {
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  };
+  const prepareSimulatorWindowForCapture = async (window: BrowserWindow | null, options: { placeBehindAde?: boolean } = {}) => {
+    await runMacUtility("open", ["-g", "-a", "Simulator"], 900);
+    const bounds = options.placeBehindAde && window ? window.getBounds() : null;
+    const targetWidth = bounds ? Math.max(300, Math.min(440, Math.round(bounds.width * 0.34))) : 0;
+    const targetHeight = bounds ? Math.max(520, Math.min(860, bounds.height - 120)) : 0;
+    // Park the real Simulator window under ADE, but away from the drawer.
+    // Window capture needs the window to stay unminimized; placing it under
+    // the left side avoids capturing the user's cursor while they interact
+    // with the simulator surface on the right.
+    const targetX = bounds ? Math.round(bounds.x + Math.max(64, Math.min(140, bounds.width * 0.08))) : 0;
+    const targetY = bounds ? Math.round(bounds.y + 72) : 0;
+    const script = [
+      'tell application "System Events"',
+      '  if exists process "Simulator" then',
+      '    tell process "Simulator"',
+      '      set visible to true',
+      '      repeat with simulatorWindow in windows',
+      '        try',
+      '          set value of attribute "AXMinimized" of simulatorWindow to false',
+      '        end try',
+      bounds
+        ? [
+            '        try',
+            `          set position of simulatorWindow to {${targetX}, ${targetY}}`,
+            `          set size of simulatorWindow to {${Math.round(targetWidth)}, ${Math.round(targetHeight)}}`,
+            '        end try',
+          ].join("\n")
+        : "",
+      '      end repeat',
+      '    end tell',
+      '  end if',
+      'end tell',
+    ].filter(Boolean).join("\n");
+    await runMacUtility("osascript", ["-e", script], 1_200);
+    focusBrowserWindow(window);
+  };
+  let simulatorParkingWindow: BrowserWindow | null = null;
+  let simulatorParkingTimer: NodeJS.Timeout | null = null;
+  let cleanupSimulatorParkingFollow: (() => void) | null = null;
+  const scheduleSimulatorParking = (window: BrowserWindow) => {
+    if (simulatorParkingTimer) clearTimeout(simulatorParkingTimer);
+    simulatorParkingTimer = setTimeout(() => {
+      simulatorParkingTimer = null;
+      if (window.isDestroyed()) return;
+      void prepareSimulatorWindowForCapture(window, { placeBehindAde: true }).catch(() => {});
+    }, 120);
+  };
+  const followSimulatorWindowUnderAde = (window: BrowserWindow | null) => {
+    if (!window || window.isDestroyed()) return;
+    if (simulatorParkingWindow === window) {
+      scheduleSimulatorParking(window);
+      return;
+    }
+    cleanupSimulatorParkingFollow?.();
+    simulatorParkingWindow = window;
+    const onBoundsChanged = () => scheduleSimulatorParking(window);
+    const onClosed = () => {
+      cleanupSimulatorParkingFollow?.();
+    };
+    window.on("move", onBoundsChanged);
+    window.on("resize", onBoundsChanged);
+    window.once("closed", onClosed);
+    cleanupSimulatorParkingFollow = () => {
+      if (simulatorParkingTimer) {
+        clearTimeout(simulatorParkingTimer);
+        simulatorParkingTimer = null;
+      }
+      if (!window.isDestroyed()) {
+        window.off("move", onBoundsChanged);
+        window.off("resize", onBoundsChanged);
+        window.off("closed", onClosed);
+      }
+      if (simulatorParkingWindow === window) simulatorParkingWindow = null;
+      cleanupSimulatorParkingFollow = null;
+    };
+    scheduleSimulatorParking(window);
+  };
+
+  ipcMain.handle(IPC.iosSimulatorLaunch, async (event, arg = {}) => {
+    const result = await ensureIosSimulator().launch(arg);
+    const browserWindow = BrowserWindow.fromWebContents(event.sender);
+    await prepareSimulatorWindowForCapture(browserWindow, { placeBehindAde: true });
+    followSimulatorWindowUnderAde(browserWindow);
+    return result;
+  });
 
   ipcMain.handle(IPC.iosSimulatorAttachToChatSession, async (_event, arg) => {
     // Tolerate null/undefined payloads (treated as detach) and reject malformed
@@ -5071,7 +5303,10 @@ export function registerIpc({
     return ensureIosSimulator().attachToChatSession(chatSessionId, callerChatSessionId);
   });
 
-  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => ensureIosSimulator().shutdown(arg));
+  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => {
+    cleanupSimulatorParkingFollow?.();
+    return ensureIosSimulator().shutdown(arg);
+  });
 
   ipcMain.handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => ensureIosSimulator().screenshot(arg));
 
@@ -5100,14 +5335,27 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorGetStreamStatus, async () => ensureIosSimulator().getStreamStatus());
 
-  ipcMain.handle(IPC.iosSimulatorListWindowSources, async () => {
+  ipcMain.handle(IPC.iosSimulatorGetWindowState, async () => getSimulatorWindowState());
+
+  ipcMain.handle(IPC.iosSimulatorListWindowSources, async (event) => {
     const status = await ensureIosSimulator().getStatus();
     if (!status.supported) return [];
-    const simulatorWindowName = /simulator|iphone|ipad|ios/i;
-    const sources = await desktopCapturer.getSources({
+    const browserWindow = BrowserWindow.fromWebContents(event.sender);
+    const readSources = async () => desktopCapturer.getSources({
       types: ["window"],
       thumbnailSize: { width: 320, height: 320 },
     });
+    if (status.activeSession) {
+      await prepareSimulatorWindowForCapture(browserWindow, { placeBehindAde: true });
+      followSimulatorWindowUnderAde(browserWindow);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+    let sources = await readSources();
+    if (status.activeSession && !sources.some((source) => simulatorWindowName.test(source.name))) {
+      await prepareSimulatorWindowForCapture(browserWindow, { placeBehindAde: true });
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      sources = await readSources();
+    }
     return sources
       .filter((source) => simulatorWindowName.test(source.name))
       .map((source) => ({
