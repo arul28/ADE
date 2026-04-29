@@ -5059,8 +5059,17 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorLaunch, async (_event, arg = {}) => ensureIosSimulator().launch(arg));
 
-  ipcMain.handle(IPC.iosSimulatorAttachToChatSession, async (_event, arg: { chatSessionId: string | null } = { chatSessionId: null }) =>
-    ensureIosSimulator().attachToChatSession(arg.chatSessionId ?? null));
+  ipcMain.handle(IPC.iosSimulatorAttachToChatSession, async (_event, arg) => {
+    // Tolerate null/undefined payloads (treated as detach) and reject malformed
+    // shapes with a clear error rather than throwing on a property dereference.
+    if (arg !== undefined && arg !== null && typeof arg !== "object") {
+      throw new Error("iosSimulatorAttachToChatSession requires { chatSessionId } payload.");
+    }
+    const payload = (arg ?? {}) as { chatSessionId?: string | null; callerChatSessionId?: string | null };
+    const chatSessionId = payload.chatSessionId ?? null;
+    const callerChatSessionId = payload.callerChatSessionId ?? chatSessionId;
+    return ensureIosSimulator().attachToChatSession(chatSessionId, callerChatSessionId);
+  });
 
   ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => ensureIosSimulator().shutdown(arg));
 

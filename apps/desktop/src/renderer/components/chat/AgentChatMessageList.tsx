@@ -394,9 +394,23 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
     if (close === -1) break;
     const inner = text.slice(i + 1, close);
     if (!inner.length || inner.includes("`") || inner.includes("\n")) break;
+    // Promote only when the closing backtick is followed by a valid token
+    // boundary — whitespace, end-of-string, or an accepted punctuation char.
+    // Adjacent non-space text (e.g. `ctx`message) is plain code, not a chip.
+    const next = text[close + 1];
+    const atValidBoundary =
+      next === undefined
+      || next === " "
+      || next === "\t"
+      || next === "\n"
+      || next === ","
+      || next === "."
+      || next === ":"
+      || next === ";";
+    if (!atValidBoundary) break;
     chips.push(inner);
     i = close + 1;
-    if (text[i] === " ") {
+    if (next === " ") {
       i += 1;
       continue;
     }

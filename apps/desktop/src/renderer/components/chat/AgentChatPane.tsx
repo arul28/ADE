@@ -3031,9 +3031,18 @@ export function AgentChatPane({
       draftSelectionLockedRef.current = false;
       touchSession(created.id);
       setSelectedSessionId(created.id);
-      void window.ade.iosSimulator
-        .attachToChatSession({ chatSessionId: created.id })
-        .catch(() => { /* attach is best-effort; sim may not be running or already owned */ });
+      // Only rebind the iOS simulator to a freshly created chat when the user
+      // has opened the simulator drawer for THIS chat. The eager-create path
+      // would otherwise steal ownership from a chat that is currently using
+      // the simulator (e.g. switching to a new lane creates a new session
+      // before any user gesture occurs).
+      if (iosSimulatorOpen) {
+        try {
+          void window.ade.iosSimulator
+            ?.attachToChatSession?.({ chatSessionId: created.id })
+            ?.catch(() => { /* attach is best-effort; sim may not be running or already owned */ });
+        } catch { /* iosSimulator API may be unavailable in some environments */ }
+      }
       if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
         window.ade.agentChat.warmupModel({
           sessionId: created.id,
@@ -3052,7 +3061,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [buildNativeControlPayload, currentNativeControls, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, currentNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const handoffSession = useCallback(async () => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;

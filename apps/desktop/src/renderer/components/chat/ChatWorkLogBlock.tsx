@@ -114,7 +114,7 @@ function workLogEntryKindSlug(entry: ChatWorkLogEntry): string {
 
 function entryHasResolvedPayload(entry: ChatWorkLogEntry): boolean {
   if (entry.result !== undefined) return true;
-  if (typeof entry.output === "string" && entry.output.length > 0) return true;
+  if (typeof entry.output === "string" && /\S/.test(entry.output)) return true;
   if (entry.changedFiles && entry.changedFiles.length > 0) return true;
   return false;
 }

@@ -675,7 +675,10 @@ final class SyncService: ObservableObject {
   private struct PendingRequest {
     let completion: (Result<Any, Error>) -> Void
     let timeoutTask: Task<Void, Never>
-    let startedAt: Date
+    /// Monotonic timestamp captured via `ProcessInfo.processInfo.systemUptime`
+    /// — RTT calculations must not be skewed by user-initiated wall-clock
+    /// adjustments (DST, NTP step, manual time changes).
+    let startedAt: TimeInterval
   }
 
   private var pending: [String: PendingRequest] = [:]
@@ -724,7 +727,11 @@ final class SyncService: ObservableObject {
   private var projectSelectionGeneration: UInt64 = 0
   private var healthyConnectionSampleCount = 0
   private var poorConnectionSampleCount = 0
-  private var forceReducedSyncLoadUntil: Date?
+  /// Monotonic deadline (seconds since boot, sourced from
+  /// `ProcessInfo.processInfo.systemUptime`) for the forced reduced-load
+  /// window. Wall-clock independent so daylight savings / NTP steps cannot
+  /// abruptly extend or skip the window.
+  private var forceReducedSyncLoadUntil: TimeInterval?
 
   /// Process-wide singleton populated by the first `init` and consumed by
   /// `AppDelegate`, Live Activity intents, and the `@EnvironmentObject`
@@ -1767,7 +1774,8 @@ final class SyncService: ObservableObject {
     let route = currentAddress
       ?? activeHostProfile?.lastSuccessfulAddress
       ?? activeHostProfile?.tailscaleAddress
-    let forcedReduced = forceReducedSyncLoadUntil.map { $0 > Date() } ?? false
+    let nowMonotonic = ProcessInfo.processInfo.systemUptime
+    let forcedReduced = forceReducedSyncLoadUntil.map { $0 > nowMonotonic } ?? false
     if forceReducedSyncLoadUntil != nil && !forcedReduced {
       forceReducedSyncLoadUntil = nil
       poorConnectionSampleCount = 0
@@ -1829,7 +1837,7 @@ final class SyncService: ObservableObject {
   }
 
   private func markConnectionLoadStrained(duration: TimeInterval = 60) {
-    forceReducedSyncLoadUntil = Date().addingTimeInterval(duration)
+    forceReducedSyncLoadUntil = ProcessInfo.processInfo.systemUptime + duration
     poorConnectionSampleCount = max(poorConnectionSampleCount, 1)
     healthyConnectionSampleCount = 0
     refreshReducedSyncLoad()
@@ -4823,8 +4831,12 @@ final class SyncService: ObservableObject {
       "incoming message failed type=\(type, privacy: .public) error=\(String(describing: error), privacy: .public)"
     )
     let friendlyError = SyncUserFacingError.error(from: error)
-    markConnectionLoadStrained()
+    // Tear the socket down before flipping reduced-load preferences. The
+    // restoreChatEventSubscriptions() side-effect inside refreshReducedSyncLoad
+    // would otherwise enqueue chat_subscribe frames on a socket that is about
+    // to be cancelled, surfacing as send-on-closed errors and orphaned subs.
     teardownSocket(reason: friendlyError.localizedDescription)
+    markConnectionLoadStrained()
     lastError = friendlyError.localizedDescription
     connectionState = syncIsMessageTooLongError(error) ? .error : .disconnected
     setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
@@ -4989,7 +5001,7 @@ final class SyncService: ObservableObject {
     request.timeoutTask.cancel()
     switch result {
     case .success(let payload):
-      recordConnectionLoadSample(roundTripSeconds: Date().timeIntervalSince(request.startedAt))
+      recordConnectionLoadSample(roundTripSeconds: ProcessInfo.processInfo.systemUptime - request.startedAt)
       request.completion(.success(payload))
     case .failure(let error):
       request.completion(.failure(SyncUserFacingError.error(from: error)))
@@ -5018,7 +5030,7 @@ final class SyncService: ObservableObject {
           continuation.resume(with: result)
         },
         timeoutTask: timeoutTask,
-        startedAt: Date()
+        startedAt: ProcessInfo.processInfo.systemUptime
       )
       send()
     }
@@ -5139,9 +5151,10 @@ final class SyncService: ObservableObject {
     connectionState: RemoteConnectionState = .error,
     reconnectDelayNanoseconds: UInt64? = nil
   ) {
-    markConnectionLoadStrained()
     let friendlyError = SyncUserFacingError.error(from: error)
+    // Tear down before marking load strained — see handleIncomingFailure.
     teardownSocket(reason: friendlyError.localizedDescription)
+    markConnectionLoadStrained()
     lastError = friendlyError.localizedDescription
     self.connectionState = connectionState
     if phase == .failed {
@@ -5165,10 +5178,14 @@ final class SyncService: ObservableObject {
     timeoutError: NSError = SyncRequestTimeout.error()
   ) {
     guard pending[requestId] != nil else { return }
-    markConnectionLoadStrained()
     if disconnectOnTimeout {
+      // handleTransportFailure tears the socket down before flipping the
+      // reduced-load preference, so we must NOT call markConnectionLoadStrained
+      // here — calling it pre-teardown re-subscribes chat events on the
+      // doomed socket. The transport-failure path strains the load itself.
       handleTransportFailure(timeoutError)
     } else {
+      markConnectionLoadStrained()
       resolve(requestId: requestId, result: .failure(timeoutError))
     }
   }

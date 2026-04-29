@@ -652,6 +652,10 @@ export function AgentChatComposer({
   const fileAddInProgressRef = useRef(false);
   const clipboardImagePasteHandledRef = useRef(0);
   const clipboardImagePasteFallbackTimerRef = useRef<number | null>(null);
+  // Set when the keydown-driven fallback path actually attaches a clipboard
+  // image. handlePaste consults this to avoid attaching the same image twice
+  // when the real paste event lands after the 80ms fallback has already fired.
+  const clipboardImagePasteFallbackAttachedRef = useRef(false);
   const useRichIosComposer = iosElementContextItems.length > 0;
   const canAttach = !parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS;
   const attachBlockedReason = parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
@@ -1649,9 +1653,15 @@ export function AgentChatComposer({
       if (clipboardImagePasteFallbackTimerRef.current != null) {
         window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);
       }
+      clipboardImagePasteFallbackAttachedRef.current = false;
       clipboardImagePasteFallbackTimerRef.current = window.setTimeout(() => {
         clipboardImagePasteFallbackTimerRef.current = null;
         if (clipboardImagePasteHandledRef.current !== handledPasteGeneration) return;
+        // Claim the generation before attaching so a real paste event landing
+        // after this fallback fires short-circuits in handlePaste instead of
+        // attaching the same clipboard image a second time.
+        clipboardImagePasteHandledRef.current += 1;
+        clipboardImagePasteFallbackAttachedRef.current = true;
         void addNativeClipboardImageAttachment();
       }, CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS);
     }
@@ -1702,6 +1712,10 @@ export function AgentChatComposer({
 
   const handlePaste = (event: React.ClipboardEvent<HTMLElement>) => {
     if (!canAttach) return;
+    // If the keydown fallback already attached the clipboard image (timeout
+    // fired before this paste event landed), bail out so we don't double-attach.
+    const fallbackAlreadyAttached = clipboardImagePasteFallbackAttachedRef.current;
+    clipboardImagePasteFallbackAttachedRef.current = false;
     const collected: File[] = [];
     let hasImageItem = false;
     if (event.clipboardData.files.length) {
@@ -1718,12 +1732,14 @@ export function AgentChatComposer({
     if (!collected.length) {
       if (hasImageItem) {
         event.preventDefault();
+        if (fallbackAlreadyAttached) return;
         clipboardImagePasteHandledRef.current += 1;
         void addNativeClipboardImageAttachment();
       }
       return;
     }
     event.preventDefault();
+    if (fallbackAlreadyAttached) return;
     clipboardImagePasteHandledRef.current += 1;
     const dt = new DataTransfer();
     for (const file of collected) dt.items.add(file);

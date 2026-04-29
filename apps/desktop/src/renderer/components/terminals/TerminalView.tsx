@@ -77,6 +77,10 @@ type CachedRuntime = {
   inputEnabled: boolean;
   active: boolean;
   visible: boolean;
+  // Set when a webgl→dom fallback is in flight and the runtime turned
+  // invisible before the webgl restore could run. Persists across renderer
+  // changes so the restore can be retried on the next visibility-true.
+  pendingWebGLRestore: boolean;
   invalidFitRetryTimer: ReturnType<typeof setTimeout> | null;
   fitWarningLogged: boolean;
 };
@@ -721,7 +725,15 @@ function resetWebglRenderer(runtime: CachedRuntime, afterReset: () => void): boo
 
   void setRenderer(runtime, "dom")
     .then(async () => {
-      if (runtime.disposed || !runtime.visible) return;
+      if (runtime.disposed) return;
+      // Visibility may have flipped to false while we were swapping to DOM.
+      // Defer the webgl restore until the runtime becomes visible again
+      // instead of dropping it permanently — `runtime.renderer === "dom"`
+      // here so a subsequent caller would not retry without this flag.
+      if (!runtime.visible) {
+        runtime.pendingWebGLRestore = true;
+        return;
+      }
       const restored = await setRenderer(runtime, "webgl");
       if (!restored && !runtime.disposed) {
         incrementHealth(runtime, "rendererFallbacks");
@@ -740,6 +752,20 @@ function resetWebglRenderer(runtime: CachedRuntime, afterReset: () => void): boo
     });
 
   return true;
+}
+
+function flushPendingWebGLRestore(runtime: CachedRuntime): void {
+  if (!runtime.pendingWebGLRestore || runtime.disposed || !runtime.visible) return;
+  if (runtime.renderer === "webgl") {
+    runtime.pendingWebGLRestore = false;
+    return;
+  }
+  runtime.pendingWebGLRestore = false;
+  void setRenderer(runtime, "webgl").then((restored) => {
+    if (!restored && !runtime.disposed) {
+      incrementHealth(runtime, "rendererFallbacks");
+    }
+  });
 }
 
 function createRuntime(args: {
@@ -813,6 +839,7 @@ function createRuntime(args: {
     inputEnabled: true,
     active: true,
     visible: true,
+    pendingWebGLRestore: false,
     invalidFitRetryTimer: null,
     fitWarningLogged: false
   };
@@ -1299,6 +1326,10 @@ export function TerminalView({
       };
       clearTextureAtlas(runtime);
       flushPendingFrameWrites(runtime);
+      // Replay a webgl restore that was deferred when the runtime turned
+      // invisible mid-fallback. Without this, runtime.renderer stays "dom"
+      // and resetWebglRenderer's webgl-only guard would silently skip retry.
+      flushPendingWebGLRestore(runtime);
       resetWebglRenderer(runtime, redraw);
       redraw();
     }

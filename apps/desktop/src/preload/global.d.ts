@@ -1266,7 +1266,7 @@ declare global {
         listDevices: () => Promise<IosSimulatorDevice[]>;
         listLaunchTargets: (args?: IosSimulatorListLaunchTargetsArgs) => Promise<IosSimulatorLaunchTarget[]>;
         launch: (args?: IosSimulatorLaunchArgs) => Promise<IosSimulatorSession>;
-        attachToChatSession: (args: { chatSessionId: string | null }) => Promise<IosSimulatorSession | null>;
+        attachToChatSession: (args: { chatSessionId: string | null; callerChatSessionId?: string | null }) => Promise<IosSimulatorSession | null>;
         shutdown: (args?: IosSimulatorShutdownArgs) => Promise<IosSimulatorShutdownResult>;
         screenshot: (args?: { deviceUdid?: string | null }) => Promise<IosSimulatorScreenshot>;
         getScreenSnapshot: (args?: IosScreenSnapshotArgs) => Promise<IosScreenSnapshot>;

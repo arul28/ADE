@@ -1103,8 +1103,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
-  function send<TPayload>(ws: WebSocket, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): void {
+  function send<TPayload>(target: WebSocket | PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): void {
+    const ws = target instanceof WebSocket ? target : target.ws;
     if (ws.readyState !== WebSocket.OPEN) return;
+    // Drop sends to backpressured peers as the default — most envelopes are
+    // either replayable (chat events / changesets re-derived from db state) or
+    // tolerable to lose (acks, status pings). Routes that *must* deliver under
+    // backpressure should call ws.send / sendAndWait directly.
+    if (target instanceof WebSocket ? ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES : isPeerBackpressured(target)) {
+      return;
+    }
     ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }));
   }
 

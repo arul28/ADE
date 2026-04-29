@@ -55,6 +55,13 @@ struct WorkSessionDestinationView: View {
     syncService.connectionState == .connected || syncService.connectionState == .syncing
   }
 
+  /// Live polling/load gates require BOTH the parent's "session is live" flag
+  /// AND a reachable host. Using `hostReachable` alone enables chat actions
+  /// for sessions the parent considers ended/archived.
+  var isLiveAndReachable: Bool {
+    isLive && hostReachable
+  }
+
   /// Trailing nav-bar control scoped to the session's lane. The visible branch
   /// icon keeps it distinct from in-transcript overflow menus.
   @ViewBuilder
@@ -154,7 +161,7 @@ struct WorkSessionDestinationView: View {
           artifactRefreshError: artifactRefreshError,
           sending: $sending,
           errorMessage: $errorMessage,
-          isLive: hostReachable,
+          isLive: isLiveAndReachable,
           transitionNamespace: transitionNamespace,
           onOpenLane: showsLaneActions ? openSessionLane : nil,
           onSend: sendMessage,
@@ -200,7 +207,7 @@ struct WorkSessionDestinationView: View {
 
   var pollingKey: String {
     let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
-    return "\(session?.id ?? sessionId)-\(status)-\(hostReachable)"
+    return "\(session?.id ?? sessionId)-\(status)-\(isLiveAndReachable)"
   }
 
   var liveChatObservationKey: String {
@@ -237,13 +244,13 @@ struct WorkSessionDestinationView: View {
       if let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
         chatSummary = fetchedSummary
       }
-      if hostReachable, let currentSession = session ?? initialSession, isChatSession(currentSession) {
+      if isLiveAndReachable, let currentSession = session ?? initialSession, isChatSession(currentSession) {
         try? await syncService.subscribeToChatEvents(sessionId: sessionId)
       }
       if !syncService.prefersReducedSyncLoad {
         await refreshArtifacts(force: true)
       }
-      await loadTranscript(forceRemote: hostReachable, preferLightweight: syncService.prefersReducedSyncLoad)
+      await loadTranscript(forceRemote: isLiveAndReachable, preferLightweight: syncService.prefersReducedSyncLoad)
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
@@ -260,10 +267,16 @@ struct WorkSessionDestinationView: View {
     var fallbackTranscript: [WorkChatEnvelope] = []
     var eventTranscript: [WorkChatEnvelope] = []
     var fetchedFallbackEntries: [AgentChatTranscriptEntry] = []
+    // Track whether the fallback fetch genuinely produced data so that a
+    // skipped or failed fetch preserves the previous fallbackEntries instead
+    // of clobbering them with [], which would erase artifact and tool history
+    // in the fallback render path.
+    var fetchedFallbackEntriesAvailable = false
 
     let shouldFetchFallback = !preferLightweight || (liveTranscript.isEmpty && transcript.isEmpty)
     if shouldFetchFallback, let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
       fetchedFallbackEntries = response.entries
+      fetchedFallbackEntriesAvailable = true
       fallbackTranscript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
     }
 
@@ -288,7 +301,7 @@ struct WorkSessionDestinationView: View {
     if !mergedTranscript.isEmpty, mergedTranscript != transcript {
       transcript = mergedTranscript
     }
-    if fallbackEntries != fetchedFallbackEntries {
+    if fetchedFallbackEntriesAvailable, fallbackEntries != fetchedFallbackEntries {
       fallbackEntries = fetchedFallbackEntries
     }
 
@@ -430,13 +443,13 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func pollIfNeeded() async {
-    guard hostReachable,
+    guard isLiveAndReachable,
           let session,
           isChatSession(session)
     else { return }
     let initialStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     guard initialStatus == "active" || initialStatus == "awaiting-input" else { return }
-    while !Task.isCancelled, hostReachable,
+    while !Task.isCancelled, isLiveAndReachable,
       {
         let status = normalizedWorkChatSessionStatus(session: self.session, summary: self.chatSummary)
         return status == "active" || status == "awaiting-input"

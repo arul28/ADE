@@ -1800,7 +1800,7 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.iosSimulatorListLaunchTargets, args),
     launch: async (args: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> =>
       ipcRenderer.invoke(IPC.iosSimulatorLaunch, args),
-    attachToChatSession: async (args: { chatSessionId: string | null }): Promise<IosSimulatorSession | null> =>
+    attachToChatSession: async (args: { chatSessionId: string | null; callerChatSessionId?: string | null }): Promise<IosSimulatorSession | null> =>
       ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args),
     shutdown: async (args: IosSimulatorShutdownArgs = {}): Promise<IosSimulatorShutdownResult> =>
       ipcRenderer.invoke(IPC.iosSimulatorShutdown, args),

@@ -143,7 +143,22 @@ extension WorkRootScreen {
       let activeLanes = lanes.filter { $0.archivedAt == nil }
       guard syncService.prefersReducedSyncLoad else { return activeLanes }
       let relevantLaneIds = Set((sessions + Array(optimisticSessions.values)).map(\.laneId))
-      let prioritized = activeLanes.filter { relevantLaneIds.contains($0.id) }
+      let candidates = activeLanes.filter { relevantLaneIds.contains($0.id) }
+      // prefix(6) without prioritization can drop the lane the user is
+      // looking at OR a lane currently awaiting input. Order so the selected
+      // lane is first, then lanes with awaiting-input / live sessions, then
+      // the remainder, before truncating.
+      let allSessions = sessions + Array(optimisticSessions.values)
+      let priorityLaneIds: Set<String> = Set(allSessions.compactMap { session in
+        let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+        return (status == "awaiting-input" || status == "active") ? session.laneId : nil
+      })
+      let selected = selectedLaneId
+      let prioritized = candidates.sorted { lhs, rhs in
+        let lhsRank = laneRefreshPriorityRank(laneId: lhs.id, selectedLaneId: selected, priorityLaneIds: priorityLaneIds)
+        let rhsRank = laneRefreshPriorityRank(laneId: rhs.id, selectedLaneId: selected, priorityLaneIds: priorityLaneIds)
+        return lhsRank < rhsRank
+      }
       return Array(prioritized.prefix(6))
     }()
     var updated: [String: AgentChatSessionSummary] = [:]
@@ -379,4 +394,17 @@ extension WorkRootScreen {
     )
   }
 
+}
+
+/// Lower rank = higher priority. Selected lane > priority lanes (live /
+/// awaiting-input) > everything else, so reduced-mode prefix(6) keeps the
+/// most user-visible refreshes instead of dropping them.
+fileprivate func laneRefreshPriorityRank(
+  laneId: String,
+  selectedLaneId: String,
+  priorityLaneIds: Set<String>
+) -> Int {
+  if selectedLaneId != "all" && laneId == selectedLaneId { return 0 }
+  if priorityLaneIds.contains(laneId) { return 1 }
+  return 2
 }

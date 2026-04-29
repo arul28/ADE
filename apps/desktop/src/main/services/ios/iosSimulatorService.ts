@@ -2549,12 +2549,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  const attachToChatSession = (chatSessionId: string | null): IosSimulatorSession | null => {
+  const attachToChatSession = (chatSessionId: string | null, callerChatSessionId: string | null = chatSessionId): IosSimulatorSession | null => {
     if (!activeSession) return null;
+    // Ownership check applies symmetrically: callers passing null to detach
+    // must still be the current owner, otherwise an unrelated chat could free
+    // another chat's simulator binding. The caller's own chat id is supplied
+    // via callerChatSessionId; for attach calls it is the same as the new
+    // chatSessionId, for detach calls (chatSessionId === null) it identifies
+    // the chat requesting the detach.
     if (
       activeSession.chatSessionId
-      && chatSessionId
-      && activeSession.chatSessionId !== chatSessionId
+      && callerChatSessionId
+      && activeSession.chatSessionId !== callerChatSessionId
     ) {
       throw new IosSimulatorOwnedBySessionError(activeSession);
     }
