@@ -201,8 +201,11 @@ async function main() {
     || process.env.ADE_APP_CONTROL_REMOTE_DEBUGGING_PORT
     || process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT
     || "9222";
+  if (!/^\d+$/.test(String(remoteDebugPortRaw).trim())) {
+    throw new Error(`Invalid Electron remote debugging port: ${remoteDebugPortRaw}`);
+  }
   const remoteDebugPort = Number.parseInt(remoteDebugPortRaw, 10);
-  if (!Number.isFinite(remoteDebugPort) || remoteDebugPort <= 0) {
+  if (!Number.isFinite(remoteDebugPort) || remoteDebugPort <= 0 || remoteDebugPort > 65535) {
     throw new Error(`Invalid Electron remote debugging port: ${remoteDebugPortRaw}`);
   }
   if (process.env.ADE_APP_CONTROL_CDP_PORT) {

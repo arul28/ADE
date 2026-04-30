@@ -1662,6 +1662,33 @@ export function registerIpc({
   const traceIpcInvokes = !app.isPackaged || process.env.ADE_TRACE_IPC === "1";
   let ipcInvokeSeq = 0;
 
+  // Channel-aware redaction: these channels carry sensitive payloads
+  // (commands, env vars, typed text, terminal data) that must NOT land in
+  // structured trace logs. Redact by replacing the field with `[redacted]`
+  // before the generic summarizer descends into the args.
+  const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
+    [IPC.appControlLaunch]: new Set(["command", "env"]),
+    [IPC.appControlLaunchInTerminal]: new Set(["command", "env"]),
+    [IPC.appControlTypeText]: new Set(["text"]),
+    [IPC.appControlDispatchKey]: new Set(["text", "unmodifiedText", "key", "code"]),
+    [IPC.terminalWrite]: new Set(["data"]),
+    [IPC.ptyWrite]: new Set(["data"]),
+  };
+
+  const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
+    const redactKeys = ipcChannelRedactionMap[channel];
+    if (!redactKeys || redactKeys.size === 0) return args;
+    return args.map((arg) => {
+      if (!arg || typeof arg !== "object" || Array.isArray(arg)) return arg;
+      const record = arg as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(record)) {
+        out[key] = redactKeys.has(key) ? "[redacted]" : val;
+      }
+      return out;
+    });
+  };
+
   const summarizeIpcValue = (value: unknown, depth = 0): unknown => {
     if (value == null) return value;
     if (typeof value === "string") {
@@ -1766,7 +1793,7 @@ export function registerIpc({
               return null;
             }
           })(),
-          args: summarizeIpcValue(args),
+          args: summarizeIpcValue(redactIpcArgsForChannel(channel, args)),
         });
         const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel);
         let timeoutHandle: NodeJS.Timeout | null = null;
@@ -5822,14 +5849,20 @@ export function registerIpc({
   ipcMain.handle(IPC.appControlScroll, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlScroll, { windowMs: 10_000, max: 600 });
     const record = isRecord(arg) ? arg : {};
-    const numberOr = (key: string, fallback: number | null): number | null =>
-      typeof record[key] === "number" ? record[key] as number : fallback;
+    const finiteNumberOr = (key: string, fallback: number | null): number | null => {
+      const raw = record[key];
+      if (raw === undefined || raw === null) return fallback;
+      if (typeof raw !== "number" || !Number.isFinite(raw)) {
+        throw new Error(`appControlScroll: '${key}' must be a finite number`);
+      }
+      return raw;
+    };
     return ensureAppControl().scroll({
-      x: numberOr("x", 0) as number,
-      y: numberOr("y", 0) as number,
-      deltaX: numberOr("deltaX", 0) as number,
-      deltaY: numberOr("deltaY", 0) as number,
-      scale: numberOr("scale", null),
+      x: finiteNumberOr("x", 0) as number,
+      y: finiteNumberOr("y", 0) as number,
+      deltaX: finiteNumberOr("deltaX", 0) as number,
+      deltaY: finiteNumberOr("deltaY", 0) as number,
+      scale: finiteNumberOr("scale", null),
     });
   });
 
@@ -5841,8 +5874,10 @@ export function registerIpc({
   ipcMain.handle(IPC.appControlAttachToTarget, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlAttachToTarget, { windowMs: 10_000, max: 30 });
     const rawTargetId = isRecord(arg) ? arg.targetId : null;
-    const targetId = typeof rawTargetId === "string" ? rawTargetId : "";
-    return ensureAppControl().attachToTarget(targetId);
+    if (typeof rawTargetId !== "string" || rawTargetId.length === 0) {
+      throw new Error("appControlAttachToTarget: 'targetId' must be a non-empty string");
+    }
+    return ensureAppControl().attachToTarget(rawTargetId);
   });
 
   ipcMain.handle(IPC.appControlDispatchKey, async (event, arg) => {
@@ -5852,9 +5887,10 @@ export function registerIpc({
     const numberField = (key: string): number | null => (typeof record[key] === "number" ? record[key] as number : null);
     const boolField = (key: string): boolean | null => (typeof record[key] === "boolean" ? record[key] as boolean : null);
     const rawType = record.type;
-    const type = rawType === "keyDown" || rawType === "keyUp" || rawType === "rawKeyDown" || rawType === "char"
-      ? rawType
-      : "keyDown";
+    if (rawType !== "keyDown" && rawType !== "keyUp" && rawType !== "rawKeyDown" && rawType !== "char") {
+      throw new Error(`appControlDispatchKey: 'type' must be one of keyDown|keyUp|rawKeyDown|char (got ${typeof rawType === "string" ? JSON.stringify(rawType) : typeof rawType})`);
+    }
+    const type = rawType;
     return ensureAppControl().dispatchKey({
       type,
       key: stringField("key"),

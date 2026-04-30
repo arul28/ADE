@@ -1810,13 +1810,13 @@ describe("ptyService", () => {
 
       const a = await service.create({ laneId: "lane-1", title: "A", cols: 80, rows: 24, chatSessionId: "chat-1" });
       const b = await service.create({ laneId: "lane-1", title: "B", cols: 80, rows: 24, chatSessionId: "chat-1" });
-      await service.create({ laneId: "lane-1", title: "C", cols: 80, rows: 24, chatSessionId: "chat-other" });
+      const c = await service.create({ laneId: "lane-1", title: "C", cols: 80, rows: 24, chatSessionId: "chat-other" });
 
       const list = service.listTerminals({ chatSessionId: "chat-1" });
       const ids = list.map((s) => s.terminalId);
       expect(ids).toContain(a.sessionId);
       expect(ids).toContain(b.sessionId);
-      expect(ids).not.toContain(expect.stringMatching(/chat-other/));
+      expect(ids).not.toContain(c.sessionId);
       // The most recently created terminal is the active one for the chat and must sort first.
       expect(list[0]?.terminalId).toBe(b.sessionId);
       expect(list[0]?.active).toBe(true);

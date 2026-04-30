@@ -860,6 +860,22 @@ export function ChatAppControlPanel({
     });
   }, [processes]);
 
+  // Hit-testing/overlays must align with the dimensions of the actually-rendered
+  // <img>, which switches to the live screencast frame when liveFrameActive.
+  // Without this, inspect-mode coordinate math and selection outlines drift
+  // off the rendered image as soon as live streaming starts.
+  const getDisplayedDims = (): { width: number; height: number } | null => {
+    if (liveFrameActive) {
+      const live = liveFrameDimsRef.current;
+      if (live && live.width > 0 && live.height > 0) {
+        return { width: live.width, height: live.height };
+      }
+    }
+    const sw = snapshot?.screenshot?.width ?? 0;
+    const sh = snapshot?.screenshot?.height ?? 0;
+    return sw > 0 && sh > 0 ? { width: sw, height: sh } : null;
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 font-sans text-[12px] text-fg/75">
       {/* Top row: launch input + run-command picker + Run, or running command + Stop/Terminal */}
@@ -1192,9 +1208,11 @@ export function ChatAppControlPanel({
                 onMouseMove={(event) => {
                   if (mode !== "inspect") return;
                   if (screenshotBlank || !snapshot?.elements.length || !screenshot) return;
+                  const dims = getDisplayedDims();
+                  if (!dims) return;
                   const rect = event.currentTarget.getBoundingClientRect();
-                  const x = (event.clientX - rect.left) * (screenshot.width / rect.width);
-                  const y = (event.clientY - rect.top) * (screenshot.height / rect.height);
+                  const x = (event.clientX - rect.left) * (dims.width / rect.width);
+                  const y = (event.clientY - rect.top) * (dims.height / rect.height);
                   const hit =
                     snapshot.elements
                       .filter(
@@ -1220,41 +1238,53 @@ export function ChatAppControlPanel({
                 </div>
               ) : null}
               {/* Inspect-only: persistent outline for the attached/selected element */}
-              {mode === "inspect" && selectedElement && screenshot && !screenshotBlank ? (
-                <div
-                  key={`selected-${selectedElement.id}`}
-                  className="pointer-events-none absolute rounded-sm border-2 border-sky-300/85 bg-sky-300/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.18)]"
-                  style={{
-                    left: `${(selectedElement.pixelFrame.x / screenshot.width) * 100}%`,
-                    top: `${(selectedElement.pixelFrame.y / screenshot.height) * 100}%`,
-                    width: `${(selectedElement.pixelFrame.width / screenshot.width) * 100}%`,
-                    height: `${(selectedElement.pixelFrame.height / screenshot.height) * 100}%`,
-                  }}
-                />
-              ) : null}
+              {mode === "inspect" && selectedElement && screenshot && !screenshotBlank ? (() => {
+                const dims = getDisplayedDims();
+                if (!dims) return null;
+                return (
+                  <div
+                    key={`selected-${selectedElement.id}`}
+                    className="pointer-events-none absolute rounded-sm border-2 border-sky-300/85 bg-sky-300/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.18)]"
+                    style={{
+                      left: `${(selectedElement.pixelFrame.x / dims.width) * 100}%`,
+                      top: `${(selectedElement.pixelFrame.y / dims.height) * 100}%`,
+                      width: `${(selectedElement.pixelFrame.width / dims.width) * 100}%`,
+                      height: `${(selectedElement.pixelFrame.height / dims.height) * 100}%`,
+                    }}
+                  />
+                );
+              })() : null}
               {/* Inspect-only: hover affordance to telegraph what's selectable */}
-              {mode === "inspect" && hoverElement && screenshot && !screenshotBlank && hoverElement.id !== selectedElement?.id ? (
-                <div
-                  key={`hover-${hoverElement.id}`}
-                  className="pointer-events-none absolute rounded-sm border border-sky-200/60 bg-sky-200/5"
-                  style={{
-                    left: `${(hoverElement.pixelFrame.x / screenshot.width) * 100}%`,
-                    top: `${(hoverElement.pixelFrame.y / screenshot.height) * 100}%`,
-                    width: `${(hoverElement.pixelFrame.width / screenshot.width) * 100}%`,
-                    height: `${(hoverElement.pixelFrame.height / screenshot.height) * 100}%`,
-                  }}
-                />
-              ) : null}
+              {mode === "inspect" && hoverElement && screenshot && !screenshotBlank && hoverElement.id !== selectedElement?.id ? (() => {
+                const dims = getDisplayedDims();
+                if (!dims) return null;
+                return (
+                  <div
+                    key={`hover-${hoverElement.id}`}
+                    className="pointer-events-none absolute rounded-sm border border-sky-200/60 bg-sky-200/5"
+                    style={{
+                      left: `${(hoverElement.pixelFrame.x / dims.width) * 100}%`,
+                      top: `${(hoverElement.pixelFrame.y / dims.height) * 100}%`,
+                      width: `${(hoverElement.pixelFrame.width / dims.width) * 100}%`,
+                      height: `${(hoverElement.pixelFrame.height / dims.height) * 100}%`,
+                    }}
+                  />
+                );
+              })() : null}
               {/* Inspect-only: coordinate marker when no element matched */}
-              {mode === "inspect" && selectedPoint && screenshot && !screenshotBlank && !selectedElement ? (
-                <div
-                  className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-300/90 bg-sky-300/40"
-                  style={{
-                    left: `${(selectedPoint.x / screenshot.width) * 100}%`,
-                    top: `${(selectedPoint.y / screenshot.height) * 100}%`,
-                  }}
-                />
-              ) : null}
+              {mode === "inspect" && selectedPoint && screenshot && !screenshotBlank && !selectedElement ? (() => {
+                const dims = getDisplayedDims();
+                if (!dims) return null;
+                return (
+                  <div
+                    className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-300/90 bg-sky-300/40"
+                    style={{
+                      left: `${(selectedPoint.x / dims.width) * 100}%`,
+                      top: `${(selectedPoint.y / dims.height) * 100}%`,
+                    }}
+                  />
+                );
+              })() : null}
               {/* Control-only: brief click pulse so the user gets feedback without persistent chrome */}
               {mode === "control" && controlPulse && !screenshotBlank ? (() => {
                 // Use whichever dims back the rendered image right now; live

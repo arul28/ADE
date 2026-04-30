@@ -2359,8 +2359,14 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
 function readTrailingCommand(args: string[]): string | null {
   const index = args.indexOf("--");
   if (index < 0) return null;
-  const command = args.slice(index + 1).join(" ").trim();
+  const tokens = args.slice(index + 1);
   args.splice(index);
+  if (tokens.length === 0) return null;
+  // Preserve quoted-token boundaries by shell-escaping each token before
+  // joining. The downstream consumer (appControlService) shell-parses this
+  // string, so naive `join(" ")` would let `--flag "a b"` be re-tokenized as
+  // three args. Shell-escaping per token preserves the original boundaries.
+  const command = tokens.map(shellEscapeToken).join(" ").trim();
   return command.length ? command : null;
 }
 

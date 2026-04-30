@@ -2728,7 +2728,13 @@ app.whenReady().then(async () => {
         const matchingLane = lanes.find((lane) => {
           const worktreePath = path.resolve(lane.worktreePath);
           const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
-          return targetRoot === worktreePath || targetRoot.startsWith(`${worktreePath}${path.sep}`) || targetRoot === attachedRootPath;
+          return (
+            targetRoot === worktreePath
+            || targetRoot.startsWith(`${worktreePath}${path.sep}`)
+            || (attachedRootPath !== null
+              && (targetRoot === attachedRootPath
+                || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
+          );
         });
         return matchingLane?.id ?? lanes[0]?.id ?? null;
       },

@@ -140,6 +140,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const pendingAutoCreateRef = useRef(false);
   const tabsRef = useRef<TabEntry[]>([]);
   const restoringUiStateRef = useRef(false);
+  // revealRequest is edge-triggered (the parent re-uses the same prop slot
+  // across renders). Track the (chatKey, nonce) we've already applied so a
+  // stale request from a previous chat doesn't keep blocking the new chat's
+  // auto-create path.
+  const lastHandledRevealRef = useRef<{ chatKey: string; nonce: number } | null>(null);
 
   tabsRef.current = tabs;
 
@@ -261,6 +266,13 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
   useEffect(() => {
     if (!revealRequest) return;
+    const last = lastHandledRevealRef.current;
+    if (last && last.chatKey === uiStateKey && last.nonce === revealRequest.nonce) {
+      // Already handled this exact request — treat subsequent renders with
+      // the same revealRequest in props as no-ops.
+      return;
+    }
+    lastHandledRevealRef.current = { chatKey: uiStateKey, nonce: revealRequest.nonce };
     const existing = tabsRef.current.find(
       (tab) => tab.sessionId === revealRequest.terminalId || tab.ptyId === revealRequest.ptyId,
     );
@@ -278,7 +290,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     };
     setTabs((prev) => [...prev, nextEntry]);
     setActiveTabId(tabId);
-  }, [revealRequest]);
+  }, [revealRequest, uiStateKey]);
 
   useEffect(() => {
     const wasOpen = previousOpenRef.current;
@@ -290,7 +302,13 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     }
 
     if (!wasOpen) pendingAutoCreateRef.current = true;
-    if (revealRequest || tabs.length > 0) {
+    // Treat already-consumed reveal requests as null so switching chats with
+    // a stale revealRequest in props doesn't block auto-create on the new
+    // drawer.
+    const last = lastHandledRevealRef.current;
+    const revealActive = revealRequest != null
+      && !(last && last.chatKey === uiStateKey && last.nonce === revealRequest.nonce);
+    if (revealActive || tabs.length > 0) {
       pendingAutoCreateRef.current = false;
       return;
     }
@@ -298,7 +316,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
     pendingAutoCreateRef.current = false;
     void createTab();
-  }, [createTab, creatingTab, open, restoringTabs, revealRequest, tabs.length]);
+  }, [createTab, creatingTab, open, restoringTabs, revealRequest, tabs.length, uiStateKey]);
 
   useEffect(() => {
     if (tabs.length > 0) {

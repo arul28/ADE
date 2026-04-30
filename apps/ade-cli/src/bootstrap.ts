@@ -476,6 +476,11 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     projectRoot,
     logger,
   });
+  // Late-bound chat session lookup. agentChatService is created after
+  // appControlService below, so we capture a holder that the resolveLaneId
+  // closure reads at call time. The chat session store lives in agentChatService
+  // (getSessionSummary), not in sessionService (which holds terminal sessions).
+  const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
   const appControlService = createAppControlService({
     projectRoot,
     logger,
@@ -484,8 +489,8 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       const explicitLaneId = laneId?.trim();
       if (explicitLaneId) return explicitLaneId;
       const chatId = chatSessionId?.trim();
-      if (chatId) {
-        const chatSession = sessionService.get(chatId);
+      if (chatId && agentChatServiceHolder.current) {
+        const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
         if (chatSession?.laneId) return chatSession.laneId;
       }
       const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
@@ -493,7 +498,13 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       const matchingLane = lanes.find((lane) => {
         const worktreePath = path.resolve(lane.worktreePath);
         const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
-        return targetRoot === worktreePath || targetRoot.startsWith(`${worktreePath}${path.sep}`) || targetRoot === attachedRootPath;
+        return (
+          targetRoot === worktreePath
+          || targetRoot.startsWith(`${worktreePath}${path.sep}`)
+          || (attachedRootPath !== null
+            && (targetRoot === attachedRootPath
+              || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
+        );
       });
       return matchingLane?.id ?? lanes[0]?.id ?? null;
     },
@@ -535,6 +546,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
   });
 
   const agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
+  agentChatServiceHolder.current = agentChatService;
   const automationService = createAutomationService({
     db,
     logger,

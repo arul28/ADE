@@ -1285,11 +1285,18 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       }
     }
     await stopScreencast();
-    const stoppedSession = previousSession ? { ...(activeSession ?? previousSession), status: "stopped" as const } : null;
-    activeSession = stoppedSession;
+    // For terminal-backed sessions, keep state as "stopping" — the PTY onExit
+    // callback will publish the final "stopped"/"exited"/"failed" state when
+    // the process actually exits. For non-terminal sessions, finalize now.
+    const finalSession = previousSession
+      ? terminalSessionId
+        ? (activeSession ?? { ...previousSession, status: "stopping" as const })
+        : { ...(activeSession ?? previousSession), status: "stopped" as const }
+      : null;
+    activeSession = finalSession;
     if (activeSession) emit({ type: "session-updated", session: activeSession });
     emit({ type: "session-stopped", previousSession });
-    return { ok: true, previousSession: stoppedSession };
+    return { ok: true, previousSession: finalSession };
   };
 
   const connect = async (connectArgs: AppControlConnectArgs): Promise<AppControlSession> => {
