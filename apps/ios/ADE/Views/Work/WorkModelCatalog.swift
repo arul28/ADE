@@ -418,16 +418,26 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
   case "codex":
     return "openai"
   case "droid":
-    if normalizedFamily == "factory" || normalizedId.hasPrefix("glm-") || normalizedId.hasPrefix("kimi-") || normalizedId.hasPrefix("minimax-") || normalizedId.hasPrefix("custom:") {
+    // Prefer the explicit `family` field over ID substring matches so an
+    // Anthropic model whose ID happens to contain "codex" (or similar) is
+    // still routed to the right bucket.
+    switch normalizedFamily {
+    case "anthropic": return "anthropic"
+    case "openai": return "openai"
+    case "google": return "google"
+    case "factory": return "factory"
+    default: break
+    }
+    if normalizedId.hasPrefix("glm-") || normalizedId.hasPrefix("kimi-") || normalizedId.hasPrefix("minimax-") || normalizedId.hasPrefix("custom:") {
       return "factory"
     }
-    if normalizedFamily == "anthropic" || normalizedId.contains("claude") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
+    if normalizedId.contains("claude") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
       return "anthropic"
     }
-    if normalizedFamily == "openai" || normalizedId.contains("gpt") || normalizedId.contains("codex") {
+    if normalizedId.contains("gpt") || normalizedId.contains("codex") {
       return "openai"
     }
-    if normalizedFamily == "google" || normalizedId.contains("gemini") {
+    if normalizedId.contains("gemini") {
       return "google"
     }
     return normalizedFamily.isEmpty ? "factory" : normalizedFamily

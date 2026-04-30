@@ -556,10 +556,10 @@ struct WorkModelPickerSheet: View {
     let tiers = supportedReasoningTiers(for: model)
     let isSelected = model.id == currentModelId
     VStack(alignment: .leading, spacing: 0) {
-      // Card header: name, tier, tagline. For models without reasoning the whole
-      // card is a tap target — picking commits the model with no effort.
+      // Card header is always tappable: tapping the header commits the model
+      // with `effort: nil` (server default) even for reasoning-capable models,
+      // so users who don't care about a specific tier aren't forced to pick one.
       Button {
-        if !tiers.isEmpty { return }
         commit(model: model, effort: nil)
       } label: {
         modelHeaderRow(model: model, isSelected: isSelected)
@@ -567,8 +567,7 @@ struct WorkModelPickerSheet: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .disabled(isBusy || !tiers.isEmpty)
-      .allowsHitTesting(tiers.isEmpty)
+      .disabled(isBusy)
 
       if !tiers.isEmpty {
         reasoningPills(model: model, tiers: tiers)
