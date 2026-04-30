@@ -42,6 +42,7 @@ type SessionRow = {
   summary: string | null;
   resumeCommand: string | null;
   resumeMetadataJson: string | null;
+  chatSessionId: string | null;
 };
 
 const SESSION_COLUMNS = `
@@ -66,7 +67,8 @@ const SESSION_COLUMNS = `
   s.last_output_preview as lastOutputPreview,
   s.summary as summary,
   s.resume_command as resumeCommand,
-  s.resume_metadata_json as resumeMetadataJson
+  s.resume_metadata_json as resumeMetadataJson,
+  s.chat_session_id as chatSessionId
 `;
 
 function isResumeProvider(value: unknown): value is TerminalResumeProvider {
@@ -235,6 +237,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       resumeMetadata,
       resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),
       archivedAt: row.archivedAt ?? null,
+      chatSessionId: row.chatSessionId ?? null,
     };
   };
 
@@ -442,6 +445,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       toolType,
       resumeCommand,
       resumeMetadata,
+      chatSessionId,
     }: {
       sessionId: string;
       laneId: string;
@@ -453,18 +457,22 @@ export function createSessionService({ db }: { db: AdeDb }) {
       toolType?: TerminalToolType | null;
       resumeCommand?: string | null;
       resumeMetadata?: TerminalResumeMetadata | null;
+      chatSessionId?: string | null;
     }): void {
       const normalizedToolType = normalizeToolType(toolType);
       const normalizedMetadata = normalizeResumeMetadata(resumeMetadata);
       const normalizedResumeCommand = normalizedMetadata
         ? buildTrackedCliResumeCommand(normalizedMetadata)
         : normalizeResumeCommand(resumeCommand, normalizedToolType) ?? defaultResumeCommandForTool(normalizedToolType);
+      const normalizedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
+        ? chatSessionId.trim()
+        : null;
       db.run(
         `
           insert into terminal_sessions(
             id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
-            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command, resume_metadata_json
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?, ?)
+            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command, resume_metadata_json, chat_session_id
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?, ?, ?)
         `,
         [
           sessionId,
@@ -477,8 +485,21 @@ export function createSessionService({ db }: { db: AdeDb }) {
           normalizedToolType,
           normalizedResumeCommand ?? null,
           serializeResumeMetadata(normalizedMetadata),
+          normalizedChatSessionId,
         ]
       );
+      emitChanged({ sessionId, reason: "created" });
+    },
+
+    setChatSessionId(sessionId: string, chatSessionId: string | null): void {
+      const normalized = typeof chatSessionId === "string" && chatSessionId.trim().length
+        ? chatSessionId.trim()
+        : null;
+      db.run(
+        "update terminal_sessions set chat_session_id = ? where id = ?",
+        [normalized, sessionId],
+      );
+      emitChanged({ sessionId, reason: "meta-updated" });
     },
 
     reopen(sessionId: string): void {

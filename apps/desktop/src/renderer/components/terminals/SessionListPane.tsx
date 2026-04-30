@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Archive, ArrowCounterClockwise, CaretDown, CaretRight, DownloadSimple, Funnel, GitBranch, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -227,6 +227,45 @@ export const SessionListPane = React.memo(function SessionListPane({
     () => [...runningFiltered, ...awaitingInputFiltered, ...endedFiltered],
     [runningFiltered, awaitingInputFiltered, endedFiltered],
   );
+  const visibleSessionIdSet = useMemo(
+    () => new Set(allSessions.map((session) => session.id)),
+    [allSessions],
+  );
+  // Build parent → children index. A child is a tracked terminal that records the
+  // chat session id of its parent (e.g. App Control launches, in-chat terminal
+  // drawer tabs). Children render indented under the parent when the parent is
+  // also visible. If the parent is filtered out, the child still renders at the
+  // top level so users do not lose access.
+  const childrenByParentId = useMemo(() => {
+    const map = new Map<string, TerminalSessionSummary[]>();
+    for (const session of allSessions) {
+      const parentId = session.chatSessionId;
+      if (!parentId || parentId === session.id) continue;
+      if (!visibleSessionIdSet.has(parentId)) continue;
+      const list = map.get(parentId) ?? [];
+      list.push(session);
+      map.set(parentId, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+    }
+    return map;
+  }, [allSessions, visibleSessionIdSet]);
+  const excludedTopLevelIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const list of childrenByParentId.values()) {
+      for (const child of list) set.add(child.id);
+    }
+    return set;
+  }, [childrenByParentId]);
+  const isChildSectionCollapsed = useCallback(
+    (parentId: string) => workCollapsedSectionIds.includes(`chat:${parentId}`),
+    [workCollapsedSectionIds],
+  );
+  const toggleChildSection = useCallback(
+    (parentId: string) => toggleWorkSectionCollapsed(`chat:${parentId}`),
+    [toggleWorkSectionCollapsed],
+  );
   const timeBuckets = useMemo(() => bucketByTime(allSessions), [allSessions]);
   const selectedCount = selectedSessionIds?.size ?? 0;
   const selectedSessions = useMemo(
@@ -264,33 +303,48 @@ export const SessionListPane = React.memo(function SessionListPane({
         return leftName.localeCompare(rightName);
       });
   }, [lanes, sessionsGroupedByLane]);
+  const expandSessionWithChildren = useCallback((session: TerminalSessionSummary): string[] => {
+    const children = childrenByParentId.get(session.id) ?? [];
+    if (children.length === 0) return [session.id];
+    if (isChildSectionCollapsed(session.id)) return [session.id];
+    return [session.id, ...children.map((child) => child.id)];
+  }, [childrenByParentId, isChildSectionCollapsed]);
+  const collectVisibleIds = useCallback((sessions: TerminalSessionSummary[]): string[] => {
+    const ids: string[] = [];
+    for (const session of sessions) {
+      if (excludedTopLevelIds.has(session.id)) continue;
+      ids.push(...expandSessionWithChildren(session));
+    }
+    return ids;
+  }, [excludedTopLevelIds, expandSessionWithChildren]);
   const renderedSessionIds = useMemo(() => {
     if (isByLane) {
       const ids: string[] = [];
       for (const lane of orderedLanes) {
         if (workCollapsedLaneIds.includes(lane.id)) continue;
-        ids.push(...(sessionsGroupedByLane?.get(lane.id) ?? []).map((session) => session.id));
+        ids.push(...collectVisibleIds(sessionsGroupedByLane?.get(lane.id) ?? []));
       }
       for (const [laneId, list] of missingLaneSessionGroups) {
         if (workCollapsedLaneIds.includes(laneId)) continue;
-        ids.push(...list.map((session) => session.id));
+        ids.push(...collectVisibleIds(list));
       }
       return ids;
     }
     if (isByTime) {
       const ids: string[] = [];
-      if (!workCollapsedSectionIds.includes("time:today")) ids.push(...timeBuckets.today.map((session) => session.id));
-      if (!workCollapsedSectionIds.includes("time:yesterday")) ids.push(...timeBuckets.yesterday.map((session) => session.id));
-      if (!workCollapsedSectionIds.includes("time:older")) ids.push(...timeBuckets.older.map((session) => session.id));
+      if (!workCollapsedSectionIds.includes("time:today")) ids.push(...collectVisibleIds(timeBuckets.today));
+      if (!workCollapsedSectionIds.includes("time:yesterday")) ids.push(...collectVisibleIds(timeBuckets.yesterday));
+      if (!workCollapsedSectionIds.includes("time:older")) ids.push(...collectVisibleIds(timeBuckets.older));
       return ids;
     }
     const ids: string[] = [];
-    if (!workCollapsedSectionIds.includes("status:running")) ids.push(...runningFiltered.map((session) => session.id));
-    if (!workCollapsedSectionIds.includes("status:awaiting")) ids.push(...awaitingInputFiltered.map((session) => session.id));
-    if (!workCollapsedSectionIds.includes("status:ended")) ids.push(...endedFiltered.map((session) => session.id));
+    if (!workCollapsedSectionIds.includes("status:running")) ids.push(...collectVisibleIds(runningFiltered));
+    if (!workCollapsedSectionIds.includes("status:awaiting")) ids.push(...collectVisibleIds(awaitingInputFiltered));
+    if (!workCollapsedSectionIds.includes("status:ended")) ids.push(...collectVisibleIds(endedFiltered));
     return ids;
   }, [
     awaitingInputFiltered,
+    collectVisibleIds,
     endedFiltered,
     isByLane,
     isByTime,
@@ -309,35 +363,81 @@ export const SessionListPane = React.memo(function SessionListPane({
   // tab tour can anchor at a real session. We track whether we've already
   // emitted the anchor across the whole list (not per-section).
   let sessionItemAnchorEmitted = false;
+  const renderCardCore = (session: TerminalSessionSummary, options?: { compact?: boolean }) => {
+    const isFirst = !sessionItemAnchorEmitted;
+    if (isFirst) sessionItemAnchorEmitted = true;
+    const card = (
+      <SessionCard
+        key={session.id}
+        session={session}
+        lane={laneById.get(session.laneId) ?? null}
+        isSelected={selectedSessionId === session.id}
+        isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
+        onSelect={(id, event) => onSelectSession(id, event, renderedSessionIds)}
+        onResume={() => onResume(session)}
+        onInfoClick={(e) => onInfoClick(session, e)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onContextMenu(session, e);
+        }}
+        resumingSessionId={resumingSessionId}
+        compact={options?.compact}
+      />
+    );
+    if (!isFirst) return card;
+    return (
+      <div key={`tour-${session.id}`} data-tour="work.sessionItem">
+        {card}
+      </div>
+    );
+  };
+
+  const renderChildSection = (parentId: string, children: TerminalSessionSummary[]) => {
+    if (children.length === 0) return null;
+    const collapsed = isChildSectionCollapsed(parentId);
+    return (
+      <div key={`children-${parentId}`} className="ml-3 mt-px border-l border-white/[0.06] pl-1.5">
+        <button
+          type="button"
+          onClick={() => toggleChildSection(parentId)}
+          className="flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] font-medium uppercase tracking-wide text-muted-fg/40 transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70"
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? (
+            <CaretRight size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
+          ) : (
+            <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
+          )}
+          <Terminal size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
+          <span className="truncate">
+            {children.length === 1 ? "1 shell" : `${children.length} shells`}
+          </span>
+        </button>
+        {!collapsed ? (
+          <div className="space-y-px">
+            {children.map((child) => (
+              <div key={child.id}>{renderCardCore(child, { compact: true })}</div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderCards = (list: TerminalSessionSummary[]) =>
-    list.map((session) => {
-      const isFirst = !sessionItemAnchorEmitted;
-      if (isFirst) sessionItemAnchorEmitted = true;
-      const card = (
-        <SessionCard
-          key={session.id}
-          session={session}
-          lane={laneById.get(session.laneId) ?? null}
-          isSelected={selectedSessionId === session.id}
-          isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
-          onSelect={(id, event) => onSelectSession(id, event, renderedSessionIds)}
-          onResume={() => onResume(session)}
-          onInfoClick={(e) => onInfoClick(session, e)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            onContextMenu(session, e);
-          }}
-          resumingSessionId={resumingSessionId}
-        />
-      );
-      if (!isFirst) return card;
-      // tour anchor: wraps the first rendered SessionCard.
-      return (
-        <div key={session.id} data-tour="work.sessionItem">
-          {card}
-        </div>
-      );
-    });
+    list
+      .filter((session) => !excludedTopLevelIds.has(session.id))
+      .map((session) => {
+        const children = childrenByParentId.get(session.id) ?? [];
+        const card = renderCardCore(session);
+        if (children.length === 0) return card;
+        return (
+          <div key={`group-${session.id}`}>
+            {card}
+            {renderChildSection(session.id, children)}
+          </div>
+        );
+      });
 
   const groupedByStatusList = (
     <div className="px-1.5 pb-2">

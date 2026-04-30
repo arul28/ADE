@@ -620,6 +620,28 @@ import type {
   IosSimulatorStreamStatus,
   IosSimulatorWindowState,
   IosSimulatorWindowSource,
+  AppControlClickArgs,
+  AppControlConnectArgs,
+  AppControlEventPayload,
+  AppControlInspectPointArgs,
+  AppControlInspectResult,
+  AppControlLaunchArgs,
+  AppControlScreenshot,
+  AppControlSelectResult,
+  AppControlSession,
+  AppControlSnapshot,
+  AppControlSnapshotArgs,
+  AppControlStatus,
+  AppControlStopArgs,
+  AppControlTarget,
+  AppControlTypeTextArgs,
+  ChatTerminalActiveForChatArgs,
+  ChatTerminalListArgs,
+  ChatTerminalReadArgs,
+  ChatTerminalReadResult,
+  ChatTerminalSession,
+  ChatTerminalSignalArgs,
+  ChatTerminalWriteArgs,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -1288,6 +1310,37 @@ declare global {
         swipe: (args: IosSimulatorDragArgs) => Promise<{ ok: true }>;
         selectPoint: (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }) => Promise<IosSimulatorSelectResult>;
         onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => () => void;
+      };
+      appControl: {
+        getStatus: () => Promise<AppControlStatus>;
+        launch: (args?: AppControlLaunchArgs) => Promise<AppControlSession>;
+        launchInTerminal: (args?: AppControlLaunchArgs) => Promise<AppControlSession>;
+        connect: (args: AppControlConnectArgs) => Promise<AppControlSession>;
+        stop: (args?: AppControlStopArgs) => Promise<{ ok: true; previousSession: AppControlSession | null }>;
+        screenshot: () => Promise<AppControlScreenshot>;
+        getSnapshot: (args?: AppControlSnapshotArgs) => Promise<AppControlSnapshot>;
+        inspectPoint: (args: AppControlInspectPointArgs) => Promise<AppControlInspectResult>;
+        selectPoint: (args: AppControlInspectPointArgs) => Promise<AppControlSelectResult>;
+        click: (args: AppControlClickArgs) => Promise<{ ok: true }>;
+        typeText: (args: AppControlTypeTextArgs) => Promise<{ ok: true }>;
+        scroll: (args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null }) => Promise<{ ok: true }>;
+        dispatchKey: (args: {
+          type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
+          key?: string | null;
+          code?: string | null;
+          text?: string | null;
+          modifiers?: number | null;
+        }) => Promise<{ ok: true }>;
+        listTargets: () => Promise<AppControlTarget[]>;
+        attachToTarget: (args: { targetId: string }) => Promise<AppControlSession>;
+        onEvent: (cb: (ev: AppControlEventPayload) => void) => () => void;
+      };
+      terminal: {
+        list: (args?: ChatTerminalListArgs) => Promise<ChatTerminalSession[]>;
+        read: (args?: ChatTerminalReadArgs) => Promise<ChatTerminalReadResult>;
+        write: (args: ChatTerminalWriteArgs) => Promise<{ ok: true }>;
+        signal: (args: ChatTerminalSignalArgs) => Promise<{ ok: true }>;
+        activeForChat: (args: ChatTerminalActiveForChatArgs) => Promise<ChatTerminalSession | null>;
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;

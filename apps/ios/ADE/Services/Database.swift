@@ -85,6 +85,7 @@ final class DatabaseService {
     let resumeCommand: String?
     let resumeMetadata: TerminalResumeMetadata?
     let chatIdleSinceAt: String?
+    let chatSessionId: String?
   }
 
   private struct ComputerUseArtifactRow {
@@ -870,8 +871,8 @@ final class DatabaseService {
           insert into terminal_sessions(
             id, lane_id, lane_name, pty_id, tracked, goal, tool_type, pinned, title, started_at, ended_at,
             exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
-            last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at, chat_session_id
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             lane_id = excluded.lane_id,
             lane_name = excluded.lane_name,
@@ -895,7 +896,8 @@ final class DatabaseService {
             resume_command = excluded.resume_command,
             resume_metadata_json = excluded.resume_metadata_json,
             manually_named = excluded.manually_named,
-            chat_idle_since_at = excluded.chat_idle_since_at
+            chat_idle_since_at = excluded.chat_idle_since_at,
+            chat_session_id = excluded.chat_session_id
         """) { statement in
           try bindText(session.id, to: statement, index: 1)
           try bindText(session.laneId, to: statement, index: 2)
@@ -964,6 +966,11 @@ final class DatabaseService {
             try bindText(chatIdleSinceAt, to: statement, index: 24)
           } else {
             sqlite3_bind_null(statement, 24)
+          }
+          if let chatSessionId = session.chatSessionId, !chatSessionId.isEmpty {
+            try bindText(chatSessionId, to: statement, index: 25)
+          } else {
+            sqlite3_bind_null(statement, 25)
           }
         }
       }
@@ -1430,7 +1437,7 @@ final class DatabaseService {
       select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.manually_named, s.goal, s.tool_type,
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
-             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at
+             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where l.project_id = ?
@@ -1464,7 +1471,8 @@ final class DatabaseService {
         runtimeState: stringValue(statement, index: 19) ?? runtimeState(for: stringValue(statement, index: 10) ?? "unknown"),
         resumeCommand: stringValue(statement, index: 20),
         resumeMetadata: decodeJson(stringValue(statement, index: 21), as: TerminalResumeMetadata.self),
-        chatIdleSinceAt: stringValue(statement, index: 22)
+        chatIdleSinceAt: stringValue(statement, index: 22),
+        chatSessionId: stringValue(statement, index: 23)
       )
     }.map { row in
       TerminalSessionSummary(
@@ -1490,7 +1498,8 @@ final class DatabaseService {
         runtimeState: row.runtimeState,
         resumeCommand: row.resumeCommand,
         resumeMetadata: row.resumeMetadata,
-        chatIdleSinceAt: row.chatIdleSinceAt
+        chatIdleSinceAt: row.chatIdleSinceAt,
+        chatSessionId: row.chatSessionId
       )
     }
   }
@@ -2209,6 +2218,11 @@ final class DatabaseService {
     try ensureColumn(
       tableName: "terminal_sessions",
       columnName: "chat_idle_since_at",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "chat_session_id",
       definition: "text"
     )
     try exec("""

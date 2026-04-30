@@ -868,6 +868,7 @@ function migrate(db: MigrationDb) {
       resume_command text,
       resume_metadata_json text,
       archived_at text,
+      chat_session_id text,
       foreign key(lane_id) references lanes(id)
     )
   `);
@@ -881,6 +882,8 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table terminal_sessions add column resume_metadata_json text"); } catch {}
   try { db.run("alter table terminal_sessions add column manually_named integer not null default 0"); } catch {}
   try { db.run("alter table terminal_sessions add column archived_at text"); } catch {}
+  try { db.run("alter table terminal_sessions add column chat_session_id text"); } catch {}
+  try { db.run("create index if not exists idx_terminal_sessions_chat_session_id on terminal_sessions(chat_session_id)"); } catch {}
 
   // Phase 2 process/test config and history tables.
   db.run(`
