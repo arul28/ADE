@@ -14052,9 +14052,12 @@ export function createAgentChatService(args: {
 
     const queue = runtime.pendingSteers;
     const idx = queue.findIndex((s) => s.steerId === steerId);
-    if (idx === -1) return;
-
-    queue.splice(idx, 1);
+    if (idx !== -1) {
+      queue.splice(idx, 1);
+    }
+    // Always emit the cancelled notice — even when the steer already left the
+    // server-side queue (e.g. dispatched inline before this call landed) — so
+    // the client display clears the staged chip on the delete-button path.
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",

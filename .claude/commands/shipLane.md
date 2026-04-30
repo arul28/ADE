@@ -78,7 +78,11 @@ If `TeamCreate` is genuinely not in scope for this session:
 
 ## Scheduling wake-ups
 
-This wrapper is Claude Code-specific. Use `ScheduleWakeup` at the end of each iteration (playbook §5.3) with the same command re-invocation as the `prompt`:
+The right primitive depends on the harness this command is running under. Pick one and stick with it for the whole run.
+
+### Claude Code CLI (interactive terminal)
+
+`ScheduleWakeup` is a CLI-native primitive — the CLI scheduler re-invokes the command later without the user typing. Use it at the end of each iteration (playbook §5.3):
 
 ```
 ScheduleWakeup({
@@ -90,15 +94,29 @@ ScheduleWakeup({
 
 Pass `$ARGUMENTS` through so a PR-number argument is preserved across wake-ups.
 
-Waiting must be token-idle. After scheduling a wake-up, stop the active agent turn completely and let the scheduler re-invoke this command later. Do not keep agents alive in polling loops, do not run `--watch` commands, and do not ask sub-agents to sleep while holding context. Poll only once per scheduled invocation, then either fix, exit, or schedule the next wake.
+### Claude Agent SDK chat (e.g. ADE Work chats)
 
-Other agent CLIs have their own sleep/resume mechanisms. If a Claude Code scheduler is not available, follow the playbook's generic guidance instead of copying `ScheduleWakeup` literally. For Codex-style terminal work, the recommended fallback is a shell sleep that does not involve the model, followed by one one-shot status command, for example:
+When this command runs inside a `claude-agent-sdk` v2 chat session (`unstable_v2_createSession` / `SDKSession.send` / `stream`), the SDK has **no scheduled-wakeup primitive**. `ScheduleWakeup` accepts the call but never re-invokes — the session only advances when the host calls `session.send(...)`, which only happens on a fresh user message. `Bash run_in_background: true` task notifications are queued in the SDK message stream and only flushed on the next user message; they do **not** start an autonomous turn either.
+
+So in an SDK-driven chat, do not pretend you can self-resume:
+- Do all polling synchronously inside the current turn (`until ! ... ; do sleep N; done` in a foreground bash). One bounded sleep + one bounded poll per turn — no `run_in_background` if you actually need the result before turn end.
+- Or stop the turn cleanly and tell the user to re-ping you when they want the next iteration. Write the updated state file with `status: running` so the next `/shipLane $ARGUMENTS` invocation continues from the right phase.
+
+Do not start a `run_in_background` poller and claim it will wake you — it won't. Do not "probe" the wake mechanism by starting a 30s background sleep and waiting silently; nothing will arrive.
+
+### Other agent CLIs
+
+If neither a CLI scheduler nor an SDK wake is available, fall back to a shell sleep that does not involve the model, followed by one one-shot status command, for example:
 
 ```bash
 sleep 720 && gh pr checks 185 && gh run list --branch ade/cli-prs-fixes-747d7096 --limit 5
 ```
 
 That shell process can wait without spending model tokens; the agent should only resume reasoning after the command produces output.
+
+### Common rules (all harnesses)
+
+Waiting must be token-idle. After scheduling a wake-up (or running a foreground sleep), do not keep agents alive in polling loops, do not run `--watch` commands, and do not ask sub-agents to sleep while holding context. Poll only once per scheduled invocation, then either fix, exit, or schedule the next wake.
 
 Do NOT schedule a wake if `status` is `done-clean`, `done-max`, or `blocked` — print the summary and stop.
 

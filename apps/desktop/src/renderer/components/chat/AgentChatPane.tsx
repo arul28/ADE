@@ -473,9 +473,17 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
       turnActive = event.turnStatus === "started";
     } else if (event.type === "done") {
       turnActive = false;
-    } else if (event.type === "user_message" && event.steerId && event.deliveryState === "queued") {
-      if (!resolvedSteerIds.has(event.steerId)) {
-        steerMap.set(event.steerId, { steerId: event.steerId, text: event.text });
+    } else if (event.type === "user_message" && event.steerId) {
+      if (event.deliveryState === "queued") {
+        if (!resolvedSteerIds.has(event.steerId)) {
+          steerMap.set(event.steerId, { steerId: event.steerId, text: event.text });
+        }
+      } else {
+        // "inline" / "delivered" / "failed" — the steer left the queue, so
+        // clear it from the display. Without this the chip stays staged after
+        // the user clicks "Send Now" or after a queued steer is delivered.
+        steerMap.delete(event.steerId);
+        resolvedSteerIds.add(event.steerId);
       }
     } else if (event.type === "system_notice" && event.steerId) {
       // "cancelled" or "Delivering" notices resolve the steer
