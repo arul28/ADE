@@ -676,12 +676,14 @@ struct WorkStructuredQuestionCard: View {
   /// forwards this as one `chat.respondToInput` call.
   let onSubmitAll: @MainActor ([String: AgentChatInputAnswerValue], String?) async -> Void
   let onDecline: @MainActor () async -> Void
+  var onFreeformFocusChange: ((Bool) -> Void)? = nil
 
   @State private var currentPage: Int = 0
   @State private var singleQuestionFreeformText: String = ""
   @State private var selections: [String: Set<String>] = [:]
   @State private var freeformByQuestion: [String: String] = [:]
   @State private var expandedPreviews: Set<String> = []
+  @FocusState private var freeformFocused: Bool
 
   private var isPaged: Bool { question.questions.count > 1 }
   private var activeQuestion: WorkPendingQuestion {
@@ -699,12 +701,11 @@ struct WorkStructuredQuestionCard: View {
           ForEach(Array(question.questions.enumerated()), id: \.offset) { index, q in
             questionPage(q)
               .tag(index)
-              .padding(.bottom, 24)
+              .padding(.bottom, 4)
           }
         }
-        .tabViewStyle(.page(indexDisplayMode: .always))
-        .indexViewStyle(.page(backgroundDisplayMode: .always))
-        .frame(minHeight: 280)
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .frame(minHeight: 240)
       } else {
         questionPage(activeQuestion)
       }
@@ -716,6 +717,9 @@ struct WorkStructuredQuestionCard: View {
       footerRow
     }
     .adeGlassCard(cornerRadius: 18, padding: 14)
+    .onChange(of: freeformFocused) { _, focused in
+      onFreeformFocusChange?(focused)
+    }
   }
 
   @ViewBuilder
@@ -797,10 +801,12 @@ struct WorkStructuredQuestionCard: View {
     let binding = freeformBinding(for: q)
     if q.isSecret {
       SecureField(q.options.isEmpty ? "Response" : "Optional response", text: binding)
+        .focused($freeformFocused)
         .adeInsetField(cornerRadius: 14, padding: 12)
         .disabled(busy)
     } else {
       TextField(q.options.isEmpty ? "Response" : "Optional response", text: binding, axis: .vertical)
+        .focused($freeformFocused)
         .lineLimit(1...4)
         .autocorrectionDisabled(false)
         .textInputAutocapitalization(.sentences)
@@ -812,22 +818,45 @@ struct WorkStructuredQuestionCard: View {
   @ViewBuilder
   private var footerRow: some View {
     HStack(spacing: 10) {
-      Button(submitLabel) {
-        Task { await submitAll() }
-      }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
-      .disabled(busy || !canSubmit)
-
-      Spacer(minLength: 0)
-
       Button("Decline") {
         Task { await declineQuestion() }
       }
       .buttonStyle(.glass)
       .tint(ADEColor.danger)
       .disabled(busy)
+
+      Spacer(minLength: 8)
+
+      if isPaged {
+        pageIndicator
+        Spacer(minLength: 8)
+      }
+
+      Button(submitLabel) {
+        Task { await submitAll() }
+      }
+      .buttonStyle(.glassProminent)
+      .tint(ADEColor.accent)
+      .disabled(busy || !canSubmit)
     }
+  }
+
+  @ViewBuilder
+  private var pageIndicator: some View {
+    HStack(spacing: 6) {
+      ForEach(0..<question.questions.count, id: \.self) { index in
+        Button {
+          withAnimation(.easeInOut(duration: 0.18)) { currentPage = index }
+        } label: {
+          Circle()
+            .fill(index == currentPage ? ADEColor.accent : ADEColor.textMuted.opacity(0.35))
+            .frame(width: index == currentPage ? 7 : 6, height: index == currentPage ? 7 : 6)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Question \(index + 1) of \(question.questions.count)")
+      }
+    }
+    .padding(.horizontal, 4)
   }
 
   private var submitLabel: String {

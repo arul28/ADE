@@ -78,7 +78,11 @@ If `TeamCreate` is genuinely not in scope for this session:
 
 ## Scheduling wake-ups
 
-This wrapper is Claude Code-specific. Use `ScheduleWakeup` at the end of each iteration (playbook §5.3) with the same command re-invocation as the `prompt`:
+The right primitive depends on the harness this command is running under. Pick one and stick with it for the whole run.
+
+### Claude Code CLI (interactive terminal)
+
+`ScheduleWakeup` is a CLI-native primitive — the CLI scheduler re-invokes the command later without the user typing. Use it at the end of each iteration (playbook §5.3):
 
 ```
 ScheduleWakeup({
@@ -90,15 +94,29 @@ ScheduleWakeup({
 
 Pass `$ARGUMENTS` through so a PR-number argument is preserved across wake-ups.
 
-Waiting must be token-idle. After scheduling a wake-up, stop the active agent turn completely and let the scheduler re-invoke this command later. Do not keep agents alive in polling loops, do not run `--watch` commands, and do not ask sub-agents to sleep while holding context. Poll only once per scheduled invocation, then either fix, exit, or schedule the next wake.
+### Claude Agent SDK chat (e.g. ADE Work chats)
 
-Other agent CLIs have their own sleep/resume mechanisms. If a Claude Code scheduler is not available, follow the playbook's generic guidance instead of copying `ScheduleWakeup` literally. For Codex-style terminal work, the recommended fallback is a shell sleep that does not involve the model, followed by one one-shot status command, for example:
+When this command runs inside a `claude-agent-sdk` v2 chat session (`unstable_v2_createSession` / `SDKSession.send` / `stream`), the SDK has **no scheduled-wakeup primitive**. `ScheduleWakeup` accepts the call but never re-invokes — the session only advances when the host calls `session.send(...)`, which only happens on a fresh user message. `Bash run_in_background: true` task notifications are queued in the SDK message stream and only flushed on the next user message; they do **not** start an autonomous turn either.
+
+So in an SDK-driven chat, do not pretend you can self-resume:
+- Do all polling synchronously inside the current turn (`until ! ... ; do sleep N; done` in a foreground bash). One bounded sleep + one bounded poll per turn — no `run_in_background` if you actually need the result before turn end.
+- Or stop the turn cleanly and tell the user to re-ping you when they want the next iteration. Write the updated state file with `status: running` so the next `/shipLane $ARGUMENTS` invocation continues from the right phase.
+
+Do not start a `run_in_background` poller and claim it will wake you — it won't. Do not "probe" the wake mechanism by starting a 30s background sleep and waiting silently; nothing will arrive.
+
+### Other agent CLIs
+
+If neither a CLI scheduler nor an SDK wake is available, fall back to a shell sleep that does not involve the model, followed by one one-shot status command, for example:
 
 ```bash
 sleep 720 && gh pr checks 185 && gh run list --branch ade/cli-prs-fixes-747d7096 --limit 5
 ```
 
 That shell process can wait without spending model tokens; the agent should only resume reasoning after the command produces output.
+
+### Common rules (all harnesses)
+
+Waiting must be token-idle. After scheduling a wake-up (or running a foreground sleep), do not keep agents alive in polling loops, do not run `--watch` commands, and do not ask sub-agents to sleep while holding context. Poll only once per scheduled invocation, then either fix, exit, or schedule the next wake.
 
 Do NOT schedule a wake if `status` is `done-clean`, `done-max`, or `blocked` — print the summary and stop.
 
@@ -113,6 +131,21 @@ Before running `automate-agent` and `finalize-agent` in Phase 0:
 3. Confirm `origin` is a GitHub remote (`git remote get-url origin`) — `gh pr create` needs it.
 
 If any rail fails, exit `blocked` with a clear reason in the state file and stop.
+
+---
+
+## Worktree path discipline (CRITICAL — every iteration)
+
+ADE invokes `/shipLane` from a worktree like `/Users/<you>/Projects/<repo>/.ade/worktrees/<lane>/`. The project root (`/Users/<you>/Projects/<repo>/`) **also** exists as a separate git checkout, usually on `main`, with the same files at the same relative paths.
+
+Every `Edit`/`Write` you do MUST target the worktree-prefixed absolute path. Editing the project-root copy lands changes on the wrong branch, leaves the worktree clean, and the iteration's commit silently picks up nothing.
+
+How to keep yourself honest:
+
+- Anchor every edit on the env's working directory: if `pwd` shows `.ade/worktrees/<lane>/`, every Edit `file_path` must start with `.../.ade/worktrees/<lane>/`. If a path begins anywhere else under the project root, that's the wrong target.
+- `Read` tool result paths are not authoritative. If a Read resolved to the project-root copy (because of an earlier `cd` to project root for a `gh` or `git fetch` call), re-resolve to the worktree before editing.
+- After any sequence of edits and before commit, run `git status` from the worktree. If it's empty but you "just edited" several files, you wrote to the wrong tree — recover via `cd <project-root> && git diff > /tmp/x.patch && git checkout -- <files>`, then `git apply /tmp/x.patch` from the worktree.
+- Stay in the worktree directory. Use `git -C <project-root> ...` for one-off project-root reads instead of `cd <project-root>`, so subsequent edits don't accidentally use cached project-root paths.
 
 ---
 

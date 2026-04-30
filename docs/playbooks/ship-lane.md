@@ -620,7 +620,14 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ### 5.3 Self-pace the next wake
 
-Agent-CLI-agnostic guidance (Claude Code maps this to `ScheduleWakeup`; Codex in a terminal should usually use shell `sleep ... && <one-shot checks>`; other CLIs map it to their native sleep/resume):
+Agent-CLI-agnostic guidance. Pick the right primitive for the harness:
+
+- **Claude Code CLI** maps this to `ScheduleWakeup` (CLI scheduler re-invokes the command later).
+- **Claude Agent SDK v2** (e.g. ADE Work chats using `unstable_v2_createSession`) has **no scheduled-wakeup primitive**. `SDKSession` only advances when the host calls `send(...)`, which fires on a fresh user message. `run_in_background` bash `task_notification` events are queued in the SDK message stream until the next user turn — they will not start an autonomous turn. In an SDK chat, either poll synchronously inside the current turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop with `status: running` written to the state file and ask the user to re-invoke the command.
+- **Codex in a terminal** should usually use shell `sleep ... && <one-shot checks>`.
+- **Other CLIs** map this to their native sleep/resume.
+
+Cadence (applies once you've picked a primitive):
 
 - Just pushed, neither CI nor review has started yet → **270 seconds** (stay in prompt cache; next poll only confirms things have kicked off)
 - CI running OR review bots still pending → **720 seconds** (12 min). This is the spec floor: CI shards typically finish in 3–5 min, Greptile in 5–10 min, Copilot within a few minutes of its ping. 12 min is what lets **both** land before the next poll.

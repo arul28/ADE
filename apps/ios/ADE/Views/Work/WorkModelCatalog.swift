@@ -61,7 +61,7 @@ struct WorkModelCatalogGroupLegacyView: Identifiable, Hashable {
   let models: [WorkModelOption]
 }
 
-private let workModelGroupOrder = ["claude", "codex", "cursor", "opencode"]
+private let workModelGroupOrder = ["claude", "codex", "cursor", "droid", "opencode"]
 
 /// Flat view of the curated catalog: every model in a single provider tab so
 /// legacy call sites keep functioning. Prefer `workModelCatalogGroups` for
@@ -148,6 +148,61 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         displayName: "Cursor",
         models: [
           WorkModelOption(id: "auto", displayName: "Auto", tier: .balanced, tagline: "Cursor picks per turn", provider: "cursor"),
+        ]
+      )
+    ]
+  ))
+
+  groups.append(WorkModelCatalogGroup(
+    key: "droid",
+    displayName: "Droid",
+    providers: [
+      WorkModelProvider(
+        key: "anthropic",
+        displayName: "Anthropic (Droid)",
+        models: [
+          WorkModelOption(id: "claude-opus-4-6", displayName: "Opus 4.6 (2x)", tier: .flagship, tagline: "Flagship reasoning · 2x usage", provider: "claude"),
+          WorkModelOption(id: "claude-opus-4-6-fast", displayName: "Opus 4.6 Fast Mode (12x)", tier: .flagship, tagline: "Faster Opus · 12x usage", provider: "claude"),
+          WorkModelOption(id: "claude-opus-4-5-20251101", displayName: "Opus 4.5 (2x)", tier: .flagship, tagline: "Prior-gen Opus", provider: "claude"),
+          WorkModelOption(id: "claude-sonnet-4-6", displayName: "Sonnet 4.6 (1.2x)", tier: .balanced, tagline: "Balanced default", provider: "claude"),
+          WorkModelOption(id: "claude-sonnet-4-5-20250929", displayName: "Sonnet 4.5 (1.2x)", tier: .balanced, tagline: "Prior-gen Sonnet", provider: "claude"),
+          WorkModelOption(id: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5 (0.4x)", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
+        ]
+      ),
+      WorkModelProvider(
+        key: "openai",
+        displayName: "OpenAI (Droid)",
+        models: [
+          WorkModelOption(id: "gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "OpenAI flagship", provider: "codex"),
+          WorkModelOption(id: "gpt-5.4-fast", displayName: "GPT-5.4 Fast", tier: .flagship, tagline: "Faster GPT-5.4", provider: "codex"),
+          WorkModelOption(id: "gpt-5.4-mini", displayName: "GPT-5.4 Mini", tier: .fast, tagline: "Cheaper general-purpose", provider: "codex"),
+          WorkModelOption(id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex (0.7x)", tier: .balanced, tagline: "Tuned for code edits", provider: "codex"),
+          WorkModelOption(id: "gpt-5.3-codex-fast", displayName: "GPT-5.3-Codex Fast", tier: .balanced, tagline: "Faster Codex variant", provider: "codex"),
+          WorkModelOption(id: "gpt-5.2", displayName: "GPT-5.2 (0.7x)", tier: .balanced, tagline: "Prior-gen GPT-5", provider: "codex"),
+          WorkModelOption(id: "gpt-5.2-codex", displayName: "GPT-5.2-Codex (0.7x)", tier: .balanced, tagline: "Prior-gen Codex", provider: "codex"),
+          WorkModelOption(id: "gpt-5.1", displayName: "GPT-5.1 (0.5x)", tier: .balanced, tagline: "Older GPT-5", provider: "codex"),
+          WorkModelOption(id: "gpt-5.1-codex", displayName: "GPT-5.1-Codex (0.5x)", tier: .balanced, tagline: "Older Codex", provider: "codex"),
+          WorkModelOption(id: "gpt-5.1-codex-max", displayName: "GPT-5.1-Codex-Max (0.5x)", tier: .flagship, tagline: "Long-running Codex turns", provider: "codex"),
+        ]
+      ),
+      WorkModelProvider(
+        key: "google",
+        displayName: "Google (Droid)",
+        models: [
+          WorkModelOption(id: "gemini-3-pro-preview", displayName: "Gemini 3 Pro", tier: .flagship, tagline: "Google flagship", provider: "google"),
+          WorkModelOption(id: "gemini-3.1-pro-preview", displayName: "Gemini 3.1 Pro (0.8x)", tier: .flagship, tagline: "Updated Gemini 3", provider: "google"),
+          WorkModelOption(id: "gemini-3-flash-preview", displayName: "Gemini 3 Flash (0.2x)", tier: .fast, tagline: "Fast Gemini", provider: "google"),
+        ]
+      ),
+      WorkModelProvider(
+        key: "factory",
+        displayName: "Droid Core",
+        models: [
+          WorkModelOption(id: "glm-5.1", displayName: "Droid Core (GLM-5.1)", tier: .balanced, tagline: "Latest Droid Core", provider: "factory"),
+          WorkModelOption(id: "glm-5", displayName: "Droid Core (GLM-5) (0.4x)", tier: .balanced, tagline: "GLM-5 backbone", provider: "factory"),
+          WorkModelOption(id: "glm-4.7", displayName: "Droid Core (GLM-4.7) (0.25x)", tier: .fast, tagline: "Lightweight GLM", provider: "factory"),
+          WorkModelOption(id: "kimi-k2.5", displayName: "Droid Core (Kimi K2.5) (0.25x)", tier: .fast, tagline: "Kimi backbone", provider: "factory"),
+          WorkModelOption(id: "minimax-m2.5", displayName: "Droid Core (MiniMax M2.5) (0.12x)", tier: .fast, tagline: "MiniMax backbone", provider: "factory"),
         ]
       )
     ]
@@ -324,6 +379,7 @@ private func workProviderDisplayName(
   case "ollama": return "Ollama"
   case "together": return "Together"
   case "cursor": return "Cursor"
+  case "factory": return "Droid Core"
   default: return providerKey.capitalized
   }
 }
@@ -361,6 +417,30 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
     return "anthropic"
   case "codex":
     return "openai"
+  case "droid":
+    // Prefer the explicit `family` field over ID substring matches so an
+    // Anthropic model whose ID happens to contain "codex" (or similar) is
+    // still routed to the right bucket.
+    switch normalizedFamily {
+    case "anthropic": return "anthropic"
+    case "openai": return "openai"
+    case "google": return "google"
+    case "factory": return "factory"
+    default: break
+    }
+    if normalizedId.hasPrefix("glm-") || normalizedId.hasPrefix("kimi-") || normalizedId.hasPrefix("minimax-") || normalizedId.hasPrefix("custom:") {
+      return "factory"
+    }
+    if normalizedId.contains("claude") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
+      return "anthropic"
+    }
+    if normalizedId.contains("gpt") || normalizedId.contains("codex") {
+      return "openai"
+    }
+    if normalizedId.contains("gemini") {
+      return "google"
+    }
+    return normalizedFamily.isEmpty ? "factory" : normalizedFamily
   case "opencode":
     if normalizedId.hasPrefix("opencode/") {
       let parts = normalizedId.split(separator: "/", omittingEmptySubsequences: true)
@@ -537,6 +617,9 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
 
   if modelId.hasPrefix("opencode/") || provider == "opencode" {
     return "opencode"
+  }
+  if provider == "droid" || provider == "factory" || modelId.hasPrefix("droid/") {
+    return "droid"
   }
   if provider == "cursor" || modelId.contains("cursor/") || modelId.contains("cursor-") || modelId.contains("composer") {
     return "cursor"

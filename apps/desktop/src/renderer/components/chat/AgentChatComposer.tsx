@@ -795,7 +795,6 @@ export function AgentChatComposer({
 
   const addFileAttachments = async (files: FileList | null | undefined) => {
     if (!files?.length) return;
-    if (turnActive) return;
     if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
@@ -847,7 +846,6 @@ export function AgentChatComposer({
 
   const addNativeClipboardImageAttachment = async () => {
     if (!canAttach) return;
-    if (turnActive) return;
     if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
