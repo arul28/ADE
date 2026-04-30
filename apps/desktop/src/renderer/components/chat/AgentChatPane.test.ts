@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { getModelById } from "../../../shared/modelRegistry";
-import type { AgentChatSessionSummary } from "../../../shared/types";
+import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../shared/types";
 import {
   buildParallelLaunchPrompt,
   cleanupTransientParallelLaunchLanes,
   formatParallelLaunchFailureMessage,
+  mergeChatHistorySnapshot,
   parallelLaneModelSuffix,
   resolveNextSelectedSessionId,
   shouldPromoteSessionForComputerUse,
@@ -65,6 +66,59 @@ describe("shouldPromoteSessionForComputerUse", () => {
     expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" })).toBe(true);
     expect(shouldPromoteSessionForComputerUse({ sessionProfile: undefined })).toBe(true);
     expect(shouldPromoteSessionForComputerUse({ sessionProfile: "workflow" })).toBe(false);
+  });
+});
+
+describe("mergeChatHistorySnapshot", () => {
+  function envelope(
+    timestamp: string,
+    sequence: number,
+    text: string,
+  ): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-1",
+      timestamp,
+      sequence,
+      event: {
+        type: "text",
+        text,
+        messageId: `message-${text}`,
+      },
+    };
+  }
+
+  it("keeps live events after a provider sequence reset", () => {
+    const beforeRestart = envelope("2026-04-30T23:14:47.751Z", 1003, "before restart");
+    const afterRestartUser = envelope("2026-04-30T23:19:57.083Z", 1, "after restart user");
+    const afterRestartReply = envelope("2026-04-30T23:21:34.621Z", 66, "after restart reply");
+    const stillLive = envelope("2026-04-30T23:25:10.427Z", 146, "still live");
+
+    const merged = mergeChatHistorySnapshot(
+      [beforeRestart, afterRestartUser, afterRestartReply],
+      [beforeRestart, afterRestartUser, afterRestartReply, stillLive],
+    );
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "before restart",
+      "after restart user",
+      "after restart reply",
+      "still live",
+    ]);
+  });
+
+  it("keeps same-millisecond live tail events without trusting global sequence order", () => {
+    const snapshotLast = envelope("2026-04-30T23:25:10.427Z", 146, "snapshot last");
+    const sameMillisecondTail = envelope("2026-04-30T23:25:10.427Z", 1, "same millisecond tail");
+
+    const merged = mergeChatHistorySnapshot(
+      [snapshotLast],
+      [snapshotLast, sameMillisecondTail],
+    );
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "snapshot last",
+      "same millisecond tail",
+    ]);
   });
 });
 

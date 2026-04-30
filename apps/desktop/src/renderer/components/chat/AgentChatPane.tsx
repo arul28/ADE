@@ -899,6 +899,41 @@ function trimChatEventHistory(events: AgentChatEventEnvelope[], maxEvents: numbe
   return events.length > maxEvents ? events.slice(-maxEvents) : events;
 }
 
+function chatEventDedupKey(entry: AgentChatEventEnvelope): string {
+  return `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
+}
+
+export function mergeChatHistorySnapshot(
+  parsed: AgentChatEventEnvelope[],
+  existing: AgentChatEventEnvelope[],
+): AgentChatEventEnvelope[] {
+  if (!existing.length) return parsed;
+  if (!parsed.length) return existing;
+
+  const parsedKeys = new Set(parsed.map(chatEventDedupKey));
+  const lastParsedKey = chatEventDedupKey(parsed[parsed.length - 1]!);
+  let overlapIndex = -1;
+  for (let index = existing.length - 1; index >= 0; index -= 1) {
+    if (chatEventDedupKey(existing[index]!) === lastParsedKey) {
+      overlapIndex = index;
+      break;
+    }
+  }
+
+  const tailCandidates = overlapIndex >= 0
+    ? existing.slice(overlapIndex + 1)
+    : existing.filter((entry) => {
+        const entryTime = Date.parse(entry.timestamp);
+        const parsedTime = Date.parse(parsed[parsed.length - 1]!.timestamp);
+        if (Number.isFinite(entryTime) && Number.isFinite(parsedTime)) {
+          return entryTime > parsedTime;
+        }
+        return entry.timestamp > parsed[parsed.length - 1]!.timestamp;
+      });
+  const tail = tailCandidates.filter((entry) => !parsedKeys.has(chatEventDedupKey(entry)));
+  return tail.length ? [...parsed, ...tail] : parsed;
+}
+
 function pruneSessionRecord<T>(record: Record<string, T>, keepIds: ReadonlySet<string>): Record<string, T> {
   let changed = false;
   const next: Record<string, T> = {};
@@ -2566,30 +2601,11 @@ export function AgentChatPane({
 
       // If real-time events have already been received for this session
       // (via flushQueuedEvents), the snapshot may be stale by a few events.
-      // Merge: use the snapshot as a base but keep any real-time events that
-      // arrived after the last snapshot entry.
+      // Merge by event identity and stream overlap. Sequence numbers are only
+      // monotonic within a single provider run; Claude fallback/resume can
+      // restart them while keeping the same ADE chat id.
       const existing = eventsBySessionRef.current[sessionId] ?? [];
-      let merged: AgentChatEventEnvelope[];
-      if (existing.length && parsed.length) {
-        // Find real-time events that are newer than the last transcript entry.
-        // Prefer the monotonic event sequence when available because multiple
-        // events can share the same millisecond timestamp during streaming.
-        const lastParsed = parsed[parsed.length - 1]!;
-        const lastParsedSequence = typeof lastParsed.sequence === "number" ? lastParsed.sequence : null;
-        const lastParsedTs = lastParsed.timestamp;
-        const tail = existing.filter((entry) => {
-          if (lastParsedSequence != null && typeof entry.sequence === "number") {
-            return entry.sequence > lastParsedSequence;
-          }
-          return entry.timestamp > lastParsedTs;
-        });
-        merged = tail.length ? [...parsed, ...tail] : parsed;
-      } else if (existing.length) {
-        // No transcript on disk — keep the real-time events as-is.
-        merged = existing;
-      } else {
-        merged = parsed;
-      }
+      let merged = mergeChatHistorySnapshot(parsed, existing);
       merged = trimChatEventHistory(
         merged,
         sessionId === selectedSessionIdRef.current || sessionId === lockSessionId

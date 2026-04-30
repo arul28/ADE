@@ -246,8 +246,8 @@ function fileContentToBlob(filePath: string, content: FileContent): SyncFileBlob
   return {
     path: filePath,
     size: content.size,
-    mimeType: inferMimeType(filePath),
-    encoding: "utf-8",
+    mimeType: content.mimeType ?? inferMimeType(filePath),
+    encoding: content.encoding,
     isBinary: content.isBinary,
     content: content.content,
     languageId: content.languageId,

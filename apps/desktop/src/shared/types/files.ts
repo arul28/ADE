@@ -37,12 +37,17 @@ export type FilesListTreeArgs = {
   includeIgnored?: boolean;
 };
 
+export type FilePreviewKind = "text" | "image" | "binary";
+
 export type FileContent = {
   content: string;
-  encoding: string;
+  encoding: "utf-8" | "base64";
   size: number;
   languageId: string;
   isBinary: boolean;
+  previewKind?: FilePreviewKind;
+  mimeType?: string | null;
+  dataUrl?: string;
 };
 
 export type FilesReadFileArgs = {
