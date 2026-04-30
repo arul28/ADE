@@ -203,11 +203,23 @@ function hasDurablePrFeedbackSignals(value: string): boolean {
 function isLowSignalPrFeedbackContent(value: string): boolean {
   const trimmed = cleanText(value);
   if (!trimmed.length) return true;
-  if (GENERIC_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
-  if (DERIVABLE_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
 
   const withoutUrls = trimmed.replace(/https?:\/\/\S+/gi, " ").replace(/\s+/g, " ").trim();
   const wordCount = withoutUrls.split(/\s+/).filter(Boolean).length;
+
+  // Treat generic-prefix matches (e.g. "Thanks", "Acknowledged") as low-signal
+  // only when there's no durable guidance attached and the comment is short.
+  // Otherwise actionable PR feedback that begins with courtesy text would be
+  // dropped before it ever reaches the durable-signal check below.
+  if (
+    GENERIC_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))
+    && !hasDurablePrFeedbackSignals(trimmed)
+    && wordCount < 10
+  ) {
+    return true;
+  }
+  if (DERIVABLE_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
+
   if (/https?:\/\//i.test(trimmed) && wordCount <= 8) return true;
 
   return !hasDurablePrFeedbackSignals(trimmed) && wordCount < 7;

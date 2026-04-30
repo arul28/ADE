@@ -155,7 +155,7 @@ export function createRebaseSuggestionService(args: {
     parent: LaneSummary,
     options: { refreshRemoteTracking?: boolean } = {},
   ): Promise<string | null> => {
-    const parentBranch = parent.branchRef.trim();
+    const parentBranch = branchNameFromLaneRef(parent.branchRef).trim();
     if (!parentBranch) return null;
     if (options.refreshRemoteTracking) {
       await fetchRemoteTrackingBranch({
@@ -356,22 +356,27 @@ export function createRebaseSuggestionService(args: {
   };
 
   const listSuggestions = async (options: ListSuggestionsOptions = {}): Promise<RebaseSuggestion[]> => {
+    // Only share the global cache and in-flight promise for default (no
+    // request-specific options) requests. Caller-supplied lane subsets and
+    // refreshRemoteTracking each compute different results, so they must not
+    // read or populate the shared default-result cache.
+    const useSharedCache = !options.force && !options.lanes && options.refreshRemoteTracking !== true;
     const nowMs = Date.now();
-    if (!options.force && cachedSuggestions && nowMs - cachedSuggestions.atMs < SUGGESTION_CACHE_TTL_MS) {
+    if (useSharedCache && cachedSuggestions && nowMs - cachedSuggestions.atMs < SUGGESTION_CACHE_TTL_MS) {
       return cachedSuggestions.suggestions;
     }
-    if (!options.force && suggestionsInFlight) {
+    if (useSharedCache && suggestionsInFlight) {
       return suggestionsInFlight;
     }
 
     const generation = suggestionsCacheGeneration;
     const work = computeSuggestions(options);
-    if (!options.force) {
+    if (useSharedCache) {
       suggestionsInFlight = work;
     }
     try {
       const suggestions = await work;
-      if (generation === suggestionsCacheGeneration) {
+      if (useSharedCache && generation === suggestionsCacheGeneration) {
         cachedSuggestions = { atMs: Date.now(), suggestions };
       }
       return suggestions;

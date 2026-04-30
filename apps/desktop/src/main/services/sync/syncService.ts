@@ -787,7 +787,10 @@ export function createSyncService(args: SyncServiceArgs) {
     if (!options?.force && transferReadinessCache && transferReadinessCache.expiresAtMs > now) {
       return transferReadinessCache.value;
     }
-    if (!options?.force && transferReadinessInFlight) return transferReadinessInFlight;
+    // `force` should skip the cached value but still share the in-flight
+    // promise — otherwise overlapping forced callers each spawn their own
+    // computeTransferReadiness() run.
+    if (transferReadinessInFlight) return transferReadinessInFlight;
     transferReadinessInFlight = computeTransferReadiness()
       .then((value) => {
         transferReadinessCache = {

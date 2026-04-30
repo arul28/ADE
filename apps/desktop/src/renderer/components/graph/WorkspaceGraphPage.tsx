@@ -128,7 +128,12 @@ function GraphInner() {
   const lanesKey = React.useMemo(() => lanes.map((l) => l.id).join(","), [lanes]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const refreshGraphLanes = React.useCallback(
-    () => refreshLanes({ includeStatus: false }),
+    // The graph still renders lane.status data (dirty/behind chips, selected
+    // lane summary, hover tooltip), so refreshing without status leaves those
+    // badges stale after commits, rebases, pushes, or external repo changes.
+    // Skip the heavier conflict/rebase-suggestion phases instead — those are
+    // refreshed on their own cadences elsewhere on this page.
+    () => refreshLanes({ includeStatus: true, includeConflictStatus: false, includeRebaseSuggestions: false, includeAutoRebaseStatus: false }),
     [refreshLanes]
   );
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);

@@ -1699,6 +1699,12 @@ export function createPtyService({
       let titleBufferFull = false;
 
       pty.onData((data) => {
+        // Late chunks can arrive after closeEntry()/dispose() has flushed the
+        // final buffer and emitted ptyExit. Bail out so post-teardown data
+        // can't re-arm pendingDataTimer, mutate previews/runtime state, or
+        // emit ptyData after ptyExit while transcript summarization is in
+        // flight.
+        if (entry.disposed) return;
         writeTranscript(entry, data);
         updatePreviewThrottled(entry, data);
         enqueuePtyData(entry, { ptyId, sessionId, data });

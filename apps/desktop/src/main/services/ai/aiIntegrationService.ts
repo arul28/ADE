@@ -1336,7 +1336,7 @@ export function createAiIntegrationService(args: {
         try {
           const auth = await timePhase("detect_auth", () => detectAuth({
             force: options?.force,
-            shallowCliAuth: options?.force !== true,
+            shallowCliAuth: !shouldProbeCliModels,
           }));
           const available = await timePhase("resolve_available_models", () =>
             getResolvedAvailableModels(auth, { discoverCliModels: shouldProbeCliModels })

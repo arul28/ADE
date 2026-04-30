@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { At, CaretDown, Check, Desktop, DeviceMobile, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
@@ -2006,31 +2006,19 @@ export function AgentChatComposer({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
-  const composerFrameStyle = { overflow: "visible" as const };
-  const renderComposerFrame = (children: ReactNode) => (
-    composerBeamActive ? (
+
+  return (
+    <>
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
         duration={composerBeamDuration}
         strength={composerBeamStrength}
-        active
+        active={composerBeamActive}
         borderRadius={18}
         className={composerFrameClassName}
-        style={composerFrameStyle}
+        style={{ overflow: "visible" }}
       >
-        {children}
-      </BorderBeam>
-    ) : (
-      <div className={composerFrameClassName} style={composerFrameStyle}>
-        {children}
-      </div>
-    )
-  );
-
-  return (
-    <>
-      {renderComposerFrame(
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
@@ -2910,7 +2898,7 @@ export function AgentChatComposer({
         </div>
       </div>
       </ChatComposerShell>
-      )}
+      </BorderBeam>
     </>
   );
 }

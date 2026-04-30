@@ -692,19 +692,43 @@ function createShortIpcCache<T>(loader: () => Promise<T>, ttlMs: number): ShortI
   };
 }
 
+// Soft cap to keep keyed caches from growing unboundedly across long desktop
+// sessions when callers use high-cardinality keys (image paths, session ids,
+// diff arg blobs, etc.). Map iteration order is insertion order, so deleting
+// the first key approximates LRU when combined with the touch-on-access below.
+const KEYED_IPC_CACHE_MAX_ENTRIES = 256;
+
 function createKeyedShortIpcCache<T>(
   loader: (key: string) => Promise<T>,
   ttlMs: number,
+  options: { maxEntries?: number } = {},
 ): {
   clear: (key?: string) => void;
   get: (key: string, opts?: { force?: boolean }) => Promise<T>;
 } {
+  const maxEntries = options.maxEntries ?? KEYED_IPC_CACHE_MAX_ENTRIES;
   const caches = new Map<string, ShortIpcCache<T>>();
+  const touch = (key: string, cache: ShortIpcCache<T>) => {
+    // Move to most-recently-used position by re-inserting.
+    caches.delete(key);
+    caches.set(key, cache);
+  };
+  const evictIfNeeded = () => {
+    while (caches.size > maxEntries) {
+      const oldestKey = caches.keys().next().value;
+      if (oldestKey === undefined) break;
+      caches.delete(oldestKey);
+    }
+  };
   const getCache = (key: string): ShortIpcCache<T> => {
     const existing = caches.get(key);
-    if (existing) return existing;
+    if (existing) {
+      touch(key, existing);
+      return existing;
+    }
     const cache = createShortIpcCache(() => loader(key), ttlMs);
     caches.set(key, cache);
+    evictIfNeeded();
     return cache;
   };
 
@@ -907,7 +931,13 @@ function createIpcEventFanout<T>(
   const listener = (_event: Electron.IpcRendererEvent, payload: T) => {
     beforeDispatch?.(payload);
     for (const cb of [...callbacks]) {
-      cb(payload);
+      // Isolate subscribers: a single throwing listener must not abort
+      // delivery to the rest of the fanout.
+      try {
+        cb(payload);
+      } catch (error) {
+        console.error(`preload IPC fanout listener failed for ${channel}`, error);
+      }
     }
   };
 
@@ -927,7 +957,12 @@ function createIpcEventFanout<T>(
   };
 }
 
-const agentChatEventFanout = createIpcEventFanout<AgentChatEventEnvelope>(IPC.agentChatEvent);
+const agentChatEventFanout = createIpcEventFanout<AgentChatEventEnvelope>(
+  IPC.agentChatEvent,
+  // Streamed/background agent activity changes session state too — invalidate
+  // the 1s summary cache before listeners can read a stale value.
+  () => agentChatSummaryCache.clear(),
+);
 const computerUseEventFanout = createIpcEventFanout<ComputerUseEventPayload>(
   IPC.computerUseEvent,
   () => computerUseOwnerSnapshotCache.clear(),

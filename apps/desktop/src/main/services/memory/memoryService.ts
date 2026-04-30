@@ -585,6 +585,7 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
           AND scope = ?
           AND COALESCE(scope_owner_id, '') = ?
           AND status != 'archived'
+          AND tier IN (1, 2)
         ORDER BY updated_at DESC
         LIMIT 120
       `,

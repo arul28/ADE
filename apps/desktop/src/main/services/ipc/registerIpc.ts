@@ -862,10 +862,10 @@ async function buildLaneListSnapshots(
 ): Promise<LaneListSnapshot[]> {
   const startedAt = Date.now();
   const phases: Array<{ phase: string; durationMs: number }> = [];
-  const timePhase = async <T>(phase: string, work: Promise<T>): Promise<T> => {
+  const timePhase = async <T>(phase: string, work: () => Promise<T> | T): Promise<T> => {
     const phaseStartedAt = Date.now();
     try {
-      return await work;
+      return await work();
     } finally {
       const durationMs = Date.now() - phaseStartedAt;
       phases.push({ phase, durationMs });
@@ -883,17 +883,29 @@ async function buildLaneListSnapshots(
   };
 
   const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
-    timePhase("sessions", enrichSessionsForLaneList(args)),
+    timePhase("sessions", () => enrichSessionsForLaneList(args)),
     options.includeRebaseSuggestions === false
       ? Promise.resolve([])
-      : timePhase("rebase_suggestions", Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? []).catch(() => [])),
+      : timePhase("rebase_suggestions", () =>
+          Promise.resolve()
+            .then(() => args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? [])
+            .catch(() => [])),
     options.includeAutoRebaseStatus === false
       ? Promise.resolve([])
-      : timePhase("auto_rebase_statuses", Promise.resolve(args.autoRebaseService?.listStatuses({ lanes }) ?? []).catch(() => [])),
-    timePhase("state_snapshots", Promise.resolve(args.laneService.listStateSnapshots()).catch(() => [])),
+      : timePhase("auto_rebase_statuses", () =>
+          Promise.resolve()
+            .then(() => args.autoRebaseService?.listStatuses({ lanes }) ?? [])
+            .catch(() => [])),
+    timePhase("state_snapshots", () =>
+      Promise.resolve()
+        .then(() => args.laneService.listStateSnapshots())
+        .catch(() => [])),
     options.includeConflictStatus === false
       ? Promise.resolve(null)
-      : timePhase("conflict_assessment", args.conflictService?.getBatchAssessment({ lanes }).catch(() => null) ?? Promise.resolve(null)),
+      : timePhase("conflict_assessment", () =>
+          Promise.resolve()
+            .then(() => args.conflictService?.getBatchAssessment({ lanes }) ?? null)
+            .catch(() => null)),
   ]);
   const durationMs = Date.now() - startedAt;
   if (durationMs >= 120) {

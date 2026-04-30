@@ -528,7 +528,11 @@ export function resolveProjectIcon(
 
   const iconPath = resolveProjectIconPath(root, options);
   if (!iconPath) {
-    return cacheValue({ dataUrl: null, sourcePath: null, mimeType: null }, null);
+    // Don't cache negative lookups: there is no real source path to key off,
+    // so adding an icon (e.g. src/app/icon.png) under an existing workspace
+    // tree wouldn't change the cached mtimes and the UI would keep showing
+    // "no icon" until the cache TTL expires.
+    return { dataUrl: null, sourcePath: null, mimeType: null };
   }
 
   const mimeType = mimeTypeForIconPath(iconPath);
