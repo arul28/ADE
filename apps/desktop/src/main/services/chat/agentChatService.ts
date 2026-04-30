@@ -2637,6 +2637,7 @@ function buildCodexDeveloperInstructions(args: {
     mode: promptMode,
     permissionMode: toHarnessPermissionMode(args.session.permissionMode),
     interactive: true,
+    runtime: "codex-cli",
   });
 }
 
@@ -10539,6 +10540,11 @@ export function createAgentChatService(args: {
         type: "preset",
         preset: "claude_code",
         append: [
+          "## Runtime Environment",
+          "**Runtime:** ADE Work chat hosted on the Claude Agent SDK v2 (`unstable_v2_createSession` / `SDKSession`). The `claude_code` preset above is the same system prompt the Claude Code CLI uses, so you may think you're in the CLI — you are NOT. You are inside an ADE-hosted SDK session.",
+          "**Wake-up semantics:** The session only advances when ADE calls `session.send(...)`, which fires on a fresh user message. There is no autonomous wake. `ScheduleWakeup` is **not honored** in this harness — the host accepts the call but never re-invokes you. `Bash run_in_background: true` task notifications are queued in the SDK message stream and only flushed on the next user turn; they do not start an autonomous turn either.",
+          "**To wait:** Either poll synchronously inside the active turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop the turn cleanly and ask the user to re-ping when ready. Do not run a background poller and claim it will wake you — it will not.",
+          "",
           "## ADE Workspace",
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
           "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",

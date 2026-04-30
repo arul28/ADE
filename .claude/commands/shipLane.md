@@ -134,6 +134,21 @@ If any rail fails, exit `blocked` with a clear reason in the state file and stop
 
 ---
 
+## Worktree path discipline (CRITICAL — every iteration)
+
+ADE invokes `/shipLane` from a worktree like `/Users/<you>/Projects/<repo>/.ade/worktrees/<lane>/`. The project root (`/Users/<you>/Projects/<repo>/`) **also** exists as a separate git checkout, usually on `main`, with the same files at the same relative paths.
+
+Every `Edit`/`Write` you do MUST target the worktree-prefixed absolute path. Editing the project-root copy lands changes on the wrong branch, leaves the worktree clean, and the iteration's commit silently picks up nothing.
+
+How to keep yourself honest:
+
+- Anchor every edit on the env's working directory: if `pwd` shows `.ade/worktrees/<lane>/`, every Edit `file_path` must start with `.../.ade/worktrees/<lane>/`. If a path begins anywhere else under the project root, that's the wrong target.
+- `Read` tool result paths are not authoritative. If a Read resolved to the project-root copy (because of an earlier `cd` to project root for a `gh` or `git fetch` call), re-resolve to the worktree before editing.
+- After any sequence of edits and before commit, run `git status` from the worktree. If it's empty but you "just edited" several files, you wrote to the wrong tree — recover via `cd <project-root> && git diff > /tmp/x.patch && git checkout -- <files>`, then `git apply /tmp/x.patch` from the worktree.
+- Stay in the worktree directory. Use `git -C <project-root> ...` for one-off project-root reads instead of `cd <project-root>`, so subsequent edits don't accidentally use cached project-root paths.
+
+---
+
 ## ADE CLI discovery (Claude Code specific)
 
 This wrapper consumes `ade` everywhere the playbook says to use it. If `command -v ade` returns nothing, do NOT immediately fall back to `gh`. Try the local build first:
