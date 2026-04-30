@@ -479,6 +479,37 @@ describe("ptyService", () => {
       expect(mockPty.write).toHaveBeenCalledWith("codex --no-alt-screen \"ADE session guidance\"\r");
     });
 
+    it("falls back to a shell exec command when direct command spawn fails before a terminal attaches", async () => {
+      setPlatform("darwin");
+      const { service, mockPty, loadPty } = createHarness();
+      const spawn = vi.fn((command: string) => {
+        if (command === "./scripts/dogfood.sh") throw new Error("ENOENT");
+        return mockPty;
+      });
+      loadPty.mockImplementationOnce(() => ({ spawn: spawn as any }));
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Run command",
+        cols: 80,
+        rows: 24,
+        command: "./scripts/dogfood.sh",
+        args: ["onboarding fixes", "quote's ok"],
+      });
+
+      expect(spawn).toHaveBeenCalledWith(
+        "./scripts/dogfood.sh",
+        ["onboarding fixes", "quote's ok"],
+        expect.any(Object),
+      );
+      expect(spawn).toHaveBeenCalledWith(
+        expect.stringMatching(/(?:zsh|bash|sh)$/),
+        expect.any(Array),
+        expect.any(Object),
+      );
+      expect(mockPty.write).toHaveBeenCalledWith("exec ./scripts/dogfood.sh 'onboarding fixes' 'quote'\\''s ok'\r");
+    });
+
     it("wraps direct Windows command shims through cmd.exe", async () => {
       setPlatform("win32");
       const harness = createHarness();

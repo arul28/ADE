@@ -23,6 +23,14 @@ vi.mock("./LaneRuntimeBar", () => {
   };
 });
 
+vi.mock("../terminals/TerminalView", () => {
+  const ReactMod = require("react") as typeof import("react");
+  return {
+    TerminalView: (props: { sessionId: string; ptyId: string }) =>
+      ReactMod.createElement("div", { "data-testid": "terminal-view" }, `${props.sessionId}:${props.ptyId}`),
+  };
+});
+
 const laneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false };
 
 const stubLane: LaneSummary = {
@@ -73,8 +81,9 @@ function installAdeStub() {
       stopGroup: vi.fn(),
     },
     pty: {
-      create: vi.fn(),
+      create: vi.fn().mockResolvedValue({ sessionId: "terminal-new", ptyId: "pty-new", pid: 1234 }),
       dispose: vi.fn().mockResolvedValue(undefined),
+      onExit: vi.fn(() => vi.fn()),
     },
     project: {
       listRecent: vi.fn().mockResolvedValue([]),
@@ -131,5 +140,75 @@ describe("RunPage Advanced lane runtime drawer", () => {
     const toggle = screen.getByRole("button", { name: /^advanced$/i });
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     await waitFor(() => expect(mocks.laneBarSpy).toHaveBeenCalled());
+  });
+
+  it("uses the shared terminal drawer when opening a run shell", async () => {
+    render(<RunPage />);
+    fireEvent.click(screen.getByRole("button", { name: /new shell/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked((window as unknown as { ade: { pty: { create: ReturnType<typeof vi.fn> } } }).ade.pty.create)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "lane-a",
+          toolType: "shell",
+          tracked: true,
+        }),
+      );
+    });
+    expect((await screen.findByTestId("terminal-view")).textContent).toBe("terminal-new:pty-new");
+  });
+
+  it("reveals a run command terminal returned by the process service", async () => {
+    const definition = {
+      id: "proc-1",
+      name: "Dev server",
+      command: ["npm", "run", "dev"],
+      cwd: ".",
+      env: {},
+      groupIds: [],
+      autostart: false,
+      restart: "never",
+      gracefulShutdownMs: 7000,
+      dependsOn: [],
+      readiness: { type: "none" as const },
+    };
+    const runtime = {
+      runId: "run-1",
+      laneId: "lane-a",
+      processId: "proc-1",
+      status: "running" as const,
+      readiness: "unknown" as const,
+      pid: 4321,
+      sessionId: "terminal-run",
+      ptyId: "pty-run",
+      startedAt: "2026-04-30T12:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      lastExitCode: null,
+      lastEndedAt: null,
+      uptimeMs: 0,
+      ports: [],
+      logPath: null,
+      updatedAt: "2026-04-30T12:00:00.000Z",
+    };
+    const ade = (window as unknown as { ade: {
+      projectConfig: { get: ReturnType<typeof vi.fn> };
+      processes: { listDefinitions: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn> };
+    } }).ade;
+    ade.projectConfig.get.mockResolvedValue({
+      effective: { processGroups: [] },
+      shared: { processGroups: [], processes: [definition] },
+      local: { processGroups: [], processes: [] },
+    });
+    ade.processes.listDefinitions.mockResolvedValue([definition]);
+    ade.processes.start.mockResolvedValue(runtime);
+
+    render(<RunPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Run$/i }));
+
+    await waitFor(() => {
+      expect(ade.processes.start).toHaveBeenCalledWith({ laneId: "lane-a", processId: "proc-1" });
+    });
+    expect((await screen.findByTestId("terminal-view")).textContent).toBe("terminal-run:pty-run");
   });
 });

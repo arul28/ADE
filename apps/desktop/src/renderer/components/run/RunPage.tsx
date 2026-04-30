@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretDown, CaretUp, Folder, FolderOpen, Play, Plus, Stop, Terminal, X } from "@phosphor-icons/react";
+import { CaretDown, CaretUp, Folder, FolderOpen, Play, Plus, Stop, Terminal } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { CommandCard } from "./CommandCard";
@@ -10,6 +10,8 @@ import { RunNetworkPanel } from "./RunNetworkPanel";
 import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { toRelativeTime } from "../graph/graphHelpers";
+import { isActiveProcessStatus } from "./processUtils";
+import { ChatTerminalDrawer, ChatTerminalToggle } from "../chat/ChatTerminalDrawer";
 import type {
   ConfigProcessDefinition,
   ProcessDefinition,
@@ -24,13 +26,6 @@ import type {
 function generateId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
-
-type RunShellSession = {
-  sessionId: string;
-  ptyId: string;
-  title: string;
-  laneId: string;
-};
 
 function parseEnvText(text: string): Record<string, string> | undefined {
   const trimmed = text.trim();
@@ -407,12 +402,19 @@ export function RunPage() {
   const [loading, setLoading] = useState(false);
   const [editingProcess, setEditingProcess] = useState<{ id: string; values: AddCommandInitialValues } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [runShellSessions, setRunShellSessions] = useState<RunShellSession[]>([]);
-  const [shellBusy, setShellBusy] = useState(false);
   const [networkDrawerOpen, setNetworkDrawerOpen] = useState(false);
   const [laneRuntimeBarOpen, setLaneRuntimeBarOpen] = useState(readLaneRuntimeBarOpenFromStorage);
+  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(false);
+  const [terminalCreateRequestNonce, setTerminalCreateRequestNonce] = useState(0);
+  const [terminalRevealRequest, setTerminalRevealRequest] = useState<{
+    terminalId: string;
+    ptyId: string;
+    label: string;
+    nonce: number;
+  } | null>(null);
   const runtimeRefreshTimerRef = useRef<number | null>(null);
-  const runShellSessionsRef = useRef<RunShellSession[]>([]);
+  const pendingRunLaunchRef = useRef<{ laneId: string; processId: string } | null>(null);
+  const terminalRevealNonceRef = useRef(0);
 
   const fallbackRunLaneId = useMemo(
     () => lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null,
@@ -469,27 +471,12 @@ export function RunPage() {
     });
   }, [definitions, lanes, projectRoot, refreshLanePersistence]);
 
-  runShellSessionsRef.current = runShellSessions;
-
-  const disposeRunShellSessions = useCallback(async (sessions: RunShellSession[]) => {
-    if (sessions.length === 0) return;
-    await Promise.allSettled(
-      sessions.map((session) => window.ade.pty.dispose({ ptyId: session.ptyId, sessionId: session.sessionId })),
-    );
-  }, []);
-
   useEffect(() => {
     logRendererDebugEvent("renderer.run.page_mount");
     return () => {
       logRendererDebugEvent("renderer.run.page_unmount");
     };
   }, []);
-
-  useEffect(() => {
-    return () => {
-      void disposeRunShellSessions(runShellSessionsRef.current);
-    };
-  }, [disposeRunShellSessions]);
 
   const refreshDefinitions = useCallback(async () => {
     if (showWelcome) {
@@ -521,7 +508,6 @@ export function RunPage() {
     const laneIds = Array.from(
       new Set([
         ...Object.values(commandLaneMap),
-        ...runShellSessions.map((session) => session.laneId),
       ].filter((value): value is string => Boolean(value))),
     );
     if (laneIds.length === 0) {
@@ -537,7 +523,7 @@ export function RunPage() {
     } catch (error) {
       console.error("RunPage.refreshRuntime", error);
     }
-  }, [commandLaneMap, runShellSessions, showWelcome]);
+  }, [commandLaneMap, showWelcome]);
 
   useEffect(() => {
     if (showWelcome) return;
@@ -575,22 +561,47 @@ export function RunPage() {
     };
   }, [refreshRuntime]);
 
+  const upsertRuntime = useCallback((nextRuntime: ProcessRuntime) => {
+    setRuntime((current) => {
+      const next = [...current];
+      const index = next.findIndex((runtimeItem) => runtimeItem.runId === nextRuntime.runId);
+      if (index >= 0) {
+        next[index] = nextRuntime;
+      } else {
+        next.unshift(nextRuntime);
+      }
+      return next;
+    });
+  }, []);
+
+  const revealRuntimeTerminal = useCallback((runtimeItem: ProcessRuntime): boolean => {
+    if (!runtimeItem.sessionId || !runtimeItem.ptyId) return false;
+    const definition = definitions.find((item) => item.id === runtimeItem.processId);
+    const lane = lanes.find((item) => item.id === runtimeItem.laneId);
+    terminalRevealNonceRef.current += 1;
+    setTerminalDrawerOpen(true);
+    setTerminalRevealRequest({
+      terminalId: runtimeItem.sessionId,
+      ptyId: runtimeItem.ptyId,
+      label: definition?.name ?? lane?.name ?? "Run command",
+      nonce: terminalRevealNonceRef.current,
+    });
+    return true;
+  }, [definitions, lanes]);
+
   useEffect(() => {
     const unsubscribe = window.ade.processes.onEvent((event: ProcessEvent) => {
       if (event.type !== "runtime") return;
-      setRuntime((current) => {
-        const next = [...current];
-        const index = next.findIndex((runtimeItem) => runtimeItem.runId === event.runtime.runId);
-        if (index >= 0) {
-          next[index] = event.runtime;
-        } else {
-          next.unshift(event.runtime);
+      upsertRuntime(event.runtime);
+      const pending = pendingRunLaunchRef.current;
+      if (pending?.laneId === event.runtime.laneId && pending.processId === event.runtime.processId) {
+        if (revealRuntimeTerminal(event.runtime) || !isActiveProcessStatus(event.runtime.status)) {
+          pendingRunLaunchRef.current = null;
         }
-        return next;
-      });
+      }
     });
     return unsubscribe;
-  }, []);
+  }, [revealRuntimeTerminal, upsertRuntime]);
 
   const resolveProcessLaneId = useCallback((processId: string): string | null => {
     return commandLaneMap[processId] ?? fallbackRunLaneId ?? null;
@@ -624,14 +635,23 @@ export function RunPage() {
   const handleRun = useCallback(async (processId: string) => {
     const laneId = resolveProcessLaneId(processId);
     if (!laneId) return;
+    pendingRunLaunchRef.current = { laneId, processId };
     try {
       setActionError(null);
-      await startProcess(processId, laneId);
+      const started = await startProcess(processId, laneId);
+      upsertRuntime(started);
+      if (revealRuntimeTerminal(started)) {
+        pendingRunLaunchRef.current = null;
+      }
     } catch (error) {
+      const pending = pendingRunLaunchRef.current;
+      if (pending?.laneId === laneId && pending.processId === processId) {
+        pendingRunLaunchRef.current = null;
+      }
       setActionError(error instanceof Error ? error.message : String(error));
       console.error("[RunPage] handleRun failed:", error);
     }
-  }, [resolveProcessLaneId, startProcess]);
+  }, [resolveProcessLaneId, revealRuntimeTerminal, startProcess, upsertRuntime]);
 
   const handleKillRuntime = useCallback(async (runtimeItem: ProcessRuntime) => {
     try {
@@ -646,6 +666,12 @@ export function RunPage() {
       console.error("[RunPage] handleKillRuntime failed:", error);
     }
   }, []);
+
+  const handleOpenRuntimeTerminal = useCallback((runtimeItem: ProcessRuntime) => {
+    setActionError(null);
+    if (revealRuntimeTerminal(runtimeItem)) return;
+    setActionError("This run no longer has a live terminal attached.");
+  }, [revealRuntimeTerminal]);
 
   const buildLaneMapForSelectedGroup = useCallback((): Record<string, string> | null => {
     if (!selectedGroupId) return null;
@@ -715,41 +741,12 @@ export function RunPage() {
     }
   }, [config, newGroupName, refreshDefinitions]);
 
-  const handleLaunchShell = useCallback(async () => {
-    const laneId = fallbackRunLaneId;
-    if (!laneId || shellBusy) return;
-    setShellBusy(true);
+  const handleLaunchShell = useCallback(() => {
+    if (!fallbackRunLaneId) return;
     setActionError(null);
-    try {
-      const existingCount = runShellSessionsRef.current.length;
-      const title = existingCount > 0 ? `Shell ${existingCount + 1}` : "Shell";
-      const result = await window.ade.pty.create({
-        laneId,
-        cols: 100,
-        rows: 30,
-        title,
-        tracked: false,
-        toolType: "shell",
-      });
-      const session: RunShellSession = { sessionId: result.sessionId, ptyId: result.ptyId, title, laneId };
-      setRunShellSessions((current) => [...current, session]);
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setShellBusy(false);
-    }
-  }, [fallbackRunLaneId, shellBusy]);
-
-  const handleCloseRunShell = useCallback(async (sessionId: string) => {
-    const target = runShellSessionsRef.current.find((session) => session.sessionId === sessionId);
-    setRunShellSessions((current) => current.filter((session) => session.sessionId !== sessionId));
-    if (!target) return;
-    try {
-      await window.ade.pty.dispose({ ptyId: target.ptyId, sessionId: target.sessionId });
-    } catch {
-      // ignore shell disposal failures in the Run tab
-    }
-  }, []);
+    setTerminalCreateRequestNonce((nonce) => nonce + 1);
+    setTerminalDrawerOpen(true);
+  }, [fallbackRunLaneId]);
 
   const saveProcessToConfig = useCallback(async (cmd: AddCommandSubmitPayload) => {
     if (!config) {
@@ -937,19 +934,23 @@ export function RunPage() {
           Advanced
         </button>
 
+        {fallbackRunLaneId ? (
+          <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((open) => !open)} />
+        ) : null}
+
         <button
           type="button"
           data-tour="run.newShell"
-          onClick={() => void handleLaunchShell()}
-          disabled={!fallbackRunLaneId || shellBusy}
+          onClick={handleLaunchShell}
+          disabled={!fallbackRunLaneId}
           style={{
             ...outlineButton(),
-            opacity: fallbackRunLaneId && !shellBusy ? 1 : 0.45,
-            cursor: fallbackRunLaneId && !shellBusy ? "pointer" : "default",
+            opacity: fallbackRunLaneId ? 1 : 0.45,
+            cursor: fallbackRunLaneId ? "pointer" : "default",
           }}
         >
           <Terminal size={14} weight="bold" />
-          {shellBusy ? "Opening shell..." : "New shell"}
+          New shell
         </button>
 
         {selectedGroupId ? (
@@ -1195,6 +1196,7 @@ export function RunPage() {
                     onDelete={handleDeleteProcess}
                     onAddToGroup={handleAddProcessToGroup}
                     onKillRuntime={handleKillRuntime}
+                    onOpenRuntime={handleOpenRuntimeTerminal}
                   />
                 );
               })}
@@ -1220,73 +1222,15 @@ export function RunPage() {
         ) : null}
       </div>
 
-      {runShellSessions.length > 0 ? (
-        <div
-          data-tour="run.shellSessions"
-          style={{
-            flexShrink: 0,
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            gap: 10,
-            padding: "10px 20px",
-            borderTop: `1px solid ${COLORS.border}`,
-            background: COLORS.recessedBg,
-          }}
-        >
-          <span
-            style={{
-              fontFamily: MONO_FONT,
-              fontSize: 9,
-              fontWeight: 700,
-              color: COLORS.textDim,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-            }}
-          >
-            Shells
-          </span>
-          {runShellSessions.map((session) => {
-            const shellLaneName = lanes.find((item) => item.id === session.laneId)?.name ?? session.laneId;
-            return (
-              <div
-                key={session.sessionId}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "4px 10px",
-                  background: COLORS.pageBg,
-                  border: `1px solid ${COLORS.border}`,
-                }}
-              >
-                <Terminal size={14} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
-                <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary }}>{session.title}</span>
-                <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>{shellLaneName}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleCloseRunShell(session.sessionId);
-                  }}
-                  aria-label={`Close ${session.title}`}
-                  style={{
-                    width: 26,
-                    height: 26,
-                    background: "transparent",
-                    border: "none",
-                    color: COLORS.textMuted,
-                    cursor: "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <X size={14} weight="bold" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
+      {fallbackRunLaneId ? (
+        <ChatTerminalDrawer
+          open={terminalDrawerOpen}
+          onToggle={() => setTerminalDrawerOpen((open) => !open)}
+          laneId={fallbackRunLaneId}
+          revealRequest={terminalRevealRequest}
+          createRequestNonce={terminalCreateRequestNonce}
+          emptyMessage="Open a shell or run a command to attach a terminal."
+        />
       ) : null}
 
       <AddCommandDialog
