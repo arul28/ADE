@@ -5,6 +5,7 @@ import type {
   SyncAddressCandidate,
   SyncDesktopConnectionDraft,
   SyncDeviceRuntimeState,
+  SyncGetStatusArgs,
   SyncPairingConnectInfo,
   SyncPairingQrPayload,
   SyncProjectCatalogPayload,
@@ -165,6 +166,17 @@ const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
 const SYNC_HOST_PORT_RETRY_WINDOW = 12;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
+const TRANSFER_READINESS_CACHE_MS = 15_000;
+
+function buildSkippedTransferReadiness(): SyncTransferReadiness {
+  return {
+    ready: false,
+    blockers: [],
+    survivableState: [
+      "Transfer readiness was skipped for this lightweight sync status request.",
+    ],
+  };
+}
 
 function sanitizeDraft(
   raw: unknown,
@@ -371,6 +383,8 @@ export function createSyncService(args: SyncServiceArgs) {
   let initialized = false;
   let hostStartupEnabled = args.hostStartupEnabled !== false;
   let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
+  let transferReadinessCache: { value: SyncTransferReadiness; expiresAtMs: number } | null = null;
+  let transferReadinessInFlight: Promise<SyncTransferReadiness> | null = null;
   const forceHostRole = args.forceHostRole === true;
   const isCrdtSyncAvailable = (): boolean => args.db.sync.isAvailable?.() !== false;
   const assertPhonePairingAvailable = (): void => {
@@ -692,7 +706,7 @@ export function createSyncService(args: SyncServiceArgs) {
     });
   };
 
-  const getTransferReadiness = async (): Promise<SyncTransferReadiness> => {
+  const computeTransferReadiness = async (): Promise<SyncTransferReadiness> => {
     const blockers: SyncTransferBlocker[] = [];
 
     for (const mission of args.missionService.list({
@@ -768,6 +782,26 @@ export function createSyncService(args: SyncServiceArgs) {
     };
   };
 
+  const getTransferReadiness = async (options?: { force?: boolean }): Promise<SyncTransferReadiness> => {
+    const now = Date.now();
+    if (!options?.force && transferReadinessCache && transferReadinessCache.expiresAtMs > now) {
+      return transferReadinessCache.value;
+    }
+    if (!options?.force && transferReadinessInFlight) return transferReadinessInFlight;
+    transferReadinessInFlight = computeTransferReadiness()
+      .then((value) => {
+        transferReadinessCache = {
+          value,
+          expiresAtMs: Date.now() + TRANSFER_READINESS_CACHE_MS,
+        };
+        return value;
+      })
+      .finally(() => {
+        transferReadinessInFlight = null;
+      });
+    return transferReadinessInFlight;
+  };
+
   const service = {
     async initialize(): Promise<void> {
       if (initialized) return;
@@ -782,7 +816,7 @@ export function createSyncService(args: SyncServiceArgs) {
       return initializingPromise;
     },
 
-    async getStatus(): Promise<SyncRoleSnapshot> {
+    async getStatus(options?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> {
       const localDevice = deviceRegistryService.ensureLocalDevice();
       const cluster = deviceRegistryService.getClusterState();
       const savedDraft = readSavedDraft();
@@ -827,7 +861,9 @@ export function createSyncService(args: SyncServiceArgs) {
                 : "Tailnet discovery is only published by the host desktop.",
             ),
         client,
-        transferReadiness: await getTransferReadiness(),
+        transferReadiness: options?.includeTransferReadiness === false
+          ? (transferReadinessCache?.value ?? buildSkippedTransferReadiness())
+          : await getTransferReadiness({ force: options?.forceTransferReadiness === true }),
         survivableStateText:
           crdtSyncAvailable
             ? "Paused and idle state will remain available on the new host."
@@ -954,11 +990,11 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async getTransferReadiness(): Promise<SyncTransferReadiness> {
-      return await getTransferReadiness();
+      return await getTransferReadiness({ force: true });
     },
 
     async transferBrainToLocal(): Promise<SyncRoleSnapshot> {
-      const current = await this.getStatus();
+      const current = await this.getStatus({ forceTransferReadiness: true });
       if (current.role === "brain") return current;
       if (!current.transferReadiness.ready) {
         throw new Error(

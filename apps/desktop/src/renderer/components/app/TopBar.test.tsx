@@ -154,7 +154,7 @@ describe("TopBar", () => {
     render(<TopBar />);
 
     expect(await screen.findByText("1 phone connected")).toBeTruthy();
-    expect(globalThis.window.ade.sync.getStatus).toHaveBeenCalled();
+    expect(globalThis.window.ade.sync.getStatus).toHaveBeenCalledWith({ includeTransferReadiness: false });
   });
 
   it("opens the phone sync drawer from the host status control", async () => {

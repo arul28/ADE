@@ -19,6 +19,7 @@ type StoredDismissal = {
 };
 type ListStatusesOptions = {
   includeAll?: boolean;
+  lanes?: LaneSummary[];
 };
 type AttentionStatusInput = {
   laneId: string;
@@ -262,7 +263,7 @@ export function createAutoRebaseService(args: {
 
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
     void maybeSweepRoots("listStatuses");
-    const lanes = await laneService.list({ includeArchived: false });
+    const lanes = options?.lanes ?? await laneService.list({ includeArchived: false });
     if (disposed) return [];
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const nowMs = Date.now();

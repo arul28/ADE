@@ -292,13 +292,11 @@ export function resolveAgentMemoryWritePolicy(args: {
   writeGateMode?: WriteGateMode;
 }): AgentMemoryWritePolicy {
   const pinned = args.pin === true;
-  const promoted = pinned || args.writeGateMode === "strict";
-  const tier: MemoryTier = pinned ? 1 : promoted ? 2 : 3;
 
   return {
-    status: promoted ? "promoted" : "candidate",
-    tier,
-    confidence: promoted ? 1 : 0.6,
+    status: "promoted",
+    tier: pinned ? 1 : 2,
+    confidence: 1,
   };
 }
 
@@ -587,7 +585,6 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
           AND scope = ?
           AND COALESCE(scope_owner_id, '') = ?
           AND status != 'archived'
-          AND tier IN (1, 2)
         ORDER BY updated_at DESC
         LIMIT 120
       `,

@@ -99,7 +99,7 @@ import { createBatchConsolidationService } from "./services/memory/batchConsolid
 import { createEmbeddingService } from "./services/memory/embeddingService";
 import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
 import { createHybridSearchService } from "./services/memory/hybridSearchService";
-import { createMemoryService } from "./services/memory/memoryService";
+import { createMemoryService, type Memory } from "./services/memory/memoryService";
 import { createProjectMemoryFilesService } from "./services/memory/memoryFilesService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createMemoryBriefingService } from "./services/memory/memoryBriefingService";
@@ -230,6 +230,10 @@ function isBackgroundTaskEnabled(enableFlag?: string): boolean {
     process.env[enableFlag] === "1" ||
     defaultEnabledBackgroundTaskFlags.has(enableFlag)
   );
+}
+
+function shouldEmbedMemory(memory: Pick<Memory, "status" | "pinned">): boolean {
+  return memory.status === "promoted" || memory.pinned === true;
 }
 
 const episodicSummaryEnabled = isBackgroundTaskEnabled(
@@ -1603,17 +1607,6 @@ app.whenReady().then(async () => {
       onEvent: (event) =>
         emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, event),
     });
-    // Prime suggestions once on init so the UI can show them without waiting for a head change.
-    void rebaseSuggestionService
-      .listSuggestions()
-      .then((suggestions) =>
-        emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, {
-          type: "rebase-suggestions-updated",
-          computedAt: new Date().toISOString(),
-          suggestions,
-        }),
-      )
-      .catch(() => {});
 
     const githubService = createGithubService({
       logger,
@@ -2061,7 +2054,7 @@ app.whenReady().then(async () => {
         debouncedSyncMemoryDocs();
       },
       onMemoryUpserted: (event) => {
-        if (event.created || event.contentChanged) {
+        if ((event.created || event.contentChanged) && shouldEmbedMemory(event.memory)) {
           embeddingWorkerServiceRef?.queueMemory(event.memory.id);
         }
       },
@@ -2082,7 +2075,10 @@ app.whenReady().then(async () => {
       onStatus: (event) =>
         emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event),
       onMemoryInserted: (memoryId) => {
-        embeddingWorkerServiceRef?.queueMemory(memoryId);
+        const memory = memoryService.getMemory(memoryId);
+        if (memory && shouldEmbedMemory(memory)) {
+          embeddingWorkerServiceRef?.queueMemory(memoryId);
+        }
       },
     });
     batchConsolidationServiceRef = batchConsolidationService;

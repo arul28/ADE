@@ -95,6 +95,7 @@ const MIN_HOST_WIDTH_PX = 120;
 const MIN_HOST_HEIGHT_PX = 48;
 const INVALID_FIT_RETRY_MS = 90;
 const RENDERER_RESET_COOLDOWN_MS = 250;
+const TERMINAL_RENDERER_STORAGE_KEY = "ade.terminalRenderer";
 const runtimeCache = new Map<string, CachedRuntime>();
 let parkedRoot: HTMLDivElement | null = null;
 
@@ -117,6 +118,14 @@ const terminalThemes: Record<"light" | "dark", XtermTheme> = {
 
 function isDarkTheme(theme: ThemeId): boolean {
   return theme === "dark";
+}
+
+function terminalWebglRendererEnabled(): boolean {
+  try {
+    return window.localStorage.getItem(TERMINAL_RENDERER_STORAGE_KEY) === "webgl";
+  } catch {
+    return false;
+  }
 }
 
 function cloneHealth(health: TerminalHealthCounters): TerminalHealthCounters {
@@ -706,6 +715,11 @@ async function initRendererChain(runtime: CachedRuntime) {
   if (runtime.rendererInitStarted || runtime.disposed) return;
   runtime.rendererInitStarted = true;
 
+  if (!terminalWebglRendererEnabled()) {
+    await setRenderer(runtime, "dom");
+    return;
+  }
+
   const webgl = await setRenderer(runtime, "webgl");
   if (webgl) return;
   incrementHealth(runtime, "rendererFallbacks");
@@ -782,7 +796,7 @@ function createRuntime(args: {
   const term = new Terminal({
     allowProposedApi: true,
     convertEol: true,
-    cursorBlink: true,
+    cursorBlink: false,
     cursorInactiveStyle: "none",
     documentOverride: document,
     scrollback: args.preferences.scrollback,

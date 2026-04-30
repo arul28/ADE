@@ -52,6 +52,7 @@ import type {
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
+  SyncGetStatusArgs,
   SyncPeerDeviceType,
   SyncRoleSnapshot,
   SyncStatusEventPayload,
@@ -654,6 +655,294 @@ import type {
   FeedbackSubmitDraftArgs,
 } from "../shared/types";
 
+type ShortIpcCache<T> = {
+  clear: () => void;
+  get: (opts?: { force?: boolean }) => Promise<T>;
+};
+
+function createShortIpcCache<T>(loader: () => Promise<T>, ttlMs: number): ShortIpcCache<T> {
+  let value: T | undefined;
+  let promise: Promise<T> | null = null;
+  let expiresAt = 0;
+
+  return {
+    clear: () => {
+      value = undefined;
+      promise = null;
+      expiresAt = 0;
+    },
+    get: async (opts?: { force?: boolean }) => {
+      const now = Date.now();
+      if (!opts?.force) {
+        if (value !== undefined && expiresAt > now) return value;
+        if (promise) return promise;
+      }
+
+      promise = loader()
+        .then((next) => {
+          value = next;
+          expiresAt = Date.now() + ttlMs;
+          return next;
+        })
+        .finally(() => {
+          promise = null;
+        });
+      return promise;
+    },
+  };
+}
+
+function createKeyedShortIpcCache<T>(
+  loader: (key: string) => Promise<T>,
+  ttlMs: number,
+): {
+  clear: (key?: string) => void;
+  get: (key: string, opts?: { force?: boolean }) => Promise<T>;
+} {
+  const caches = new Map<string, ShortIpcCache<T>>();
+  const getCache = (key: string): ShortIpcCache<T> => {
+    const existing = caches.get(key);
+    if (existing) return existing;
+    const cache = createShortIpcCache(() => loader(key), ttlMs);
+    caches.set(key, cache);
+    return cache;
+  };
+
+  return {
+    clear: (key?: string) => {
+      if (key == null) {
+        caches.clear();
+        return;
+      }
+      caches.delete(key);
+    },
+    get: (key: string, opts?: { force?: boolean }) => getCache(key).get(opts),
+  };
+}
+
+function serializeIpcCacheArgs(value: unknown): string {
+  return JSON.stringify(value ?? {}) ?? "{}";
+}
+
+function parseIpcCacheArgs<T>(key: string, fallback: T): T {
+  try {
+    return JSON.parse(key) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+const projectConfigSnapshotCache = createShortIpcCache<ProjectConfigSnapshot>(
+  () => ipcRenderer.invoke(IPC.projectConfigGet),
+  1_000,
+);
+
+const aiStatusCache = (() => {
+  let value: AiSettingsStatus | undefined;
+  let promise: Promise<AiSettingsStatus> | null = null;
+  let expiresAt = 0;
+  let includesOpenCodeInventory = false;
+  let promiseIncludesOpenCodeInventory = false;
+
+  const clear = () => {
+    value = undefined;
+    promise = null;
+    expiresAt = 0;
+    includesOpenCodeInventory = false;
+    promiseIncludesOpenCodeInventory = false;
+  };
+
+  const get = async (key: string): Promise<AiSettingsStatus> => {
+    const args = parseIpcCacheArgs<{ refreshOpenCodeInventory?: boolean }>(key, {});
+    const wantsOpenCodeInventory = args.refreshOpenCodeInventory === true;
+    const now = Date.now();
+    if (
+      value !== undefined
+      && expiresAt > now
+      && (!wantsOpenCodeInventory || includesOpenCodeInventory)
+    ) {
+      return value;
+    }
+    if (
+      promise
+      && (!wantsOpenCodeInventory || promiseIncludesOpenCodeInventory)
+    ) {
+      return promise;
+    }
+
+    promiseIncludesOpenCodeInventory = wantsOpenCodeInventory;
+    const request = ipcRenderer.invoke(IPC.aiGetStatus, {
+      refreshOpenCodeInventory: wantsOpenCodeInventory,
+    }).then((status: AiSettingsStatus) => {
+      if (promise === request) {
+        value = status;
+        expiresAt = Date.now() + 10_000;
+        includesOpenCodeInventory = wantsOpenCodeInventory;
+      }
+      return status;
+    }).finally(() => {
+      if (promise === request) {
+        promise = null;
+        promiseIncludesOpenCodeInventory = false;
+      }
+    });
+    promise = request;
+    return request;
+  };
+
+  return { clear, get };
+})();
+
+const githubStatusCache = createShortIpcCache<GitHubStatus>(
+  () => ipcRenderer.invoke(IPC.githubGetStatus, {}),
+  30_000,
+);
+
+const lanesListCache = createKeyedShortIpcCache<LaneSummary[]>(
+  (key) => ipcRenderer.invoke(IPC.lanesList, parseIpcCacheArgs<ListLanesArgs>(key, {})),
+  2_000,
+);
+
+const lanesListSnapshotsCache = createKeyedShortIpcCache<LaneListSnapshot[]>(
+  (key) => ipcRenderer.invoke(IPC.lanesListSnapshots, parseIpcCacheArgs<ListLanesArgs>(key, {})),
+  2_000,
+);
+
+const sessionDeltaCache = createKeyedShortIpcCache<SessionDeltaSummary | null>(
+  (sessionId) => ipcRenderer.invoke(IPC.sessionsGetDelta, { sessionId }),
+  1_000,
+);
+
+const agentChatSummaryCache = createKeyedShortIpcCache<AgentChatSessionSummary | null>(
+  (sessionId) => ipcRenderer.invoke(IPC.agentChatGetSummary, { sessionId }),
+  1_000,
+);
+
+const iosSimulatorStatusCache = createShortIpcCache<IosSimulatorStatus>(
+  () => ipcRenderer.invoke(IPC.iosSimulatorGetStatus),
+  2_000,
+);
+
+const iosSimulatorDevicesCache = createShortIpcCache<IosSimulatorDevice[]>(
+  () => ipcRenderer.invoke(IPC.iosSimulatorListDevices),
+  2_000,
+);
+
+const appControlStatusCache = createShortIpcCache<AppControlStatus>(
+  () => ipcRenderer.invoke(IPC.appControlGetStatus),
+  1_000,
+);
+
+const computerUseOwnerSnapshotCache = createKeyedShortIpcCache<ComputerUseOwnerSnapshot>(
+  (key) => ipcRenderer.invoke(
+    IPC.computerUseGetOwnerSnapshot,
+    parseIpcCacheArgs<ComputerUseOwnerSnapshotArgs>(key, {} as ComputerUseOwnerSnapshotArgs),
+  ),
+  2_000,
+);
+
+const imageDataUrlCache = createKeyedShortIpcCache<{ dataUrl: string }>(
+  (path) => ipcRenderer.invoke(IPC.appGetImageDataUrl, { path }),
+  30_000,
+);
+
+const projectIconCache = createKeyedShortIpcCache<ProjectIcon>(
+  (rootPath) => ipcRenderer.invoke(IPC.projectResolveIcon, { rootPath }),
+  30_000,
+);
+
+const diffChangesCache = createKeyedShortIpcCache<DiffChanges>(
+  (key) => ipcRenderer.invoke(IPC.diffGetChanges, parseIpcCacheArgs<GetDiffChangesArgs>(key, {} as GetDiffChangesArgs)),
+  2_000,
+);
+
+const gitBranchesCache = createKeyedShortIpcCache<GitBranchSummary[]>(
+  (key) => ipcRenderer.invoke(IPC.gitListBranches, parseIpcCacheArgs<GitListBranchesArgs>(key, {} as GitListBranchesArgs)),
+  2_000,
+);
+
+function clearGitReadCaches(): void {
+  diffChangesCache.clear();
+  gitBranchesCache.clear();
+  lanesListCache.clear();
+  lanesListSnapshotsCache.clear();
+  sessionDeltaCache.clear();
+}
+
+function clearProjectScopedReadCaches(): void {
+  clearGitReadCaches();
+  projectConfigSnapshotCache.clear();
+  agentChatSummaryCache.clear();
+  computerUseOwnerSnapshotCache.clear();
+  imageDataUrlCache.clear();
+  projectIconCache.clear();
+}
+
+function clearIosSimulatorStatusCaches(): void {
+  iosSimulatorStatusCache.clear();
+  iosSimulatorDevicesCache.clear();
+}
+
+function getAiStatusCacheKey(args?: { refreshOpenCodeInventory?: boolean }): string {
+  return serializeIpcCacheArgs({
+    refreshOpenCodeInventory: args?.refreshOpenCodeInventory === true,
+  });
+}
+
+async function clearAround<T>(clear: () => void, action: () => Promise<T>): Promise<T> {
+  clear();
+  try {
+    return await action();
+  } finally {
+    clear();
+  }
+}
+
+function createIpcEventFanout<T>(
+  channel: string,
+  beforeDispatch?: (payload: T) => void,
+): (cb: (payload: T) => void) => () => void {
+  const callbacks = new Set<(payload: T) => void>();
+  let subscribed = false;
+  const listener = (_event: Electron.IpcRendererEvent, payload: T) => {
+    beforeDispatch?.(payload);
+    for (const cb of [...callbacks]) {
+      cb(payload);
+    }
+  };
+
+  return (cb: (payload: T) => void) => {
+    callbacks.add(cb);
+    if (!subscribed) {
+      ipcRenderer.on(channel, listener);
+      subscribed = true;
+    }
+    return () => {
+      callbacks.delete(cb);
+      if (callbacks.size === 0 && subscribed) {
+        ipcRenderer.removeListener(channel, listener);
+        subscribed = false;
+      }
+    };
+  };
+}
+
+const agentChatEventFanout = createIpcEventFanout<AgentChatEventEnvelope>(IPC.agentChatEvent);
+const computerUseEventFanout = createIpcEventFanout<ComputerUseEventPayload>(
+  IPC.computerUseEvent,
+  () => computerUseOwnerSnapshotCache.clear(),
+);
+const iosSimulatorEventFanout = createIpcEventFanout<IosSimulatorEventPayload>(
+  IPC.iosSimulatorEvent,
+  () => clearIosSimulatorStatusCaches(),
+);
+const appControlEventFanout = createIpcEventFanout<AppControlEventPayload>(
+  IPC.appControlEvent,
+  () => appControlStatusCache.clear(),
+);
+const ptyDataEventFanout = createIpcEventFanout<PtyDataEvent>(IPC.ptyData);
+const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
+
 contextBridge.exposeInMainWorld("ade", {
   app: {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
@@ -664,7 +953,10 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: ProjectInfo | null,
-      ) => cb(payload);
+      ) => {
+        clearProjectScopedReadCaches();
+        cb(payload);
+      };
       ipcRenderer.on(IPC.appProjectChanged, listener);
       return () => ipcRenderer.removeListener(IPC.appProjectChanged, listener);
     },
@@ -679,7 +971,7 @@ contextBridge.exposeInMainWorld("ade", {
     readClipboardImage: async (): Promise<{ data: string; filename: string; mimeType: string } | null> =>
       ipcRenderer.invoke(IPC.appReadClipboardImage),
     getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
-      ipcRenderer.invoke(IPC.appGetImageDataUrl, { path }),
+      imageDataUrlCache.get(path),
     writeClipboardImage: async (path: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appWriteClipboardImage, { path }),
     openPathInEditor: async (args: {
@@ -692,7 +984,7 @@ contextBridge.exposeInMainWorld("ade", {
   },
   project: {
     openRepo: async (): Promise<ProjectInfo | null> =>
-      ipcRenderer.invoke(IPC.projectOpenRepo),
+      clearAround(() => clearProjectScopedReadCaches(), () => ipcRenderer.invoke(IPC.projectOpenRepo)),
     chooseDirectory: async (
       args: { title?: string; defaultPath?: string } = {},
     ): Promise<string | null> =>
@@ -704,11 +996,17 @@ contextBridge.exposeInMainWorld("ade", {
     getDetail: async (rootPath: string): Promise<ProjectDetail> =>
       ipcRenderer.invoke(IPC.projectGetDetail, { rootPath }),
     resolveIcon: async (rootPath: string): Promise<ProjectIcon> =>
-      ipcRenderer.invoke(IPC.projectResolveIcon, { rootPath }),
+      projectIconCache.get(rootPath),
     chooseIcon: async (rootPath: string): Promise<ProjectIcon | null> =>
-      ipcRenderer.invoke(IPC.projectChooseIcon, { rootPath }),
+      clearAround(() => {
+        imageDataUrlCache.clear();
+        projectIconCache.clear(rootPath);
+      }, () => ipcRenderer.invoke(IPC.projectChooseIcon, { rootPath })),
     removeIcon: async (rootPath: string): Promise<ProjectIcon> =>
-      ipcRenderer.invoke(IPC.projectRemoveIcon, { rootPath }),
+      clearAround(() => {
+        imageDataUrlCache.clear();
+        projectIconCache.clear(rootPath);
+      }, () => ipcRenderer.invoke(IPC.projectRemoveIcon, { rootPath })),
     getDroppedPath: (file: File): string => {
       try {
         return webUtils.getPathForFile(file);
@@ -721,13 +1019,13 @@ contextBridge.exposeInMainWorld("ade", {
     clearLocalData: async (
       args: ClearLocalAdeDataArgs = {},
     ): Promise<ClearLocalAdeDataResult> =>
-      ipcRenderer.invoke(IPC.projectClearLocalData, args),
+      clearAround(() => clearProjectScopedReadCaches(), () => ipcRenderer.invoke(IPC.projectClearLocalData, args)),
     listRecent: async (): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectListRecent),
     closeCurrent: async (): Promise<void> =>
-      ipcRenderer.invoke(IPC.projectCloseCurrent),
+      clearAround(() => clearProjectScopedReadCaches(), () => ipcRenderer.invoke(IPC.projectCloseCurrent)),
     switchToPath: async (rootPath: string): Promise<ProjectInfo> =>
-      ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
+      clearAround(() => clearProjectScopedReadCaches(), () => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath })),
     forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
     reorderRecent: async (
@@ -766,14 +1064,20 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.keybindingsSet, { overrides }),
   },
   ai: {
-    getStatus: async (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> =>
-      ipcRenderer.invoke(IPC.aiGetStatus, args),
+    getStatus: async (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> => {
+      const cacheKey = getAiStatusCacheKey(args);
+      if (args?.force === true) {
+        aiStatusCache.clear();
+        return ipcRenderer.invoke(IPC.aiGetStatus, args);
+      }
+      return aiStatusCache.get(cacheKey);
+    },
     getOpenCodeRuntimeDiagnostics: async (): Promise<OpenCodeRuntimeSnapshot> =>
       ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
     storeApiKey: async (provider: string, key: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.aiStoreApiKey, { provider, key }),
+      clearAround(() => aiStatusCache.clear(), () => ipcRenderer.invoke(IPC.aiStoreApiKey, { provider, key })),
     deleteApiKey: async (provider: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.aiDeleteApiKey, { provider }),
+      clearAround(() => aiStatusCache.clear(), () => ipcRenderer.invoke(IPC.aiDeleteApiKey, { provider })),
     listApiKeys: async (): Promise<string[]> =>
       ipcRenderer.invoke(IPC.aiListApiKeys),
     verifyApiKey: async (
@@ -781,11 +1085,11 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<AiApiKeyVerificationResult> =>
       ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
     updateConfig: async (config: Partial<AiConfig>): Promise<void> =>
-      ipcRenderer.invoke(IPC.aiUpdateConfig, config),
+      clearAround(() => aiStatusCache.clear(), () => ipcRenderer.invoke(IPC.aiUpdateConfig, config)),
   },
   sync: {
-    getStatus: async (): Promise<SyncRoleSnapshot> =>
-      ipcRenderer.invoke(IPC.syncGetStatus),
+    getStatus: async (args?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncGetStatus, args),
     refreshDiscovery: async (): Promise<SyncRoleSnapshot> =>
       ipcRenderer.invoke(IPC.syncRefreshDiscovery),
     listDevices: async (): Promise<SyncDeviceRuntimeState[]> =>
@@ -1418,45 +1722,89 @@ contextBridge.exposeInMainWorld("ade", {
   },
   lanes: {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> =>
-      ipcRenderer.invoke(IPC.lanesList, args),
+      lanesListCache.get(serializeIpcCacheArgs(args)),
     listSnapshots: async (
       args: ListLanesArgs = {},
     ): Promise<LaneListSnapshot[]> =>
-      ipcRenderer.invoke(IPC.lanesListSnapshots, args),
-    create: async (args: CreateLaneArgs): Promise<LaneSummary> =>
-      ipcRenderer.invoke(IPC.lanesCreate, args),
-    createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> =>
-      ipcRenderer.invoke(IPC.lanesCreateChild, args),
+      lanesListSnapshotsCache.get(serializeIpcCacheArgs(args)),
+    create: async (args: CreateLaneArgs): Promise<LaneSummary> => {
+      clearGitReadCaches();
+      const lane = await ipcRenderer.invoke(IPC.lanesCreate, args);
+      clearGitReadCaches();
+      return lane;
+    },
+    createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => {
+      clearGitReadCaches();
+      const lane = await ipcRenderer.invoke(IPC.lanesCreateChild, args);
+      clearGitReadCaches();
+      return lane;
+    },
     createFromUnstaged: async (
       args: CreateLaneFromUnstagedArgs,
-    ): Promise<LaneSummary> =>
-      ipcRenderer.invoke(IPC.lanesCreateFromUnstaged, args),
-    importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> =>
-      ipcRenderer.invoke(IPC.lanesImportBranch, args),
+    ): Promise<LaneSummary> => {
+      clearGitReadCaches();
+      const lane = await ipcRenderer.invoke(IPC.lanesCreateFromUnstaged, args);
+      clearGitReadCaches();
+      return lane;
+    },
+    importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> => {
+      clearGitReadCaches();
+      const lane = await ipcRenderer.invoke(IPC.lanesImportBranch, args);
+      clearGitReadCaches();
+      return lane;
+    },
     previewBranchSwitch: async (
       args: LaneBranchSwitchArgs,
     ): Promise<LaneBranchSwitchPreview> =>
       ipcRenderer.invoke(IPC.lanesPreviewBranchSwitch, args),
     switchBranch: async (
       args: LaneBranchSwitchArgs,
-    ): Promise<LaneBranchSwitchResult> =>
-      ipcRenderer.invoke(IPC.lanesSwitchBranch, args),
-    attach: async (args: AttachLaneArgs): Promise<LaneSummary> =>
-      ipcRenderer.invoke(IPC.lanesAttach, args),
+    ): Promise<LaneBranchSwitchResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.lanesSwitchBranch, args);
+      clearGitReadCaches();
+      return result;
+    },
+    attach: async (args: AttachLaneArgs): Promise<LaneSummary> => {
+      clearGitReadCaches();
+      const lane = await ipcRenderer.invoke(IPC.lanesAttach, args);
+      clearGitReadCaches();
+      return lane;
+    },
     listUnregisteredWorktrees: async (): Promise<UnregisteredLaneCandidate[]> =>
       ipcRenderer.invoke(IPC.lanesListUnregisteredWorktrees),
-    adoptAttached: async (args: AdoptAttachedLaneArgs): Promise<LaneSummary> =>
-      ipcRenderer.invoke(IPC.lanesAdoptAttached, args),
-    rename: async (args: RenameLaneArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesRename, args),
-    reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> =>
-      ipcRenderer.invoke(IPC.lanesReparent, args),
-    updateAppearance: async (args: UpdateLaneAppearanceArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesUpdateAppearance, args),
-    archive: async (args: ArchiveLaneArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesArchive, args),
-    delete: async (args: DeleteLaneArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesDelete, args),
+    adoptAttached: async (args: AdoptAttachedLaneArgs): Promise<LaneSummary> => {
+      clearGitReadCaches();
+      const lane = await ipcRenderer.invoke(IPC.lanesAdoptAttached, args);
+      clearGitReadCaches();
+      return lane;
+    },
+    rename: async (args: RenameLaneArgs): Promise<void> => {
+      clearGitReadCaches();
+      await ipcRenderer.invoke(IPC.lanesRename, args);
+      clearGitReadCaches();
+    },
+    reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.lanesReparent, args);
+      clearGitReadCaches();
+      return result;
+    },
+    updateAppearance: async (args: UpdateLaneAppearanceArgs): Promise<void> => {
+      clearGitReadCaches();
+      await ipcRenderer.invoke(IPC.lanesUpdateAppearance, args);
+      clearGitReadCaches();
+    },
+    archive: async (args: ArchiveLaneArgs): Promise<void> => {
+      clearGitReadCaches();
+      await ipcRenderer.invoke(IPC.lanesArchive, args);
+      clearGitReadCaches();
+    },
+    delete: async (args: DeleteLaneArgs): Promise<void> => {
+      clearGitReadCaches();
+      await ipcRenderer.invoke(IPC.lanesDelete, args);
+      clearGitReadCaches();
+    },
     cancelDelete: async (args: { laneId: string }): Promise<{ cancelled: boolean; reason?: string }> =>
       ipcRenderer.invoke(IPC.lanesDeleteCancel, args),
     getDeleteRisk: async (args: { laneId: string }): Promise<LaneDeleteRisk> =>
@@ -1674,7 +2022,7 @@ contextBridge.exposeInMainWorld("ade", {
     readTranscriptTail: async (args: ReadTranscriptTailArgs): Promise<string> =>
       ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
     getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
-      ipcRenderer.invoke(IPC.sessionsGetDelta, { sessionId }),
+      sessionDeltaCache.get(sessionId),
     onChanged: (cb: (ev: TerminalSessionChangedEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -1691,10 +2039,15 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatList, args),
     getSummary: async (
       args: AgentChatGetSummaryArgs,
-    ): Promise<AgentChatSessionSummary | null> =>
-      ipcRenderer.invoke(IPC.agentChatGetSummary, args),
-    create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
-      ipcRenderer.invoke(IPC.agentChatCreate, args),
+    ): Promise<AgentChatSessionSummary | null> => {
+      const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) return ipcRenderer.invoke(IPC.agentChatGetSummary, args);
+      return agentChatSummaryCache.get(sessionId);
+    },
+    create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> => {
+      agentChatSummaryCache.clear();
+      return ipcRenderer.invoke(IPC.agentChatCreate, args);
+    },
     suggestLaneName: async (args: AgentChatSuggestLaneNameArgs): Promise<string> =>
       ipcRenderer.invoke(IPC.agentChatSuggestLaneName, args),
     parallelLaunchState: {
@@ -1707,52 +2060,94 @@ contextBridge.exposeInMainWorld("ade", {
       args: AgentChatHandoffArgs,
     ): Promise<AgentChatHandoffResult> =>
       ipcRenderer.invoke(IPC.agentChatHandoff, args),
-    send: async (args: AgentChatSendArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatSend, args),
-    steer: async (args: AgentChatSteerArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatSteer, args),
-    cancelSteer: async (args: AgentChatCancelSteerArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatCancelSteer, args),
-    editSteer: async (args: AgentChatEditSteerArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatEditSteer, args),
-    dispatchSteer: async (args: AgentChatDispatchSteerArgs): Promise<AgentChatDispatchSteerResult> =>
-      ipcRenderer.invoke(IPC.agentChatDispatchSteer, args),
-    cancelDispatchedSteer: async (args: AgentChatCancelDispatchedSteerArgs): Promise<AgentChatCancelDispatchedSteerResult> =>
-      ipcRenderer.invoke(IPC.agentChatCancelDispatchedSteer, args),
-    interrupt: async (args: AgentChatInterruptArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatInterrupt, args),
-    resume: async (args: AgentChatResumeArgs): Promise<AgentChatSession> =>
-      ipcRenderer.invoke(IPC.agentChatResume, args),
-    approve: async (args: AgentChatApproveArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatApprove, args),
-    respondToInput: async (args: AgentChatRespondToInputArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatRespondToInput, args),
+    send: async (args: AgentChatSendArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatSend, args);
+      agentChatSummaryCache.clear();
+    },
+    steer: async (args: AgentChatSteerArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatSteer, args);
+      agentChatSummaryCache.clear();
+    },
+    cancelSteer: async (args: AgentChatCancelSteerArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatCancelSteer, args);
+      agentChatSummaryCache.clear();
+    },
+    editSteer: async (args: AgentChatEditSteerArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatEditSteer, args);
+      agentChatSummaryCache.clear();
+    },
+    dispatchSteer: async (args: AgentChatDispatchSteerArgs): Promise<AgentChatDispatchSteerResult> => {
+      agentChatSummaryCache.clear();
+      const result = await ipcRenderer.invoke(IPC.agentChatDispatchSteer, args);
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    cancelDispatchedSteer: async (args: AgentChatCancelDispatchedSteerArgs): Promise<AgentChatCancelDispatchedSteerResult> => {
+      agentChatSummaryCache.clear();
+      const result = await ipcRenderer.invoke(IPC.agentChatCancelDispatchedSteer, args);
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    interrupt: async (args: AgentChatInterruptArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatInterrupt, args);
+      agentChatSummaryCache.clear();
+    },
+    resume: async (args: AgentChatResumeArgs): Promise<AgentChatSession> => {
+      agentChatSummaryCache.clear();
+      const session = await ipcRenderer.invoke(IPC.agentChatResume, args);
+      agentChatSummaryCache.clear();
+      return session;
+    },
+    approve: async (args: AgentChatApproveArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatApprove, args);
+      agentChatSummaryCache.clear();
+    },
+    respondToInput: async (args: AgentChatRespondToInputArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatRespondToInput, args);
+      agentChatSummaryCache.clear();
+    },
     models: async (args: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> =>
       ipcRenderer.invoke(IPC.agentChatModels, args),
-    dispose: async (args: AgentChatDisposeArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatDispose, args),
-    archive: async (args: AgentChatArchiveArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatArchive, args),
-    unarchive: async (args: AgentChatArchiveArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatUnarchive, args),
-    delete: async (args: AgentChatDeleteArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatDelete, args),
+    dispose: async (args: AgentChatDisposeArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatDispose, args);
+      agentChatSummaryCache.clear();
+    },
+    archive: async (args: AgentChatArchiveArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatArchive, args);
+      agentChatSummaryCache.clear();
+    },
+    unarchive: async (args: AgentChatArchiveArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatUnarchive, args);
+      agentChatSummaryCache.clear();
+    },
+    delete: async (args: AgentChatDeleteArgs): Promise<void> => {
+      agentChatSummaryCache.clear();
+      await ipcRenderer.invoke(IPC.agentChatDelete, args);
+      agentChatSummaryCache.clear();
+    },
     updateSession: async (
       args: AgentChatUpdateSessionArgs,
-    ): Promise<AgentChatSession> =>
-      ipcRenderer.invoke(IPC.agentChatUpdateSession, args),
+    ): Promise<AgentChatSession> => {
+      agentChatSummaryCache.clear();
+      const session = await ipcRenderer.invoke(IPC.agentChatUpdateSession, args);
+      agentChatSummaryCache.clear();
+      return session;
+    },
     warmupModel: async (args: {
       sessionId: string;
       modelId: string;
     }): Promise<void> => ipcRenderer.invoke(IPC.agentChatWarmupModel, args),
-    onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: AgentChatEventEnvelope,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.agentChatEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.agentChatEvent, listener);
-    },
+    onEvent: agentChatEventFanout,
     slashCommands: async (
       args: AgentChatSlashCommandsArgs,
     ): Promise<AgentChatSlashCommand[]> =>
@@ -1792,41 +2187,58 @@ contextBridge.exposeInMainWorld("ade", {
     getOwnerSnapshot: async (
       args: ComputerUseOwnerSnapshotArgs,
     ): Promise<ComputerUseOwnerSnapshot> =>
-      ipcRenderer.invoke(IPC.computerUseGetOwnerSnapshot, args),
+      computerUseOwnerSnapshotCache.get(serializeIpcCacheArgs(args)),
     routeArtifact: async (
       args: ComputerUseArtifactRouteArgs,
     ): Promise<ComputerUseArtifactView> =>
-      ipcRenderer.invoke(IPC.computerUseRouteArtifact, args),
+      clearAround(
+        () => computerUseOwnerSnapshotCache.clear(),
+        () => ipcRenderer.invoke(IPC.computerUseRouteArtifact, args),
+      ),
     updateArtifactReview: async (
       args: ComputerUseArtifactReviewArgs,
     ): Promise<ComputerUseArtifactView> =>
-      ipcRenderer.invoke(IPC.computerUseUpdateArtifactReview, args),
+      clearAround(
+        () => computerUseOwnerSnapshotCache.clear(),
+        () => ipcRenderer.invoke(IPC.computerUseUpdateArtifactReview, args),
+      ),
     readArtifactPreview: async (args: {
       uri: string;
     }): Promise<string | null> =>
       ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
-    onEvent: (cb: (ev: ComputerUseEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: ComputerUseEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.computerUseEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.computerUseEvent, listener);
-    },
+    onEvent: computerUseEventFanout,
   },
   iosSimulator: {
     getStatus: async (): Promise<IosSimulatorStatus> =>
-      ipcRenderer.invoke(IPC.iosSimulatorGetStatus),
+      iosSimulatorStatusCache.get(),
     listDevices: async (): Promise<IosSimulatorDevice[]> =>
-      ipcRenderer.invoke(IPC.iosSimulatorListDevices),
+      iosSimulatorDevicesCache.get(),
     listLaunchTargets: async (args: IosSimulatorListLaunchTargetsArgs = {}): Promise<IosSimulatorLaunchTarget[]> =>
       ipcRenderer.invoke(IPC.iosSimulatorListLaunchTargets, args),
-    launch: async (args: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> =>
-      ipcRenderer.invoke(IPC.iosSimulatorLaunch, args),
-    attachToChatSession: async (args: { chatSessionId: string | null; callerChatSessionId?: string | null }): Promise<IosSimulatorSession | null> =>
-      ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args),
-    shutdown: async (args: IosSimulatorShutdownArgs = {}): Promise<IosSimulatorShutdownResult> =>
-      ipcRenderer.invoke(IPC.iosSimulatorShutdown, args),
+    launch: async (args: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> => {
+      clearIosSimulatorStatusCaches();
+      try {
+        return await ipcRenderer.invoke(IPC.iosSimulatorLaunch, args);
+      } finally {
+        clearIosSimulatorStatusCaches();
+      }
+    },
+    attachToChatSession: async (args: { chatSessionId: string | null; callerChatSessionId?: string | null }): Promise<IosSimulatorSession | null> => {
+      clearIosSimulatorStatusCaches();
+      try {
+        return await ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args);
+      } finally {
+        clearIosSimulatorStatusCaches();
+      }
+    },
+    shutdown: async (args: IosSimulatorShutdownArgs = {}): Promise<IosSimulatorShutdownResult> => {
+      clearIosSimulatorStatusCaches();
+      try {
+        return await ipcRenderer.invoke(IPC.iosSimulatorShutdown, args);
+      } finally {
+        clearIosSimulatorStatusCaches();
+      }
+    },
     screenshot: async (args: { deviceUdid?: string | null } = {}): Promise<IosSimulatorScreenshot> =>
       ipcRenderer.invoke(IPC.iosSimulatorScreenshot, args),
     getScreenSnapshot: async (args: IosScreenSnapshotArgs = {}): Promise<IosScreenSnapshot> =>
@@ -1843,10 +2255,22 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.iosSimulatorRenderPreview, args),
     openPreviewWorkspace: async (args: IosSimulatorOpenPreviewWorkspaceArgs = {}): Promise<{ ok: true; path: string }> =>
       ipcRenderer.invoke(IPC.iosSimulatorOpenPreviewWorkspace, args),
-    startStream: async (args: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> =>
-      ipcRenderer.invoke(IPC.iosSimulatorStartStream, args),
-    stopStream: async (): Promise<IosSimulatorStreamStatus> =>
-      ipcRenderer.invoke(IPC.iosSimulatorStopStream),
+    startStream: async (args: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> => {
+      clearIosSimulatorStatusCaches();
+      try {
+        return await ipcRenderer.invoke(IPC.iosSimulatorStartStream, args);
+      } finally {
+        clearIosSimulatorStatusCaches();
+      }
+    },
+    stopStream: async (): Promise<IosSimulatorStreamStatus> => {
+      clearIosSimulatorStatusCaches();
+      try {
+        return await ipcRenderer.invoke(IPC.iosSimulatorStopStream);
+      } finally {
+        clearIosSimulatorStatusCaches();
+      }
+    },
     getStreamStatus: async (): Promise<IosSimulatorStreamStatus> =>
       ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
     getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> =>
@@ -1864,26 +2288,19 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.iosSimulatorSwipe, args),
     selectPoint: async (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }): Promise<IosSimulatorSelectResult> =>
       ipcRenderer.invoke(IPC.iosSimulatorSelectPoint, args),
-    onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: IosSimulatorEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.iosSimulatorEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.iosSimulatorEvent, listener);
-    },
+    onEvent: iosSimulatorEventFanout,
   },
   appControl: {
     getStatus: async (): Promise<AppControlStatus> =>
-      ipcRenderer.invoke(IPC.appControlGetStatus),
+      appControlStatusCache.get(),
     launch: async (args: AppControlLaunchArgs = {}): Promise<AppControlSession> =>
-      ipcRenderer.invoke(IPC.appControlLaunch, args),
+      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlLaunch, args)),
     launchInTerminal: async (args: AppControlLaunchArgs = {}): Promise<AppControlSession> =>
-      ipcRenderer.invoke(IPC.appControlLaunchInTerminal, args),
+      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlLaunchInTerminal, args)),
     connect: async (args: AppControlConnectArgs): Promise<AppControlSession> =>
-      ipcRenderer.invoke(IPC.appControlConnect, args),
+      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlConnect, args)),
     stop: async (args: AppControlStopArgs = {}): Promise<{ ok: true; previousSession: AppControlSession | null }> =>
-      ipcRenderer.invoke(IPC.appControlStop, args),
+      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlStop, args)),
     screenshot: async (): Promise<AppControlScreenshot> =>
       ipcRenderer.invoke(IPC.appControlScreenshot),
     getSnapshot: async (args: AppControlSnapshotArgs = {}): Promise<AppControlSnapshot> =>
@@ -1908,15 +2325,8 @@ contextBridge.exposeInMainWorld("ade", {
     listTargets: async (): Promise<AppControlTarget[]> =>
       ipcRenderer.invoke(IPC.appControlListTargets),
     attachToTarget: async (args: { targetId: string }): Promise<AppControlSession> =>
-      ipcRenderer.invoke(IPC.appControlAttachToTarget, args),
-    onEvent: (cb: (ev: AppControlEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: AppControlEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.appControlEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.appControlEvent, listener);
-    },
+      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args)),
+    onEvent: appControlEventFanout,
   },
   terminal: {
     list: async (args: ChatTerminalListArgs = {}): Promise<ChatTerminalSession[]> =>
@@ -1944,26 +2354,12 @@ contextBridge.exposeInMainWorld("ade", {
       ptyId: string;
       sessionId?: string;
     }): Promise<void> => ipcRenderer.invoke(IPC.ptyDispose, arg),
-    onData: (cb: (ev: PtyDataEvent) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: PtyDataEvent,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.ptyData, listener);
-      return () => ipcRenderer.removeListener(IPC.ptyData, listener);
-    },
-    onExit: (cb: (ev: PtyExitEvent) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: PtyExitEvent,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.ptyExit, listener);
-      return () => ipcRenderer.removeListener(IPC.ptyExit, listener);
-    },
+    onData: ptyDataEventFanout,
+    onExit: ptyExitEventFanout,
   },
   diff: {
     getChanges: async (args: GetDiffChangesArgs): Promise<DiffChanges> =>
-      ipcRenderer.invoke(IPC.diffGetChanges, args),
+      diffChangesCache.get(serializeIpcCacheArgs(args)),
     getFile: async (args: GetFileDiffArgs): Promise<FileDiff> =>
       ipcRenderer.invoke(IPC.diffGetFile, args),
   },
@@ -2010,23 +2406,52 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   git: {
-    stageFile: async (args: GitFileActionArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitStageFile, args),
-    stageAll: async (args: GitBatchFileActionArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitStageAll, args),
-    unstageFile: async (args: GitFileActionArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitUnstageFile, args),
+    stageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitStageFile, args);
+      clearGitReadCaches();
+      return result;
+    },
+    stageAll: async (args: GitBatchFileActionArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitStageAll, args);
+      clearGitReadCaches();
+      return result;
+    },
+    unstageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitUnstageFile, args);
+      clearGitReadCaches();
+      return result;
+    },
     unstageAll: async (
       args: GitBatchFileActionArgs,
-    ): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitUnstageAll, args),
-    discardFile: async (args: GitFileActionArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitDiscardFile, args),
+    ): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitUnstageAll, args);
+      clearGitReadCaches();
+      return result;
+    },
+    discardFile: async (args: GitFileActionArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitDiscardFile, args);
+      clearGitReadCaches();
+      return result;
+    },
     restoreStagedFile: async (
       args: GitFileActionArgs,
-    ): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitRestoreStagedFile, args),
-    commit: async (args: GitCommitArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitCommit, args),
+    ): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitRestoreStagedFile, args);
+      clearGitReadCaches();
+      return result;
+    },
+    commit: async (args: GitCommitArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitCommit, args);
+      clearGitReadCaches();
+      return result;
+    },
     generateCommitMessage: async (
       args: GitGenerateCommitMessageArgs,
     ): Promise<GitGenerateCommitMessageResult> =>
@@ -2040,36 +2465,80 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.gitListCommitFiles, args),
     getCommitMessage: async (args: GitGetCommitMessageArgs): Promise<string> =>
       ipcRenderer.invoke(IPC.gitGetCommitMessage, args),
-    revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitRevertCommit, args),
+    revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitRevertCommit, args);
+      clearGitReadCaches();
+      return result;
+    },
     cherryPickCommit: async (
       args: GitCherryPickArgs,
-    ): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitCherryPickCommit, args),
-    stashPush: async (args: GitStashPushArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitStashPush, args),
+    ): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitCherryPickCommit, args);
+      clearGitReadCaches();
+      return result;
+    },
+    stashPush: async (args: GitStashPushArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitStashPush, args);
+      clearGitReadCaches();
+      return result;
+    },
     stashList: async (args: { laneId: string }): Promise<GitStashSummary[]> =>
       ipcRenderer.invoke(IPC.gitStashList, args),
-    stashApply: async (args: GitStashRefArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitStashApply, args),
-    stashPop: async (args: GitStashRefArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitStashPop, args),
-    stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitStashDrop, args),
-    stashClear: async (args: { laneId: string }): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitStashClear, args),
-    fetch: async (args: { laneId: string }): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitFetch, args),
-    pull: async (args: { laneId: string }): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitPull, args),
+    stashApply: async (args: GitStashRefArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitStashApply, args);
+      clearGitReadCaches();
+      return result;
+    },
+    stashPop: async (args: GitStashRefArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitStashPop, args);
+      clearGitReadCaches();
+      return result;
+    },
+    stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitStashDrop, args);
+      clearGitReadCaches();
+      return result;
+    },
+    stashClear: async (args: { laneId: string }): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitStashClear, args);
+      clearGitReadCaches();
+      return result;
+    },
+    fetch: async (args: { laneId: string }): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitFetch, args);
+      clearGitReadCaches();
+      return result;
+    },
+    pull: async (args: { laneId: string }): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitPull, args);
+      clearGitReadCaches();
+      return result;
+    },
     getSyncStatus: async (args: {
       laneId: string;
     }): Promise<GitUpstreamSyncStatus> =>
       ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
-    sync: async (args: GitSyncArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitSync, args),
-    push: async (args: GitPushArgs): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitPush, args),
+    sync: async (args: GitSyncArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitSync, args);
+      clearGitReadCaches();
+      return result;
+    },
+    push: async (args: GitPushArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitPush, args);
+      clearGitReadCaches();
+      return result;
+    },
     getConflictState: async (laneId: string): Promise<GitConflictState> =>
       ipcRenderer.invoke(IPC.gitGetConflictState, { laneId }),
     rebaseContinue: async (laneId: string): Promise<GitActionResult> =>
@@ -2083,7 +2552,7 @@ contextBridge.exposeInMainWorld("ade", {
     listBranches: async (
       args: GitListBranchesArgs,
     ): Promise<GitBranchSummary[]> =>
-      ipcRenderer.invoke(IPC.gitListBranches, args),
+      gitBranchesCache.get(serializeIpcCacheArgs(args)),
     checkoutBranch: async (
       args: GitCheckoutBranchArgs,
     ): Promise<GitActionResult> =>
@@ -2185,13 +2654,15 @@ contextBridge.exposeInMainWorld("ade", {
   },
   github: {
     getStatus: async (opts?: { forceRefresh?: boolean }): Promise<GitHubStatus> =>
-      ipcRenderer.invoke(IPC.githubGetStatus, opts ?? {}),
+      opts?.forceRefresh
+        ? clearAround(() => githubStatusCache.clear(), () => ipcRenderer.invoke(IPC.githubGetStatus, opts ?? {}))
+        : githubStatusCache.get(),
     setToken: async (token: string): Promise<GitHubStatus> =>
-      ipcRenderer.invoke(IPC.githubSetToken, { token }),
+      clearAround(() => githubStatusCache.clear(), () => ipcRenderer.invoke(IPC.githubSetToken, { token })),
     clearToken: async (): Promise<GitHubStatus> =>
-      ipcRenderer.invoke(IPC.githubClearToken),
+      clearAround(() => githubStatusCache.clear(), () => ipcRenderer.invoke(IPC.githubClearToken)),
     detectRepo: async (): Promise<{ owner: string; name: string } | null> => {
-      const status = await ipcRenderer.invoke(IPC.githubGetStatus) as GitHubStatus;
+      const status = await githubStatusCache.get();
       return status.repo;
     },
     listRepoLabels: async (args: { owner: string; name: string }): Promise<Array<{ name: string; color?: string }>> =>
@@ -2199,8 +2670,10 @@ contextBridge.exposeInMainWorld("ade", {
     listRepoCollaborators: async (args: { owner: string; name: string }): Promise<Array<{ login: string; avatarUrl?: string }>> =>
       ipcRenderer.invoke(IPC.githubListRepoCollaborators, args),
     onStatusChanged: (cb: (status: GitHubStatus) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: GitHubStatus) =>
+      const listener = (_event: Electron.IpcRendererEvent, payload: GitHubStatus) => {
+        githubStatusCache.clear();
         cb(payload);
+      };
       ipcRenderer.on(IPC.githubStatusChanged, listener);
       return () => ipcRenderer.removeListener(IPC.githubStatusChanged, listener);
     },
@@ -2585,21 +3058,36 @@ contextBridge.exposeInMainWorld("ade", {
   },
   projectConfig: {
     get: async (): Promise<ProjectConfigSnapshot> =>
-      ipcRenderer.invoke(IPC.projectConfigGet),
+      projectConfigSnapshotCache.get(),
     validate: async (
       candidate: ProjectConfigCandidate,
     ): Promise<ProjectConfigValidationResult> =>
       ipcRenderer.invoke(IPC.projectConfigValidate, { candidate }),
     save: async (
       candidate: ProjectConfigCandidate,
-    ): Promise<ProjectConfigSnapshot> =>
-      ipcRenderer.invoke(IPC.projectConfigSave, { candidate }),
+    ): Promise<ProjectConfigSnapshot> => {
+      projectConfigSnapshotCache.clear();
+      try {
+        const snapshot = await ipcRenderer.invoke(IPC.projectConfigSave, { candidate });
+        projectConfigSnapshotCache.clear();
+        return snapshot;
+      } catch (error) {
+        projectConfigSnapshotCache.clear();
+        throw error;
+      }
+    },
     diffAgainstDisk: async (): Promise<ProjectConfigDiff> =>
       ipcRenderer.invoke(IPC.projectConfigDiffAgainstDisk),
     confirmTrust: async (
       arg: { sharedHash?: string } = {},
-    ): Promise<ProjectConfigTrust> =>
-      ipcRenderer.invoke(IPC.projectConfigConfirmTrust, arg),
+    ): Promise<ProjectConfigTrust> => {
+      projectConfigSnapshotCache.clear();
+      try {
+        return await ipcRenderer.invoke(IPC.projectConfigConfirmTrust, arg);
+      } finally {
+        projectConfigSnapshotCache.clear();
+      }
+    },
   },
   zoom: {
     getLevel: (): number => webFrame.getZoomLevel(),

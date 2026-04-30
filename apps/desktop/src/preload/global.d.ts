@@ -149,6 +149,7 @@ import type {
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
+  SyncGetStatusArgs,
   SyncPeerDeviceType,
   SyncRoleSnapshot,
   SyncStatusEventPayload,
@@ -723,7 +724,7 @@ declare global {
         updateConfig: (config: Partial<AiConfig>) => Promise<void>;
       };
       sync: {
-        getStatus: () => Promise<SyncRoleSnapshot>;
+        getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
         refreshDiscovery: () => Promise<SyncRoleSnapshot>;
         listDevices: () => Promise<SyncDeviceRuntimeState[]>;
         updateLocalDevice: (args: {

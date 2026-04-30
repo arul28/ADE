@@ -1450,15 +1450,48 @@ describe("ptyService", () => {
 
   describe("PTY data handling", () => {
     it("broadcasts data events when the PTY emits data", async () => {
-      const { service, mockPty, broadcastData } = createHarness();
-      const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
-      mockPty._emitter.emit("data", "hello world");
-      expect(broadcastData).toHaveBeenCalledWith({
-        ptyId,
-        sessionId,
-        projectRoot: "/tmp/test-project",
-        data: "hello world",
-      });
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, broadcastData } = createHarness();
+        const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+        mockPty._emitter.emit("data", "hello world");
+        expect(broadcastData).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(16);
+        expect(broadcastData).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "hello world",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("coalesces rapid PTY data chunks and flushes before exit", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, broadcastData, broadcastExit } = createHarness();
+        const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+        mockPty._emitter.emit("data", "hello ");
+        mockPty._emitter.emit("data", "world");
+        mockPty._emitter.emit("exit", { exitCode: 0 });
+
+        expect(broadcastData).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "hello world",
+        });
+        expect(broadcastExit).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          exitCode: 0,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("closes entry and broadcasts exit when PTY exits", async () => {
@@ -1592,6 +1625,44 @@ describe("ptyService", () => {
         await vi.advanceTimersByTimeAsync(0);
 
         expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-1", "codex resume thread-abc");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cools down repeated missing resume target backfills during session-list hydration", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-04-15T22:00:00.000Z"));
+
+        const { service, sessionService, logger } = createHarness();
+        sessionService.create({
+          sessionId: "session-missing",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: "2026-04-15T21:30:00.000Z",
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-missing.log",
+          toolType: "codex",
+        });
+
+        await service.ensureResumeTargets(["session-missing"]);
+        await service.ensureResumeTargets(["session-missing"]);
+
+        expect(sessionService.readTranscriptTail).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.resume_target_missing",
+          expect.objectContaining({ sessionId: "session-missing", reason: "session-list" }),
+        );
+
+        await vi.advanceTimersByTimeAsync(10 * 60_000 - 1);
+        await service.ensureResumeTargets(["session-missing"]);
+        expect(sessionService.readTranscriptTail).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(1);
+        await service.ensureResumeTargets(["session-missing"]);
+        expect(sessionService.readTranscriptTail).toHaveBeenCalledTimes(2);
       } finally {
         vi.useRealTimers();
       }

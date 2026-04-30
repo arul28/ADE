@@ -74,11 +74,15 @@ function hashText(value: string): string {
 }
 
 const GENERIC_PR_FEEDBACK_PATTERNS = [
+  /^@(?:copilot|coderabbit)\b/i,
+  /^acknowledged\b/i,
+  /^thanks?\b/i,
   /^preview deployment\b/i,
   /^learn more about\b/i,
   /^read more about\b/i,
   /^see more\b/i,
   /^click here\b/i,
+  /\bdo not make fixes\b/i,
 ];
 
 const DERIVABLE_PR_FEEDBACK_PATTERNS = [
@@ -445,7 +449,8 @@ export function createKnowledgeCaptureService(args: {
     const distinctOrigins = new Set(
       matches.map((item) => cleanText(item.sourceRunId || item.sourceId || item.id)).filter(Boolean),
     );
-    if (distinctOrigins.size < 3) return;
+    const repeatedObservations = matches.some((item) => item.observationCount >= 3);
+    if (distinctOrigins.size < 3 && !repeatedObservations) return;
 
     const canonical = [...matches].sort((left, right) =>
       (right.observationCount - left.observationCount)
@@ -489,6 +494,7 @@ export function createKnowledgeCaptureService(args: {
       metadata: {
         canonicalMemoryId: result.id,
         distinctOrigins: distinctOrigins.size,
+        observationCount: canonical.observationCount,
       },
     });
   };

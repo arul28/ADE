@@ -9,8 +9,8 @@ describe("createMemoryTools", () => {
         accepted: true,
         memory: {
           id: "memory-1",
-          tier: 3,
-          status: "candidate",
+          tier: 2,
+          status: "promoted",
         },
         deduped: false,
       })),
@@ -44,9 +44,9 @@ describe("createMemoryTools", () => {
       expect.objectContaining({
         scope: "mission",
         scopeOwnerId: "run-1",
-        status: "candidate",
-        tier: 3,
-        confidence: 0.6,
+        status: "promoted",
+        tier: 2,
+        confidence: 1,
       })
     );
   });
@@ -58,8 +58,8 @@ describe("createMemoryTools", () => {
         accepted: true,
         memory: {
           id: "memory-2",
-          tier: 3,
-          status: "candidate",
+          tier: 2,
+          status: "promoted",
         },
         deduped: false,
       })),
@@ -93,9 +93,9 @@ describe("createMemoryTools", () => {
       expect.objectContaining({
         scope: "agent",
         scopeOwnerId: "agent-session-1",
-        status: "candidate",
-        tier: 3,
-        confidence: 0.6,
+        status: "promoted",
+        tier: 2,
+        confidence: 1,
       })
     );
   });

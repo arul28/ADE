@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { At, CaretDown, Check, Desktop, DeviceMobile, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
@@ -1976,7 +1976,7 @@ export function AgentChatComposer({
     setSelectedAppControlContextId(null);
   }, [appControlContextItems, selectedAppControlContextId]);
 
-  const composerBeamActive = layoutVariant !== "grid-tile" && (turnActive || !chatHasMessages);
+  const composerBeamActive = isActive && layoutVariant !== "grid-tile" && turnActive;
   const composerBeamVariant = turnActive ? "ocean" : "colorful";
   const composerBeamDuration = turnActive ? 20 : 5;
   const composerBeamStrength = turnActive ? 0.26 : 0.44;
@@ -2002,21 +2002,35 @@ export function AgentChatComposer({
     return "Send";
   }
 
-  return (
-    <>
+  const composerFrameClassName = cn(
+    "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
+    layoutVariant === "grid-tile" ? "m-0" : "",
+  );
+  const composerFrameStyle = { overflow: "visible" as const };
+  const renderComposerFrame = (children: ReactNode) => (
+    composerBeamActive ? (
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
         duration={composerBeamDuration}
         strength={composerBeamStrength}
-        active={composerBeamActive}
+        active
         borderRadius={18}
-        className={cn(
-          "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
-          layoutVariant === "grid-tile" ? "m-0" : "",
-        )}
-        style={{ overflow: "visible" }}
+        className={composerFrameClassName}
+        style={composerFrameStyle}
       >
+        {children}
+      </BorderBeam>
+    ) : (
+      <div className={composerFrameClassName} style={composerFrameStyle}>
+        {children}
+      </div>
+    )
+  );
+
+  return (
+    <>
+      {renderComposerFrame(
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
@@ -2896,7 +2910,7 @@ export function AgentChatComposer({
         </div>
       </div>
       </ChatComposerShell>
-      </BorderBeam>
+      )}
     </>
   );
 }

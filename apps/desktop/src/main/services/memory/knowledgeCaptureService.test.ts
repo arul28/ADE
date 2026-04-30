@@ -265,6 +265,18 @@ describe("knowledgeCaptureService", () => {
             createdAt: null,
             updatedAt: null,
           },
+          {
+            id: "comment-copilot-command",
+            author: "maintainer",
+            authorAvatarUrl: null,
+            body: "@copilot review but do not make fixes",
+            source: "issue",
+            url: null,
+            path: null,
+            line: null,
+            createdAt: null,
+            updatedAt: null,
+          },
         ],
         getReviews: async () => [
           {
