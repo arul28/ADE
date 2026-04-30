@@ -678,16 +678,17 @@ function createShortIpcCache<T>(loader: () => Promise<T>, ttlMs: number): ShortI
         if (promise) return promise;
       }
 
-      promise = loader()
+      const req = loader()
         .then((next) => {
           value = next;
           expiresAt = Date.now() + ttlMs;
           return next;
         })
         .finally(() => {
-          promise = null;
+          if (promise === req) promise = null;
         });
-      return promise;
+      promise = req;
+      return req;
     },
   };
 }
