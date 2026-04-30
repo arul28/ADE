@@ -46,11 +46,13 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "file",
   "process",
   "pty",
+  "terminal",
   "layout",
   "tiling_tree",
   "graph_state",
   "computer_use_artifacts",
   "ios_simulator",
+  "app_control",
   "automations",
   "issue",
 ] as const;
@@ -336,11 +338,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   process: ["getLogTail", "listDefinitions", "listRuntime", "startAll", "stopAll"],
   pty: ["create", "dispose", "resize", "write"],
+  terminal: ["list", "read", "write", "signal", "activeForChat"],
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
   computer_use_artifacts: ["ingest", "listArtifacts"],
   ios_simulator: ["getStatus", "listDevices", "listLaunchTargets", "launch", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
+  app_control: ["getStatus", "launch", "launchInTerminal", "connect", "stop", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "readTerminal", "writeTerminal", "signalTerminal"],
   automations: [
     "list",
     "get",
@@ -556,6 +560,35 @@ function buildGraphStateDomainService(runtime: AdeRuntime): GraphStateService | 
   };
 }
 
+type TerminalDomainService = {
+  list(args?: unknown): unknown;
+  read(args?: unknown): Promise<unknown>;
+  write(args?: unknown): unknown;
+  signal(args?: unknown): unknown;
+  activeForChat(args?: unknown): unknown;
+};
+
+function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService | null {
+  if (!runtime.ptyService) return null;
+  return {
+    list(args) {
+      return runtime.ptyService.listTerminals(args as Parameters<typeof runtime.ptyService.listTerminals>[0]);
+    },
+    read(args) {
+      return runtime.ptyService.readTerminal(args as Parameters<typeof runtime.ptyService.readTerminal>[0]);
+    },
+    write(args) {
+      return runtime.ptyService.writeTerminal(args as Parameters<typeof runtime.ptyService.writeTerminal>[0]);
+    },
+    signal(args) {
+      return runtime.ptyService.signalTerminal(args as Parameters<typeof runtime.ptyService.signalTerminal>[0]);
+    },
+    activeForChat(args) {
+      return runtime.ptyService.activeForChat(args as Parameters<typeof runtime.ptyService.activeForChat>[0]);
+    },
+  };
+}
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -595,11 +628,13 @@ export function getAdeActionDomainServices(
     file: toService(runtime.fileService),
     process: toService(runtime.processService),
     pty: toService(runtime.ptyService),
+    terminal: toService(buildTerminalDomainService(runtime)),
     layout: toService(buildLayoutDomainService(runtime)),
     tiling_tree: toService(buildTilingTreeDomainService(runtime)),
     graph_state: toService(buildGraphStateDomainService(runtime)),
     computer_use_artifacts: toService(runtime.computerUseArtifactBrokerService),
     ios_simulator: toService(runtime.iosSimulatorService),
+    app_control: toService(runtime.appControlService),
     automations: toService(buildAutomationsDomainService(runtime)),
     issue: toService(buildIssueDomainService(runtime)),
   };

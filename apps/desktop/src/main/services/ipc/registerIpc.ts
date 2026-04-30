@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell } from "electron";
+import type { IpcMainInvokeEvent } from "electron";
 import { createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -43,6 +44,13 @@ import type {
   AutomationSimulateRequest,
   AutomationSimulateResult,
   ReviewLaunchContext,
+  AppControlClickArgs,
+  AppControlConnectArgs,
+  AppControlInspectPointArgs,
+  AppControlLaunchArgs,
+  AppControlSnapshotArgs,
+  AppControlStopArgs,
+  AppControlTypeTextArgs,
   ReviewListRunsArgs,
   ReviewRun,
   ReviewRunDetail,
@@ -269,6 +277,11 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  ChatTerminalActiveForChatArgs,
+  ChatTerminalListArgs,
+  ChatTerminalReadArgs,
+  ChatTerminalSignalArgs,
+  ChatTerminalWriteArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
   RenameLaneArgs,
@@ -552,6 +565,7 @@ import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
+import type { createAppControlService } from "../appControl/appControlService";
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -641,6 +655,7 @@ export type AppContext = {
   agentChatService: ReturnType<typeof createAgentChatService>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   iosSimulatorService?: ReturnType<typeof createIosSimulatorService> | null;
+  appControlService?: ReturnType<typeof createAppControlService> | null;
   githubService: ReturnType<typeof createGithubService>;
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
@@ -1586,6 +1601,7 @@ export function registerIpc({
   const watcherCleanupBoundSenders = new Set<number>();
   let linearOAuthService: LinearOAuthService | null = null;
   let linearOAuthServiceAdeDir: string | null = null;
+  const appControlRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
     if (getSyncService) return getSyncService() ?? null;
@@ -1713,6 +1729,16 @@ export function registerIpc({
       case IPC.iosSimulatorTypeText:
       case IPC.iosSimulatorDrag:
       case IPC.iosSimulatorSwipe:
+      case IPC.appControlLaunch:
+      case IPC.appControlLaunchInTerminal:
+      case IPC.appControlGetSnapshot:
+      case IPC.appControlInspectPoint:
+      case IPC.appControlSelectPoint:
+      case IPC.appControlScreenshot:
+      case IPC.appControlConnect:
+      case IPC.appControlStop:
+      case IPC.appControlClick:
+      case IPC.appControlTypeText:
         return 60_000;
       default:
         return 30_000;
@@ -1792,6 +1818,361 @@ export function registerIpc({
       throw new Error("iOS Simulator service is not available.");
     }
     return service;
+  };
+
+  const ensureAppControl = (): NonNullable<AppContext["appControlService"]> => {
+    const service = getCtx().appControlService;
+    if (!service) {
+      throw new Error("App Control service is not available.");
+    }
+    return service;
+  };
+
+  const isTrustedAppControlRendererUrl = (rawUrl: string | null | undefined): boolean => {
+    if (!rawUrl) return false;
+    try {
+      const url = new URL(rawUrl);
+      const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+      if (devServerUrl) {
+        return url.origin === new URL(devServerUrl).origin;
+      }
+      return url.protocol === "file:" && /\/renderer\/index\.html$/.test(decodeURIComponent(url.pathname));
+    } catch {
+      return false;
+    }
+  };
+
+  const assertTrustedAppControlSender = (event: IpcMainInvokeEvent, channel: string): void => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const senderUrl = event.senderFrame?.url || event.sender.getURL();
+    if (win && !win.isDestroyed() && isTrustedAppControlRendererUrl(senderUrl)) return;
+    getCtx().logger.warn("ipc.app_control.untrusted_sender", {
+      channel,
+      windowId: win?.id ?? null,
+      senderUrl: senderUrl || null,
+    });
+    throw new Error("App Control is only available to the ADE renderer.");
+  };
+
+  const assertAppControlRateLimit = (
+    event: IpcMainInvokeEvent,
+    channel: string,
+    limit: { windowMs: number; max: number },
+  ): void => {
+    const now = Date.now();
+    const key = `${event.sender.id}:${channel}`;
+    const bucket = appControlRateBuckets.get(key);
+    if (!bucket || now - bucket.windowStartMs > limit.windowMs) {
+      appControlRateBuckets.set(key, { windowStartMs: now, count: 1 });
+      return;
+    }
+    if (bucket.count >= limit.max) {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      getCtx().logger.warn("ipc.app_control.rate_limited", {
+        channel,
+        windowId: win?.id ?? null,
+        count: bucket.count,
+        windowMs: limit.windowMs,
+      });
+      throw new Error("Too many App Control requests. Try again shortly.");
+    }
+    bucket.count += 1;
+  };
+
+  const guardAppControlIpc = (
+    event: IpcMainInvokeEvent,
+    channel: string,
+    limit: { windowMs: number; max: number } = { windowMs: 10_000, max: 40 },
+  ): void => {
+    assertTrustedAppControlSender(event, channel);
+    assertAppControlRateLimit(event, channel, limit);
+  };
+
+  const invalidAppControlArg = (channel: string, reason: string): never => {
+    getCtx().logger.warn("ipc.app_control.invalid_args", { channel, reason });
+    throw new Error(`Invalid App Control payload: ${reason}`);
+  };
+
+  const appControlRecord = (value: unknown, channel: string, required = false): Record<string, unknown> => {
+    if (value == null) {
+      if (required) invalidAppControlArg(channel, "payload object is required");
+      return {};
+    }
+    if (!isRecord(value)) invalidAppControlArg(channel, "payload must be an object");
+    return value as Record<string, unknown>;
+  };
+
+  const optionalAppControlString = (
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+    maxLength: number,
+    options: { trim?: boolean } = {},
+  ): string | null | undefined => {
+    const value = record[field];
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== "string") invalidAppControlArg(channel, `${field} must be a string`);
+    const stringValue = value as string;
+    if (stringValue.includes("\0")) invalidAppControlArg(channel, `${field} cannot contain null bytes`);
+    const normalized = options.trim === false ? stringValue : stringValue.trim();
+    if (normalized.length > maxLength) invalidAppControlArg(channel, `${field} is too long`);
+    return normalized;
+  };
+
+  const optionalAppControlBoolean = (
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+  ): boolean | null | undefined => {
+    const value = record[field];
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== "boolean") invalidAppControlArg(channel, `${field} must be a boolean`);
+    return value as boolean;
+  };
+
+  const optionalAppControlNumber = (
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+    options: { integer?: boolean; min?: number; max?: number } = {},
+  ): number | null | undefined => {
+    const value = record[field];
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      invalidAppControlArg(channel, `${field} must be a finite number`);
+    }
+    const numberValue = value as number;
+    if (options.integer && !Number.isInteger(numberValue)) invalidAppControlArg(channel, `${field} must be an integer`);
+    if (options.min != null && numberValue < options.min) invalidAppControlArg(channel, `${field} is below the minimum`);
+    if (options.max != null && numberValue > options.max) invalidAppControlArg(channel, `${field} is above the maximum`);
+    return numberValue;
+  };
+
+  const optionalAppControlAppKind = (
+    record: Record<string, unknown>,
+    channel: string,
+  ): AppControlLaunchArgs["appKind"] | undefined => {
+    const value = record.appKind;
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (value !== "electron") invalidAppControlArg(channel, "appKind must be electron");
+    return value as "electron";
+  };
+
+  const optionalAppControlEnv = (
+    record: Record<string, unknown>,
+    channel: string,
+  ): AppControlLaunchArgs["env"] | undefined => {
+    const value = record.env;
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (!isRecord(value)) invalidAppControlArg(channel, "env must be an object");
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 64) invalidAppControlArg(channel, "env has too many entries");
+    const env: NonNullable<AppControlLaunchArgs["env"]> = {};
+    for (const [key, envValue] of entries) {
+      if (!key || key.length > 128 || key.includes("=") || key.includes("\0")) {
+        invalidAppControlArg(channel, `env key ${JSON.stringify(key)} is invalid`);
+      }
+      if (envValue === undefined) continue;
+      if (envValue === null) {
+        env[key] = null;
+        continue;
+      }
+      if (typeof envValue !== "string") invalidAppControlArg(channel, `env.${key} must be a string`);
+      const stringEnvValue = envValue as string;
+      if (stringEnvValue.includes("\0")) invalidAppControlArg(channel, `env.${key} cannot contain null bytes`);
+      if (stringEnvValue.length > 8192) invalidAppControlArg(channel, `env.${key} is too long`);
+      env[key] = stringEnvValue;
+    }
+    return env;
+  };
+
+  const parseAppControlLaunchArgs = (value: unknown, channel: string): AppControlLaunchArgs => {
+    const record = appControlRecord(value, channel);
+    const args: AppControlLaunchArgs = {};
+    const appKind = optionalAppControlAppKind(record, channel);
+    if (appKind !== undefined) args.appKind = appKind;
+    const projectRoot = optionalAppControlString(record, "projectRoot", channel, 4096);
+    if (projectRoot !== undefined) args.projectRoot = projectRoot;
+    const laneId = optionalAppControlString(record, "laneId", channel, 512);
+    if (laneId !== undefined) args.laneId = laneId;
+    const command = optionalAppControlString(record, "command", channel, 8000);
+    if (command !== undefined) args.command = command;
+    const cwd = optionalAppControlString(record, "cwd", channel, 4096);
+    if (cwd !== undefined) args.cwd = cwd;
+    const cdpPort = optionalAppControlNumber(record, "cdpPort", channel, { integer: true, min: 1, max: 65535 });
+    if (cdpPort !== undefined) args.cdpPort = cdpPort;
+    const debugPort = optionalAppControlNumber(record, "debugPort", channel, { integer: true, min: 1, max: 65535 });
+    if (debugPort !== undefined) args.debugPort = debugPort;
+    const env = optionalAppControlEnv(record, channel);
+    if (env !== undefined) args.env = env;
+    const label = optionalAppControlString(record, "label", channel, 256);
+    if (label !== undefined) args.label = label;
+    const chatSessionId = optionalAppControlString(record, "chatSessionId", channel, 128);
+    if (chatSessionId !== undefined) args.chatSessionId = chatSessionId;
+    const force = optionalAppControlBoolean(record, "force", channel);
+    if (force !== undefined) args.force = force;
+    return args;
+  };
+
+  const parseAppControlConnectArgs = (value: unknown, channel: string): AppControlConnectArgs => {
+    const record = appControlRecord(value, channel, true);
+    const cdpPort = optionalAppControlNumber(record, "cdpPort", channel, { integer: true, min: 1, max: 65535 });
+    if (cdpPort == null) invalidAppControlArg(channel, "cdpPort is required");
+    const args: AppControlConnectArgs = { cdpPort: cdpPort as number };
+    const appKind = optionalAppControlAppKind(record, channel);
+    if (appKind !== undefined) args.appKind = appKind;
+    const projectRoot = optionalAppControlString(record, "projectRoot", channel, 4096);
+    if (projectRoot !== undefined) args.projectRoot = projectRoot;
+    const label = optionalAppControlString(record, "label", channel, 256);
+    if (label !== undefined) args.label = label;
+    const chatSessionId = optionalAppControlString(record, "chatSessionId", channel, 128);
+    if (chatSessionId !== undefined) args.chatSessionId = chatSessionId;
+    const force = optionalAppControlBoolean(record, "force", channel);
+    if (force !== undefined) args.force = force;
+    return args;
+  };
+
+  const parseAppControlStopArgs = (value: unknown, channel: string): AppControlStopArgs => {
+    const record = appControlRecord(value, channel);
+    const args: AppControlStopArgs = {};
+    const force = optionalAppControlBoolean(record, "force", channel);
+    if (force !== undefined) args.force = force;
+    return args;
+  };
+
+  const parseAppControlSnapshotArgs = (value: unknown, channel: string): AppControlSnapshotArgs => {
+    const record = appControlRecord(value, channel);
+    const args: AppControlSnapshotArgs = {};
+    const projectRoot = optionalAppControlString(record, "projectRoot", channel, 4096);
+    if (projectRoot !== undefined) args.projectRoot = projectRoot;
+    const x = optionalAppControlNumber(record, "x", channel, { min: 0, max: 100_000 });
+    if (x !== undefined) args.x = x;
+    const y = optionalAppControlNumber(record, "y", channel, { min: 0, max: 100_000 });
+    if (y !== undefined) args.y = y;
+    return args;
+  };
+
+  const parseAppControlPointArgs = (value: unknown, channel: string): AppControlInspectPointArgs => {
+    const record = appControlRecord(value, channel, true);
+    const x = optionalAppControlNumber(record, "x", channel, { min: 0, max: 100_000 });
+    const y = optionalAppControlNumber(record, "y", channel, { min: 0, max: 100_000 });
+    if (x == null || y == null) invalidAppControlArg(channel, "x and y are required");
+    const args: AppControlInspectPointArgs = { x: x as number, y: y as number };
+    const scale = optionalAppControlNumber(record, "scale", channel, { min: 0.01, max: 100 });
+    if (scale !== undefined) args.scale = scale;
+    const projectRoot = optionalAppControlString(record, "projectRoot", channel, 4096);
+    if (projectRoot !== undefined) args.projectRoot = projectRoot;
+    const includeScreenshot = optionalAppControlBoolean(record, "includeScreenshot", channel);
+    if (includeScreenshot !== undefined) args.includeScreenshot = includeScreenshot;
+    return args;
+  };
+
+  const parseAppControlClickArgs = (value: unknown, channel: string): AppControlClickArgs => {
+    const record = appControlRecord(value, channel, true);
+    const x = optionalAppControlNumber(record, "x", channel, { min: 0, max: 100_000 });
+    const y = optionalAppControlNumber(record, "y", channel, { min: 0, max: 100_000 });
+    if (x == null || y == null) invalidAppControlArg(channel, "x and y are required");
+    const scale = optionalAppControlNumber(record, "scale", channel, { min: 0.01, max: 100 });
+    return { x: x as number, y: y as number, ...(scale !== undefined ? { scale } : {}) };
+  };
+
+  const parseAppControlTypeTextArgs = (value: unknown, channel: string): AppControlTypeTextArgs => {
+    const record = appControlRecord(value, channel, true);
+    const text = optionalAppControlString(record, "text", channel, 10_000, { trim: false });
+    if (text == null) invalidAppControlArg(channel, "text is required");
+    return { text: text as string };
+  };
+
+  const terminalRecord = (value: unknown): Record<string, unknown> => (isRecord(value) ? value as Record<string, unknown> : {});
+
+  const optionalTerminalString = (
+    record: Record<string, unknown>,
+    field: string,
+    maxLength = 4096,
+    trim = true,
+  ): string | null | undefined => {
+    const value = record[field];
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== "string") throw new Error(`Invalid terminal payload: ${field} must be a string`);
+    const text = trim ? value.trim() : value;
+    if (text.includes("\0")) throw new Error(`Invalid terminal payload: ${field} cannot contain null bytes`);
+    if (text.length > maxLength) throw new Error(`Invalid terminal payload: ${field} is too long`);
+    return text;
+  };
+
+  const optionalTerminalNumber = (
+    record: Record<string, unknown>,
+    field: string,
+    min: number,
+    max: number,
+  ): number | null | undefined => {
+    const value = record[field];
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new Error(`Invalid terminal payload: ${field} must be a finite number`);
+    }
+    const next = Math.floor(value);
+    if (next < min || next > max) throw new Error(`Invalid terminal payload: ${field} is out of range`);
+    return next;
+  };
+
+  const parseTerminalListArgs = (value: unknown): ChatTerminalListArgs => {
+    const record = terminalRecord(value);
+    return {
+      chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
+      laneId: optionalTerminalString(record, "laneId", 512),
+      limit: optionalTerminalNumber(record, "limit", 1, 500),
+    };
+  };
+
+  const parseTerminalReadArgs = (value: unknown): ChatTerminalReadArgs => {
+    const record = terminalRecord(value);
+    return {
+      terminalId: optionalTerminalString(record, "terminalId", 128),
+      chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
+      maxBytes: optionalTerminalNumber(record, "maxBytes", 1, 8 * 1024 * 1024),
+      since: optionalTerminalNumber(record, "since", 0, 8 * 1024 * 1024),
+    };
+  };
+
+  const parseTerminalWriteArgs = (value: unknown): ChatTerminalWriteArgs => {
+    const record = terminalRecord(value);
+    const data = optionalTerminalString(record, "data", 100_000, false);
+    if (data == null) throw new Error("Invalid terminal payload: data is required");
+    return {
+      terminalId: optionalTerminalString(record, "terminalId", 128),
+      ptyId: optionalTerminalString(record, "ptyId", 128),
+      chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
+      data,
+    };
+  };
+
+  const parseTerminalSignalArgs = (value: unknown): ChatTerminalSignalArgs => {
+    const record = terminalRecord(value);
+    const signal = optionalTerminalString(record, "signal", 16);
+    if (signal !== "SIGINT" && signal !== "SIGTERM" && signal !== "SIGKILL") {
+      throw new Error("Invalid terminal payload: signal must be SIGINT, SIGTERM, or SIGKILL");
+    }
+    return {
+      terminalId: optionalTerminalString(record, "terminalId", 128),
+      ptyId: optionalTerminalString(record, "ptyId", 128),
+      chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
+      signal,
+    };
+  };
+
+  const parseTerminalActiveForChatArgs = (value: unknown): ChatTerminalActiveForChatArgs => {
+    const record = terminalRecord(value);
+    const chatSessionId = optionalTerminalString(record, "chatSessionId", 128);
+    if (!chatSessionId) throw new Error("Invalid terminal payload: chatSessionId is required");
+    return { chatSessionId };
   };
 
   const resolveComputerUseOwnerSnapshotArgs = async (
@@ -5376,6 +5757,112 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorSelectPoint, async (_event, arg) => ensureIosSimulator().selectPoint(arg));
 
+  ipcMain.handle(IPC.appControlGetStatus, async (event) => {
+    guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });
+    return ensureAppControl().getStatus();
+  });
+
+  ipcMain.handle(IPC.appControlLaunch, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlLaunch, { windowMs: 60_000, max: 10 });
+    return ensureAppControl().launch(parseAppControlLaunchArgs(arg, IPC.appControlLaunch));
+  });
+
+  ipcMain.handle(IPC.appControlLaunchInTerminal, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlLaunchInTerminal, { windowMs: 60_000, max: 10 });
+    return ensureAppControl().launchInTerminal(parseAppControlLaunchArgs(arg, IPC.appControlLaunchInTerminal));
+  });
+
+  ipcMain.handle(IPC.appControlConnect, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlConnect, { windowMs: 60_000, max: 20 });
+    return ensureAppControl().connect(parseAppControlConnectArgs(arg, IPC.appControlConnect));
+  });
+
+  ipcMain.handle(IPC.appControlStop, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlStop, { windowMs: 10_000, max: 20 });
+    return ensureAppControl().stop(parseAppControlStopArgs(arg, IPC.appControlStop));
+  });
+
+  ipcMain.handle(IPC.appControlScreenshot, async (event) => {
+    guardAppControlIpc(event, IPC.appControlScreenshot, { windowMs: 10_000, max: 30 });
+    return ensureAppControl().screenshot();
+  });
+
+  ipcMain.handle(IPC.appControlGetSnapshot, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlGetSnapshot, { windowMs: 10_000, max: 30 });
+    return ensureAppControl().getSnapshot(parseAppControlSnapshotArgs(arg, IPC.appControlGetSnapshot));
+  });
+
+  ipcMain.handle(IPC.appControlInspectPoint, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlInspectPoint, { windowMs: 10_000, max: 60 });
+    return ensureAppControl().inspectPoint(parseAppControlPointArgs(arg, IPC.appControlInspectPoint));
+  });
+
+  ipcMain.handle(IPC.appControlSelectPoint, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlSelectPoint, { windowMs: 10_000, max: 40 });
+    return ensureAppControl().selectPoint(parseAppControlPointArgs(arg, IPC.appControlSelectPoint));
+  });
+
+  ipcMain.handle(IPC.appControlClick, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlClick, { windowMs: 10_000, max: 30 });
+    return ensureAppControl().click(parseAppControlClickArgs(arg, IPC.appControlClick));
+  });
+
+  ipcMain.handle(IPC.appControlTypeText, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlTypeText, { windowMs: 10_000, max: 20 });
+    return ensureAppControl().typeText(parseAppControlTypeTextArgs(arg, IPC.appControlTypeText));
+  });
+
+  ipcMain.handle(IPC.appControlScroll, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlScroll, { windowMs: 10_000, max: 600 });
+    const record = isRecord(arg) ? arg : {};
+    const numberOr = (key: string, fallback: number | null): number | null =>
+      typeof record[key] === "number" ? record[key] as number : fallback;
+    return ensureAppControl().scroll({
+      x: numberOr("x", 0) as number,
+      y: numberOr("y", 0) as number,
+      deltaX: numberOr("deltaX", 0) as number,
+      deltaY: numberOr("deltaY", 0) as number,
+      scale: numberOr("scale", null),
+    });
+  });
+
+  ipcMain.handle(IPC.appControlListTargets, async (event) => {
+    guardAppControlIpc(event, IPC.appControlListTargets, { windowMs: 10_000, max: 60 });
+    return ensureAppControl().listTargets();
+  });
+
+  ipcMain.handle(IPC.appControlAttachToTarget, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlAttachToTarget, { windowMs: 10_000, max: 30 });
+    const rawTargetId = isRecord(arg) ? arg.targetId : null;
+    const targetId = typeof rawTargetId === "string" ? rawTargetId : "";
+    return ensureAppControl().attachToTarget(targetId);
+  });
+
+  ipcMain.handle(IPC.appControlDispatchKey, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlDispatchKey, { windowMs: 10_000, max: 600 });
+    const record = isRecord(arg) ? arg : {};
+    const stringField = (key: string): string | null => (typeof record[key] === "string" ? record[key] as string : null);
+    const numberField = (key: string): number | null => (typeof record[key] === "number" ? record[key] as number : null);
+    const boolField = (key: string): boolean | null => (typeof record[key] === "boolean" ? record[key] as boolean : null);
+    const rawType = record.type;
+    const type = rawType === "keyDown" || rawType === "keyUp" || rawType === "rawKeyDown" || rawType === "char"
+      ? rawType
+      : "keyDown";
+    return ensureAppControl().dispatchKey({
+      type,
+      key: stringField("key"),
+      code: stringField("code"),
+      text: stringField("text"),
+      unmodifiedText: stringField("unmodifiedText"),
+      modifiers: numberField("modifiers"),
+      autoRepeat: boolField("autoRepeat"),
+      isKeypad: boolField("isKeypad"),
+      location: numberField("location"),
+      windowsVirtualKeyCode: numberField("windowsVirtualKeyCode"),
+      nativeVirtualKeyCode: numberField("nativeVirtualKeyCode"),
+    });
+  });
+
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {
     const ctx = getCtx();
     return await ctx.ptyService.create(arg);
@@ -5395,6 +5882,26 @@ export function registerIpc({
     const ctx = getCtx();
     ctx.ptyService.dispose(arg);
   });
+
+  ipcMain.handle(IPC.terminalList, async (_event, arg) =>
+    getCtx().ptyService.listTerminals(parseTerminalListArgs(arg)),
+  );
+
+  ipcMain.handle(IPC.terminalRead, async (_event, arg) =>
+    getCtx().ptyService.readTerminal(parseTerminalReadArgs(arg)),
+  );
+
+  ipcMain.handle(IPC.terminalWrite, async (_event, arg) =>
+    getCtx().ptyService.writeTerminal(parseTerminalWriteArgs(arg)),
+  );
+
+  ipcMain.handle(IPC.terminalSignal, async (_event, arg) =>
+    getCtx().ptyService.signalTerminal(parseTerminalSignalArgs(arg)),
+  );
+
+  ipcMain.handle(IPC.terminalActiveForChat, async (_event, arg) =>
+    getCtx().ptyService.activeForChat(parseTerminalActiveForChatArgs(arg)),
+  );
 
   ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
     const ctx = getCtx();

@@ -3249,6 +3249,14 @@ export function createAgentChatService(args: {
     throw new Error("Issue inventory service is required to initialize agent chat.");
   }
 
+  const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => ({
+    ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
+    ADE_CHAT_SESSION_ID: managed.session.id,
+    ADE_LANE_ID: managed.session.laneId,
+    ADE_PROJECT_ROOT: projectRoot,
+    ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
+  });
+
   const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
 
   // In-memory ring buffer of recent chat events per session. Populated on every
@@ -10147,7 +10155,7 @@ export function createAgentChatService(args: {
       shellPath: process.env.SHELL ?? "",
       path: process.env.PATH ?? "",
     });
-    const spawnEnv = getAdeCliAgentEnv?.(process.env) ?? process.env;
+    const spawnEnv = buildAgentRuntimeEnv(managed);
     let codexExecutable: string;
     try {
       codexExecutable = resolveCodexExecutable().path;
@@ -10487,7 +10495,7 @@ export function createAgentChatService(args: {
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
     const claudeExecutable = resolveClaudeCodeExecutable();
-    const claudeEnv = getAdeCliAgentEnv?.(process.env) ?? process.env;
+    const claudeEnv = buildAgentRuntimeEnv(managed);
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
       env: claudeEnv,

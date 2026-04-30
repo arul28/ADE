@@ -625,6 +625,28 @@ import type {
   IosSimulatorStreamStatus,
   IosSimulatorWindowState,
   IosSimulatorWindowSource,
+  AppControlClickArgs,
+  AppControlConnectArgs,
+  AppControlEventPayload,
+  AppControlInspectPointArgs,
+  AppControlInspectResult,
+  AppControlLaunchArgs,
+  AppControlScreenshot,
+  AppControlSelectResult,
+  AppControlSession,
+  AppControlSnapshot,
+  AppControlSnapshotArgs,
+  AppControlStatus,
+  AppControlStopArgs,
+  AppControlTarget,
+  AppControlTypeTextArgs,
+  ChatTerminalActiveForChatArgs,
+  ChatTerminalListArgs,
+  ChatTerminalReadArgs,
+  ChatTerminalReadResult,
+  ChatTerminalSession,
+  ChatTerminalSignalArgs,
+  ChatTerminalWriteArgs,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -1850,6 +1872,63 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.iosSimulatorEvent, listener);
       return () => ipcRenderer.removeListener(IPC.iosSimulatorEvent, listener);
     },
+  },
+  appControl: {
+    getStatus: async (): Promise<AppControlStatus> =>
+      ipcRenderer.invoke(IPC.appControlGetStatus),
+    launch: async (args: AppControlLaunchArgs = {}): Promise<AppControlSession> =>
+      ipcRenderer.invoke(IPC.appControlLaunch, args),
+    launchInTerminal: async (args: AppControlLaunchArgs = {}): Promise<AppControlSession> =>
+      ipcRenderer.invoke(IPC.appControlLaunchInTerminal, args),
+    connect: async (args: AppControlConnectArgs): Promise<AppControlSession> =>
+      ipcRenderer.invoke(IPC.appControlConnect, args),
+    stop: async (args: AppControlStopArgs = {}): Promise<{ ok: true; previousSession: AppControlSession | null }> =>
+      ipcRenderer.invoke(IPC.appControlStop, args),
+    screenshot: async (): Promise<AppControlScreenshot> =>
+      ipcRenderer.invoke(IPC.appControlScreenshot),
+    getSnapshot: async (args: AppControlSnapshotArgs = {}): Promise<AppControlSnapshot> =>
+      ipcRenderer.invoke(IPC.appControlGetSnapshot, args),
+    inspectPoint: async (args: AppControlInspectPointArgs): Promise<AppControlInspectResult> =>
+      ipcRenderer.invoke(IPC.appControlInspectPoint, args),
+    selectPoint: async (args: AppControlInspectPointArgs): Promise<AppControlSelectResult> =>
+      ipcRenderer.invoke(IPC.appControlSelectPoint, args),
+    click: async (args: AppControlClickArgs): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appControlClick, args),
+    typeText: async (args: AppControlTypeTextArgs): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appControlTypeText, args),
+    scroll: async (args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null }): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appControlScroll, args),
+    dispatchKey: async (args: {
+      type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
+      key?: string | null;
+      code?: string | null;
+      text?: string | null;
+      modifiers?: number | null;
+    }): Promise<{ ok: true }> => ipcRenderer.invoke(IPC.appControlDispatchKey, args),
+    listTargets: async (): Promise<AppControlTarget[]> =>
+      ipcRenderer.invoke(IPC.appControlListTargets),
+    attachToTarget: async (args: { targetId: string }): Promise<AppControlSession> =>
+      ipcRenderer.invoke(IPC.appControlAttachToTarget, args),
+    onEvent: (cb: (ev: AppControlEventPayload) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: AppControlEventPayload,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.appControlEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.appControlEvent, listener);
+    },
+  },
+  terminal: {
+    list: async (args: ChatTerminalListArgs = {}): Promise<ChatTerminalSession[]> =>
+      ipcRenderer.invoke(IPC.terminalList, args),
+    read: async (args: ChatTerminalReadArgs = {}): Promise<ChatTerminalReadResult> =>
+      ipcRenderer.invoke(IPC.terminalRead, args),
+    write: async (args: ChatTerminalWriteArgs): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.terminalWrite, args),
+    signal: async (args: ChatTerminalSignalArgs): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.terminalSignal, args),
+    activeForChat: async (args: ChatTerminalActiveForChatArgs): Promise<ChatTerminalSession | null> =>
+      ipcRenderer.invoke(IPC.terminalActiveForChat, args),
   },
   pty: {
     create: async (args: PtyCreateArgs): Promise<PtyCreateResult> =>

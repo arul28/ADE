@@ -73,6 +73,10 @@ import {
   createIosSimulatorService,
   type IosSimulatorService,
 } from "../../desktop/src/main/services/ios/iosSimulatorService";
+import {
+  createAppControlService,
+  type AppControlService,
+} from "../../desktop/src/main/services/appControl/appControlService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import {
   createAutomationService,
@@ -168,6 +172,7 @@ export type AdeRuntime = {
   automationPlannerService?: ReturnType<typeof createAutomationPlannerService> | null;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   iosSimulatorService?: IosSimulatorService | null;
+  appControlService?: AppControlService | null;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   missionBudgetService?: ReturnType<typeof createMissionBudgetService> | null;
@@ -471,6 +476,28 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     projectRoot,
     logger,
   });
+  const appControlService = createAppControlService({
+    projectRoot,
+    logger,
+    ptyService,
+    resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
+      const explicitLaneId = laneId?.trim();
+      if (explicitLaneId) return explicitLaneId;
+      const chatId = chatSessionId?.trim();
+      if (chatId) {
+        const chatSession = sessionService.get(chatId);
+        if (chatSession?.laneId) return chatSession.laneId;
+      }
+      const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
+      const lanes = await laneService.list({ includeArchived: false });
+      const matchingLane = lanes.find((lane) => {
+        const worktreePath = path.resolve(lane.worktreePath);
+        const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
+        return targetRoot === worktreePath || targetRoot.startsWith(`${worktreePath}${path.sep}`) || targetRoot === attachedRootPath;
+      });
+      return matchingLane?.id ?? lanes[0]?.id ?? null;
+    },
+  });
 
   const aiOrchestratorService = createAiOrchestratorService({
     db,
@@ -573,6 +600,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     automationPlannerService,
     computerUseArtifactBrokerService,
     iosSimulatorService,
+    appControlService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,
@@ -581,6 +609,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       swallow(() => automationService.dispose());
       swallow(() => processService.disposeAll());
       swallow(() => iosSimulatorService.dispose());
+      swallow(() => appControlService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
       swallow(() => testService.disposeAll());

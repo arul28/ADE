@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, MenuItem, nativeImage, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, nativeImage, protocol, safeStorage, shell } from "electron";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -137,6 +137,7 @@ import { createMissionBudgetService } from "./services/orchestrator/missionBudge
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
+import { createAppControlService } from "./services/appControl/appControlService";
 import { createSyncService } from "./services/sync/syncService";
 import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
 import {
@@ -2710,6 +2711,30 @@ app.whenReady().then(async () => {
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
     });
+    const appControlService = createAppControlService({
+      projectRoot,
+      logger,
+      ptyService,
+      resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
+        const explicitLaneId = laneId?.trim();
+        if (explicitLaneId) return explicitLaneId;
+        const chatId = chatSessionId?.trim();
+        if (chatId) {
+          const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
+          if (chatSession?.laneId) return chatSession.laneId;
+        }
+        const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
+        const lanes = await laneService.list({ includeArchived: false });
+        const matchingLane = lanes.find((lane) => {
+          const worktreePath = path.resolve(lane.worktreePath);
+          const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
+          return targetRoot === worktreePath || targetRoot.startsWith(`${worktreePath}${path.sep}`) || targetRoot === attachedRootPath;
+        });
+        return matchingLane?.id ?? lanes[0]?.id ?? null;
+      },
+      onEvent: (payload) =>
+        emitProjectEvent(projectRoot, IPC.appControlEvent, payload),
+    });
     missionPreflightService = createMissionPreflightService({
       logger,
       projectRoot,
@@ -3384,6 +3409,7 @@ app.whenReady().then(async () => {
       automationPlannerService,
       computerUseArtifactBrokerService,
       iosSimulatorService,
+      appControlService,
       orchestratorService,
       aiOrchestratorService,
       missionBudgetService,
@@ -3548,6 +3574,7 @@ app.whenReady().then(async () => {
         ptyService,
         computerUseArtifactBrokerService,
         iosSimulatorService,
+        appControlService,
         automationService,
         automationPlannerService,
         githubService,
@@ -3597,6 +3624,7 @@ app.whenReady().then(async () => {
       prPollingService,
       computerUseArtifactBrokerService,
       iosSimulatorService,
+      appControlService,
       queueLandingService,
       issueInventoryService,
       prSummaryService,
@@ -3702,6 +3730,7 @@ app.whenReady().then(async () => {
       agentChatService: null,
       computerUseArtifactBrokerService: null,
       iosSimulatorService: null,
+      appControlService: null,
       githubService: null,
       feedbackReporterService: null,
       prService: null,
@@ -3898,6 +3927,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.iosSimulatorService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.appControlService?.dispose?.();
     } catch {
       // ignore
     }

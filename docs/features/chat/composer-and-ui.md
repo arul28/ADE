@@ -22,6 +22,7 @@ stream plus session metadata.
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
 | `ChatSubagentsPanel.tsx`, `ChatSubagentStrip.tsx` | Claude background subagent panels. |
 | `ChatComputerUsePanel.tsx` | Computer-use backend status. |
+| `ChatAppControlPanel.tsx` | App Control panel for Electron apps mounted under the chat composer. Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists per-chat panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`. See [App Control](../computer-use/app-control.md). |
 | `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer mounted in place of the work-log when the header toggle is on: tool-readiness checklist, device + target pickers, three-backend live preview, `interact` vs `inspect` mode, hit-test overlay, and selection emission as `IosElementContextItem`. See [iOS Simulator feature](../ios-simulator/README.md). |
 | `ChatTerminalDrawer.tsx` | Collapsible terminal drawer at the bottom of the chat. |
 | `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. |

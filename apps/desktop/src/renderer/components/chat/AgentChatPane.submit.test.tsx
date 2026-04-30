@@ -207,6 +207,13 @@ function installAdeMocks(options?: {
       write: vi.fn().mockResolvedValue(undefined),
       onData: vi.fn().mockImplementation(() => () => undefined),
     },
+    terminal: {
+      list: vi.fn().mockResolvedValue([]),
+      read: vi.fn().mockResolvedValue({ terminalId: "term-1", data: "", nextSince: 0 }),
+      write: vi.fn().mockResolvedValue({ ok: true }),
+      signal: vi.fn().mockResolvedValue({ ok: true }),
+      activeForChat: vi.fn().mockResolvedValue(null),
+    },
   } as any;
 
   return {

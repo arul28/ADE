@@ -81,6 +81,8 @@ export type TerminalSessionSummary = {
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
   chatIdleSinceAt?: string | null;
+  /** Parent chat session id when this terminal was launched from a chat (e.g. App Control, in-chat terminal drawer). */
+  chatSessionId?: string | null;
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {
@@ -93,6 +95,8 @@ export type PtyCreateArgs = {
   allowNewSessionId?: boolean;
   /** Allow an explicit absolute cwd outside the selected lane worktree. */
   allowExternalCwd?: boolean;
+  /** Chat session that owns this in-chat terminal, when launched from chat UI or App Control. */
+  chatSessionId?: string | null;
   laneId: string;
   cwd?: string;
   cols: number;
@@ -126,9 +130,62 @@ export type PtyExitEvent = {
   exitCode: number | null;
 };
 
+export type ChatTerminalSession = {
+  terminalId: string;
+  ptyId: string | null;
+  chatSessionId: string | null;
+  laneId: string;
+  laneName: string;
+  title: string;
+  status: TerminalSessionStatus;
+  runtimeState: TerminalRuntimeState;
+  active: boolean;
+  startedAt: string;
+  endedAt: string | null;
+  exitCode: number | null;
+  pid: number | null;
+};
+
+export type ChatTerminalListArgs = {
+  chatSessionId?: string | null;
+  laneId?: string | null;
+  limit?: number | null;
+};
+
+export type ChatTerminalReadArgs = {
+  terminalId?: string | null;
+  chatSessionId?: string | null;
+  maxBytes?: number | null;
+  since?: number | null;
+};
+
+export type ChatTerminalReadResult = {
+  terminalId: string;
+  data: string;
+  nextSince: number;
+};
+
+export type ChatTerminalWriteArgs = {
+  terminalId?: string | null;
+  ptyId?: string | null;
+  chatSessionId?: string | null;
+  data: string;
+};
+
+export type ChatTerminalSignalArgs = {
+  terminalId?: string | null;
+  ptyId?: string | null;
+  chatSessionId?: string | null;
+  signal: "SIGINT" | "SIGTERM" | "SIGKILL";
+};
+
+export type ChatTerminalActiveForChatArgs = {
+  chatSessionId: string;
+};
+
 export type TerminalSessionChangedEvent = {
   sessionId: string;
-  reason: "meta-updated" | "deleted";
+  reason: "meta-updated" | "deleted" | "created";
 };
 
 export type ListSessionsArgs = {

@@ -118,8 +118,19 @@ bridge.
   Linear, tests, proof, memory, settings, the iOS Simulator (`ade
   ios-sim` / `ade ios` / `ade simulator` — see
   [features/ios-simulator/README.md](./features/ios-simulator/README.md)),
-  and a generic `ade actions run <domain.action>` escape hatch for
-  every registered ADE service action.
+  the App Control bridge for Electron apps (`ade app-control` / `ade
+  app` / `ade electron` — `launch`, `connect`, `stop`, `status`,
+  `screenshot`, `snapshot`, `inspect`, `select`, `click`, `type`,
+  `scroll`, `key`, `targets`, `attach`, `logs`, `terminal write`,
+  `terminal signal` — see
+  [features/computer-use/app-control.md](./features/computer-use/app-control.md)),
+  the chat-scoped terminal (`ade terminal list` / `read` / `write` /
+  `signal` / `active`), and a generic `ade actions run
+  <domain.action>` escape hatch for every registered ADE service
+  action. The action allow-list adds two domains for these surfaces:
+  `app_control` (every public method on `AppControlService`) and
+  `terminal` (`list`, `read`, `write`, `signal`, `activeForChat`
+  against `ptyService`).
 - **Proof subcommands** — `ade proof capture` (alias of `screenshot`),
   `ade proof attach <path>`, `ade proof record`, `ade proof launch`,
   `ade proof interact`, `ade proof list/status/environment/ingest`.
@@ -175,7 +186,7 @@ Schema bootstrap in `kvDb.ts` creates ~103 tables. Anchor tables for agents read
 |-------|---------|
 | `projects` | One row per opened repo. Keyed by `root_path`. |
 | `lanes` | Worktree-backed units of work. Types: `primary`, `worktree`, `attached`. Supports parent/child stacks, mission binding, color/icon/tags. |
-| `terminal_sessions` | Tracked PTY sessions per lane with transcript path and head SHAs. |
+| `terminal_sessions` | Tracked PTY sessions per lane with transcript path and head SHAs. The `chat_session_id` column (indexed) marks terminals owned by a chat (chat terminal drawer, App Control launch terminal); `ptyService` exposes them through the `ade.terminal.*` IPC and the `terminal` ADE action domain. |
 | `session_deltas` | Post-session diff stats + touched files + failure lines. Input to pack generation. |
 | `operations` | Audit log of every significant mutation (git, pack updates). Pre/post HEAD SHAs enable undo. |
 | `process_definitions` / `process_runtime` / `process_runs` | Managed-process lifecycle (derived from `ade.yaml`). |
@@ -367,6 +378,8 @@ ade.usage.*                  # token/cost accounting
 ade.layout.* / ade.graph.*
 ade.computerUse.*
 ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: getStatus/launch/shutdown/screenshot/getScreenSnapshot/getInspectorSnapshot/inspectPoint/getPreviewCapability/listPreviewTargets/renderPreview/openPreviewWorkspace/startStream/stopStream/getStreamStatus/getWindowState/listWindowSources/tap/typeText/drag/swipe/selectPoint, plus the ade.iosSimulator.event push channel
+ade.appControl.*             # Electron app control bridge over Chrome DevTools Protocol: getStatus/launch/launchInTerminal/connect/stop/screenshot/getSnapshot/inspectPoint/selectPoint/click/typeText/scroll/dispatchKey/listTargets/attachToTarget, plus the ade.appControl.event push channel (session-started/updated/stopped, selection, screencast frame)
+ade.terminal.*               # chat-owned terminal control: list/read/write/signal/activeForChat. Resolves a chat's active terminal via chatSessionId so in-chat agents and the App Control panel can drive the visible launch terminal.
 ade.updates.*
 ```
 
@@ -413,6 +426,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 |--------|-----------|------|
 | `ai/` | `aiIntegrationService.ts`, `authDetector.ts`, `providerConnectionStatus.ts`, `claudeRuntimeProbe.ts`, `modelsDevService.ts`, `compactionEngine.ts`, `tools/*` | Provider routing, detection, tool definitions, compaction. |
 | `agentTools/` | `agentToolsService.ts` | Agent tool registry metadata surfaced to the renderer. |
+| `appControl/` | `appControlService.ts` | Chrome DevTools Protocol bridge for developer-owned Electron apps. Launches a chat-owned PTY running the user's dev command (or connects to an existing `--remote-debugging-port`), polls `/json` for ready CDP targets, attaches a long-lived `CdpClient` WebSocket, and exposes screenshot / DOM snapshot / hit-test / click / type / scroll / key dispatch / screencast frames. `inspectPoint` and `selectPoint` produce `AppControlContextItem`s for the chat composer (DOM packet + screenshot + source-file candidates resolved by `findSourceMatches` over an indexed tree of project source files). See [features/computer-use/app-control.md](./features/computer-use/app-control.md). |
 | `automations/` | `automationService.ts`, `automationPlannerService.ts`, `automationIngressService.ts`, `automationSecretService.ts` | Rule lifecycle, NL → rule planner, inbound triggers, per-rule secrets. |
 | `chat/` | `agentChatService.ts`, `buildClaudeV2Message.ts`, `cursorAcp*`, `sessionRecovery.ts` | Agent chat sessions (lane-scoped + mission worker/coordinator). Builds Claude messages, manages Cursor ACP pool, recovers sessions on restart, and derives prompt-based lane names for parallel model launches. |
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |

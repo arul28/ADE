@@ -47,6 +47,7 @@ export const SessionCard = React.memo(function SessionCard({
   onInfoClick,
   onContextMenu,
   resumingSessionId,
+  compact = false,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
@@ -57,6 +58,7 @@ export const SessionCard = React.memo(function SessionCard({
   onInfoClick: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
   resumingSessionId: string | null;
+  compact?: boolean;
 }) {
   const dot = sessionStatusDot(session);
   const canResume = session.status !== "running" && Boolean(resolveTrackedCliResumeCommand(session));
@@ -95,10 +97,10 @@ export const SessionCard = React.memo(function SessionCard({
         }}
         onClick={(event) => onSelect(session.id, event)}
       >
-        <div className="flex items-stretch gap-2.5 px-2.5 py-2">
+        <div className={cn("flex items-stretch", compact ? "gap-2 px-2 py-1" : "gap-2.5 px-2.5 py-2")}>
           {/* Logo — vertically centered against full card height */}
           <div className="flex shrink-0 self-stretch items-center justify-center">
-            <ToolLogo toolType={session.toolType} size={22} />
+            <ToolLogo toolType={session.toolType} size={compact ? 16 : 22} />
           </div>
 
           {/* Content — 3 rows */}
@@ -107,10 +109,18 @@ export const SessionCard = React.memo(function SessionCard({
             <div className="flex items-center gap-1.5 min-w-0">
               <span
                 title={dot.label}
-                className={cn("h-2 w-2 shrink-0 rounded-full", dot.cls, dot.spinning && "animate-spin")}
+                className={cn(
+                  "shrink-0 rounded-full",
+                  compact ? "h-1.5 w-1.5" : "h-2 w-2",
+                  dot.cls,
+                  dot.spinning && "animate-spin",
+                )}
               />
               <span
-                className="min-w-0 flex-1 truncate text-[11px] text-fg/90"
+                className={cn(
+                  "min-w-0 flex-1 truncate text-fg/90",
+                  compact ? "text-[10px]" : "text-[11px]",
+                )}
                 style={{ fontWeight: isHighlighted ? 600 : 400 }}
               >
                 {primaryText}
@@ -124,13 +134,13 @@ export const SessionCard = React.memo(function SessionCard({
                   <WarningCircle size={11} weight="fill" />
                 </span>
               ) : null}
-              <span className="shrink-0 text-[10px] text-muted-fg/45 tabular-nums">
+              <span className={cn("shrink-0 text-muted-fg/45 tabular-nums", compact ? "text-[9px]" : "text-[10px]")}>
                 {relativeTimeCompact(session.endedAt ?? session.startedAt)}
               </span>
             </div>
 
             {/* Row 2: Summary/preview line (conditional) */}
-            {previewLine ? (
+            {previewLine && !compact ? (
               <div className="mt-0.5 min-w-0">
                 <span className="block truncate text-[10px] text-muted-fg/50 leading-snug">
                   {previewLine}
@@ -139,8 +149,8 @@ export const SessionCard = React.memo(function SessionCard({
             ) : null}
 
             {/* Row 3: Tool type + Lane + Cache badge + Delta chips + Exit code */}
-            <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
-              <span className="shrink-0 text-[10px] text-muted-fg/55">
+            <div className={cn("flex items-center gap-1.5 min-w-0", compact ? "mt-px" : "mt-0.5")}>
+              <span className={cn("shrink-0 text-muted-fg/55", compact ? "text-[9px]" : "text-[10px]")}>
                 {shortToolTypeLabel(session.toolType)}
               </span>
               <span className="text-muted-fg/25">&middot;</span>
@@ -151,7 +161,7 @@ export const SessionCard = React.memo(function SessionCard({
                 {laneMarker}
               </span>
               <span
-                className="min-w-0 flex-1 truncate text-[10px] text-muted-fg/50"
+                className={cn("min-w-0 flex-1 truncate text-muted-fg/50", compact ? "text-[9px]" : "text-[10px]")}
                 style={laneAccent ? { color: laneAccent, opacity: 0.85 } : undefined}
               >
                 {lane?.name ?? session.laneName}
