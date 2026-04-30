@@ -1751,11 +1751,11 @@ export function ChatIosSimulatorPanel({
       default:
         startupGraceMs = 5_000;
     }
-    const postFrameStallMs = streamStatus.backend === "iosurface-indigo" ? 8_000 : 5_000;
     const timer = window.setInterval(() => {
       const lastFrameMs = streamStatus.lastFrameAt ? Date.parse(streamStatus.lastFrameAt) : 0;
       const startedMs = streamStatus.startedAt ? Date.parse(streamStatus.startedAt) : 0;
-      const staleAfterMs = lastFrameMs ? postFrameStallMs : startupGraceMs;
+      if (streamStatus.backend === "iosurface-indigo" && lastFrameMs) return;
+      const staleAfterMs = lastFrameMs ? 5_000 : startupGraceMs;
       const referenceMs = lastFrameMs || startedMs;
       if (referenceMs && Date.now() - referenceMs > staleAfterMs) {
         scheduleDeviceBackedStreamRestart("Live simulator stream stalled.");
