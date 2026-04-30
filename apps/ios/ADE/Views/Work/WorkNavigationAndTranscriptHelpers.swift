@@ -684,7 +684,11 @@ func buildWorkToolCards(
       if suppressedPendingItemIds.contains(itemId) {
         continue
       }
-      if isQuestionInputToolName(tool) {
+      // Suppress only when the structured-question payload parses cleanly. If
+      // parsing fails (malformed args), fall through and render the raw tool
+      // card so the user can see what the model emitted.
+      if isQuestionInputToolName(tool),
+         pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) != nil {
         continue
       }
       if cards[itemId] == nil {
@@ -700,7 +704,11 @@ func buildWorkToolCards(
         resultText: cards[itemId]?.resultText
       )
     case .toolResult(let tool, let resultText, let itemId, _, _, let status):
-      if isQuestionInputToolName(tool) {
+      // Skip results only when the corresponding call was intentionally
+      // suppressed as a structured-question card (no fallback card exists).
+      // If a fallback tool card was kept (malformed args), let the result
+      // update it.
+      if isQuestionInputToolName(tool), cards[itemId] == nil {
         continue
       }
       let existing = cards[itemId]

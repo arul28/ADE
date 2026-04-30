@@ -618,7 +618,7 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   if modelId.hasPrefix("opencode/") || provider == "opencode" {
     return "opencode"
   }
-  if provider == "droid" || modelId.hasPrefix("droid/") {
+  if provider == "droid" || provider == "factory" || modelId.hasPrefix("droid/") {
     return "droid"
   }
   if provider == "cursor" || modelId.contains("cursor/") || modelId.contains("cursor-") || modelId.contains("composer") {

@@ -692,9 +692,14 @@ struct WorkModelPickerSheet: View {
   }
 
   private func commit(model: WorkModelOption, effort: String?) {
-    let normalizedEffort = effort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let normalizedEffort = effort?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased() ?? ""
+    let normalizedCurrentEffort = currentReasoningEffort
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
     let nextEffort: String? = normalizedEffort.isEmpty ? nil : normalizedEffort
-    let effortChanged = (nextEffort ?? "") != currentReasoningEffort
+    let effortChanged = (nextEffort ?? "") != normalizedCurrentEffort
     if model.id == currentModelId && !effortChanged {
       dismiss()
       return

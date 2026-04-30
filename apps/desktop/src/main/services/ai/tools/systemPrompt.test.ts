@@ -89,7 +89,8 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("## Runtime Environment");
       expect(result).toContain("Claude Agent SDK v2");
       expect(result).toContain("ScheduleWakeup");
-      expect(result).toContain("not available");
+      expect(result).toContain("not honored");
+      expect(result).toContain("never re-invokes");
     });
 
     it("describes the Cursor ACP runtime", () => {
