@@ -684,8 +684,7 @@ func buildWorkToolCards(
       if suppressedPendingItemIds.contains(itemId) {
         continue
       }
-      if isQuestionInputToolName(tool),
-         pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) != nil {
+      if isQuestionInputToolName(tool) {
         continue
       }
       if cards[itemId] == nil {
@@ -701,6 +700,9 @@ func buildWorkToolCards(
         resultText: cards[itemId]?.resultText
       )
     case .toolResult(let tool, let resultText, let itemId, _, _, let status):
+      if isQuestionInputToolName(tool) {
+        continue
+      }
       let existing = cards[itemId]
       if existing == nil {
         orderedIds.append(itemId)
