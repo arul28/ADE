@@ -35,7 +35,7 @@ const CDP_COMMAND_TIMEOUT_MS = 15_000;
 const MAX_DOM_ELEMENTS = 450;
 const SOURCE_FILE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".html", ".css"]);
 const SOURCE_SKIP_DIRS = new Set([".git", ".ade", "node_modules", "dist", "build", "out", "coverage", ".next", ".vite"]);
-const sourceFileCache = new Map<string, string[]>();
+const SOURCE_FILE_CACHE_MAX = 200;
 
 type CreateAppControlServiceArgs = {
   projectRoot: string;
@@ -692,9 +692,14 @@ function cdpDomClickScript(point: { x: number; y: number }): string {
   })()`;
 }
 
-function collectSourceFiles(root: string): string[] {
-  const cached = sourceFileCache.get(root);
-  if (cached) return cached;
+function collectSourceFiles(root: string, cache: Map<string, string[]>): string[] {
+  const cached = cache.get(root);
+  if (cached) {
+    // LRU touch: re-insert to mark as most recently used.
+    cache.delete(root);
+    cache.set(root, cached);
+    return cached;
+  }
   const out: string[] = [];
   const visit = (dir: string) => {
     let entries: fs.Dirent[];
@@ -715,7 +720,13 @@ function collectSourceFiles(root: string): string[] {
     }
   };
   visit(root);
-  sourceFileCache.set(root, out);
+  cache.set(root, out);
+  // Bounded LRU eviction: drop oldest entries when over capacity.
+  while (cache.size > SOURCE_FILE_CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
   return out;
 }
 
@@ -772,6 +783,7 @@ function sourceTermsForElement(element: AppControlElement): Array<{ term: string
 function findSourceMatches(
   projectRoot: string | null | undefined,
   element: AppControlElement,
+  cache: Map<string, string[]>,
   options: { maxMs?: number; includeCandidates?: boolean } = {},
 ): AppControlSourceMatch[] {
   if (!projectRoot) return [];
@@ -783,7 +795,7 @@ function findSourceMatches(
     .filter((term) => options.includeCandidates !== false || term.confidence === "exact");
   if (!terms.length) return [];
   const matches: AppControlSourceMatch[] = [];
-  for (const filePath of collectSourceFiles(root)) {
+  for (const filePath of collectSourceFiles(root, cache)) {
     if (Date.now() - startedAt > maxMs) break;
     let text: string;
     try {
@@ -880,6 +892,10 @@ function findSmallestElementAt(elements: AppControlElement[], x: number, y: numb
 export type AppControlService = ReturnType<typeof createAppControlService>;
 
 export function createAppControlService(args: CreateAppControlServiceArgs) {
+  // Bounded LRU cache scoped to this service instance — dies with the service,
+  // so rebuilding the project naturally invalidates stale paths. Capped to
+  // SOURCE_FILE_CACHE_MAX entries to keep growth bounded.
+  const sourceFileCache = new Map<string, string[]>();
   let activeSession: AppControlSession | null = null;
   let lastSelectedItem: AppControlContextItem | null = null;
   let cdpPollTimer: NodeJS.Timeout | null = null;
@@ -1709,7 +1725,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     projectRootOverride?: string | null,
   ): AppControlContextItem => {
     const projectRoot = normalizeProjectRoot(projectRootOverride ?? snapshot.session?.projectRoot ?? activeSession?.projectRoot, args.projectRoot);
-    const sourceMatches = findSourceMatches(projectRoot, element);
+    const sourceMatches = findSourceMatches(projectRoot, element, sourceFileCache);
     const exact = sourceMatches.find((match) => match.confidence === "exact") ?? null;
     const candidate = sourceMatches[0] ?? null;
     const sourceFile = exact?.sourceFile ?? candidate?.sourceFile ?? null;

@@ -1861,6 +1861,13 @@ export function registerIpc({
   ): void => {
     const now = Date.now();
     const key = `${event.sender.id}:${channel}`;
+    // Cheap sweep: prune entries whose window has fully expired so the map
+    // does not grow unboundedly across cycling sender/window IDs.
+    for (const [k, v] of appControlRateBuckets) {
+      if (now - v.windowStartMs > limit.windowMs) {
+        appControlRateBuckets.delete(k);
+      }
+    }
     const bucket = appControlRateBuckets.get(key);
     if (!bucket || now - bucket.windowStartMs > limit.windowMs) {
       appControlRateBuckets.set(key, { windowStartMs: now, count: 1 });

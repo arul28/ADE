@@ -1280,7 +1280,7 @@ export function createPtyService({
       return replacement.sessionId;
     }
     activeTerminalByChatSession.delete(chatSessionId);
-    return activeTerminalId;
+    return null;
   };
 
   return {
