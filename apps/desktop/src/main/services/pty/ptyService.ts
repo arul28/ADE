@@ -55,6 +55,9 @@ function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolea
 const CLI_USER_TITLE_SEED_MIN_LEN = 3;
 const CLI_USER_TITLE_SEED_MAX_LEN = 180;
 const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
+const PTY_DATA_BATCH_INTERVAL_MS = 16;
+const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
+const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 
 function sanitizeCliUserTitleSeed(raw: string): string {
   const stripped = stripAnsi(raw)
@@ -140,6 +143,11 @@ type PtyEntry = {
   disposed: boolean;
   createdAt: number;
   cleanupPaths: string[];
+  lastResizeCols: number | null;
+  lastResizeRows: number | null;
+  pendingDataChunks: string[];
+  pendingDataChars: number;
+  pendingDataTimer: ReturnType<typeof setTimeout> | null;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
   cliUserTitleLineBuffer: string;
@@ -264,6 +272,7 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
 
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
+const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 
 export function createPtyService({
   projectRoot,
@@ -308,8 +317,15 @@ export function createPtyService({
   const exitListeners = new Set<PtyExitListener>();
   const terminalChatSessions = new Map<string, string>();
   const activeTerminalByChatSession = new Map<string, string>();
+  const missingResumeTargetBackfillFailures = new Map<string, { toolType: TerminalToolType | null; checkedAtMs: number }>();
   /** Timers for auto-closing tool-typed PTYs when the CLI tool exits back to shell prompt */
   const toolAutoCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  let ptyDataSummaryTimer: ReturnType<typeof setTimeout> | null = null;
+  let ptyDataSummaryStartedAt = Date.now();
+  let ptyDataChunkCount = 0;
+  let ptyDataBatchCount = 0;
+  let ptyDataCharCount = 0;
+  let ptyDataMaxBatchChars = 0;
 
   const getSessionIntelligence = () => {
     const ai = projectConfigService?.get().effective.ai;
@@ -429,6 +445,36 @@ export function createPtyService({
     if (!state?.idleTimer) return;
     clearTimeout(state.idleTimer);
     state.idleTimer = null;
+  };
+
+  const flushPtyDataSummary = () => {
+    if (ptyDataSummaryTimer) {
+      clearTimeout(ptyDataSummaryTimer);
+      ptyDataSummaryTimer = null;
+    }
+    if (ptyDataChunkCount > 0 || ptyDataBatchCount > 0) {
+      const intervalMs = Math.max(1, Date.now() - ptyDataSummaryStartedAt);
+      logger.info("pty.data.summary", {
+        intervalMs,
+        chunks: ptyDataChunkCount,
+        batches: ptyDataBatchCount,
+        chars: ptyDataCharCount,
+        avgChunksPerBatch: ptyDataBatchCount > 0 ? Math.round((ptyDataChunkCount / ptyDataBatchCount) * 10) / 10 : 0,
+        maxBatchChars: ptyDataMaxBatchChars,
+        activePtys: ptys.size,
+        listeners: dataListeners.size,
+      });
+    }
+    ptyDataSummaryStartedAt = Date.now();
+    ptyDataChunkCount = 0;
+    ptyDataBatchCount = 0;
+    ptyDataCharCount = 0;
+    ptyDataMaxBatchChars = 0;
+  };
+
+  const schedulePtyDataSummary = () => {
+    if (ptyDataSummaryTimer) return;
+    ptyDataSummaryTimer = setTimeout(flushPtyDataSummary, PTY_DATA_SUMMARY_INTERVAL_MS);
   };
 
   const setRuntimeState = (sessionId: string, nextState: TerminalRuntimeState, opts?: { touch?: boolean }) => {
@@ -821,11 +867,20 @@ export function createPtyService({
     const effectiveToolType = preferredToolType ?? session.toolType ?? null;
     if (!isTrackedCliToolType(effectiveToolType)) return false;
     if (session.resumeMetadata?.targetId?.trim()) return true;
+    const recentMissing = missingResumeTargetBackfillFailures.get(sessionId);
+    if (
+      reason === "session-list"
+      && recentMissing?.toolType === effectiveToolType
+      && Date.now() - recentMissing.checkedAtMs < RESUME_TARGET_MISSING_COOLDOWN_MS
+    ) {
+      return false;
+    }
 
     // Strategy 1: Try parsing the transcript for an explicit resume command
     const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
     const detected = extractResumeCommandFromOutput(transcript, effectiveToolType);
     if (detected) {
+      missingResumeTargetBackfillFailures.delete(sessionId);
       sessionService.setResumeCommand(sessionId, detected);
       logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "transcript" });
       return true;
@@ -838,6 +893,7 @@ export function createPtyService({
       const claudeSessionId = resolveClaudeSessionIdFromStorage(cwd);
       if (claudeSessionId) {
         const resumeCmd = `claude --resume ${claudeSessionId}`;
+        missingResumeTargetBackfillFailures.delete(sessionId);
         sessionService.setResumeCommand(sessionId, resumeCmd);
         logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "claude-storage", claudeSessionId });
         return true;
@@ -857,12 +913,19 @@ export function createPtyService({
       });
       if (codexSessionId) {
         const resumeCmd = `codex resume ${codexSessionId}`;
+        missingResumeTargetBackfillFailures.delete(sessionId);
         sessionService.setResumeCommand(sessionId, resumeCmd);
         logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "codex-storage", codexSessionId });
         return true;
       }
     }
 
+    if (reason === "session-list") {
+      missingResumeTargetBackfillFailures.set(sessionId, {
+        toolType: effectiveToolType,
+        checkedAtMs: Date.now(),
+      });
+    }
     logger.warn("pty.resume_target_missing", { sessionId, toolType: effectiveToolType, reason });
     return false;
   };
@@ -1110,6 +1173,7 @@ export function createPtyService({
         }
       });
 
+    flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });
     emitPtyExit(entry, { ptyId, sessionId: entry.sessionId, exitCode });
     ptys.delete(ptyId);
   };
@@ -1198,7 +1262,7 @@ export function createPtyService({
     }
   };
 
-  const emitPtyData = (entry: PtyEntry, event: PtyDataEvent) => {
+  const emitPtyDataNow = (entry: PtyEntry, event: PtyDataEvent) => {
     const scopedEvent = { ...event, projectRoot };
     broadcastData(scopedEvent);
     const enriched = { ...scopedEvent, laneId: entry.laneId };
@@ -1209,6 +1273,42 @@ export function createPtyService({
         // ignore listener failures
       }
     }
+  };
+
+  const clearPendingDataTimer = (entry: PtyEntry) => {
+    if (!entry.pendingDataTimer) return;
+    clearTimeout(entry.pendingDataTimer);
+    entry.pendingDataTimer = null;
+  };
+
+  const flushQueuedPtyData = (entry: PtyEntry, ids: { ptyId: string; sessionId: string }) => {
+    clearPendingDataTimer(entry);
+    if (entry.pendingDataChunks.length === 0) return;
+    const data = entry.pendingDataChunks.join("");
+    entry.pendingDataChunks.length = 0;
+    entry.pendingDataChars = 0;
+    if (!data) return;
+    ptyDataBatchCount += 1;
+    ptyDataMaxBatchChars = Math.max(ptyDataMaxBatchChars, data.length);
+    emitPtyDataNow(entry, { ...ids, data });
+  };
+
+  const enqueuePtyData = (entry: PtyEntry, event: PtyDataEvent) => {
+    if (!event.data) return;
+    ptyDataChunkCount += 1;
+    ptyDataCharCount += event.data.length;
+    schedulePtyDataSummary();
+    entry.pendingDataChunks.push(event.data);
+    entry.pendingDataChars += event.data.length;
+    const ids = { ptyId: event.ptyId, sessionId: event.sessionId };
+    if (entry.pendingDataChars >= PTY_DATA_BATCH_MAX_CHARS) {
+      flushQueuedPtyData(entry, ids);
+      return;
+    }
+    if (entry.pendingDataTimer) return;
+    entry.pendingDataTimer = setTimeout(() => {
+      flushQueuedPtyData(entry, ids);
+    }, PTY_DATA_BATCH_INTERVAL_MS);
   };
 
   const emitPtyExit = (entry: Pick<PtyEntry, "laneId" | "sessionId">, event: PtyExitEvent) => {
@@ -1576,6 +1676,11 @@ export function createPtyService({
         disposed: false,
         createdAt: Date.now(),
         cleanupPaths,
+        lastResizeCols: null,
+        lastResizeRows: null,
+        pendingDataChunks: [],
+        pendingDataChars: 0,
+        pendingDataTimer: null,
         aiTitleTimer: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
@@ -1594,9 +1699,15 @@ export function createPtyService({
       let titleBufferFull = false;
 
       pty.onData((data) => {
+        // Late chunks can arrive after closeEntry()/dispose() has flushed the
+        // final buffer and emitted ptyExit. Bail out so post-teardown data
+        // can't re-arm pendingDataTimer, mutate previews/runtime state, or
+        // emit ptyData after ptyExit while transcript summarization is in
+        // flight.
+        if (entry.disposed) return;
         writeTranscript(entry, data);
         updatePreviewThrottled(entry, data);
-        emitPtyData(entry, { ptyId, sessionId, data });
+        enqueuePtyData(entry, { ptyId, sessionId, data });
 
         const prevState = runtimeStates.get(sessionId)?.state ?? "running";
         const runtimeState = runtimeStateFromOsc133Chunk(data, prevState);
@@ -1898,8 +2009,11 @@ export function createPtyService({
       const entry = ptys.get(ptyId);
       if (!entry) return;
       const safe = clampDims(cols, rows);
+      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return;
       try {
         entry.pty.resize(safe.cols, safe.rows);
+        entry.lastResizeCols = safe.cols;
+        entry.lastResizeRows = safe.rows;
       } catch (err) {
         logger.warn("pty.resize_failed", { ptyId, err: String(err) });
       }
@@ -1941,8 +2055,11 @@ export function createPtyService({
       );
       if (!entry) return false;
       const safe = clampDims(cols, rows);
+      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return true;
       try {
         entry.pty.resize(safe.cols, safe.rows);
+        entry.lastResizeCols = safe.cols;
+        entry.lastResizeRows = safe.rows;
         return true;
       } catch (err) {
         logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });
@@ -2009,6 +2126,7 @@ export function createPtyService({
         entry.aiTitleTimer = null;
       }
       clearToolAutoCloseTimer(ptyId);
+      flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });
       cleanupEntryPaths(entry);
       try {
         entry.pty.kill();

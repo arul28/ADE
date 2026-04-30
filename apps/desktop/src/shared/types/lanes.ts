@@ -124,6 +124,9 @@ export type LaneIcon = "star" | "flag" | "bolt" | "shield" | "tag" | null;
 export type ListLanesArgs = {
   includeArchived?: boolean;
   includeStatus?: boolean;
+  includeConflictStatus?: boolean;
+  includeRebaseSuggestions?: boolean;
+  includeAutoRebaseStatus?: boolean;
 };
 
 export type CreateLaneArgs = {

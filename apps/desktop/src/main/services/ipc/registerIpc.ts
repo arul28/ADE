@@ -382,6 +382,7 @@ import type {
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
+  SyncGetStatusArgs,
   SyncPeerDeviceType,
   SyncRoleSnapshot,
   SyncTransferReadiness,
@@ -853,18 +854,72 @@ async function enrichSessionsForLaneList(
 }
 
 async function buildLaneListSnapshots(
-  args: Pick<AppContext, "laneService" | "sessionService" | "ptyService" | "agentChatService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService"> & {
+  args: Pick<AppContext, "laneService" | "sessionService" | "ptyService" | "agentChatService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService" | "logger"> & {
     syncService?: ReturnType<typeof createSyncService> | null;
   },
   lanes: LaneSummary[],
+  options: { includeConflictStatus?: boolean; includeRebaseSuggestions?: boolean; includeAutoRebaseStatus?: boolean } = {},
 ): Promise<LaneListSnapshot[]> {
+  const startedAt = Date.now();
+  const phases: Array<{ phase: string; durationMs: number }> = [];
+  const timePhase = async <T>(phase: string, work: () => Promise<T> | T): Promise<T> => {
+    const phaseStartedAt = Date.now();
+    try {
+      return await work();
+    } finally {
+      const durationMs = Date.now() - phaseStartedAt;
+      phases.push({ phase, durationMs });
+      if (durationMs >= 120) {
+        args.logger.info("lanes.listSnapshots.phase", {
+          phase,
+          durationMs,
+          laneCount: lanes.length,
+          includeConflictStatus: options.includeConflictStatus !== false,
+          includeRebaseSuggestions: options.includeRebaseSuggestions !== false,
+          includeAutoRebaseStatus: options.includeAutoRebaseStatus !== false,
+        });
+      }
+    }
+  };
+
   const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
-    enrichSessionsForLaneList(args),
-    Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []).catch(() => []),
-    Promise.resolve(args.autoRebaseService?.listStatuses() ?? []).catch(() => []),
-    Promise.resolve(args.laneService.listStateSnapshots()).catch(() => []),
-    args.conflictService?.getBatchAssessment({ lanes }).catch(() => null) ?? Promise.resolve(null),
+    timePhase("sessions", () => enrichSessionsForLaneList(args)),
+    options.includeRebaseSuggestions === false
+      ? Promise.resolve([])
+      : timePhase("rebase_suggestions", () =>
+          Promise.resolve()
+            .then(() => args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? [])
+            .catch(() => [])),
+    options.includeAutoRebaseStatus === false
+      ? Promise.resolve([])
+      : timePhase("auto_rebase_statuses", () =>
+          Promise.resolve()
+            .then(() => args.autoRebaseService?.listStatuses({ lanes }) ?? [])
+            .catch(() => [])),
+    timePhase("state_snapshots", () =>
+      Promise.resolve()
+        .then(() => args.laneService.listStateSnapshots())
+        .catch(() => [])),
+    options.includeConflictStatus === false
+      ? Promise.resolve(null)
+      : timePhase("conflict_assessment", () =>
+          Promise.resolve()
+            .then(() => args.conflictService?.getBatchAssessment({ lanes }) ?? null)
+            .catch(() => null)),
   ]);
+  const durationMs = Date.now() - startedAt;
+  if (durationMs >= 120) {
+    args.logger.info("lanes.listSnapshots.summary", {
+      durationMs,
+      laneCount: lanes.length,
+      includeConflictStatus: options.includeConflictStatus !== false,
+      includeRebaseSuggestions: options.includeRebaseSuggestions !== false,
+      includeAutoRebaseStatus: options.includeAutoRebaseStatus !== false,
+      phases: phases
+        .filter((phase) => phase.durationMs >= 10)
+        .sort((left, right) => right.durationMs - left.durationMs),
+    });
+  }
 
   const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
   const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
@@ -1714,6 +1769,23 @@ export function registerIpc({
     return typeof value;
   };
 
+  const summarizeIpcArg = (value: unknown): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Date) {
+      return summarizeIpcValue(value);
+    }
+    const record = value as Record<string, unknown>;
+    const entries = Object.entries(record).slice(0, 8);
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, summarizeIpcValue(entryValue, 1)]));
+  };
+
+  const summarizeIpcArgs = (args: unknown[]): unknown => ({
+    kind: "array",
+    length: args.length,
+    ...(args.length > 0 ? { arg0: summarizeIpcArg(args[0]) } : {}),
+    ...(args.length > 1 ? { arg1: summarizeIpcArg(args[1]) } : {}),
+    ...(args.length > 2 ? { arg2: summarizeIpcArg(args[2]) } : {}),
+  });
+
   const getTraceLogger = (): Pick<Logger, "info" | "warn"> => {
     try {
       return getCtx().logger;
@@ -1772,6 +1844,91 @@ export function registerIpc({
     }
   };
 
+  type IpcInvokeAggregate = {
+    channel: string;
+    winId: number | null;
+    count: number;
+    failed: number;
+    totalDurationMs: number;
+    maxDurationMs: number;
+    slowCount: number;
+  };
+
+  const IPC_SUMMARY_INTERVAL_MS = 10_000;
+  const ipcInvokeAggregates = new Map<string, IpcInvokeAggregate>();
+  let ipcInvokeSummaryTimer: NodeJS.Timeout | null = null;
+
+  const flushIpcInvokeSummary = () => {
+    ipcInvokeSummaryTimer = null;
+    if (ipcInvokeAggregates.size === 0) return;
+    const rows = [...ipcInvokeAggregates.values()];
+    ipcInvokeAggregates.clear();
+    const totalCalls = rows.reduce((sum, row) => sum + row.count, 0);
+    const totalDurationMs = rows.reduce((sum, row) => sum + row.totalDurationMs, 0);
+    const topByCount = [...rows]
+      .sort((left, right) => right.count - left.count || right.totalDurationMs - left.totalDurationMs)
+      .slice(0, 12)
+      .map((row) => ({
+        channel: row.channel,
+        winId: row.winId,
+        count: row.count,
+        avgMs: Math.round(row.totalDurationMs / Math.max(1, row.count)),
+        maxMs: row.maxDurationMs,
+        slowCount: row.slowCount,
+        failed: row.failed,
+      }));
+    const topByCost = [...rows]
+      .sort((left, right) => right.totalDurationMs - left.totalDurationMs || right.count - left.count)
+      .slice(0, 12)
+      .map((row) => ({
+        channel: row.channel,
+        winId: row.winId,
+        count: row.count,
+        totalMs: row.totalDurationMs,
+        avgMs: Math.round(row.totalDurationMs / Math.max(1, row.count)),
+        maxMs: row.maxDurationMs,
+        slowCount: row.slowCount,
+        failed: row.failed,
+      }));
+
+    getTraceLogger().info("ipc.invoke.summary", {
+      intervalMs: IPC_SUMMARY_INTERVAL_MS,
+      totalCalls,
+      totalDurationMs,
+      topByCount,
+      topByCost,
+    });
+  };
+
+  const recordIpcInvokeAggregate = (input: {
+    channel: string;
+    winId: number | null;
+    durationMs: number;
+    failed: boolean;
+  }) => {
+    const key = `${input.winId ?? "none"}:${input.channel}`;
+    const existing = ipcInvokeAggregates.get(key) ?? {
+      channel: input.channel,
+      winId: input.winId,
+      count: 0,
+      failed: 0,
+      totalDurationMs: 0,
+      maxDurationMs: 0,
+      slowCount: 0,
+    };
+    existing.count += 1;
+    existing.failed += input.failed ? 1 : 0;
+    existing.totalDurationMs += input.durationMs;
+    existing.maxDurationMs = Math.max(existing.maxDurationMs, input.durationMs);
+    if (input.durationMs >= 120) existing.slowCount += 1;
+    ipcInvokeAggregates.set(key, existing);
+
+    if (!ipcInvokeSummaryTimer) {
+      ipcInvokeSummaryTimer = setTimeout(flushIpcInvokeSummary, IPC_SUMMARY_INTERVAL_MS);
+      ipcInvokeSummaryTimer.unref?.();
+    }
+  };
+
   const tracedIpcMain = ipcMain as TracedIpcMain;
   if (traceIpcInvokes && !tracedIpcMain.__adeTraceWrapped) {
     const originalHandle = tracedIpcMain.handle.bind(ipcMain);
@@ -1793,7 +1950,7 @@ export function registerIpc({
               return null;
             }
           })(),
-          args: summarizeIpcValue(redactIpcArgsForChannel(channel, args)),
+          args: summarizeIpcArgs(redactIpcArgsForChannel(channel, args)),
         });
         const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel);
         let timeoutHandle: NodeJS.Timeout | null = null;
@@ -1807,20 +1964,24 @@ export function registerIpc({
               );
             }),
           ]);
+          const durationMs = Date.now() - startedAt;
+          recordIpcInvokeAggregate({ channel, winId, durationMs, failed: false });
           logger.info("ipc.invoke.done", {
             callId,
             channel,
             winId,
-            durationMs: Date.now() - startedAt,
+            durationMs,
             result: summarizeIpcValue(result),
           });
           return result;
         } catch (error) {
+          const durationMs = Date.now() - startedAt;
+          recordIpcInvokeAggregate({ channel, winId, durationMs, failed: true });
           logger.warn("ipc.invoke.failed", {
             callId,
             channel,
             winId,
-            durationMs: Date.now() - startedAt,
+            durationMs,
             err: getErrorMessage(error),
           });
           throw error;
@@ -3069,8 +3230,11 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.syncGetStatus, async (): Promise<SyncRoleSnapshot> => {
-    return await (await requireSyncService()).getStatus();
+  ipcMain.handle(IPC.syncGetStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+    return await (await requireSyncService()).getStatus({
+      includeTransferReadiness: arg?.includeTransferReadiness,
+      forceTransferReadiness: arg?.forceTransferReadiness,
+    });
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (): Promise<SyncRoleSnapshot> => {
@@ -4312,11 +4476,18 @@ export function registerIpc({
           includeArchived: Boolean(arg?.includeArchived),
           includeStatus: arg?.includeStatus !== false,
         });
-        return await buildLaneListSnapshots(ctx, lanes);
+        return await buildLaneListSnapshots(ctx, lanes, {
+          includeConflictStatus: arg?.includeConflictStatus !== false,
+          includeRebaseSuggestions: arg?.includeRebaseSuggestions !== false,
+          includeAutoRebaseStatus: arg?.includeAutoRebaseStatus !== false,
+        });
       },
       {
         includeArchived: Boolean(arg?.includeArchived),
         includeStatus: arg?.includeStatus !== false,
+        includeConflictStatus: arg?.includeConflictStatus !== false,
+        includeRebaseSuggestions: arg?.includeRebaseSuggestions !== false,
+        includeAutoRebaseStatus: arg?.includeAutoRebaseStatus !== false,
       }
     );
   });

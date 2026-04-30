@@ -215,31 +215,27 @@ describe("embeddingService", () => {
     }));
   });
 
-  it("reports an installed local model path and loads from local cache during probe", async () => {
+  it("reports an installed local model path during probe without loading ONNX", async () => {
     const logger = createLogger();
     const cacheDir = createTempCacheDir();
     const installPath = writeInstalledModel(cacheDir);
-    const extractor = Object.assign(
-      vi.fn(async (text: string) => ({ data: buildVector(text), dims: [1, EXPECTED_EMBEDDING_DIMENSIONS] })),
-      { dispose: vi.fn(async () => {}) },
-    );
-    const pipeline = vi.fn(async (_task, _model, options?: { progress_callback?: (event: { file?: string; progress?: number }) => void }) => {
-      options?.progress_callback?.({ file: "tokenizer.json", progress: 100 });
-      return extractor;
+    const pipeline = vi.fn(async () => {
+      throw new Error("pipeline should not run during cache probe");
     });
+    const loadRuntime = vi.fn(async () => ({
+      env: {
+        cacheDir: "",
+        allowRemoteModels: true,
+        allowLocalModels: true,
+        useFSCache: true,
+      },
+      pipeline,
+    }));
 
     const service = createEmbeddingService({
       logger,
       cacheDir,
-      loadRuntime: async () => ({
-        env: {
-          cacheDir: "",
-          allowRemoteModels: true,
-          allowLocalModels: true,
-          useFSCache: true,
-        },
-        pipeline,
-      }),
+      loadRuntime,
     });
 
     expect(service.getStatus()).toEqual(expect.objectContaining({
@@ -251,15 +247,15 @@ describe("embeddingService", () => {
 
     await service.probeCache();
 
-    expect(pipeline).toHaveBeenCalledTimes(1);
-    expect(pipeline.mock.calls[0]?.[1]).toBe(installPath);
-    expect(pipeline.mock.calls[0]?.[2]).toBeDefined();
+    expect(loadRuntime).not.toHaveBeenCalled();
+    expect(pipeline).not.toHaveBeenCalled();
     expect(service.getStatus()).toEqual(expect.objectContaining({
       installState: "installed",
       installPath,
-      activity: "ready",
-      state: "ready",
+      activity: "idle",
+      state: "idle",
     }));
+    expect(service.isAvailable()).toBe(false);
   });
 
   it("does not auto-download from a partial cache during startup probing", async () => {

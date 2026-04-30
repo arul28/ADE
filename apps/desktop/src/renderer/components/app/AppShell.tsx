@@ -397,7 +397,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         laneRefreshTimer = window.setTimeout(() => {
           laneRefreshTimer = null;
           if (cancelled) return;
-          void refreshLanes({ includeStatus: true });
+          const includeDecoratedLaneSnapshots = isLanesRoute;
+          void refreshLanes({
+            includeStatus: includeDecoratedLaneSnapshots,
+            includeConflictStatus: includeDecoratedLaneSnapshots,
+            includeRebaseSuggestions: isLanesRoute,
+            includeAutoRebaseStatus: includeDecoratedLaneSnapshots,
+          });
         }, 1_200);
         providerRefreshTimer = window.setTimeout(() => {
           providerRefreshTimer = null;
@@ -441,6 +447,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     refreshProviderMode,
     refreshKeybindings,
     setShowWelcome,
+    isLanesRoute,
   ]);
 
   useEffect(() => {
@@ -703,23 +710,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return;
     }
     setAiStatusLoaded(false);
-    const timer = window.setTimeout(() => {
-      void Promise.allSettled([
-        window.ade.ai.getStatus(),
-        window.ade.github.getStatus(),
-      ]).then((results) => {
+    const aiTimer = window.setTimeout(() => {
+      void window.ade.ai.getStatus().then((status) => {
         if (cancelled) return;
-        const [aiResult, githubResult] = results;
-        setAiStatus(aiResult.status === "fulfilled" ? aiResult.value : null);
+        setAiStatus(status);
+      }).catch(() => {
+        if (cancelled) return;
+        setAiStatus(null);
+      }).finally(() => {
+        if (cancelled) return;
         setAiStatusLoaded(true);
-        setGithubStatus(
-          githubResult.status === "fulfilled" ? githubResult.value : null,
-        );
       });
     }, 1_000);
+    const githubTimer = window.setTimeout(() => {
+      void window.ade.github.getStatus().then((status) => {
+        if (cancelled) return;
+        setGithubStatus(status);
+      }).catch(() => {
+        if (cancelled) return;
+        setGithubStatus(null);
+      });
+    }, 4_000);
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      window.clearTimeout(aiTimer);
+      window.clearTimeout(githubTimer);
     };
   }, [project?.rootPath]);
 

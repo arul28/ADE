@@ -1976,7 +1976,7 @@ export function AgentChatComposer({
     setSelectedAppControlContextId(null);
   }, [appControlContextItems, selectedAppControlContextId]);
 
-  const composerBeamActive = layoutVariant !== "grid-tile" && (turnActive || !chatHasMessages);
+  const composerBeamActive = isActive && layoutVariant !== "grid-tile" && turnActive;
   const composerBeamVariant = turnActive ? "ocean" : "colorful";
   const composerBeamDuration = turnActive ? 20 : 5;
   const composerBeamStrength = turnActive ? 0.26 : 0.44;
@@ -2002,6 +2002,11 @@ export function AgentChatComposer({
     return "Send";
   }
 
+  const composerFrameClassName = cn(
+    "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
+    layoutVariant === "grid-tile" ? "m-0" : "",
+  );
+
   return (
     <>
       <BorderBeam
@@ -2011,10 +2016,7 @@ export function AgentChatComposer({
         strength={composerBeamStrength}
         active={composerBeamActive}
         borderRadius={18}
-        className={cn(
-          "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
-          layoutVariant === "grid-tile" ? "m-0" : "",
-        )}
+        className={composerFrameClassName}
         style={{ overflow: "visible" }}
       >
       <ChatComposerShell

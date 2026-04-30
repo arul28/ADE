@@ -292,13 +292,11 @@ export function resolveAgentMemoryWritePolicy(args: {
   writeGateMode?: WriteGateMode;
 }): AgentMemoryWritePolicy {
   const pinned = args.pin === true;
-  const promoted = pinned || args.writeGateMode === "strict";
-  const tier: MemoryTier = pinned ? 1 : promoted ? 2 : 3;
 
   return {
-    status: promoted ? "promoted" : "candidate",
-    tier,
-    confidence: promoted ? 1 : 0.6,
+    status: "promoted",
+    tier: pinned ? 1 : 2,
+    confidence: 1,
   };
 }
 

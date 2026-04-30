@@ -163,7 +163,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                   "absolute -right-1 -top-1 ade-status-dot",
                   terminalAttention.indicator === "running-needs-attention"
                     ? "ade-status-dot-warning"
-                    : "ade-status-dot-active animate-spin",
+                    : "ade-status-dot-active",
                 )}
               />
             ) : null}

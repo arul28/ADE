@@ -138,7 +138,7 @@ export function sessionStatusDot(session: {
 }): SessionStatusDot {
   const indicator = sessionIndicatorState(session);
   if (indicator === "running-active") {
-    return { cls: "rounded-full border-2 border-emerald-400 border-t-transparent bg-transparent", spinning: true, label: "Running" };
+    return { cls: "rounded-full bg-emerald-400", spinning: false, label: "Running" };
   }
   if (indicator === "running-needs-attention") {
     let label: string;

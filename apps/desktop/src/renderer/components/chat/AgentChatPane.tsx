@@ -1260,6 +1260,11 @@ function writeChatCompanionUiState(key: string, state: ChatCompanionUiState): vo
   }
 }
 
+function isLikelyMacRenderer(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
+}
+
 export function AgentChatPane({
   laneId,
   laneLabel,
@@ -1388,7 +1393,7 @@ export function AgentChatPane({
   const [iosSimulatorOpen, setIosSimulatorOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
   );
-  const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(false);
+  const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
   const [iosElementContextItems, setIosElementContextItems] = useState<IosElementContextItem[]>([]);
   const [appControlOpen, setAppControlOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).appControlOpen,
@@ -1534,6 +1539,7 @@ export function AgentChatPane({
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.getStatus) return;
+    if (!iosSimulatorOpen || !isTileActive) return;
     let cancelled = false;
     void api.getStatus()
       .then((status) => {
@@ -1547,7 +1553,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [iosSimulatorOpen, isTileActive]);
 
   useEffect(() => {
     const api = window.ade?.appControl;
@@ -2204,7 +2210,15 @@ export function AgentChatPane({
   });
 
   const refreshAvailableModels = useCallback(async () => {
-    const shouldRefreshOpenCodeInventory = sessionProvider === "opencode";
+    const selectedModelProvider = modelId.trim()
+      ? resolveChatRuntimeProvider(getModelById(modelId))
+      : null;
+    const shouldRefreshOpenCodeInventory =
+      sessionProvider === "opencode"
+      && (
+        selectedSession?.provider === "opencode"
+        || selectedModelProvider === "opencode"
+      );
     try {
       const status = await getAiStatusCached({
         projectRoot,
@@ -2281,7 +2295,7 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-  }, [projectRoot, sessionProvider]);
+  }, [modelId, projectRoot, selectedSession?.provider, sessionProvider]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
@@ -2431,8 +2445,9 @@ export function AgentChatPane({
   }, [selectedSessionId]);
 
   useEffect(() => {
+    if (!isTileActive) return;
     void refreshAvailableModels();
-  }, [refreshAvailableModels, selectedSession?.provider]);
+  }, [isTileActive, refreshAvailableModels, selectedSession?.provider]);
 
   useEffect(() => {
     // Suspend the 5s model-list poll when this pane is mounted but hidden
@@ -2676,7 +2691,7 @@ export function AgentChatPane({
   ]);
 
   useEffect(() => {
-    if (!selectedSessionId || !selectedSessionModelId || turnActive) return;
+    if (!isTileActive || !selectedSessionId || !selectedSessionModelId || turnActive) return;
     const desc = getModelById(selectedSessionModelId);
     if (!desc?.isCliWrapped || desc.family !== "cursor") return;
     const warmupKey = `${selectedSessionId}:${selectedSessionModelId}:${selectedSession?.cursorModeSnapshot?.currentModeId ?? cursorModeId ?? "agent"}`;
@@ -2692,6 +2707,7 @@ export function AgentChatPane({
     selectedSession?.cursorModeSnapshot?.currentModeId,
     selectedSessionId,
     selectedSessionModelId,
+    isTileActive,
     turnActive,
   ]);
 
@@ -2817,6 +2833,7 @@ export function AgentChatPane({
   }, [handoffOpen, handoffModelId, handoffTargetDescriptor]);
 
   useEffect(() => {
+    if (!isTileActive) return;
     if (!selectedSessionId) return;
     if (!lockedSingleSessionMode) {
       // Re-read the selected transcript on every tab switch so the selected
@@ -2834,9 +2851,13 @@ export function AgentChatPane({
       void loadHistory(selectedSessionId, { force: true });
     }, 120);
     return () => window.clearTimeout(handle);
-  }, [loadHistory, lockedSingleSessionMode, selectedSessionId]);
+  }, [isTileActive, loadHistory, lockedSingleSessionMode, selectedSessionId]);
 
   useEffect(() => {
+    if (!isTileActive) {
+      setComputerUseSnapshot(null);
+      return;
+    }
     if (!lockedSingleSessionMode) {
       void refreshComputerUseSnapshot(selectedSessionId);
       return;
@@ -2845,7 +2866,7 @@ export function AgentChatPane({
       void refreshComputerUseSnapshot(selectedSessionId);
     }, 180);
     return () => window.clearTimeout(handle);
-  }, [lockedSingleSessionMode, refreshComputerUseSnapshot, selectedSessionId]);
+  }, [isTileActive, lockedSingleSessionMode, refreshComputerUseSnapshot, selectedSessionId]);
 
   useEffect(() => {
     setAttachments([]);
@@ -2861,17 +2882,17 @@ export function AgentChatPane({
 
   // Fetch SDK slash commands when session changes
   useEffect(() => {
-    if (!selectedSessionId) { setSdkSlashCommands([]); return; }
+    if (!selectedSessionId || !isTileActive) { setSdkSlashCommands([]); return; }
     let cancelled = false;
     window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
-  }, [selectedSessionId]);
+  }, [isTileActive, selectedSessionId]);
 
   // Fetch git diff stats when the session changes or a turn completes
   useEffect(() => {
-    if (!selectedSessionId) { setSessionDelta(null); return; }
+    if (!selectedSessionId || !isTileActive) { setSessionDelta(null); return; }
     let cancelled = false;
     const fetchDelta = () => {
       window.ade.sessions.getDelta(selectedSessionId)
@@ -2887,7 +2908,7 @@ export function AgentChatPane({
     };
     fetchDelta();
     return () => { cancelled = true; };
-  }, [selectedSessionId, turnActive]);
+  }, [isTileActive, selectedSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
@@ -3073,6 +3094,7 @@ export function AgentChatPane({
   }, [lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
+    if (!isTileActive) return undefined;
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
       if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
@@ -3080,7 +3102,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [refreshComputerUseSnapshot, selectedSessionId]);
+  }, [isTileActive, refreshComputerUseSnapshot, selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -4684,7 +4706,7 @@ export function AgentChatPane({
             surfaceMode={surfaceMode}
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
-            isActive={layoutVariant === "grid-tile" ? isTileActive : false}
+            isActive={isTileActive}
             shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}

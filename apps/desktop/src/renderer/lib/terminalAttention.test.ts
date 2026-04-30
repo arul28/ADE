@@ -56,12 +56,12 @@ describe("terminalAttention", () => {
   });
 
   describe("sessionStatusDot", () => {
-    it("returns a spinning emerald dot for a running active session", () => {
+    it("returns a solid emerald dot for a running active session", () => {
       const dot = sessionStatusDot({
         status: "running",
         lastOutputPreview: "building project...",
       });
-      expect(dot.spinning).toBe(true);
+      expect(dot.spinning).toBe(false);
       expect(dot.cls).toContain("emerald");
       expect(dot.label).toBe("Running");
     });

@@ -278,6 +278,9 @@ describe("appStore", () => {
       expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
         includeArchived: false,
         includeStatus: true,
+        includeConflictStatus: true,
+        includeRebaseSuggestions: true,
+        includeAutoRebaseStatus: true,
       });
       expect(useAppStore.getState().laneSnapshots).toEqual(snapshots);
       expect(useAppStore.getState().lanes).toEqual([snapshots[0].lane]);
@@ -295,6 +298,48 @@ describe("appStore", () => {
       });
       expect(window.ade.lanes.listSnapshots).not.toHaveBeenCalled();
       expect(useAppStore.getState().lanes).toEqual(lanes);
+    });
+
+    it("refreshLanes can skip conflict status for cheaper warmup snapshots", async () => {
+      (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([]);
+
+      await useAppStore.getState().refreshLanes({ includeStatus: true, includeConflictStatus: false });
+
+      expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: true,
+        includeConflictStatus: false,
+        includeRebaseSuggestions: true,
+        includeAutoRebaseStatus: true,
+      });
+    });
+
+    it("refreshLanes can skip rebase suggestions for cheaper warmup snapshots", async () => {
+      (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([]);
+
+      await useAppStore.getState().refreshLanes({ includeStatus: true, includeRebaseSuggestions: false });
+
+      expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: true,
+        includeConflictStatus: true,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: true,
+      });
+    });
+
+    it("refreshLanes can skip auto-rebase status for cheaper warmup snapshots", async () => {
+      (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([]);
+
+      await useAppStore.getState().refreshLanes({ includeStatus: true, includeAutoRebaseStatus: false });
+
+      expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: true,
+        includeConflictStatus: true,
+        includeRebaseSuggestions: true,
+        includeAutoRebaseStatus: false,
+      });
     });
 
     it("refreshLanes preserves compatible lane snapshots during lightweight refresh", async () => {

@@ -6,6 +6,7 @@ import {
 import { spawnAsync } from "../shared/utils";
 
 export type CursorCliModelRow = { id: string; displayName?: string };
+type CursorCliModelDiscoveryMode = "probe" | "cached-or-fallback";
 
 let cached: { at: number; models: CursorCliModelRow[] } | null = null;
 const TTL_MS = 120_000;
@@ -48,6 +49,14 @@ export function parseCursorCliModelsStdout(stdout: string): CursorCliModelRow[] 
 
 export function clearCursorCliModelsCache(): void {
   cached = null;
+}
+
+function getCachedCursorModels(): CursorCliModelRow[] | null {
+  const now = Date.now();
+  if (cached && now - cached.at < TTL_MS && cached.models.length) {
+    return cached.models;
+  }
+  return null;
 }
 
 /**
@@ -117,8 +126,13 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
 /**
  * Full list of Cursor CLI models as registry descriptors (for AI status + chat pickers).
  */
-export async function discoverCursorCliModelDescriptors(agentPath: string): Promise<ModelDescriptor[]> {
-  const rows = await listCursorModelsFromCli(agentPath);
+export async function discoverCursorCliModelDescriptors(
+  agentPath: string,
+  options?: { mode?: CursorCliModelDiscoveryMode },
+): Promise<ModelDescriptor[]> {
+  const rows = options?.mode === "cached-or-fallback"
+    ? getCachedCursorModels() ?? []
+    : await listCursorModelsFromCli(agentPath);
   const useRows: CursorCliModelRow[] = rows.length ? rows : FALLBACK_SDK_IDS.map((id) => ({ id }));
   const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];

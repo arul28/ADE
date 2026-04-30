@@ -84,6 +84,7 @@ export function PaneTilingLayout({
   /* Leaf panel refs for individual pane minimization */
   const leafPanelRefs = useRef<Record<string, PanelImperativeHandle | null>>({});
   const leafCompactedRef = useRef<Record<string, { compacted: boolean; previousSize: number | null; parentDirection: "horizontal" | "vertical" }>>({});
+  const lastReadyLogSignatureRef = useRef<string | null>(null);
 
   const replaceTreeImmediately = useCallback((next: PaneSplit, resetLayout = false) => {
     if (saveTimerRef.current) {
@@ -351,15 +352,21 @@ export function PaneTilingLayout({
 
   /* ---- Recursive renderer ---- */
 
+  const liveLeafCount = useMemo(() => collectLeafIds(liveTree).length, [liveTree]);
+  const paneCount = useMemo(() => Object.keys(panes).length, [panes]);
+
   useEffect(() => {
+    const signature = `${layoutId}:${loaded ? 1 : 0}:${treeLoaded ? 1 : 0}:${liveLeafCount}:${paneCount}`;
+    if (lastReadyLogSignatureRef.current === signature) return;
+    lastReadyLogSignatureRef.current = signature;
     logRendererDebugEvent("renderer.pane_layout.ready", {
       layoutId,
       loaded,
       treeLoaded,
-      liveLeafCount: collectLeafIds(liveTree).length,
-      paneCount: Object.keys(panes).length,
+      liveLeafCount,
+      paneCount,
     });
-  }, [layoutId, loaded, treeLoaded, liveTree, panes]);
+  }, [layoutId, loaded, treeLoaded, liveLeafCount, paneCount]);
 
   const renderNode = (
     node: PaneLeaf | PaneSplit,

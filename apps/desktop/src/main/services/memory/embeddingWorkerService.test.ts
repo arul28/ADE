@@ -184,6 +184,32 @@ describe("embeddingWorkerService", () => {
     expect(rows.map((row) => row.memory_id)).toEqual([existing.id, missing.id].sort());
   });
 
+  it("does not embed candidate memories unless they are promoted or pinned", async () => {
+    const { db, worker, memoryService, embeddingService } = await createFixture({ attachQueueHook: false });
+
+    const candidate = memoryService.addCandidateMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "fact",
+      content: "Tentative memory should stay out of embedding backfill.",
+      importance: "medium",
+      confidence: 0.7,
+    });
+
+    await worker.start();
+    await worker.waitForIdle();
+
+    expect(embeddingService.embed).not.toHaveBeenCalled();
+    expect(countEmbeddings(db)).toBe(0);
+
+    memoryService.promoteMemory(candidate.id);
+    worker.runBackfill();
+    await worker.waitForIdle();
+
+    expect(embeddingService.embed).toHaveBeenCalledTimes(1);
+    expect(countEmbeddings(db)).toBe(1);
+  });
+
   it("processes queued memories in bounded batches and stores 384-d blobs", async () => {
     const { db, worker, memoryService } = await createFixture({ idleBatchSize: 10, activeBatchSize: 10 });
 

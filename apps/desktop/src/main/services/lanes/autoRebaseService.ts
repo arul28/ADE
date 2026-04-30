@@ -19,6 +19,7 @@ type StoredDismissal = {
 };
 type ListStatusesOptions = {
   includeAll?: boolean;
+  lanes?: LaneSummary[];
 };
 type AttentionStatusInput = {
   laneId: string;
@@ -262,8 +263,13 @@ export function createAutoRebaseService(args: {
 
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
     void maybeSweepRoots("listStatuses");
-    const lanes = await laneService.list({ includeArchived: false });
+    const lanes = options?.lanes ?? await laneService.list({ includeArchived: false });
     if (disposed) return [];
+    // When a caller-supplied lane subset is provided, laneById is no longer
+    // authoritative for the full active-lane set, so we cannot infer "parent
+    // was deleted" from "parent missing from this slice" — skip the
+    // missing-parent prune in that case.
+    const hasAuthoritativeLaneSet = !options?.lanes;
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const nowMs = Date.now();
 
@@ -284,7 +290,7 @@ export function createAutoRebaseService(args: {
       } else if (!options?.includeAll && lane.status.behind <= 0 && status.source !== "manual") {
         clearStatus(lane.id);
         continue;
-      } else if (status.parentLaneId && !laneById.has(status.parentLaneId)) {
+      } else if (hasAuthoritativeLaneSet && status.parentLaneId && !laneById.has(status.parentLaneId)) {
         clearStatus(lane.id);
         continue;
       }
