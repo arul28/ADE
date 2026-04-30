@@ -49,6 +49,7 @@ import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import type {
+  BranchPullRequest,
   ConflictChip,
   DeleteLaneArgs,
   GitCommitSummary,
@@ -241,6 +242,10 @@ export function LanesPage() {
   const [createImportBranch, setCreateImportBranch] = useState("");
   const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
   const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
+  const [createBranchesLoading, setCreateBranchesLoading] = useState(false);
+  const [createBranchPullRequests, setCreateBranchPullRequests] = useState<BranchPullRequest[]>([]);
+  const [createBranchPullRequestsLoading, setCreateBranchPullRequestsLoading] = useState(false);
+  const [createGitUserName, setCreateGitUserName] = useState<string>("");
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createEnvInitProgress, setCreateEnvInitProgress] = useState<LaneEnvInitProgress | null>(null);
@@ -1528,11 +1533,13 @@ export function LanesPage() {
     setCreateImportBranch("");
     setCreateChildBaseBranch("");
     setCreateBranches([]);
+    setCreateBranchPullRequests([]);
     setLaneCreated(false);
     createBaseBranchUserPickedRef.current = false;
     const primary = lanes.find((l) => l.laneType === "primary");
     if (primary) {
       // Fetch remotes first so remote-only branches (pushed from other machines) appear.
+      setCreateBranchesLoading(true);
       window.ade.git.fetch({ laneId: primary.id })
         .catch(() => {})
         .then(() => window.ade.git.listBranches({ laneId: primary.id }))
@@ -1548,7 +1555,20 @@ export function LanesPage() {
             if (defaultBranch) setCreateBaseBranch(defaultBranch.name);
           }
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => setCreateBranchesLoading(false));
+
+      // Capture git user.name so the picker can resolve `mine` / `author:me`.
+      window.ade.git.getUserIdentity({ laneId: primary.id })
+        .then((identity) => setCreateGitUserName(identity?.name ?? ""))
+        .catch(() => setCreateGitUserName(""));
+
+      // Lazily attach open-PR metadata. Fail-soft — picker degrades gracefully.
+      setCreateBranchPullRequestsLoading(true);
+      window.ade.prs.listOpenForRepo()
+        .then(setCreateBranchPullRequests)
+        .catch(() => setCreateBranchPullRequests([]))
+        .finally(() => setCreateBranchPullRequestsLoading(false));
     }
     Promise.all([
       window.ade.lanes.listTemplates().catch(() => [] as LaneTemplate[]),
@@ -2969,6 +2989,10 @@ export function LanesPage() {
         setSelectedTemplateId={setSelectedTemplateId}
         selectedColor={createSelectedColor}
         setSelectedColor={setCreateSelectedColor}
+        branchPullRequests={createBranchPullRequests}
+        currentGitUserName={createGitUserName}
+        loadingBranches={createBranchesLoading}
+        loadingBranchPullRequests={createBranchPullRequestsLoading}
         onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
         importBranchWarning={
           createMode === "existing" && createImportBranch && primaryLane?.status.dirty

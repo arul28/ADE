@@ -179,6 +179,50 @@ describe("gitOperationsService.listBranches annotations", () => {
     const branches = await service.listBranches({ laneId: "lane-1" });
     expect(branches.find((b) => b.name === "origin/HEAD")).toBeUndefined();
   });
+
+  it("attaches last-commit metadata and rejoins tab-containing subjects", async () => {
+    // Subject is the last column so any tab inside it stays inside parts[7+]
+    // and is rejoined — see the FORMAT comment in gitOperationsService.
+    mockGit.runGitOrThrow.mockResolvedValue(
+      [
+        [
+          "refs/heads/feat/widget",
+          "feat/widget",
+          "*",
+          "origin/feat/widget",
+          "abc1234",
+          "2026-04-30T10:00:00+00:00",
+          "Arul Sharma",
+          "tweak\twidget alignment",
+        ].join("\t"),
+        [
+          "refs/remotes/origin/feat/sidebar",
+          "origin/feat/sidebar",
+          " ",
+          "",
+          "def5678",
+          "2026-04-29T08:00:00+00:00",
+          "Jamie Lee",
+          "rebuild sidebar nav",
+        ].join("\t"),
+      ].join("\n"),
+    );
+
+    const { service } = makeServiceWithLanes({});
+    const branches = await service.listBranches({ laneId: "lane-1" });
+    const local = branches.find((b) => b.name === "feat/widget");
+    expect(local).toBeDefined();
+    expect(local!.lastCommitSha).toBe("abc1234");
+    expect(local!.lastCommitDate).toBe("2026-04-30T10:00:00+00:00");
+    expect(local!.lastCommitAuthor).toBe("Arul Sharma");
+    expect(local!.lastCommitMessage).toBe("tweak\twidget alignment");
+
+    const remote = branches.find((b) => b.name === "origin/feat/sidebar");
+    expect(remote).toBeDefined();
+    expect(remote!.lastCommitSha).toBe("def5678");
+    expect(remote!.lastCommitAuthor).toBe("Jamie Lee");
+    expect(remote!.lastCommitMessage).toBe("rebuild sidebar nav");
+  });
 });
 
 describe("gitOperationsService.checkoutBranch", () => {

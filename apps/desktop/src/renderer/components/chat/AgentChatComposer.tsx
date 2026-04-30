@@ -1976,7 +1976,7 @@ export function AgentChatComposer({
     setSelectedAppControlContextId(null);
   }, [appControlContextItems, selectedAppControlContextId]);
 
-  const composerBeamActive = isActive && layoutVariant !== "grid-tile" && turnActive;
+  const composerBeamActive = isActive && layoutVariant !== "grid-tile" && !iosSimulatorOpen && (turnActive || !chatHasMessages);
   const composerBeamVariant = turnActive ? "ocean" : "colorful";
   const composerBeamDuration = turnActive ? 20 : 5;
   const composerBeamStrength = turnActive ? 0.26 : 0.44;

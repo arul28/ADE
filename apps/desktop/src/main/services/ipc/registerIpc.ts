@@ -101,8 +101,11 @@ import type {
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
+  BranchPullRequest,
   GitBranchSummary,
   GitListBranchesArgs,
+  GitGetUserIdentityArgs,
+  GitUserIdentity,
   GitCheckoutBranchArgs,
   GitPushArgs,
   GitUpstreamSyncStatus,
@@ -5871,9 +5874,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorLaunch, async (event, arg = {}) => {
     const result = await ensureIosSimulator().launch(arg);
-    const browserWindow = BrowserWindow.fromWebContents(event.sender);
-    await prepareSimulatorWindowForCapture(browserWindow, { placeBehindAde: true });
-    followSimulatorWindowUnderAde(browserWindow);
+    const keepSimulatorInBackground = Boolean((arg as { keepSimulatorInBackground?: unknown } | null)?.keepSimulatorInBackground ?? true);
+    if (!keepSimulatorInBackground) {
+      const browserWindow = BrowserWindow.fromWebContents(event.sender);
+      await prepareSimulatorWindowForCapture(browserWindow, { placeBehindAde: false });
+      cleanupSimulatorParkingFollow?.();
+    }
     return result;
   });
 
@@ -6388,6 +6394,11 @@ export function registerIpc({
     return await ctx.gitService.listBranches(arg);
   });
 
+  ipcMain.handle(IPC.gitGetUserIdentity, async (_event, arg: GitGetUserIdentityArgs): Promise<GitUserIdentity> => {
+    const ctx = getCtx();
+    return await ctx.gitService.getUserIdentity(arg);
+  });
+
   ipcMain.handle(IPC.gitCheckoutBranch, async (_event, arg: GitCheckoutBranchArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return await ctx.gitService.checkoutBranch(arg);
@@ -6596,6 +6607,11 @@ export function registerIpc({
   ipcMain.handle(IPC.prsListAll, async (): Promise<PrSummary[]> => {
     const ctx = ensurePrPolling();
     return ctx.prService.listAll();
+  });
+
+  ipcMain.handle(IPC.prsListOpenForRepo, async (): Promise<BranchPullRequest[]> => {
+    const ctx = ensurePrPolling();
+    return await ctx.prService.listOpenPullRequests();
   });
 
   ipcMain.handle(IPC.prsRefresh, async (_event, arg: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> => {

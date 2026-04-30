@@ -689,7 +689,18 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "git_list_branches",
-    description: "List branches visible from a lane checkout.",
+    description: "List branches visible from a lane checkout, including last commit sha/date/author/subject for each branch.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "git_get_user_identity",
+    description: "Read the lane checkout's git user.name and user.email config (the identity new commits would be authored under).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -975,6 +986,15 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         prId: { type: "string", minLength: 1 }
       }
+    }
+  },
+  {
+    name: "prs_list_open",
+    description: "List every open pull request in the project's GitHub repo as flat BranchPullRequest rows keyed by head branch. Independent of ADE lane state, so it surfaces PRs whose head branch has no local lane.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {}
     }
   },
   {
@@ -1860,6 +1880,8 @@ const READ_ONLY_TOOLS = new Set([
   "list_unregistered_lanes",
   "git_get_sync_status",
   "git_list_branches",
+  "git_get_user_identity",
+  "prs_list_open",
   "generate_commit_message",
   "list_stashes",
   "simulate_integration",
@@ -5261,6 +5283,17 @@ async function runTool(args: {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_list_branches");
     const branches = await runtime.gitService.listBranches({ laneId });
     return { laneId, branches };
+  }
+
+  if (name === "git_get_user_identity") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_get_user_identity");
+    const identity = await runtime.gitService.getUserIdentity({ laneId });
+    return { laneId, identity };
+  }
+
+  if (name === "prs_list_open") {
+    const prs = await requirePrService(runtime).listOpenPullRequests();
+    return { prs };
   }
 
   if (name === "git_checkout_branch") {

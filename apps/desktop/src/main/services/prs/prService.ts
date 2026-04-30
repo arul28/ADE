@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  BranchPullRequest,
   CreatePrFromLaneArgs,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
@@ -5219,6 +5220,37 @@ export function createPrService({
       const laneId = String(args.laneId ?? "").trim();
       const summaries = listRows().map(rowToSummary);
       return laneId ? summaries.filter((pr) => pr.laneId === laneId) : summaries;
+    },
+
+    /**
+     * Returns a flat list of open PRs in the project's GitHub repo, keyed by
+     * head branch. Used by the branch picker to attach PR pills to branches.
+     * Hits a single paginated GitHub endpoint — independent of the local PR
+     * cache, so it covers branches that don't yet have a lane.
+     */
+    async listOpenPullRequests(): Promise<BranchPullRequest[]> {
+      const repo = await githubService.getRepoOrThrow();
+      const rows = await fetchAllPages<any>({
+        path: `/repos/${repo.owner}/${repo.name}/pulls`,
+        query: { state: "open", sort: "updated", direction: "desc" },
+      });
+      const out: BranchPullRequest[] = [];
+      for (const row of rows) {
+        const headBranch = asString(row?.head?.ref).trim();
+        const prNumber = asNumber(row?.number);
+        if (!headBranch || !prNumber) continue;
+        const isDraft = Boolean(row?.draft);
+        out.push({
+          branch: headBranch,
+          prNumber,
+          title: asString(row?.title).trim(),
+          state: isDraft ? "draft" : "open",
+          url: asString(row?.html_url).trim(),
+          author: asString(row?.user?.login).trim() || null,
+          updatedAt: asString(row?.updated_at).trim() || null,
+        });
+      }
+      return out;
     },
 
     getReviewSnapshot,

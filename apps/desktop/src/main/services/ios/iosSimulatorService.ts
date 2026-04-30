@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import http, { type ServerResponse } from "node:http";
@@ -66,17 +66,55 @@ const SIMCTL_BOOTSTATUS_TIMEOUT_MS = 90_000;
 const SIMCTL_INSTALL_TIMEOUT_MS = 180_000;
 const IDB_MJPEG_STARTUP_TIMEOUT_MS = 5_000;
 const IDB_H264_STARTUP_TIMEOUT_MS = 15_000;
+const IOSURFACE_HELPER_STARTUP_TIMEOUT_MS = 5_000;
+const IOSURFACE_INPUT_ACK_TIMEOUT_MS = 5_000;
+const IOSURFACE_TAP_HOLD_MS = 45;
+const IOSURFACE_FAILURE_WINDOW_MS = 60_000;
+const IOSURFACE_MAX_FAILURES_PER_WINDOW = 2;
+const IOSURFACE_SUPPORTED_XCODE_MAJORS = new Set([17, 26]);
 const INSTALL_HINT_XCODE = "Install Xcode from the App Store, then run xcode-select --install.";
 const INSTALL_HINT_XCODE_CLI = "Run xcode-select --install to install the Xcode command line tools.";
+const INSTALL_HINT_IOSURFACE_INDIGO = "Install a supported full Xcode (17.x or 26.x) and select it with xcode-select so ADE can build the private IOSurface/Indigo helpers.";
 const INSTALL_HINT_IDB = "Install Facebook idb: brew tap facebook/fb && brew install idb-companion && pipx install fb-idb.";
 const INSTALL_HINT_IDB_COMPANION = "Install idb_companion: brew tap facebook/fb && brew install idb-companion.";
 const INSTALL_HINT_FFMPEG = "Install ffmpeg: brew install ffmpeg.";
 const XCODE_MCP_SESSION_ID = "906026e2-d248-4770-8654-032d0e1fbb54";
 const XCODE_MCP_APPROVAL_TIMEOUT_MS = 90_000;
+export const IOSURFACE_HELPER_UNAVAILABLE_CODE = "IOSURFACE_HELPER_UNAVAILABLE" as const;
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
 type SpawnProcess = typeof spawn;
 type CommandExistsProbe = typeof commandExists;
+
+type IosurfaceIndigoCapability = {
+  available: boolean;
+  reason?: string;
+  xcodeVersion?: string;
+  developerDir?: string | null;
+  helpers?: IosurfaceIndigoHelperBundle;
+};
+
+type IosurfaceIndigoHelperBundle = {
+  xcodeVersion: string;
+  sourceHash: string;
+  buildDir: string;
+  capture: string;
+  input: string;
+};
+
+type IosSimulatorStreamTools = {
+  iosurfaceIndigo: boolean;
+  windowCaptureAllowed: boolean;
+  idb: boolean;
+  idbCompanion: boolean;
+  ffmpeg: boolean;
+};
+
+type LatencyPercentiles = {
+  averageLatencyMs: number | null;
+  latencyP50Ms: number | null;
+  latencyP95Ms: number | null;
+};
 
 export class IosSimulatorOwnedBySessionError extends Error {
   readonly code: typeof IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE = IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE;
@@ -89,6 +127,17 @@ export class IosSimulatorOwnedBySessionError extends Error {
     this.name = "IosSimulatorOwnedBySessionError";
     this.currentChatSessionId = owner;
     this.currentSession = currentSession;
+  }
+}
+
+export class IosurfaceHelperUnavailableError extends Error {
+  readonly code: typeof IOSURFACE_HELPER_UNAVAILABLE_CODE = IOSURFACE_HELPER_UNAVAILABLE_CODE;
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`${IOSURFACE_HELPER_UNAVAILABLE_CODE}: ${reason}`);
+    this.name = "IosurfaceHelperUnavailableError";
+    this.reason = reason;
   }
 }
 
@@ -255,12 +304,253 @@ export function shouldOpenSimulatorAppForLaunch(keepSimulatorInBackground?: bool
 
 export function resolveIosSimulatorStreamBackend(
   requestedBackend: "auto" | IosSimulatorStreamBackend,
-  tools: { idb: boolean; idbCompanion: boolean; ffmpeg: boolean },
+  tools: IosSimulatorStreamTools,
 ): IosSimulatorStreamBackend {
   if (requestedBackend !== "auto") return requestedBackend;
-  if (tools.idb && tools.idbCompanion && tools.ffmpeg) return "idb-h264-ffmpeg-mjpeg";
+  // Auto ranking:
+  // 1. iosurface-indigo: native-resolution IOSurface frames + Indigo HID.
+  // 2. simulator-window-capture: only when the caller permits a visible
+  //    Simulator.app window and macOS window capture is reachable.
+  // 3. idb-mjpeg: mature idb fallback without extra transcoding.
+  // 4. idb-h264-ffmpeg-mjpeg: recovery-only, entered after idb-mjpeg fails
+  //    inside a session; auto never picks it as the first backend.
+  // 5. simctl-screenshot-poll: last resort.
+  if (tools.iosurfaceIndigo) return "iosurface-indigo";
+  if (tools.windowCaptureAllowed) return "simulator-window-capture";
   if (tools.idb && tools.idbCompanion) return "idb-mjpeg";
   return "simctl-screenshot-poll";
+}
+
+export function normalizeIosSimulatorPointForIndigo(
+  point: { x: number; y: number },
+  screen: Pick<IosInspectableScreen, "width" | "height">,
+): { x: number; y: number } {
+  const width = Number(screen.width);
+  const height = Number(screen.height);
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    throw new Error("Simulator screen metrics are required for Indigo input.");
+  }
+  return {
+    x: Math.max(0, Math.min(1, point.x / width)),
+    y: Math.max(0, Math.min(1, point.y / height)),
+  };
+}
+
+export function iosurfaceInputScreenFromSnapshot(
+  screen: IosInspectableScreen,
+  shot: Pick<IosSimulatorScreenshot, "width" | "height">,
+): IosInspectableScreen {
+  const scale = Number(screen.scale);
+  const width = Number(shot.width);
+  const height = Number(shot.height);
+  if (Number.isFinite(scale) && scale > 0 && Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+    return {
+      width: width / scale,
+      height: height / scale,
+      scale,
+    };
+  }
+  return screen;
+}
+
+function parseXcodeMajor(version: string | null | undefined): number | null {
+  const match = /^(\d+)(?:\.|$)/.exec(version ?? "");
+  if (!match) return null;
+  const major = Number(match[1]);
+  return Number.isFinite(major) ? major : null;
+}
+
+function percentile(samples: number[], fraction: number): number | null {
+  if (!samples.length) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1));
+  return Math.round(sorted[index] ?? 0);
+}
+
+function latencyPercentiles(samples: number[]): LatencyPercentiles {
+  if (!samples.length) {
+    return { averageLatencyMs: null, latencyP50Ms: null, latencyP95Ms: null };
+  }
+  return {
+    averageLatencyMs: Math.round(samples.reduce((sum, sample) => sum + sample, 0) / samples.length),
+    latencyP50Ms: percentile(samples, 0.5),
+    latencyP95Ms: percentile(samples, 0.95),
+  };
+}
+
+function iosSimHelperRoot(): string | null {
+  const candidates = [
+    path.join(process.cwd(), "native", "ios-sim-helpers"),
+    path.join(process.cwd(), "apps", "desktop", "native", "ios-sim-helpers"),
+    path.resolve(__dirname, "../../../../native/ios-sim-helpers"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, "build.sh"))) ?? null;
+}
+
+function hashHelperSources(helperRoot: string): string {
+  const hash = createHash("sha256");
+  for (const fileName of ["sim-capture.swift", "sim-input.m", "build.sh"]) {
+    hash.update(fileName);
+    hash.update(fs.readFileSync(path.join(helperRoot, fileName)));
+  }
+  return hash.digest("hex");
+}
+
+let iosurfaceCapabilityCache: {
+  developerDir: string | null;
+  value: Promise<IosurfaceIndigoCapability>;
+  settled: IosurfaceIndigoCapability | null;
+} | null = null;
+
+async function readSelectedDeveloperDir(): Promise<string | null> {
+  try {
+    const { stdout } = await run("/usr/bin/xcode-select", ["-p"], { timeoutMs: 5_000 });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function readSelectedXcodeVersion(): Promise<string | null> {
+  try {
+    const { stdout } = await run("xcodebuild", ["-version"], { timeoutMs: 5_000 });
+    return /^Xcode\s+(.+)$/m.exec(stdout)?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function simulatorKitFrameworkPath(developerDir: string): string | null {
+  const candidates = [
+    path.join(developerDir, "Platforms", "iPhoneSimulator.platform", "Developer", "Library", "PrivateFrameworks", "SimulatorKit.framework"),
+    path.join(developerDir, "Library", "PrivateFrameworks", "SimulatorKit.framework"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+function isPackagedElectronRuntime(): boolean {
+  if (process.env.ADE_IOS_SURFACE_ALLOW_PACKAGED === "1") return false;
+  try {
+    const electron = require("electron") as { app?: { isPackaged?: boolean } };
+    return Boolean(electron.app?.isPackaged);
+  } catch {
+    return false;
+  }
+}
+
+function unsupportedIosurfaceEnvironment(): IosurfaceIndigoCapability | null {
+  if (process.platform !== "darwin") {
+    return { available: false, reason: "IOSurface simulator streaming is only available on macOS." };
+  }
+  if (isPackagedElectronRuntime()) {
+    return {
+      available: false,
+      reason: "IOSurface simulator streaming is disabled in packaged ADE builds until helper signing and notarization are cleared. Using the idb/window/simctl fallback chain.",
+    };
+  }
+  return null;
+}
+
+async function buildIosurfaceIndigoHelpers(helperRoot: string): Promise<IosurfaceIndigoHelperBundle> {
+  const { stdout } = await run("bash", [path.join(helperRoot, "build.sh"), "--print-json", "--smoke"], {
+    timeoutMs: 120_000,
+  });
+  const parsed = JSON.parse(stdout.trim()) as Partial<IosurfaceIndigoHelperBundle>;
+  const { xcodeVersion, sourceHash, buildDir, capture, input } = parsed;
+  if (!capture || !input || !buildDir || !xcodeVersion || !sourceHash) {
+    throw new Error("Helper build script did not return expected paths.");
+  }
+  return { xcodeVersion, sourceHash, buildDir, capture, input };
+}
+
+export async function detectIosurfaceIndigoCapability(): Promise<IosurfaceIndigoCapability> {
+  const unsupported = unsupportedIosurfaceEnvironment();
+  if (unsupported) return unsupported;
+  const developerDir = await readSelectedDeveloperDir();
+  if (iosurfaceCapabilityCache && iosurfaceCapabilityCache.developerDir === developerDir) {
+    return iosurfaceCapabilityCache.value;
+  }
+  const value = (async (): Promise<IosurfaceIndigoCapability> => {
+    if (!developerDir) {
+      return { available: false, reason: "xcode-select does not point at a developer directory.", developerDir };
+    }
+    const simulatorKit = simulatorKitFrameworkPath(developerDir);
+    if (!simulatorKit) {
+      return {
+        available: false,
+        reason: `Full Xcode is required for IOSurface streaming; SimulatorKit.framework was not found under ${developerDir}.`,
+        developerDir,
+      };
+    }
+    const xcodeVersion = await readSelectedXcodeVersion();
+    const xcodeMajor = parseXcodeMajor(xcodeVersion);
+    if (!xcodeVersion || xcodeMajor == null) {
+      return { available: false, reason: "Could not determine the selected Xcode version.", developerDir };
+    }
+    if (!IOSURFACE_SUPPORTED_XCODE_MAJORS.has(xcodeMajor)) {
+      return {
+        available: false,
+        reason: `Xcode ${xcodeVersion} is not yet supported by ADE's IOSurface helper. Supported major versions: ${Array.from(IOSURFACE_SUPPORTED_XCODE_MAJORS).join(", ")}.`,
+        xcodeVersion,
+        developerDir,
+      };
+    }
+    if (!commandExistsProbe("swiftc")) {
+      return { available: false, reason: "swiftc was not found on PATH.", xcodeVersion, developerDir };
+    }
+    if (!commandExistsProbe("clang")) {
+      return { available: false, reason: "clang was not found on PATH.", xcodeVersion, developerDir };
+    }
+    const helperRoot = iosSimHelperRoot();
+    if (!helperRoot) {
+      return { available: false, reason: "ADE's native iOS simulator helper sources were not found.", xcodeVersion, developerDir };
+    }
+    try {
+      hashHelperSources(helperRoot);
+      const helpers = await buildIosurfaceIndigoHelpers(helperRoot);
+      return { available: true, xcodeVersion, developerDir, helpers };
+    } catch (error) {
+      return {
+        available: false,
+        reason: `IOSurface helper build or smoke test failed: ${error instanceof Error ? error.message : String(error)}`,
+        xcodeVersion,
+        developerDir,
+      };
+    }
+  })();
+  const nextCache = { developerDir, value, settled: null as IosurfaceIndigoCapability | null };
+  iosurfaceCapabilityCache = nextCache;
+  value.then((capability) => {
+    if (iosurfaceCapabilityCache === nextCache) nextCache.settled = capability;
+  }, (error) => {
+    if (iosurfaceCapabilityCache === nextCache) {
+      nextCache.settled = {
+        available: false,
+        reason: error instanceof Error ? error.message : String(error),
+        developerDir,
+      };
+    }
+  });
+  return value;
+}
+
+async function peekIosurfaceIndigoCapabilityForStatus(): Promise<IosurfaceIndigoCapability> {
+  const unsupported = unsupportedIosurfaceEnvironment();
+  if (unsupported) return unsupported;
+  const developerDir = await readSelectedDeveloperDir();
+  if (iosurfaceCapabilityCache?.developerDir === developerDir) {
+    return iosurfaceCapabilityCache.settled ?? {
+      available: false,
+      reason: "Preparing IOSurface simulator helpers. ADE will use them once the background build and smoke test finish.",
+      developerDir,
+    };
+  }
+  void detectIosurfaceIndigoCapability().catch(() => {});
+  return {
+    available: false,
+    reason: "Preparing IOSurface simulator helpers. ADE will use them once the background build and smoke test finish.",
+    developerDir,
+  };
 }
 
 function encodeMcpMessage(message: JsonRpcMessage): Buffer {
@@ -1451,6 +1741,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   let streamProcess: ChildProcess | null = null;
   let streamTranscoderProcess: ChildProcess | null = null;
   let streamPollTimer: NodeJS.Timeout | null = null;
+  let iosurfaceInputProcess: ChildProcess | null = null;
+  let iosurfaceInputDeviceUdid: string | null = null;
+  let iosurfaceInputBuffer = "";
+  let iosurfaceInputStderr = "";
+  let iosurfaceInputPending = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  let iosurfaceInputStickyFallbackSessionId: string | null = null;
+  let iosurfaceInputFailureTimestamps: number[] = [];
+  let iosurfaceFailureTimestamps: number[] = [];
+  let iosurfaceHelperIdleTimer: NodeJS.Timeout | null = null;
+  let iosurfaceLastInputAtMs = 0;
+  let iosurfaceScreenMetrics = new Map<string, IosInspectableScreen>();
   let companionProcess: ChildProcess | null = null;
   let companionDeviceUdid: string | null = null;
   let companionAddress: string | null = null;
@@ -1459,10 +1760,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   let streamBuffer = Buffer.alloc(0);
   let streamServer: http.Server | null = null;
   let streamClients = new Set<ServerResponse>();
+  let streamLatestFrame: { frame: Buffer; capturedAt: string } | null = null;
   let streamFpsWindowStartedAtMs = 0;
   let streamFpsWindowFrameCount = 0;
   let streamLatencySamples: number[] = [];
   let streamLastStatusEmitMs = 0;
+  let streamRequestContext: Pick<IosSimulatorStreamStatus, "requestedBackend" | "fallbackReason" | "degradationReason"> = {
+    requestedBackend: null,
+    fallbackReason: null,
+    degradationReason: null,
+  };
   let controlQueue: Promise<void> = Promise.resolve();
   let activeLaunchId: string | null = null;
   let disposed = false;
@@ -1495,9 +1802,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     startedAt: null,
     lastFrameAt: null,
     lastError: null,
+    error: null,
     streamUrl: null,
     averageLatencyMs: null,
+    latencyP50Ms: null,
+    latencyP95Ms: null,
+    helperPid: null,
+    inputBackend: null,
   };
+
+  void detectIosurfaceIndigoCapability().catch((error) => {
+    args.logger.debug("ios_simulator.iosurface_indigo_warmup_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   void cleanupOrphanedIdbCompanions().then((stopped) => {
     if (stopped > 0) {
@@ -1511,11 +1829,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const emit = (payload: IosSimulatorEventPayload) => {
     args.onEvent?.(payload);
-  };
-
-  const openSimulatorAppInBackground = () => {
-    if (process.platform !== "darwin") return;
-    spawnProcess("open", ["-g", "-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
   };
 
   const cachedCommandExists = (command: string, ttlMs = TOOL_STATUS_CACHE_MS): boolean => {
@@ -1674,19 +1987,32 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
     closeStreamServer();
     streamBuffer = Buffer.alloc(0);
+    streamLatestFrame = null;
     streamFpsWindowStartedAtMs = 0;
     streamFpsWindowFrameCount = 0;
     streamLatencySamples = [];
     streamLastStatusEmitMs = 0;
+    if (iosurfaceHelperIdleTimer) {
+      clearTimeout(iosurfaceHelperIdleTimer);
+      iosurfaceHelperIdleTimer = null;
+    }
     streamStatus = {
       ...streamStatus,
       running: false,
       backend: null,
+      requestedBackend: null,
+      fallbackReason: null,
+      degradationReason: null,
       fps: null,
       targetFps: null,
       lastError: error,
+      error: error ? { code: "stream-stopped", exitCode: null, signal: null } : null,
       streamUrl: null,
       averageLatencyMs: null,
+      latencyP50Ms: null,
+      latencyP95Ms: null,
+      helperPid: null,
+      inputBackend: null,
     };
     return streamStatus;
   };
@@ -1706,8 +2032,44 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
   };
 
+  const stopIosurfaceInput = () => {
+    for (const pending of iosurfaceInputPending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Indigo input helper stopped."));
+    }
+    iosurfaceInputPending.clear();
+    stopChild(iosurfaceInputProcess);
+    iosurfaceInputProcess = null;
+    iosurfaceInputDeviceUdid = null;
+    iosurfaceInputBuffer = "";
+    iosurfaceInputStderr = "";
+  };
+
+  const writeMjpegPayload = (client: ServerResponse, frame: Buffer, capturedAt: string): boolean => {
+    if (client.destroyed || client.writableEnded || client.writableFinished) return false;
+    const bufferedBytes = client.socket?.bufferSize ?? 0;
+    if (bufferedBytes > 2 * 1024 * 1024) return false;
+    const header = Buffer.from([
+      `--${STREAM_BOUNDARY}`,
+      "Content-Type: image/jpeg",
+      `Content-Length: ${frame.length}`,
+      `X-ADE-Captured-At: ${capturedAt}`,
+      "",
+      "",
+    ].join("\r\n"));
+    const trailer = Buffer.from("\r\n");
+    // `write()` returning false is normal backpressure, not a broken socket.
+    // The next frame will be skipped/dropped if the buffered byte count stays
+    // above our threshold.
+    client.write(header);
+    client.write(frame);
+    client.write(trailer);
+    return true;
+  };
+
   const startMjpegStreamServer = async (): Promise<string> => {
     closeStreamServer();
+    streamLatestFrame = null;
     streamClients = new Set<ServerResponse>();
     streamServer = http.createServer((request, response) => {
       if (!request.url?.startsWith("/ios-simulator/stream.mjpg")) {
@@ -1724,11 +2086,21 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         "Pragma": "no-cache",
       });
       streamClients.add(response);
+      if (streamLatestFrame && !writeMjpegPayload(response, streamLatestFrame.frame, streamLatestFrame.capturedAt)) {
+        streamClients.delete(response);
+        response.destroy();
+        return;
+      }
+      if (streamStatus.backend === "iosurface-indigo") {
+        scheduleIosurfaceHelperIdleStop();
+      }
       request.on("close", () => {
         streamClients.delete(response);
+        if (streamStatus.backend === "iosurface-indigo") scheduleIosurfaceHelperIdleStop();
       });
       response.on("close", () => {
         streamClients.delete(response);
+        if (streamStatus.backend === "iosurface-indigo") scheduleIosurfaceHelperIdleStop();
       });
     });
     // Bind atomically to an OS-assigned port to avoid the TOCTOU race that
@@ -1754,31 +2126,37 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return `http://127.0.0.1:${port}/ios-simulator/stream.mjpg`;
   };
 
-  const writeMjpegFrame = (frame: Buffer, capturedAt: string) => {
-    if (!streamClients.size) return;
-    const header = Buffer.from([
-      `--${STREAM_BOUNDARY}`,
-      "Content-Type: image/jpeg",
-      `Content-Length: ${frame.length}`,
-      `X-ADE-Captured-At: ${capturedAt}`,
-      "",
-      "",
-    ].join("\r\n"));
-    const trailer = Buffer.from("\r\n");
-    for (const client of [...streamClients]) {
-      if (client.destroyed || client.writableEnded || client.writableFinished) {
-        streamClients.delete(client);
-        continue;
+  const scheduleIosurfaceHelperIdleStop = () => {
+    if (iosurfaceHelperIdleTimer) {
+      clearTimeout(iosurfaceHelperIdleTimer);
+      iosurfaceHelperIdleTimer = null;
+    }
+    if (!streamStatus.running || streamStatus.backend !== "iosurface-indigo") return;
+    iosurfaceHelperIdleTimer = setTimeout(() => {
+      iosurfaceHelperIdleTimer = null;
+      if (
+        streamStatus.running
+        && streamStatus.backend === "iosurface-indigo"
+        && streamClients.size === 0
+        && Date.now() - iosurfaceLastInputAtMs >= COMPANION_IDLE_STOP_MS
+      ) {
+        const detail = "IOSurface helper stopped after 30s with no active stream clients or input.";
+        stopChild(streamProcess);
+        const status = setStreamStopped(detail);
+        emit({ type: "stream-stopped", status });
       }
-      const bufferedBytes = client.socket?.bufferSize ?? 0;
-      if (bufferedBytes > 8 * 1024 * 1024) {
+    }, COMPANION_IDLE_STOP_MS);
+    iosurfaceHelperIdleTimer.unref?.();
+  };
+
+  const writeMjpegFrame = (frame: Buffer, capturedAt: string) => {
+    streamLatestFrame = { frame, capturedAt };
+    if (!streamClients.size) return;
+    for (const client of [...streamClients]) {
+      if (!writeMjpegPayload(client, frame, capturedAt)) {
         streamClients.delete(client);
         client.destroy();
-        continue;
       }
-      client.write(header);
-      client.write(frame);
-      client.write(trailer);
     }
   };
 
@@ -1794,7 +2172,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
     const elapsedMs = nowMs - streamFpsWindowStartedAtMs;
     const measuredFps = elapsedMs >= 1_000
-      ? Math.round((streamFpsWindowFrameCount * 1000) / Math.max(1, elapsedMs))
+      ? Math.max(1, Math.round((streamFpsWindowFrameCount * 1000) / Math.max(1, elapsedMs)))
       : streamStatus.fps;
     const fps = measuredFps == null || streamStatus.targetFps == null
       ? measuredFps
@@ -1803,16 +2181,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       streamFpsWindowStartedAtMs = nowMs;
       streamFpsWindowFrameCount = 0;
     }
-    const averageLatencyMs = streamLatencySamples.length
-      ? Math.round(streamLatencySamples.reduce((sum, sample) => sum + sample, 0) / streamLatencySamples.length)
-      : null;
+    const latency = latencyPercentiles(streamLatencySamples);
     streamStatus = {
       ...streamStatus,
       frameCount: streamStatus.frameCount + 1,
       fps,
       lastFrameAt: capturedAt,
       lastError: null,
-      averageLatencyMs,
+      error: null,
+      averageLatencyMs: latency.averageLatencyMs,
+      latencyP50Ms: latency.latencyP50Ms,
+      latencyP95Ms: latency.latencyP95Ms,
     };
     if (nowMs - streamLastStatusEmitMs >= STREAM_STATUS_EMIT_INTERVAL_MS) {
       streamLastStatusEmitMs = nowMs;
@@ -1941,6 +2320,42 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     while ((frame = extractJpegFrame()) !== null) {
       emitFrame(frame, backend, nowIso(), "jpeg");
     }
+  };
+
+  const extractLengthPrefixedJpegFrame = (): Buffer | null => {
+    if (streamBuffer.length < 4) return null;
+    const length = streamBuffer.readUInt32BE(0);
+    if (!Number.isFinite(length) || length <= 0 || length > 50 * 1024 * 1024) {
+      streamBuffer = Buffer.alloc(0);
+      streamStatus = { ...streamStatus, lastError: "Dropped an invalid IOSurface frame payload." };
+      emit({ type: "stream-error", status: streamStatus });
+      return null;
+    }
+    if (streamBuffer.length < 4 + length) return null;
+    const frame = streamBuffer.subarray(4, 4 + length);
+    streamBuffer = streamBuffer.subarray(4 + length);
+    return frame;
+  };
+
+  const handleLengthPrefixedJpegChunk = (chunk: Buffer, backend: IosSimulatorStreamBackend) => {
+    streamBuffer = Buffer.concat([streamBuffer, chunk]);
+    let frame: Buffer | null = null;
+    while ((frame = extractLengthPrefixedJpegFrame()) !== null) {
+      const capturedAt = nowIso();
+      emitFrame(frame, backend, capturedAt, "jpeg", 0);
+    }
+  };
+
+  const rememberIosurfaceFailure = (): number => {
+    const nowMs = Date.now();
+    iosurfaceFailureTimestamps = [...iosurfaceFailureTimestamps.filter((timestamp) => nowMs - timestamp <= IOSURFACE_FAILURE_WINDOW_MS), nowMs];
+    return iosurfaceFailureTimestamps.length;
+  };
+
+  const rememberIosurfaceInputFailure = (): number => {
+    const nowMs = Date.now();
+    iosurfaceInputFailureTimestamps = [...iosurfaceInputFailureTimestamps.filter((timestamp) => nowMs - timestamp <= IOSURFACE_FAILURE_WINDOW_MS), nowMs];
+    return iosurfaceInputFailureTimestamps.length;
   };
 
   const computeListDevices = async (): Promise<IosSimulatorDevice[]> => {
@@ -2145,7 +2560,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return fallback;
   };
 
-  const buildToolStatuses = (): IosSimulatorToolStatus[] => {
+  const buildToolStatuses = (iosurfaceCapability: IosurfaceIndigoCapability | null): IosSimulatorToolStatus[] => {
     const isDarwin = process.platform === "darwin";
     const xcrunAvailable = isDarwin && cachedCommandExists("xcrun");
     const xcodebuildAvailable = isDarwin && cachedCommandExists("xcodebuild");
@@ -2174,6 +2589,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         installHint: isDarwin ? INSTALL_HINT_XCODE : "iOS Simulator control requires macOS.",
       },
       {
+        name: "iosurface_indigo",
+        available: Boolean(iosurfaceCapability?.available),
+        detail: iosurfaceCapability?.available
+          ? `Available as ADE's primary low-latency simulator stream${iosurfaceCapability.xcodeVersion ? ` on Xcode ${iosurfaceCapability.xcodeVersion}` : ""}.`
+          : iosurfaceCapability?.reason ?? (isDarwin ? "Checking native IOSurface/Indigo helpers." : "Only available on macOS."),
+        installHint: INSTALL_HINT_IOSURFACE_INDIGO,
+      },
+      {
         name: "simulator_window",
         available: isDarwin,
         detail: isDarwin
@@ -2185,8 +2608,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         name: "idb",
         available: idbAvailable,
         detail: idbAvailable
-          ? "Available for exact-screen live streaming, taps, and text input."
-          : "Optional. Required for exact-screen streaming and pointer/text control.",
+          ? "Available for fallback streaming, accessibility reads, and pointer/text control."
+          : "Optional fallback. Required for idb streaming, accessibility reads, and pointer/text control when Indigo is unavailable.",
         installHint: INSTALL_HINT_IDB,
       },
       {
@@ -2201,8 +2624,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         name: "ffmpeg",
         available: ffmpegAvailable,
         detail: ffmpegAvailable
-          ? "Available for the low-latency idb H.264 stream."
-          : "Optional. Needed for the default low-latency idb H.264 stream.",
+          ? "Available for the recovery idb H.264 transcode stream."
+          : "Optional. Used only as an idb recovery stream after MJPEG fails.",
         installHint: INSTALL_HINT_FFMPEG,
       },
     ];
@@ -2210,7 +2633,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const computeStatus = async (): Promise<IosSimulatorStatus> => {
     const isDarwin = process.platform === "darwin";
-    const tools = buildToolStatuses();
+    const iosurfaceCapability = isDarwin ? await peekIosurfaceIndigoCapabilityForStatus().catch((error): IosurfaceIndigoCapability => ({
+      available: false,
+      reason: error instanceof Error ? error.message : String(error),
+    })) : null;
+    const tools = buildToolStatuses(iosurfaceCapability);
     const devices = isDarwin ? await listDevices().catch(() => []) : [];
     const activeDevice = activeSession
       ? devices.find((device) => device.udid === activeSession?.deviceUdid) ?? null
@@ -2707,9 +3134,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         spawnProcess("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
         emitLaunchProgress(launchId, "open-simulator", "complete", "Simulator.app is visible.", null, { deviceUdid: device.udid });
       } else {
-        emitLaunchProgress(launchId, "open-simulator", "running", "Preparing Simulator.app behind ADE for live streaming...", null, { deviceUdid: device.udid });
-        openSimulatorAppInBackground();
-        emitLaunchProgress(launchId, "open-simulator", "complete", "Simulator.app is running behind ADE.", null, { deviceUdid: device.udid });
+        emitLaunchProgress(launchId, "open-simulator", "skipped", "Simulator.app is not opened for headless streaming.", null, { deviceUdid: device.udid });
       }
 
       currentStep = "resolve-target";
@@ -2758,6 +3183,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         projectRoot,
         chatSessionId: launchArgs.chatSessionId ?? null,
         mode: normalizeLaunchMode(launchArgs.mode),
+        keepSimulatorInBackground: launchArgs.keepSimulatorInBackground ?? true,
         bridgeUrl: null,
         startedAt: nowIso(),
       };
@@ -2785,11 +3211,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         env: childEnv,
         timeoutMs: 60_000,
       });
-      if (!openSimulatorInForeground) {
-        // simctl launch can activate Simulator.app. Reopen it without
-        // activation so ADE can refocus while the window remains capturable.
-        openSimulatorAppInBackground();
-      }
       emitLaunchProgress(launchId, "launch-app", "complete", "App launched.", bundleId, { deviceUdid: device.udid, targetId: target.target.id });
       emitLaunchProgress(launchId, "ready", "complete", "iOS simulator drawer is ready.", device.name, { deviceUdid: device.udid, targetId: target.target.id });
       emit({ type: "session-started", session });
@@ -2981,6 +3402,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       height: accessibilityScreen?.height ?? shot.height ?? 0,
       scale: accessibilityScreen?.scale ?? 1,
     };
+    const iosurfaceInputScreen = iosurfaceInputScreenFromSnapshot(screen, shot);
+    if (iosurfaceInputScreen.width > 0 && iosurfaceInputScreen.height > 0) {
+      iosurfaceScreenMetrics.set(shot.deviceUdid, iosurfaceInputScreen);
+    }
     const hitElement = hitX == null || hitY == null
       ? null
       : findSmallestScreenElementAt(elements, hitX, hitY);
@@ -3144,12 +3569,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       });
     }
     stopCompanion();
+    stopIosurfaceInput();
     cleanupTempFiles();
     if (shutdownArgs.force) {
       await cleanupOrphanedIdbCompanions(previousSession?.deviceUdid ?? null).catch(() => 0);
     }
     const released = activeSession !== null;
     activeSession = null;
+    iosurfaceInputStickyFallbackSessionId = null;
+    iosurfaceInputFailureTimestamps = [];
     cachedStatus = { ...cachedStatus, computedAt: 0 };
     if (released || previousSession) {
       emit({ type: "session-updated", session: null });
@@ -3169,23 +3597,39 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
   };
 
+  const startedStreamStatus = (
+    device: IosSimulatorDevice,
+    backend: IosSimulatorStreamBackend,
+    targetFps: number,
+    streamUrl: string | null,
+    helperPid: number | null = null,
+  ): IosSimulatorStreamStatus => ({
+    deviceUdid: device.udid,
+    running: true,
+    backend,
+    requestedBackend: streamRequestContext.requestedBackend ?? null,
+    fallbackReason: streamRequestContext.fallbackReason ?? null,
+    degradationReason: streamRequestContext.degradationReason ?? null,
+    fps: null,
+    targetFps,
+    frameCount: 0,
+    startedAt: nowIso(),
+    lastFrameAt: null,
+    lastError: null,
+    error: null,
+    streamUrl,
+    averageLatencyMs: null,
+    latencyP50Ms: null,
+    latencyP95Ms: null,
+    helperPid,
+    inputBackend: null,
+  });
+
   const startSimctlPreview = async (device: IosSimulatorDevice, fps: number): Promise<IosSimulatorStreamStatus> => {
     await stopStream();
     const pollFps = Math.max(1, Math.min(8, Math.round(fps)));
     const streamUrl = await startMjpegStreamServer();
-    streamStatus = {
-      deviceUdid: device.udid,
-      running: true,
-      backend: "simctl-screenshot-poll",
-      fps: null,
-      targetFps: pollFps,
-      frameCount: 0,
-      startedAt: nowIso(),
-      lastFrameAt: null,
-      lastError: null,
-      streamUrl,
-      averageLatencyMs: null,
-    };
+    streamStatus = startedStreamStatus(device, "simctl-screenshot-poll", pollFps, streamUrl);
     emit({ type: "stream-started", status: streamStatus });
     let inFlight = false;
     const tick = async () => {
@@ -3212,19 +3656,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const startWindowCaptureStream = async (device: IosSimulatorDevice, fps: number): Promise<IosSimulatorStreamStatus> => {
     await stopStream();
-    streamStatus = {
-      deviceUdid: device.udid,
-      running: true,
-      backend: "simulator-window-capture",
-      fps: null,
-      targetFps: Math.max(1, Math.min(60, Math.round(fps))),
-      frameCount: 0,
-      startedAt: nowIso(),
-      lastFrameAt: null,
-      lastError: null,
-      streamUrl: null,
-      averageLatencyMs: null,
-    };
+    if (process.platform === "darwin") {
+      spawnProcess("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
+    }
+    streamStatus = startedStreamStatus(device, "simulator-window-capture", Math.max(1, Math.min(60, Math.round(fps))), null);
     emit({ type: "stream-started", status: streamStatus });
     if (cachedCommandExists("idb") && cachedCommandExists("idb_companion")) {
       void ensureCompanion(device.udid).then(() => {
@@ -3241,6 +3676,157 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return streamStatus;
   };
 
+  const startFallbackAfterIosurfaceFailure = async (device: IosSimulatorDevice, fps: number, reason: string): Promise<IosSimulatorStreamStatus> => {
+    const failureCount = rememberIosurfaceFailure();
+    const fallbackReason = failureCount >= IOSURFACE_MAX_FAILURES_PER_WINDOW
+      ? `${reason} ADE disabled iosurface-indigo for this 60s window after repeated helper failures.`
+      : reason;
+    const windowCaptureAllowed = process.platform === "darwin" && activeSession?.keepSimulatorInBackground === false;
+    const nextBackend = resolveIosSimulatorStreamBackend("auto", {
+      iosurfaceIndigo: false,
+      windowCaptureAllowed,
+      idb: cachedCommandExists("idb"),
+      idbCompanion: cachedCommandExists("idb_companion"),
+      ffmpeg: cachedCommandExists("ffmpeg"),
+    });
+    streamRequestContext = {
+      requestedBackend: streamRequestContext.requestedBackend ?? "auto",
+      fallbackReason: `Using ${nextBackend} fallback because ${fallbackReason}`,
+      degradationReason: fallbackReason,
+    };
+    args.logger.warn("ios_simulator.iosurface_indigo_degraded", {
+      deviceUdid: device.udid,
+      nextBackend,
+      reason: fallbackReason,
+    });
+    if (nextBackend === "simulator-window-capture") return startWindowCaptureStream(device, fps);
+    if (nextBackend === "idb-mjpeg") return startIdbMjpegStream(device, Math.min(30, fps));
+    return startSimctlPreview(device, Math.min(8, fps));
+  };
+
+  const startIosurfaceIndigoStream = async (device: IosSimulatorDevice, fps: number, capability?: IosurfaceIndigoCapability): Promise<IosSimulatorStreamStatus> => {
+    const detected = capability ?? await detectIosurfaceIndigoCapability();
+    if (!detected.available || !detected.helpers) {
+      throw new IosurfaceHelperUnavailableError(detected.reason ?? "IOSurface helper is unavailable.");
+    }
+    if (streamProcess && streamStatus.deviceUdid === device.udid && streamStatus.backend === "iosurface-indigo" && streamStatus.running) {
+      return streamStatus;
+    }
+    await stopStream();
+    const targetFps = Math.max(1, Math.min(60, Math.round(fps)));
+    const streamUrl = await startMjpegStreamServer();
+    streamBuffer = Buffer.alloc(0);
+    let stderr = "";
+    let stderrLineBuffer = "";
+    streamProcess = spawnProcess(detected.helpers.capture, [
+      "--udid",
+      device.udid,
+      "--fps",
+      String(targetFps),
+      "--quality",
+      "0.52",
+    ], {
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const child = streamProcess;
+    streamStatus = startedStreamStatus(device, "iosurface-indigo", targetFps, streamUrl, child.pid ?? null);
+    scheduleIosurfaceHelperIdleStop();
+
+    const handleStatusLine = (line: string) => {
+      const jsonStart = line.indexOf("{");
+      if (jsonStart < 0) return;
+      try {
+        const parsed = JSON.parse(line.slice(jsonStart)) as unknown;
+        if (!isRecord(parsed)) return;
+        if (parsed.type === "stream-started") {
+          const pixelWidth = Number(parsed.pixelWidth);
+          const pixelHeight = Number(parsed.pixelHeight);
+          args.logger.debug("ios_simulator.iosurface_stream_started", {
+            deviceUdid: device.udid,
+            pixelWidth: Number.isFinite(pixelWidth) ? pixelWidth : null,
+            pixelHeight: Number.isFinite(pixelHeight) ? pixelHeight : null,
+          });
+        }
+      } catch {
+        // stderr is diagnostic; malformed helper lines should not stop capture.
+      }
+    };
+
+    const startupTimer = setTimeout(() => {
+      if (
+        streamProcess !== child
+        || !streamStatus.running
+        || streamStatus.backend !== "iosurface-indigo"
+        || streamStatus.frameCount > 0
+      ) {
+        return;
+      }
+      const detail = "iosurface-indigo produced no frames during startup.";
+      stopChild(child);
+      void (async () => {
+        const failedStatus = { ...streamStatus, running: false, lastError: detail, error: { code: "iosurface-helper-timeout", exitCode: null, signal: null } };
+        emit({ type: "stream-error", status: failedStatus });
+        await stopStream();
+        await startFallbackAfterIosurfaceFailure(device, targetFps, stderr.trim() || detail);
+      })().catch((error) => {
+        const status = setStreamStopped(error instanceof Error ? error.message : String(error));
+        emit({ type: "stream-error", status });
+      });
+    }, IOSURFACE_HELPER_STARTUP_TIMEOUT_MS);
+    startupTimer.unref?.();
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (streamProcess !== child || streamStatus.backend !== "iosurface-indigo") return;
+      handleLengthPrefixedJpegChunk(chunk, "iosurface-indigo");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      stderr = `${stderr}${text}`.slice(-4000);
+      stderrLineBuffer += text;
+      const lines = stderrLineBuffer.split(/\r?\n/);
+      stderrLineBuffer = lines.pop() ?? "";
+      for (const line of lines) handleStatusLine(line);
+    });
+    child.once("error", (error) => {
+      clearTimeout(startupTimer);
+      if (streamProcess !== child) return;
+      const detail = error.message || "iosurface-indigo helper failed to start.";
+      void (async () => {
+        const failedStatus = { ...streamStatus, running: false, lastError: detail, error: { code: "iosurface-helper-error", exitCode: null, signal: null } };
+        emit({ type: "stream-error", status: failedStatus });
+        await stopStream();
+        await startFallbackAfterIosurfaceFailure(device, targetFps, detail);
+      })().catch((failure) => {
+        const status = setStreamStopped(failure instanceof Error ? failure.message : String(failure));
+        emit({ type: "stream-error", status });
+      });
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(startupTimer);
+      if (streamProcess !== child) return;
+      const detail = stderr.trim();
+      const graceful = code === 0 || signal === "SIGTERM";
+      if (graceful) {
+        const status = setStreamStopped(null);
+        emit({ type: "stream-stopped", status });
+        return;
+      }
+      const reason = detail || `iosurface-indigo helper exited with ${signal ?? code ?? "unknown status"}.`;
+      void (async () => {
+        const failedStatus = { ...streamStatus, running: false, lastError: reason, error: { code: "iosurface-helper-exited", exitCode: code, signal } };
+        emit({ type: "stream-error", status: failedStatus });
+        await stopStream();
+        await startFallbackAfterIosurfaceFailure(device, targetFps, reason);
+      })().catch((error) => {
+        const status = setStreamStopped(error instanceof Error ? error.message : String(error));
+        emit({ type: "stream-error", status });
+      });
+    });
+    emit({ type: "stream-started", status: streamStatus });
+    return streamStatus;
+  };
+
   const startIdbMjpegStream = async (device: IosSimulatorDevice, fps: number): Promise<IosSimulatorStreamStatus> => {
     if (!cachedCommandExists("idb")) {
       throw new Error(`idb is required for live simulator streaming. ${INSTALL_HINT_IDB}`);
@@ -3251,19 +3837,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     await stopStream();
     const companion = await ensureCompanion(device.udid);
     const streamUrl = await startMjpegStreamServer();
-    streamStatus = {
-      deviceUdid: device.udid,
-      running: true,
-      backend: "idb-mjpeg",
-      fps: null,
-      targetFps: fps,
-      frameCount: 0,
-      startedAt: nowIso(),
-      lastFrameAt: null,
-      lastError: null,
-      streamUrl,
-      averageLatencyMs: null,
-    };
+    streamStatus = startedStreamStatus(device, "idb-mjpeg", fps, streamUrl);
     streamBuffer = Buffer.alloc(0);
     streamProcess = spawnProcess("idb", [
       "--companion",
@@ -3301,6 +3875,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       void (async () => {
         await stopStream();
         emit({ type: "stream-error", status: { ...streamStatus, lastError: detail } });
+        streamRequestContext = { ...streamRequestContext, degradationReason: detail };
         if (cachedCommandExists("ffmpeg")) {
           await startIdbH264FfmpegStream(device, fps);
         } else {
@@ -3348,19 +3923,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     await stopStream();
     const companion = await ensureCompanion(device.udid);
     const streamUrl = await startMjpegStreamServer();
-    streamStatus = {
-      deviceUdid: device.udid,
-      running: true,
-      backend: "idb-h264-ffmpeg-mjpeg",
-      fps: null,
-      targetFps: fps,
-      frameCount: 0,
-      startedAt: nowIso(),
-      lastFrameAt: null,
-      lastError: null,
-      streamUrl,
-      averageLatencyMs: null,
-    };
+    streamStatus = startedStreamStatus(device, "idb-h264-ffmpeg-mjpeg", fps, streamUrl);
     streamBuffer = Buffer.alloc(0);
     streamProcess = spawnProcess("idb", [
       "--companion",
@@ -3419,6 +3982,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       void (async () => {
         await stopStream();
         emit({ type: "stream-error", status: { ...streamStatus, lastError: detail } });
+        streamRequestContext = { ...streamRequestContext, degradationReason: detail };
         await startSimctlPreview(device, Math.min(8, fps));
       })().catch((error) => {
         const status = setStreamStopped(error instanceof Error ? error.message : String(error));
@@ -3481,16 +4045,52 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const startStream = async (streamArgs: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> => {
     const device = await resolveDevice(streamArgs.deviceUdid ?? activeSession?.deviceUdid);
-    const backend = streamArgs.backend ?? "simctl-screenshot-poll";
-    if (backend !== "auto" && backend !== "simctl-screenshot-poll" && backend !== "idb-mjpeg" && backend !== "idb-h264-ffmpeg-mjpeg" && backend !== "simulator-window-capture") {
-      throw new Error("stream backend must be `auto`, `simulator-window-capture`, `simctl-screenshot-poll`, `idb-mjpeg`, or `idb-h264-ffmpeg-mjpeg`.");
+    const backend = streamArgs.backend ?? "auto";
+    if (backend !== "auto" && backend !== "iosurface-indigo" && backend !== "simctl-screenshot-poll" && backend !== "idb-mjpeg" && backend !== "idb-h264-ffmpeg-mjpeg" && backend !== "simulator-window-capture") {
+      throw new Error("stream backend must be `auto`, `iosurface-indigo`, `simulator-window-capture`, `simctl-screenshot-poll`, `idb-mjpeg`, or `idb-h264-ffmpeg-mjpeg`.");
     }
+    const iosurfaceCapability = backend === "auto" || backend === "iosurface-indigo"
+      ? await detectIosurfaceIndigoCapability()
+      : null;
+    if (backend === "iosurface-indigo" && !iosurfaceCapability?.available) {
+      throw new IosurfaceHelperUnavailableError(iosurfaceCapability?.reason ?? "IOSurface helper is unavailable.");
+    }
+    const recentIosurfaceFailures = iosurfaceFailureTimestamps.filter((timestamp) => Date.now() - timestamp <= IOSURFACE_FAILURE_WINDOW_MS).length;
+    const iosurfaceUsable = Boolean(iosurfaceCapability?.available && recentIosurfaceFailures < IOSURFACE_MAX_FAILURES_PER_WINDOW);
+    const windowCaptureAllowed = process.platform === "darwin" && activeSession?.keepSimulatorInBackground === false;
     const resolvedBackend = resolveIosSimulatorStreamBackend(backend, {
+      iosurfaceIndigo: iosurfaceUsable,
+      windowCaptureAllowed,
       idb: cachedCommandExists("idb"),
       idbCompanion: cachedCommandExists("idb_companion"),
       ffmpeg: cachedCommandExists("ffmpeg"),
     });
-    const defaultFps = resolvedBackend === "idb-mjpeg" || resolvedBackend === "idb-h264-ffmpeg-mjpeg" ? 30 : 8;
+    let fallbackReason: string | null = null;
+    if (backend === "auto" && resolvedBackend !== "iosurface-indigo" && !iosurfaceUsable) {
+      fallbackReason = recentIosurfaceFailures >= IOSURFACE_MAX_FAILURES_PER_WINDOW
+        ? "iosurface-indigo is temporarily disabled after repeated helper failures."
+        : iosurfaceCapability?.reason ?? null;
+    }
+    streamRequestContext = {
+      requestedBackend: backend,
+      fallbackReason: fallbackReason ? `Using ${resolvedBackend} fallback because ${fallbackReason}` : null,
+      degradationReason: null,
+    };
+    if (streamRequestContext.fallbackReason) {
+      args.logger.info("ios_simulator.stream_fallback_selected", {
+        requestedBackend: backend,
+        resolvedBackend,
+        reason: streamRequestContext.fallbackReason,
+      });
+    }
+    let defaultFps: number;
+    if (resolvedBackend === "simulator-window-capture") {
+      defaultFps = 60;
+    } else if (resolvedBackend === "iosurface-indigo" || resolvedBackend === "idb-mjpeg" || resolvedBackend === "idb-h264-ffmpeg-mjpeg") {
+      defaultFps = 30;
+    } else {
+      defaultFps = 8;
+    }
     const requestedFps = Math.max(1, Math.min(60, Math.round(Number(streamArgs.fps ?? defaultFps))));
     if (!Number.isFinite(requestedFps)) {
       throw new Error("fps must be a number between 1 and 60.");
@@ -3510,6 +4110,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
       await stopStream();
     }
+    if (resolvedBackend === "iosurface-indigo") {
+      return startIosurfaceIndigoStream(device, requestedFps, iosurfaceCapability ?? undefined);
+    }
     if (resolvedBackend === "idb-mjpeg") {
       return startIdbMjpegStream(device, requestedFps);
     }
@@ -3522,20 +4125,211 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return startSimctlPreview(device, requestedFps);
   };
 
+  const handleIosurfaceInputStdout = (chunk: Buffer) => {
+    iosurfaceInputBuffer += chunk.toString();
+    const lines = iosurfaceInputBuffer.split(/\r?\n/);
+    iosurfaceInputBuffer = lines.pop() ?? "";
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      try {
+        const parsed = JSON.parse(line) as unknown;
+        if (!isRecord(parsed)) continue;
+        const id = typeof parsed.id === "string" ? parsed.id : null;
+        if (!id) continue;
+        const pending = iosurfaceInputPending.get(id);
+        if (!pending) continue;
+        iosurfaceInputPending.delete(id);
+        clearTimeout(pending.timer);
+        if (parsed.ok === true) {
+          pending.resolve();
+        } else {
+          pending.reject(new Error(typeof parsed.error === "string" ? parsed.error : "Indigo input command failed."));
+        }
+      } catch {
+        // Keep scanning. stderr carries helper diagnostics.
+      }
+    }
+  };
+
+  const ensureIosurfaceInputHelper = async (deviceUdid: string): Promise<ChildProcess> => {
+    if (
+      iosurfaceInputProcess
+      && iosurfaceInputDeviceUdid === deviceUdid
+      && iosurfaceInputProcess.exitCode == null
+      && iosurfaceInputProcess.signalCode == null
+    ) {
+      return iosurfaceInputProcess;
+    }
+    stopIosurfaceInput();
+    const capability = await detectIosurfaceIndigoCapability();
+    if (!capability.available || !capability.helpers) {
+      throw new IosurfaceHelperUnavailableError(capability.reason ?? "IOSurface helper is unavailable.");
+    }
+    const child = spawnProcess(capability.helpers.input, ["--udid", deviceUdid], {
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    iosurfaceInputProcess = child;
+    iosurfaceInputDeviceUdid = deviceUdid;
+    iosurfaceInputBuffer = "";
+    iosurfaceInputStderr = "";
+    child.stdout?.on("data", handleIosurfaceInputStdout);
+    child.stderr?.on("data", (chunk: Buffer) => {
+      iosurfaceInputStderr = `${iosurfaceInputStderr}${chunk.toString()}`.slice(-4000);
+    });
+    const rejectPending = (reason: string) => {
+      if (iosurfaceInputProcess === child) {
+        iosurfaceInputProcess = null;
+        iosurfaceInputDeviceUdid = null;
+      }
+      for (const pending of iosurfaceInputPending.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error(reason));
+      }
+      iosurfaceInputPending.clear();
+    };
+    child.once("error", (error) => rejectPending(error.message));
+    child.once("exit", (code, signal) => {
+      if (signal === "SIGTERM" || code === 0) return;
+      rejectPending(iosurfaceInputStderr.trim() || `Indigo input helper exited with ${signal ?? code ?? "unknown status"}.`);
+    });
+    return child;
+  };
+
+  const sendIosurfaceInputCommand = async (deviceUdid: string, command: Record<string, unknown>): Promise<void> => {
+    const child = await ensureIosurfaceInputHelper(deviceUdid);
+    const stdin = child.stdin;
+    if (!stdin || typeof stdin.write !== "function" || stdin.destroyed) {
+      throw new Error("Indigo input helper stdin is not writable.");
+    }
+    const id = randomUUID();
+    iosurfaceLastInputAtMs = Date.now();
+    scheduleIosurfaceHelperIdleStop();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        iosurfaceInputPending.delete(id);
+        reject(new Error("Timed out waiting for Indigo input acknowledgement."));
+      }, IOSURFACE_INPUT_ACK_TIMEOUT_MS);
+      timer.unref?.();
+      iosurfaceInputPending.set(id, { resolve, reject, timer });
+      const ok = stdin.write(`${JSON.stringify({ id, ...command })}\n`);
+      if (!ok) {
+        stdin.once("drain", () => {});
+      }
+    });
+  };
+
+  const screenMetricsForIndigoInput = (deviceUdid: string): IosInspectableScreen => {
+    const metrics = iosurfaceScreenMetrics.get(deviceUdid);
+    if (!metrics || metrics.width <= 0 || metrics.height <= 0) {
+      throw new Error("Indigo input needs a current simulator snapshot to map point coordinates.");
+    }
+    return metrics;
+  };
+
+  const runIdbTap = async (deviceUdid: string, x: number, y: number): Promise<void> => {
+    if (!cachedCommandExists("idb")) {
+      throw new Error(`idb is required for pointer control. ${INSTALL_HINT_IDB}`);
+    }
+    const companion = await ensureCompanion(deviceUdid);
+    try {
+      await run("idb", ["--companion", companion, "ui", "tap", String(Math.round(x)), String(Math.round(y)), "--udid", deviceUdid], { timeoutMs: 20_000 });
+    } finally {
+      scheduleCompanionIdleStop();
+    }
+  };
+
+  const runIdbText = async (deviceUdid: string, text: string): Promise<void> => {
+    if (!cachedCommandExists("idb")) {
+      throw new Error(`idb is required for text input. ${INSTALL_HINT_IDB}`);
+    }
+    const companion = await ensureCompanion(deviceUdid);
+    try {
+      await run("idb", ["--companion", companion, "ui", "text", text, "--udid", deviceUdid], { timeoutMs: 20_000 });
+    } finally {
+      scheduleCompanionIdleStop();
+    }
+  };
+
+  const runIdbSwipe = async (deviceUdid: string, input: { startX: number; startY: number; endX: number; endY: number; durationMs?: number | null; delta?: number | null }): Promise<void> => {
+    if (!cachedCommandExists("idb")) {
+      throw new Error(`idb is required for pointer control. ${INSTALL_HINT_IDB}`);
+    }
+    const companion = await ensureCompanion(deviceUdid);
+    const idbArgs = [
+      "--companion",
+      companion,
+      "ui",
+      "swipe",
+      String(Math.round(input.startX)),
+      String(Math.round(input.startY)),
+      String(Math.round(input.endX)),
+      String(Math.round(input.endY)),
+      "--udid",
+      deviceUdid,
+    ];
+    if (input.durationMs != null) {
+      if (!Number.isFinite(input.durationMs)) throw new Error("durationMs must be a number.");
+      idbArgs.push("--duration", String(Math.max(0.01, input.durationMs / 1000)));
+    }
+    if (input.delta != null) {
+      if (!Number.isFinite(input.delta) || input.delta <= 0) throw new Error("delta must be a positive number.");
+      idbArgs.push("--delta", String(input.delta));
+    }
+    try {
+      await run("idb", idbArgs, { timeoutMs: 20_000 });
+    } finally {
+      scheduleCompanionIdleStop();
+    }
+  };
+
+  const preferIndigoInput = async (): Promise<boolean> => {
+    if (iosurfaceInputStickyFallbackSessionId && iosurfaceInputStickyFallbackSessionId === activeSession?.id) return false;
+    if (process.platform !== "darwin") return false;
+    const capability = await detectIosurfaceIndigoCapability();
+    return capability.available;
+  };
+
+  const runWithInputFallback = async (action: string, runIndigo: () => Promise<void>, runIdb: () => Promise<void>): Promise<void> => {
+    if (await preferIndigoInput()) {
+      try {
+        await runIndigo();
+        streamStatus = { ...streamStatus, inputBackend: "indigo" };
+        return;
+      } catch (error) {
+        const failureCount = rememberIosurfaceInputFailure();
+        const detail = error instanceof Error ? error.message : String(error);
+        args.logger.warn("ios_simulator.indigo_input_failed", {
+          action,
+          failureCount,
+          error: detail,
+        });
+        if (failureCount >= IOSURFACE_MAX_FAILURES_PER_WINDOW) {
+          iosurfaceInputStickyFallbackSessionId = activeSession?.id ?? "anonymous";
+          const degradationReason = `Using idb input fallback because Indigo input failed ${failureCount} times in 60s: ${detail}`;
+          streamStatus = {
+            ...streamStatus,
+            inputBackend: "idb",
+            degradationReason,
+          };
+          emit({ type: "stream-status", status: streamStatus });
+        }
+      }
+    }
+    await runIdb();
+    streamStatus = { ...streamStatus, inputBackend: "idb" };
+  };
+
   const tap = async (point: { deviceUdid?: string | null; x: number; y: number }): Promise<{ ok: true }> => {
     const deviceUdid = await resolveControlDeviceUdid(point.deviceUdid);
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
     return enqueueControl("tap", async () => {
-      if (!cachedCommandExists("idb")) {
-        throw new Error(`idb is required for pointer control. ${INSTALL_HINT_IDB}`);
-      }
-      const companion = await ensureCompanion(deviceUdid);
-      try {
-        await run("idb", ["--companion", companion, "ui", "tap", String(Math.round(x)), String(Math.round(y)), "--udid", deviceUdid], { timeoutMs: 20_000 });
-      } finally {
-        scheduleCompanionIdleStop();
-      }
+      await runWithInputFallback("tap", async () => {
+        const normalized = normalizeIosSimulatorPointForIndigo({ x, y }, screenMetricsForIndigoInput(deviceUdid));
+        await sendIosurfaceInputCommand(deviceUdid, { type: "tap", x: normalized.x, y: normalized.y, hold: IOSURFACE_TAP_HOLD_MS });
+      }, () => runIdbTap(deviceUdid, x, y));
       return { ok: true };
     });
   };
@@ -3543,15 +4337,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const typeText = async (input: { deviceUdid?: string | null; text: string }): Promise<{ ok: true }> => {
     const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid);
     return enqueueControl("text", async () => {
-      if (!cachedCommandExists("idb")) {
-        throw new Error(`idb is required for text input. ${INSTALL_HINT_IDB}`);
-      }
-      const companion = await ensureCompanion(deviceUdid);
-      try {
-        await run("idb", ["--companion", companion, "ui", "text", input.text, "--udid", deviceUdid], { timeoutMs: 20_000 });
-      } finally {
-        scheduleCompanionIdleStop();
-      }
+      await runWithInputFallback("text", () => sendIosurfaceInputCommand(deviceUdid, { type: "text", text: input.text }), () => runIdbText(deviceUdid, input.text));
       return { ok: true };
     });
   };
@@ -3565,35 +4351,28 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const durationMs = input.durationMs;
     const deltaValue = input.delta;
     return enqueueControl("drag", async () => {
-      if (!cachedCommandExists("idb")) {
-        throw new Error(`idb is required for pointer control. ${INSTALL_HINT_IDB}`);
-      }
-      const companion = await ensureCompanion(deviceUdid);
-      const idbArgs = [
-        "--companion",
-        companion,
-        "ui",
-        "swipe",
-        String(Math.round(startX)),
-        String(Math.round(startY)),
-        String(Math.round(endX)),
-        String(Math.round(endY)),
-        "--udid",
-        deviceUdid,
-      ];
-      if (durationMs != null) {
-        if (!Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
-        idbArgs.push("--duration", String(Math.max(0.01, durationMs / 1000)));
-      }
-      if (deltaValue != null) {
-        if (!Number.isFinite(deltaValue) || deltaValue <= 0) throw new Error("delta must be a positive number.");
-        idbArgs.push("--delta", String(deltaValue));
-      }
-      try {
-        await run("idb", idbArgs, { timeoutMs: 20_000 });
-      } finally {
-        scheduleCompanionIdleStop();
-      }
+      if (durationMs != null && !Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
+      if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
+      await runWithInputFallback("drag", async () => {
+        const metrics = screenMetricsForIndigoInput(deviceUdid);
+        const start = normalizeIosSimulatorPointForIndigo({ x: startX, y: startY }, metrics);
+        const end = normalizeIosSimulatorPointForIndigo({ x: endX, y: endY }, metrics);
+        await sendIosurfaceInputCommand(deviceUdid, {
+          type: "swipe",
+          startX: start.x,
+          startY: start.y,
+          endX: end.x,
+          endY: end.y,
+          durationMs: durationMs ?? 180,
+        });
+      }, () => runIdbSwipe(deviceUdid, {
+        startX,
+        startY,
+        endX,
+        endY,
+        durationMs,
+        delta: deltaValue,
+      }));
       return { ok: true };
     });
   };
@@ -3640,6 +4419,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       stopChild(streamProcess);
       stopChild(streamTranscoderProcess);
       stopCompanion();
+      stopIosurfaceInput();
       setStreamStopped(null);
       activeSession = null;
       activeLaunchId = null;

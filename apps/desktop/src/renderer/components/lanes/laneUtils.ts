@@ -183,6 +183,10 @@ export type LaneBranchOption = {
   ownedByLaneName?: string | null;
   profiledInCurrentLane?: boolean;
   hasOpenPr?: boolean;
+  lastCommitSha?: string;
+  lastCommitMessage?: string;
+  lastCommitDate?: string;
+  lastCommitAuthor?: string;
 };
 
 export const EMPTY_LANE_PANE_DETAIL: LanePaneDetailSelection = {

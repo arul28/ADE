@@ -244,7 +244,10 @@ import type {
   GitGenerateCommitMessageArgs,
   GitGenerateCommitMessageResult,
   GitListBranchesArgs,
+  GitGetUserIdentityArgs,
+  GitUserIdentity,
   GitListCommitFilesArgs,
+  BranchPullRequest,
   GitFileActionArgs,
   GitBatchFileActionArgs,
   GitPushArgs,
@@ -1421,6 +1424,9 @@ declare global {
         listBranches: (
           args: GitListBranchesArgs,
         ) => Promise<GitBranchSummary[]>;
+        getUserIdentity: (
+          args: GitGetUserIdentityArgs,
+        ) => Promise<GitUserIdentity>;
         checkoutBranch: (
           args: GitCheckoutBranchArgs,
         ) => Promise<GitActionResult>;
@@ -1497,6 +1503,7 @@ declare global {
         linkToLane: (args: LinkPrToLaneArgs) => Promise<PrSummary>;
         getForLane: (laneId: string) => Promise<PrSummary | null>;
         listAll: () => Promise<PrSummary[]>;
+        listOpenForRepo: () => Promise<BranchPullRequest[]>;
         refresh: (args?: {
           prId?: string;
           prIds?: string[];
