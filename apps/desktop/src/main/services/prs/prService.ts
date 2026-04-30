@@ -1510,10 +1510,12 @@ export function createPrService({
     path: string;
     query?: Record<string, string | number | boolean | undefined | null>;
     select?: (payload: any) => T[];
+    maxPages?: number;
   }): Promise<T[]> => {
     const out: T[] = [];
     const pageSize = 100;
-    for (let page = 1; page <= 10; page += 1) {
+    const maxPages = args.maxPages ?? 10;
+    for (let page = 1; page <= maxPages; page += 1) {
       const { data } = await githubService.apiRequest<any>({
         method: "GET",
         path: args.path,
@@ -5233,6 +5235,7 @@ export function createPrService({
       const rows = await fetchAllPages<any>({
         path: `/repos/${repo.owner}/${repo.name}/pulls`,
         query: { state: "open", sort: "updated", direction: "desc" },
+        maxPages: 5,
       });
       const out: BranchPullRequest[] = [];
       for (const row of rows) {

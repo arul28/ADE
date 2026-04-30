@@ -107,7 +107,8 @@ export function matchesQuery(ctx: BranchMatchContext, query: ParsedSearchQuery):
     switch (token.kind) {
       case "pr": {
         if (token.value === "none" && pr) return false;
-        if (token.value === "open" && (!pr || pr.state !== "open")) return false;
+        // `pr:open` includes drafts — drafts are still open PRs on GitHub.
+        if (token.value === "open" && (!pr || (pr.state !== "open" && pr.state !== "draft"))) return false;
         if (token.value === "draft" && (!pr || pr.state !== "draft")) return false;
         break;
       }

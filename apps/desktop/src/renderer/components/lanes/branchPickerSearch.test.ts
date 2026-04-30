@@ -107,8 +107,9 @@ describe("matchesQuery", () => {
     expect(matchesQuery(ctx(), parseSearchQuery("#812"))).toBe(true);
   });
 
-  it("pr:open keeps branches with open PR", () => {
+  it("pr:open keeps branches with open PR (including drafts)", () => {
     expect(matchesQuery(ctx(), parseSearchQuery("pr:open"))).toBe(true);
+    expect(matchesQuery(ctx({ pr: makePr({ state: "draft" }) }), parseSearchQuery("pr:open"))).toBe(true);
     expect(matchesQuery(ctx({ pr: null }), parseSearchQuery("pr:open"))).toBe(false);
   });
 

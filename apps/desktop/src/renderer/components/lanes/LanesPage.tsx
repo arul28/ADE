@@ -1534,6 +1534,9 @@ export function LanesPage() {
     setCreateChildBaseBranch("");
     setCreateBranches([]);
     setCreateBranchPullRequests([]);
+    setCreateGitUserName("");
+    setCreateBranchesLoading(false);
+    setCreateBranchPullRequestsLoading(false);
     setLaneCreated(false);
     createBaseBranchUserPickedRef.current = false;
     const primary = lanes.find((l) => l.laneType === "primary");

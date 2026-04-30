@@ -88,8 +88,16 @@ if [[ "$SMOKE" == "1" ]]; then
 fi
 
 if [[ "$PRINT_JSON" == "1" ]]; then
-  printf '{"xcodeVersion":"%s","sourceHash":"%s","buildDir":"%s","capture":"%s","input":"%s"}\n' \
-    "$XCODE_VERSION" "$SOURCE_HASH" "$OUT_DIR" "$CAPTURE" "$INPUT"
+  XCODE_VERSION="$XCODE_VERSION" SOURCE_HASH="$SOURCE_HASH" OUT_DIR="$OUT_DIR" \
+    CAPTURE="$CAPTURE" INPUT="$INPUT" \
+    python3 -c 'import json, os, sys
+sys.stdout.write(json.dumps({
+  "xcodeVersion": os.environ.get("XCODE_VERSION", ""),
+  "sourceHash": os.environ.get("SOURCE_HASH", ""),
+  "buildDir": os.environ.get("OUT_DIR", ""),
+  "capture": os.environ.get("CAPTURE", ""),
+  "input": os.environ.get("INPUT", ""),
+}) + "\n")'
 else
   echo "$OUT_DIR"
 fi

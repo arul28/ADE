@@ -324,10 +324,17 @@ guard let requestedUdid = options.udid, !requestedUdid.isEmpty else {
 
 var currentStream: Stream?
 var currentDeviceUdid = ""
+let stateQueue = DispatchQueue(label: "ade.sim-capture.state")
+
+func stopCurrentStream() {
+  stateQueue.sync {
+    currentStream?.stop()
+  }
+}
 
 let sigTerm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 sigTerm.setEventHandler {
-  currentStream?.stop()
+  stopCurrentStream()
   exit(0)
 }
 sigTerm.resume()
@@ -335,7 +342,7 @@ signal(SIGTERM, SIG_IGN)
 
 let sigInt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 sigInt.setEventHandler {
-  currentStream?.stop()
+  stopCurrentStream()
   exit(0)
 }
 sigInt.resume()
@@ -346,25 +353,33 @@ DispatchQueue.global(qos: .userInitiated).async {
   while true {
     if let device = bootedDevice(deviceSet, udid: requestedUdid) {
       let udid = deviceUdid(device)
-      if udid != currentDeviceUdid {
-        currentStream?.stop()
-        currentStream = nil
+      let needsSwap = stateQueue.sync { udid != currentDeviceUdid }
+      if needsSwap {
+        stateQueue.sync {
+          currentStream?.stop()
+          currentStream = nil
+        }
         if let descriptor = findDisplayDescriptor(device) {
           let stream = Stream(descriptor: descriptor, device: device, targetUdid: udid, maxFps: options.fps, jpegQuality: options.quality)
           stream.start()
-          currentStream = stream
-          currentDeviceUdid = udid
+          stateQueue.sync {
+            currentStream = stream
+            currentDeviceUdid = udid
+          }
           notifiedNoBoot = false
         } else {
           eprint("[sim-capture] no display descriptor on booted device (will retry)")
         }
       }
     } else {
-      if currentStream != nil {
+      let hadStream = stateQueue.sync { currentStream != nil }
+      if hadStream {
         eprint("[sim-capture] booted device gone")
-        currentStream?.stop()
-        currentStream = nil
-        currentDeviceUdid = ""
+        stateQueue.sync {
+          currentStream?.stop()
+          currentStream = nil
+          currentDeviceUdid = ""
+        }
       }
       if !notifiedNoBoot {
         jsonStatus(["type": "no-booted-device", "deviceUDID": requestedUdid])

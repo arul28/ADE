@@ -4400,7 +4400,7 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "file read") return "file-read";
   if (label === "file tree" || label === "file workspaces") return "files-tree";
   if (label === "file search" || label === "file quick-open") return "files-search";
-  if (label === "pr list") return "prs-list";
+  if (label === "pr list" || label === "pr list open") return "prs-list";
   if (label === "pr detail" || label === "pr health") return "pr-detail";
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";

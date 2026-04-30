@@ -382,7 +382,10 @@ int main(int argc, const char **argv) {
       elog(@"[sim-input] --udid is required");
       return 64;
     }
-    ensureHID();
+    if (!ensureHID()) {
+      elog(@"[sim-input] FAIL ensureHID at startup");
+      return 2;
+    }
     elog(@"[sim-input] ready");
     NSFileHandle *input = [NSFileHandle fileHandleWithStandardInput];
     NSMutableData *buffer = [NSMutableData data];

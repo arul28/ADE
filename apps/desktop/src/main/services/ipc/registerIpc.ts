@@ -5874,7 +5874,8 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorLaunch, async (event, arg = {}) => {
     const result = await ensureIosSimulator().launch(arg);
-    const keepSimulatorInBackground = Boolean((arg as { keepSimulatorInBackground?: unknown } | null)?.keepSimulatorInBackground ?? true);
+    const keepSimulatorInBackgroundPayload = (arg as { keepSimulatorInBackground?: unknown } | null)?.keepSimulatorInBackground;
+    const keepSimulatorInBackground = keepSimulatorInBackgroundPayload === undefined ? true : keepSimulatorInBackgroundPayload === true;
     if (!keepSimulatorInBackground) {
       const browserWindow = BrowserWindow.fromWebContents(event.sender);
       await prepareSimulatorWindowForCapture(browserWindow, { placeBehindAde: false });

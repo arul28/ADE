@@ -2234,6 +2234,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const ensureCompanion = async (deviceUdid: string): Promise<string> => {
+    if (disposed) {
+      throw new Error("iOS simulator service has been disposed.");
+    }
     if (companionIdleTimer) {
       clearTimeout(companionIdleTimer);
       companionIdleTimer = null;
@@ -2248,8 +2251,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (stopped > 0) {
       args.logger.info("ios_simulator.cleaned_orphaned_idb_companions", { deviceUdid, stopped });
     }
+    if (disposed) {
+      throw new Error("iOS simulator service has been disposed.");
+    }
     stopCompanion();
     const port = await getFreePort();
+    if (disposed) {
+      throw new Error("iOS simulator service has been disposed.");
+    }
     const address = `127.0.0.1:${port}`;
     let stderr = "";
     const process = spawnProcess("idb_companion", [
@@ -2268,6 +2277,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
     process.stdout?.on("data", (chunk: Buffer) => {
       stderr = `${stderr}${chunk.toString()}`.slice(-4000);
+    });
+    // Always attach an `error` listener so spawn failures (e.g. ENOENT when
+    // idb_companion is not installed on CI) surface as a normal stream-error
+    // instead of becoming an unhandled exception that fails the test runner.
+    process.once("error", (error) => {
+      if (companionProcess !== process) return;
+      companionProcess = null;
+      companionDeviceUdid = null;
+      companionAddress = null;
+      companionReadyPromise = null;
+      const detail = error instanceof Error ? error.message : String(error);
+      args.logger.debug("ios_simulator.idb_companion_spawn_failed", { deviceUdid, error: detail });
+      if (streamStatus.running) {
+        stopChild(streamProcess);
+        stopChild(streamTranscoderProcess);
+        const status = setStreamStopped(stderr.trim() || detail);
+        emit({ type: "stream-error", status });
+      }
     });
     process.once("exit", (code) => {
       if (companionProcess !== process) return;
@@ -3578,6 +3605,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     activeSession = null;
     iosurfaceInputStickyFallbackSessionId = null;
     iosurfaceInputFailureTimestamps = [];
+    iosurfaceScreenMetrics.clear();
     cachedStatus = { ...cachedStatus, computedAt: 0 };
     if (released || previousSession) {
       emit({ type: "session-updated", session: null });
@@ -4285,7 +4313,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const preferIndigoInput = async (): Promise<boolean> => {
-    if (iosurfaceInputStickyFallbackSessionId && iosurfaceInputStickyFallbackSessionId === activeSession?.id) return false;
+    const currentSessionMarker = activeSession?.id ?? "anonymous";
+    if (iosurfaceInputStickyFallbackSessionId && iosurfaceInputStickyFallbackSessionId === currentSessionMarker) return false;
     if (process.platform !== "darwin") return false;
     const capability = await detectIosurfaceIndigoCapability();
     return capability.available;
@@ -4423,6 +4452,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       setStreamStopped(null);
       activeSession = null;
       activeLaunchId = null;
+      iosurfaceScreenMetrics.clear();
       cleanupTempFiles();
       toolAvailabilityCache.clear();
       if (xcodeMcpBridge) {

@@ -132,10 +132,15 @@ export function BranchPickerView({
   const [query, setQuery] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
-  const now = React.useMemo(() => Date.now(), []);
+  const [now, setNow] = React.useState(() => Date.now());
 
   React.useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  React.useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
   }, []);
 
   const prByBranch = React.useMemo(() => {
