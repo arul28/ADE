@@ -226,7 +226,8 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
-      "mergeASARs": false
+      "mergeASARs": false,
+      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/{node_modules,vendor}/**/*"
     }
   }
 }
