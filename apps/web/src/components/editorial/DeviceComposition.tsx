@@ -28,25 +28,20 @@ export function DeviceComposition() {
       <div className="relative z-[1] aspect-[1/0.78] w-full">
         {/* MacBook */}
         <div
-          className="absolute left-[-2%] top-[6%] w-[82%]"
+          className="absolute left-[-2%] top-[8%] w-[104%] 2xl:left-[-9%] 2xl:w-[122%]"
           style={{
-            transform: "rotate(-1.6deg)",
-            filter: "drop-shadow(0 30px 50px rgba(0,0,0,0.55))",
+            boxShadow: "0 30px 50px rgba(0,0,0,0.55)",
+            borderRadius: "10px 10px 14px 14px",
           }}
         >
-          <div className="relative aspect-[16/10] overflow-hidden rounded-t-[10px] border border-[color:var(--color-hairline-strong)] bg-[#07070b]">
-            <div className="absolute left-[10px] top-[9px] z-[3] flex gap-[5px]">
-              <span className="h-[9px] w-[9px] rounded-full bg-[#ff5f57]" />
-              <span className="h-[9px] w-[9px] rounded-full bg-[#febc2e]" />
-              <span className="h-[9px] w-[9px] rounded-full bg-[#28c840]" />
-            </div>
+          <div className="relative aspect-[2556/1411] overflow-hidden rounded-t-[10px] border border-[color:var(--color-hairline-strong)] bg-[#07070b]">
             <img
-              src="/images/screenshots/lanes.png"
+              src="/images/screenshots/hero-mac.png"
               alt="ADE on macOS"
               loading="eager"
               fetchPriority="high"
-              decoding="async"
-              className="h-full w-full object-cover object-top"
+              decoding="sync"
+              className="block h-full w-full object-cover object-top"
             />
           </div>
           <div
@@ -64,25 +59,19 @@ export function DeviceComposition() {
 
         {/* iPhone */}
         <div
-          className="absolute right-[2%] bottom-[-4%] w-[30%]"
+          className="absolute right-[-4%] bottom-[-6%] w-[26%] 2xl:right-[-19%] 2xl:w-[31%]"
           style={{
-            transform: "rotate(3.4deg)",
-            filter: "drop-shadow(0 30px 50px rgba(124,58,237,0.55))",
+            boxShadow: "0 30px 50px rgba(124,58,237,0.55)",
+            borderRadius: "36px",
           }}
         >
-          <div className="relative aspect-[9/19.5] overflow-hidden rounded-[32px] border-[6px] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
-            <div aria-hidden="true" className="absolute left-1/2 top-[7px] z-[2] h-[20px] w-[44%] -translate-x-1/2 rounded-full bg-black" />
+          <div className="relative aspect-[1206/2622] overflow-hidden rounded-[36px] border-[6px] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
             <img
-              src="/images/screenshots/agent-chat.png"
+              src="/images/screenshots/hero-iphone.png"
               alt="ADE on iOS"
               loading="eager"
-              decoding="async"
-              className="h-full w-full object-cover object-left-top"
-            />
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0 rounded-[28px]"
-              style={{ boxShadow: "inset 0 0 40px rgba(124,58,237,0.35)" }}
+              decoding="sync"
+              className="block h-full w-full object-cover object-top"
             />
           </div>
         </div>

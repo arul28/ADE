@@ -27,6 +27,8 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 import type {
   FileChangeEvent,
+  FileContent,
+  FilePreviewKind,
   FileTreeNode,
   FilesQuickOpenItem,
   FilesSearchTextMatch,
@@ -50,7 +52,51 @@ type OpenTab = {
   savedContent: string;
   languageId: string;
   isBinary: boolean;
+  previewKind?: FilePreviewKind;
+  mimeType?: string | null;
+  dataUrl?: string;
+  size?: number;
 };
+
+type FilePreviewLike = {
+  isBinary: boolean;
+  previewKind?: FilePreviewKind;
+  dataUrl?: string;
+  mimeType?: string | null;
+  size?: number;
+};
+
+function getFilePreviewKind(file: FilePreviewLike | null | undefined): FilePreviewKind {
+  if (!file) return "text";
+  if (file.previewKind) return file.previewKind;
+  if (file.dataUrl) return "image";
+  return file.isBinary ? "binary" : "text";
+}
+
+function isTextTab(tab: OpenTab | null | undefined): boolean {
+  return Boolean(tab) && getFilePreviewKind(tab) === "text" && !tab?.isBinary;
+}
+
+function formatFileSize(bytes: number | null | undefined): string | null {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function openTabFromFileContent(filePath: string, loaded: FileContent): OpenTab {
+  return {
+    path: filePath,
+    content: loaded.content,
+    savedContent: loaded.content,
+    languageId: loaded.languageId,
+    isBinary: loaded.isBinary,
+    previewKind: getFilePreviewKind(loaded),
+    mimeType: loaded.mimeType ?? null,
+    dataUrl: loaded.dataUrl,
+    size: loaded.size,
+  };
+}
 
 type FilesPageNavState = {
   openFilePath?: string;
@@ -422,6 +468,64 @@ function formatFilesWorkspaceSelectLabel(ws: FilesWorkspace, lanes: LaneSummary[
   return { label: `${full.slice(0, FILES_WORKSPACE_SELECT_LABEL_MAX_LEN - 1)}…`, title: full };
 }
 
+function FilePreviewSurface({ tab }: { tab: OpenTab }) {
+  const previewKind = getFilePreviewKind(tab);
+  const sizeLabel = formatFileSize(tab.size);
+  const details = [tab.mimeType, sizeLabel].filter(Boolean).join(" · ");
+  const [imageFailed, setImageFailed] = React.useState(false);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [tab.dataUrl]);
+
+  if (previewKind === "image" && tab.dataUrl && !imageFailed) {
+    return (
+      <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.recessedBg }}>
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+          <img
+            src={tab.dataUrl}
+            alt={tab.path}
+            className="max-h-full max-w-full object-contain"
+            style={{ imageRendering: "auto" }}
+            onError={() => setImageFailed(true)}
+          />
+        </div>
+        <div className="shrink-0 border-t px-3 py-2" style={{ borderColor: COLORS.border, color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 11 }}>
+          <span style={{ color: COLORS.textPrimary }}>{tab.path}</span>
+          {details ? <span> · {details}</span> : null}
+        </div>
+      </div>
+    );
+  }
+
+  const title = previewKind === "image" ? "Image preview unavailable" : "Preview unavailable";
+  const body = previewKind === "image"
+    ? "This image could not be decoded for inline preview."
+    : "This file type cannot be displayed inline.";
+
+  return (
+    <div className="flex h-full items-center justify-center" style={{ background: COLORS.recessedBg }}>
+      <div className="max-w-[360px] px-6 text-center">
+        <FileText size={32} weight="thin" style={{ color: COLORS.textDim, margin: "0 auto 10px" }} />
+        <div style={{ fontFamily: MONO_FONT, fontSize: 11, fontWeight: 700, letterSpacing: "1px", color: COLORS.textPrimary }}>
+          {title.toUpperCase()}
+        </div>
+        <div style={{ fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textMuted, marginTop: 8 }}>
+          {body}
+        </div>
+        <div className="truncate" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim, marginTop: 12 }} title={tab.path}>
+          {tab.path}
+        </div>
+        {details ? (
+          <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, marginTop: 4 }}>
+            {details}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function FilesPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -553,6 +657,8 @@ export function FilesPage() {
     () => findItemByWorkspacePath(openTabs, activeTabPath, workspaceComparisonRoot) ?? null,
     [openTabs, activeTabPath, workspaceComparisonRoot],
   );
+  const activeTabPreviewKind = getFilePreviewKind(activeTab);
+  const activeTabIsText = isTextTab(activeTab);
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
   const liveWatchEnabled = openTabs.length > 0;
 
@@ -888,36 +994,19 @@ export function FilesPage() {
     const normalizedPath = nodeByComparablePath.get(normalizePathForWorkspaceComparison(requestedPath, workspaceComparisonRoot))?.path ?? requestedPath;
     try {
       const loaded = await window.ade.files.readFile({ workspaceId, path: normalizedPath });
-      if (loaded.isBinary) {
-        setError("Binary files are read-only and cannot be edited in this view.");
-      }
+      const nextTab = openTabFromFileContent(normalizedPath, loaded);
+      setError(null);
       setOpenTabs((prev) => {
         const existing = findItemByWorkspacePath(prev, normalizedPath, workspaceComparisonRoot);
         if (existing && !options.forceReload) return prev;
         if (existing && options.forceReload) {
           return prev.map((tab) => (
             areWorkspacePathsEqual(tab.path, normalizedPath, workspaceComparisonRoot)
-              ? {
-                ...tab,
-                path: normalizedPath,
-                content: loaded.content,
-                savedContent: loaded.content,
-                languageId: loaded.languageId,
-                isBinary: loaded.isBinary
-              }
+              ? { ...tab, ...nextTab }
               : tab
           ));
         }
-        return [
-          ...prev,
-          {
-            path: normalizedPath,
-            content: loaded.content,
-            savedContent: loaded.content,
-            languageId: loaded.languageId,
-            isBinary: loaded.isBinary
-          }
-        ];
+        return [...prev, nextTab];
       });
       if (!options.preserveMode) {
         setMode("edit");
@@ -943,6 +1032,7 @@ export function FilesPage() {
 
     try {
       const loaded = await window.ade.files.readFile({ workspaceId, path: filePath });
+      const nextTab = openTabFromFileContent(filePath, loaded);
       setOpenTabs((prev) => {
         let changed = false;
         const next = prev.map((tab) => {
@@ -953,19 +1043,16 @@ export function FilesPage() {
             tab.content === loaded.content &&
             tab.savedContent === loaded.content &&
             tab.languageId === loaded.languageId &&
-            tab.isBinary === loaded.isBinary
+            tab.isBinary === loaded.isBinary &&
+            getFilePreviewKind(tab) === getFilePreviewKind(loaded) &&
+            tab.mimeType === (loaded.mimeType ?? null) &&
+            tab.dataUrl === loaded.dataUrl &&
+            tab.size === loaded.size
           ) {
             return tab;
           }
           changed = true;
-          return {
-            ...tab,
-            path: filePath,
-            content: loaded.content,
-            savedContent: loaded.content,
-            languageId: loaded.languageId,
-            isBinary: loaded.isBinary
-          };
+          return { ...tab, ...nextTab };
         });
         return changed ? next : prev;
       });
@@ -1048,7 +1135,7 @@ export function FilesPage() {
   }, [activeTabPath, workspaceComparisonRoot]);
 
   const saveActive = useCallback(async () => {
-    if (!activeTab || !workspaceId || !canEdit || activeTab.isBinary) return;
+    if (!activeTab || !workspaceId || !canEdit || !isTextTab(activeTab)) return;
     await window.ade.files.writeText({ workspaceId, path: activeTab.path, text: activeTab.content });
     setOpenTabs((prev) => prev.map((tab) => (
       areWorkspacePathsEqual(tab.path, activeTab.path, workspaceComparisonRoot) ? { ...tab, savedContent: tab.content } : tab
@@ -1479,6 +1566,7 @@ export function FilesPage() {
 
   useEffect(() => {
     if (!activeTab) return;
+    if (!activeTabIsText) return;
     if (mode !== "edit") return;
     if (!editorHostEl) return;
     if (editorRef.current) return;
@@ -1551,7 +1639,7 @@ export function FilesPage() {
   // in the effect below; including editorTheme here would dispose/recreate the editor on
   // every theme click and break the instance (race with async loadMonaco).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab?.path, mode, editorHostEl, revealPendingLocation]);
+  }, [activeTab?.path, activeTabIsText, mode, editorHostEl, revealPendingLocation]);
 
   useEffect(() => {
     const monaco = monacoRef.current;
@@ -1561,13 +1649,13 @@ export function FilesPage() {
 
   useEffect(() => {
     if (!editorRef.current || mode !== "edit") return;
-    editorRef.current.updateOptions({ readOnly: !canEdit || Boolean(activeTab?.isBinary) });
-  }, [mode, canEdit, activeTab?.isBinary]);
+    editorRef.current.updateOptions({ readOnly: !canEdit || !activeTabIsText });
+  }, [mode, canEdit, activeTabIsText]);
 
   useEffect(() => {
     if (!editorRef.current || !monacoRef.current || mode !== "edit") return;
     const editor = editorRef.current;
-    if (!activeTab) {
+    if (!activeTab || !activeTabIsText) {
       try {
         editor.setModel(null);
       } catch {
@@ -1586,7 +1674,7 @@ export function FilesPage() {
     const language = activeTab.languageId || "plaintext";
     const modelKey = `${activeTab.path}::${language}`;
     if (modelRef.current && modelKeyRef.current === modelKey) {
-      editor.updateOptions({ readOnly: !canEdit || activeTab.isBinary });
+      editor.updateOptions({ readOnly: !canEdit || !activeTabIsText });
       void revealPendingLocation();
       return;
     }
@@ -1604,18 +1692,18 @@ export function FilesPage() {
     modelRef.current = monaco.editor.createModel(activeTab.content, language);
     modelKeyRef.current = modelKey;
     editor.setModel(modelRef.current);
-    editor.updateOptions({ readOnly: !canEdit || activeTab.isBinary });
+    editor.updateOptions({ readOnly: !canEdit || !activeTabIsText });
     void revealPendingLocation();
-  }, [activeTab?.path, activeTab?.languageId, activeTab?.isBinary, mode, canEdit, editorStatus, revealPendingLocation]);
+  }, [activeTab, activeTabIsText, mode, canEdit, editorStatus, revealPendingLocation]);
 
   useEffect(() => {
-    if (!activeTab || !editorRef.current || mode !== "edit") return;
+    if (!activeTab || !activeTabIsText || !editorRef.current || mode !== "edit") return;
     const current = editorRef.current.getValue();
     if (current === activeTab.content) return;
     editorApplyingRef.current = true;
     editorRef.current.setValue(activeTab.content);
     editorApplyingRef.current = false;
-  }, [activeTab?.path, activeTab?.content, mode]);
+  }, [activeTab, activeTabIsText, mode]);
 
   useEffect(() => {
     setResolvedConflictKeys(new Set());
@@ -1730,12 +1818,16 @@ export function FilesPage() {
   const hasConflictMarkers = conflictHunks.length > 0;
   const editorModeHint =
     mode === "edit"
-      ? "Code view: edit the file directly."
+      ? activeTabPreviewKind === "image"
+        ? "Image preview: view the file inline."
+        : activeTabIsText
+          ? "Code view: edit the file directly."
+          : "Preview unavailable: open externally to inspect this file type."
       : mode === "diff"
         ? "Changes view: compare this file against unstaged, staged, or commit versions."
         : "Merge view: resolve conflict markers in this file.";
 
-  const applyConflictResolution = (hunk: ConflictHunk, choice: "ours" | "theirs" | "both") => {
+  const applyConflictResolution = useCallback((hunk: ConflictHunk, choice: "ours" | "theirs" | "both") => {
     if (!activeTab) return;
     setOpenTabs((prev) => prev.map((tab) => (
       tab.path === activeTab.path
@@ -1747,7 +1839,7 @@ export function FilesPage() {
       next.add(hunk.key);
       return next;
     });
-  };
+  }, [activeTab]);
 
   const activeContextDir = (() => {
     if (!activeContextPath) return "";
@@ -1913,10 +2005,10 @@ export function FilesPage() {
               type="button"
               style={{
                 ...primaryButton({ height: 24, padding: "0 10px", fontSize: 9 }),
-                opacity: (!activeTab || !canEdit || activeTab.isBinary) ? 0.35 : 1,
+                opacity: (!activeTab || !canEdit || !activeTabIsText) ? 0.35 : 1,
               }}
               onClick={() => saveActive().catch(() => {})}
-              disabled={!activeTab || !canEdit || activeTab.isBinary}
+              disabled={!activeTab || !canEdit || !activeTabIsText}
             >
               <Save size={11} weight="bold" /> SAVE
             </button>
@@ -2006,18 +2098,20 @@ export function FilesPage() {
             ) : null}
             {mode === "edit" ? (
               <div className="h-full">
-                {activeTab ? (
+                {activeTab && !activeTabIsText ? (
+                  <FilePreviewSurface tab={activeTab} />
+                ) : activeTab ? (
                   <div ref={setEditorHostRef} className={cn("h-full", editorStatus === "failed" && "hidden")} />
                 ) : null}
-                {activeTab && editorStatus === "loading" ? (
+                {activeTab && activeTabIsText && editorStatus === "loading" ? (
                   <div className="flex h-full items-center justify-center" style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted }}>
                     <span className="animate-pulse">LOADING EDITOR...</span>
                   </div>
                 ) : null}
-                {activeTab && editorStatus === "failed" ? (
+                {activeTab && activeTabIsText && editorStatus === "failed" ? (
                   <textarea
                     value={activeTab?.content ?? ""}
-                    readOnly={!canEdit || Boolean(activeTab?.isBinary)}
+                    readOnly={!canEdit || !activeTabIsText}
                     onChange={(e) => {
                       if (!activeTab) return;
                       setOpenTabs((prev) =>
@@ -2117,11 +2211,12 @@ export function FilesPage() {
       )
     }
   }), [
-    tree, activeWorkspace, activeTabPath, activeContextDir, openTabs, activeTab,
+    tree, activeWorkspace, activeTabPath, activeContextDir, openTabs, activeTab, activeTabIsText,
     mode, canEdit, editorStatus, laneIdForDiff, activeContextPath,
     searchQuery, searchResults, conflictHunks, editorTheme, editorModeHint, hasConflictMarkers,
     resolvedConflictKeys, renderTree, createFileAt, createDirectoryAt, saveActive,
-    closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate
+    closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate,
+    applyConflictResolution, setEditorHostRef, workspaceComparisonRoot
   ]);
 
   const renderPane = useCallback((paneId: keyof typeof paneConfigs) => {

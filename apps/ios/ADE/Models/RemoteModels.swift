@@ -2106,6 +2106,9 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var resumeCommand: String?
   var resumeMetadata: TerminalResumeMetadata?
   var chatIdleSinceAt: String?
+  /// Parent chat session id when this terminal was launched from a chat (e.g. App Control,
+  /// in-chat terminal drawer). Mirrors the desktop `TerminalSessionSummary.chatSessionId`.
+  var chatSessionId: String? = nil
 }
 
 struct ProcessReadinessConfig: Codable, Equatable {

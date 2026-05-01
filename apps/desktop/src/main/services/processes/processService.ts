@@ -536,9 +536,10 @@ export function createProcessService({
   const handleStartFailure = (args: {
     entry: ManagedProcessEntry;
     startedAt: string;
+    cwd: string;
     error: unknown;
   }) => {
-    const { entry, startedAt, error } = args;
+    const { entry, startedAt, cwd, error } = args;
     const endedAt = nowIso();
     if (entry.sessionId) sessionToRunId.delete(entry.sessionId);
     if (entry.ptyId) ptyToRunId.delete(entry.ptyId);
@@ -555,6 +556,25 @@ export function createProcessService({
     entry.runtime.exitCode = null;
     entry.runtime.lastExitCode = null;
     entry.runtime.logPath = entry.transcriptPath;
+    if (entry.transcriptPath) {
+      try {
+        fs.mkdirSync(path.dirname(entry.transcriptPath), { recursive: true });
+        fs.appendFileSync(
+          entry.transcriptPath,
+          [
+            "",
+            `[ADE] Process '${entry.definition.name || entry.definition.id}' failed to start.`,
+            `[ADE] Command: ${entry.definition.command.join(" ")}`,
+            `[ADE] Working directory: ${cwd}`,
+            `[ADE] Error: ${error instanceof Error ? error.message : String(error)}`,
+            "",
+          ].join("\n"),
+          "utf8",
+        );
+      } catch {
+        // Best-effort: the renderer still receives the thrown startup error.
+      }
+    }
     emitRuntime(entry);
 
     upsertRunStart(entry.runId, entry.laneId, entry.processId, startedAt, entry.transcriptPath ?? "");
@@ -666,7 +686,7 @@ export function createProcessService({
       });
       return cloneRuntime(entry.runtime);
     } catch (error) {
-      handleStartFailure({ entry, startedAt, error });
+      handleStartFailure({ entry, startedAt, cwd, error });
       throw error;
     }
   };

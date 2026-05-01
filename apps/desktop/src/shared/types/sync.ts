@@ -136,6 +136,16 @@ export type SyncTransferReadiness = {
   survivableState: string[];
 };
 
+export type SyncGetStatusArgs = {
+  /**
+   * Transfer readiness scans active missions, chats, terminal sessions, and
+   * managed run processes. Top-level chrome can skip it when it only needs the
+   * connection label.
+   */
+  includeTransferReadiness?: boolean;
+  forceTransferReadiness?: boolean;
+};
+
 export type SyncDeviceRuntimeState = SyncDeviceRecord & {
   isLocal: boolean;
   // Legacy internal/wire flag. User-facing copy should say "host".

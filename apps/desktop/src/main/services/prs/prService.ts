@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  BranchPullRequest,
   CreatePrFromLaneArgs,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
@@ -157,6 +158,17 @@ type PullRequestRow = {
   updated_at: string;
   creation_strategy: string | null;
 };
+
+type LanePrLookupRow = {
+  lane_type: string | null;
+  branch_ref: string | null;
+  base_ref: string | null;
+  archived_at: string | null;
+};
+
+function isActivePrState(state: string | null | undefined): boolean {
+  return state === "open" || state === "draft";
+}
 
 type PullRequestSnapshotHydration = {
   prId: string;
@@ -859,11 +871,73 @@ export function createPrService({
     name: row.repo_name
   });
 
-  const getRowForLane = (laneId: string): PullRequestRow | null =>
-    db.get<PullRequestRow>(
-      `select ${PR_COLUMNS} from pull_requests where lane_id = ? and project_id = ? limit 1`,
+  const getRowForLane = (laneId: string): PullRequestRow | null => {
+    const rows = db.all<PullRequestRow>(
+      `
+        select ${PR_COLUMNS}
+          from pull_requests
+         where lane_id = ?
+           and project_id = ?
+         order by
+           case when state in ('open', 'draft') then 0 else 1 end,
+           updated_at desc,
+           created_at desc
+      `,
       [laneId, projectId]
     );
+    const lane = getLanePrLookupRow(laneId);
+    if (!lane || lane.archived_at) return rows[0] ?? null;
+    return rows.find((row) => rowMatchesCurrentLaneBranch(row, lane)) ?? rows[0] ?? null;
+  };
+
+  const getLanePrLookupRow = (laneId: string): LanePrLookupRow | null =>
+    db.get<LanePrLookupRow>(
+      `
+        select lane_type, branch_ref, base_ref, archived_at
+          from lanes
+         where id = ?
+           and project_id = ?
+         limit 1
+      `,
+      [laneId, projectId],
+    );
+
+  const rowMatchesCurrentLaneBranch = (row: PullRequestRow, lane: LanePrLookupRow): boolean => {
+    if (!isActivePrState(row.state)) return false;
+
+    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
+    const prHeadBranch = normalizeBranchName(row.head_branch);
+    if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
+
+    if (lane.lane_type === "primary") {
+      const laneBaseBranch = normalizeBranchName(branchNameFromRef(lane.base_ref ?? ""));
+      if (laneBranch && laneBaseBranch && laneBranch === laneBaseBranch) return false;
+    }
+
+    return true;
+  };
+
+  const getActiveRowForCurrentLaneBranch = (laneId: string): PullRequestRow | null => {
+    const lane = getLanePrLookupRow(laneId);
+    if (!lane || lane.archived_at) return null;
+
+    const rows = db.all<PullRequestRow>(
+      `
+        select ${PR_COLUMNS}
+          from pull_requests
+         where lane_id = ?
+           and project_id = ?
+           and state in ('open', 'draft')
+         order by updated_at desc, created_at desc
+      `,
+      [laneId, projectId],
+    );
+
+    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
+    if (!laneBranch) return rows[0] ?? null;
+
+    return rows.find((row) => rowMatchesCurrentLaneBranch(row, lane)) ?? null;
+  };
 
   const getRowForLaneBranch = (laneId: string, headBranch: string): PullRequestRow | null => {
     const normalizedHead = normalizeBranchName(headBranch).trim();
@@ -1054,7 +1128,7 @@ export function createPrService({
     for (const child of directChildren) {
       const previousParentLaneId = child.parentLaneId;
       const previousBaseRef = child.baseRef;
-      const childPr = getRowForLane(child.id);
+      const childPr = getActiveRowForCurrentLaneBranch(child.id);
 
       let reparentResult:
         | {
@@ -1436,10 +1510,12 @@ export function createPrService({
     path: string;
     query?: Record<string, string | number | boolean | undefined | null>;
     select?: (payload: any) => T[];
+    maxPages?: number;
   }): Promise<T[]> => {
     const out: T[] = [];
     const pageSize = 100;
-    for (let page = 1; page <= 10; page += 1) {
+    const maxPages = args.maxPages ?? 10;
+    for (let page = 1; page <= maxPages; page += 1) {
       const { data } = await githubService.apiRequest<any>({
         method: "GET",
         path: args.path,
@@ -2966,13 +3042,13 @@ export function createPrService({
     if (!chain.length) return [];
 
     // Root base branch is derived from the root lane PR.
-    const rootRow = getRowForLane(chain[0]!.laneId);
+    const rootRow = getActiveRowForCurrentLaneBranch(chain[0]!.laneId);
     if (!rootRow) throw new Error("Root lane has no PR linked.");
     const baseTarget = rootRow.base_branch;
 
     const results: LandResult[] = [];
     for (const item of chain) {
-      const row = getRowForLane(item.laneId);
+      const row = getActiveRowForCurrentLaneBranch(item.laneId);
       if (!row) {
         results.push({
           prId: "",
@@ -3304,7 +3380,7 @@ export function createPrService({
     const chain = await laneService.getStackChain(args.rootLaneId);
     if (!chain.length) return [];
 
-    const rootRow = getRowForLane(chain[0]!.laneId);
+    const rootRow = getActiveRowForCurrentLaneBranch(chain[0]!.laneId);
     if (!rootRow) throw new Error("Root lane has no PR linked.");
     const baseTarget = rootRow.base_branch;
 
@@ -3316,7 +3392,7 @@ export function createPrService({
 
     for (let i = 0; i < chain.length; i++) {
       const item = chain[i]!;
-      const row = getRowForLane(item.laneId);
+      const row = getActiveRowForCurrentLaneBranch(item.laneId);
       if (!row) {
         results[i] = {
           prId: "",
@@ -5138,7 +5214,7 @@ export function createPrService({
     },
 
     getForLane(laneId: string): PrSummary | null {
-      const row = getRowForLane(laneId);
+      const row = getActiveRowForCurrentLaneBranch(laneId);
       return row ? rowToSummary(row) : null;
     },
 
@@ -5146,6 +5222,38 @@ export function createPrService({
       const laneId = String(args.laneId ?? "").trim();
       const summaries = listRows().map(rowToSummary);
       return laneId ? summaries.filter((pr) => pr.laneId === laneId) : summaries;
+    },
+
+    /**
+     * Returns a flat list of open PRs in the project's GitHub repo, keyed by
+     * head branch. Used by the branch picker to attach PR pills to branches.
+     * Hits a single paginated GitHub endpoint — independent of the local PR
+     * cache, so it covers branches that don't yet have a lane.
+     */
+    async listOpenPullRequests(): Promise<BranchPullRequest[]> {
+      const repo = await githubService.getRepoOrThrow();
+      const rows = await fetchAllPages<any>({
+        path: `/repos/${repo.owner}/${repo.name}/pulls`,
+        query: { state: "open", sort: "updated", direction: "desc" },
+        maxPages: 5,
+      });
+      const out: BranchPullRequest[] = [];
+      for (const row of rows) {
+        const headBranch = asString(row?.head?.ref).trim();
+        const prNumber = asNumber(row?.number);
+        if (!headBranch || !prNumber) continue;
+        const isDraft = Boolean(row?.draft);
+        out.push({
+          branch: headBranch,
+          prNumber,
+          title: asString(row?.title).trim(),
+          state: isDraft ? "draft" : "open",
+          url: asString(row?.html_url).trim(),
+          author: asString(row?.user?.login).trim() || null,
+          updatedAt: asString(row?.updated_at).trim() || null,
+        });
+      }
+      return out;
     },
 
     getReviewSnapshot,
@@ -6599,7 +6707,7 @@ export function createPrService({
   }
 
   function prSummariesForLane(laneId: string): PrSummary | null {
-    const row = getRowForLane(laneId);
+    const row = getActiveRowForCurrentLaneBranch(laneId);
     return row ? rowToSummary(row) : null;
   }
 }

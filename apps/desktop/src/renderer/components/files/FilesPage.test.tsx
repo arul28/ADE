@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { editor as monacoEditor } from "monaco-editor";
-import type { FileChangeEvent, FileTreeNode } from "../../../shared/types";
+import type { FileChangeEvent, FileContent, FileTreeNode } from "../../../shared/types";
 import { FilesPage } from "./FilesPage";
 import { useAppStore } from "../../state/appStore";
 
@@ -114,6 +114,7 @@ const ignoredTree: FileTreeNode[] = [
 
 let currentTree: FileTreeNode[] = [];
 let fileContents: Record<string, string> = {};
+let fileReadOverrides: Record<string, FileContent> = {};
 let changeListener: ((event: FileChangeEvent) => void) | null = null;
 let projectRoot = "";
 let projectCounter = 0;
@@ -214,6 +215,7 @@ describe("FilesPage", () => {
       "src/main.ts": "export const value = 2;\n",
       ".ade/notes/project.md": "# Project notes\n\nRenderer-safe content",
     };
+    fileReadOverrides = {};
     window.localStorage.clear();
     globalThis.window.confirm = vi.fn(() => true);
 
@@ -242,6 +244,9 @@ describe("FilesPage", () => {
           };
         }),
         readFile: vi.fn(async ({ path }: { path: string }) => {
+          const override = fileReadOverrides[path]
+            ?? fileReadOverrides[Object.keys(fileReadOverrides).find((candidate) => candidate.toLowerCase() === path.toLowerCase()) ?? ""];
+          if (override) return override;
           const content = fileContents[path]
             ?? fileContents[Object.keys(fileContents).find((candidate) => candidate.toLowerCase() === path.toLowerCase()) ?? ""];
           if (content == null) {
@@ -354,6 +359,51 @@ describe("FilesPage", () => {
       });
     });
     expect(await screen.findByText(".ade/notes/project.md")).toBeTruthy();
+  });
+
+  it("renders image files inline without starting the code editor", async () => {
+    fileReadOverrides["assets/logo.png"] = {
+      content: "iVBORw0KGgo=",
+      encoding: "base64",
+      size: 8,
+      languageId: "image",
+      isBinary: true,
+      previewKind: "image",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+    };
+
+    renderFilesPage({
+      openFilePath: "assets/logo.png",
+      preferPrimaryWorkspace: true,
+    });
+
+    const image = await screen.findByAltText("assets/logo.png");
+    expect(image.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
+    expect(screen.getByText(/IMAGE PREVIEW/i)).toBeTruthy();
+    expect(screen.queryByTestId("mock-monaco-editor")).toBeNull();
+  });
+
+  it("shows a stable fallback for unsupported binary files", async () => {
+    fileReadOverrides["dist/app.bin"] = {
+      content: "AQIDBA==",
+      encoding: "base64",
+      size: 4,
+      languageId: "plaintext",
+      isBinary: true,
+      previewKind: "binary",
+      mimeType: "application/octet-stream",
+    };
+
+    renderFilesPage({
+      openFilePath: "dist/app.bin",
+      preferPrimaryWorkspace: true,
+    });
+
+    expect(await screen.findByText(/PREVIEW UNAVAILABLE/i)).toBeTruthy();
+    expect(screen.getByText(/This file type cannot be displayed inline/i)).toBeTruthy();
+    expect(screen.getByText(/application\/octet-stream/i)).toBeTruthy();
+    expect(screen.queryByTestId("mock-monaco-editor")).toBeNull();
   });
 
   it("remaps clean open tabs when files are renamed", async () => {

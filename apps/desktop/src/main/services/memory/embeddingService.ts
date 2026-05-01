@@ -507,9 +507,8 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
   }
 
   /**
-   * Check if the model files exist in the cache dir and auto-load if so.
-   * Call this at startup so that previously-downloaded models are recognized
-   * without requiring the user to click "Download Model" again.
+   * Check if the model files exist in the cache dir without loading ONNX.
+   * Actual embedding work stays lazy until preload() or embed() is called.
    */
   async function probeCache(): Promise<void> {
     if (state === "ready" || state === "loading") return;
@@ -522,10 +521,11 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
           installPath,
           installState: install.installState,
         });
+        emitStatus();
         return;
       }
-      logger.info("memory.embedding.probe_cache", { modelId, cacheDir, installPath });
-      await ensureExtractor({ localFilesOnly: true, installInspection: install });
+      logger.info("memory.embedding.probe_cache_installed", { modelId, cacheDir, installPath });
+      emitStatus();
     } catch (error) {
       // Probe is best-effort — don't block startup
       logger.warn("memory.embedding.probe_cache_failed", {

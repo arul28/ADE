@@ -8,6 +8,7 @@ import type { SDKModel } from "@cursor/sdk";
 import { createHash } from "node:crypto";
 
 export type CursorCliModelRow = { id: string; displayName?: string };
+type CursorCliModelDiscoveryMode = "probe" | "cached-or-fallback";
 
 let cached: { at: number; models: CursorCliModelRow[] } | null = null;
 let sdkCached: { at: number; keyHash: string; models: CursorCliModelRow[] } | null = null;
@@ -84,6 +85,14 @@ export async function listCursorModelsFromSdk(apiKey?: string | null): Promise<C
   return rows;
 }
 
+function getCachedCursorModels(): CursorCliModelRow[] | null {
+  const now = Date.now();
+  if (cached && now - cached.at < TTL_MS && cached.models.length) {
+    return cached.models;
+  }
+  return null;
+}
+
 /**
  * Best-effort: run `agent models` (and JSON variants) and parse stdout.
  */
@@ -151,8 +160,13 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
 /**
  * Legacy Cursor CLI model discovery kept for older tests and migrations.
  */
-export async function discoverCursorCliModelDescriptors(agentPath: string): Promise<ModelDescriptor[]> {
-  const rows = await listCursorModelsFromCli(agentPath);
+export async function discoverCursorCliModelDescriptors(
+  agentPath: string,
+  options?: { mode?: CursorCliModelDiscoveryMode },
+): Promise<ModelDescriptor[]> {
+  const rows = options?.mode === "cached-or-fallback"
+    ? getCachedCursorModels() ?? []
+    : await listCursorModelsFromCli(agentPath);
   const useRows: CursorCliModelRow[] = rows.length ? rows : FALLBACK_SDK_IDS.map((id) => ({ id }));
   const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];

@@ -2657,9 +2657,9 @@ describe("adeRpcServer", () => {
         expect.objectContaining({
           scope: "mission",
           scopeOwnerId: "run-from-env",
-          status: "candidate",
-          tier: 3,
-          confidence: 0.6,
+          status: "promoted",
+          tier: 2,
+          confidence: 1,
         })
       );
       expect(fixture.runtime.memoryService.addSharedFact).toHaveBeenCalledWith(

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Cube, DeviceMobile, Plus } from "@phosphor-icons/react";
+import { Cube, Desktop, DeviceMobile, Plus } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   PARALLEL_CHAT_MAX_ATTACHMENTS,
@@ -28,6 +28,7 @@ import {
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
   type ComputerUseOwnerSnapshot,
+  type AppControlContextItem,
   type IosElementContextItem,
   type AiSettingsStatus,
   type TerminalToolType,
@@ -67,6 +68,7 @@ import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatChipToneClass, providerChatAccent } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
+import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
@@ -214,6 +216,97 @@ function createIosContextInstanceId(item: IosElementContextItem): string {
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   return `${item.id}::${suffix}`;
+}
+
+function appControlContextLabel(item: AppControlContextItem): string {
+  const metadata = item.metadata ?? {};
+  for (const value of [metadata.label, metadata.value, item.componentId, metadata.role, metadata.tagName]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "App Control element";
+}
+
+function formatAppControlContextChipsForDisplay(items: AppControlContextItem[]): string {
+  if (!items.length) return "";
+  return items.map((item) => `\`${appControlContextLabel(item)}\``).join(" ");
+}
+
+function getAppControlContextAttachmentPath(item: AppControlContextItem): string | null {
+  const value = item.metadata?.attachmentPath;
+  return typeof value === "string" && value.length ? value : null;
+}
+
+function createAppControlContextInstanceId(item: AppControlContextItem): string {
+  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${item.id}::${suffix}`;
+}
+
+function formatAppControlContextForPrompt(items: AppControlContextItem[]): string {
+  if (!items.length) return "";
+  const rows = items.map((item, index) => {
+    const metadata = item.metadata ?? {};
+    const sourceConfidence = typeof metadata.sourceConfidence === "string"
+      ? metadata.sourceConfidence
+      : item.sourceFile ? "exact" : "none";
+    const frame = item.frame
+      ? `x=${item.frame.x}, y=${item.frame.y}, w=${item.frame.width}, h=${item.frame.height}`
+      : "unknown frame";
+    const attachmentPath = getAppControlContextAttachmentPath(item);
+    const sourceCandidates = asRecordArray(metadata.sourceCandidates)
+      .slice(0, 5)
+      .map((candidate) => ({
+        sourceFile: candidate.sourceFile,
+        sourceLine: candidate.sourceLine,
+        confidence: candidate.confidence,
+        reason: candidate.reason,
+        snippet: typeof candidate.snippet === "string" ? candidate.snippet : undefined,
+      }));
+    const nearbyElements = asRecordArray(metadata.nearbyElements).slice(0, 8);
+    const packet = {
+      contextId: item.id,
+      appKind: item.appKind,
+      provider: item.provider,
+      visualAttachmentPath: attachmentPath,
+      selectedAt: item.selectedAt,
+      selectedElement: metadata.selectedElement ?? {
+        componentId: item.componentId,
+        label: metadata.label,
+        value: metadata.value,
+        role: metadata.role,
+        tagName: metadata.tagName,
+        selector: metadata.selector,
+        testId: metadata.testId,
+        screenshotFrame: frame,
+      },
+      screen: metadata.screen,
+      url: metadata.url,
+      title: metadata.title,
+      sourceConfidence,
+      exactSource: item.sourceFile ? {
+        sourceFile: item.sourceFile,
+        sourceLine: item.sourceLine,
+        snippet: typeof metadata.sourceSnippet === "string" ? metadata.sourceSnippet : null,
+      } : null,
+      sourceCandidates,
+      nearbyElements,
+    };
+    const source = item.sourceFile
+      ? `${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}`
+      : sourceConfidence === "candidate" ? "no exact source; ranked candidates below" : "no source match";
+    const snippet = typeof metadata.sourceSnippet === "string" && metadata.sourceSnippet.trim().length
+      ? `\nBest source snippet:\n${metadata.sourceSnippet}`
+      : "";
+    return `${index + 1}. ${appControlContextLabel(item)} (${source}, frame=${frame})\nPacket:\n${JSON.stringify(packet, null, 2)}${snippet}`;
+  });
+  return [
+    "App Control visual inspect context attached by the user.",
+    "Each packet came from a developer-owned app session, usually Electron launched or connected through ADE CLI with a local CDP port. Image attachments/crops are visual evidence for the same packet and use screenshot pixel coordinates.",
+    "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked guesses from DOM text/test ids/selectors and source search, not proof. Prefer the screenshot, DOM selector, nearbyElements, console/browser context, and exact source when available.",
+    ...rows,
+    "",
+  ].join("\n");
 }
 
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
@@ -382,9 +475,17 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
       turnActive = event.turnStatus === "started";
     } else if (event.type === "done") {
       turnActive = false;
-    } else if (event.type === "user_message" && event.steerId && event.deliveryState === "queued") {
-      if (!resolvedSteerIds.has(event.steerId)) {
-        steerMap.set(event.steerId, { steerId: event.steerId, text: event.text });
+    } else if (event.type === "user_message" && event.steerId) {
+      if (event.deliveryState === "queued") {
+        if (!resolvedSteerIds.has(event.steerId)) {
+          steerMap.set(event.steerId, { steerId: event.steerId, text: event.text });
+        }
+      } else {
+        // "inline" / "delivered" / "failed" — the steer left the queue, so
+        // clear it from the display. Without this the chip stays staged after
+        // the user clicks "Send Now" or after a queued steer is delivered.
+        steerMap.delete(event.steerId);
+        resolvedSteerIds.add(event.steerId);
       }
     } else if (event.type === "system_notice" && event.steerId) {
       // "cancelled" or "Delivering" notices resolve the steer
@@ -800,6 +901,41 @@ function trimChatEventHistory(events: AgentChatEventEnvelope[], maxEvents: numbe
   return events.length > maxEvents ? events.slice(-maxEvents) : events;
 }
 
+function chatEventDedupKey(entry: AgentChatEventEnvelope): string {
+  return `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
+}
+
+export function mergeChatHistorySnapshot(
+  parsed: AgentChatEventEnvelope[],
+  existing: AgentChatEventEnvelope[],
+): AgentChatEventEnvelope[] {
+  if (!existing.length) return parsed;
+  if (!parsed.length) return existing;
+
+  const parsedKeys = new Set(parsed.map(chatEventDedupKey));
+  const lastParsedKey = chatEventDedupKey(parsed[parsed.length - 1]!);
+  let overlapIndex = -1;
+  for (let index = existing.length - 1; index >= 0; index -= 1) {
+    if (chatEventDedupKey(existing[index]!) === lastParsedKey) {
+      overlapIndex = index;
+      break;
+    }
+  }
+
+  const tailCandidates = overlapIndex >= 0
+    ? existing.slice(overlapIndex + 1)
+    : existing.filter((entry) => {
+        const entryTime = Date.parse(entry.timestamp);
+        const parsedTime = Date.parse(parsed[parsed.length - 1]!.timestamp);
+        if (Number.isFinite(entryTime) && Number.isFinite(parsedTime)) {
+          return entryTime > parsedTime;
+        }
+        return entry.timestamp > parsed[parsed.length - 1]!.timestamp;
+      });
+  const tail = tailCandidates.filter((entry) => !parsedKeys.has(chatEventDedupKey(entry)));
+  return tail.length ? [...parsed, ...tail] : parsed;
+}
+
 function pruneSessionRecord<T>(record: Record<string, T>, keepIds: ReadonlySet<string>): Record<string, T> {
   let changed = false;
   const next: Record<string, T> = {};
@@ -1110,6 +1246,62 @@ function completionBadgeClass(status: NonNullable<AgentChatSessionSummary["compl
   }
 }
 
+type ChatCompanionUiState = {
+  proofDrawerOpen: boolean;
+  iosSimulatorOpen: boolean;
+  appControlOpen: boolean;
+  terminalDrawerOpen: boolean;
+};
+
+const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
+  proofDrawerOpen: false,
+  iosSimulatorOpen: false,
+  appControlOpen: false,
+  terminalDrawerOpen: false,
+};
+
+const chatCompanionUiStateByKey = new Map<string, ChatCompanionUiState>();
+
+function chatCompanionUiStorageKey(key: string): string {
+  return `ade.chat.companionUiState.${key}`;
+}
+
+function readChatCompanionUiState(key: string): ChatCompanionUiState {
+  const cached = chatCompanionUiStateByKey.get(key);
+  if (cached) return cached;
+  try {
+    const raw = window.sessionStorage.getItem(chatCompanionUiStorageKey(key));
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<ChatCompanionUiState>;
+      const state = {
+        proofDrawerOpen: parsed.proofDrawerOpen === true,
+        iosSimulatorOpen: parsed.iosSimulatorOpen === true,
+        appControlOpen: parsed.appControlOpen === true,
+        terminalDrawerOpen: parsed.terminalDrawerOpen === true,
+      };
+      chatCompanionUiStateByKey.set(key, state);
+      return state;
+    }
+  } catch {
+    // Session storage is best-effort UI state only.
+  }
+  return DEFAULT_CHAT_COMPANION_UI_STATE;
+}
+
+function writeChatCompanionUiState(key: string, state: ChatCompanionUiState): void {
+  chatCompanionUiStateByKey.set(key, state);
+  try {
+    window.sessionStorage.setItem(chatCompanionUiStorageKey(key), JSON.stringify(state));
+  } catch {
+    // Session storage is best-effort UI state only.
+  }
+}
+
+function isLikelyMacRenderer(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
+}
+
 export function AgentChatPane({
   laneId,
   laneLabel,
@@ -1190,6 +1382,7 @@ export function AgentChatPane({
   const showWorkspaceChrome = !hideWorkspaceChrome;
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
+  const initialCompanionStateKey = lockSessionId ?? initialSessionId ?? (laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
@@ -1259,9 +1452,13 @@ export function AgentChatPane({
   const [closingChatSessionId, setClosingChatSessionId] = useState<string | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
-  const [proofDrawerOpen, setProofDrawerOpen] = useState(false);
-  const [iosSimulatorOpen, setIosSimulatorOpen] = useState(false);
-  const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(false);
+  const [proofDrawerOpen, setProofDrawerOpen] = useState(
+    () => readChatCompanionUiState(initialCompanionStateKey).proofDrawerOpen,
+  );
+  const [iosSimulatorOpen, setIosSimulatorOpen] = useState(
+    () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
+  );
+  const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
   const [cursorCloudLaunchModeOpen, setCursorCloudLaunchModeOpen] = useState(false);
   const cursorCloudPanelRef = useRef<ChatCursorCloudPanelHandle | null>(null);
@@ -1269,9 +1466,66 @@ export function AgentChatPane({
   const [laneGitRemote, setLaneGitRemote] = useState<string | null>(null);
   const [laneGitBranch, setLaneGitBranch] = useState<string | null>(null);
   const [iosElementContextItems, setIosElementContextItems] = useState<IosElementContextItem[]>([]);
+  const [appControlOpen, setAppControlOpen] = useState(
+    () => readChatCompanionUiState(initialCompanionStateKey).appControlOpen,
+  );
+  const [appControlAvailable, setAppControlAvailable] = useState(false);
+  const [appControlContextItems, setAppControlContextItems] = useState<AppControlContextItem[]>([]);
   const latestAttachmentRef = useRef<{ path: string; type: AgentChatFileRef["type"]; addedAt: number } | null>(null);
   const linkedIosAttachmentPathsRef = useRef<Set<string>>(new Set());
-  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(false);
+  const linkedAppControlAttachmentPathsRef = useRef<Set<string>>(new Set());
+  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(
+    () => readChatCompanionUiState(initialCompanionStateKey).terminalDrawerOpen,
+  );
+  const [terminalRevealRequest, setTerminalRevealRequest] = useState<{
+    terminalId: string;
+    ptyId: string;
+    label: string;
+    nonce: number;
+  } | null>(null);
+  const [rightPaneSplit, setRightPaneSplit] = useState<number>(() => {
+    try {
+      const raw = window.sessionStorage.getItem("ade.chat.rightPaneSplit");
+      const n = raw == null ? NaN : Number(raw);
+      if (Number.isFinite(n) && n >= 20 && n <= 80) return n;
+    } catch {
+      // sessionStorage unavailable — fall through to default
+    }
+    return 50;
+  });
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem("ade.chat.rightPaneSplit", String(rightPaneSplit));
+    } catch {
+      // best-effort persistence only
+    }
+  }, [rightPaneSplit]);
+  const handleRightPaneDividerDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const container = event.currentTarget.parentElement;
+    if (!container) return;
+    const totalWidth = container.getBoundingClientRect().width;
+    if (totalWidth <= 0) return;
+    const startX = event.clientX;
+    const startSplit = rightPaneSplit;
+    const onMove = (ev: MouseEvent) => {
+      const deltaPct = ((ev.clientX - startX) / totalWidth) * 100;
+      const next = Math.max(20, Math.min(80, startSplit - deltaPct));
+      setRightPaneSplit(next);
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [rightPaneSplit]);
+  const companionStateKey = selectedSessionId ?? (laneId ? `draft:${laneId}` : "draft");
+  const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
@@ -1356,6 +1610,7 @@ export function AgentChatPane({
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.getStatus) return;
+    if (!iosSimulatorOpen || !isTileActive) return;
     let cancelled = false;
     void api.getStatus()
       .then((status) => {
@@ -1369,7 +1624,47 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
+  }, [iosSimulatorOpen, isTileActive]);
+
+  useEffect(() => {
+    const api = window.ade?.appControl;
+    if (!api?.getStatus) return;
+    let cancelled = false;
+    void api.getStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setAppControlAvailable(Boolean(status.supported));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAppControlAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    companionHydrationKeyRef.current = companionStateKey;
+    const saved = readChatCompanionUiState(companionStateKey);
+    setProofDrawerOpen(saved.proofDrawerOpen);
+    setIosSimulatorOpen(saved.iosSimulatorOpen);
+    setAppControlOpen(saved.appControlOpen);
+    setTerminalDrawerOpen(saved.terminalDrawerOpen);
+  }, [companionStateKey]);
+
+  useEffect(() => {
+    if (companionHydrationKeyRef.current === companionStateKey) {
+      companionHydrationKeyRef.current = null;
+      return;
+    }
+    writeChatCompanionUiState(companionStateKey, {
+      proofDrawerOpen,
+      iosSimulatorOpen,
+      appControlOpen,
+      terminalDrawerOpen,
+    });
+  }, [appControlOpen, companionStateKey, iosSimulatorOpen, proofDrawerOpen, terminalDrawerOpen]);
 
   const removeIosElementContext = useCallback((id: string) => {
     let linkedAttachmentPath: string | null = null;
@@ -1380,6 +1675,18 @@ export function AgentChatPane({
     });
     if (linkedAttachmentPath) {
       linkedIosAttachmentPathsRef.current.delete(linkedAttachmentPath);
+      setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
+    }
+  }, []);
+  const removeAppControlContext = useCallback((id: string) => {
+    let linkedAttachmentPath: string | null = null;
+    setAppControlContextItems((current) => {
+      const item = current.find((entry) => entry.id === id);
+      linkedAttachmentPath = item ? getAppControlContextAttachmentPath(item) : null;
+      return current.filter((entry) => entry.id !== id);
+    });
+    if (linkedAttachmentPath) {
+      linkedAppControlAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
   }, []);
@@ -2079,7 +2386,15 @@ export function AgentChatPane({
   });
 
   const refreshAvailableModels = useCallback(async () => {
-    const shouldRefreshOpenCodeInventory = sessionProvider === "opencode";
+    const selectedModelProvider = modelId.trim()
+      ? resolveChatRuntimeProvider(getModelById(modelId))
+      : null;
+    const shouldRefreshOpenCodeInventory =
+      sessionProvider === "opencode"
+      && (
+        selectedSession?.provider === "opencode"
+        || selectedModelProvider === "opencode"
+      );
     try {
       const status = await getAiStatusCached({
         projectRoot,
@@ -2156,7 +2471,7 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-  }, [projectRoot, sessionProvider]);
+  }, [modelId, projectRoot, selectedSession?.provider, sessionProvider]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
@@ -2306,8 +2621,9 @@ export function AgentChatPane({
   }, [selectedSessionId]);
 
   useEffect(() => {
+    if (!isTileActive) return;
     void refreshAvailableModels();
-  }, [refreshAvailableModels, selectedSession?.provider]);
+  }, [isTileActive, refreshAvailableModels, selectedSession?.provider]);
 
   useEffect(() => {
     // Suspend the 5s model-list poll when this pane is mounted but hidden
@@ -2426,30 +2742,11 @@ export function AgentChatPane({
 
       // If real-time events have already been received for this session
       // (via flushQueuedEvents), the snapshot may be stale by a few events.
-      // Merge: use the snapshot as a base but keep any real-time events that
-      // arrived after the last snapshot entry.
+      // Merge by event identity and stream overlap. Sequence numbers are only
+      // monotonic within a single provider run; Claude fallback/resume can
+      // restart them while keeping the same ADE chat id.
       const existing = eventsBySessionRef.current[sessionId] ?? [];
-      let merged: AgentChatEventEnvelope[];
-      if (existing.length && parsed.length) {
-        // Find real-time events that are newer than the last transcript entry.
-        // Prefer the monotonic event sequence when available because multiple
-        // events can share the same millisecond timestamp during streaming.
-        const lastParsed = parsed[parsed.length - 1]!;
-        const lastParsedSequence = typeof lastParsed.sequence === "number" ? lastParsed.sequence : null;
-        const lastParsedTs = lastParsed.timestamp;
-        const tail = existing.filter((entry) => {
-          if (lastParsedSequence != null && typeof entry.sequence === "number") {
-            return entry.sequence > lastParsedSequence;
-          }
-          return entry.timestamp > lastParsedTs;
-        });
-        merged = tail.length ? [...parsed, ...tail] : parsed;
-      } else if (existing.length) {
-        // No transcript on disk — keep the real-time events as-is.
-        merged = existing;
-      } else {
-        merged = parsed;
-      }
+      let merged = mergeChatHistorySnapshot(parsed, existing);
       merged = trimChatEventHistory(
         merged,
         sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
@@ -2551,7 +2848,7 @@ export function AgentChatPane({
   ]);
 
   useEffect(() => {
-    if (!selectedSessionId || !selectedSessionModelId || turnActive) return;
+    if (!isTileActive || !selectedSessionId || !selectedSessionModelId || turnActive) return;
     const desc = getModelById(selectedSessionModelId);
     if (!desc?.isCliWrapped || desc.family !== "cursor") return;
     const warmupKey = `${selectedSessionId}:${selectedSessionModelId}:${selectedSession?.cursorModeSnapshot?.currentModeId ?? cursorModeId ?? "agent"}`;
@@ -2567,6 +2864,7 @@ export function AgentChatPane({
     selectedSession?.cursorModeSnapshot?.currentModeId,
     selectedSessionId,
     selectedSessionModelId,
+    isTileActive,
     turnActive,
   ]);
 
@@ -2692,6 +2990,7 @@ export function AgentChatPane({
   }, [handoffOpen, handoffModelId, handoffTargetDescriptor]);
 
   useEffect(() => {
+    if (!isTileActive) return;
     if (!selectedSessionId) return;
     if (!lockedSingleSessionMode) {
       // Re-read the selected transcript on every tab switch so the selected
@@ -2709,9 +3008,13 @@ export function AgentChatPane({
       void loadHistory(selectedSessionId, { force: true });
     }, 120);
     return () => window.clearTimeout(handle);
-  }, [loadHistory, lockedSingleSessionMode, selectedSessionId]);
+  }, [isTileActive, loadHistory, lockedSingleSessionMode, selectedSessionId]);
 
   useEffect(() => {
+    if (!isTileActive) {
+      setComputerUseSnapshot(null);
+      return;
+    }
     if (!lockedSingleSessionMode) {
       void refreshComputerUseSnapshot(selectedSessionId);
       return;
@@ -2720,7 +3023,7 @@ export function AgentChatPane({
       void refreshComputerUseSnapshot(selectedSessionId);
     }, 180);
     return () => window.clearTimeout(handle);
-  }, [lockedSingleSessionMode, refreshComputerUseSnapshot, selectedSessionId]);
+  }, [isTileActive, lockedSingleSessionMode, refreshComputerUseSnapshot, selectedSessionId]);
 
   useEffect(() => {
     setAttachments([]);
@@ -2736,17 +3039,17 @@ export function AgentChatPane({
 
   // Fetch SDK slash commands when session changes
   useEffect(() => {
-    if (!selectedSessionId) { setSdkSlashCommands([]); return; }
+    if (!selectedSessionId || !isTileActive) { setSdkSlashCommands([]); return; }
     let cancelled = false;
     window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
-  }, [selectedSessionId]);
+  }, [isTileActive, selectedSessionId]);
 
   // Fetch git diff stats when the session changes or a turn completes
   useEffect(() => {
-    if (!selectedSessionId) { setSessionDelta(null); return; }
+    if (!selectedSessionId || !isTileActive) { setSessionDelta(null); return; }
     let cancelled = false;
     const fetchDelta = () => {
       window.ade.sessions.getDelta(selectedSessionId)
@@ -2762,7 +3065,7 @@ export function AgentChatPane({
     };
     fetchDelta();
     return () => { cancelled = true; };
-  }, [selectedSessionId, turnActive]);
+  }, [isTileActive, selectedSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
@@ -2948,6 +3251,7 @@ export function AgentChatPane({
   }, [lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
+    if (!isTileActive) return undefined;
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
       if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
@@ -2955,7 +3259,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [refreshComputerUseSnapshot, selectedSessionId]);
+  }, [isTileActive, refreshComputerUseSnapshot, selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -3029,8 +3333,10 @@ export function AgentChatPane({
 
   const removeAttachment = useCallback((attachmentPath: string) => {
     linkedIosAttachmentPathsRef.current.delete(attachmentPath);
+    linkedAppControlAttachmentPathsRef.current.delete(attachmentPath);
     setAttachments((prev) => prev.filter((entry) => entry.path !== attachmentPath));
     setIosElementContextItems((prev) => prev.filter((entry) => getIosContextAttachmentPath(entry) !== attachmentPath));
+    setAppControlContextItems((prev) => prev.filter((entry) => getAppControlContextAttachmentPath(entry) !== attachmentPath));
   }, []);
 
   const currentNativeControls = useMemo<NativeControlState>(() => ({
@@ -3561,9 +3867,14 @@ export function AgentChatPane({
     if (!modelId) return;
     const text = draft.trim();
     const iosContextSnapshot = [...iosElementContextItems];
+    const appControlContextSnapshot = [...appControlContextItems];
     const iosContextPrefix = formatIosElementContextForPrompt(iosContextSnapshot);
+    const appControlContextPrefix = formatAppControlContextForPrompt(appControlContextSnapshot);
     const iosContextDisplayChips = formatIosElementContextChipsForDisplay(iosContextSnapshot);
-    if ((!text.length && !iosContextPrefix.length) || !laneId) return;
+    const appControlContextDisplayChips = formatAppControlContextChipsForDisplay(appControlContextSnapshot);
+    const visualContextPrefix = [iosContextPrefix, appControlContextPrefix].filter(Boolean).join("\n");
+    const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips].filter(Boolean).join(" ");
+    if ((!text.length && !visualContextPrefix.length) || !laneId) return;
     const pendingNativeControlUpdate = pendingNativeControlUpdateRef.current;
     if (selectedSessionId && pendingNativeControlUpdate?.sessionId === selectedSessionId) {
       try {
@@ -3584,11 +3895,11 @@ export function AgentChatPane({
     setAttachments([]);
     try {
       let justCreatedSession = false;
-      let finalText = iosContextPrefix ? `${iosContextPrefix}${text}` : text;
-      const finalDisplayText = iosContextDisplayChips
+      let finalText = visualContextPrefix ? `${visualContextPrefix}${text}` : text;
+      const finalDisplayText = visualContextDisplayChips
         ? text.length
-          ? `${iosContextDisplayChips} ${text}`
-          : iosContextDisplayChips
+          ? `${visualContextDisplayChips} ${text}`
+          : visualContextDisplayChips
         : text;
 
       let sessionId = selectedSessionId;
@@ -3654,7 +3965,7 @@ export function AgentChatPane({
           await window.ade.agentChat.send({
             sessionId,
             text: finalText,
-            displayText: finalDisplayText || "Selected iOS simulator context",
+            displayText: finalDisplayText || "Selected visual app context",
             attachments: selectedAttachments,
             reasoningEffort,
             executionMode: launchModeEditable ? executionMode : null,
@@ -3684,11 +3995,13 @@ export function AgentChatPane({
         await refreshSessions().catch(() => {});
       }
       setIosElementContextItems([]);
+      setAppControlContextItems([]);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
       setAttachments((current) => (current.length ? current : attachmentsSnapshot));
       setIosElementContextItems((current) => (current.length ? current : iosContextSnapshot));
+      setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
       setOptimisticOutgoingMessage(null);
       setError(message);
       if (
@@ -3739,6 +4052,7 @@ export function AgentChatPane({
     setWorkViewState,
     setLaneWorkViewState,
     iosElementContextItems,
+    appControlContextItems,
   ]);
 
   const interrupt = useCallback(async () => {
@@ -4079,6 +4393,60 @@ export function AgentChatPane({
       </div>
     </>
   );
+  const appControlPanelContent = (
+    <>
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
+        <span className="font-sans text-[12px] font-medium text-fg/80">App Control</span>
+        <button
+          type="button"
+          className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-colors hover:text-fg/80"
+          onClick={() => setAppControlOpen(false)}
+          title="Close App Control panel"
+        >
+          Close
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+        <ChatAppControlPanel
+          sessionId={selectedSessionId}
+          laneId={laneId}
+          projectRoot={iosSimulatorProjectRoot}
+          onAddAttachment={addAttachment}
+          onInsertDraft={insertComposerDraft}
+          onShowTerminal={(terminal) => {
+            setTerminalDrawerOpen(true);
+            setTerminalRevealRequest({ ...terminal, nonce: Date.now() });
+          }}
+          onAddContext={(item) => {
+            const latestAttachment = latestAttachmentRef.current;
+            const attachmentPath = item.screenshotDataUrl
+              && latestAttachment?.type === "image"
+              && Date.now() - latestAttachment.addedAt < 10_000
+              && !linkedAppControlAttachmentPathsRef.current.has(latestAttachment.path)
+                ? latestAttachment.path
+                : getAppControlContextAttachmentPath(item);
+            const instanceId = createAppControlContextInstanceId(item);
+            if (attachmentPath) {
+              linkedAppControlAttachmentPathsRef.current.add(attachmentPath);
+            }
+            setAppControlContextItems((current) => [
+              {
+                ...item,
+                id: instanceId,
+                metadata: {
+                  ...item.metadata,
+                  originalElementId: item.metadata.originalElementId ?? item.id,
+                  contextInstanceId: instanceId,
+                  ...(attachmentPath ? { attachmentPath } : {}),
+                },
+              },
+              ...current.slice(0, 4),
+            ]);
+          }}
+        />
+      </div>
+    </>
+  );
   const shellHeader = (
     <div className="space-y-2 px-4 py-3">
       {/* Single-row header: title + git toolbar + actions */}
@@ -4096,35 +4464,85 @@ export function AgentChatPane({
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {showWorkspaceChrome && laneId && iosSimulatorAvailable ? (
-            <button
-              type="button"
-              className={cn(
-                "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
-                iosSimulatorOpen
-                  ? "border-cyan-300/22 bg-cyan-500/10 text-cyan-100/80"
-                  : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
-              )}
-              onClick={() => {
-                setIosSimulatorOpen((current) => {
-                  const next = !current;
-                  if (next) {
-                    setProofDrawerOpen(false);
-                    setCursorCloudPaneOpen(false);
-                  }
-                  return next;
-                });
+            <SmartTooltip
+              content={{
+                label: iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator",
+                description: "Boot and inspect the iOS simulator alongside this chat.",
+                effect: iosElementContextItems.length
+                  ? `${iosElementContextItems.length} element context attached`
+                  : undefined,
               }}
-              title={iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator"}
-              aria-label={iosSimulatorOpen ? "Close iOS simulator drawer" : "Open iOS simulator drawer"}
-              aria-pressed={iosSimulatorOpen}
             >
-              <DeviceMobile size={13} weight={iosSimulatorOpen ? "fill" : "regular"} />
-              {iosElementContextItems.length ? (
-                <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-cyan-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
-                  {iosElementContextItems.length}
-                </span>
-              ) : null}
-            </button>
+              <button
+                type="button"
+                className={cn(
+                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  iosSimulatorOpen
+                    ? "border-cyan-300/22 bg-cyan-500/10 text-cyan-100/80"
+                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                )}
+                onClick={() => {
+                  setIosSimulatorOpen((current) => {
+                    const next = !current;
+                    if (next) {
+                      setProofDrawerOpen(false);
+                      setAppControlOpen(false);
+                      setCursorCloudPaneOpen(false);
+                    }
+                    return next;
+                  });
+                }}
+                aria-label={iosSimulatorOpen ? "Close iOS simulator drawer" : "Open iOS simulator drawer"}
+                aria-pressed={iosSimulatorOpen}
+              >
+                <DeviceMobile size={13} weight={iosSimulatorOpen ? "fill" : "regular"} />
+                {iosElementContextItems.length ? (
+                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-cyan-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
+                    {iosElementContextItems.length}
+                  </span>
+                ) : null}
+              </button>
+            </SmartTooltip>
+          ) : null}
+          {showWorkspaceChrome && laneId && appControlAvailable ? (
+            <SmartTooltip
+              content={{
+                label: appControlOpen ? "Close App Control" : "Open App Control",
+                description: "Launch or attach to an Electron app to inspect, click, and capture context.",
+                effect: appControlContextItems.length
+                  ? `${appControlContextItems.length} element context attached`
+                  : undefined,
+              }}
+            >
+              <button
+                type="button"
+                className={cn(
+                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  appControlOpen
+                    ? "border-sky-300/22 bg-sky-500/10 text-sky-100/80"
+                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                )}
+                onClick={() => {
+                  setAppControlOpen((current) => {
+                    const next = !current;
+                    if (next) {
+                      setProofDrawerOpen(false);
+                      setIosSimulatorOpen(false);
+                    }
+                    return next;
+                  });
+                }}
+                aria-label={appControlOpen ? "Close App Control drawer" : "Open App Control drawer"}
+                aria-pressed={appControlOpen}
+              >
+                <Desktop size={13} weight={appControlOpen ? "fill" : "regular"} />
+                {appControlContextItems.length ? (
+                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
+                    {appControlContextItems.length}
+                  </span>
+                ) : null}
+              </button>
+            </SmartTooltip>
           ) : null}
           {showWorkspaceChrome && laneId ? (
             <SmartTooltip
@@ -4150,6 +4568,7 @@ export function AgentChatPane({
                     if (next) {
                       setIosSimulatorOpen(false);
                       setCursorCloudPaneOpen(false);
+                      setAppControlOpen(false);
                     }
                     return next;
                   });
@@ -4479,7 +4898,7 @@ export function AgentChatPane({
             surfaceMode={surfaceMode}
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
-            isActive={layoutVariant === "grid-tile" ? isTileActive : false}
+            isActive={isTileActive}
             shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
@@ -4504,6 +4923,7 @@ export function AgentChatPane({
             executionMode={selectedExecutionMode?.value ?? "focused"}
             computerUseSnapshot={computerUseSnapshot}
             iosElementContextItems={iosElementContextItems}
+            appControlContextItems={appControlContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
@@ -4530,6 +4950,7 @@ export function AgentChatPane({
             }}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
             onRemoveIosElementContext={removeIosElementContext}
+            onRemoveAppControlContext={removeAppControlContext}
             onOpenAiSettings={openAiProvidersSettings}
             onModelChange={(nextModelId) => {
               if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
@@ -4665,6 +5086,20 @@ export function AgentChatPane({
                 if (next) {
                   setProofDrawerOpen(false);
                   setCursorCloudPaneOpen(false);
+                  setAppControlOpen(false);
+                }
+                return next;
+              });
+            }}
+            showAppControlToggle={Boolean(showWorkspaceChrome && laneId && appControlAvailable)}
+            appControlOpen={appControlOpen}
+            onToggleAppControl={() => {
+              setAppControlOpen((current) => {
+                const next = !current;
+                if (next) {
+                  setProofDrawerOpen(false);
+                  setIosSimulatorOpen(false);
+                  setCursorCloudPaneOpen(false);
                 }
                 return next;
               });
@@ -4798,6 +5233,41 @@ export function AgentChatPane({
     </div>
   );
 
+  // True when a non-proof companion panel is open. These panels (iOS simulator,
+  // App Control) host their own input affordances, so the empty-state layout
+  // shrinks the hero and moves the composer below.
+  const appPanelOpen = iosSimulatorOpen || appControlOpen;
+  const rightPaneOpen = proofDrawerOpen || appPanelOpen;
+  const supportsSplit = layoutVariant !== "grid-tile";
+  const splitChatColStyle: React.CSSProperties | undefined =
+    rightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
+  const splitRightPaneStyle: React.CSSProperties | undefined =
+    rightPaneOpen && supportsSplit ? { flexGrow: rightPaneSplit, flexBasis: 0 } : undefined;
+  const rightPaneDivider = rightPaneOpen && supportsSplit ? (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      onMouseDown={handleRightPaneDividerDown}
+      className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
+    />
+  ) : null;
+  // Wrap a right-side panel for either grid-tile (overlay) or standard
+  // (resizable split) layout. Used for proof, iOS simulator, and App Control
+  // panels which all share the same outer chrome.
+  const renderRightPane = (content: React.ReactNode) =>
+    layoutVariant === "grid-tile" ? (
+      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
+        {content}
+      </div>
+    ) : (
+      <div
+        style={splitRightPaneStyle}
+        className="flex h-full min-w-0 flex-1 basis-0 flex-col bg-surface/80"
+      >
+        {content}
+      </div>
+    );
+
   return (
     <>
       <ChatSurfaceShell
@@ -4809,7 +5279,7 @@ export function AgentChatPane({
         shellGeometry={chatShellGeometry}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
         header={compactShell ? undefined : shellHeader}
-        footer={isEmptyState || iosSimulatorOpen ? undefined : composerWithTypographyRoot}
+        footer={isEmptyState || appPanelOpen ? undefined : composerWithTypographyRoot}
         footerClassName={compactShell ? "px-0 pb-0 pt-0" : undefined}
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
@@ -4884,9 +5354,9 @@ export function AgentChatPane({
                   {/* Chat column */}
                   <div
                     data-chat-appearance-root
-                    style={chatAppearanceRootStyle}
+                    style={{ ...chatAppearanceRootStyle, ...splitChatColStyle }}
                     className={cn(
-                      "flex min-h-0 flex-1 flex-col overflow-hidden",
+                      "flex min-h-0 flex-1 basis-0 flex-col overflow-hidden",
                       layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
                     )}
                   >
@@ -4941,49 +5411,22 @@ export function AgentChatPane({
                         open={terminalDrawerOpen}
                         onToggle={() => setTerminalDrawerOpen((v) => !v)}
                         laneId={laneId}
+                        chatSessionId={selectedSessionId}
+                        revealRequest={terminalRevealRequest}
                       />
                     ) : null}
-                    {iosSimulatorOpen ? (
-                      <div className="shrink-0 border-t border-white/[0.06] px-3 py-3">
+                    {appPanelOpen ? (
+                      <div className="shrink-0 border-t border-white/[0.06]">
                         {composerElement}
                       </div>
                     ) : null}
                   </div>
 
-                  {/* Proof panel (push) */}
-                  {proofDrawerOpen ? (
-                    layoutVariant === "grid-tile" ? (
-                      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
-                        {proofPanelContent}
-                      </div>
-                    ) : (
-                      <div className="flex h-full w-[52%] min-w-[520px] max-w-[980px] shrink-0 flex-col border-l border-white/[0.06] bg-surface/80">
-                        {proofPanelContent}
-                      </div>
-                    )
-                  ) : null}
-                  {iosSimulatorOpen ? (
-                    layoutVariant === "grid-tile" ? (
-                      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
-                        {iosSimulatorPanelContent}
-                      </div>
-                    ) : (
-                      <div className="flex h-full w-[52%] min-w-[520px] max-w-[980px] shrink-0 flex-col border-l border-white/[0.06] bg-surface/80">
-                        {iosSimulatorPanelContent}
-                      </div>
-                    )
-                  ) : null}
-                  {cursorCloudPaneOpen && cursorCloudAvailable ? (
-                    layoutVariant === "grid-tile" ? (
-                      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-violet-300/15 bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
-                        {cursorCloudPanelContent}
-                      </div>
-                    ) : (
-                      <div className="flex h-full w-[52%] min-w-[460px] max-w-[760px] shrink-0 flex-col border-l border-violet-300/12 bg-surface/80">
-                        {cursorCloudPanelContent}
-                      </div>
-                    )
-                  ) : null}
+                  {rightPaneDivider}
+                  {proofDrawerOpen ? renderRightPane(proofPanelContent) : null}
+                  {iosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
+                  {appControlOpen ? renderRightPane(appControlPanelContent) : null}
+                  {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               ) : (
                 <motion.div
@@ -4992,29 +5435,34 @@ export function AgentChatPane({
                   exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
                 >
-                  <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
-                    <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-6">
-                      <div className="flex w-full max-w-[820px] flex-col items-center gap-4 text-center">
+                  <div
+                    style={splitChatColStyle}
+                    className="flex min-w-0 min-h-0 flex-1 basis-0 flex-col overflow-hidden"
+                  >
+                    <div className={cn(
+                      "flex min-h-0 flex-1 items-center justify-center overflow-hidden",
+                      appPanelOpen ? "px-3" : "px-6",
+                    )}>
+                      <div className={cn(
+                        "flex w-full flex-col items-center gap-4 text-center",
+                        appPanelOpen ? null : "max-w-[820px]",
+                      )}>
                         <motion.div
-                          className="relative"
+                          className={cn(
+                            "relative flex w-full min-w-0 items-center justify-center",
+                            appPanelOpen ? "max-w-[360px]" : "max-w-[560px]",
+                          )}
+                          style={{ aspectRatio: "560 / 300" }}
                           exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                         >
                           <div
-                            className={cn(
-                              "pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full",
-                              iosSimulatorOpen ? "h-[360px] w-[360px]" : "h-[560px] w-[560px]",
-                            )}
+                            className="pointer-events-none absolute top-1/2 left-1/2 aspect-square h-full max-h-full max-w-full -translate-x-1/2 -translate-y-1/2 rounded-full"
                             style={{ background: "var(--color-accent)", opacity: 0.08, filter: "blur(140px)" }}
                           />
                           <img
                             src="./logo.png"
                             alt="ADE"
-                            className={cn(
-                              "relative z-10 object-contain",
-                              iosSimulatorOpen
-                                ? "h-[180px] w-[360px] max-w-full"
-                                : "h-[300px] w-[560px] max-w-[78vw]",
-                            )}
+                            className="relative z-10 h-auto max-h-full w-full max-w-full object-contain"
                             style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
                           />
                         </motion.div>
@@ -5058,41 +5506,23 @@ export function AgentChatPane({
                         ) : null}
 
                         {/* Inline composer for empty state (only when sim drawer closed) */}
-                        {!iosSimulatorOpen ? (
+                        {!appPanelOpen ? (
                           <div className="w-full max-w-[820px]">
                             {composerWithTypographyRoot}
                           </div>
                         ) : null}
                       </div>
                     </div>
-                    {iosSimulatorOpen ? (
-                      <div className="shrink-0 border-t border-white/[0.06] px-3 py-3">
+                    {appPanelOpen ? (
+                      <div className="shrink-0 border-t border-white/[0.06]">
                         {composerWithTypographyRoot}
                       </div>
                     ) : null}
                   </div>
-                  {iosSimulatorOpen ? (
-                    layoutVariant === "grid-tile" ? (
-                      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
-                        {iosSimulatorPanelContent}
-                      </div>
-                    ) : (
-                      <div className="flex h-full w-[52%] min-w-[520px] max-w-[980px] shrink-0 flex-col border-l border-white/[0.06] bg-surface/80">
-                        {iosSimulatorPanelContent}
-                      </div>
-                    )
-                  ) : null}
-                  {cursorCloudPaneOpen && cursorCloudAvailable ? (
-                    layoutVariant === "grid-tile" ? (
-                      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-violet-300/15 bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
-                        {cursorCloudPanelContent}
-                      </div>
-                    ) : (
-                      <div className="flex h-full w-[52%] min-w-[460px] max-w-[760px] shrink-0 flex-col border-l border-violet-300/12 bg-surface/80">
-                        {cursorCloudPanelContent}
-                      </div>
-                    )
-                  ) : null}
+                  {rightPaneDivider}
+                  {iosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
+                  {appControlOpen ? renderRightPane(appControlPanelContent) : null}
+                  {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               )}
             </AnimatePresence>

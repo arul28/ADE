@@ -97,6 +97,12 @@ Other paths are rejected.
 - Ghost OS-specific readiness probes (`ghost status` / `ghost doctor` shelling and regex parsing).
 - MCP tool delivery for computer use.
 
+## App Control bridge
+
+Alongside the proof broker, ADE exposes a separate **App Control** capability for driving developer-owned Electron apps from a chat. Unlike the proof broker, App Control actively launches and inspects an app over Chrome DevTools Protocol; it then feeds screenshot + DOM context back into the chat as `AppControlContextItem`s. App Control is intentionally a bridge — Playwright, agent-browser, browser-use, or Claude's `computer_use` may also attach to the same app — but ADE keeps the launch/session state and turns snapshots into chat context.
+
+See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
+
 ## Cross-links
 
 - [`../proof.md`](../proof.md) — `ade proof` CLI and the drawer UI contract.
@@ -106,7 +112,9 @@ Other paths are rejected.
 
 ## Detail docs
 
-The three detail docs in this folder describe the pre-rebuild control plane (Ghost OS readiness probe, policy matrix, phase-based coverage). They are retained for historical context but do not reflect the current shipping system.
+- [`app-control.md`](./app-control.md) — current App Control bridge for Electron apps (CDP launch/connect, snapshot, click/type, source matching, ADE CLI `app-control` and `terminal` surfaces).
+
+The three remaining detail docs describe the pre-rebuild control plane (Ghost OS readiness probe, policy matrix, phase-based coverage). They are retained for historical context but do not reflect the current shipping system.
 
 - [`backends.md`](./backends.md) — pre-rebuild backend catalog.
 - [`artifact-broker.md`](./artifact-broker.md) — pre-rebuild broker model, including the passive observer.

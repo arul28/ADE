@@ -3,6 +3,50 @@ import { ADE_CLI_AGENT_GUIDANCE } from "../../../../shared/adeCliGuidance";
 type HarnessMode = "chat" | "coding" | "planning";
 type HarnessPermissionMode = "plan" | "edit" | "full-auto";
 
+/**
+ * Identifier for the runtime that's actually executing the model. Used to tell
+ * the agent which harness it's in so it doesn't assume CLI-only primitives
+ * (like ScheduleWakeup) are available, and so it knows whether autonomous
+ * wake-ups are possible.
+ */
+export type AdeRuntimeKind =
+  | "claude-agent-sdk-v2"
+  | "codex-cli"
+  | "cursor-acp"
+  | "droid-acp"
+  | "opencode";
+
+function describeRuntime(runtime: AdeRuntimeKind): string[] {
+  switch (runtime) {
+    case "claude-agent-sdk-v2":
+      return [
+        "**Runtime:** ADE Work chat hosted on the Claude Agent SDK v2 (`unstable_v2_createSession` / `SDKSession`).",
+        "**Wake-up semantics:** The session only advances when the host calls `session.send(...)`, which fires on a fresh user message. There is no autonomous wake. `ScheduleWakeup` is **not honored** in this harness — the host accepts the call but never re-invokes you. `Bash run_in_background: true` task notifications are queued in the SDK message stream and only flushed on the next user turn; they do not start an autonomous turn either.",
+        "**To wait:** Either poll synchronously inside the active turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop the turn cleanly and ask the user to re-ping when ready. Do not run a background poller and claim it will wake you — it will not.",
+      ];
+    case "codex-cli":
+      return [
+        "**Runtime:** ADE Work chat wrapping the Codex CLI as a subprocess. Your turns are driven through the Codex agent loop, but the orchestration host is ADE — slash commands, attachments, and lane scoping come from ADE.",
+        "**Wake-up semantics:** No autonomous wake from ADE. If you need to wait, prefer `sleep ... && <one-shot command>` so the shell holds the wait without burning model tokens, then resume reasoning when the command produces output.",
+      ];
+    case "cursor-acp":
+      return [
+        "**Runtime:** ADE Work chat wrapping the Cursor agent via ACP (Agent Client Protocol).",
+        "**Wake-up semantics:** Each turn is a discrete ACP `prompt` request. There is no autonomous wake; if you need to wait, use a shell `sleep` and surface results in the next user turn.",
+      ];
+    case "droid-acp":
+      return [
+        "**Runtime:** ADE Work chat wrapping the Factory Droid agent via ACP.",
+        "**Wake-up semantics:** Each turn is a discrete ACP `prompt` request. There is no autonomous wake; if you need to wait, use a shell `sleep` and surface results in the next user turn.",
+      ];
+    case "opencode":
+      return [
+        "**Runtime:** ADE Work chat wrapping an OpenCode session.",
+        "**Wake-up semantics:** Turns are driven by ADE through the OpenCode HTTP session. There is no autonomous wake; use a shell `sleep` for waits.",
+      ];
+  }
+}
+
 function describePermissionMode(mode: HarnessPermissionMode): string {
   switch (mode) {
     case "plan":
@@ -31,11 +75,13 @@ export function buildCodingAgentSystemPrompt(args: {
   permissionMode?: HarnessPermissionMode;
   toolNames?: string[];
   interactive?: boolean;
+  runtime?: AdeRuntimeKind;
 }): string {
   const mode = args.mode ?? "coding";
   const permissionMode = args.permissionMode ?? "edit";
   const toolNames = [...new Set((args.toolNames ?? []).filter((entry) => entry.trim().length > 0))];
   const interactive = args.interactive !== false;
+  const runtime = args.runtime;
   const hasMemoryTools = toolNames.some((name) =>
     name === "memorySearch"
     || name === "memoryAdd"
@@ -71,6 +117,13 @@ export function buildCodingAgentSystemPrompt(args: {
   return [
     `You are ADE's software engineering agent working in ${args.cwd}.`,
     "This session is bound to that worktree. Read, edit, and run commands only inside this path unless ADE explicitly relaunches you in a different lane.",
+    ...(runtime
+      ? [
+          "",
+          "## Runtime Environment",
+          ...describeRuntime(runtime),
+        ]
+      : []),
     "",
     "## Mission",
     describeMode(mode),

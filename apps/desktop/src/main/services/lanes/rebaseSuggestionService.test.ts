@@ -519,4 +519,42 @@ describe("rebaseSuggestionService", () => {
     expect(saved.parentHeadSha).toBe("def456");
     expect(saved.behindCount).toBe(3);
   });
+
+  it("caches short repeated suggestion scans", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rebase-cache-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const listMock = vi.fn(async () => []);
+
+    const service = createRebaseSuggestionService({
+      db,
+      logger: createLogger(),
+      projectId: "proj-cache",
+      projectRoot: repoRoot,
+      laneService: { list: listMock } as any,
+    });
+
+    await service.listSuggestions();
+    await service.listSuggestions();
+
+    expect(listMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("force refresh bypasses the suggestion cache", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rebase-force-cache-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const listMock = vi.fn(async () => []);
+
+    const service = createRebaseSuggestionService({
+      db,
+      logger: createLogger(),
+      projectId: "proj-force-cache",
+      projectRoot: repoRoot,
+      laneService: { list: listMock } as any,
+    });
+
+    await service.listSuggestions();
+    await service.listSuggestions({ force: true });
+
+    expect(listMock).toHaveBeenCalledTimes(2);
+  });
 });

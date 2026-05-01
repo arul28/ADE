@@ -1,0 +1,71 @@
+---
+title: "v1.1.8"
+description: "Release notes for ADE v1.1.8 — April 30, 2026"
+---
+
+v1.1.8 lands three PRs since v1.1.7: an **Electron Viewer** surface that wires app control + sessions + chat together, a **Mobile Models Registry** that groups Droid alongside the existing Claude/Codex/Cursor tabs and adds a runtime-environment banner to the chat system prompt, and a wide **performance optimization pass** across the desktop main process and renderer (caching, dedupe, IPC bridge cleanup, lifecycle correctness). Ships in **TestFlight build 10** of 1.1.1.
+
+---
+
+## Desktop
+
+<Tabs>
+  <Tab title="Performance Pass">
+    A profile-driven cleanup of CPU/memory/IPC/render hot paths uncovered while running the Electron app under stress. No product-behavior changes — just removing waste, polling, avoidable re-renders, redundant IPC, log spam, and tightening lifecycle/contracts that showed up under load.
+
+    - **Auth detection.** `aiIntegrationService` and `authDetector` now dedupe + cache auth lookups, with a `shallowCliAuth` fast path. `refreshOpenCodeInventory` opts into the full pass automatically (`shallowCliAuth = !shouldProbeCliModels`) so a refresh never reuses stale Cursor/Droid auth state. Tests expanded.
+    - **IPC surface hardening.** `registerIpc.timePhase` takes a thunk now (`Promise.resolve().then(...).catch(...)`) so synchronous throws degrade to `[]`/`null` fallbacks instead of failing whole snapshot calls. Adds validation + redaction across the lane / suggestions / status surface.
+    - **Preload bridge cleanup.** `preload.ts` reorganized end-to-end. `createShortIpcCache` captures the request reference and only nulls `promise` when it still equals our request, so a `force: true` call no longer races a stale `.finally`. `createKeyedShortIpcCache` is now bounded (`KEYED_IPC_CACHE_MAX_ENTRIES = 256`, touch-on-access LRU) so high-cardinality keys (image paths, session ids, diff args) can't grow monotonically across long sessions. IPC fanouts wrap each subscriber in `try/catch` so one throwing renderer doesn't starve later subscribers, and the `agentChatEvent` fanout invalidates `agentChatSummaryCache` in `beforeDispatch` so background events don't get a 1s-stale cached summary.
+    - **PTY lifecycle.** `ptyService.onData` early-returns on `entry.disposed` so late chunks can't mutate post-teardown state, re-arm the pending-data timer, or emit `ptyData` after `ptyExit`.
+    - **Lanes services.** `autoRebaseService` adds a `hasAuthoritativeLaneSet` guard so the missing-parent prune only fires when the caller didn't supply a lane subset — no more wiped statuses for lanes outside the requested slice. `rebaseSuggestionService` normalizes primary lane refs via `branchNameFromLaneRef` before building `origin/<branch>`, and the suggestions cache + in-flight promise are now scoped to default-shape requests only (force, lanes-subset, and `refreshRemoteTracking` bypass the shared cache).
+    - **Memory + sync.** `syncService` `force: true` bypasses the cached value but still rides the in-flight dedupe promise — overlapping callers no longer kick off redundant `computeTransferReadiness()` runs. `memoryService.evaluateWriteGate` keeps the `tier IN (1, 2)` filter on its dedupe scan, so candidate-tier-3 episodes are preserved across `addCandidateMemory` callers (procedural promotion needs each distinct episode). `embeddingService` / `embeddingWorkerService` worker shutdown is fixed, and `knowledgeCaptureService` low-signal regexes now also require `!hasDurablePrFeedbackSignals && wordCount < 10`, so "Thanks, but always X..." style guidance is preserved instead of being dropped as courtesy text.
+    - **Project icon resolver.** Negative icon lookups no longer cache misses without an invalidation signal — a freshly added `src/app/icon.png` or `public/favicon.svg` is picked up on the next call.
+    - **Renderer.** `AppShell`, `TopBar`, `TabNav`, `ChatGitToolbar`, `AgentChatPane`, `AgentChatComposer`, `LanesPage`, `WorkspaceGraphPage`, `TerminalView`, and `PaneTilingLayout` cut polling, log spam, and avoidable re-renders. `WorkspaceGraphPage.refreshGraphLanes` keeps `includeStatus: true` (and skips the heavier conflict/rebase phases instead) so dirty/behind chips stay current without paying for a full snapshot. `appStore` slice cleanup + tests; `terminalAttention` lifecycle correctness.
+    - **Optimize skill.** `.claude/commands/optimize.md` lands as the `/optimize` skill that drove this pass.
+  </Tab>
+
+  <Tab title="Electron Viewer">
+    A unified app-control + chat-terminal surface that lets agents drive Electron-built apps and inspect their state from inside chat.
+
+    - **App control core.** New `appControlService` and matching IPC handlers expose typed app-control actions to the chat surface. `apps/desktop/src/shared/types/appControl.ts` declares the contract; the `adeActions` registry registers app-control handlers so agents can list, focus, and command Electron apps from chat.
+    - **Chat panels.** `ChatAppControlPanel` and `ChatTerminalDrawer` join the chat pane as first-class side panels. `AgentChatComposer` and `AgentChatPane` learn the new attach points; submit-recovery is covered by a dedicated `AgentChatPane.submit.test.tsx` suite.
+    - **Sessions surface.** New `sessionService` consolidates session lifecycle. `SessionCard`, `SessionListPane`, and `WorkStartSurface` are the renderer entry points; `kvDb` underpins durable session metadata.
+    - **CLI guidance.** `apps/desktop/src/shared/adeCliGuidance.ts` ships a structured CLI guidance payload that the chat surface reads when explaining `ade` commands. `bootstrap.ts` and `cli.ts` wire it through; `cli.test.ts` pins the shape.
+    - **Lane resolution + IPC redaction.** Greptile/CodeRabbit review fixes from the iter loop: lane resolution paths in the chat service handle missing IDs cleanly, IPC redaction tightens secrets handling on the snapshot surface, and the app-control coord system + terminal session lifecycle were reviewed and patched in the same iteration.
+  </Tab>
+
+  <Tab title="Runtime Environment Banner">
+    Carry-over from the Mobile Models Registry PR: the chat system prompt now names the host runtime so the model knows which wake-up primitives are honored.
+
+    - **`systemPrompt.buildCodingAgentSystemPrompt`** takes an optional `runtime` parameter. New `describeRuntime()` helper covers all five ADE chat runtimes (Claude Agent SDK v2, Codex CLI, Cursor ACP, Droid ACP, OpenCode), including wake-up semantics — e.g. inside the SDK v2 chat the banner explicitly says "you are NOT in the Claude Code CLI; `ScheduleWakeup` is not honored — the host accepts the call but never re-invokes you; `Bash run_in_background` task notifications are queued until the next user message".
+    - **`agentChatService`** passes `runtime: "codex-cli"` through Codex's developer instructions and prepends the SDK-v2 runtime banner above the `## ADE Workspace` block on the Claude V2 system-prompt append array.
+    - **Tests.** Six new cases in `systemPrompt.test.ts` pin the banner content per runtime, and assert the block is omitted when `runtime` is not passed.
+    - **Steer chip dispatch.** `deriveRuntimeState` resolves a steer on any non-queued `user_message` with the same `steerId` so the chip clears after Send-Now (inline dispatch) and other delivery paths. `cancelSteer` emits the cancelled notice even when the queue is empty server-side, so the delete button clears stale chips after a dispatch race.
+    - **Mid-turn attach.** `AgentChatComposer` no longer short-circuits image paste / file attach when `turnActive` — the steer endpoint already accepts attachments; the guard was blocking the legitimate steer-with-image case.
+  </Tab>
+</Tabs>
+
+---
+
+## iOS
+
+<Tabs>
+  <Tab title="Mobile Models Registry">
+    The Work model picker gets a Droid provider group, tighter reasoning-effort UX, and family-first provider routing.
+
+    - **Droid provider tab.** `WorkModelCatalog` registers a Droid group with Anthropic / OpenAI / Google / Factory sub-providers. `provider == "factory"` now maps into the `droid` group key, so Factory-provider models (`glm-*`, `kimi-*`, `minimax-*`) land in the Droid group instead of forming a separate one.
+    - **Reasoning-effort row dropped.** The standalone segmented row is gone; `gpt-5 mini` exposes only `medium` / `high`. Tapping the header of a reasoning-capable card commits the model with `effort: nil` (server default) instead of forcing a tier pill — users who don't care about effort aren't required to pick one.
+    - **Single-provider filter rows hidden.** Claude and Codex tabs no longer render redundant single-provider filter rows.
+    - **Family-first routing.** Droid provider routing prefers `family` over ID substring matches, so an Anthropic model whose ID happens to contain "codex" still resolves to the `anthropic` bucket. Substring fallbacks only run when family is empty.
+    - **Effort normalization.** `WorkModelPickerSheet` normalizes `currentReasoningEffort` the same way as the incoming effort before diffing, avoiding spurious "changed" comparisons from casing/whitespace drift.
+  </Tab>
+
+  <Tab title="Question Cards + Composer">
+    Structured-question UX and inline indicators.
+
+    - **Auto-scroll above keyboard.** The structured-question card auto-scrolls above the keyboard when its freeform field gains focus, so the input is never hidden behind the keyboard.
+    - **Inline indicators replace page dots.** `WorkChatSessionView+Timeline` swaps the page dots for inline indicators on multi-step question cards.
+    - **Tool-card suppression.** Question-input tool cards are always suppressed in the timeline, but the malformed-question fallback is preserved: tool-call suppression now only fires when the structured-question payload parses cleanly. On `toolResult`, suppression skips only when no fallback card exists, so a malformed payload still gets a rendered card. Mirrors the conditional logic already used in `WorkErrorAndMessageHelpers`.
+    - **`RemoteModels` updates.** Carry-over from #217 to keep the iOS remote-model surface aligned with the desktop registry.
+  </Tab>
+</Tabs>

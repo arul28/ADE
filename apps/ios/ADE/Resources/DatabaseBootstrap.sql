@@ -128,6 +128,7 @@ create table if not exists terminal_sessions (
       resume_command text,
       resume_metadata_json text,
       archived_at text,
+      chat_session_id text,
       foreign key(lane_id) references lanes(id)
     );
 
@@ -146,6 +147,10 @@ alter table terminal_sessions add column resume_metadata_json text;
 alter table terminal_sessions add column manually_named integer not null default 0;
 
 alter table terminal_sessions add column archived_at text;
+
+alter table terminal_sessions add column chat_session_id text;
+
+create index if not exists idx_terminal_sessions_chat_session_id on terminal_sessions(chat_session_id);
 
 create table if not exists process_definitions (
       id text primary key,

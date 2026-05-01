@@ -163,6 +163,7 @@ import type {
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
+  SyncGetStatusArgs,
   SyncPeerDeviceType,
   SyncRoleSnapshot,
   SyncStatusEventPayload,
@@ -257,7 +258,10 @@ import type {
   GitGenerateCommitMessageArgs,
   GitGenerateCommitMessageResult,
   GitListBranchesArgs,
+  GitGetUserIdentityArgs,
+  GitUserIdentity,
   GitListCommitFilesArgs,
+  BranchPullRequest,
   GitFileActionArgs,
   GitBatchFileActionArgs,
   GitPushArgs,
@@ -634,6 +638,28 @@ import type {
   IosSimulatorStreamStatus,
   IosSimulatorWindowState,
   IosSimulatorWindowSource,
+  AppControlClickArgs,
+  AppControlConnectArgs,
+  AppControlEventPayload,
+  AppControlInspectPointArgs,
+  AppControlInspectResult,
+  AppControlLaunchArgs,
+  AppControlScreenshot,
+  AppControlSelectResult,
+  AppControlSession,
+  AppControlSnapshot,
+  AppControlSnapshotArgs,
+  AppControlStatus,
+  AppControlStopArgs,
+  AppControlTarget,
+  AppControlTypeTextArgs,
+  ChatTerminalActiveForChatArgs,
+  ChatTerminalListArgs,
+  ChatTerminalReadArgs,
+  ChatTerminalReadResult,
+  ChatTerminalSession,
+  ChatTerminalSignalArgs,
+  ChatTerminalWriteArgs,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -737,7 +763,7 @@ declare global {
         cursorCloudOpenChat: (args: CursorCloudOpenChatRequest) => Promise<CursorCloudOpenChatResult>;
       };
       sync: {
-        getStatus: () => Promise<SyncRoleSnapshot>;
+        getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
         refreshDiscovery: () => Promise<SyncRoleSnapshot>;
         listDevices: () => Promise<SyncDeviceRuntimeState[]>;
         updateLocalDevice: (args: {
@@ -1325,6 +1351,37 @@ declare global {
         selectPoint: (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }) => Promise<IosSimulatorSelectResult>;
         onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => () => void;
       };
+      appControl: {
+        getStatus: () => Promise<AppControlStatus>;
+        launch: (args?: AppControlLaunchArgs) => Promise<AppControlSession>;
+        launchInTerminal: (args?: AppControlLaunchArgs) => Promise<AppControlSession>;
+        connect: (args: AppControlConnectArgs) => Promise<AppControlSession>;
+        stop: (args?: AppControlStopArgs) => Promise<{ ok: true; previousSession: AppControlSession | null }>;
+        screenshot: () => Promise<AppControlScreenshot>;
+        getSnapshot: (args?: AppControlSnapshotArgs) => Promise<AppControlSnapshot>;
+        inspectPoint: (args: AppControlInspectPointArgs) => Promise<AppControlInspectResult>;
+        selectPoint: (args: AppControlInspectPointArgs) => Promise<AppControlSelectResult>;
+        click: (args: AppControlClickArgs) => Promise<{ ok: true }>;
+        typeText: (args: AppControlTypeTextArgs) => Promise<{ ok: true }>;
+        scroll: (args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null }) => Promise<{ ok: true }>;
+        dispatchKey: (args: {
+          type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
+          key?: string | null;
+          code?: string | null;
+          text?: string | null;
+          modifiers?: number | null;
+        }) => Promise<{ ok: true }>;
+        listTargets: () => Promise<AppControlTarget[]>;
+        attachToTarget: (args: { targetId: string }) => Promise<AppControlSession>;
+        onEvent: (cb: (ev: AppControlEventPayload) => void) => () => void;
+      };
+      terminal: {
+        list: (args?: ChatTerminalListArgs) => Promise<ChatTerminalSession[]>;
+        read: (args?: ChatTerminalReadArgs) => Promise<ChatTerminalReadResult>;
+        write: (args: ChatTerminalWriteArgs) => Promise<{ ok: true }>;
+        signal: (args: ChatTerminalSignalArgs) => Promise<{ ok: true }>;
+        activeForChat: (args: ChatTerminalActiveForChatArgs) => Promise<ChatTerminalSession | null>;
+      };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
         write: (args: { ptyId: string; data: string }) => Promise<void>;
@@ -1405,6 +1462,9 @@ declare global {
         listBranches: (
           args: GitListBranchesArgs,
         ) => Promise<GitBranchSummary[]>;
+        getUserIdentity: (
+          args: GitGetUserIdentityArgs,
+        ) => Promise<GitUserIdentity>;
         checkoutBranch: (
           args: GitCheckoutBranchArgs,
         ) => Promise<GitActionResult>;
@@ -1481,6 +1541,7 @@ declare global {
         linkToLane: (args: LinkPrToLaneArgs) => Promise<PrSummary>;
         getForLane: (laneId: string) => Promise<PrSummary | null>;
         listAll: () => Promise<PrSummary[]>;
+        listOpenForRepo: () => Promise<BranchPullRequest[]>;
         refresh: (args?: {
           prId?: string;
           prIds?: string[];

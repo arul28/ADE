@@ -127,6 +127,15 @@ function GraphInner() {
   const lanes = useAppStore((s) => s.lanes);
   const lanesKey = React.useMemo(() => lanes.map((l) => l.id).join(","), [lanes]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const refreshGraphLanes = React.useCallback(
+    // The graph still renders lane.status data (dirty/behind chips, selected
+    // lane summary, hover tooltip), so refreshing without status leaves those
+    // badges stale after commits, rebases, pushes, or external repo changes.
+    // Skip the heavier conflict/rebase-suggestion phases instead — those are
+    // refreshed on their own cadences elsewhere on this page.
+    () => refreshLanes({ includeStatus: true, includeConflictStatus: false, includeRebaseSuggestions: false, includeAutoRebaseStatus: false }),
+    [refreshLanes]
+  );
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
   const [prs, setPrs] = React.useState<PrWithConflicts[]>([]);
   const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
@@ -370,7 +379,10 @@ function GraphInner() {
     () => sessionState[viewMode] ?? createSnapshot(viewMode),
     [sessionState, viewMode]
   );
-  const filters = coalesceGraphFilters(activeSnapshot.filters);
+  const filters = React.useMemo(
+    () => coalesceGraphFilters(activeSnapshot.filters),
+    [activeSnapshot.filters]
+  );
 
   const environmentByLaneId = React.useMemo(() => {
     const compiled = environmentMappings
@@ -651,8 +663,8 @@ function GraphInner() {
 
   const refreshGraphPrSurface = React.useCallback(async () => {
     await refreshPrs();
-    await Promise.allSettled([refreshRiskBatch(), refreshLanes()]);
-  }, [refreshLanes, refreshPrs, refreshRiskBatch]);
+    await Promise.allSettled([refreshRiskBatch(), refreshGraphLanes()]);
+  }, [refreshGraphLanes, refreshPrs, refreshRiskBatch]);
 
   const refreshIntegrationProposals = React.useCallback(async () => {
     try {
@@ -767,7 +779,7 @@ function GraphInner() {
     setSelectedLaneIds([]);
     setShowFiltersPanel(false);
 
-    void refreshLanes()
+    void refreshGraphLanes()
       .catch((err) => {
         console.warn("[Graph] refreshLanes failed:", err);
         reportGraphIssue("The graph could not load the latest lanes.", err);
@@ -800,7 +812,7 @@ function GraphInner() {
       if (syncTimer != null) window.clearTimeout(syncTimer);
       if (autoRebaseTimer != null) window.clearTimeout(autoRebaseTimer);
     };
-  }, [project?.rootPath, refreshAutoRebaseStatuses, refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
+  }, [project?.rootPath, refreshAutoRebaseStatuses, refreshGraphLanes, refreshLaneSyncStatuses, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1116,7 +1128,7 @@ function GraphInner() {
     }
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
-      void refreshLanes().catch((err) => console.warn("[Graph] periodic refreshLanes failed:", err));
+      void refreshGraphLanes().catch((err) => console.warn("[Graph] periodic refreshLanes failed:", err));
       scheduleRefreshActivity(320, { includeOperations: true });
     }, 60_000);
     const syncInterval = window.setInterval(() => {
@@ -1162,7 +1174,7 @@ function GraphInner() {
         prRefreshTimerRef.current = null;
       }
     };
-  }, [project?.rootPath, refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
+  }, [project?.rootPath, refreshLaneSyncStatuses, refreshGraphLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
 
   const baseGraph = React.useMemo(() => {
     if (!loadedGraphPreferences) {

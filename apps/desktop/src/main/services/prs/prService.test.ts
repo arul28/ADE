@@ -86,6 +86,33 @@ function makeFakeLane(overrides?: Partial<Record<string, unknown>>) {
     icon: null,
     tags: [],
     createdAt: "2026-01-01T00:00:00Z",
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+function makePrRow(overrides?: Partial<Record<string, unknown>>) {
+  return {
+    id: "pr-row-1",
+    lane_id: LANE_ID,
+    project_id: "proj-1",
+    repo_owner: REPO.owner,
+    repo_name: REPO.name,
+    github_pr_number: 90,
+    github_url: "https://github.com/test-owner/test-repo/pull/90",
+    github_node_id: "PR_node90",
+    title: "Linked PR",
+    state: "open",
+    base_branch: "main",
+    head_branch: "my-feature",
+    checks_status: "none",
+    review_status: "none",
+    additions: 1,
+    deletions: 1,
+    last_synced_at: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    creation_strategy: "pr_target",
     ...overrides,
   };
 }
@@ -156,6 +183,133 @@ function buildService(opts: BuildServiceOpts = {}) {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe("prService.getForLane", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function buildGetForLaneService(lane: ReturnType<typeof makeFakeLane>, rows: unknown[]) {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      if (String(sql).includes("from lanes")) {
+        return {
+          lane_type: lane.laneType,
+          branch_ref: lane.branchRef,
+          base_ref: lane.baseRef,
+          archived_at: lane.archivedAt ?? null,
+        };
+      }
+      return null;
+    });
+    db.all.mockReturnValue(rows);
+    return buildService({ db, laneService: makeLaneService([lane]) }).service;
+  }
+
+  it("does not surface a PR for primary when primary is on its base branch", () => {
+    const lane = makeFakeLane({
+      laneType: "primary",
+      branchRef: "main",
+      baseRef: "main",
+    });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        lane_id: lane.id,
+        state: "open",
+        head_branch: "main",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)).toBeNull();
+  });
+
+  it("ignores stale PR rows whose head branch no longer matches the lane branch", () => {
+    const lane = makeFakeLane({
+      branchRef: "refs/heads/current-feature",
+    });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        lane_id: lane.id,
+        state: "open",
+        head_branch: "old-feature",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)).toBeNull();
+  });
+
+  it("prefers the PR whose head matches the current lane branch", () => {
+    const lane = makeFakeLane({
+      branchRef: "refs/heads/current-feature",
+    });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        id: "stale-pr",
+        lane_id: lane.id,
+        github_pr_number: 91,
+        head_branch: "old-feature",
+        updated_at: "2026-01-03T00:00:00Z",
+      }),
+      makePrRow({
+        id: "current-pr",
+        lane_id: lane.id,
+        github_pr_number: 92,
+        head_branch: "current-feature",
+        updated_at: "2026-01-02T00:00:00Z",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)?.githubPrNumber).toBe(92);
+  });
+
+  it("falls back to the newest active PR while the lane branch is unavailable", () => {
+    const lane = makeFakeLane({
+      branchRef: null,
+    });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        lane_id: lane.id,
+        github_pr_number: 93,
+        head_branch: "latest-active",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)?.githubPrNumber).toBe(93);
+  });
+
+  it("ignores terminal PR rows when resolving the current lane PR", () => {
+    const lane = makeFakeLane({
+      branchRef: "refs/heads/current-feature",
+    });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        lane_id: lane.id,
+        state: "merged",
+        head_branch: "current-feature",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)).toBeNull();
+  });
+
+  it("allows primary to show an active PR only when checked out to that PR head branch", () => {
+    const lane = makeFakeLane({
+      laneType: "primary",
+      branchRef: "refs/heads/direct-work",
+      baseRef: "refs/heads/main",
+    });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        lane_id: lane.id,
+        github_pr_number: 91,
+        state: "draft",
+        head_branch: "direct-work",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)?.githubPrNumber).toBe(91);
+  });
+});
 
 describe("prService.createFromLane", () => {
   beforeEach(() => {

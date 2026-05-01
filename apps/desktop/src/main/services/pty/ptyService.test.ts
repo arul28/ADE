@@ -479,6 +479,37 @@ describe("ptyService", () => {
       expect(mockPty.write).toHaveBeenCalledWith("codex --no-alt-screen \"ADE session guidance\"\r");
     });
 
+    it("falls back to a shell exec command when direct command spawn fails before a terminal attaches", async () => {
+      setPlatform("darwin");
+      const { service, mockPty, loadPty } = createHarness();
+      const spawn = vi.fn((command: string) => {
+        if (command === "./scripts/dogfood.sh") throw new Error("ENOENT");
+        return mockPty;
+      });
+      loadPty.mockImplementationOnce(() => ({ spawn: spawn as any }));
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Run command",
+        cols: 80,
+        rows: 24,
+        command: "./scripts/dogfood.sh",
+        args: ["onboarding fixes", "quote's ok"],
+      });
+
+      expect(spawn).toHaveBeenCalledWith(
+        "./scripts/dogfood.sh",
+        ["onboarding fixes", "quote's ok"],
+        expect.any(Object),
+      );
+      expect(spawn).toHaveBeenCalledWith(
+        expect.stringMatching(/(?:zsh|bash|sh)$/),
+        expect.any(Array),
+        expect.any(Object),
+      );
+      expect(mockPty.write).toHaveBeenCalledWith("exec ./scripts/dogfood.sh 'onboarding fixes' 'quote'\\''s ok'\r");
+    });
+
     it("wraps direct Windows command shims through cmd.exe", async () => {
       setPlatform("win32");
       const harness = createHarness();
@@ -1450,15 +1481,48 @@ describe("ptyService", () => {
 
   describe("PTY data handling", () => {
     it("broadcasts data events when the PTY emits data", async () => {
-      const { service, mockPty, broadcastData } = createHarness();
-      const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
-      mockPty._emitter.emit("data", "hello world");
-      expect(broadcastData).toHaveBeenCalledWith({
-        ptyId,
-        sessionId,
-        projectRoot: "/tmp/test-project",
-        data: "hello world",
-      });
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, broadcastData } = createHarness();
+        const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+        mockPty._emitter.emit("data", "hello world");
+        expect(broadcastData).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(16);
+        expect(broadcastData).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "hello world",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("coalesces rapid PTY data chunks and flushes before exit", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, broadcastData, broadcastExit } = createHarness();
+        const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+        mockPty._emitter.emit("data", "hello ");
+        mockPty._emitter.emit("data", "world");
+        mockPty._emitter.emit("exit", { exitCode: 0 });
+
+        expect(broadcastData).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "hello world",
+        });
+        expect(broadcastExit).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          exitCode: 0,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("closes entry and broadcasts exit when PTY exits", async () => {
@@ -1597,6 +1661,44 @@ describe("ptyService", () => {
       }
     });
 
+    it("cools down repeated missing resume target backfills during session-list hydration", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-04-15T22:00:00.000Z"));
+
+        const { service, sessionService, logger } = createHarness();
+        sessionService.create({
+          sessionId: "session-missing",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: "2026-04-15T21:30:00.000Z",
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-missing.log",
+          toolType: "codex",
+        });
+
+        await service.ensureResumeTargets(["session-missing"]);
+        await service.ensureResumeTargets(["session-missing"]);
+
+        expect(sessionService.readTranscriptTail).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.resume_target_missing",
+          expect.objectContaining({ sessionId: "session-missing", reason: "session-list" }),
+        );
+
+        await vi.advanceTimersByTimeAsync(10 * 60_000 - 1);
+        await service.ensureResumeTargets(["session-missing"]);
+        expect(sessionService.readTranscriptTail).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(1);
+        await service.ensureResumeTargets(["session-missing"]);
+        expect(sessionService.readTranscriptTail).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("captures a fresh Codex storage target for a new launch without choosing older same-cwd sessions", async () => {
       vi.useFakeTimers();
       try {
@@ -1707,6 +1809,183 @@ describe("ptyService", () => {
       expect(broadcastExit).toHaveBeenCalledWith(
         expect.objectContaining({ exitCode: null }),
       );
+    });
+  });
+
+  describe("chat terminal contract", () => {
+    /**
+     * Augment the harness's session service with the methods listTerminals/activeForChat rely on.
+     * Returned `service` is a fresh ptyService bound to the augmented sessionService, so we can
+     * exercise the chat-linked terminal surface end-to-end.
+     */
+    function createChatHarness() {
+      const harness = createHarness();
+      const sessionStore = new Map<string, any>();
+
+      const sessionService = {
+        ...harness.sessionService,
+        create: vi.fn((args: any) => {
+          sessionStore.set(args.sessionId, {
+            ...args,
+            id: args.sessionId,
+            status: "running",
+            laneId: args.laneId,
+            laneName: "Test lane",
+            ptyId: args.ptyId ?? null,
+            title: args.title,
+            transcriptPath: args.transcriptPath,
+            startedAt: args.startedAt,
+            endedAt: null,
+            exitCode: null,
+            chatSessionId: args.chatSessionId ?? null,
+          });
+        }),
+        end: vi.fn((args: any) => {
+          const s = sessionStore.get(args.sessionId);
+          if (s) {
+            s.status = args.status;
+            s.exitCode = args.exitCode;
+            s.endedAt = args.endedAt;
+            s.ptyId = null;
+          }
+        }),
+        get: vi.fn((id: string) => sessionStore.get(id) ?? null),
+        list: vi.fn((args: { laneId?: string; limit?: number } = {}) => {
+          const all = Array.from(sessionStore.values()) as any[];
+          return all
+            .filter((s) => (args.laneId ? s.laneId === args.laneId : true))
+            .slice(0, args.limit ?? all.length);
+        }),
+        setChatSessionId: vi.fn((sessionId: string, chatSessionId: string | null) => {
+          const s = sessionStore.get(sessionId);
+          if (s) s.chatSessionId = chatSessionId;
+        }),
+        readTranscriptTail: vi.fn(async (
+          _path: string,
+          _max: number,
+          _opts?: { raw?: boolean },
+        ) => "transcript-bytes"),
+      };
+
+      const service = createPtyService({
+        projectRoot: "/tmp/test-project",
+        transcriptsDir: "/tmp/transcripts",
+        laneService: harness.laneService as any,
+        sessionService: sessionService as any,
+        logger: harness.logger as any,
+        broadcastData: harness.broadcastData,
+        broadcastExit: harness.broadcastExit,
+        onSessionEnded: harness.onSessionEnded,
+        onSessionRuntimeSignal: harness.onSessionRuntimeSignal,
+        loadPty: harness.loadPty as any,
+      });
+
+      return { ...harness, sessionService, sessionStore, service };
+    }
+
+    it("propagates chatSessionId through sessionService.create on a fresh terminal", async () => {
+      const { service, sessionService } = createChatHarness();
+
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Chat-linked terminal",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-42",
+      });
+
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: created.sessionId,
+          chatSessionId: "chat-42",
+        }),
+      );
+      const active = service.activeForChat({ chatSessionId: "chat-42" });
+      expect(active).not.toBeNull();
+      expect(active!.terminalId).toBe(created.sessionId);
+      expect(active!.chatSessionId).toBe("chat-42");
+      expect(active!.active).toBe(true);
+    });
+
+    it("listTerminals filters to the requested chat session and orders active first", async () => {
+      const { service } = createChatHarness();
+
+      const a = await service.create({ laneId: "lane-1", title: "A", cols: 80, rows: 24, chatSessionId: "chat-1" });
+      const b = await service.create({ laneId: "lane-1", title: "B", cols: 80, rows: 24, chatSessionId: "chat-1" });
+      const c = await service.create({ laneId: "lane-1", title: "C", cols: 80, rows: 24, chatSessionId: "chat-other" });
+
+      const list = service.listTerminals({ chatSessionId: "chat-1" });
+      const ids = list.map((s) => s.terminalId);
+      expect(ids).toContain(a.sessionId);
+      expect(ids).toContain(b.sessionId);
+      expect(ids).not.toContain(c.sessionId);
+      // The most recently created terminal is the active one for the chat and must sort first.
+      expect(list[0]?.terminalId).toBe(b.sessionId);
+      expect(list[0]?.active).toBe(true);
+    });
+
+    it("readTerminal returns transcript bytes from `since` and reports nextSince", async () => {
+      const { service, sessionService } = createChatHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Reader",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-7",
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("0123456789");
+
+      const read = await service.readTerminal({ chatSessionId: "chat-7", since: 4, maxBytes: 1024 });
+      expect(read.terminalId).toBe(created.sessionId);
+      expect(read.data).toBe("456789");
+      expect(read.nextSince).toBe(4 + "456789".length);
+    });
+
+    it("writeTerminal routes data via the active chat terminal and the underlying PTY", async () => {
+      const { service, mockPty } = createChatHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Writer",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-write",
+      });
+
+      const result = service.writeTerminal({ chatSessionId: "chat-write", data: "y\n" });
+      expect(result).toEqual({ ok: true });
+      expect(mockPty.write).toHaveBeenCalledWith("y\n");
+    });
+
+    it("signalTerminal sends ^C for SIGINT and forwards SIGTERM to pty.kill", async () => {
+      const { service, mockPty } = createChatHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Signal",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-signal",
+      });
+
+      service.signalTerminal({ chatSessionId: "chat-signal", signal: "SIGINT" });
+      expect(mockPty.write).toHaveBeenCalledWith("\x03");
+
+      service.signalTerminal({ chatSessionId: "chat-signal", signal: "SIGTERM" });
+      expect(mockPty.kill).toHaveBeenCalledWith("SIGTERM");
+    });
+
+    it("fails loudly when chat terminal calls cannot resolve a target", async () => {
+      const { service } = createChatHarness();
+
+      await expect(service.readTerminal({ chatSessionId: "no-such-chat" })).rejects.toThrow(
+        /terminal\.read requires/,
+      );
+      expect(() => service.writeTerminal({ chatSessionId: "no-such-chat", data: "x" })).toThrow(
+        /terminal\.write requires/,
+      );
+      expect(() => service.signalTerminal({ chatSessionId: "no-such-chat", signal: "SIGINT" })).toThrow(
+        /No running terminal/,
+      );
+      expect(service.activeForChat({ chatSessionId: "no-such-chat" })).toBeNull();
     });
   });
 });

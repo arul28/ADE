@@ -71,6 +71,44 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("Use the available tools deliberately");
   });
 
+  describe("runtime environment banner", () => {
+    it("omits the runtime block when runtime is not provided", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
+      expect(result).not.toContain("## Runtime Environment");
+    });
+
+    it("describes the Codex CLI runtime", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "codex-cli" });
+      expect(result).toContain("## Runtime Environment");
+      expect(result).toContain("Codex CLI");
+      expect(result).toContain("No autonomous wake from ADE");
+    });
+
+    it("describes the Claude Agent SDK v2 runtime with wake-up caveat", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "claude-agent-sdk-v2" });
+      expect(result).toContain("## Runtime Environment");
+      expect(result).toContain("Claude Agent SDK v2");
+      expect(result).toContain("ScheduleWakeup");
+      expect(result).toContain("not honored");
+      expect(result).toContain("never re-invokes");
+    });
+
+    it("describes the Cursor ACP runtime", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "cursor-acp" });
+      expect(result).toContain("Cursor agent via ACP");
+    });
+
+    it("describes the Droid ACP runtime", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "droid-acp" });
+      expect(result).toContain("Factory Droid agent via ACP");
+    });
+
+    it("describes the OpenCode runtime", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "opencode" });
+      expect(result).toContain("OpenCode session");
+    });
+  });
+
   it("includes interactive question guidance by default", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
     expect(result).toContain("ask one concise question");

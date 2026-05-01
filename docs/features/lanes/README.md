@@ -44,7 +44,9 @@ Renderer components:
 | `renderer/components/lanes/LaneWorkPane.tsx` | Terminal/chat toggle work surface |
 | `renderer/components/lanes/LaneRebaseBanner.tsx` | Inline banner driven by `rebaseSuggestionService` |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Env init step progress inside create dialog |
-| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation / attach dialogs and shared dialog chrome |
+| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation / attach dialogs and shared dialog chrome. The "import existing branch" path inside `CreateLaneDialog` swaps the dialog body for `BranchPickerView` when the user opens the picker; the dialog title/description switches with it. |
+| `renderer/components/lanes/BranchPickerView.tsx` | Filterable virtualized branch list rendered inside `CreateLaneDialog`. Each row shows branch name, last-commit author + relative date, and an inline PR pill (`#NNN`, dim for drafts) when the branch has an open PR. Loading/empty/error states are handled inline. Backed by `branchPickerSearch.ts`. |
+| `renderer/components/lanes/branchPickerSearch.ts` | Pure parser + matcher. Tokens AND together: `pr:open` / `pr:none` / `pr:draft`, `author:NAME` (or `author:me` / `mine` resolved against the local git user), `stale:Nd` (older than N days), `#PRNUMBER` (exact match), and free text fuzzy-matched across branch name / PR title / author. Also exposes `formatRelativeTime` for the row subtitle. |
 | `renderer/components/lanes/ManageLaneDialog.tsx` | Unified delete / archive / adopt-attached dialog. Supports single-lane and batch (multi-select) modes, three delete scopes (`worktree`, `local_branch`, `remote_branch`), a typed confirmation phrase, remote-branch name input, dirty-state warnings, and a live multi-step progress strip wired to `lanes.delete.event` (`stop_processes` / `stop_ptys` / `stop_watchers` / `cancel_auto_rebase` / `cleanup_env` / `git_status` / `git_worktree_remove` / `git_branch_delete` / `git_remote_branch_delete` / `pack_dir_remove` / `database_cleanup`). The dialog calls `lanes.getDeleteRisk` on open to surface dirty state, unpushed commits, running processes / PTYs / watchers, and remote-branch existence before the user confirms; while a delete is running, the user can cancel each lane through `lanes.cancelDelete` until the irreversible filesystem step (`git_worktree_remove`) starts. |
 | `renderer/components/lanes/MonacoDiffView.tsx` | Monaco-based side-by-side file diff |
 | `renderer/components/run/LaneRuntimeBar.tsx` | Compact lane runtime status bar (health, preview, port, proxy, oauth) |
@@ -197,7 +199,14 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
    fails. Rejects when the source has staged changes or an
    in-progress merge/rebase.
 4. **Import branch** — `importBranch` attaches an existing branch to a
-   worktree managed by ADE.
+   worktree managed by ADE. `CreateLaneDialog` drives this through
+   `BranchPickerView`: the picker opens against `git.listBranches`
+   (which now also returns `lastCommitSha` / `Date` / `Author` /
+   `Message` from a single `for-each-ref` pass), enriches each row with
+   any open PR coming from `prs.listOpenForRepo`, and resolves
+   `mine` / `author:me` against the local git identity returned by
+   `git.getUserIdentity`. PR fetch is fail-soft: when the GitHub call
+   errors the picker still works, just without PR pills.
 5. **Attach** — `attach` links an external worktree path (pre-existing
    outside ADE). `lane_type = 'attached'`.
 6. **Rename / update appearance / reparent** — `rename`, `updateAppearance`,

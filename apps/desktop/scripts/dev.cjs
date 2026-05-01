@@ -31,7 +31,23 @@ function canListenOnHost(port, host) {
   });
 }
 
+function somethingIsListening(port, host) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ port, host });
+    socket.setTimeout(150);
+    const settle = (busy) => {
+      socket.destroy();
+      resolve(busy);
+    };
+    socket.once("connect", () => settle(true));
+    socket.once("timeout", () => settle(false));
+    socket.once("error", () => settle(false));
+  });
+}
+
 async function isPortFree(port) {
+  if (await somethingIsListening(port, "127.0.0.1")) return false;
+  if (await somethingIsListening(port, "::1")) return false;
   const ipv4Free = await canListenOnHost(port, "127.0.0.1");
   if (!ipv4Free) return false;
   const ipv6Free = await canListenOnHost(port, "::1");
@@ -180,9 +196,20 @@ function terminateChild(child, signal) {
 async function main() {
   const devPort = await choosePort(5173, 32);
   const devServerUrl = `http://localhost:${devPort}`;
-  const remoteDebugPort = Number.parseInt(process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT || "9222", 10);
-  if (!Number.isFinite(remoteDebugPort) || remoteDebugPort <= 0) {
-    throw new Error(`Invalid ADE_ELECTRON_REMOTE_DEBUGGING_PORT: ${process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT ?? ""}`);
+  const remoteDebugPortRaw =
+    process.env.ADE_APP_CONTROL_CDP_PORT
+    || process.env.ADE_APP_CONTROL_REMOTE_DEBUGGING_PORT
+    || process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT
+    || "9222";
+  if (!/^\d+$/.test(String(remoteDebugPortRaw).trim())) {
+    throw new Error(`Invalid Electron remote debugging port: ${remoteDebugPortRaw}`);
+  }
+  const remoteDebugPort = Number.parseInt(remoteDebugPortRaw, 10);
+  if (!Number.isFinite(remoteDebugPort) || remoteDebugPort <= 0 || remoteDebugPort > 65535) {
+    throw new Error(`Invalid Electron remote debugging port: ${remoteDebugPortRaw}`);
+  }
+  if (process.env.ADE_APP_CONTROL_CDP_PORT) {
+    process.stdout.write(`[ade] honoring ADE App Control CDP port ${remoteDebugPort}\n`);
   }
   process.stdout.write(`[ade] dev launcher using ${devServerUrl}\n`);
   process.stdout.write(`[ade] electron CDP endpoint: http://127.0.0.1:${remoteDebugPort}/json/version\n`);

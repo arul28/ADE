@@ -42,6 +42,7 @@ export type DroidExecHelpModelRow = {
   /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
   customProxy?: boolean;
 };
+type DroidCliModelDiscoveryMode = "probe" | "cached-or-fallback";
 
 let cached: { at: number; models: DroidExecHelpModelRow[] } | null = null;
 let inflight: Promise<DroidExecHelpModelRow[]> | null = null;
@@ -189,6 +190,14 @@ export function clearDroidCliModelsCache(): void {
   inflight = null;
 }
 
+function getCachedDroidModels(): DroidExecHelpModelRow[] | null {
+  const now = Date.now();
+  if (cached && now - cached.at < TTL_MS) {
+    return cached.models;
+  }
+  return null;
+}
+
 /**
  * Read custom models from `~/.factory/config.json`.
  *
@@ -221,8 +230,13 @@ async function readFactoryConfigCustomModels(): Promise<DroidExecHelpModelRow[]>
   }
 }
 
-export async function discoverDroidCliModelDescriptors(droidPath: string): Promise<ModelDescriptor[]> {
-  const fromCli = await listDroidModelsFromCli(droidPath);
+export async function discoverDroidCliModelDescriptors(
+  droidPath: string,
+  options?: { mode?: DroidCliModelDiscoveryMode },
+): Promise<ModelDescriptor[]> {
+  const fromCli = options?.mode === "cached-or-fallback"
+    ? getCachedDroidModels() ?? []
+    : await listDroidModelsFromCli(droidPath);
   const baseRows: DroidExecHelpModelRow[] = fromCli.length
     ? fromCli
     : DROID_DEFAULT_MODEL_IDS.map((id) => ({ id, displayName: id }));

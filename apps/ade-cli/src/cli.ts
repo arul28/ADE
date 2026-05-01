@@ -66,6 +66,11 @@ type FormatterId =
   | "ios-sim-snapshot"
   | "ios-sim-selection"
   | "ios-sim-preview"
+  | "app-control-status"
+  | "app-control-snapshot"
+  | "app-control-selection"
+  | "terminal-list"
+  | "terminal-read"
   | "actions-list"
   | "action-result"
   | "automation-run-detail";
@@ -271,6 +276,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
+    $ ade terminal list | read | write | signal     Control the active in-chat terminal
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -280,6 +286,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap   Control iOS Simulator apps, capture, and input
+    $ ade app-control launch | snapshot | click   Inspect and drive Electron apps
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -307,6 +314,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
+    $ ade app-control launch --command "pnpm dev" --text
+    $ ade terminal read --chat-session <id> --text
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -386,13 +395,13 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --chat-session <id>         Owner chat session for the single-owner lock.
     --no-build                  Skip xcodebuild.
     --mode snapshot|live        Inspector launch mode; default live.
-    --foreground                Bring Simulator.app forward instead of background.
+    --foreground                Open and bring Simulator.app forward.
     --arg KEY=VALUE             Extra service args for advanced launch options.
 `,
   shutdown: `${ADE_BANNER}
   iOS Simulator: shutdown
 
-  Stops streams, releases the drawer session, and tears down the idb companion.
+  Stops streams, releases the drawer session, and tears down simulator helper processes.
   Aliases: stop, teardown, end, end-session.
 
     $ ade --socket ios-sim shutdown --text
@@ -518,9 +527,11 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "stream-start": `${ADE_BANNER}
   iOS Simulator: stream-start
 
-  Starts a visual stream. Prefer live-start/auto for the drawer UI when
-  idb+idb_companion+ffmpeg are installed, preview-start as a simctl screenshot-poll fallback,
-  and window-start only for native Simulator.app diagnostics. Aliases:
+  Starts a visual stream. auto resolves to iosurface-indigo first when full
+  Xcode supports ADE's private helpers, then Simulator.app window capture when
+  visible-window capture is allowed, then idb MJPEG, then simctl screenshot
+  polling. The H.264+ffmpeg idb stream is recovery-only after idb MJPEG fails.
+  Aliases:
   start-stream, stream, window-start,
   start-window, mirror-start, live-start, start-live, preview-start, start-preview.
 
@@ -531,15 +542,17 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --device, --udid <id>  Simulator device.
     --fps <n>              Target fps.
-    --backend auto|simulator-window-capture|idb-mjpeg|idb-h264-ffmpeg-mjpeg|simctl-screenshot-poll
+    --backend auto|iosurface-indigo|simulator-window-capture|idb-mjpeg|idb-h264-ffmpeg-mjpeg|simctl-screenshot-poll
     --window, --mirror     Force window capture.
-    --idb, --live          Prefer idb stream (auto-picks h264+ffmpeg, falls back to MJPEG).
+    --idb, --live          Use auto backend resolution.
     --simctl, --preview    Force simctl screenshot polling.
 `,
   "stream-status": `${ADE_BANNER}
   iOS Simulator: stream-status
 
-  Shows running backend, fps, latency, stream URL, frame count, and last error.
+  Shows running backend, fallback/degradation reason, helper pid, fps, latency,
+  stream URL, frame count, input backend, and last error. Low idle fps is normal
+  on iosurface-indigo because frames are event-driven when the simulator is still.
 
     $ ade --socket ios-sim stream-status --text
 `,
@@ -567,7 +580,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   tap: `${ADE_BANNER}
   iOS Simulator: tap
 
-  Sends a tap through idb to the active launched app.
+  Sends a tap through the active input backend, preferring Indigo with idb fallback.
 
     $ ade --socket ios-sim tap --x 120 --y 420 --text
     $ ade --socket ios-sim tap 120 420 --text
@@ -580,7 +593,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   drag: `${ADE_BANNER}
   iOS Simulator: drag / swipe
 
-  Sends a swipe through idb. "swipe" is an alias of drag.
+  Sends a swipe through the active input backend. "swipe" is an alias of drag.
 
     $ ade --socket ios-sim drag --start-x 120 --start-y 700 --end-x 120 --end-y 250 --text
     $ ade --socket ios-sim swipe 120 700 120 250 --duration-ms 250 --text
@@ -680,6 +693,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git unstage --lane <lane> src/file.ts     Unstage one file
     $ ade git commit --lane <lane> [-m <message>]   Commit, generating a message when omitted
     $ ade git push --lane <lane> --set-upstream     Push through ADE
+    $ ade git branches --lane <lane> --text         List branches with last-commit metadata
+    $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
     $ ade git stash push|list|apply|pop             Use ADE lane stash actions
     $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
     $ ade diff changes --lane <lane> --text         Inspect changed files
@@ -699,6 +714,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Creating or linking a PR persists the lane mapping in ADE so the PR tab tracks it.
 
     $ ade prs list --text                           List PRs known to ADE
+    $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open and map a GitHub PR from a lane
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
@@ -733,6 +749,19 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
     $ ade shell close <pty-id>                      Dispose a PTY
+`,
+  terminal: `${ADE_BANNER}
+  Chat terminal
+
+  Terminal commands control the active in-chat terminal for an ADE chat. Use
+  desktop socket mode when you want the same terminal the user sees in the app.
+
+    $ ade terminal list --chat-session <id> --text  List terminals for a chat
+    $ ade terminal active --chat-session <id> --text Show the active chat terminal
+    $ ade terminal read --terminal <id> --text      Read terminal scrollback
+    $ ade app-control logs --text                   Read the active App Control launch terminal
+    $ ade terminal write --terminal <id> --data "y\\n"
+    $ ade terminal signal --terminal <id> --signal SIGINT
 `,
   files: `${ADE_BANNER}
   Files
@@ -795,7 +824,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
   surface. For drawer/shared session state, prefer desktop socket mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch keeps Simulator.app hidden by default; use --foreground only when you
+  Launch is headless by default; use --foreground only when you
   need the native Simulator window in front. idb is optional for direct
   pointer/text control and the low-latency MJPEG live stream.
 
@@ -810,7 +839,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim apps --device <udid> --text      List launchable apps (listLaunchTargets)
     $ ade --socket ios-sim launch --target <id>    Build/install/launch and update drawer state
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
-    $ ade --socket ios-sim shutdown                Tear down session, streams, idb companion (alias: stop)
+    $ ade --socket ios-sim shutdown                Tear down session, streams, helper processes (alias: stop)
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
@@ -824,7 +853,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Streaming:
-    $ ade ios-sim live-start --fps 30              Low-latency idb live stream
+    $ ade ios-sim live-start --fps 30              Auto live stream (IOSurface first)
     $ ade ios-sim preview-start --fps 8            simctl screenshot-poll fallback
     $ ade ios-sim window-start --fps 60            Native Simulator.app window capture diagnostic
     $ ade ios-sim stream-status --text             Backend/fps/latency/URL (getStreamStatus)
@@ -832,10 +861,56 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Input and selection:
     $ ade --socket ios-sim select --x 120 --y 420  Add UI context to drawer chat (selectPoint)
-    $ ade ios-sim tap 120 420                      Tap through idb (tap)
-    $ ade ios-sim drag 120 700 120 250             Drag through idb (drag)
-    $ ade ios-sim swipe 120 700 120 250            Swipe through idb (swipe)
+    $ ade ios-sim tap 120 420                      Tap active simulator app (tap)
+    $ ade ios-sim drag 120 700 120 250             Drag active simulator app (drag)
+    $ ade ios-sim swipe 120 700 120 250            Swipe active simulator app (swipe)
     $ ade ios-sim type "hello" --text              Type into the launched app (typeText)
+`,
+  "app-control": `${ADE_BANNER}
+  App Control
+
+  App Control is ADE's bridge for developer-owned app sessions. The first
+  supported kind is Electron: ADE can launch or connect to an Electron renderer
+  that exposes a Chrome DevTools Protocol port, then capture screenshots, DOM
+  elements, selected UI context, and basic input in the same style as the iOS
+  simulator drawer. App Control is intentionally a bridge: Playwright,
+  agent-browser, Computer Use, and other tools may also attach to the same app;
+  ADE keeps the launch/session state and turns snapshots into chat context.
+
+  Launching runs the command in the chat terminal instead of a hidden child
+  process. ADE sets ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS in
+  the environment and auto-forwards debug flags for common npm/pnpm/yarn/bun
+  script launches and direct electron commands. Custom launchers should forward
+  ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT. You can also put
+  {ADE_APP_CONTROL_DEBUG_FLAGS} in the command string for explicit substitution.
+
+  Reuse a Run-tab command: list configured processes with
+  \`ade settings get --text\`, then pass \`--cwd\` so the launch runs from the
+  same directory the Run tab uses. Relative cwds resolve against the lane root.
+
+  Discovery and lifecycle:
+    $ ade app-control status --text                Show active session and provider readiness
+    $ ade app-control launch --command "npm run dev" --text
+    $ ade app-control launch pnpm dev --text       Launch via the visible chat terminal
+    $ ade app-control launch --command "pnpm dev" --cwd apps/desktop --text
+    $ ade app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}"
+    $ ade app-control connect --cdp-port 9222      Attach to an already-running app
+    $ ade app-control logs --text                  Read the active App Control launch terminal
+    $ ade app-control terminal write --data "y\\n" Answer a prompt in that terminal
+    $ ade app-control stop --text                  Signal the App Control terminal session
+    $ ade app-control actions --text               List every callable app_control action
+    $ ade terminal read --terminal <id> --text     Read a specific chat terminal
+    $ ade terminal write --chat-session <id> --data "y\\n" Answer a prompt
+
+  Capture and context:
+    $ ade app-control screenshot --text            Capture the active renderer screenshot
+    $ ade app-control snapshot --text              Screenshot + DOM element refs
+    $ ade app-control inspect --x 120 --y 420      Hit-test a point without committing context
+    $ ade app-control select --x 120 --y 420       Add selected app context to the drawer chat
+
+  Input:
+    $ ade app-control click 120 420                Click screenshot coordinates
+    $ ade app-control type "hello" --text          Type text into the focused element
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -1125,6 +1200,18 @@ function buildIosSimulatorHelp(args: string[]): string {
     return `${HELP_BY_COMMAND["ios-sim"]}\n  Unknown iOS simulator subcommand '${rawSubcommand}'. Run 'ade ios-sim actions --text' to list raw service actions.\n`;
   }
   return HELP_BY_COMMAND["ios-sim"];
+}
+
+function buildAppControlHelp(args: string[]): string {
+  const rawSubcommand = peekFirstPositional(args)?.toLowerCase() ?? "";
+  if (!rawSubcommand) return HELP_BY_COMMAND["app-control"];
+  const focused = `${HELP_BY_COMMAND["app-control"]}
+  Focused help for '${rawSubcommand}':
+    Most subcommands accept --input-json and --arg/--arg-json as escape hatches.
+    Use "ade app-control actions --text" to inspect the exact service methods.
+    Use --socket when you want the desktop drawer and CLI to share the same live App Control session.
+`;
+  return focused;
 }
 
 function collectGenericObjectArgs(args: string[], base: JsonObject = {}): JsonObject {
@@ -1501,6 +1588,9 @@ function buildGitPlan(args: string[]): CliPlan {
     return { kind: "execute", label: "git commit message", steps: [actionCallStep("result", "generate_commit_message", withLane({ amend: readFlag(args, ["--amend"]) }))] };
   }
   if (sub === "branches" || sub === "branch") return { kind: "execute", label: "git branches", steps: [actionCallStep("result", "git_list_branches", withLane())] };
+  if (sub === "user-identity" || sub === "user" || sub === "identity") {
+    return { kind: "execute", label: "git user identity", steps: [actionCallStep("result", "git_get_user_identity", withLane())] };
+  }
   if (sub === "checkout") {
     const branchName = requireValue(readValue(args, ["--branch", "--branch-name"]) ?? firstPositional(args), "branchName");
     const create = readFlag(args, ["--create", "-b"]);
@@ -1635,6 +1725,9 @@ function buildPrPlan(args: string[]): CliPlan {
   const withPr = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(prId ? { prId } : {}) });
 
   if (sub === "list" || sub === "ls") return { kind: "execute", label: "PR list", steps: [actionStep("result", "pr", "listAll", collectGenericObjectArgs(args))] };
+  if (sub === "list-open" || sub === "open" || sub === "list-repo-open") {
+    return { kind: "execute", label: "PR list open", steps: [actionCallStep("result", "prs_list_open", {})] };
+  }
   if (sub === "show" || sub === "detail" || sub === "view") {
     const id = requireValue(prId ?? firstPositional(args), "prId");
     return { kind: "execute", label: "PR detail", steps: [actionArgsListStep("result", "pr", "getDetail", [id])] };
@@ -1968,6 +2061,62 @@ function buildShellPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `shell ${sub}`, steps: [actionStep("result", "pty", sub, collectGenericObjectArgs(args))] };
 }
 
+function buildTerminalPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "active";
+  if (sub === "actions") return { kind: "execute", label: "terminal actions", steps: [listActionsStep("actions", "terminal")] };
+  const chatSessionId = () => readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"]) ?? process.env.ADE_CHAT_SESSION_ID ?? null;
+  if (sub === "list" || sub === "ls") {
+    return { kind: "execute", label: "terminal list", steps: [actionStep("result", "terminal", "list", collectGenericObjectArgs(args, {
+      chatSessionId: chatSessionId(),
+      laneId: readValue(args, ["--lane", "--lane-id"]),
+      limit: readIntOption(args, ["--limit"], undefined),
+    }))] };
+  }
+  if (sub === "active" || sub === "current") {
+    return { kind: "execute", label: "terminal active", steps: [actionStep("result", "terminal", "activeForChat", collectGenericObjectArgs(args, {
+      chatSessionId: requireValue(chatSessionId(), "chatSessionId"),
+    }))] };
+  }
+  if (sub === "read" || sub === "tail" || sub === "scrollback") {
+    const terminal = readValue(args, ["--terminal", "--terminal-id"]);
+    const chat = chatSessionId();
+    const maxBytes = readIntOption(args, ["--max-bytes"], undefined);
+    const since = readIntOption(args, ["--since"], undefined);
+    return { kind: "execute", label: "terminal read", steps: [actionStep("result", "terminal", "read", collectGenericObjectArgs(args, {
+      terminalId: terminal ?? firstPositional(args),
+      chatSessionId: chat,
+      maxBytes,
+      since,
+    }))] };
+  }
+  if (sub === "write" || sub === "send" || sub === "input") {
+    const terminal = readValue(args, ["--terminal", "--terminal-id"]);
+    const ptyId = readValue(args, ["--pty", "--pty-id"]);
+    const chat = chatSessionId();
+    const data = readValue(args, ["--data", "--value", "--text"]) ?? args.join(" ");
+    if (!data.length) throw new CliUsageError("data is required.");
+    return { kind: "execute", label: "terminal write", steps: [actionStep("result", "terminal", "write", collectGenericObjectArgs(args, {
+      terminalId: terminal ?? firstPositional(args),
+      ptyId,
+      chatSessionId: chat,
+      data,
+    }))] };
+  }
+  if (sub === "signal" || sub === "interrupt" || sub === "stop") {
+    const terminal = readValue(args, ["--terminal", "--terminal-id"]);
+    const ptyId = readValue(args, ["--pty", "--pty-id"]);
+    const chat = chatSessionId();
+    const signal = readValue(args, ["--signal"]) ?? (sub === "stop" ? "SIGTERM" : "SIGINT");
+    return { kind: "execute", label: "terminal signal", steps: [actionStep("result", "terminal", "signal", collectGenericObjectArgs(args, {
+      terminalId: terminal ?? firstPositional(args),
+      ptyId,
+      chatSessionId: chat,
+      signal,
+    }))] };
+  }
+  return { kind: "execute", label: `terminal ${sub}`, steps: [actionStep("result", "terminal", sub, collectGenericObjectArgs(args))] };
+}
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "actions") return { kind: "execute", label: "chat actions", steps: [listActionsStep("actions", "chat")] };
@@ -2195,7 +2344,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
       ?? (readFlag(args, ["--window", "--mirror"]) ? "simulator-window-capture" : readFlag(args, ["--idb", "--live"]) ? "auto" : readFlag(args, ["--simctl", "--preview"]) ? "simctl-screenshot-poll" : readValue(args, ["--backend"]) ?? "auto");
     const defaultFps = requestedBackend === "simulator-window-capture"
       ? 60
-      : requestedBackend === "idb-mjpeg" || requestedBackend === "idb-h264-ffmpeg-mjpeg"
+      : requestedBackend === "iosurface-indigo" || requestedBackend === "idb-mjpeg" || requestedBackend === "idb-h264-ffmpeg-mjpeg"
         ? 30
         : requestedBackend === "simctl-screenshot-poll"
           ? 8
@@ -2258,6 +2407,142 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
     }))] };
   }
   return { kind: "execute", label: `ios-sim ${sub}`, steps: [actionStep("result", "ios_simulator", sub, collectGenericObjectArgs(args))] };
+}
+
+function readTrailingCommand(args: string[]): string | null {
+  const index = args.indexOf("--");
+  if (index < 0) return null;
+  const tokens = args.slice(index + 1);
+  args.splice(index);
+  if (tokens.length === 0) return null;
+  // Preserve quoted-token boundaries by shell-escaping each token before
+  // joining. The downstream consumer (appControlService) shell-parses this
+  // string, so naive `join(" ")` would let `--flag "a b"` be re-tokenized as
+  // three args. Shell-escaping per token preserves the original boundaries.
+  const command = tokens.map(shellEscapeToken).join(" ").trim();
+  return command.length ? command : null;
+}
+
+function buildAppControlPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "status";
+  if (sub === "help") return { kind: "help", text: buildAppControlHelp(args) };
+  const numericPositionals = () => args.filter((value) => /^\d+(\.\d+)?$/.test(value));
+  const readCoordinate = (flag: string, index: number): number => {
+    const value = readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
+    if (!Number.isFinite(value)) throw new CliUsageError(`${flag} is required and must be a number.`);
+    return value;
+  };
+  if (sub === "actions") return { kind: "execute", label: "App Control actions", steps: [listActionsStep("actions", "app_control")] };
+  if (sub === "status") return { kind: "execute", label: "App Control status", steps: [actionStep("result", "app_control", "getStatus", collectGenericObjectArgs(args))] };
+  if (sub === "logs" || sub === "log" || sub === "read" || sub === "tail") {
+    return { kind: "execute", label: "terminal read", steps: [actionStep("result", "app_control", "readTerminal", collectGenericObjectArgs(args, {
+      maxBytes: readIntOption(args, ["--max-bytes"], undefined),
+      since: readIntOption(args, ["--since"], undefined),
+    }))] };
+  }
+  if (sub === "terminal") {
+    const mode = firstPositional(args) ?? "read";
+    if (mode === "read" || mode === "logs" || mode === "tail") {
+      return { kind: "execute", label: "terminal read", steps: [actionStep("result", "app_control", "readTerminal", collectGenericObjectArgs(args, {
+        maxBytes: readIntOption(args, ["--max-bytes"], undefined),
+        since: readIntOption(args, ["--since"], undefined),
+      }))] };
+    }
+    if (mode === "write" || mode === "send" || mode === "input") {
+      const data = readValue(args, ["--data", "--value", "--text"]) ?? args.join(" ");
+      if (!data.length) throw new CliUsageError("data is required.");
+      return { kind: "execute", label: "terminal write", steps: [actionStep("result", "app_control", "writeTerminal", collectGenericObjectArgs(args, { data }))] };
+    }
+    if (mode === "signal" || mode === "interrupt" || mode === "stop") {
+      return { kind: "execute", label: "terminal signal", steps: [actionStep("result", "app_control", "signalTerminal", collectGenericObjectArgs(args, {
+        signal: readValue(args, ["--signal"]) ?? (mode === "stop" ? "SIGTERM" : "SIGINT"),
+      }))] };
+    }
+    throw new CliUsageError("app-control terminal supports read, write, or signal.");
+  }
+  if (sub === "launch" || sub === "open" || sub === "start") {
+    const trailingCommand = readTrailingCommand(args);
+    const command = readValue(args, ["--command", "--cmd"]) ?? trailingCommand;
+    const appKind = readValue(args, ["--kind", "--app-kind"]) ?? "electron";
+    const projectRoot = readValue(args, ["--project-root", "--root"]);
+    const laneId = readValue(args, ["--lane", "--lane-id"]);
+    const cwd = readValue(args, ["--cwd", "--working-directory"]);
+    const debugPort = readNumberOption(args, ["--debug-port", "--port"]);
+    const cdpPort = readNumberOption(args, ["--cdp-port"]);
+    const label = readValue(args, ["--label", "--name"]);
+    const chatSessionId = readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"]) ?? process.env.ADE_CHAT_SESSION_ID;
+    const force = readFlag(args, ["--force", "-f"]) ? true : undefined;
+    const positionalCommand = args.filter((arg) => arg !== "--" && !arg.startsWith("-")).join(" ").trim();
+    const launchCommand = command ?? (positionalCommand.length ? positionalCommand : null);
+    if (!launchCommand) throw new CliUsageError("app-control launch requires a command, for example: ade app-control launch --command \"pnpm dev\".");
+    return {
+      kind: "execute",
+      label: "App Control launch",
+      steps: [actionStep("result", "app_control", "launch", collectGenericObjectArgs(args, {
+        appKind,
+        projectRoot,
+        laneId,
+        command: launchCommand,
+        cwd,
+        debugPort,
+        cdpPort,
+        label,
+        chatSessionId,
+        force,
+      }))],
+    };
+  }
+  if (sub === "connect" || sub === "attach") {
+    return { kind: "execute", label: "App Control connect", steps: [actionStep("result", "app_control", "connect", collectGenericObjectArgs(args, {
+      appKind: readValue(args, ["--kind", "--app-kind"]) ?? "electron",
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      cdpPort: readNumberOption(args, ["--cdp-port", "--port"]) ?? Number(numericPositionals()[0]),
+      label: readValue(args, ["--label", "--name"]),
+      chatSessionId: readValue(args, ["--chat-session", "--session"]) ?? process.env.ADE_CHAT_SESSION_ID,
+      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+    }))] };
+  }
+  if (sub === "stop" || sub === "shutdown" || sub === "teardown" || sub === "close") {
+    return { kind: "execute", label: "App Control stop", steps: [actionStep("result", "app_control", "stop", collectGenericObjectArgs(args, { force: readFlag(args, ["--force", "-f"]) ? true : undefined }))] };
+  }
+  if (sub === "screenshot" || sub === "capture") {
+    return { kind: "execute", label: "App Control screenshot", steps: [actionStep("result", "app_control", "screenshot", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "snapshot" || sub === "screen" || sub === "elements") {
+    return { kind: "execute", label: "App Control snapshot", steps: [actionStep("result", "app_control", "getSnapshot", collectGenericObjectArgs(args, { projectRoot: readValue(args, ["--project-root", "--root"]) }))] };
+  }
+  if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
+    return { kind: "execute", label: "App Control inspect point", steps: [actionStep("result", "app_control", "inspectPoint", collectGenericObjectArgs(args, {
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+      includeScreenshot: readFlag(args, ["--screenshot", "--include-screenshot"]),
+    }))] };
+  }
+  if (sub === "select") {
+    return { kind: "execute", label: "App Control select", steps: [actionStep("result", "app_control", "selectPoint", collectGenericObjectArgs(args, {
+      projectRoot: readValue(args, ["--project-root", "--root"]),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+    }))] };
+  }
+  if (sub === "click" || sub === "tap") {
+    return { kind: "execute", label: "App Control click", steps: [actionStep("result", "app_control", "click", collectGenericObjectArgs(args, {
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+    }))] };
+  }
+  if (sub === "type" || sub === "text") {
+    return { kind: "execute", label: "App Control type", steps: [actionStep("result", "app_control", "typeText", collectGenericObjectArgs(args, {
+      text: requireValue(
+        readValue(args, ["--value", "--message", "--input-text"])
+          ?? readCommandTextValue(args, ["--text"])
+          ?? args.filter((arg) => arg !== "--text").join(" "),
+        "text",
+      ),
+    }))] };
+  }
+  return { kind: "execute", label: `app-control ${sub}`, steps: [actionStep("result", "app_control", sub, collectGenericObjectArgs(args))] };
 }
 
 function buildMemoryPlan(args: string[]): CliPlan {
@@ -2657,12 +2942,14 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--automation", "--autonomy", "--backend", "--base", "--base-branch", "--base-ref", "--body", "--branch",
   "--branch-name", "--branch-ref", "--bundle", "--bundle-id", "--category", "--color", "--cols",
   "--command", "--comment", "--comment-id", "--commit", "--compare-ref",
-  "--caption", "--compare-to", "--content", "--context-file", "--cwd", "--data",
+  "--caption", "--cdp-port", "--chat-session", "--chat-session-id", "--compare-to", "--content", "--context-file", "--cwd", "--data",
+  "--debug-port",
   "--depth", "--desc", "--device", "--duration", "--duration-ms",
   "--description", "--domain", "--droid-autonomy", "--droid-permission-mode",
   "--duration-sec", "--enabled", "--event",
   "--end-x", "--end-y", "--file", "--fps", "--from", "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
   "--index", "--input", "--input-json", "--input-text", "--instructions",
+  "--kind",
   "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",
   "--line",
   "--max-log-bytes", "--max-prompt-chars", "--max-rounds", "--memory",
@@ -2670,15 +2957,15 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--model-id", "--name", "--new", "--new-path", "--number", "--old",
   "--old-path", "--owner", "--owner-id", "--owner-kind",
   "--params-json", "--parent", "--parent-lane", "--parent-lane-id",
-  "--path", "--permission-mode", "--permissions", "--pr", "--pr-id",
+  "--path", "--permission-mode", "--permissions", "--port", "--pr", "--pr-id",
   "--pr-number", "--pr-url", "--process", "--process-id", "--project-root",
   "--prompt", "--provider", "--pty", "--pty-id", "--query", "--question",
   "--reason", "--reasoning", "--recent-limit", "--ref", "--role", "--root",
   "--root-lane", "--round", "--rounds", "--rows", "--rule", "--run", "--run-id", "--scalar",
   "--scalar-json", "--scope", "--seconds", "--session", "--session-id", "--set",
-  "--set-json", "--sha", "--source", "--source-lane", "--stack", "--stack-id",
+  "--set-json", "--sha", "--signal", "--since", "--source", "--source-lane", "--stack", "--stack-id",
   "--scheme", "--start-point", "--start-x", "--start-y", "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
-  "--tab", "--tab-identifier", "--target", "--target-id", "--thread", "--thread-id", "--timeout", "--timeout-ms", "--title", "--tool-type",
+  "--tab", "--tab-identifier", "--target", "--target-id", "--terminal", "--terminal-id", "--thread", "--thread-id", "--timeout", "--timeout-ms", "--title", "--tool-type",
   "--udid", "--url", "--value", "--workspace", "--workspace-id", "--workspace-root",
   "--x", "--xcodeproj", "--y",
 ]);
@@ -2716,6 +3003,7 @@ function buildCliPlan(command: string[]): CliPlan {
     process: "run",
     processes: "run",
     pty: "shell",
+    term: "terminal",
     chats: "chat",
     work: "chat",
     agents: "agent",
@@ -2726,6 +3014,9 @@ function buildCliPlan(command: string[]): CliPlan {
     artifacts: "proof",
     ios: "ios-sim",
     simulator: "ios-sim",
+    app: "app-control",
+    apps: "app-control",
+    electron: "app-control",
     setting: "settings",
     config: "settings",
     action: "actions",
@@ -2740,6 +3031,9 @@ function buildCliPlan(command: string[]): CliPlan {
     if (primaryHelpKey === "cursor") {
       return { kind: "help", text: buildCursorHelp(args) };
     }
+    if (primaryHelpKey === "app-control") {
+      return { kind: "help", text: buildAppControlHelp(args) };
+    }
     return { kind: "help", text: HELP_BY_COMMAND[primaryHelpKey] ?? TOP_LEVEL_HELP };
   }
   if (primary === "help") {
@@ -2750,6 +3044,9 @@ function buildCliPlan(command: string[]): CliPlan {
     }
     if (key === "cursor") {
       return { kind: "help", text: buildCursorHelp(args) };
+    }
+    if (key === "app-control") {
+      return { kind: "help", text: buildAppControlHelp(args) };
     }
     return { kind: "help", text: key && HELP_BY_COMMAND[key] ? HELP_BY_COMMAND[key] : TOP_LEVEL_HELP };
   }
@@ -2792,6 +3089,7 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "prs" || primary === "pr") return buildPrPlan(args);
   if (primary === "run" || primary === "process" || primary === "processes") return buildRunPlan(args);
   if (primary === "shell" || primary === "pty") return buildShellPlan(args);
+  if (primary === "terminal" || primary === "term") return buildTerminalPlan(args);
   if (primary === "chat" || primary === "chats" || primary === "work") return buildChatPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "cto") return buildCtoPlan(args);
@@ -2805,6 +3103,7 @@ function buildCliPlan(command: string[]): CliPlan {
     return buildProofPlan(args);
   }
   if (primary === "ios-sim" || primary === "ios" || primary === "simulator") return buildIosSimulatorPlan(args);
+  if (primary === "app-control" || primary === "app" || primary === "apps" || primary === "electron") return buildAppControlPlan(args);
   if (primary === "memory") return buildMemoryPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
@@ -3823,11 +4122,19 @@ function formatIosSimStream(value: unknown): string {
   const status = isRecord(value) ? value : {};
   return renderKeyValues("ADE iOS simulator stream", [
     ["running", status.running],
-    ["backend", status.backend],
+    ["requested backend", status.requestedBackend],
+    ["resolved backend", status.backend],
+    ["fallback reason", status.fallbackReason],
+    ["degradation reason", status.degradationReason],
     ["device", status.deviceUdid],
     ["fps", status.fps ?? status.targetFps],
     ["frames", status.frameCount],
     ["avg latency ms", status.averageLatencyMs],
+    ["latency p50 ms", status.latencyP50Ms],
+    ["latency p95 ms", status.latencyP95Ms],
+    ["helper pid", status.helperPid],
+    ["input backend", status.inputBackend],
+    ["error code", isRecord(status.error) ? status.error.code : null],
     ["started", status.startedAt],
     ["last frame", status.lastFrameAt],
     ["stream url", status.streamUrl],
@@ -3903,6 +4210,114 @@ function formatIosSimPreview(value: unknown): string {
     ["rendered", record.renderedAt],
     ["setup", steps],
     ["error", record.error ?? capability.error],
+  ]);
+}
+
+function formatAppControlStatus(value: unknown): string {
+  const status = isRecord(value) ? value : {};
+  const providers = Array.isArray(status.providers) ? status.providers.filter(isRecord) : [];
+  const session = isRecord(status.activeSession)
+    ? status.activeSession
+    : typeof status.status === "string" && status.label ? status : {};
+  return [
+    renderKeyValues("ADE App Control", [
+      ["supported", status.supported],
+      ["platform", status.platform],
+      ["active app", session.label],
+      ["session", session.id],
+      ["status", session.status],
+      ["cdp port", session.cdpPort],
+      ["terminal", session.terminalSessionId],
+      ["pty", session.terminalPtyId],
+      ["chat session", session.chatSessionId],
+      ["pid", session.pid],
+      ["command", session.command],
+      ["error", session.lastError],
+    ]),
+    "",
+    renderTable(
+      ["provider", "ready", "detail"],
+      providers.map((provider) => [provider.provider, provider.available ? "yes" : "no", provider.detail]),
+      "Providers\n(none)",
+    ),
+  ].join("\n");
+}
+
+function formatAppControlSnapshot(value: unknown): string {
+  const snapshot = isRecord(value) ? value : {};
+  const screenshot = isRecord(snapshot.screenshot) ? snapshot.screenshot : snapshot;
+  const screen = isRecord(snapshot.screen) ? snapshot.screen : {};
+  const providers = Array.isArray(snapshot.providers) ? snapshot.providers.filter(isRecord) : [];
+  const elements = Array.isArray(snapshot.elements) ? snapshot.elements.filter(isRecord) : [];
+  const providerSummary = providers.map((provider) => `${provider.provider}:${provider.available ? provider.elementCount ?? "ok" : "unavailable"}`).join(", ");
+  return [
+    renderKeyValues("ADE App Control snapshot", [
+      ["title", snapshot.title],
+      ["url", snapshot.url],
+      ["captured", snapshot.capturedAt],
+      ["screenshot", screenshot.width && screenshot.height ? `${screenshot.width}x${screenshot.height}` : null],
+      ["screen", screen.width && screen.height ? `${screen.width}x${screen.height} @${screen.scale ?? 1}x` : null],
+      ["elements", elements.length],
+      ["providers", providerSummary],
+    ]),
+    elements.length ? "" : "",
+    elements.length
+      ? renderTable(
+          ["ref", "role", "label", "selector"],
+          elements.slice(0, 24).map((element) => [
+            element.ref ?? element.id,
+            element.role ?? element.tagName,
+            element.label ?? element.value ?? element.testId,
+            element.selector,
+          ]),
+          "",
+        )
+      : "",
+  ].filter(Boolean).join("\n");
+}
+
+function formatTerminalList(value: unknown): string {
+  const terminals = Array.isArray(value)
+    ? value.filter(isRecord)
+    : isRecord(value) && value.terminalId
+      ? [value]
+      : firstArray(value, ["terminals", "items"]);
+  return renderTable(
+    ["terminal", "pty", "chat", "status", "runtime", "title"],
+    terminals.map((terminal) => [
+      terminal.terminalId,
+      terminal.ptyId,
+      terminal.chatSessionId,
+      terminal.status,
+      terminal.runtimeState,
+      terminal.title,
+    ]),
+    "ADE chat terminals\n(no terminals found)",
+  );
+}
+
+function formatTerminalRead(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const data = typeof result.data === "string" ? result.data : "";
+  const header = renderKeyValues("ADE terminal scrollback", [
+    ["terminal", result.terminalId],
+    ["nextSince", result.nextSince],
+    ["bytes", Buffer.byteLength(data, "utf8")],
+  ]);
+  return data.length ? `${header}\n\n${data}` : `${header}\n\n(no output)`;
+}
+
+function formatAppControlSelection(value: unknown): string {
+  const item = firstRecord(value, ["item", "selection"]) ?? (isRecord(value) ? value : {});
+  const metadata = isRecord(item.metadata) ? item.metadata : {};
+  const selected = isRecord(metadata.selectedElement) ? metadata.selectedElement : {};
+  return renderKeyValues("ADE App Control selection", [
+    ["component", item.componentId],
+    ["source", isRecord(value) ? value.source ?? item.provider : item.provider],
+    ["file", item.sourceFile ? `${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}` : null],
+    ["selector", selected.selector],
+    ["label", selected.label ?? metadata.label],
+    ["selected", item.selectedAt],
   ]);
 }
 
@@ -4019,6 +4434,16 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
       return formatIosSimSelection(value);
     case "ios-sim-preview":
       return formatIosSimPreview(value);
+    case "app-control-status":
+      return formatAppControlStatus(value);
+    case "app-control-snapshot":
+      return formatAppControlSnapshot(value);
+    case "app-control-selection":
+      return formatAppControlSelection(value);
+    case "terminal-list":
+      return formatTerminalList(value);
+    case "terminal-read":
+      return formatTerminalRead(value);
     case "actions-list":
       return formatActionsList(value);
     case "automation-run-detail":
@@ -4041,7 +4466,7 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "file read") return "file-read";
   if (label === "file tree" || label === "file workspaces") return "files-tree";
   if (label === "file search" || label === "file quick-open") return "files-search";
-  if (label === "pr list") return "prs-list";
+  if (label === "pr list" || label === "pr list open") return "prs-list";
   if (label === "pr detail" || label === "pr health") return "pr-detail";
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";
@@ -4057,6 +4482,11 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "ios simulator screen snapshot" || label === "ios simulator inspector snapshot" || label === "ios simulator screenshot") return "ios-sim-snapshot";
   if (label === "ios simulator select" || label === "ios simulator inspect point") return "ios-sim-selection";
   if (label === "ios simulator preview status" || label === "ios simulator previews" || label === "ios simulator preview render" || label === "ios simulator preview open") return "ios-sim-preview";
+  if (label === "app control status" || label === "app control launch" || label === "app control connect" || label === "app control stop") return "app-control-status";
+  if (label === "app control snapshot" || label === "app control screenshot") return "app-control-snapshot";
+  if (label === "app control select" || label === "app control inspect point") return "app-control-selection";
+  if (label === "terminal list" || label === "terminal active") return "terminal-list";
+  if (label === "terminal read") return "terminal-read";
   if (label === "actions list") return "actions-list";
   if (label.endsWith("actions")) return "actions-list";
   return "action-result";

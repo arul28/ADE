@@ -7,7 +7,7 @@ export type IosSimulatorDevice = {
 };
 
 export type IosSimulatorToolStatus = {
-  name: "xcrun" | "xcodebuild" | "simulator_window" | "idb" | "idb_companion" | "ffmpeg";
+  name: "xcrun" | "xcodebuild" | "iosurface_indigo" | "simulator_window" | "idb" | "idb_companion" | "ffmpeg";
   available: boolean;
   detail: string;
   installHint: string;
@@ -84,6 +84,7 @@ export type IosSimulatorSession = {
   projectRoot: string | null;
   chatSessionId: string | null;
   mode: IosSimulatorLaunchMode;
+  keepSimulatorInBackground?: boolean | null;
   bridgeUrl: string | null;
   startedAt: string;
 };
@@ -100,17 +101,30 @@ export type IosSimulatorStreamStatus = {
   deviceUdid: string | null;
   running: boolean;
   backend: IosSimulatorStreamBackend | null;
+  requestedBackend?: "auto" | IosSimulatorStreamBackend | null;
+  fallbackReason?: string | null;
+  degradationReason?: string | null;
   fps: number | null;
   targetFps: number | null;
   frameCount: number;
   startedAt: string | null;
   lastFrameAt: string | null;
   lastError: string | null;
+  error?: {
+    code: string;
+    exitCode?: number | null;
+    signal?: string | null;
+  } | null;
   streamUrl: string | null;
   averageLatencyMs?: number | null;
+  latencyP50Ms?: number | null;
+  latencyP95Ms?: number | null;
+  helperPid?: number | null;
+  inputBackend?: "indigo" | "idb" | null;
 };
 
 export type IosSimulatorStreamBackend =
+  | "iosurface-indigo"
   | "simctl-screenshot-poll"
   | "idb-mjpeg"
   | "idb-h264-ffmpeg-mjpeg"

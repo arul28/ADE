@@ -195,7 +195,7 @@ struct WorkChatSessionView: View {
   }
 
   @ViewBuilder
-  var timelineSection: some View {
+  func timelineSection(proxy: ScrollViewProxy) -> some View {
     if timeline.isEmpty {
       ADEEmptyStateView(
         symbol: "bubble.left.and.bubble.right",
@@ -221,7 +221,7 @@ struct WorkChatSessionView: View {
       }
 
       ForEach(visibleTimeline) { entry in
-        timelineEntryView(for: entry)
+        timelineEntryView(for: entry, proxy: proxy)
       }
     }
   }
@@ -383,7 +383,7 @@ struct WorkChatSessionView: View {
           if !timelineSnapshot.subagentSnapshots.isEmpty {
             WorkSubagentStrip(snapshots: timelineSnapshot.subagentSnapshots)
           }
-          timelineSection
+          timelineSection(proxy: proxy)
           streamingStatusSection
 
           Color.clear

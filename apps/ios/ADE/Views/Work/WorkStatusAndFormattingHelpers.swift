@@ -48,6 +48,7 @@ func providerLabel(_ provider: String) -> String {
   case "claude": return "Claude"
   case "opencode": return "OpenCode"
   case "cursor": return "Cursor"
+  case "droid": return "Droid"
   default: return provider.capitalized
   }
 }
@@ -117,6 +118,12 @@ func providerTint(_ provider: String?) -> Color {
     return .teal
   case "cursor":
     return .indigo
+  case "droid":
+    return .gray
+  case "google":
+    return .yellow
+  case "factory":
+    return .gray
   default:
     return ADEColor.accent
   }
@@ -137,6 +144,9 @@ func providerFamilyKey(_ provider: String) -> String {
   }
   if raw == "cursor" || raw.hasPrefix("cursor") {
     return "cursor"
+  }
+  if raw == "droid" || raw == "factory" || raw.hasPrefix("droid") {
+    return "droid"
   }
   return raw
 }

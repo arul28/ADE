@@ -15,7 +15,7 @@ import {
   Trash,
   X
 } from "@phosphor-icons/react";
-import type { FileTreeNode, FilesWorkspace } from "../../../shared/types";
+import type { FileContent, FilePreviewKind, FileTreeNode, FilesWorkspace } from "../../../shared/types";
 import { replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
 import { cn } from "../ui/cn";
 
@@ -25,6 +25,10 @@ type OpenTab = {
   savedContent: string;
   languageId: string;
   isBinary: boolean;
+  previewKind?: FilePreviewKind;
+  mimeType?: string | null;
+  dataUrl?: string;
+  size?: number;
 };
 
 type NodeContextMenuState = {
@@ -100,6 +104,93 @@ function basename(pathValue: string): string {
   const idx = normalized.lastIndexOf("/");
   if (idx < 0) return normalized;
   return normalized.slice(idx + 1);
+}
+
+type FilePreviewLike = {
+  isBinary: boolean;
+  previewKind?: FilePreviewKind;
+  dataUrl?: string;
+  mimeType?: string | null;
+  size?: number;
+};
+
+function getFilePreviewKind(file: FilePreviewLike | null | undefined): FilePreviewKind {
+  if (!file) return "text";
+  if (file.previewKind) return file.previewKind;
+  if (file.dataUrl) return "image";
+  return file.isBinary ? "binary" : "text";
+}
+
+function isTextTab(tab: OpenTab | null | undefined): boolean {
+  return Boolean(tab) && getFilePreviewKind(tab) === "text" && !tab?.isBinary;
+}
+
+function formatFileSize(bytes: number | null | undefined): string | null {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function openTabFromFileContent(filePath: string, file: FileContent): OpenTab {
+  return {
+    path: filePath,
+    content: file.content,
+    savedContent: file.content,
+    languageId: file.languageId,
+    isBinary: file.isBinary,
+    previewKind: getFilePreviewKind(file),
+    mimeType: file.mimeType ?? null,
+    dataUrl: file.dataUrl,
+    size: file.size,
+  };
+}
+
+function FloatingFilePreview({ tab }: { tab: OpenTab }) {
+  const previewKind = getFilePreviewKind(tab);
+  const details = [tab.mimeType, formatFileSize(tab.size)].filter(Boolean).join(" · ");
+  const [imageFailed, setImageFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    setImageFailed(false);
+  }, [tab.dataUrl]);
+
+  if (previewKind === "image" && tab.dataUrl && !imageFailed) {
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-surface">
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+          <img
+            src={tab.dataUrl}
+            alt={tab.path}
+            className="max-h-full max-w-full object-contain"
+            onError={() => setImageFailed(true)}
+          />
+        </div>
+        <div className="shrink-0 truncate border-t border-border px-3 py-2 text-[11px] font-mono text-muted-fg" title={tab.path}>
+          <span className="text-fg">{tab.path}</span>
+          {details ? <span> · {details}</span> : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full items-center justify-center bg-surface px-6 text-center">
+      <div className="max-w-[300px]">
+        <FileText size={28} className="mx-auto mb-2 text-muted-fg" />
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-fg">
+          {previewKind === "image" ? "Image preview unavailable" : "Preview unavailable"}
+        </div>
+        <div className="mt-2 text-[12px] leading-5 text-muted-fg">
+          {previewKind === "image" ? "This image could not be decoded for inline preview." : "This file type cannot be displayed inline."}
+        </div>
+        <div className="mt-3 truncate text-[11px] font-mono text-muted-fg" title={tab.path}>
+          {tab.path}
+        </div>
+        {details ? <div className="mt-1 text-[10px] font-mono text-muted-fg">{details}</div> : null}
+      </div>
+    </div>
+  );
 }
 
 function splitNameAndExtension(fileName: string): { base: string; ext: string } {
@@ -219,6 +310,7 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
     () => openTabs.find((tab) => tab.path === activeTabPath) ?? null,
     [openTabs, activeTabPath]
   );
+  const activeTabIsText = isTextTab(activeTab);
 
   const nodeMap = React.useMemo(() => flattenNodes(tree), [tree]);
 
@@ -259,6 +351,7 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
 
       try {
         const file = await window.ade.files.readFile({ workspaceId, path });
+        const nextTab = openTabFromFileContent(path, file);
         setOpenTabs((prev) => {
           let changed = false;
           const next = prev.map((tab) => {
@@ -269,19 +362,17 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
               tab.content === file.content &&
               tab.savedContent === file.content &&
               tab.languageId === file.languageId &&
-              tab.isBinary === file.isBinary
+              tab.isBinary === file.isBinary &&
+              getFilePreviewKind(tab) === getFilePreviewKind(file) &&
+              tab.mimeType === (file.mimeType ?? null) &&
+              tab.dataUrl === file.dataUrl &&
+              tab.size === file.size
             ) {
               return tab;
             }
 
             changed = true;
-            return {
-              ...tab,
-              content: file.content,
-              savedContent: file.content,
-              languageId: file.languageId,
-              isBinary: file.isBinary
-            };
+            return { ...tab, ...nextTab };
           });
           return changed ? next : prev;
         });
@@ -471,7 +562,7 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
   React.useEffect(() => {
     if (!editorRef.current || !monacoRef.current) return;
 
-    if (!activeTab) {
+    if (!activeTab || !activeTabIsText) {
       try {
         editorRef.current.setModel(null);
       } catch {
@@ -490,7 +581,7 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
     const modelKey = `${activeTab.path}:${activeTab.languageId}`;
     if (modelRef.current && modelKeyRef.current === modelKey) {
       editorRef.current.updateOptions({
-        readOnly: !canEdit || activeTab.isBinary
+        readOnly: !canEdit || !activeTabIsText
       });
       return;
     }
@@ -513,49 +604,36 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
     modelKeyRef.current = modelKey;
     editorRef.current.setModel(modelRef.current);
     editorRef.current.updateOptions({
-      readOnly: !canEdit || activeTab.isBinary
+      readOnly: !canEdit || !activeTabIsText
     });
-  }, [activeTab?.path, activeTab?.languageId, activeTab?.isBinary, canEdit]);
+  }, [activeTab, activeTabIsText, canEdit]);
 
   React.useEffect(() => {
-    if (!activeTab || !editorRef.current) return;
+    if (!activeTab || !activeTabIsText || !editorRef.current) return;
     const current = editorRef.current.getValue();
     if (current === activeTab.content) return;
     applyingRef.current = true;
     editorRef.current.setValue(activeTab.content);
     applyingRef.current = false;
-  }, [activeTab?.path, activeTab?.content]);
+  }, [activeTab, activeTabIsText]);
 
   const openFile = React.useCallback(
     async (path: string) => {
       if (!workspaceId) return;
       try {
         const next = await window.ade.files.readFile({ workspaceId, path });
+        const nextTab = openTabFromFileContent(path, next);
+        setError(null);
         setOpenTabs((prev) => {
           const existing = prev.find((tab) => tab.path === path);
           if (existing) {
             return prev.map((tab) =>
               tab.path === path
-                ? {
-                  ...tab,
-                  content: next.content,
-                  savedContent: next.content,
-                  languageId: next.languageId,
-                  isBinary: next.isBinary
-                }
+                ? { ...tab, ...nextTab }
                 : tab
             );
           }
-          return [
-            ...prev,
-            {
-              path,
-              content: next.content,
-              savedContent: next.content,
-              languageId: next.languageId,
-              isBinary: next.isBinary
-            }
-          ];
+          return [...prev, nextTab];
         });
         setActiveTabPath(path);
         setSelectedNodePath(path);
@@ -577,7 +655,7 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
   }, []);
 
   const saveActive = React.useCallback(async () => {
-    if (!workspaceId || !activeTab || !canEdit || activeTab.isBinary) return;
+    if (!workspaceId || !activeTab || !canEdit || !isTextTab(activeTab)) return;
     try {
       await window.ade.files.writeText({
         workspaceId,
@@ -953,12 +1031,12 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
             type="button"
             className={cn(
               "h-7 rounded border px-2 text-[10px] font-mono",
-              activeTab && canEdit && !activeTab.isBinary
+              activeTab && canEdit && activeTabIsText
                 ? "border-accent/40 bg-accent/15 text-accent hover:text-fg"
                 : "border-border/60 bg-surface text-muted-fg/50"
             )}
             onClick={() => void saveActive()}
-            disabled={!activeTab || !canEdit || activeTab.isBinary}
+            disabled={!activeTab || !canEdit || !activeTabIsText}
             data-pane-control="true"
             title="Save"
           >
@@ -1050,10 +1128,14 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
               </div>
             ) : null}
 
-            {editorStatus === "failed" && activeTab ? (
+            {activeTab && !activeTabIsText ? (
+              <FloatingFilePreview tab={activeTab} />
+            ) : null}
+
+            {editorStatus === "failed" && activeTab && activeTabIsText ? (
               <textarea
                 value={activeTab.content}
-                readOnly={!canEdit || activeTab.isBinary}
+                readOnly={!canEdit || !activeTabIsText}
                 onChange={(event) => {
                   if (!activeTab) return;
                   setOpenTabs((prev) =>
@@ -1065,7 +1147,7 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
               />
             ) : null}
 
-            {editorStatus !== "failed" ? (
+            {editorStatus !== "failed" && (!activeTab || activeTabIsText) ? (
               <div
                 ref={(node) => setEditorHost(node)}
                 className={cn("h-full", !activeTab && "hidden")}
@@ -1073,7 +1155,7 @@ export function FloatingFilesWorkspace({ preferredLaneId }: { preferredLaneId: s
               />
             ) : null}
 
-            {editorStatus === "loading" && activeTab ? (
+            {editorStatus === "loading" && activeTab && activeTabIsText ? (
               <div className="absolute inset-0 flex items-center justify-center text-[11px] font-mono text-muted-fg">
                 Loading editor...
               </div>

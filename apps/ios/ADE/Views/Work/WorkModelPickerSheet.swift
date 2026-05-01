@@ -33,7 +33,6 @@ struct WorkModelPickerSheet: View {
   @State private var activeGroup: String = ""
   @State private var activeProvider: String = ""
   @State private var searchText: String = ""
-  @State private var reasoningEffort: String = ""
   @State private var liveCatalog: [WorkModelCatalogGroup]?
   @State private var isLoadingCatalog = false
   @State private var usingCuratedFallback = false
@@ -119,7 +118,6 @@ struct WorkModelPickerSheet: View {
         } else if isSearching {
           searchList
         } else {
-          reasoningRow
           groupTabStrip
           providerBadgeRow
           Divider().overlay(ADEColor.border.opacity(0.18))
@@ -145,9 +143,6 @@ struct WorkModelPickerSheet: View {
     .presentationDragIndicator(.visible)
     .onAppear {
       syncSelectionStateToCatalog()
-      if reasoningEffort.isEmpty {
-        reasoningEffort = currentReasoningEffort
-      }
     }
     .onChange(of: catalogIdentity) { _, _ in
       syncSelectionStateToCatalog()
@@ -184,7 +179,7 @@ struct WorkModelPickerSheet: View {
     usingCuratedFallback = false
     liveCatalog = nil
 
-    let providers = ["claude", "codex", "cursor", "opencode"]
+    let providers = ["claude", "codex", "cursor", "droid", "opencode"]
     var availableModelsByProvider: [String: [AgentChatModelInfo]] = [:]
     var successCount = 0
 
@@ -259,15 +254,6 @@ struct WorkModelPickerSheet: View {
     return workModelCatalogGroupKey(for: model.id, currentProvider: currentProvider)
   }
 
-  private func reasoningEffortForSelection(_ model: WorkModelOption) -> String? {
-    let supportedTiers = supportedReasoningTiers(for: model)
-    if supportedTiers.isEmpty { return nil }
-    let trimmed = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed.isEmpty { return nil }
-    let normalized = trimmed.lowercased()
-    return supportedTiers.contains(where: { $0.lowercased() == normalized }) ? normalized : nil
-  }
-
   private func supportedReasoningTiers(for model: WorkModelOption) -> [String] {
     if let tiers = ADEColor.reasoningTiers(for: model.id), !tiers.isEmpty {
       return tiers
@@ -282,27 +268,9 @@ struct WorkModelPickerSheet: View {
       return ["low", "medium", "high"]
     }
     if lower.contains("gpt-5") {
-      return ["low", "medium", "high", "xhigh"]
+      return lower.contains("mini") ? ["medium", "high"] : ["low", "medium", "high", "xhigh"]
     }
     return []
-  }
-
-  private func reasoningLevelsForVisibleContext() -> [(String, String)] {
-    let visibleModels = filteredModels
-    let preferredOrder = ["low", "medium", "high", "xhigh", "max"]
-    var tierSet = Set<String>()
-    for model in visibleModels {
-      for tier in supportedReasoningTiers(for: model) {
-        tierSet.insert(tier.lowercased())
-      }
-    }
-    let current = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    if !current.isEmpty {
-      tierSet.insert(current)
-    }
-    let orderedTiers = preferredOrder.filter { tierSet.contains($0) }
-      + tierSet.filter { !preferredOrder.contains($0) }.sorted()
-    return [("", "Off")] + orderedTiers.map { ($0, reasoningLabel(for: $0)) }
   }
 
   private func reasoningLabel(for tier: String) -> String {
@@ -312,6 +280,7 @@ struct WorkModelPickerSheet: View {
     default: return tier.capitalized
     }
   }
+
 
   @ViewBuilder
   private var loadingState: some View {
@@ -383,62 +352,6 @@ struct WorkModelPickerSheet: View {
     .padding(.bottom, 10)
   }
 
-  /// Reasoning-effort segmented control, displayed above the group/provider
-  /// tabs. Users pick the effort level here and it is applied to any
-  /// reasoning-capable model they subsequently tap in the list; for models
-  /// that don't accept the chosen tier the value is ignored at the call site.
-  @ViewBuilder
-  private var reasoningRow: some View {
-    let levels = reasoningLevelsForVisibleContext()
-    HStack(spacing: 8) {
-      Text("REASONING")
-        .font(.caption2.weight(.bold))
-        .tracking(0.4)
-        .foregroundStyle(ADEColor.textMuted)
-      HStack(spacing: 4) {
-        ForEach(levels, id: \.0) { entry in
-          let (id, label) = entry
-          let isActive = id.lowercased() == reasoningEffort.lowercased()
-          Button {
-            withAnimation(.easeInOut(duration: 0.14)) {
-              reasoningEffort = id
-            }
-          } label: {
-            Text(label)
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary.opacity(0.7))
-              .lineLimit(1)
-              .minimumScaleFactor(0.75)
-              .frame(maxWidth: .infinity)
-              .padding(.vertical, 6)
-              .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                  .fill(isActive ? ADEColor.accent.opacity(0.18) : Color.clear)
-              )
-              .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                  .stroke(isActive ? ADEColor.accent.opacity(0.35) : Color.clear, lineWidth: 0.6)
-              )
-          }
-          .buttonStyle(.plain)
-          .accessibilityAddTraits(isActive ? .isSelected : [])
-          .accessibilityLabel("Reasoning effort \(label)")
-        }
-      }
-      .padding(3)
-      .background(
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-          .fill(ADEColor.surfaceBackground.opacity(0.3))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
-      )
-    }
-    .padding(.horizontal, 16)
-    .padding(.bottom, 10)
-  }
-
   @ViewBuilder
   private var groupTabStrip: some View {
     HStack(spacing: 4) {
@@ -502,7 +415,8 @@ struct WorkModelPickerSheet: View {
 
   @ViewBuilder
   private var providerBadgeRow: some View {
-    if let block = activeGroupBlock, block.providers.count > 1 || block.key == "opencode" {
+    if let block = activeGroupBlock, !singleFamilyGroup(block.key),
+       block.providers.count > 1 || block.key == "opencode" {
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
           ForEach(block.providers) { prov in
@@ -512,14 +426,14 @@ struct WorkModelPickerSheet: View {
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
       }
-    } else if let block = activeGroupBlock, let only = block.providers.first {
-      HStack(spacing: 8) {
-        providerBadge(only)
-        Spacer(minLength: 0)
-      }
-      .padding(.horizontal, 16)
-      .padding(.bottom, 10)
     }
+  }
+
+  /// Groups whose entries all come from a single brand (Claude, Codex) don't
+  /// need a redundant filter row beneath the group tab — every model is from
+  /// that brand by definition.
+  private func singleFamilyGroup(_ key: String) -> Bool {
+    key == "claude" || key == "codex"
   }
 
   @ViewBuilder
@@ -639,24 +553,42 @@ struct WorkModelPickerSheet: View {
 
   @ViewBuilder
   private func modelButton(model: WorkModelOption) -> some View {
-    Button {
-      let reasoningToSend = reasoningEffortForSelection(model)
-      let reasoningChanged = (reasoningToSend ?? "") != currentReasoningEffort
-      if model.id == currentModelId && !reasoningChanged {
-        dismiss()
-      } else {
-        onSelect(model, reasoningToSend, runtimeProvider(for: model))
+    let tiers = supportedReasoningTiers(for: model)
+    let isSelected = model.id == currentModelId
+    VStack(alignment: .leading, spacing: 0) {
+      // Card header is always tappable: tapping the header commits the model
+      // with `effort: nil` (server default) even for reasoning-capable models,
+      // so users who don't care about a specific tier aren't forced to pick one.
+      Button {
+        commit(model: model, effort: nil)
+      } label: {
+        modelHeaderRow(model: model, isSelected: isSelected)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .contentShape(Rectangle())
       }
-    } label: {
-      modelRow(model: model)
+      .buttonStyle(.plain)
+      .disabled(isBusy)
+
+      if !tiers.isEmpty {
+        reasoningPills(model: model, tiers: tiers)
+          .padding(.top, 2)
+      }
     }
-    .buttonStyle(.plain)
-    .disabled(isBusy)
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .background(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(isSelected ? ADEColor.accent.opacity(0.08) : ADEColor.surfaceBackground.opacity(0.55))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(isSelected ? ADEColor.accent.opacity(0.35) : ADEColor.border.opacity(0.14), lineWidth: isSelected ? 1 : 0.5)
+    )
+    .contentShape(Rectangle())
   }
 
   @ViewBuilder
-  private func modelRow(model: WorkModelOption) -> some View {
-    let isSelected = model.id == currentModelId
+  private func modelHeaderRow(model: WorkModelOption, isSelected: Bool) -> some View {
     HStack(alignment: .center, spacing: 12) {
       WorkProviderLogo(provider: model.provider, size: 30)
 
@@ -707,17 +639,71 @@ struct WorkModelPickerSheet: View {
         }
       }
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(isSelected ? ADEColor.accent.opacity(0.08) : ADEColor.surfaceBackground.opacity(0.55))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(isSelected ? ADEColor.accent.opacity(0.35) : ADEColor.border.opacity(0.14), lineWidth: isSelected ? 1 : 0.5)
-    )
-    .contentShape(Rectangle())
     .accessibilityLabel("\(model.displayName), \(workModelTierLabel(model.tier)). \(model.tagline)\(isSelected ? ". Currently selected." : "")")
+  }
+
+  /// Reasoning level pill row shown inline under a model card. Tapping a pill
+  /// commits both the model selection and the chosen effort. Highlights the
+  /// currently-active effort for the active model so users see what's set.
+  @ViewBuilder
+  private func reasoningPills(model: WorkModelOption, tiers: [String]) -> some View {
+    let isActiveModel = model.id == currentModelId
+    let normalizedCurrent = currentReasoningEffort
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    HStack(spacing: 6) {
+      Text("REASONING")
+        .font(.system(size: 9, weight: .bold))
+        .tracking(0.4)
+        .foregroundStyle(ADEColor.textMuted)
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 5) {
+          ForEach(tiers, id: \.self) { tier in
+            let normalized = tier.lowercased()
+            let isActive = isActiveModel && normalized == normalizedCurrent
+            Button {
+              commit(model: model, effort: normalized)
+            } label: {
+              Text(reasoningLabel(for: tier))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(isActive ? Color.white : ADEColor.textSecondary)
+                .lineLimit(1)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(
+                  Capsule(style: .continuous)
+                    .fill(isActive ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.6))
+                )
+                .overlay(
+                  Capsule(style: .continuous)
+                    .stroke(isActive ? ADEColor.accent : ADEColor.border.opacity(0.18), lineWidth: 0.6)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isBusy)
+            .accessibilityLabel("\(model.displayName) · reasoning \(reasoningLabel(for: tier))")
+            .accessibilityAddTraits(isActive ? .isSelected : [])
+          }
+        }
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.top, 8)
+  }
+
+  private func commit(model: WorkModelOption, effort: String?) {
+    let normalizedEffort = effort?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased() ?? ""
+    let normalizedCurrentEffort = currentReasoningEffort
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    let nextEffort: String? = normalizedEffort.isEmpty ? nil : normalizedEffort
+    let effortChanged = (nextEffort ?? "") != normalizedCurrentEffort
+    if model.id == currentModelId && !effortChanged {
+      dismiss()
+      return
+    }
+    onSelect(model, nextEffort, runtimeProvider(for: model))
   }
 }

@@ -50,6 +50,64 @@ describe("fileService", () => {
     }
   });
 
+  it("returns an inline image preview for image files", () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-image-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      fs.writeFileSync(path.join(rootPath, "logo.png"), pngBytes);
+
+      const result = service.readFile({
+        workspaceId: "workspace-1",
+        path: "logo.png",
+      });
+
+      expect(result).toMatchObject({
+        content: pngBytes.toString("base64"),
+        encoding: "base64",
+        size: pngBytes.length,
+        languageId: "image",
+        isBinary: true,
+        previewKind: "image",
+        mimeType: "image/png",
+        dataUrl: `data:image/png;base64,${pngBytes.toString("base64")}`,
+      });
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("treats invalid non-null bytes as unsupported binary content", () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-binary-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      const bytes = Buffer.from([0xff, 0xfe, 0xfd, 0xfc]);
+      fs.writeFileSync(path.join(rootPath, "payload.bin"), bytes);
+
+      const result = service.readFile({
+        workspaceId: "workspace-1",
+        path: "payload.bin",
+      });
+
+      expect(result).toMatchObject({
+        content: bytes.toString("base64"),
+        encoding: "base64",
+        size: bytes.length,
+        languageId: "plaintext",
+        isBinary: true,
+        previewKind: "binary",
+        mimeType: null,
+      });
+      expect(result.dataUrl).toBeUndefined();
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("includes ignored files in quick open and search when requested", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-search-"));
     const { execSync } = await import("node:child_process");

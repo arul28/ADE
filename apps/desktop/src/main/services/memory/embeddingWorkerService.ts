@@ -15,6 +15,7 @@ type MemoryRow = {
   id: string;
   content: string | null;
   status: string | null;
+  pinned: number | boolean | null;
 };
 
 type CreateEmbeddingWorkerServiceOpts = {
@@ -143,9 +144,6 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
   }
 
   function queueMemory(memoryId: string) {
-    // Don't gate on isAvailable() — items should queue during model loading
-    // and get processed once the model is ready. The processing loop handles
-    // unavailability via embed()'s ensureExtractor() which awaits loading.
     const normalized = String(memoryId ?? "").trim();
     if (!normalized || queuedIds.has(normalized)) return;
     queuedIds.add(normalized);
@@ -162,7 +160,7 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
           ON e.memory_id = m.id
          AND e.embedding_model = ?
         WHERE m.project_id = ?
-          AND m.status != 'archived'
+          AND (m.status = 'promoted' OR m.pinned = 1)
           AND e.id IS NULL
         ORDER BY m.created_at ASC
       `,
@@ -175,7 +173,7 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
     const placeholders = batchIds.map(() => "?").join(", ");
     const rows = db.all<MemoryRow>(
       `
-        SELECT id, content, status
+        SELECT id, content, status, pinned
         FROM unified_memories
         WHERE project_id = ?
           AND id IN (${placeholders})
@@ -247,7 +245,9 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
         for (const row of rows) {
           const memoryId = String(row.id ?? "").trim();
           if (!memoryId) continue;
-          if (String(row.status ?? "").trim() === "archived") continue;
+          const status = String(row.status ?? "").trim();
+          const pinned = row.pinned === true || Number(row.pinned ?? 0) === 1;
+          if (status !== "promoted" && !pinned) continue;
 
           try {
             const vector = await embeddingService.embed(String(row.content ?? ""));
@@ -282,8 +282,6 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
   async function start() {
     if (started) return getStatus();
     started = true;
-    // Always run backfill — items queue regardless of model availability.
-    // The processing loop handles unavailability via embed()'s ensureExtractor().
     for (const id of listBackfillIds()) {
       queueMemory(id);
     }

@@ -1,5 +1,5 @@
 import React from "react";
-import { DotsThreeVertical, Play, Plus, X } from "@phosphor-icons/react";
+import { DotsThreeVertical, Play, Plus, Terminal, X } from "@phosphor-icons/react";
 import type { LaneSummary, ProcessDefinition, ProcessGroupDefinition, ProcessRuntime } from "../../../shared/types";
 import { COLORS, MONO_FONT, inlineBadge, outlineButton, processStatusColor } from "../lanes/laneDesignTokens";
 import { useClickOutside } from "../../hooks/useClickOutside";
@@ -19,6 +19,7 @@ type CommandCardProps = {
   onDelete: (processId: string) => void;
   onAddToGroup?: (processId: string, groupId: string) => void;
   onKillRuntime?: (runtime: ProcessRuntime) => void;
+  onOpenRuntime?: (runtime: ProcessRuntime) => void;
 };
 
 function sortRuntimes(runtimes: ProcessRuntime[]): ProcessRuntime[] {
@@ -43,6 +44,7 @@ export function CommandCard({
   onDelete,
   onAddToGroup,
   onKillRuntime,
+  onOpenRuntime,
 }: CommandCardProps) {
   const hasLanes = lanes.length > 0;
   const laneId = selectedLaneId && lanes.some((item) => item.id === selectedLaneId)
@@ -418,6 +420,21 @@ export function CommandCard({
                   </button>
                 ))}
               </div>
+            ) : null}
+            {onOpenRuntime && latestRuntime.sessionId && latestRuntime.ptyId ? (
+              <button
+                type="button"
+                onClick={() => onOpenRuntime(latestRuntime)}
+                title="Open terminal"
+                aria-label={`Open terminal for run ${latestRuntime.runId}`}
+                style={{
+                  ...outlineButton({ height: 24, padding: "0 8px", fontSize: 9 }),
+                  marginLeft: activeRuntimes.length > 0 ? 0 : "auto",
+                }}
+              >
+                <Terminal size={12} weight="bold" />
+                Terminal
+              </button>
             ) : null}
           </div>
         ) : (

@@ -18,6 +18,13 @@ type StoredSuggestionState = {
 };
 
 const KEY_PREFIX = "rebase:suggestion:";
+const SUGGESTION_CACHE_TTL_MS = 10_000;
+
+type ListSuggestionsOptions = {
+  force?: boolean;
+  lanes?: LaneSummary[];
+  refreshRemoteTracking?: boolean;
+};
 
 function keyForLane(laneId: string): string {
   return `${KEY_PREFIX}${laneId}`;
@@ -83,16 +90,23 @@ export function createRebaseSuggestionService(args: {
     db.setJson(keyForLane(state.laneId), state);
   };
 
+  let cachedSuggestions: { atMs: number; suggestions: RebaseSuggestion[] } | null = null;
+  let suggestionsInFlight: Promise<RebaseSuggestion[]> | null = null;
+  let suggestionsCacheGeneration = 0;
+
+  const invalidateSuggestionsCache = () => {
+    cachedSuggestions = null;
+    suggestionsCacheGeneration += 1;
+  };
+
   const readRefHeadSha = async (ref: string): Promise<string | null> => {
     const result = await runGit(["rev-parse", "--verify", ref], { cwd: projectRoot, timeoutMs: 10_000 });
     return result.exitCode === 0 && result.stdout.trim() ? result.stdout.trim() : null;
   };
 
-  const readBehindCount = async (args: { laneWorktreePath: string; baseHeadSha: string }): Promise<number> => {
-    const laneHeadSha = await getHeadSha(args.laneWorktreePath);
-    if (!laneHeadSha) return 0;
+  const readBehindCount = async (args: { laneHeadSha: string; baseHeadSha: string }): Promise<number> => {
     const result = await runGit(
-      ["rev-list", "--count", `${laneHeadSha}..${args.baseHeadSha}`],
+      ["rev-list", "--count", `${args.laneHeadSha}..${args.baseHeadSha}`],
       { cwd: projectRoot, timeoutMs: 10_000 }
     );
     return result.exitCode === 0 ? Math.max(0, Number(result.stdout.trim()) || 0) : 0;
@@ -104,18 +118,16 @@ export function createRebaseSuggestionService(args: {
    * trimmed. Returns an empty array on any git failure.
    */
   const readBehindCommits = async (args: {
-    laneWorktreePath: string;
+    laneHeadSha: string;
     baseHeadSha: string;
   }): Promise<RebaseTargetCommit[]> => {
-    const laneHeadSha = await getHeadSha(args.laneWorktreePath);
-    if (!laneHeadSha) return [];
     const result = await runGit(
       [
         "log",
         "-n",
         "20",
         "--pretty=format:%H%x1F%h%x1F%s%x1F%an%x1F%aI",
-        `${laneHeadSha}..${args.baseHeadSha}`,
+        `${args.laneHeadSha}..${args.baseHeadSha}`,
       ],
       { cwd: projectRoot, timeoutMs: 10_000 }
     );
@@ -139,13 +151,18 @@ export function createRebaseSuggestionService(args: {
     return out;
   };
 
-  const resolvePrimaryParentHeadSha = async (parent: LaneSummary): Promise<string | null> => {
-    const parentBranch = parent.branchRef.trim();
+  const resolvePrimaryParentHeadSha = async (
+    parent: LaneSummary,
+    options: { refreshRemoteTracking?: boolean } = {},
+  ): Promise<string | null> => {
+    const parentBranch = branchNameFromLaneRef(parent.branchRef).trim();
     if (!parentBranch) return null;
-    await fetchRemoteTrackingBranch({
-      projectRoot,
-      targetBranch: parentBranch,
-    }).catch(() => {});
+    if (options.refreshRemoteTracking) {
+      await fetchRemoteTrackingBranch({
+        projectRoot,
+        targetBranch: parentBranch,
+      }).catch(() => {});
+    }
     const remoteHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
     if (remoteHeadSha) return remoteHeadSha;
     return getHeadSha(parent.worktreePath);
@@ -155,6 +172,7 @@ export function createRebaseSuggestionService(args: {
     lane: LaneSummary,
     laneById: Map<string, LaneSummary>,
     primaryParentHeadByBranch: Map<string, string | null>,
+    options: { refreshRemoteTracking?: boolean } = {},
   ): Promise<{ parentLaneId: string; parentHeadSha: string; baseLabel: string | null; groupContext: string | null } | null> => {
     const queueOverride = await resolveQueueRebaseOverride({
       db,
@@ -183,10 +201,12 @@ export function createRebaseSuggestionService(args: {
           if (primaryParentHeadByBranch.has(parentBranch)) {
             parentHeadSha = primaryParentHeadByBranch.get(parentBranch) ?? null;
           } else {
-            await fetchRemoteTrackingBranch({
-              projectRoot,
-              targetBranch: parentBranch,
-            }).catch(() => {});
+            if (options.refreshRemoteTracking) {
+              await fetchRemoteTrackingBranch({
+                projectRoot,
+                targetBranch: parentBranch,
+              }).catch(() => {});
+            }
             parentHeadSha = await readRefHeadSha(`origin/${parentBranch}`);
             if (!parentHeadSha) {
               parentHeadSha = await getHeadSha(parent.worktreePath);
@@ -211,7 +231,9 @@ export function createRebaseSuggestionService(args: {
     if (!baseRef) return null;
     if (lane.laneType === "primary") return null;
     const fetchTargetName = baseRef.replace(/^origin\//, "");
-    await fetchRemoteTrackingBranch({ projectRoot, targetBranch: fetchTargetName }).catch(() => {});
+    if (options.refreshRemoteTracking) {
+      await fetchRemoteTrackingBranch({ projectRoot, targetBranch: fetchTargetName }).catch(() => {});
+    }
     const comparisonRef = baseRef.startsWith("origin/") ? baseRef : `origin/${fetchTargetName}`;
     const baseHeadSha =
       (await readRefHeadSha(comparisonRef))
@@ -225,14 +247,16 @@ export function createRebaseSuggestionService(args: {
     };
   };
 
-  const listSuggestions = async (): Promise<RebaseSuggestion[]> => {
-    await fetchQueueTargetTrackingBranches({
-      db,
-      projectId,
-      projectRoot,
-    });
+  const computeSuggestions = async (options: ListSuggestionsOptions = {}): Promise<RebaseSuggestion[]> => {
+    if (options.refreshRemoteTracking) {
+      await fetchQueueTargetTrackingBranches({
+        db,
+        projectId,
+        projectRoot,
+      });
+    }
 
-    const lanes = await laneService.list({ includeArchived: false });
+    const lanes = options.lanes ?? await laneService.list({ includeArchived: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const primaryParentHeadByBranch = new Map<string, string | null>();
     const prLaneIds = getPrLaneIds();
@@ -241,10 +265,14 @@ export function createRebaseSuggestionService(args: {
     const nowMs = Date.now();
 
     for (const lane of lanes) {
-      const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
+      const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch, {
+        refreshRemoteTracking: options.refreshRemoteTracking === true,
+      });
       if (!base) continue;
+      const laneHeadSha = await getHeadSha(lane.worktreePath);
+      if (!laneHeadSha) continue;
       const behindCount = await readBehindCount({
-        laneWorktreePath: lane.worktreePath,
+        laneHeadSha,
         baseHeadSha: base.parentHeadSha,
       });
       if (behindCount <= 0) continue;
@@ -295,7 +323,7 @@ export function createRebaseSuggestionService(args: {
       let targetCommits: RebaseTargetCommit[] = [];
       try {
         targetCommits = await readBehindCommits({
-          laneWorktreePath: lane.worktreePath,
+          laneHeadSha,
           baseHeadSha: base.parentHeadSha,
         });
       } catch (err) {
@@ -327,10 +355,42 @@ export function createRebaseSuggestionService(args: {
     });
   };
 
-  const emit = async () => {
+  const listSuggestions = async (options: ListSuggestionsOptions = {}): Promise<RebaseSuggestion[]> => {
+    // Only share the global cache and in-flight promise for default (no
+    // request-specific options) requests. Caller-supplied lane subsets and
+    // refreshRemoteTracking each compute different results, so they must not
+    // read or populate the shared default-result cache.
+    const useSharedCache = !options.force && !options.lanes && options.refreshRemoteTracking !== true;
+    const nowMs = Date.now();
+    if (useSharedCache && cachedSuggestions && nowMs - cachedSuggestions.atMs < SUGGESTION_CACHE_TTL_MS) {
+      return cachedSuggestions.suggestions;
+    }
+    if (useSharedCache && suggestionsInFlight) {
+      return suggestionsInFlight;
+    }
+
+    const generation = suggestionsCacheGeneration;
+    const work = computeSuggestions(options);
+    if (useSharedCache) {
+      suggestionsInFlight = work;
+    }
+    try {
+      const suggestions = await work;
+      if (useSharedCache && generation === suggestionsCacheGeneration) {
+        cachedSuggestions = { atMs: Date.now(), suggestions };
+      }
+      return suggestions;
+    } finally {
+      if (suggestionsInFlight === work) {
+        suggestionsInFlight = null;
+      }
+    }
+  };
+
+  const emit = async (options: ListSuggestionsOptions = {}) => {
     if (!onEvent) return;
     try {
-      const suggestions = await listSuggestions();
+      const suggestions = await listSuggestions({ ...options, force: true });
       onEvent({
         type: "rebase-suggestions-updated",
         computedAt: nowIso(),
@@ -347,6 +407,7 @@ export function createRebaseSuggestionService(args: {
 
     const existing = loadState(laneId);
     if (existing) {
+      invalidateSuggestionsCache();
       saveState({
         ...existing,
         dismissedAt: nowIso()
@@ -363,8 +424,10 @@ export function createRebaseSuggestionService(args: {
     const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to dismiss.");
 
+    const laneHeadSha = await getHeadSha(lane.worktreePath);
+    if (!laneHeadSha) throw new Error("Lane has no readable head.");
     const behindCount = await readBehindCount({
-      laneWorktreePath: lane.worktreePath,
+      laneHeadSha,
       baseHeadSha: base.parentHeadSha,
     });
     const next: StoredSuggestionState = {
@@ -376,6 +439,7 @@ export function createRebaseSuggestionService(args: {
       deferredUntil: null,
       dismissedAt: nowIso()
     };
+    invalidateSuggestionsCache();
     saveState(next);
     void emit();
   };
@@ -389,6 +453,7 @@ export function createRebaseSuggestionService(args: {
 
     const existing = loadState(laneId);
     if (existing) {
+      invalidateSuggestionsCache();
       saveState({
         ...existing,
         deferredUntil: until,
@@ -406,8 +471,10 @@ export function createRebaseSuggestionService(args: {
     const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to defer.");
 
+    const laneHeadSha = await getHeadSha(lane.worktreePath);
+    if (!laneHeadSha) throw new Error("Lane has no readable head.");
     const behindCount = await readBehindCount({
-      laneWorktreePath: lane.worktreePath,
+      laneHeadSha,
       baseHeadSha: base.parentHeadSha,
     });
     const next: StoredSuggestionState = {
@@ -419,6 +486,7 @@ export function createRebaseSuggestionService(args: {
       deferredUntil: until,
       dismissedAt: null
     };
+    invalidateSuggestionsCache();
     saveState(next);
     void emit();
   };
@@ -439,7 +507,7 @@ export function createRebaseSuggestionService(args: {
     const lanes = await laneService.list({ includeArchived: false });
     const parent = lanes.find((lane) => lane.id === parentId) ?? null;
     const resolvedParentHeadSha = parent?.laneType === "primary"
-      ? await resolvePrimaryParentHeadSha(parent)
+      ? await resolvePrimaryParentHeadSha(parent, { refreshRemoteTracking: true })
       : (args.postHeadSha ?? "").trim();
     if (!resolvedParentHeadSha) return;
     const directChildren = lanes.filter((lane) => lane.parentLaneId === parentId && lane.status.behind > 0);
@@ -466,16 +534,17 @@ export function createRebaseSuggestionService(args: {
         deferredUntil: existing?.deferredUntil ?? null,
         dismissedAt: existing?.parentHeadSha === resolvedParentHeadSha ? existing.dismissedAt ?? null : null
       };
+      invalidateSuggestionsCache();
       saveState(next);
     }
 
     logger.info("rebaseSuggestions.parent_head_changed", { parentId, reason: args.reason, children: children.length });
-    await emit();
+    await emit({ refreshRemoteTracking: true });
   };
 
   return {
     listSuggestions,
-    refresh: emit,
+    refresh: () => emit({ refreshRemoteTracking: true }),
     dismiss,
     defer,
     onParentHeadChanged

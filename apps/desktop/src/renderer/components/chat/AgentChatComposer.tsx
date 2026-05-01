@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, CloudArrowUp, DeviceMobile, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
+import { At, CaretDown, Check, CloudArrowUp, Desktop, DeviceMobile, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -20,6 +20,7 @@ import {
   type AgentChatSlashCommand,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
+  type AppControlContextItem,
   type IosElementContextItem,
   type PendingInputRequest,
 } from "../../../shared/types";
@@ -108,6 +109,37 @@ function iosContextSourceDescription(item: IosElementContextItem): string {
 function iosFrameLabel(item: IosElementContextItem): string | null {
   if (!item.frame) return null;
   return `x ${Math.round(item.frame.x)}, y ${Math.round(item.frame.y)}, w ${Math.round(item.frame.width)}, h ${Math.round(item.frame.height)}`;
+}
+
+function appControlContextDisplayLabel(item: AppControlContextItem): string {
+  const metadata = item.metadata ?? {};
+  for (const value of [metadata.label, metadata.value, item.componentId, metadata.role, metadata.tagName]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "App element";
+}
+
+function appControlContextSourceDescription(item: AppControlContextItem): string {
+  if (item.sourceFile) {
+    return `${item.sourceFile.split("/").pop()}${item.sourceLine ? `:${item.sourceLine}` : ""}`;
+  }
+  const candidates = iosMetadataArray(item.metadata.sourceCandidates);
+  if (candidates.length) return `${candidates.length} source ${candidates.length === 1 ? "guess" : "guesses"}`;
+  if (item.provider === "coordinate-fallback") return "Coordinate selection";
+  return typeof item.metadata.provider === "string" ? item.metadata.provider : item.provider;
+}
+
+function appControlContextRoleHint(item: AppControlContextItem): string | null {
+  const metadata = item.metadata ?? {};
+  const role = typeof metadata.role === "string" ? metadata.role.trim() : null;
+  if (role) return role;
+  const tag = typeof metadata.tagName === "string" ? metadata.tagName.trim() : null;
+  return tag ? tag.toLowerCase() : null;
+}
+
+function appControlContextFrameHint(item: AppControlContextItem): string | null {
+  if (!item.frame) return null;
+  return `${Math.round(item.frame.width)}×${Math.round(item.frame.height)} @ ${Math.round(item.frame.x)},${Math.round(item.frame.y)}`;
 }
 
 /** When set, permission/runtime controls bind to this slot (parallel model row configuration). */
@@ -472,6 +504,7 @@ export function AgentChatComposer({
   executionMode,
   computerUseSnapshot,
   iosElementContextItems = [],
+  appControlContextItems = [],
   executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
@@ -500,6 +533,7 @@ export function AgentChatComposer({
   onCursorModeChange,
   onCursorConfigChange,
   onRemoveIosElementContext,
+  onRemoveAppControlContext,
   onClearEvents,
   promptSuggestion,
   chatHasMessages = false,
@@ -540,6 +574,9 @@ export function AgentChatComposer({
   onCloseCloudLaunchMode,
   onOpenCloudBringToLocal,
   onSubmitToCloud,
+  showAppControlToggle = false,
+  appControlOpen = false,
+  onToggleAppControl,
 }: {
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
@@ -569,6 +606,7 @@ export function AgentChatComposer({
   executionMode?: AgentChatExecutionMode | null;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
   iosElementContextItems?: IosElementContextItem[];
+  appControlContextItems?: AppControlContextItem[];
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
@@ -602,6 +640,7 @@ export function AgentChatComposer({
   onCursorConfigChange?: (configId: string, value: string | boolean) => void;
   onComputerUsePolicyChange?: (policy: unknown) => void;
   onRemoveIosElementContext?: (id: string) => void;
+  onRemoveAppControlContext?: (id: string) => void;
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
   chatHasMessages?: boolean;
@@ -649,6 +688,9 @@ export function AgentChatComposer({
   onCloseCloudLaunchMode?: () => void;
   onOpenCloudBringToLocal?: () => void;
   onSubmitToCloud?: (promptText: string) => Promise<boolean> | boolean;
+  showAppControlToggle?: boolean;
+  appControlOpen?: boolean;
+  onToggleAppControl?: () => void;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -657,6 +699,7 @@ export function AgentChatComposer({
   const [attachmentCursor, setAttachmentCursor] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
+  const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
 
   const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
   const [hoveredCodexPreset, setHoveredCodexPreset] = useState<Exclude<CodexPermissionPreset, "custom"> | null>(null);
@@ -684,14 +727,14 @@ export function AgentChatComposer({
   // image. handlePaste consults this to avoid attaching the same image twice
   // when the real paste event lands after the 80ms fallback has already fired.
   const clipboardImagePasteFallbackAttachedRef = useRef(false);
-  const useRichIosComposer = iosElementContextItems.length > 0;
+  const useRichComposer = iosElementContextItems.length > 0 || appControlContextItems.length > 0;
   const canAttach = !parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS;
   const attachBlockedReason = parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
     ? `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`
     : null;
 
   const resizeTextarea = useCallback(() => {
-    if (useRichIosComposer) return;
+    if (useRichComposer) return;
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "0px";
@@ -699,16 +742,16 @@ export function AgentChatComposer({
     const next = Math.min(Math.max(el.scrollHeight, 28), maxH);
     el.style.height = `${next}px`;
     el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
-  }, [layoutVariant, composerMaxHeightPx, useRichIosComposer]);
+  }, [layoutVariant, composerMaxHeightPx, useRichComposer]);
   useEffect(() => {
     resizeTextarea();
     if (!shouldAutofocus) return;
-    if (useRichIosComposer) {
+    if (useRichComposer) {
       richEditorRef.current?.focus({ preventScroll: true });
       return;
     }
     textareaRef.current?.focus({ preventScroll: true });
-  }, [resizeTextarea, shouldAutofocus, useRichIosComposer]);
+  }, [resizeTextarea, shouldAutofocus, useRichComposer]);
   useEffect(() => {
     return () => {
       if (clipboardImagePasteFallbackTimerRef.current != null) {
@@ -780,7 +823,6 @@ export function AgentChatComposer({
 
   const addFileAttachments = async (files: FileList | null | undefined) => {
     if (!files?.length) return;
-    if (turnActive) return;
     if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
@@ -832,7 +874,6 @@ export function AgentChatComposer({
 
   const addNativeClipboardImageAttachment = async () => {
     if (!canAttach) return;
-    if (turnActive) return;
     if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
@@ -871,7 +912,7 @@ export function AgentChatComposer({
         return;
       }
       if (!(node instanceof HTMLElement)) return;
-      if (node.dataset.iosContextId) {
+      if (node.dataset.iosContextId || node.dataset.appControlContextId) {
         parts.push(" ");
         return;
       }
@@ -891,12 +932,12 @@ export function AgentChatComposer({
   }, [draft]);
 
   const syncRichDraft = useCallback(() => {
-    if (!useRichIosComposer) return;
+    if (!useRichComposer) return;
     const editor = richEditorRef.current;
     if (!editor) return;
     onDraftChange(serializeRichEditor());
     captureRichSelection();
-  }, [captureRichSelection, onDraftChange, serializeRichEditor, useRichIosComposer]);
+  }, [captureRichSelection, onDraftChange, serializeRichEditor, useRichComposer]);
 
   const getRichCursorTextOffset = useCallback((): number => {
     const editor = richEditorRef.current;
@@ -917,7 +958,7 @@ export function AgentChatComposer({
         offset += node.textContent?.length ?? 0;
         return;
       }
-      if (node instanceof HTMLElement && node.dataset.iosContextId) return;
+      if (node instanceof HTMLElement && (node.dataset.iosContextId || node.dataset.appControlContextId)) return;
       node.childNodes.forEach(visit);
     };
     editor.childNodes.forEach(visit);
@@ -992,9 +1033,36 @@ export function AgentChatComposer({
     return chip;
   }, []);
 
+  const createAppControlContextChipNode = useCallback((item: AppControlContextItem): HTMLElement => {
+    const chip = document.createElement("span");
+    chip.contentEditable = "false";
+    chip.dataset.appControlContextId = item.id;
+    chip.className = "mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-sky-300/22 bg-sky-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-sky-50/85 align-baseline";
+    chip.title = item.sourceFile
+      ? `${appControlContextDisplayLabel(item)} - ${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}`
+      : appControlContextDisplayLabel(item);
+
+    const label = document.createElement("span");
+    label.className = "max-w-[150px] truncate";
+    label.textContent = appControlContextDisplayLabel(item);
+    chip.appendChild(label);
+
+    const source = document.createElement("span");
+    source.className = "max-w-[90px] truncate text-sky-100/45";
+    source.textContent = appControlContextSourceDescription(item);
+    chip.appendChild(source);
+
+    const remove = document.createElement("span");
+    remove.className = "rounded px-0.5 text-sky-100/45";
+    remove.textContent = "x";
+    remove.dataset.appControlRemove = "true";
+    chip.appendChild(remove);
+    return chip;
+  }, []);
+
   useLayoutEffect(() => {
     const editor = richEditorRef.current;
-    if (!useRichIosComposer || !editor) {
+    if (!useRichComposer || !editor) {
       richInitializedRef.current = false;
       return;
     }
@@ -1002,37 +1070,67 @@ export function AgentChatComposer({
       editor.textContent = draft;
       richInitializedRef.current = true;
     }
-    const currentIds = new Set(iosElementContextItems.map((item) => item.id));
-    editor.querySelectorAll<HTMLElement>("[data-ios-context-id]").forEach((node) => {
-      const id = node.dataset.iosContextId;
-      if (!id || !currentIds.has(id)) node.remove();
-    });
-    const existingIds = new Set(Array.from(editor.querySelectorAll<HTMLElement>("[data-ios-context-id]")).map((node) => node.dataset.iosContextId).filter(Boolean));
-    for (const item of iosElementContextItems) {
-      if (existingIds.has(item.id)) continue;
-      const chip = createIosContextChipNode(item);
+
+    const isFocusedInsideEditor = document.activeElement === editor;
+    const insertChipFragment = (chip: HTMLElement) => {
       const before = document.createTextNode(" ");
       const after = document.createTextNode(" ");
       const fragment = document.createDocumentFragment();
       fragment.append(before, chip, after);
       const savedRange = richSelectionRef.current;
-      if (savedRange && editor.contains(savedRange.commonAncestorContainer)) {
+      // Prefer cursor insertion only when the user is actually typing in the
+      // editor — otherwise (chips arriving from an external panel like
+      // App Control or iOS sim) just append to the end, which makes
+      // multi-chip ordering deterministic.
+      if (isFocusedInsideEditor && savedRange && editor.contains(savedRange.commonAncestorContainer)) {
         const range = savedRange.cloneRange();
         range.deleteContents();
         range.insertNode(fragment);
         range.setStartAfter(after);
         range.collapse(true);
         richSelectionRef.current = range.cloneRange();
-      } else {
-        insertNodeAtTextOffset(editor, fragment, lastPlainSelectionRef.current ?? draft.length);
+        return;
       }
-      existingIds.add(item.id);
+      editor.appendChild(fragment);
+      const range = document.createRange();
+      range.setStartAfter(after);
+      range.collapse(true);
+      richSelectionRef.current = range.cloneRange();
+    };
+
+    const iosIds = new Set(iosElementContextItems.map((item) => item.id));
+    editor.querySelectorAll<HTMLElement>("[data-ios-context-id]").forEach((node) => {
+      const id = node.dataset.iosContextId;
+      if (!id || !iosIds.has(id)) node.remove();
+    });
+    const existingIosIds = new Set(Array.from(editor.querySelectorAll<HTMLElement>("[data-ios-context-id]")).map((node) => node.dataset.iosContextId).filter(Boolean));
+    for (const item of iosElementContextItems) {
+      if (existingIosIds.has(item.id)) continue;
+      insertChipFragment(createIosContextChipNode(item));
+      existingIosIds.add(item.id);
     }
+
+    const appControlIds = new Set(appControlContextItems.map((item) => item.id));
+    editor.querySelectorAll<HTMLElement>("[data-app-control-context-id]").forEach((node) => {
+      const id = node.dataset.appControlContextId;
+      if (!id || !appControlIds.has(id)) node.remove();
+    });
+    const existingAppControlIds = new Set(
+      Array.from(editor.querySelectorAll<HTMLElement>("[data-app-control-context-id]"))
+        .map((node) => node.dataset.appControlContextId)
+        .filter(Boolean),
+    );
+    for (const item of appControlContextItems) {
+      if (existingAppControlIds.has(item.id)) continue;
+      insertChipFragment(createAppControlContextChipNode(item));
+      existingAppControlIds.add(item.id);
+    }
+
     const next = serializeRichEditor();
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, useRichIosComposer]);
+  }, [appControlContextItems, createAppControlContextChipNode, createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, useRichComposer]);
 
   const handleSlashSelect = useCallback((cmd: SlashCommandEntry) => {
     // Local-only commands handled client-side
@@ -1040,9 +1138,9 @@ export function AgentChatComposer({
     // SDK and all other commands: set as draft text to be sent to the agent
     const suffix = cmd.argumentHint ? ` ${cmd.argumentHint}` : "";
     const next = `${cmd.command}${suffix} `;
-    if (useRichIosComposer) setRichEditorText(next);
+    if (useRichComposer) setRichEditorText(next);
     onDraftChange(next);
-  }, [onClearEvents, onDraftChange, setRichEditorText, useRichIosComposer]);
+  }, [onClearEvents, onDraftChange, setRichEditorText, useRichComposer]);
 
   const nativeControlsDisabled = permissionModeLocked;
   const slot = parallelControlSlot;
@@ -1800,7 +1898,7 @@ export function AgentChatComposer({
         return;
       }
       // Replace the @query with @filepath
-      if (useRichIosComposer) {
+      if (useRichComposer) {
         insertTextIntoRichEditor(`@${item.path} `);
       } else {
         const before = draft.slice(0, commandMenuTrigger.cursorIndex);
@@ -1814,12 +1912,12 @@ export function AgentChatComposer({
         handleSlashSelect(selected);
       } else {
         const next = `/${item.name} `;
-        if (useRichIosComposer) setRichEditorText(next);
+        if (useRichComposer) setRichEditorText(next);
         onDraftChange(next);
       }
     }
     setCommandMenuTrigger(null);
-  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onDraftChange, onAddAttachment, setRichEditorText, useRichIosComposer]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onDraftChange, onAddAttachment, setRichEditorText, useRichComposer]);
 
   const handleRichEditorInput = useCallback(() => {
     const editor = richEditorRef.current;
@@ -1888,26 +1986,41 @@ export function AgentChatComposer({
       });
       return;
     }
-    if (busy || !modelId || (!draft.trim().length && !iosElementContextItems.length)) return;
+    if (busy || !modelId || (!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length)) return;
     onSubmit();
-  }, [attachments, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, modelId, onApproval, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, modelId, onApproval, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
   const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
+  const selectedAppControlContext = appControlContextItems.find((item) => item.id === selectedAppControlContextId) ?? null;
   const selectedIosCandidates = selectedIosContext
     ? iosMetadataArray(selectedIosContext.metadata.sourceCandidates ?? selectedIosContext.metadata.sourceMatches).slice(0, 3)
     : [];
   const selectedNearbyIosElements = selectedIosContext
     ? iosMetadataArray(selectedIosContext.metadata.nearbyElements).slice(0, 6)
     : [];
+  const selectedAppControlCandidates = selectedAppControlContext
+    ? iosMetadataArray(selectedAppControlContext.metadata.sourceCandidates).slice(0, 3)
+    : [];
+  const selectedAppControlNearby = selectedAppControlContext
+    ? iosMetadataArray(selectedAppControlContext.metadata.nearbyElements).slice(0, 6)
+    : [];
+  const selectedAppControlSnippet = typeof selectedAppControlContext?.metadata.sourceSnippet === "string"
+    ? selectedAppControlContext.metadata.sourceSnippet
+    : null;
   useEffect(() => {
     if (!selectedIosContextId) return;
     if (iosElementContextItems.some((item) => item.id === selectedIosContextId)) return;
     setSelectedIosContextId(null);
   }, [iosElementContextItems, selectedIosContextId]);
+  useEffect(() => {
+    if (!selectedAppControlContextId) return;
+    if (appControlContextItems.some((item) => item.id === selectedAppControlContextId)) return;
+    setSelectedAppControlContextId(null);
+  }, [appControlContextItems, selectedAppControlContextId]);
 
-  const composerBeamActive = layoutVariant !== "grid-tile" && (turnActive || !chatHasMessages);
+  const composerBeamActive = isActive && layoutVariant !== "grid-tile" && !iosSimulatorOpen && (turnActive || !chatHasMessages);
   const composerBeamVariant = turnActive ? "ocean" : "colorful";
   const composerBeamDuration = turnActive ? 20 : 5;
   const composerBeamStrength = turnActive ? 0.26 : 0.44;
@@ -1917,7 +2030,8 @@ export function AgentChatComposer({
     && parallelModelSlots.length >= 2
     && (draft.trim().length > 0 || attachments.length > 0);
   const hasIosElementContext = iosElementContextItems.length > 0;
-  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext);
+  const hasAppControlContext = appControlContextItems.length > 0;
+  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext || hasAppControlContext);
   const sendEnabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
 
   function sendButtonTitle(): string {
@@ -1927,9 +2041,15 @@ export function AgentChatComposer({
       return "Send to all lanes";
     }
     if (!modelId) return "Select a model first";
+    if (!draft.trim().length && hasAppControlContext) return "Send selected App Control context";
     if (!draft.trim().length && hasIosElementContext) return "Send selected iOS context";
     return "Send";
   }
+
+  const composerFrameClassName = cn(
+    "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
+    layoutVariant === "grid-tile" ? "m-0" : "",
+  );
 
   return (
     <>
@@ -1940,10 +2060,7 @@ export function AgentChatComposer({
         strength={composerBeamStrength}
         active={composerBeamActive}
         borderRadius={18}
-        className={cn(
-          "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
-          layoutVariant === "grid-tile" ? "m-0" : "",
-        )}
+        className={composerFrameClassName}
         style={{ overflow: "visible" }}
       >
       <ChatComposerShell
@@ -2004,8 +2121,89 @@ export function AgentChatComposer({
         )
       ) : undefined}
       trays={
-        attachments.length || attachError || selectedIosContext ? (
+        attachments.length || attachError || selectedIosContext || selectedAppControlContext ? (
           <div className="space-y-2 px-1 py-2">
+            {selectedAppControlContext ? (
+              <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-sky-300/12 bg-black/20 p-2 pr-6">
+                <button
+                  type="button"
+                  aria-label="Dismiss preview"
+                  className="absolute right-1.5 top-1.5 rounded p-0.5 text-sky-100/40 transition-colors hover:text-sky-50/85"
+                  onClick={() => setSelectedAppControlContextId(null)}
+                >
+                  <X size={10} weight="bold" />
+                </button>
+                {selectedAppControlContext.screenshotDataUrl ? (
+                  <img
+                    src={selectedAppControlContext.screenshotDataUrl}
+                    alt=""
+                    className="h-16 w-16 rounded border border-white/[0.06] object-cover"
+                  />
+                ) : (
+                  <div className="flex h-16 w-16 items-center justify-center rounded border border-white/[0.06] bg-white/[0.03] text-sky-100/35">
+                    <Desktop size={20} weight="regular" />
+                  </div>
+                )}
+                <div className="min-w-0 space-y-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="shrink-0 rounded border border-sky-300/22 bg-sky-500/8 px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-wide text-sky-100/75">
+                      App Control
+                    </span>
+                    <span className="truncate text-sky-50/85">{appControlContextDisplayLabel(selectedAppControlContext)}</span>
+                    {appControlContextRoleHint(selectedAppControlContext) ? (
+                      <span className="shrink-0 rounded bg-white/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-wide text-muted-fg/55">
+                        {appControlContextRoleHint(selectedAppControlContext)}
+                      </span>
+                    ) : null}
+                  </div>
+                  {selectedAppControlContext.sourceFile ? (
+                    <div className="truncate text-sky-100/65">
+                      {selectedAppControlContext.sourceFile}
+                      {selectedAppControlContext.sourceLine ? `:${selectedAppControlContext.sourceLine}` : ""}
+                    </div>
+                  ) : (
+                    <div className="truncate">{appControlContextSourceDescription(selectedAppControlContext)}</div>
+                  )}
+                  {typeof selectedAppControlContext.metadata.url === "string" ? (
+                    <div className="truncate text-sky-100/45">{selectedAppControlContext.metadata.url}</div>
+                  ) : null}
+                  {appControlContextFrameHint(selectedAppControlContext) ? (
+                    <div className="text-muted-fg/45">{appControlContextFrameHint(selectedAppControlContext)}</div>
+                  ) : null}
+                  {selectedAppControlSnippet && selectedAppControlSnippet.trim().length ? (
+                    <pre className="mt-1 max-h-24 overflow-auto rounded border border-white/[0.05] bg-black/20 p-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] leading-4 text-sky-50/70">
+                      {selectedAppControlSnippet}
+                    </pre>
+                  ) : selectedAppControlCandidates.length ? (
+                    <div className="space-y-1">
+                      <div className="text-sky-100/45">Best source candidates</div>
+                      {selectedAppControlCandidates.map((candidate, index) => (
+                        <div key={`${candidate.sourceFile}:${candidate.sourceLine}:${index}`} className="rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-1">
+                          <div className="truncate text-sky-50/70">
+                            {String(candidate.sourceFile ?? "unknown")}{candidate.sourceLine ? `:${String(candidate.sourceLine)}` : ""}
+                          </div>
+                          {candidate.reason ? <div className="truncate text-muted-fg/50">{String(candidate.reason)}</div> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-amber-100/55">No source match for this element. Add a data-testid or an aria-label that matches a string in source.</div>
+                  )}
+                  {selectedAppControlNearby.length ? (
+                    <div className="space-y-1">
+                      <div className="text-sky-100/45">Nearby screen context</div>
+                      <div className="flex flex-wrap gap-1">
+                        {selectedAppControlNearby.map((element, index) => (
+                          <span key={`${String(element.id ?? index)}:${index}`} className="max-w-[160px] truncate rounded border border-white/[0.05] bg-white/[0.025] px-1.5 py-0.5 text-muted-fg/55">
+                            {String(element.label ?? element.role ?? element.tagName ?? "element")}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             {selectedIosContext ? (
               <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-cyan-300/12 bg-black/20 p-2">
                 <button
@@ -2387,17 +2585,17 @@ export function AgentChatComposer({
                 onClick={() => {
                   const richEl = richEditorRef.current;
                   const el = textareaRef.current;
-                  const currentDraft = useRichIosComposer ? serializeRichEditor() : el?.value ?? "";
+                  const currentDraft = useRichComposer ? serializeRichEditor() : el?.value ?? "";
                   if (!currentDraft.length) onDraftChange("/");
-                  if (useRichIosComposer && !currentDraft.length) setRichEditorText("/");
-                  const rect = (useRichIosComposer ? richEl : el)?.getBoundingClientRect();
+                  if (useRichComposer && !currentDraft.length) setRichEditorText("/");
+                  const rect = (useRichComposer ? richEl : el)?.getBoundingClientRect();
                   setCommandMenuTrigger({
                     type: "slash",
                     query: currentDraft.startsWith("/") ? currentDraft.slice(1).match(/^[^\s/]*/)?.[0] ?? "" : "",
                     cursorIndex: 0,
                   });
                   if (rect) setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
-                  (useRichIosComposer ? richEl : el)?.focus();
+                  (useRichComposer ? richEl : el)?.focus();
                 }}
                 aria-label="Open command picker"
               >
@@ -2418,7 +2616,7 @@ export function AgentChatComposer({
                   disabled={turnActive || busy}
                   onClick={() => onParallelChatModeChange?.(true)}
                   className={cn(
-                    "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                    "relative inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
                     "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
                     turnActive || busy ? "cursor-not-allowed opacity-40" : "",
                   )}
@@ -2463,6 +2661,36 @@ export function AgentChatComposer({
                   aria-pressed={iosSimulatorOpen}
                 >
                   <DeviceMobile className="h-3 w-3" size={14} weight={iosSimulatorOpen ? "fill" : "regular"} />
+                </button>
+              </SmartTooltip>
+            ) : null}
+
+            {showAppControlToggle && onToggleAppControl ? (
+              <SmartTooltip
+                content={{
+                  label: appControlOpen ? "Close App Control" : "Open App Control",
+                  description: "Launch, inspect, and capture Electron app sessions alongside this chat.",
+                  effect: appControlOpen ? "Hides the App Control drawer." : "Opens App Control for this lane.",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={onToggleAppControl}
+                  className={cn(
+                    "inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                    appControlOpen
+                      ? "border-sky-300/22 bg-sky-500/10 text-sky-100/80"
+                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
+                  )}
+                  aria-label={appControlOpen ? "Close App Control drawer" : "Open App Control drawer"}
+                  aria-pressed={appControlOpen}
+                >
+                  <Desktop className="h-3 w-3" size={14} weight={appControlOpen ? "fill" : "regular"} />
+                  {appControlContextItems.length ? (
+                    <span className="absolute -right-1 -top-1 inline-flex min-w-[14px] items-center justify-center rounded-full border border-sky-200/30 bg-sky-500 px-1 font-mono text-[8px] leading-[14px] text-white">
+                      {appControlContextItems.length}
+                    </span>
+                  ) : null}
                 </button>
               </SmartTooltip>
             ) : null}
@@ -2631,9 +2859,9 @@ export function AgentChatComposer({
             onSelect={handleCommandMenuSelect}
             onClose={() => setCommandMenuTrigger(null)}
           />
-          {useRichIosComposer ? (
+          {useRichComposer ? (
             <div className="relative">
-              {!draft.trim().length && !iosElementContextItems.length ? (
+              {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length ? (
                 <div className="pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30">
                   {turnActive ? "Steer the active turn..." : (messagePlaceholder ?? "Type to vibecode...")}
                 </div>
@@ -2658,15 +2886,31 @@ export function AgentChatComposer({
                 onBlur={captureRichSelection}
                 onClick={(event) => {
                   const target = event.target as HTMLElement | null;
-                  const chip = target?.closest?.("[data-ios-context-id]") as HTMLElement | null;
-                  if (!chip?.dataset.iosContextId) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  if (target?.dataset.iosRemove === "true") {
-                    onRemoveIosElementContext?.(chip.dataset.iosContextId);
+                  const iosChip = target?.closest?.("[data-ios-context-id]") as HTMLElement | null;
+                  if (iosChip?.dataset.iosContextId) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (target?.dataset.iosRemove === "true") {
+                      onRemoveIosElementContext?.(iosChip.dataset.iosContextId);
+                      return;
+                    }
+                    setSelectedIosContextId((current) => current === iosChip.dataset.iosContextId ? null : iosChip.dataset.iosContextId ?? null);
+                    setSelectedAppControlContextId(null);
                     return;
                   }
-                  setSelectedIosContextId((current) => current === chip.dataset.iosContextId ? null : chip.dataset.iosContextId ?? null);
+                  const appControlChip = target?.closest?.("[data-app-control-context-id]") as HTMLElement | null;
+                  if (appControlChip?.dataset.appControlContextId) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (target?.dataset.appControlRemove === "true") {
+                      onRemoveAppControlContext?.(appControlChip.dataset.appControlContextId);
+                      return;
+                    }
+                    setSelectedAppControlContextId((current) =>
+                      current === appControlChip.dataset.appControlContextId ? null : appControlChip.dataset.appControlContextId ?? null,
+                    );
+                    setSelectedIosContextId(null);
+                  }
                 }}
               />
             </div>

@@ -17,6 +17,13 @@ import type {
   PtyExitEvent,
   PtyCreateArgs,
   PtyCreateResult,
+  ChatTerminalActiveForChatArgs,
+  ChatTerminalListArgs,
+  ChatTerminalReadArgs,
+  ChatTerminalReadResult,
+  ChatTerminalSession,
+  ChatTerminalSignalArgs,
+  ChatTerminalWriteArgs,
   TerminalResumeMetadata,
   TerminalRuntimeState,
   TerminalSessionStatus,
@@ -48,6 +55,9 @@ function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolea
 const CLI_USER_TITLE_SEED_MIN_LEN = 3;
 const CLI_USER_TITLE_SEED_MAX_LEN = 180;
 const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
+const PTY_DATA_BATCH_INTERVAL_MS = 16;
+const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
+const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 
 function sanitizeCliUserTitleSeed(raw: string): string {
   const stripped = stripAnsi(raw)
@@ -113,6 +123,7 @@ type PtyEntry = {
   laneWorktreePath: string;
   boundCwd: string;
   sessionId: string;
+  chatSessionId: string | null;
   tracked: boolean;
   transcriptPath: string;
   transcriptStream: fs.WriteStream | null;
@@ -132,6 +143,11 @@ type PtyEntry = {
   disposed: boolean;
   createdAt: number;
   cleanupPaths: string[];
+  lastResizeCols: number | null;
+  lastResizeRows: number | null;
+  pendingDataChunks: string[];
+  pendingDataChars: number;
+  pendingDataTimer: ReturnType<typeof setTimeout> | null;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
   cliUserTitleLineBuffer: string;
@@ -164,6 +180,17 @@ function resolveShellCandidates(): ShellSpec[] {
   candidates.push("/bin/zsh", "/bin/bash", "/bin/sh");
   const uniq = Array.from(new Set(candidates.filter(Boolean)));
   return uniq.map((file) => ({ file, args: [] }));
+}
+
+function quotePosixShellArg(value: string): string {
+  if (!value.length) return "''";
+  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function buildDirectCommandShellFallback(command: string, args: string[]): string | null {
+  if (process.platform === "win32") return null;
+  return ["exec", command, ...args].map(quotePosixShellArg).join(" ");
 }
 
 function clampDims(cols: number, rows: number): { cols: number; rows: number } {
@@ -256,6 +283,7 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
 
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
+const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 
 export function createPtyService({
   projectRoot,
@@ -298,8 +326,17 @@ export function createPtyService({
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   const dataListeners = new Set<PtyDataListener>();
   const exitListeners = new Set<PtyExitListener>();
+  const terminalChatSessions = new Map<string, string>();
+  const activeTerminalByChatSession = new Map<string, string>();
+  const missingResumeTargetBackfillFailures = new Map<string, { toolType: TerminalToolType | null; checkedAtMs: number }>();
   /** Timers for auto-closing tool-typed PTYs when the CLI tool exits back to shell prompt */
   const toolAutoCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  let ptyDataSummaryTimer: ReturnType<typeof setTimeout> | null = null;
+  let ptyDataSummaryStartedAt = Date.now();
+  let ptyDataChunkCount = 0;
+  let ptyDataBatchCount = 0;
+  let ptyDataCharCount = 0;
+  let ptyDataMaxBatchChars = 0;
 
   const getSessionIntelligence = () => {
     const ai = projectConfigService?.get().effective.ai;
@@ -419,6 +456,36 @@ export function createPtyService({
     if (!state?.idleTimer) return;
     clearTimeout(state.idleTimer);
     state.idleTimer = null;
+  };
+
+  const flushPtyDataSummary = () => {
+    if (ptyDataSummaryTimer) {
+      clearTimeout(ptyDataSummaryTimer);
+      ptyDataSummaryTimer = null;
+    }
+    if (ptyDataChunkCount > 0 || ptyDataBatchCount > 0) {
+      const intervalMs = Math.max(1, Date.now() - ptyDataSummaryStartedAt);
+      logger.info("pty.data.summary", {
+        intervalMs,
+        chunks: ptyDataChunkCount,
+        batches: ptyDataBatchCount,
+        chars: ptyDataCharCount,
+        avgChunksPerBatch: ptyDataBatchCount > 0 ? Math.round((ptyDataChunkCount / ptyDataBatchCount) * 10) / 10 : 0,
+        maxBatchChars: ptyDataMaxBatchChars,
+        activePtys: ptys.size,
+        listeners: dataListeners.size,
+      });
+    }
+    ptyDataSummaryStartedAt = Date.now();
+    ptyDataChunkCount = 0;
+    ptyDataBatchCount = 0;
+    ptyDataCharCount = 0;
+    ptyDataMaxBatchChars = 0;
+  };
+
+  const schedulePtyDataSummary = () => {
+    if (ptyDataSummaryTimer) return;
+    ptyDataSummaryTimer = setTimeout(flushPtyDataSummary, PTY_DATA_SUMMARY_INTERVAL_MS);
   };
 
   const setRuntimeState = (sessionId: string, nextState: TerminalRuntimeState, opts?: { touch?: boolean }) => {
@@ -811,11 +878,20 @@ export function createPtyService({
     const effectiveToolType = preferredToolType ?? session.toolType ?? null;
     if (!isTrackedCliToolType(effectiveToolType)) return false;
     if (session.resumeMetadata?.targetId?.trim()) return true;
+    const recentMissing = missingResumeTargetBackfillFailures.get(sessionId);
+    if (
+      reason === "session-list"
+      && recentMissing?.toolType === effectiveToolType
+      && Date.now() - recentMissing.checkedAtMs < RESUME_TARGET_MISSING_COOLDOWN_MS
+    ) {
+      return false;
+    }
 
     // Strategy 1: Try parsing the transcript for an explicit resume command
     const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
     const detected = extractResumeCommandFromOutput(transcript, effectiveToolType);
     if (detected) {
+      missingResumeTargetBackfillFailures.delete(sessionId);
       sessionService.setResumeCommand(sessionId, detected);
       logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "transcript" });
       return true;
@@ -828,6 +904,7 @@ export function createPtyService({
       const claudeSessionId = resolveClaudeSessionIdFromStorage(cwd);
       if (claudeSessionId) {
         const resumeCmd = `claude --resume ${claudeSessionId}`;
+        missingResumeTargetBackfillFailures.delete(sessionId);
         sessionService.setResumeCommand(sessionId, resumeCmd);
         logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "claude-storage", claudeSessionId });
         return true;
@@ -847,12 +924,19 @@ export function createPtyService({
       });
       if (codexSessionId) {
         const resumeCmd = `codex resume ${codexSessionId}`;
+        missingResumeTargetBackfillFailures.delete(sessionId);
         sessionService.setResumeCommand(sessionId, resumeCmd);
         logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "codex-storage", codexSessionId });
         return true;
       }
     }
 
+    if (reason === "session-list") {
+      missingResumeTargetBackfillFailures.set(sessionId, {
+        toolType: effectiveToolType,
+        checkedAtMs: Date.now(),
+      });
+    }
     logger.warn("pty.resume_target_missing", { sessionId, toolType: effectiveToolType, reason });
     return false;
   };
@@ -1058,6 +1142,20 @@ export function createPtyService({
     const finalRuntimeState = runtimeFromStatus(status);
     setRuntimeState(entry.sessionId, finalRuntimeState, { touch: false });
     runtimeStates.delete(entry.sessionId);
+    if (entry.chatSessionId && activeTerminalByChatSession.get(entry.chatSessionId) === entry.sessionId) {
+      const replacement = Array.from(ptys.values())
+        .filter((candidate) => (
+          candidate.sessionId !== entry.sessionId
+          && !candidate.disposed
+          && candidate.chatSessionId === entry.chatSessionId
+        ))
+        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+      if (replacement) {
+        activeTerminalByChatSession.set(entry.chatSessionId, replacement.sessionId);
+      } else {
+        activeTerminalByChatSession.delete(entry.chatSessionId);
+      }
+    }
     try {
       onSessionRuntimeSignal?.({
         laneId: entry.laneId,
@@ -1086,6 +1184,7 @@ export function createPtyService({
         }
       });
 
+    flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });
     emitPtyExit(entry, { ptyId, sessionId: entry.sessionId, exitCode });
     ptys.delete(ptyId);
   };
@@ -1174,7 +1273,7 @@ export function createPtyService({
     }
   };
 
-  const emitPtyData = (entry: PtyEntry, event: PtyDataEvent) => {
+  const emitPtyDataNow = (entry: PtyEntry, event: PtyDataEvent) => {
     const scopedEvent = { ...event, projectRoot };
     broadcastData(scopedEvent);
     const enriched = { ...scopedEvent, laneId: entry.laneId };
@@ -1185,6 +1284,42 @@ export function createPtyService({
         // ignore listener failures
       }
     }
+  };
+
+  const clearPendingDataTimer = (entry: PtyEntry) => {
+    if (!entry.pendingDataTimer) return;
+    clearTimeout(entry.pendingDataTimer);
+    entry.pendingDataTimer = null;
+  };
+
+  const flushQueuedPtyData = (entry: PtyEntry, ids: { ptyId: string; sessionId: string }) => {
+    clearPendingDataTimer(entry);
+    if (entry.pendingDataChunks.length === 0) return;
+    const data = entry.pendingDataChunks.join("");
+    entry.pendingDataChunks.length = 0;
+    entry.pendingDataChars = 0;
+    if (!data) return;
+    ptyDataBatchCount += 1;
+    ptyDataMaxBatchChars = Math.max(ptyDataMaxBatchChars, data.length);
+    emitPtyDataNow(entry, { ...ids, data });
+  };
+
+  const enqueuePtyData = (entry: PtyEntry, event: PtyDataEvent) => {
+    if (!event.data) return;
+    ptyDataChunkCount += 1;
+    ptyDataCharCount += event.data.length;
+    schedulePtyDataSummary();
+    entry.pendingDataChunks.push(event.data);
+    entry.pendingDataChars += event.data.length;
+    const ids = { ptyId: event.ptyId, sessionId: event.sessionId };
+    if (entry.pendingDataChars >= PTY_DATA_BATCH_MAX_CHARS) {
+      flushQueuedPtyData(entry, ids);
+      return;
+    }
+    if (entry.pendingDataTimer) return;
+    entry.pendingDataTimer = setTimeout(() => {
+      flushQueuedPtyData(entry, ids);
+    }, PTY_DATA_BATCH_INTERVAL_MS);
   };
 
   const emitPtyExit = (entry: Pick<PtyEntry, "laneId" | "sessionId">, event: PtyExitEvent) => {
@@ -1198,6 +1333,65 @@ export function createPtyService({
         // ignore listener failures
       }
     }
+  };
+
+  const cleanOptionalId = (value: unknown): string | null => {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    return trimmed.length ? trimmed : null;
+  };
+
+  const liveEntryBySessionId = (sessionId: string): [string, PtyEntry] | null => (
+    Array.from(ptys.entries()).find(([, entry]) => entry.sessionId === sessionId && !entry.disposed) ?? null
+  );
+
+  const computeRuntimeState = (sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState => {
+    const runtime = runtimeStates.get(sessionId);
+    return runtime ? runtime.state : runtimeFromStatus(fallbackStatus);
+  };
+
+  const terminalSessionFromSummary = (summary: TerminalSessionSummary): ChatTerminalSession => {
+    const live = liveEntryBySessionId(summary.id);
+    const chatSessionId = terminalChatSessions.get(summary.id)
+      ?? live?.[1].chatSessionId
+      ?? summary.chatSessionId
+      ?? null;
+    const activeTerminalId = chatSessionId ? activeTerminalByChatSession.get(chatSessionId) ?? null : null;
+    return {
+      terminalId: summary.id,
+      ptyId: live?.[0] ?? summary.ptyId ?? null,
+      chatSessionId,
+      laneId: summary.laneId,
+      laneName: summary.laneName,
+      title: summary.title,
+      status: summary.status,
+      runtimeState: computeRuntimeState(summary.id, summary.status),
+      active: Boolean(activeTerminalId && activeTerminalId === summary.id),
+      startedAt: summary.startedAt,
+      endedAt: summary.endedAt,
+      exitCode: summary.exitCode,
+      pid: live?.[1].pty.pid ?? null,
+    };
+  };
+
+  const resolveTerminalId = (args: {
+    terminalId?: string | null;
+    chatSessionId?: string | null;
+  }): string | null => {
+    const terminalId = cleanOptionalId(args.terminalId);
+    if (terminalId) return terminalId;
+    const chatSessionId = cleanOptionalId(args.chatSessionId);
+    if (!chatSessionId) return null;
+    const activeTerminalId = activeTerminalByChatSession.get(chatSessionId) ?? null;
+    if (activeTerminalId && liveEntryBySessionId(activeTerminalId)) return activeTerminalId;
+    const replacement = Array.from(ptys.values())
+      .filter((entry) => entry.chatSessionId === chatSessionId && !entry.disposed)
+      .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+    if (replacement) {
+      activeTerminalByChatSession.set(chatSessionId, replacement.sessionId);
+      return replacement.sessionId;
+    }
+    activeTerminalByChatSession.delete(chatSessionId);
+    return null;
   };
 
   return {
@@ -1223,6 +1417,7 @@ export function createPtyService({
 
     async create(args: PtyCreateArgs): Promise<PtyCreateResult> {
       const { laneId, title } = args;
+      const chatSessionId = cleanOptionalId(args.chatSessionId);
       const launchContext = resolveLaneLaunchContext({
         laneService,
         laneId,
@@ -1254,6 +1449,14 @@ export function createPtyService({
         : null;
       if (existingSession && liveAttachedEntry) {
         const [attachedPtyId, attachedEntry] = liveAttachedEntry;
+        if (chatSessionId) {
+          attachedEntry.chatSessionId = chatSessionId;
+          terminalChatSessions.set(existingSession.id, chatSessionId);
+          activeTerminalByChatSession.set(chatSessionId, existingSession.id);
+          if (existingSession.chatSessionId !== chatSessionId) {
+            try { sessionService.setChatSessionId(existingSession.id, chatSessionId); } catch {}
+          }
+        }
         const needsSessionResync = existingSession.status !== "running" || existingSession.ptyId !== attachedPtyId;
         if (needsSessionResync) {
           sessionService.reattach({
@@ -1316,6 +1519,7 @@ export function createPtyService({
           toolType: toolTypeHint,
           resumeCommand: initialResumeCommand,
           resumeMetadata: initialResumeMetadata,
+          chatSessionId,
         });
         setRuntimeState(sessionId, "running");
 
@@ -1375,6 +1579,8 @@ export function createPtyService({
             launchedDirectCommand = true;
           } catch (err) {
             lastErr = err;
+            const shellFallbackCmd = buildDirectCommandShellFallback(directCommand, directArgs);
+            if (shellFallbackCmd) startupCommand ||= shellFallbackCmd;
           }
         }
         if (!created && (!directCommand || startupCommand)) {
@@ -1463,6 +1669,7 @@ export function createPtyService({
         laneWorktreePath: worktreePath,
         boundCwd: cwd,
         sessionId,
+        chatSessionId,
         tracked,
         transcriptPath,
         transcriptStream,
@@ -1482,20 +1689,38 @@ export function createPtyService({
         disposed: false,
         createdAt: Date.now(),
         cleanupPaths,
+        lastResizeCols: null,
+        lastResizeRows: null,
+        pendingDataChunks: [],
+        pendingDataChars: 0,
+        pendingDataTimer: null,
         aiTitleTimer: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
       };
       ptys.set(ptyId, entry);
+      if (chatSessionId) {
+        terminalChatSessions.set(sessionId, chatSessionId);
+        activeTerminalByChatSession.set(chatSessionId, sessionId);
+        if (existingSession && existingSession.chatSessionId !== chatSessionId) {
+          try { sessionService.setChatSessionId(sessionId, chatSessionId); } catch {}
+        }
+      }
 
       // Buffer initial output for AI title generation
       let titleOutputBuffer = "";
       let titleBufferFull = false;
 
       pty.onData((data) => {
+        // Late chunks can arrive after closeEntry()/dispose() has flushed the
+        // final buffer and emitted ptyExit. Bail out so post-teardown data
+        // can't re-arm pendingDataTimer, mutate previews/runtime state, or
+        // emit ptyData after ptyExit while transcript summarization is in
+        // flight.
+        if (entry.disposed) return;
         writeTranscript(entry, data);
         updatePreviewThrottled(entry, data);
-        emitPtyData(entry, { ptyId, sessionId, data });
+        enqueuePtyData(entry, { ptyId, sessionId, data });
 
         const prevState = runtimeStates.get(sessionId)?.state ?? "running";
         const runtimeState = runtimeStateFromOsc133Chunk(data, prevState);
@@ -1672,12 +1897,136 @@ export function createPtyService({
       }
     },
 
+    listTerminals(args: ChatTerminalListArgs = {}): ChatTerminalSession[] {
+      const chatSessionId = cleanOptionalId(args.chatSessionId);
+      const laneId = cleanOptionalId(args.laneId);
+      const limit = typeof args.limit === "number" && Number.isFinite(args.limit)
+        ? Math.max(1, Math.min(500, Math.floor(args.limit)))
+        : 200;
+      const summaries = sessionService.list({
+        ...(laneId ? { laneId } : {}),
+        limit,
+      });
+      return summaries
+        .filter((summary) => {
+          if (!chatSessionId) return true;
+          const linkedChatSessionId = terminalChatSessions.get(summary.id)
+            ?? liveEntryBySessionId(summary.id)?.[1].chatSessionId
+            ?? summary.chatSessionId
+            ?? null;
+          return linkedChatSessionId === chatSessionId;
+        })
+        .map(terminalSessionFromSummary)
+        .sort((a, b) => {
+          if (a.active !== b.active) return a.active ? -1 : 1;
+          const aRunning = a.status === "running";
+          const bRunning = b.status === "running";
+          if (aRunning !== bRunning) return aRunning ? -1 : 1;
+          return Date.parse(b.startedAt) - Date.parse(a.startedAt);
+        });
+    },
+
+    activeForChat(args: ChatTerminalActiveForChatArgs): ChatTerminalSession | null {
+      const chatSessionId = cleanOptionalId(args.chatSessionId);
+      if (!chatSessionId) return null;
+      const terminalId = activeTerminalByChatSession.get(chatSessionId) ?? null;
+      if (terminalId && liveEntryBySessionId(terminalId)) {
+        const session = sessionService.get(terminalId);
+        return session ? terminalSessionFromSummary(session) : null;
+      }
+      const replacement = Array.from(ptys.values())
+        .filter((entry) => entry.chatSessionId === chatSessionId && !entry.disposed)
+        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+      if (!replacement) {
+        activeTerminalByChatSession.delete(chatSessionId);
+        return null;
+      }
+      activeTerminalByChatSession.set(chatSessionId, replacement.sessionId);
+      const session = sessionService.get(replacement.sessionId);
+      return session ? terminalSessionFromSummary(session) : null;
+    },
+
+    async readTerminal(args: ChatTerminalReadArgs = {}): Promise<ChatTerminalReadResult> {
+      const terminalId = resolveTerminalId(args);
+      if (!terminalId) throw new Error("terminal.read requires terminalId or an active chat terminal.");
+      const session = sessionService.get(terminalId);
+      if (!session) throw new Error(`Terminal session '${terminalId}' was not found.`);
+      const maxBytes = typeof args.maxBytes === "number" && Number.isFinite(args.maxBytes)
+        ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
+        : MAX_TRANSCRIPT_BYTES;
+      const full = await sessionService.readTranscriptTail(session.transcriptPath, maxBytes, { raw: true });
+      const since = typeof args.since === "number" && Number.isFinite(args.since)
+        ? Math.max(0, Math.floor(args.since))
+        : 0;
+      const data = since > 0 ? full.slice(Math.min(since, full.length)) : full;
+      return {
+        terminalId,
+        data,
+        nextSince: since + data.length,
+      };
+    },
+
+    writeTerminal(args: ChatTerminalWriteArgs): { ok: true } {
+      if (!args || typeof args.data !== "string") {
+        throw new Error("terminal.write requires string data.");
+      }
+      const ptyId = cleanOptionalId(args.ptyId);
+      let entry: PtyEntry | null = null;
+      if (ptyId) {
+        const candidate = ptys.get(ptyId);
+        if (!candidate || candidate.disposed) throw new Error(`Terminal PTY '${ptyId}' is not running.`);
+        entry = candidate;
+      } else {
+        const terminalId = resolveTerminalId(args);
+        if (!terminalId) throw new Error("terminal.write requires terminalId, ptyId, or an active chat terminal.");
+        const live = liveEntryBySessionId(terminalId);
+        if (!live) throw new Error(`Terminal session '${terminalId}' is not running.`);
+        entry = live[1];
+      }
+      entry.pty.write(args.data);
+      tryCliUserTitleFromWrite(entry, args.data);
+      setRuntimeState(entry.sessionId, "running");
+      scheduleIdleTransition(entry.sessionId);
+      return { ok: true };
+    },
+
+    signalTerminal(args: ChatTerminalSignalArgs): { ok: true } {
+      if (!args || (args.signal !== "SIGINT" && args.signal !== "SIGTERM" && args.signal !== "SIGKILL")) {
+        throw new Error("terminal.signal requires SIGINT, SIGTERM, or SIGKILL.");
+      }
+      const ptyId = cleanOptionalId(args.ptyId);
+      let live: [string, PtyEntry] | null = null;
+      if (ptyId) {
+        const candidate = ptys.get(ptyId);
+        if (candidate && !candidate.disposed) live = [ptyId, candidate];
+      } else {
+        const terminalId = resolveTerminalId(args);
+        if (terminalId) live = liveEntryBySessionId(terminalId);
+      }
+      if (!live) throw new Error("No running terminal matched the requested signal target.");
+      const [liveId, entry] = live;
+      try {
+        if (args.signal === "SIGINT") {
+          entry.pty.write("\x03");
+        } else {
+          entry.pty.kill(args.signal);
+        }
+      } catch (err) {
+        logger.warn("pty.signal_failed", { ptyId: liveId, signal: args.signal, err: String(err) });
+        throw err;
+      }
+      return { ok: true };
+    },
+
     resize({ ptyId, cols, rows }: { ptyId: string; cols: number; rows: number }): void {
       const entry = ptys.get(ptyId);
       if (!entry) return;
       const safe = clampDims(cols, rows);
+      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return;
       try {
         entry.pty.resize(safe.cols, safe.rows);
+        entry.lastResizeCols = safe.cols;
+        entry.lastResizeRows = safe.rows;
       } catch (err) {
         logger.warn("pty.resize_failed", { ptyId, err: String(err) });
       }
@@ -1719,8 +2068,11 @@ export function createPtyService({
       );
       if (!entry) return false;
       const safe = clampDims(cols, rows);
+      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return true;
       try {
         entry.pty.resize(safe.cols, safe.rows);
+        entry.lastResizeCols = safe.cols;
+        entry.lastResizeRows = safe.rows;
         return true;
       } catch (err) {
         logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });
@@ -1729,15 +2081,17 @@ export function createPtyService({
     },
 
     getRuntimeState(sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState {
-      const runtime = runtimeStates.get(sessionId);
-      if (runtime) return runtime.state;
-      return runtimeFromStatus(fallbackStatus);
+      return computeRuntimeState(sessionId, fallbackStatus);
     },
 
     enrichSessions<T extends TerminalSessionSummary>(rows: T[]): T[] {
       return rows.map((row) => ({
         ...row,
-        runtimeState: this.getRuntimeState(row.id, row.status)
+        runtimeState: this.getRuntimeState(row.id, row.status),
+        chatSessionId: row.chatSessionId
+          ?? terminalChatSessions.get(row.id)
+          ?? liveEntryBySessionId(row.id)?.[1].chatSessionId
+          ?? null,
       }));
     },
 
@@ -1785,6 +2139,7 @@ export function createPtyService({
         entry.aiTitleTimer = null;
       }
       clearToolAutoCloseTimer(ptyId);
+      flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });
       cleanupEntryPaths(entry);
       try {
         entry.pty.kill();

@@ -92,12 +92,12 @@ export function HomePage() {
 
         <Masthead />
 
-        <div className="relative mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)]">
+        <div className="relative mx-auto max-w-[1760px] px-[clamp(20px,3vw,48px)]">
           <div className="border-b border-[color:var(--color-hairline)]">
             <CompetitorEquation />
           </div>
 
-          <div className="grid grid-cols-1 items-center gap-[clamp(24px,3vw,48px)] py-[clamp(20px,3vw,40px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+          <div className="grid grid-cols-1 items-center gap-[clamp(24px,3vw,48px)] py-[clamp(20px,3vw,40px)] lg:grid-cols-[minmax(0,4fr)_minmax(0,9fr)]">
             <Lede />
             <DeviceComposition />
           </div>

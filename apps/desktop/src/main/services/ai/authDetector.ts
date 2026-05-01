@@ -135,6 +135,9 @@ function findExplicitCommandPath(command: string): string | null {
 }
 
 async function commandExists(command: string): Promise<boolean> {
+  const explicitPath = findExplicitCommandPath(command);
+  if (explicitPath) return true;
+
   // Strategy 1: Direct spawn — bypasses shell init (.zshrc errors, slow profiles).
   // If the binary exists, --version will produce *some* exit code.
   // A spawn error (ENOENT) means the binary isn't on PATH → status is null.
@@ -144,9 +147,6 @@ async function commandExists(command: string): Promise<boolean> {
   } catch {
     // fall through to shell-based check
   }
-
-  const explicitPath = findExplicitCommandPath(command);
-  if (explicitPath) return true;
 
   // Strategy 2: Shell-based lookup (fallback for edge cases)
   try {
@@ -372,11 +372,37 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
   return { authenticated: false, verified: false, paidPlan: false };
 }
 
-async function inspectDroidCliPresence(command: string): Promise<{
+async function hasDroidConfiguredCredentials(): Promise<boolean> {
+  if (process.env.FACTORY_API_KEY?.trim()) {
+    return true;
+  }
+
+  const settingsPath = path.join(homedir(), ".factory", "settings.json");
+  try {
+    const raw = await readFile(settingsPath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const tokenLike =
+      typeof parsed.accessToken === "string" && parsed.accessToken.trim().length > 0
+        ? parsed.accessToken
+        : typeof parsed.token === "string" && parsed.token.trim().length > 0
+          ? parsed.token
+          : null;
+    return Boolean(tokenLike);
+  } catch {
+    return false;
+  }
+}
+
+async function inspectDroidCliPresence(command: string, options?: { deep?: boolean }): Promise<{
   installed: boolean;
   authenticated: boolean;
   verified: boolean;
 }> {
+  if (!options?.deep) {
+    const authenticated = await hasDroidConfiguredCredentials();
+    return { installed: true, authenticated, verified: authenticated };
+  }
+
   const probes = CLI_AUTH_PROBES.droid ?? [];
   let sawVersionOk = false;
   for (const args of probes) {
@@ -394,25 +420,8 @@ async function inspectDroidCliPresence(command: string): Promise<{
     return { installed: false, authenticated: false, verified: false };
   }
 
-  if (process.env.FACTORY_API_KEY?.trim()) {
+  if (await hasDroidConfiguredCredentials()) {
     return { installed: true, authenticated: true, verified: true };
-  }
-
-  const settingsPath = path.join(homedir(), ".factory", "settings.json");
-  try {
-    const raw = await readFile(settingsPath, "utf8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const tokenLike =
-      typeof parsed.accessToken === "string" && parsed.accessToken.trim().length > 0
-        ? parsed.accessToken
-        : typeof parsed.token === "string" && parsed.token.trim().length > 0
-          ? parsed.token
-          : null;
-    if (tokenLike) {
-      return { installed: true, authenticated: true, verified: true };
-    }
-  } catch {
-    // missing or unreadable settings — not authenticated via file
   }
 
   try {
@@ -582,49 +591,49 @@ async function detectLocalProviders(
   }
 
   const normalized = normalizeLocalProviderConfig(config);
-  const entries: Array<{
+  const detectProvider = async (provider: LocalProviderFamily): Promise<Array<{
     provider: LocalProviderFamily;
     endpoint: string;
     endpointSource: "auto" | "config";
     preferredModelId?: string | null;
-  }> = [];
-
-  for (const provider of ["ollama", "lmstudio"] as const) {
+  }>> => {
     const providerConfig = normalized[provider];
-    if (!providerConfig.enabled) continue;
+    if (!providerConfig.enabled) return [];
 
     const configuredEndpoint = providerConfig.endpoint;
     if (configuredEndpoint) {
       const inspection = await inspectLocalProvider(provider, configuredEndpoint, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
       if (inspection.health === "ready") {
-        entries.push({
+        return [{
           provider,
           endpoint: configuredEndpoint,
           endpointSource: "config",
           preferredModelId: providerConfig.preferredModelId ?? null,
-        });
-        continue;
+        }];
       }
       if (!providerConfig.autoDetect) {
-        continue;
+        return [];
       }
     }
 
-    if (!providerConfig.autoDetect) continue;
+    if (!providerConfig.autoDetect) return [];
     const autoEndpoint = getLocalProviderDefaultEndpoint(provider);
     if (configuredEndpoint && autoEndpoint.replace(/\/+$/, "") === configuredEndpoint.replace(/\/+$/, "")) {
-      continue;
+      return [];
     }
     const autoInspection = await inspectLocalProvider(provider, autoEndpoint, LOCAL_ENDPOINT_CHECK_TIMEOUT_MS);
     if (autoInspection.health === "ready") {
-      entries.push({
+      return [{
         provider,
         endpoint: autoEndpoint,
         endpointSource: "auto",
         preferredModelId: providerConfig.preferredModelId ?? null,
-      });
+      }];
     }
-  }
+    return [];
+  };
+
+  const entries = (await Promise.all((["ollama", "lmstudio"] as const).map(detectProvider))).flat();
 
   cachedLocalProviders = { key: cacheKey, checkedAtMs: now, entries };
   return entries;
@@ -1020,16 +1029,22 @@ export async function verifyProviderApiKey(
 // CLI auth cache — avoid re-probing every time a dialog opens
 // ---------------------------------------------------------------------------
 const CLI_AUTH_CACHE_TTL_MS = 60_000; // 1 minute
-let cachedCliAuth: { checkedAtMs: number; statuses: CliAuthStatus[] } | null = null;
+let cachedCliAuth: { checkedAtMs: number; statuses: CliAuthStatus[]; skipAuthProbe: boolean } | null = null;
 
 /** Synchronous read from cache — returns empty array if not yet populated. */
 export function getCachedCliAuthStatuses(): CliAuthStatus[] {
   return cachedCliAuth?.statuses ?? [];
 }
 
-export async function detectCliAuthStatuses(options?: { force?: boolean }): Promise<CliAuthStatus[]> {
+export async function detectCliAuthStatuses(options?: { force?: boolean; skipAuthProbe?: boolean }): Promise<CliAuthStatus[]> {
   const now = Date.now();
-  if (!options?.force && cachedCliAuth && now - cachedCliAuth.checkedAtMs < CLI_AUTH_CACHE_TTL_MS) {
+  const skipAuthProbe = options?.skipAuthProbe === true && options.force !== true;
+  if (
+    !options?.force
+    && cachedCliAuth
+    && now - cachedCliAuth.checkedAtMs < CLI_AUTH_CACHE_TTL_MS
+    && (!cachedCliAuth.skipAuthProbe || skipAuthProbe)
+  ) {
     return cachedCliAuth.statuses;
   }
 
@@ -1055,6 +1070,16 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
           path,
           authenticated: false,
           verified: false,
+        };
+      }
+      if (skipAuthProbe && cli !== "droid") {
+        return {
+          cli,
+          installed,
+          path,
+          authenticated: true,
+          verified: false,
+          ...(cli === "cursor" ? { paidPlan: true } : {}),
         };
       }
       if (cli === "cursor") {
@@ -1087,7 +1112,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
           }
           droidPath = resolved.path;
         }
-        const auth = await inspectDroidCliPresence(droidPath);
+        const auth = await inspectDroidCliPresence(droidPath, { deep: options?.force === true });
         return {
           cli,
           installed: auth.installed,
@@ -1107,18 +1132,21 @@ export async function detectCliAuthStatuses(options?: { force?: boolean }): Prom
     }),
   );
 
-  cachedCliAuth = { checkedAtMs: now, statuses };
+  cachedCliAuth = { checkedAtMs: now, statuses, skipAuthProbe };
   return statuses;
 }
 
 export async function detectAllAuth(
   configApiKeys?: Record<string, string>,
-  options?: { force?: boolean; localProviders?: AiLocalProviderConfigs },
+  options?: { force?: boolean; localProviders?: AiLocalProviderConfigs; skipCliAuthProbe?: boolean },
 ): Promise<DetectedAuth[]> {
   const results: DetectedAuth[] = [];
 
   // 1. CLI subscriptions (connected and authenticated)
-  const cliStatuses = await detectCliAuthStatuses(options);
+  const cliStatuses = await detectCliAuthStatuses({
+    force: options?.force,
+    skipAuthProbe: options?.skipCliAuthProbe,
+  });
   for (const cli of cliStatuses) {
     if (cli.cli !== "claude" && cli.cli !== "codex" && cli.cli !== "cursor" && cli.cli !== "droid") continue;
     if (!cli.installed) continue;

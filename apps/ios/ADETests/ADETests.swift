@@ -2536,6 +2536,66 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseReplaceTerminalSessionsPersistsChatSessionId() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+    var session = TerminalSessionSummary(
+      id: "session-chat-owned",
+      laneId: "lane-primary",
+      laneName: "Primary",
+      ptyId: "pty-1",
+      tracked: true,
+      pinned: false,
+      goal: nil,
+      toolType: "run-shell",
+      title: "App Control terminal",
+      status: "running",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      endedAt: nil,
+      exitCode: nil,
+      transcriptPath: "/tmp/session-chat-owned.log",
+      headShaStart: nil,
+      headShaEnd: nil,
+      lastOutputPreview: nil,
+      summary: nil,
+      runtimeState: "running",
+      resumeCommand: nil
+    )
+    session.chatSessionId = "chat-abc"
+    try database.replaceTerminalSessions([session])
+
+    let stored = try XCTUnwrap(database.fetchSessions().first)
+    XCTAssertEqual(stored.chatSessionId, "chat-abc")
+
+    // Round-trip via JSON to confirm the wire-format Codable layer preserves the field too.
+    let encoded = try JSONEncoder().encode(stored)
+    let decoded = try JSONDecoder().decode(TerminalSessionSummary.self, from: encoded)
+    XCTAssertEqual(decoded.chatSessionId, "chat-abc")
+
+    // Decoding a payload that omits the new field (older desktop builds) still succeeds.
+    let legacyJson = """
+    {
+      "id": "legacy-session",
+      "laneId": "lane-primary",
+      "laneName": "Primary",
+      "tracked": true,
+      "pinned": false,
+      "title": "Legacy",
+      "status": "running",
+      "startedAt": "2026-03-17T00:10:00.000Z",
+      "transcriptPath": "/tmp/legacy.log",
+      "runtimeState": "running"
+    }
+    """
+    let legacy = try JSONDecoder().decode(TerminalSessionSummary.self, from: Data(legacyJson.utf8))
+    XCTAssertNil(legacy.chatSessionId)
+
+    database.close()
+  }
+
   func testDatabaseMigratesLegacyTerminalSessionsSchemaToStoreLaneName() throws {
     let baseURL = makeTemporaryDirectory()
     let database = DatabaseService(baseURL: baseURL, bootstrapSQL: """

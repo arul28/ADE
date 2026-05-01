@@ -2742,6 +2742,7 @@ function buildCodexDeveloperInstructions(args: {
     mode: promptMode,
     permissionMode: toHarnessPermissionMode(args.session.permissionMode),
     interactive: true,
+    runtime: "codex-cli",
   });
 }
 
@@ -3324,6 +3325,14 @@ export function createAgentChatService(args: {
   if (!issueInventoryService) {
     throw new Error("Issue inventory service is required to initialize agent chat.");
   }
+
+  const buildAgentRuntimeEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => ({
+    ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
+    ADE_CHAT_SESSION_ID: managed.session.id,
+    ADE_LANE_ID: managed.session.laneId,
+    ADE_PROJECT_ROOT: projectRoot,
+    ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
+  });
 
   const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
 
@@ -10270,7 +10279,7 @@ export function createAgentChatService(args: {
       shellPath: process.env.SHELL ?? "",
       path: process.env.PATH ?? "",
     });
-    const spawnEnv = getAdeCliAgentEnv?.(process.env) ?? process.env;
+    const spawnEnv = buildAgentRuntimeEnv(managed);
     let codexExecutable: string;
     try {
       codexExecutable = resolveCodexExecutable().path;
@@ -10610,7 +10619,7 @@ export function createAgentChatService(args: {
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
     const claudeExecutable = resolveClaudeCodeExecutable();
-    const claudeEnv = getAdeCliAgentEnv?.(process.env) ?? process.env;
+    const claudeEnv = buildAgentRuntimeEnv(managed);
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
       env: claudeEnv,
@@ -10654,6 +10663,11 @@ export function createAgentChatService(args: {
         type: "preset",
         preset: "claude_code",
         append: [
+          "## Runtime Environment",
+          "**Runtime:** ADE Work chat hosted on the Claude Agent SDK v2 (`unstable_v2_createSession` / `SDKSession`). The `claude_code` preset above is the same system prompt the Claude Code CLI uses, so you may think you're in the CLI — you are NOT. You are inside an ADE-hosted SDK session.",
+          "**Wake-up semantics:** The session only advances when ADE calls `session.send(...)`, which fires on a fresh user message. There is no autonomous wake. `ScheduleWakeup` is **not honored** in this harness — the host accepts the call but never re-invokes you. `Bash run_in_background: true` task notifications are queued in the SDK message stream and only flushed on the next user turn; they do not start an autonomous turn either.",
+          "**To wait:** Either poll synchronously inside the active turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop the turn cleanly and ask the user to re-ping when ready. Do not run a background poller and claim it will wake you — it will not.",
+          "",
           "## ADE Workspace",
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
           "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
@@ -15288,9 +15302,12 @@ export function createAgentChatService(args: {
 
     const queue = runtime.pendingSteers;
     const idx = queue.findIndex((s) => s.steerId === steerId);
-    if (idx === -1) return;
-
-    queue.splice(idx, 1);
+    if (idx !== -1) {
+      queue.splice(idx, 1);
+    }
+    // Always emit the cancelled notice — even when the steer already left the
+    // server-side queue (e.g. dispatched inline before this call landed) — so
+    // the client display clears the staged chip on the delete-button path.
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",

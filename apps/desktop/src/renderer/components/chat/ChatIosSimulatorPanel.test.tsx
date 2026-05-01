@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import type {
@@ -27,6 +27,7 @@ const activeStatus: IosSimulatorStatus = {
   tools: [
     { name: "xcrun", available: true, detail: "ok", installHint: "" },
     { name: "xcodebuild", available: true, detail: "ok", installHint: "" },
+    { name: "iosurface_indigo", available: true, detail: "ok", installHint: "" },
     { name: "simulator_window", available: true, detail: "ok", installHint: "" },
     { name: "idb", available: true, detail: "ok", installHint: "" },
     { name: "idb_companion", available: true, detail: "ok", installHint: "" },
@@ -88,6 +89,7 @@ const simulatorWindowSource: IosSimulatorWindowSource = {
 };
 
 function installIosSimulatorApi(options: {
+  autoBackend?: IosSimulatorStreamStatus["backend"];
   windowSources?: IosSimulatorWindowSource[];
   windowState?: IosSimulatorWindowState;
   getUserMedia?: () => Promise<MediaStream>;
@@ -108,13 +110,23 @@ function installIosSimulatorApi(options: {
     getStatus: vi.fn().mockResolvedValue(activeStatus),
     listDevices: vi.fn().mockResolvedValue([device]),
     listLaunchTargets: vi.fn().mockResolvedValue([launchTarget]),
-    startStream: vi.fn((args: { backend?: string | null } = {}) => Promise.resolve(streamStatus(args.backend === "simulator-window-capture"
-      ? {
-          backend: "simulator-window-capture",
-          targetFps: 60,
-          streamUrl: null,
-        }
-      : {}))),
+    startStream: vi.fn((args: { backend?: string | null } = {}) => {
+      const resolvedBackend = args.backend === "auto"
+        ? options.autoBackend ?? "idb-mjpeg"
+        : args.backend;
+      return Promise.resolve(streamStatus(resolvedBackend === "simulator-window-capture"
+        ? {
+            backend: "simulator-window-capture",
+            targetFps: 60,
+            streamUrl: null,
+          }
+        : {
+            backend: resolvedBackend === "iosurface-indigo" || resolvedBackend === "idb-mjpeg" || resolvedBackend === "simctl-screenshot-poll"
+              ? resolvedBackend
+              : "idb-mjpeg",
+            targetFps: 30,
+          }));
+    }),
     stopStream: vi.fn().mockResolvedValue(streamStatus({ running: false, backend: null, streamUrl: null })),
     getStreamStatus: vi.fn().mockResolvedValue(streamStatus()),
     getSimulatorWindowState: vi.fn().mockResolvedValue(options.windowState ?? {
@@ -188,9 +200,10 @@ describe("ChatIosSimulatorPanel", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
-  it("starts the normal live view through the smooth simulator window capture stream", async () => {
+  it("starts the normal live view through the service auto stream", async () => {
     const { api } = installIosSimulatorApi();
 
     render(
@@ -203,12 +216,27 @@ describe("ChatIosSimulatorPanel", () => {
 
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
 
-    expect(api.startStream).toHaveBeenCalledWith({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 });
-    expect(api.listSimulatorWindowSources).toHaveBeenCalled();
+    expect(api.startStream).toHaveBeenCalledWith({ deviceUdid: device.udid, backend: "auto" });
+    expect(api.listSimulatorWindowSources).not.toHaveBeenCalled();
   });
 
-  it("falls back to the device-backed auto stream when window capture is unavailable", async () => {
-    const { api } = installIosSimulatorApi({ windowSources: [] });
+  it("shows compact readiness for the best performance simulator path", async () => {
+    installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("Best simulator performance");
+    expect(screen.getByText("Ready")).toBeTruthy();
+  });
+
+  it("uses the window-capture visual when auto resolves to simulator-window-capture", async () => {
+    const { api } = installIosSimulatorApi({ autoBackend: "simulator-window-capture" });
 
     render(
       <ChatIosSimulatorPanel
@@ -220,13 +248,39 @@ describe("ChatIosSimulatorPanel", () => {
 
     await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2), { timeout: 3_000 });
 
-    expect(api.startStream).toHaveBeenNthCalledWith(1, { deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 });
+    expect(api.startStream).toHaveBeenNthCalledWith(1, { deviceUdid: device.udid, backend: "auto" });
+    expect(api.startStream).toHaveBeenNthCalledWith(2, { deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 });
+    expect(api.listSimulatorWindowSources).toHaveBeenCalled();
+  });
+
+  it("switches the current session to Simulator.app window capture on request", async () => {
+    const { api } = installIosSimulatorApi({ autoBackend: "iosurface-indigo" });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+
+    fireEvent.click(await screen.findByRole("button", { name: /show ios window/i }));
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledWith({
+      deviceUdid: device.udid,
+      backend: "simulator-window-capture",
+      fps: 60,
+    }), { timeout: 3_000 });
     expect(api.stopStream).toHaveBeenCalled();
-    expect(api.startStream).toHaveBeenLastCalledWith({ deviceUdid: device.udid, backend: "auto", fps: 30 });
+    expect(api.listSimulatorWindowSources).toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: /use ade stream/i })).toBeTruthy();
   });
 
   it("warns when macOS cannot capture the Simulator window", async () => {
     const { api } = installIosSimulatorApi({
+      autoBackend: "simulator-window-capture",
       windowState: {
         appRunning: true,
         visible: true,
@@ -252,7 +306,7 @@ describe("ChatIosSimulatorPanel", () => {
   });
 
   it("restarts the device-backed fallback stream after a stream error event", async () => {
-    const { api, emit } = installIosSimulatorApi({ windowSources: [] });
+    const { api, emit } = installIosSimulatorApi();
 
     render(
       <ChatIosSimulatorPanel
@@ -262,7 +316,7 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
     await waitFor(() => expect(document.querySelector('canvas[aria-label="iOS Simulator live stream"]')).toBeTruthy());
 
     act(() => {
@@ -277,12 +331,12 @@ describe("ChatIosSimulatorPanel", () => {
       });
     });
 
-    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(3));
-    expect(api.startStream).toHaveBeenLastCalledWith({ deviceUdid: device.udid, backend: "auto", fps: 30 });
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
+    expect(api.startStream).toHaveBeenLastCalledWith({ deviceUdid: device.udid, backend: "auto" });
   });
 
-  it("updates the canvas stream url when the service falls back to another backend", async () => {
-    const { api, emit } = installIosSimulatorApi({ windowSources: [] });
+  it("forces the idb fallback after repeated native stream failures", async () => {
+    const { api, emit } = installIosSimulatorApi({ autoBackend: "iosurface-indigo" });
 
     render(
       <ChatIosSimulatorPanel
@@ -292,7 +346,72 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+
+    act(() => {
+      emit({
+        type: "stream-error",
+        status: streamStatus({
+          running: false,
+          backend: "iosurface-indigo",
+          streamUrl: null,
+          lastError: "iosurface stream exited",
+        }),
+      });
+    });
+
     await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    expect(api.startStream).toHaveBeenLastCalledWith({ deviceUdid: device.udid, backend: "auto" });
+
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+
+    act(() => {
+      emit({
+        type: "stream-error",
+        status: streamStatus({
+          running: false,
+          backend: "iosurface-indigo",
+          streamUrl: null,
+          lastError: "iosurface stream exited again",
+        }),
+      });
+    });
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(3), { timeout: 3_000 });
+    expect(api.startStream).toHaveBeenLastCalledWith({ deviceUdid: device.udid, backend: "idb-mjpeg" });
+    await screen.findByText("Live stream had trouble reconnecting. Switching to a fallback view...");
+  });
+
+  it("does not restart an idle native stream after it has produced a frame", async () => {
+    const { api } = installIosSimulatorApi({ autoBackend: "iosurface-indigo" });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+
+    expect(api.startStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates the canvas stream url when the service falls back to another backend", async () => {
+    const { api, emit } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
 
     act(() => {
       emit({

@@ -437,6 +437,24 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps git user-identity and prs list-open to typed RPC tools", () => {
+    const identity = buildCliPlan(["git", "user-identity"]);
+    expect(identity.kind).toBe("execute");
+    if (identity.kind !== "execute") return;
+    expect(identity.steps[0]?.params).toEqual({
+      name: "git_get_user_identity",
+      arguments: {},
+    });
+
+    const openPrs = buildCliPlan(["prs", "list-open"]);
+    expect(openPrs.kind).toBe("execute");
+    if (openPrs.kind !== "execute") return;
+    expect(openPrs.steps[0]?.params).toEqual({
+      name: "prs_list_open",
+      arguments: {},
+    });
+  });
+
   it("uses the parent ADE project when invoked inside an ADE-managed lane worktree", () => {
     const rawRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-roots-"));
     // findProjectRoots canonicalizes symlinks (e.g. /var -> /private/var on macOS).
@@ -1309,6 +1327,133 @@ describe("ADE CLI", () => {
         arguments: { domain: "ios_simulator", action: "listDevices" },
       });
     }
+  });
+
+  it("app-control status maps to app_control actions", () => {
+    const status = buildCliPlan(["app-control", "status"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.steps[0]?.params).toMatchObject({
+      name: "run_ade_action",
+      arguments: { domain: "app_control", action: "getStatus" },
+    });
+  });
+
+  it("app-control launch requires a command and supports aliases", () => {
+    const launch = buildCliPlan(["app-control", "launch", "--command", "npm run dev", "--debug-port", "9333", "--force"]);
+    expect(launch.kind).toBe("execute");
+    if (launch.kind !== "execute") return;
+    expect(launch.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "launch",
+        args: {
+          command: "npm run dev",
+          debugPort: 9333,
+          force: true,
+        },
+      },
+    });
+
+    const command = buildCliPlan(["electron", "launch", "pnpm", "dev"]);
+    expect(command.kind).toBe("execute");
+    if (command.kind !== "execute") return;
+    expect(command.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "launch",
+        args: { command: "pnpm dev" },
+      },
+    });
+  });
+
+  it("terminal read and write map to terminal actions", () => {
+    const read = buildCliPlan(["terminal", "read", "--chat-session", "chat-1", "--max-bytes", "500"]);
+    expect(read.kind).toBe("execute");
+    if (read.kind !== "execute") return;
+    expect(read.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "terminal",
+        action: "read",
+        args: { chatSessionId: "chat-1", maxBytes: 500 },
+      },
+    });
+
+    const write = buildCliPlan(["terminal", "write", "--terminal", "term-1", "--data", "y\n"]);
+    expect(write.kind).toBe("execute");
+    if (write.kind !== "execute") return;
+    expect(write.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "terminal",
+        action: "write",
+        args: { terminalId: "term-1", data: "y\n" },
+      },
+    });
+  });
+
+  it("app-control logs and terminal write use the active App Control terminal", () => {
+    const logs = buildCliPlan(["app-control", "logs", "--max-bytes", "1024"]);
+    expect(logs.kind).toBe("execute");
+    if (logs.kind !== "execute") return;
+    expect(logs.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "readTerminal",
+        args: { maxBytes: 1024 },
+      },
+    });
+
+    const write = buildCliPlan(["app-control", "terminal", "write", "--data", "y\n"]);
+    expect(write.kind).toBe("execute");
+    if (write.kind !== "execute") return;
+    expect(write.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "writeTerminal",
+        args: { data: "y\n" },
+      },
+    });
+  });
+
+  it("app-control connect, select, click, and type map to App Control actions", () => {
+    const connect = buildCliPlan(["app-control", "connect", "--cdp-port", "9222", "--force"]);
+    expect(connect.kind).toBe("execute");
+    if (connect.kind !== "execute") return;
+    expect(connect.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "connect",
+        args: { cdpPort: 9222, force: true },
+      },
+    });
+
+    const positionalConnect = buildCliPlan(["app-control", "connect", "9333"]);
+    expect(positionalConnect.kind).toBe("execute");
+    if (positionalConnect.kind !== "execute") return;
+    expect(positionalConnect.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "connect", args: { cdpPort: 9333 } },
+    });
+
+    const select = buildCliPlan(["app-control", "select", "--x", "120", "--y", "420"]);
+    expect(select.kind).toBe("execute");
+    if (select.kind !== "execute") return;
+    expect(select.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "selectPoint", args: { x: 120, y: 420 } },
+    });
+
+    const click = buildCliPlan(["app", "click", "120", "420"]);
+    expect(click.kind).toBe("execute");
+    if (click.kind !== "execute") return;
+    expect(click.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "click", args: { x: 120, y: 420 } },
+    });
+
+    const type = buildCliPlan(["app-control", "type", "--value", "hello", "--text"]);
+    expect(type.kind).toBe("execute");
+    if (type.kind !== "execute") return;
+    expect(type.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "typeText", args: { text: "hello" } },
+    });
   });
 
   it("attaches a rendered lane graph when the plan has the lanes visualizer", () => {

@@ -7,6 +7,8 @@ import {
   __testSetIosSimulatorProcessHooks,
   createIosSimulatorService,
   IosSimulatorOwnedBySessionError,
+  iosurfaceInputScreenFromSnapshot,
+  normalizeIosSimulatorPointForIndigo,
   parseXcodePreviewWindows,
   resolveIosSimulatorStreamBackend,
   shouldOpenSimulatorAppForLaunch,
@@ -149,8 +151,8 @@ describe("iosSimulatorService shutdown contract", () => {
   });
 });
 
-describe("iosSimulatorService background Simulator.app launch behavior", () => {
-  it("keeps Simulator.app capturable in the background by default during launch", async () => {
+describe("iosSimulatorService Simulator.app launch visibility", () => {
+  it("does not open Simulator.app by default during headless launch", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
       if (command === "ps") return { stdout: "", stderr: "" };
@@ -184,9 +186,8 @@ describe("iosSimulatorService background Simulator.app launch behavior", () => {
         bundleId: "com.example.app",
         build: false,
       });
-      const spawnCalls = spawnMock.mock.calls;
-      expect(spawnCalls.filter(([command, commandArgs]) => command === "open" && commandArgs.join(" ") === "-g -a Simulator")).toHaveLength(2);
-      expect(spawnCalls.some(([command]) => command === "osascript")).toBe(false);
+      expect(spawnMock.mock.calls.some(([command]) => command === "open")).toBe(false);
+      expect(spawnMock.mock.calls.some(([command]) => command === "osascript")).toBe(false);
     } finally {
       service.dispose();
       fs.rmSync(projectRoot, { recursive: true, force: true });
@@ -240,15 +241,95 @@ describe("iosSimulatorService background Simulator.app launch behavior", () => {
     }
   });
 
+  it("opens Simulator.app when explicit window capture streaming is requested", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const spawnMock = vi.fn<[string, string[], unknown?], ChildProcess>(() => mockChildProcess());
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      spawn: spawnMock as unknown as typeof nodeSpawn,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({ projectRoot: os.tmpdir(), logger: noopLogger });
+
+    try {
+      const status = await service.startStream({ deviceUdid: "device-1", backend: "simulator-window-capture" });
+      expect(status.backend).toBe("simulator-window-capture");
+      expect(spawnMock).toHaveBeenCalledWith("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" });
+    } finally {
+      service.dispose();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("documents launch and stream backend defaults with pure helpers", () => {
     expect(shouldOpenSimulatorAppForLaunch(undefined)).toBe(false);
     expect(shouldOpenSimulatorAppForLaunch(true)).toBe(false);
     expect(shouldOpenSimulatorAppForLaunch(false)).toBe(true);
-    expect(resolveIosSimulatorStreamBackend("auto", { idb: true, idbCompanion: true, ffmpeg: true })).toBe("idb-h264-ffmpeg-mjpeg");
-    expect(resolveIosSimulatorStreamBackend("auto", { idb: true, idbCompanion: true, ffmpeg: false })).toBe("idb-mjpeg");
-    expect(resolveIosSimulatorStreamBackend("auto", { idb: true, idbCompanion: false, ffmpeg: true })).toBe("simctl-screenshot-poll");
-    expect(resolveIosSimulatorStreamBackend("simulator-window-capture", { idb: true, idbCompanion: true, ffmpeg: true })).toBe("simulator-window-capture");
-    expect(resolveIosSimulatorStreamBackend("idb-h264-ffmpeg-mjpeg", { idb: true, idbCompanion: true, ffmpeg: true })).toBe("idb-h264-ffmpeg-mjpeg");
+    const bools = [false, true];
+    for (const iosurfaceIndigo of bools) {
+      for (const windowCaptureAllowed of bools) {
+        for (const idb of bools) {
+          for (const idbCompanion of bools) {
+            for (const ffmpeg of bools) {
+              const expected = iosurfaceIndigo
+                ? "iosurface-indigo"
+                : windowCaptureAllowed
+                  ? "simulator-window-capture"
+                  : idb && idbCompanion
+                    ? "idb-mjpeg"
+                    : "simctl-screenshot-poll";
+              expect(resolveIosSimulatorStreamBackend("auto", {
+                iosurfaceIndigo,
+                windowCaptureAllowed,
+                idb,
+                idbCompanion,
+                ffmpeg,
+              })).toBe(expected);
+            }
+          }
+        }
+      }
+    }
+    const tools = { iosurfaceIndigo: true, windowCaptureAllowed: true, idb: true, idbCompanion: true, ffmpeg: true };
+    expect(resolveIosSimulatorStreamBackend("simulator-window-capture", tools)).toBe("simulator-window-capture");
+    expect(resolveIosSimulatorStreamBackend("idb-h264-ffmpeg-mjpeg", tools)).toBe("idb-h264-ffmpeg-mjpeg");
+  });
+
+  it("normalizes point coordinates for Indigo input using screen points", () => {
+    expect(normalizeIosSimulatorPointForIndigo(
+      { x: 430, y: 932 },
+      { width: 430, height: 932 },
+    )).toEqual({ x: 1, y: 1 });
+    expect(normalizeIosSimulatorPointForIndigo(
+      { x: 215, y: 466 },
+      { width: 430, height: 932 },
+    )).toEqual({ x: 0.5, y: 0.5 });
+    expect(normalizeIosSimulatorPointForIndigo(
+      { x: 196, y: 400 },
+      { width: 393, height: 852 },
+    )).toEqual({
+      x: 196 / 393,
+      y: 400 / 852,
+    });
+  });
+
+  it("uses full screenshot dimensions for IOSurface input even when inspector screen is content-height only", () => {
+    const inputScreen = iosurfaceInputScreenFromSnapshot(
+      { width: 402, height: 778, scale: 3 },
+      { width: 1206, height: 2622 },
+    );
+    expect(inputScreen).toEqual({ width: 402, height: 874, scale: 3 });
+    expect(normalizeIosSimulatorPointForIndigo({ x: 201, y: 830 }, inputScreen)).toEqual({
+      x: 0.5,
+      y: 830 / 874,
+    });
   });
 });
 

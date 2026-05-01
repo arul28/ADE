@@ -359,7 +359,7 @@ export function TopBar() {
   useEffect(() => {
     let cancelled = false;
     const refreshSyncStatus = () => {
-      void window.ade.sync.getStatus().then((snapshot) => {
+      void window.ade.sync.getStatus({ includeTransferReadiness: false }).then((snapshot) => {
         if (!cancelled) setSyncSnapshot(snapshot);
       }).catch(() => {
         if (!cancelled) setSyncSnapshot(null);
@@ -677,7 +677,7 @@ export function TopBar() {
                         "ade-status-dot h-1.5 w-1.5 shrink-0",
                         indicator === "running-needs-attention"
                           ? "ade-status-dot-warning"
-                          : "ade-status-dot-active animate-pulse"
+                          : "ade-status-dot-active"
                       )}
                     />
                   ) : null}

@@ -188,10 +188,42 @@ export type GitBranchSummary = {
   ownedByLaneName?: string | null;
   profiledInCurrentLane?: boolean;
   hasOpenPr?: boolean;
+  /** SHA of the branch tip (most recent commit). */
+  lastCommitSha?: string;
+  /** Subject line of the most recent commit. */
+  lastCommitMessage?: string;
+  /** ISO-8601 timestamp of the most recent commit. */
+  lastCommitDate?: string;
+  /** Author name of the most recent commit. */
+  lastCommitAuthor?: string;
 };
 
 export type GitListBranchesArgs = {
   laneId: string;
+};
+
+export type GitUserIdentity = {
+  name: string;
+  email: string;
+};
+
+export type GitGetUserIdentityArgs = {
+  laneId: string;
+};
+
+/**
+ * Lightweight PR info keyed by branch — used by the branch picker. Independent
+ * of the full PrSummary because we want to surface PRs whose head branch may
+ * not be tied to any local lane yet.
+ */
+export type BranchPullRequest = {
+  branch: string;
+  prNumber: number;
+  title: string;
+  state: "open" | "closed" | "merged" | "draft";
+  url: string;
+  author: string | null;
+  updatedAt: string | null;
 };
 
 export type GitCheckoutBranchArgs = {

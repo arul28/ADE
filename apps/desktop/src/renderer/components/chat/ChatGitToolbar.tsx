@@ -77,24 +77,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
   const laneColor = useAppStore((s) => s.lanes.find((l) => l.id === laneId)?.color ?? null);
+  const laneName = useAppStore((s) => s.lanes.find((l) => l.id === laneId)?.name ?? null);
 
-  const [laneName, setLaneName] = useState<string | null>(null);
   const [dirtyCount, setDirtyCount] = useState(0);
   const [diffStats, setDiffStats] = useState<{ adds: number; dels: number; files: number } | null>(null);
   const [commitOpen, setCommitOpen] = useState(false);
   const [commitMsg, setCommitMsg] = useState("");
   const [linkedPr, setLinkedPr] = useState<PrSummary | null>(null);
-
-  // Fetch lane display name
-  useEffect(() => {
-    let cancelled = false;
-    window.ade.lanes.list({}).then((lanes: Array<{ id: string; name: string }>) => {
-      if (cancelled) return;
-      const match = lanes.find((l) => l.id === laneId);
-      if (match) setLaneName(match.name);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [laneId]);
 
   // -----------------------------------------------------------------------
   // Refresh git status + PR link

@@ -167,12 +167,68 @@ type IconSearchRootsCacheEntry = {
 };
 
 const iconSearchRootsCache = new Map<string, IconSearchRootsCacheEntry>();
+const PROJECT_ICON_RESULT_CACHE_MAX = 64;
+const PROJECT_ICON_RESULT_CACHE_TTL_MS = 5 * 60_000;
+
+type ProjectIconResultCacheEntry = {
+  rootMtimeMs: number;
+  appsMtimeMs: number;
+  packagesMtimeMs: number;
+  configMtimeMs: number;
+  sourcePath: string | null;
+  sourceMtimeMs: number;
+  sourceSize: number;
+  expiresAtMs: number;
+  value: ProjectIcon;
+};
+
+const projectIconResultCache = new Map<string, ProjectIconResultCacheEntry>();
 
 function dirMtimeMs(absPath: string): number {
   try {
     return fs.statSync(absPath).mtimeMs;
   } catch {
     return -1;
+  }
+}
+
+function fileSignature(absPath: string | null): { mtimeMs: number; size: number } {
+  if (!absPath) return { mtimeMs: -1, size: -1 };
+  try {
+    const stat = fs.statSync(absPath);
+    return stat.isFile()
+      ? { mtimeMs: stat.mtimeMs, size: stat.size }
+      : { mtimeMs: -1, size: -1 };
+  } catch {
+    return { mtimeMs: -1, size: -1 };
+  }
+}
+
+function projectIconResultCacheKey(root: string, options: { iconPathOverride?: string | null }): string {
+  const overrideKey = Object.prototype.hasOwnProperty.call(options, "iconPathOverride")
+    ? `override:${options.iconPathOverride ?? "null"}`
+    : "auto";
+  return `${root}\0${overrideKey}`;
+}
+
+function setProjectIconResultCache(key: string, entry: ProjectIconResultCacheEntry): void {
+  if (projectIconResultCache.has(key)) {
+    projectIconResultCache.delete(key);
+  } else if (projectIconResultCache.size >= PROJECT_ICON_RESULT_CACHE_MAX) {
+    const oldestKey = projectIconResultCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      projectIconResultCache.delete(oldestKey);
+    }
+  }
+  projectIconResultCache.set(key, entry);
+}
+
+function clearProjectIconResultCache(projectRoot: string): void {
+  const root = path.resolve(projectRoot);
+  for (const key of projectIconResultCache.keys()) {
+    if (key === root || key.startsWith(`${root}\0`)) {
+      projectIconResultCache.delete(key);
+    }
   }
 }
 
@@ -417,12 +473,14 @@ export function setProjectIconOverride(projectRoot: string, iconPath: string): P
 
   const relativeIconPath = toProjectRelative(root, resolvedIconPath);
   writeProjectIconPathOverride(root, relativeIconPath);
+  clearProjectIconResultCache(root);
   return resolveProjectIcon(root, { iconPathOverride: relativeIconPath });
 }
 
 export function removeProjectIconOverride(projectRoot: string): ProjectIcon {
   const root = path.resolve(projectRoot);
   writeProjectIconPathOverride(root, null);
+  clearProjectIconResultCache(root);
   return resolveProjectIcon(root, { iconPathOverride: null });
 }
 
@@ -430,11 +488,63 @@ export function resolveProjectIcon(
   projectRoot: string,
   options: { iconPathOverride?: string | null } = {},
 ): ProjectIcon {
-  const iconPath = resolveProjectIconPath(projectRoot, options);
-  if (!iconPath) return { dataUrl: null, sourcePath: null, mimeType: null };
+  const root = path.resolve(projectRoot);
+  const cacheKey = projectIconResultCacheKey(root, options);
+  const rootMtimeMs = dirMtimeMs(root);
+  const appsMtimeMs = dirMtimeMs(path.join(root, "apps"));
+  const packagesMtimeMs = dirMtimeMs(path.join(root, "packages"));
+  const configMtimeMs = dirMtimeMs(path.join(root, ".ade", "ade.yaml"));
+  const cached = projectIconResultCache.get(cacheKey);
+  if (
+    cached
+    && cached.expiresAtMs > Date.now()
+    && cached.rootMtimeMs === rootMtimeMs
+    && cached.appsMtimeMs === appsMtimeMs
+    && cached.packagesMtimeMs === packagesMtimeMs
+    && cached.configMtimeMs === configMtimeMs
+  ) {
+    const sourceSignature = fileSignature(cached.sourcePath);
+    if (sourceSignature.mtimeMs === cached.sourceMtimeMs && sourceSignature.size === cached.sourceSize) {
+      projectIconResultCache.delete(cacheKey);
+      projectIconResultCache.set(cacheKey, cached);
+      return cached.value;
+    }
+  }
+
+  const cacheValue = (value: ProjectIcon, sourcePath: string | null, sourceMtimeMs = -1, sourceSize = -1): ProjectIcon => {
+    setProjectIconResultCache(cacheKey, {
+      rootMtimeMs,
+      appsMtimeMs,
+      packagesMtimeMs,
+      configMtimeMs,
+      sourcePath,
+      sourceMtimeMs,
+      sourceSize,
+      expiresAtMs: Date.now() + PROJECT_ICON_RESULT_CACHE_TTL_MS,
+      value,
+    });
+    return value;
+  };
+
+  const iconPath = resolveProjectIconPath(root, options);
+  if (!iconPath) {
+    // Don't cache negative lookups: there is no real source path to key off,
+    // so adding an icon (e.g. src/app/icon.png) under an existing workspace
+    // tree wouldn't change the cached mtimes and the UI would keep showing
+    // "no icon" until the cache TTL expires.
+    return { dataUrl: null, sourcePath: null, mimeType: null };
+  }
 
   const mimeType = mimeTypeForIconPath(iconPath);
-  if (!mimeType) return { dataUrl: null, sourcePath: null, mimeType: null };
+  if (!mimeType) {
+    const sourceSignature = fileSignature(iconPath);
+    return cacheValue(
+      { dataUrl: null, sourcePath: iconPath, mimeType: null },
+      iconPath,
+      sourceSignature.mtimeMs,
+      sourceSignature.size,
+    );
+  }
 
   // resolveProjectIconPath already returned a realpath inside the project
   // root, but defensively swallow any read/stat failure (e.g. a race that
@@ -443,15 +553,20 @@ export function resolveProjectIcon(
   try {
     const stat = fs.statSync(iconPath);
     if (stat.size > ICON_MAX_BYTES) {
-      return { dataUrl: null, sourcePath: iconPath, mimeType };
+      return cacheValue({ dataUrl: null, sourcePath: iconPath, mimeType }, iconPath, stat.mtimeMs, stat.size);
     }
     const data = fs.readFileSync(iconPath);
-    return {
-      dataUrl: `data:${mimeType};base64,${data.toString("base64")}`,
-      sourcePath: iconPath,
-      mimeType,
-    };
+    return cacheValue(
+      {
+        dataUrl: `data:${mimeType};base64,${data.toString("base64")}`,
+        sourcePath: iconPath,
+        mimeType,
+      },
+      iconPath,
+      stat.mtimeMs,
+      stat.size,
+    );
   } catch {
-    return { dataUrl: null, sourcePath: null, mimeType: null };
+    return cacheValue({ dataUrl: null, sourcePath: null, mimeType: null }, null);
   }
 }

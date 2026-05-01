@@ -318,6 +318,7 @@ describe("TerminalView", () => {
       lineHeight: 1.25,
       scrollback: 10_000,
     };
+    window.localStorage.removeItem("ade.terminalRenderer");
   });
 
   afterEach(() => {
@@ -328,8 +329,6 @@ describe("TerminalView", () => {
   });
 
   it("fits to the container and resizes the PTY when the fit result is valid", async () => {
-    // `await import("@xterm/addon-webgl")` may not settle under Vi's fake timers on CI shards,
-    // so use real timers + waitFor to let the microtask chain drain reliably.
     vi.useRealTimers();
     try {
       render(<TerminalView ptyId="pty-valid" sessionId="session-valid" isActive />);
@@ -337,13 +336,31 @@ describe("TerminalView", () => {
       await waitFor(
         () => {
           const runtime = getTerminalRuntimeSnapshot("session-valid");
-          expect(runtime?.renderer).toBe("webgl");
+          expect(runtime?.renderer).toBe("dom");
           expect(runtime?.health.fitRecoveries).toBe(0);
           expect((window as any).ade.pty.resize).toHaveBeenCalledWith({
             ptyId: "pty-valid",
             cols: 120,
             rows: 40,
           });
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      vi.useFakeTimers();
+    }
+  });
+
+  it("uses the WebGL renderer when explicitly opted in", async () => {
+    vi.useRealTimers();
+    try {
+      window.localStorage.setItem("ade.terminalRenderer", "webgl");
+      render(<TerminalView ptyId="pty-webgl" sessionId="session-webgl" isActive />);
+
+      await waitFor(
+        () => {
+          const runtime = getTerminalRuntimeSnapshot("session-webgl");
+          expect(runtime?.renderer).toBe("webgl");
         },
         { timeout: 10_000 },
       );
@@ -424,6 +441,7 @@ describe("TerminalView", () => {
     // `await import("@xterm/addon-webgl")` may not settle under Vi's fake timers on CI shards.
     vi.useRealTimers();
     try {
+      window.localStorage.setItem("ade.terminalRenderer", "webgl");
       mockState.shouldThrowWebglAddon = true;
       const previousFallbacks = getTerminalRuntimeSnapshot("session-dom")?.health.rendererFallbacks ?? 0;
 

@@ -99,7 +99,7 @@ import { createBatchConsolidationService } from "./services/memory/batchConsolid
 import { createEmbeddingService } from "./services/memory/embeddingService";
 import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
 import { createHybridSearchService } from "./services/memory/hybridSearchService";
-import { createMemoryService } from "./services/memory/memoryService";
+import { createMemoryService, type Memory } from "./services/memory/memoryService";
 import { createProjectMemoryFilesService } from "./services/memory/memoryFilesService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createMemoryBriefingService } from "./services/memory/memoryBriefingService";
@@ -137,6 +137,7 @@ import { createMissionBudgetService } from "./services/orchestrator/missionBudge
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
+import { createAppControlService } from "./services/appControl/appControlService";
 import { createSyncService } from "./services/sync/syncService";
 import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
 import {
@@ -229,6 +230,10 @@ function isBackgroundTaskEnabled(enableFlag?: string): boolean {
     process.env[enableFlag] === "1" ||
     defaultEnabledBackgroundTaskFlags.has(enableFlag)
   );
+}
+
+function shouldEmbedMemory(memory: Pick<Memory, "status" | "pinned">): boolean {
+  return memory.status === "promoted" || memory.pinned === true;
 }
 
 const episodicSummaryEnabled = isBackgroundTaskEnabled(
@@ -1602,17 +1607,6 @@ app.whenReady().then(async () => {
       onEvent: (event) =>
         emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, event),
     });
-    // Prime suggestions once on init so the UI can show them without waiting for a head change.
-    void rebaseSuggestionService
-      .listSuggestions()
-      .then((suggestions) =>
-        emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, {
-          type: "rebase-suggestions-updated",
-          computedAt: new Date().toISOString(),
-          suggestions,
-        }),
-      )
-      .catch(() => {});
 
     const githubService = createGithubService({
       logger,
@@ -2060,7 +2054,7 @@ app.whenReady().then(async () => {
         debouncedSyncMemoryDocs();
       },
       onMemoryUpserted: (event) => {
-        if (event.created || event.contentChanged) {
+        if ((event.created || event.contentChanged) && shouldEmbedMemory(event.memory)) {
           embeddingWorkerServiceRef?.queueMemory(event.memory.id);
         }
       },
@@ -2081,7 +2075,10 @@ app.whenReady().then(async () => {
       onStatus: (event) =>
         emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event),
       onMemoryInserted: (memoryId) => {
-        embeddingWorkerServiceRef?.queueMemory(memoryId);
+        const memory = memoryService.getMemory(memoryId);
+        if (memory && shouldEmbedMemory(memory)) {
+          embeddingWorkerServiceRef?.queueMemory(memoryId);
+        }
       },
     });
     batchConsolidationServiceRef = batchConsolidationService;
@@ -2709,6 +2706,36 @@ app.whenReady().then(async () => {
       logger,
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
+    });
+    const appControlService = createAppControlService({
+      projectRoot,
+      logger,
+      ptyService,
+      resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
+        const explicitLaneId = laneId?.trim();
+        if (explicitLaneId) return explicitLaneId;
+        const chatId = chatSessionId?.trim();
+        if (chatId) {
+          const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
+          if (chatSession?.laneId) return chatSession.laneId;
+        }
+        const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
+        const lanes = await laneService.list({ includeArchived: false });
+        const matchingLane = lanes.find((lane) => {
+          const worktreePath = path.resolve(lane.worktreePath);
+          const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
+          return (
+            targetRoot === worktreePath
+            || targetRoot.startsWith(`${worktreePath}${path.sep}`)
+            || (attachedRootPath !== null
+              && (targetRoot === attachedRootPath
+                || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
+          );
+        });
+        return matchingLane?.id ?? lanes[0]?.id ?? null;
+      },
+      onEvent: (payload) =>
+        emitProjectEvent(projectRoot, IPC.appControlEvent, payload),
     });
     missionPreflightService = createMissionPreflightService({
       logger,
@@ -3384,6 +3411,7 @@ app.whenReady().then(async () => {
       automationPlannerService,
       computerUseArtifactBrokerService,
       iosSimulatorService,
+      appControlService,
       orchestratorService,
       aiOrchestratorService,
       missionBudgetService,
@@ -3548,6 +3576,7 @@ app.whenReady().then(async () => {
         ptyService,
         computerUseArtifactBrokerService,
         iosSimulatorService,
+        appControlService,
         automationService,
         automationPlannerService,
         githubService,
@@ -3597,6 +3626,7 @@ app.whenReady().then(async () => {
       prPollingService,
       computerUseArtifactBrokerService,
       iosSimulatorService,
+      appControlService,
       queueLandingService,
       issueInventoryService,
       prSummaryService,
@@ -3702,6 +3732,7 @@ app.whenReady().then(async () => {
       agentChatService: null,
       computerUseArtifactBrokerService: null,
       iosSimulatorService: null,
+      appControlService: null,
       githubService: null,
       feedbackReporterService: null,
       prService: null,
@@ -3898,6 +3929,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.iosSimulatorService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.appControlService?.dispose?.();
     } catch {
       // ignore
     }

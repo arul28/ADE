@@ -73,6 +73,10 @@ import {
   createIosSimulatorService,
   type IosSimulatorService,
 } from "../../desktop/src/main/services/ios/iosSimulatorService";
+import {
+  createAppControlService,
+  type AppControlService,
+} from "../../desktop/src/main/services/appControl/appControlService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import {
   createAutomationService,
@@ -168,6 +172,7 @@ export type AdeRuntime = {
   automationPlannerService?: ReturnType<typeof createAutomationPlannerService> | null;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   iosSimulatorService?: IosSimulatorService | null;
+  appControlService?: AppControlService | null;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   missionBudgetService?: ReturnType<typeof createMissionBudgetService> | null;
@@ -471,6 +476,39 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     projectRoot,
     logger,
   });
+  // Late-bound chat session lookup. agentChatService is created after
+  // appControlService below, so we capture a holder that the resolveLaneId
+  // closure reads at call time. The chat session store lives in agentChatService
+  // (getSessionSummary), not in sessionService (which holds terminal sessions).
+  const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
+  const appControlService = createAppControlService({
+    projectRoot,
+    logger,
+    ptyService,
+    resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
+      const explicitLaneId = laneId?.trim();
+      if (explicitLaneId) return explicitLaneId;
+      const chatId = chatSessionId?.trim();
+      if (chatId && agentChatServiceHolder.current) {
+        const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
+        if (chatSession?.laneId) return chatSession.laneId;
+      }
+      const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
+      const lanes = await laneService.list({ includeArchived: false });
+      const matchingLane = lanes.find((lane) => {
+        const worktreePath = path.resolve(lane.worktreePath);
+        const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
+        return (
+          targetRoot === worktreePath
+          || targetRoot.startsWith(`${worktreePath}${path.sep}`)
+          || (attachedRootPath !== null
+            && (targetRoot === attachedRootPath
+              || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
+        );
+      });
+      return matchingLane?.id ?? lanes[0]?.id ?? null;
+    },
+  });
 
   const aiOrchestratorService = createAiOrchestratorService({
     db,
@@ -508,6 +546,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
   });
 
   const agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
+  agentChatServiceHolder.current = agentChatService;
   const automationService = createAutomationService({
     db,
     logger,
@@ -573,6 +612,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     automationPlannerService,
     computerUseArtifactBrokerService,
     iosSimulatorService,
+    appControlService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,
@@ -581,6 +621,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       swallow(() => automationService.dispose());
       swallow(() => processService.disposeAll());
       swallow(() => iosSimulatorService.dispose());
+      swallow(() => appControlService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
       swallow(() => testService.disposeAll());

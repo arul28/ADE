@@ -122,6 +122,38 @@ describe("authDetector", () => {
     });
   });
 
+  it("can skip expensive CLI auth probes for passive status checks", async () => {
+    spawnMock.mockImplementation((command: string, args: string[] = []) => {
+      if (args[0] === "--version") {
+        if (command === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
+        return fakeError();
+      }
+      if (command === "which") {
+        if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
+        return fakeChild({ status: 1 });
+      }
+      if ((command === "claude" || command.endsWith("/claude")) && args[0] === "auth") {
+        throw new Error("auth probe should not run");
+      }
+      return fakeChild({ status: 1 });
+    });
+
+    const statuses = await detectCliAuthStatuses({ skipAuthProbe: true });
+    const claude = statuses.find((entry) => entry.cli === "claude");
+
+    expect(claude).toEqual({
+      cli: "claude",
+      installed: true,
+      path: "/usr/local/bin/claude",
+      authenticated: true,
+      verified: false,
+    });
+    expect(spawnMock.mock.calls.some(([command, args]) => {
+      const argv = Array.isArray(args) ? args : [];
+      return String(command).includes("claude") && argv[0] === "auth";
+    })).toBe(false);
+  });
+
   it("merges config, store, env, and local endpoint auth sources", async () => {
     getAllApiKeysMock.mockReturnValue({
       anthropic: "store-anthropic",
@@ -254,7 +286,7 @@ describe("authDetector", () => {
       return fakeChild({ status: 1 });
     });
 
-    const statuses = await detectCliAuthStatuses();
+    const statuses = await detectCliAuthStatuses({ force: true });
     const droid = statuses.find((entry) => entry.cli === "droid");
 
     expect(droid).toEqual({
@@ -264,6 +296,41 @@ describe("authDetector", () => {
       authenticated: true,
       verified: true,
     });
+  });
+
+  it("skips deep Droid auth probes during default detection without stored credentials", async () => {
+    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-droid-auth-shallow-"));
+    process.env.HOME = tempHomeDir;
+    const droidBinDir = path.join(tempHomeDir, ".local", "bin");
+    fs.mkdirSync(droidBinDir, { recursive: true });
+    const fakeDroidPath = path.join(droidBinDir, "droid");
+    fs.writeFileSync(fakeDroidPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.PATH = "";
+
+    spawnMock.mockImplementation((command: string, _args: string[] = []) => {
+      if (command === "which") {
+        return fakeChild({ status: 1 });
+      }
+      return fakeError();
+    });
+
+    const statuses = await detectCliAuthStatuses();
+    const droid = statuses.find((entry) => entry.cli === "droid");
+
+    expect(droid).toEqual({
+      cli: "droid",
+      installed: true,
+      path: fakeDroidPath,
+      authenticated: false,
+      verified: false,
+    });
+    const droidDeepProbeCalls = spawnMock.mock.calls.filter(([command, args]) => {
+      const commandText = String(command);
+      const argv = Array.isArray(args) ? args as string[] : [];
+      return (commandText === "droid" || commandText.endsWith("/droid"))
+        && (argv[0] === "exec" || argv[0] === "account" || argv[0] === "whoami");
+    });
+    expect(droidDeepProbeCalls).toHaveLength(0);
   });
 
   it("does not report openai-compatible local providers when no models are loaded", async () => {

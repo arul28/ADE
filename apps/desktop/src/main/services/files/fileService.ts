@@ -37,6 +37,53 @@ import { createFileSearchIndexService } from "./fileSearchIndexService";
 
 const MAX_EDITOR_READ_BYTES = 5 * 1024 * 1024;
 const GIT_STATUS_CACHE_TTL_MS = 5_000;
+const TEXT_EXTENSIONS = new Set([
+  ".bash",
+  ".c",
+  ".cc",
+  ".cfg",
+  ".cjs",
+  ".conf",
+  ".cpp",
+  ".cs",
+  ".css",
+  ".csv",
+  ".cts",
+  ".env",
+  ".fish",
+  ".go",
+  ".h",
+  ".hpp",
+  ".html",
+  ".ini",
+  ".java",
+  ".js",
+  ".json",
+  ".jsonc",
+  ".jsx",
+  ".less",
+  ".log",
+  ".md",
+  ".mdx",
+  ".mjs",
+  ".mts",
+  ".py",
+  ".rb",
+  ".rs",
+  ".sass",
+  ".scss",
+  ".sh",
+  ".sql",
+  ".swift",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".zsh",
+]);
 
 function containsDotGit(absPath: string): boolean {
   const parts = absPath.split(path.sep);
@@ -45,6 +92,7 @@ function containsDotGit(absPath: string): boolean {
 
 function languageIdFromPath(relPath: string): string {
   const ext = path.extname(relPath).toLowerCase();
+  if (isImagePath(relPath)) return "image";
   if (ext === ".ts" || ext === ".tsx") return "typescript";
   if (ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs") return "javascript";
   if (ext === ".json") return "json";
@@ -59,6 +107,62 @@ function languageIdFromPath(relPath: string): string {
   if (ext === ".css") return "css";
   if (ext === ".html") return "html";
   return "plaintext";
+}
+
+function isImagePath(relPath: string): boolean {
+  return inferImageMimeType(relPath) !== null;
+}
+
+function inferImageMimeType(relPath: string): string | null {
+  const ext = path.extname(relPath).toLowerCase();
+  switch (ext) {
+    case ".avif":
+      return "image/avif";
+    case ".bmp":
+      return "image/bmp";
+    case ".gif":
+      return "image/gif";
+    case ".ico":
+    case ".cur":
+      return "image/x-icon";
+    case ".jpg":
+    case ".jpeg":
+    case ".jfif":
+    case ".pjpeg":
+    case ".pjp":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".svg":
+      return "image/svg+xml";
+    case ".webp":
+      return "image/webp";
+    default:
+      return null;
+  }
+}
+
+function looksLikeBinary(buf: Buffer, relPath: string): boolean {
+  if (hasNullByte(buf)) return true;
+  if (TEXT_EXTENSIONS.has(path.extname(relPath).toLowerCase())) return false;
+
+  const sample = buf.subarray(0, Math.min(buf.length, 8192));
+  if (sample.length === 0) return false;
+
+  const decoded = sample.toString("utf8");
+  const replacementChars = decoded.match(/\uFFFD/g)?.length ?? 0;
+  if (replacementChars > 0) {
+    return replacementChars / decoded.length > 0.01;
+  }
+
+  let suspiciousControlChars = 0;
+  for (const byte of sample) {
+    const isAllowedWhitespace = byte === 9 || byte === 10 || byte === 12 || byte === 13;
+    if (byte < 32 && !isAllowedWhitespace) {
+      suspiciousControlChars += 1;
+    }
+  }
+  return suspiciousControlChars / sample.length > 0.3;
 }
 
 function isAlwaysIgnoredPath(normalized: string): boolean {
@@ -442,13 +546,29 @@ export function createFileService({
         );
       }
       const buf = fs.readFileSync(absPath);
-      const isBinary = hasNullByte(buf);
+      const imageMimeType = inferImageMimeType(normalizedRel);
+      if (imageMimeType) {
+        const base64 = buf.toString("base64");
+        return {
+          content: base64,
+          encoding: "base64",
+          size: stat.size,
+          languageId: languageIdFromPath(normalizedRel),
+          isBinary: true,
+          previewKind: "image",
+          mimeType: imageMimeType,
+          dataUrl: `data:${imageMimeType};base64,${base64}`,
+        };
+      }
+      const isBinary = looksLikeBinary(buf, normalizedRel);
       return {
-        content: isBinary ? "" : buf.toString("utf8"),
-        encoding: "utf-8",
+        content: isBinary ? buf.toString("base64") : buf.toString("utf8"),
+        encoding: isBinary ? "base64" : "utf-8",
         size: stat.size,
         languageId: languageIdFromPath(normalizedRel),
-        isBinary
+        isBinary,
+        previewKind: isBinary ? "binary" : "text",
+        mimeType: null,
       };
     },
 

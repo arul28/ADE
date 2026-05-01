@@ -74,11 +74,15 @@ function hashText(value: string): string {
 }
 
 const GENERIC_PR_FEEDBACK_PATTERNS = [
+  /^@(?:copilot|coderabbit)\b/i,
+  /^acknowledged\b/i,
+  /^thanks?\b/i,
   /^preview deployment\b/i,
   /^learn more about\b/i,
   /^read more about\b/i,
   /^see more\b/i,
   /^click here\b/i,
+  /\bdo not make fixes\b/i,
 ];
 
 const DERIVABLE_PR_FEEDBACK_PATTERNS = [
@@ -199,11 +203,23 @@ function hasDurablePrFeedbackSignals(value: string): boolean {
 function isLowSignalPrFeedbackContent(value: string): boolean {
   const trimmed = cleanText(value);
   if (!trimmed.length) return true;
-  if (GENERIC_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
-  if (DERIVABLE_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
 
   const withoutUrls = trimmed.replace(/https?:\/\/\S+/gi, " ").replace(/\s+/g, " ").trim();
   const wordCount = withoutUrls.split(/\s+/).filter(Boolean).length;
+
+  // Treat generic-prefix matches (e.g. "Thanks", "Acknowledged") as low-signal
+  // only when there's no durable guidance attached and the comment is short.
+  // Otherwise actionable PR feedback that begins with courtesy text would be
+  // dropped before it ever reaches the durable-signal check below.
+  if (
+    GENERIC_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))
+    && !hasDurablePrFeedbackSignals(trimmed)
+    && wordCount < 10
+  ) {
+    return true;
+  }
+  if (DERIVABLE_PR_FEEDBACK_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
+
   if (/https?:\/\//i.test(trimmed) && wordCount <= 8) return true;
 
   return !hasDurablePrFeedbackSignals(trimmed) && wordCount < 7;
@@ -445,7 +461,8 @@ export function createKnowledgeCaptureService(args: {
     const distinctOrigins = new Set(
       matches.map((item) => cleanText(item.sourceRunId || item.sourceId || item.id)).filter(Boolean),
     );
-    if (distinctOrigins.size < 3) return;
+    const repeatedObservations = matches.some((item) => item.observationCount >= 3);
+    if (distinctOrigins.size < 3 && !repeatedObservations) return;
 
     const canonical = [...matches].sort((left, right) =>
       (right.observationCount - left.observationCount)
@@ -489,6 +506,7 @@ export function createKnowledgeCaptureService(args: {
       metadata: {
         canonicalMemoryId: result.id,
         distinctOrigins: distinctOrigins.size,
+        observationCount: canonical.observationCount,
       },
     });
   };

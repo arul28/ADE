@@ -46,7 +46,11 @@ Shared types and IPC:
 
 - `apps/desktop/src/shared/types/sessions.ts` — `TerminalSessionSummary`,
   `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
-  `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`.
+  `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`, plus
+  the chat-terminal envelopes (`ChatTerminalSession`, `ChatTerminalListArgs`,
+  `ChatTerminalReadArgs` / `ChatTerminalReadResult`, `ChatTerminalWriteArgs`,
+  `ChatTerminalSignalArgs`, `ChatTerminalActiveForChatArgs`) used by the
+  `ade.terminal.*` IPC surface and the `terminal` ADE action domain.
 - `apps/desktop/src/shared/types/sync.ts` — terminal stream/control
   envelopes (`terminal_subscribe`, `terminal_data`, `terminal_exit`,
   `terminal_input`, `terminal_resize`) for iOS Work surfaces.
@@ -57,7 +61,9 @@ Shared types and IPC:
   `ProcessRestartPolicy`. `ProcessActionArgs` and
   `GetProcessLogTailArgs` accept an optional `runId`.
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
-  `ade.pty.*`, `ade.processes.*`.
+  `ade.pty.*`, `ade.processes.*`, plus the chat-scoped
+  `ade.terminal.*` family (`list`, `read`, `write`, `signal`,
+  `activeForChat`).
 
 Preload bridge:
 
@@ -69,7 +75,11 @@ IPC registration:
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — registers
   `sessionsList`, `sessionsGet`, `sessionsUpdateMeta`,
   `sessionsReadTranscriptTail`, `sessionsGetDelta`, `ptyCreate`,
-  `ptyWrite`, `ptyResize`, `ptyDispose`, and the `processes.*` handlers.
+  `ptyWrite`, `ptyResize`, `ptyDispose`, the `processes.*` handlers,
+  and the chat-scoped `terminalList` / `terminalRead` /
+  `terminalWrite` / `terminalSignal` / `terminalActiveForChat`
+  handlers (which delegate to the new `ptyService` chat-terminal
+  helpers).
 
 Renderer surfaces:
 
@@ -205,7 +215,9 @@ Status transitions: `running` → `completed` | `failed` | `disposed`.
 Fields that feed UI and downstream systems:
 
 - identity: `id`, `laneId`, `laneName`, `ptyId`, `tracked`, `pinned`,
-  `manuallyNamed`
+  `manuallyNamed`, `chatSessionId` (parent chat that owns this terminal,
+  set when launched from the chat terminal drawer or App Control —
+  stored as `chat_session_id` and indexed)
 - title and intent: `title`, `goal`, `toolType`
 - lifecycle: `status`, `startedAt`, `endedAt`, `exitCode`, `runtimeState`
   (derived), `chatIdleSinceAt`
@@ -311,12 +323,34 @@ PTY:
 
 | Channel | Purpose |
 |---|---|
-| `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }` |
+| `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }`. Accepts an optional `chatSessionId` to mark the terminal as chat-owned. |
 | `ade.pty.write` | write bytes to PTY |
 | `ade.pty.resize` | cols/rows resize |
 | `ade.pty.dispose` | close PTY; optional `sessionId` used for logging |
 | `ade.pty.data` (event) | stream stdout/stderr to the renderer |
 | `ade.pty.exit` (event) | final exit code |
+
+Chat-owned terminals (`ade.terminal.*` — used by the chat terminal drawer, the App Control panel, and the headless `ade terminal` / `ade app-control` CLI commands):
+
+| Channel | Purpose |
+|---|---|
+| `ade.terminal.list` | list `ChatTerminalSession[]` filtered by `chatSessionId` and/or `laneId`. |
+| `ade.terminal.read` | tail scrollback by explicit `terminalId` *or* by `chatSessionId` (resolves to the chat's currently active terminal). Returns `{ terminalId, data, nextSince }` for incremental polling. |
+| `ade.terminal.write` | write bytes to a chat-owned terminal (by `terminalId`, `ptyId`, or `chatSessionId`). |
+| `ade.terminal.signal` | deliver `SIGINT` / `SIGTERM` / `SIGKILL` to the resolved chat terminal. |
+| `ade.terminal.activeForChat` | resolve the active `ChatTerminalSession` for a given `chatSessionId`. |
+
+`ptyService` keeps two in-memory maps to back this surface:
+`terminalChatSessions` (terminalId → chatSessionId) and
+`activeTerminalByChatSession` (chatSessionId → terminalId). Disposing
+the active terminal automatically promotes the most recently created
+sibling, so `ade terminal read --chat-session <id>` always resolves a
+sensible target for in-chat agents. The headless ADE runtime and
+agent chat runtime both export `ADE_CHAT_SESSION_ID`,
+`ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` into the
+agent process so an agent can call `ade --socket terminal read
+--chat-session "$ADE_CHAT_SESSION_ID" --text` without resolving the
+chat ID itself.
 
 Processes (managed):
 

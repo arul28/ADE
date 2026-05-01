@@ -592,7 +592,12 @@ type AppState = {
   openNewTab: () => void;
   cancelNewTab: () => void;
   refreshProject: () => Promise<void>;
-  refreshLanes: (options?: { includeStatus?: boolean }) => Promise<void>;
+  refreshLanes: (options?: {
+    includeStatus?: boolean;
+    includeConflictStatus?: boolean;
+    includeRebaseSuggestions?: boolean;
+    includeAutoRebaseStatus?: boolean;
+  }) => Promise<void>;
   openRepo: () => Promise<ProjectInfo | null>;
   switchProjectToPath: (rootPath: string) => Promise<void>;
   closeProject: () => Promise<void>;
@@ -602,6 +607,9 @@ export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
 
 type LaneRefreshRequest = {
   includeStatus: boolean;
+  includeConflictStatus: boolean;
+  includeRebaseSuggestions: boolean;
+  includeAutoRebaseStatus: boolean;
 };
 
 let warmupTimer: number | null = null;
@@ -612,13 +620,27 @@ let laneRefreshInFlight: Promise<void> | null = null;
 let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
 let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
 
-function normalizeLaneRefreshRequest(options?: { includeStatus?: boolean }): LaneRefreshRequest {
-  return { includeStatus: options?.includeStatus ?? true };
+function normalizeLaneRefreshRequest(options?: {
+  includeStatus?: boolean;
+  includeConflictStatus?: boolean;
+  includeRebaseSuggestions?: boolean;
+  includeAutoRebaseStatus?: boolean;
+}): LaneRefreshRequest {
+  const includeStatus = options?.includeStatus ?? true;
+  return {
+    includeStatus,
+    includeConflictStatus: includeStatus && (options?.includeConflictStatus ?? true),
+    includeRebaseSuggestions: includeStatus && (options?.includeRebaseSuggestions ?? true),
+    includeAutoRebaseStatus: includeStatus && (options?.includeAutoRebaseStatus ?? true),
+  };
 }
 
 function mergeLaneRefreshRequests(current: LaneRefreshRequest, next: LaneRefreshRequest): LaneRefreshRequest {
   return {
     includeStatus: current.includeStatus || next.includeStatus,
+    includeConflictStatus: current.includeConflictStatus || next.includeConflictStatus,
+    includeRebaseSuggestions: current.includeRebaseSuggestions || next.includeRebaseSuggestions,
+    includeAutoRebaseStatus: current.includeAutoRebaseStatus || next.includeAutoRebaseStatus,
   };
 }
 
@@ -629,7 +651,12 @@ function scheduleProjectHydration(get: () => AppState) {
   const delay = Math.max(1_200, 1_800);
   warmupTimer = window.setTimeout(() => {
     warmupTimer = null;
-    void get().refreshLanes({ includeStatus: true }).catch((err) => {
+    void get().refreshLanes({
+      includeStatus: true,
+      includeConflictStatus: false,
+      includeRebaseSuggestions: false,
+      includeAutoRebaseStatus: false,
+    }).catch((err) => {
       console.debug("Scheduled lane refresh failed:", err);
     });
     void get().refreshProviderMode();
@@ -891,9 +918,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       const token = ++laneRefreshVersion;
       const laneSnapshots = currentRequest.includeStatus
         ? await window.ade.lanes.listSnapshots({
-            includeArchived: false,
-            includeStatus: true,
-          })
+          includeArchived: false,
+          includeStatus: true,
+          includeConflictStatus: currentRequest.includeConflictStatus,
+          includeRebaseSuggestions: currentRequest.includeRebaseSuggestions,
+          includeAutoRebaseStatus: currentRequest.includeAutoRebaseStatus,
+        })
         : null;
       const lanes = laneSnapshots != null
         ? laneSnapshots.map((snapshot) => snapshot.lane)
@@ -947,7 +977,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     if (laneRefreshInFlight) {
       const activeRequest = activeLaneRefreshRequest;
-      const activeSatisfies = activeRequest != null && (activeRequest.includeStatus || !request.includeStatus);
+      const activeSatisfies =
+        activeRequest != null
+        && (activeRequest.includeStatus || !request.includeStatus)
+        && (activeRequest.includeConflictStatus || !request.includeConflictStatus)
+        && (activeRequest.includeRebaseSuggestions || !request.includeRebaseSuggestions)
+        && (activeRequest.includeAutoRebaseStatus || !request.includeAutoRebaseStatus);
       if (!activeSatisfies) {
         pendingLaneRefreshRequest = pendingLaneRefreshRequest
           ? mergeLaneRefreshRequests(pendingLaneRefreshRequest, request)

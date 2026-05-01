@@ -6,6 +6,7 @@ import type {
   GitBatchFileActionArgs,
   GitBranchSummary,
   GitCheckoutBranchArgs,
+  GitUserIdentity,
   GitCherryPickArgs,
   GitCommitArgs,
   GitGenerateCommitMessageArgs,
@@ -1091,8 +1092,20 @@ export function createGitOperationsService({
 
     async listBranches(args: { laneId: string }): Promise<GitBranchSummary[]> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      // Subject goes last so a tab inside a commit subject doesn't desync the
+      // parser — anything after index 7 is rejoined.
+      const FORMAT = [
+        "%(refname)",
+        "%(refname:short)",
+        "%(HEAD)",
+        "%(upstream:short)",
+        "%(objectname)",
+        "%(committerdate:iso-strict)",
+        "%(authorname)",
+        "%(subject)",
+      ].join("\t");
       const out = await runGitOrThrow(
-        ["for-each-ref", "--sort=refname", "--format=%(refname)\t%(refname:short)\t%(HEAD)\t%(upstream:short)", "refs/heads", "refs/remotes"],
+        ["for-each-ref", "--sort=refname", `--format=${FORMAT}`, "refs/heads", "refs/remotes"],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
       const branchProfiles = new Set<string>();
@@ -1136,21 +1149,28 @@ export function createGitOperationsService({
           const shortRef = parts[1]?.trim() ?? "";
           if (!fullRef || !shortRef) return;
 
+          const commitMeta = {
+            lastCommitSha: parts[4]?.trim() || undefined,
+            lastCommitDate: parts[5]?.trim() || undefined,
+            lastCommitAuthor: parts[6]?.trim() || undefined,
+            lastCommitMessage: parts.slice(7).join("\t").trim() || undefined,
+          };
+
           if (fullRef.startsWith("refs/heads/")) {
             const isCurrent = (parts[2]?.trim() ?? "") === "*";
             const upstream = parts[3]?.trim() || null;
-            localBranches.set(shortRef, annotate({ name: shortRef, isCurrent, isRemote: false, upstream }));
+            localBranches.set(
+              shortRef,
+              annotate({ name: shortRef, isCurrent, isRemote: false, upstream, ...commitMeta }),
+            );
             return;
           }
 
           if (fullRef.startsWith("refs/remotes/")) {
             if (shortRef.endsWith("/HEAD")) return;
-            remoteBranches.push(annotate({
-              name: shortRef,
-              isCurrent: false,
-              isRemote: true,
-              upstream: null
-            }));
+            remoteBranches.push(
+              annotate({ name: shortRef, isCurrent: false, isRemote: true, upstream: null, ...commitMeta }),
+            );
           }
         });
 
@@ -1167,6 +1187,19 @@ export function createGitOperationsService({
       const sortedRemotes = dedupedRemotes.sort((a, b) => a.name.localeCompare(b.name));
 
       return [...sortedLocals, ...sortedRemotes];
+    },
+
+    async getUserIdentity(args: { laneId: string }): Promise<GitUserIdentity> {
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      const readConfig = async (key: string): Promise<string> => {
+        const result = await runGit(["config", "--get", key], {
+          cwd: lane.worktreePath,
+          timeoutMs: 5_000,
+        });
+        return result.exitCode === 0 ? result.stdout.trim() : "";
+      };
+      const [name, email] = await Promise.all([readConfig("user.name"), readConfig("user.email")]);
+      return { name, email };
     },
 
     async checkoutBranch(args: GitCheckoutBranchArgs): Promise<GitActionResult> {

@@ -4,7 +4,7 @@ import AVKit
 
 extension WorkChatSessionView {
   @ViewBuilder
-  func timelineEntryView(for entry: WorkTimelineEntry) -> some View {
+  func timelineEntryView(for entry: WorkTimelineEntry, proxy: ScrollViewProxy) -> some View {
     switch entry.payload {
     case .message(let message):
       WorkChatMessageBubble(message: message, isLive: isLatestAssistantMessageLive(message))
@@ -57,8 +57,21 @@ extension WorkChatSessionView {
           await runSessionAction {
             await onDeclineQuestion(question.id)
           }
+        },
+        onFreeformFocusChange: { focused in
+          guard focused else { return }
+          // Wait for the keyboard to start animating in so the ScrollView's
+          // safe-area inset is updated before we ask it to scroll the focused
+          // card above the keyboard.
+          Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            withAnimation(.easeInOut(duration: 0.25)) {
+              proxy.scrollTo("pending-question-\(question.id)", anchor: .bottom)
+            }
+          }
         }
       )
+      .id("pending-question-\(question.id)")
     case .pendingPermission(let permission):
       WorkPermissionCard(
         permission: permission,

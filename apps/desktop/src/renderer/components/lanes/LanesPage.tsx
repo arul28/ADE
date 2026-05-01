@@ -49,6 +49,7 @@ import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import type {
+  BranchPullRequest,
   ConflictChip,
   DeleteLaneArgs,
   GitCommitSummary,
@@ -241,6 +242,10 @@ export function LanesPage() {
   const [createImportBranch, setCreateImportBranch] = useState("");
   const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
   const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
+  const [createBranchesLoading, setCreateBranchesLoading] = useState(false);
+  const [createBranchPullRequests, setCreateBranchPullRequests] = useState<BranchPullRequest[]>([]);
+  const [createBranchPullRequestsLoading, setCreateBranchPullRequestsLoading] = useState(false);
+  const [createGitUserName, setCreateGitUserName] = useState<string>("");
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createEnvInitProgress, setCreateEnvInitProgress] = useState<LaneEnvInitProgress | null>(null);
@@ -306,6 +311,7 @@ export function LanesPage() {
   const branchSearchInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
   const completedLaneDeleteRefreshesRef = useRef<Set<string>>(new Set());
+  const activeLanePresenceSignatureRef = useRef<string | null>(null);
 
   const [addLaneDropdownOpen, setAddLaneDropdownOpen] = useState(false);
   const addLaneDropdownRef = useRef<HTMLDivElement>(null);
@@ -476,6 +482,11 @@ export function LanesPage() {
       return;
     }
     const laneIds = project?.rootPath ? [...visibleLaneIds] : [];
+    const signature = laneIds.join("\0");
+    if (activeLanePresenceSignatureRef.current === signature) {
+      return;
+    }
+    activeLanePresenceSignatureRef.current = signature;
     void syncApi.setActiveLanePresence({ laneIds }).catch(() => {});
   }, [project?.rootPath, visibleLaneIds]);
 
@@ -485,6 +496,10 @@ export function LanesPage() {
       return;
     }
     return () => {
+      if (activeLanePresenceSignatureRef.current === "") {
+        return;
+      }
+      activeLanePresenceSignatureRef.current = "";
       void syncApi.setActiveLanePresence({ laneIds: [] }).catch(() => {});
     };
   }, []);
@@ -720,12 +735,19 @@ export function LanesPage() {
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const refreshRuntimeOnly = () =>
+      refreshLanes({
+        includeStatus: true,
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      });
     const scheduleRefresh = () => {
       if (document.visibilityState !== "visible") return;
       if (timer) return; // already scheduled
       timer = setTimeout(() => {
         timer = null;
-        void refreshLanes().catch(() => {});
+        void refreshRuntimeOnly().catch(() => {});
       }, 300);
     };
     const currentProjectRoot = project?.rootPath ?? null;
@@ -741,7 +763,7 @@ export function LanesPage() {
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       if (!hasActiveLaneRuntimeRef.current) return;
-      void refreshLanes().catch(() => {});
+      void refreshRuntimeOnly().catch(() => {});
     }, 15_000);
     return () => {
       if (timer) clearTimeout(timer);
@@ -1511,11 +1533,16 @@ export function LanesPage() {
     setCreateImportBranch("");
     setCreateChildBaseBranch("");
     setCreateBranches([]);
+    setCreateBranchPullRequests([]);
+    setCreateGitUserName("");
+    setCreateBranchesLoading(false);
+    setCreateBranchPullRequestsLoading(false);
     setLaneCreated(false);
     createBaseBranchUserPickedRef.current = false;
     const primary = lanes.find((l) => l.laneType === "primary");
     if (primary) {
       // Fetch remotes first so remote-only branches (pushed from other machines) appear.
+      setCreateBranchesLoading(true);
       window.ade.git.fetch({ laneId: primary.id })
         .catch(() => {})
         .then(() => window.ade.git.listBranches({ laneId: primary.id }))
@@ -1531,7 +1558,20 @@ export function LanesPage() {
             if (defaultBranch) setCreateBaseBranch(defaultBranch.name);
           }
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => setCreateBranchesLoading(false));
+
+      // Capture git user.name so the picker can resolve `mine` / `author:me`.
+      window.ade.git.getUserIdentity({ laneId: primary.id })
+        .then((identity) => setCreateGitUserName(identity?.name ?? ""))
+        .catch(() => setCreateGitUserName(""));
+
+      // Lazily attach open-PR metadata. Fail-soft — picker degrades gracefully.
+      setCreateBranchPullRequestsLoading(true);
+      window.ade.prs.listOpenForRepo()
+        .then(setCreateBranchPullRequests)
+        .catch(() => setCreateBranchPullRequests([]))
+        .finally(() => setCreateBranchPullRequestsLoading(false));
     }
     Promise.all([
       window.ade.lanes.listTemplates().catch(() => [] as LaneTemplate[]),
@@ -2562,7 +2602,7 @@ export function LanesPage() {
               ) : (
                 <span className="shrink-0" style={{ width: 10, height: 10, borderRadius: "50%", background: conflictDotColor(conflictStatus?.status) }} />
               )}
-              {/* Terminal attention spinner */}
+              {/* Terminal attention state */}
               {laneRuntime.bucket === "running" || laneRuntime.bucket === "awaiting-input" ? (
                 <span
                   title={
@@ -2570,11 +2610,10 @@ export function LanesPage() {
                       ? `${laneRuntime.awaitingInputCount} session${laneRuntime.awaitingInputCount === 1 ? "" : "s"} awaiting input`
                       : `${laneRuntime.runningCount} session${laneRuntime.runningCount === 1 ? "" : "s"} running`
                   }
-                  className="shrink-0 animate-spin"
+                  className="shrink-0"
                   style={{
                     width: 8, height: 8, borderRadius: "50%",
-                    border: `1.5px solid ${laneRuntime.bucket === "awaiting-input" ? COLORS.warning : COLORS.success}`,
-                    borderTopColor: "transparent",
+                    background: laneRuntime.bucket === "awaiting-input" ? COLORS.warning : COLORS.success,
                   }}
                 />
 	              ) : laneRuntime.bucket === "ended" ? (
@@ -2953,6 +2992,10 @@ export function LanesPage() {
         setSelectedTemplateId={setSelectedTemplateId}
         selectedColor={createSelectedColor}
         setSelectedColor={setCreateSelectedColor}
+        branchPullRequests={createBranchPullRequests}
+        currentGitUserName={createGitUserName}
+        loadingBranches={createBranchesLoading}
+        loadingBranchPullRequests={createBranchPullRequestsLoading}
         onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
         importBranchWarning={
           createMode === "existing" && createImportBranch && primaryLane?.status.dirty
