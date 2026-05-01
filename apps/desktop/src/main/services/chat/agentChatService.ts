@@ -1382,6 +1382,17 @@ function validateReasoningEffort(provider: "codex" | "claude", effort: string | 
   return known.has(aliased) ? aliased : fallback;
 }
 
+function resolveCodexReasoningEffortForRuntime(
+  primary: string | null | undefined,
+  fallback?: string | null,
+): string {
+  return (
+    validateReasoningEffort("codex", normalizeReasoningEffort(primary))
+    ?? validateReasoningEffort("codex", normalizeReasoningEffort(fallback))
+    ?? DEFAULT_REASONING_EFFORT
+  );
+}
+
 function buildClaudeV2ExecutableArgs(args: {
   supportsReasoning: boolean;
   effort?: string | null;
@@ -2395,11 +2406,7 @@ function applyCodexEffectiveThreadState(
     ),
   );
   if (reasoningEffort) {
-    const requestedReasoningEffort = validateReasoningEffort(
-      "codex",
-      normalizeReasoningEffort(managed.session.reasoningEffort),
-    );
-    managed.session.reasoningEffort = requestedReasoningEffort ?? reasoningEffort;
+    managed.session.reasoningEffort = reasoningEffort;
   }
 
   managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
@@ -14985,11 +14992,16 @@ export function createAgentChatService(args: {
 
         if (threadIdToResume) {
           try {
+            const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
+              managed.session.reasoningEffort,
+              readPersistedState(sessionId)?.reasoningEffort,
+            );
+            managed.session.reasoningEffort = resumeReasoningEffort;
             const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
               threadId: threadIdToResume,
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
-              reasoningEffort: managed.session.reasoningEffort ?? readPersistedState(sessionId)?.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+              reasoningEffort: resumeReasoningEffort,
               ...codexPolicyArgs(codexPolicy),
               persistExtendedHistory: true
             });
@@ -15790,9 +15802,10 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
-      if (!managed.session.reasoningEffort) {
-        managed.session.reasoningEffort = persisted?.reasoningEffort ?? DEFAULT_REASONING_EFFORT;
-      }
+      managed.session.reasoningEffort = resolveCodexReasoningEffortForRuntime(
+        managed.session.reasoningEffort,
+        persisted?.reasoningEffort,
+      );
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
         const { codexPolicy } = resolveCodexThreadParams(managed);
@@ -15801,7 +15814,7 @@ export function createAgentChatService(args: {
             threadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
-            reasoningEffort: managed.session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+            reasoningEffort: managed.session.reasoningEffort,
             ...codexPolicyArgs(codexPolicy),
             persistExtendedHistory: true
           });

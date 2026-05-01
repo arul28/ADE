@@ -648,7 +648,7 @@ struct WorkModelPickerSheet: View {
   /// currently-active effort for the active model so users see what's set.
   @ViewBuilder
   private func reasoningPills(model: WorkModelOption, tiers: [String]) -> some View {
-    let isActiveModel = model.id == currentModelId
+    let isActiveModel = workModelIdsEquivalent(model.id, currentModelId)
     let normalizedCurrent = currentReasoningEffort
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
@@ -701,7 +701,7 @@ struct WorkModelPickerSheet: View {
       .lowercased()
     let nextEffort: String? = normalizedEffort.isEmpty ? nil : normalizedEffort
     let effortChanged = (nextEffort ?? "") != normalizedCurrentEffort
-    if model.id == currentModelId && !effortChanged {
+    if workModelIdsEquivalent(model.id, currentModelId) && !effortChanged {
       dismiss()
       return
     }

@@ -139,7 +139,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
   ) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const payload: SyncChangesetAckPayload = {
-      batchId: batch.batchId ?? null,
+      batchId: batch.batchId,
       fromDbVersion: Number(batch.fromDbVersion ?? 0),
       toDbVersion: Number(batch.toDbVersion ?? 0),
       appliedDbVersion,
@@ -152,7 +152,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     ws.send(
       encodeSyncEnvelope({
         type: "changeset_ack",
-        requestId: batch.batchId ?? null,
+        requestId: batch.batchId,
         payload,
         compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
       }),
@@ -250,6 +250,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       }
     }
     ws = null;
+    pendingOutboundChangeset = null;
     latestBrainStatus = null;
     status.state = state;
     status.connectedAt = null;
@@ -329,8 +330,18 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
           break;
         }
         if (payload.toDbVersion < pendingOutboundChangeset.payload.toDbVersion) break;
+        const acknowledgedRemoteVersion = Math.max(
+          latestRemoteDbVersion,
+          pendingOutboundChangeset.payload.toDbVersion,
+          Math.floor(payload.toDbVersion ?? 0),
+        );
+        latestRemoteDbVersion = acknowledgedRemoteVersion;
+        if (connectionDraft) {
+          connectionDraft.lastRemoteDbVersion = acknowledgedRemoteVersion;
+        }
         outboundLocalDbVersion = Math.max(outboundLocalDbVersion, pendingOutboundChangeset.payload.toDbVersion);
         pendingOutboundChangeset = null;
+        emitStatus();
         break;
       }
       case "brain_status": {

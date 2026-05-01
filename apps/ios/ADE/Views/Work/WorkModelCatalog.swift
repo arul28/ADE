@@ -112,7 +112,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         models: [
           WorkModelOption(id: "gpt-5.5", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 1M context", provider: "codex"),
           WorkModelOption(id: "gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "Affordable · 1M context", provider: "codex"),
-          WorkModelOption(id: "gpt-5.4-mini", displayName: "GPT-5.4-Mini", tier: .fast, tagline: "Cheaper 400K-context variant", provider: "codex"),
+          WorkModelOption(id: "gpt-5.4-mini", displayName: "GPT-5.4-Mini", tier: .fast, tagline: "Cheaper 1M-context variant", provider: "codex"),
           WorkModelOption(id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex", tier: .balanced, tagline: "Tuned for code edits", provider: "codex"),
         ]
       )
@@ -387,6 +387,9 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
   if trimmed.lowercased().hasPrefix("openai/") {
     append(String(trimmed.dropFirst("openai/".count)))
   }
+  if trimmed.lowercased().hasPrefix("anthropic/") {
+    append(String(trimmed.dropFirst("anthropic/".count)))
+  }
 
   return keys
 }
@@ -429,7 +432,7 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
   switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
   case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7":
     return "Claude Opus 4.7"
-  case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7[1m]":
+  case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
     return "Claude Opus 4.7 1M"
   case "sonnet", "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
     return "Claude Sonnet 4.6"
@@ -636,11 +639,19 @@ private func workDeduplicatedModelOptions(_ models: [WorkModelOption]) -> [WorkM
   var seen = Set<String>()
   var deduplicated: [WorkModelOption] = []
   for model in models {
-    if seen.insert(model.id).inserted {
+    if seen.insert(workModelEquivalenceKey(model.id)).inserted {
       deduplicated.append(model)
     }
   }
   return deduplicated
+}
+
+private func workModelEquivalenceKey(_ raw: String?) -> String {
+  let keys = workModelLookupKeys(raw)
+  return keys.first(where: { !$0.contains("/") })
+    ?? keys.first
+    ?? raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    ?? ""
 }
 
 private func injectCurrentWorkModelIfNeeded(

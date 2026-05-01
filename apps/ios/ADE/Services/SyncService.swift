@@ -707,6 +707,7 @@ final class SyncService: ObservableObject {
   private struct OutboundSyncCursor: Codable, Equatable {
     var projectId: String?
     var projectRootPath: String?
+    var hostId: String?
     var siteId: String
     var lastAckedDbVersion: Int
     var updatedAt: String
@@ -715,6 +716,7 @@ final class SyncService: ObservableObject {
   private struct PersistedOutboundChangeset: Codable, Equatable {
     var projectId: String?
     var projectRootPath: String?
+    var hostId: String?
     var siteId: String
     var payload: SyncChangesetBatchPayload
     var retryCount: Int
@@ -727,6 +729,7 @@ final class SyncService: ObservableObject {
   private var pendingSocketOpenTimeoutTasks: [Int: Task<Void, Never>] = [:]
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
+  private let syncDateFormatter = ISO8601DateFormatter()
   private let compressionThresholdBytes = 4 * 1024
   private var relayTask: Task<Void, Never>?
   private var hydrationTask: Task<Void, Never>?
@@ -1268,7 +1271,8 @@ final class SyncService: ObservableObject {
         ?? projectId.flatMap { id in
           projects.first { $0.id == id }.flatMap { normalizedProjectRoot($0.rootPath) }
         }
-    if previousProjectId != nextProjectId || previousRootPath != nextRootPath {
+    let scopeChanged = previousProjectId != nextProjectId || previousRootPath != nextRootPath
+    if scopeChanged {
       prepareOutboundStateForProjectScopeChange()
     }
     activeProjectId = projectId
@@ -1283,6 +1287,9 @@ final class SyncService: ObservableObject {
       UserDefaults.standard.set(activeProjectRootPath, forKey: activeProjectRootPathKey)
     } else {
       UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+    if scopeChanged {
+      resetOutboundCursorStateForActiveProject()
     }
   }
 
@@ -1338,6 +1345,7 @@ final class SyncService: ObservableObject {
     let action: String
     let payload: Data
     let queuedAt: String
+    let hostId: String?
     let projectId: String?
     let projectRootPath: String?
   }
@@ -1960,6 +1968,9 @@ final class SyncService: ObservableObject {
       await restoreTrackedOpenLanesAfterReconnect()
       restoreChatEventSubscriptions()
       await refreshRemoteProjectCatalog()
+      try? await refreshLaneSnapshots()
+      try? await refreshWorkSessions()
+      try? await refreshPullRequestSnapshots()
       await flushPendingOperations()
       return
     }
@@ -3988,24 +3999,54 @@ final class SyncService: ObservableObject {
     return value
   }
 
-  private func outboundCursorStorageKey(projectId: String?, rootPath: String?, siteId: String) -> String? {
+  private func normalizedHostStorageKey(_ hostId: String?) -> String? {
+    guard let value = hostId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !value.isEmpty else {
+      return nil
+    }
+    return value
+  }
+
+  private func activeHostStorageKey() -> String? {
+    let profile = activeHostProfile
+    return normalizedHostStorageKey(profile?.hostIdentity)
+      ?? normalizedHostStorageKey(profile?.lastHostDeviceId)
+      ?? normalizedHostStorageKey(profile?.lastSuccessfulAddress)
+      ?? normalizedHostStorageKey(currentAddress)
+      ?? normalizedHostStorageKey(hostName)
+  }
+
+  private func outboundStateMatchesActiveHost(_ hostId: String?) -> Bool {
+    let currentHostId = activeHostStorageKey()
+    let storedHostId = normalizedHostStorageKey(hostId)
+    if let currentHostId {
+      return storedHostId == currentHostId
+    }
+    return storedHostId == nil
+  }
+
+  private func outboundCursorStorageKey(projectId: String?, rootPath: String?, siteId: String, hostId: String?) -> String? {
     let normalizedSiteId = siteId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard !normalizedSiteId.isEmpty else { return nil }
     let normalizedId = normalizedProjectId(projectId)
     let normalizedRoot = normalizedProjectRoot(rootPath)
     guard normalizedId != nil || normalizedRoot != nil else { return nil }
-    return [
+    var parts = [
       "site=\(normalizedSiteId)",
       "project=\(normalizedId ?? "")",
       "root=\(normalizedRoot ?? "")",
-    ].joined(separator: "|")
+    ]
+    if let hostId = normalizedHostStorageKey(hostId) {
+      parts.append("host=\(hostId)")
+    }
+    return parts.joined(separator: "|")
   }
 
   private func activeOutboundCursorStorageKey() -> String? {
     outboundCursorStorageKey(
       projectId: activeProjectId,
       rootPath: activeProjectRootPath,
-      siteId: database.localSiteId()
+      siteId: database.localSiteId(),
+      hostId: activeHostStorageKey()
     )
   }
 
@@ -4020,6 +4061,7 @@ final class SyncService: ObservableObject {
     return decoded.filter { _, cursor in
       !cursor.siteId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && cursor.lastAckedDbVersion >= 0
+        && (cursor.hostId == nil || normalizedHostStorageKey(cursor.hostId) != nil)
         && (normalizedProjectId(cursor.projectId) != nil || normalizedProjectRoot(cursor.projectRootPath) != nil)
     }
   }
@@ -4043,9 +4085,10 @@ final class SyncService: ObservableObject {
     }
     return decoded.filter { _, pending in
       let siteId = pending.siteId.trimmingCharacters(in: .whitespacesAndNewlines)
-      let batchId = pending.payload.batchId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      let batchId = pending.payload.batchId.trimmingCharacters(in: .whitespacesAndNewlines)
       return !siteId.isEmpty
         && !batchId.isEmpty
+        && (pending.hostId == nil || normalizedHostStorageKey(pending.hostId) != nil)
         && pending.payload.fromDbVersion >= 0
         && pending.payload.toDbVersion >= pending.payload.fromDbVersion
         && !pending.payload.changes.isEmpty
@@ -4095,6 +4138,7 @@ final class SyncService: ObservableObject {
     return cursors.values
       .filter { cursor in
         cursor.siteId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == siteId
+          && outboundStateMatchesActiveHost(cursor.hostId)
           && (
             (rootPath != nil && normalizedProjectRoot(cursor.projectRootPath) == rootPath)
               || (projectId != nil && normalizedProjectId(cursor.projectId) == projectId)
@@ -4121,6 +4165,7 @@ final class SyncService: ObservableObject {
     return changesets.values
       .filter { pending in
         pending.siteId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == siteId
+          && outboundStateMatchesActiveHost(pending.hostId)
           && (
             (rootPath != nil && normalizedProjectRoot(pending.projectRootPath) == rootPath)
               || (projectId != nil && normalizedProjectId(pending.projectId) == projectId)
@@ -4140,9 +4185,10 @@ final class SyncService: ObservableObject {
     cursors[key] = OutboundSyncCursor(
       projectId: normalizedProjectId(activeProjectId),
       projectRootPath: normalizedProjectRoot(activeProjectRootPath),
+      hostId: activeHostStorageKey(),
       siteId: database.localSiteId().trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
       lastAckedDbVersion: max(0, dbVersion),
-      updatedAt: ISO8601DateFormatter().string(from: Date())
+      updatedAt: syncDateFormatter.string(from: Date())
     )
     saveOutboundSyncCursors(cursors)
   }
@@ -4153,10 +4199,11 @@ final class SyncService: ObservableObject {
     changesets[key] = PersistedOutboundChangeset(
       projectId: normalizedProjectId(activeProjectId),
       projectRootPath: normalizedProjectRoot(activeProjectRootPath),
+      hostId: activeHostStorageKey(),
       siteId: database.localSiteId().trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
       payload: pending.payload,
       retryCount: pending.retryCount,
-      updatedAt: ISO8601DateFormatter().string(from: Date())
+      updatedAt: syncDateFormatter.string(from: Date())
     )
     savePendingOutboundChangesets(changesets)
   }
@@ -4172,9 +4219,10 @@ final class SyncService: ObservableObject {
     }
     changesets = changesets.filter { _, pending in
       let sameSite = pending.siteId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == siteId
+      let sameHost = outboundStateMatchesActiveHost(pending.hostId)
       let sameProject = projectId != nil && normalizedProjectId(pending.projectId) == projectId
       let sameRoot = rootPath != nil && normalizedProjectRoot(pending.projectRootPath) == rootPath
-      return !(sameSite && (sameProject || sameRoot))
+      return !(sameHost && sameSite && (sameProject || sameRoot))
     }
     savePendingOutboundChangesets(changesets)
   }
@@ -5113,7 +5161,6 @@ final class SyncService: ObservableObject {
     // The mobile should only claim a dbVersion it actually received via
     // changeset_batch. Setting it prematurely causes the desktop to skip
     // the full initial sync on reconnect (it thinks we already have the data).
-    resetOutboundCursorStateForActiveProject()
     hostName = remoteHostName ?? activeHostProfile?.hostName
     connectionState = .connected
     currentAddress = connectedHost
@@ -5158,6 +5205,7 @@ final class SyncService: ObservableObject {
         ?? activeHostProfile?.tailscaleAddress
     )
     saveProfile(profile)
+    resetOutboundCursorStateForActiveProject()
     startRelayLoop()
     startInitialHydrationTask(for: connectionGeneration)
     restoreChatEventSubscriptions()
@@ -5431,7 +5479,7 @@ final class SyncService: ObservableObject {
   private func handleChangesetAck(_ ack: SyncChangesetAckPayload) {
     guard var pending = pendingOutboundChangeset else { return }
     guard ack.batchId == pending.payload.batchId else {
-      syncConnectLog.info("changeset ack ignored batch=\(ack.batchId ?? "missing", privacy: .public)")
+      syncConnectLog.info("changeset ack ignored batch=\(ack.batchId, privacy: .public)")
       return
     }
     guard ack.toDbVersion >= pending.payload.toDbVersion else { return }
@@ -5440,6 +5488,7 @@ final class SyncService: ObservableObject {
       clearPendingOutboundChangesetForActiveProject()
       advanceOutboundCursorForActiveProject(to: pending.payload.toDbVersion)
       lastSyncAt = Date()
+      lastError = nil
       return
     }
     pending.retryCount += 1
@@ -5762,7 +5811,8 @@ final class SyncService: ObservableObject {
       kind: kind,
       action: action,
       payload: payload,
-      queuedAt: ISO8601DateFormatter().string(from: Date()),
+      queuedAt: syncDateFormatter.string(from: Date()),
+      hostId: activeHostStorageKey(),
       projectId: activeProjectId,
       projectRootPath: activeProjectRootPath
     ))
@@ -5770,6 +5820,14 @@ final class SyncService: ObservableObject {
   }
 
   private func pendingOperationMatchesActiveProject(_ operation: PendingOperation) -> Bool {
+    let currentHostId = activeHostStorageKey()
+    let operationHostId = normalizedHostStorageKey(operation.hostId)
+    if let currentHostId {
+      guard operationHostId == currentHostId else { return false }
+    } else if operationHostId != nil {
+      return false
+    }
+
     if operation.projectId == nil && operation.projectRootPath == nil {
       return true
     }

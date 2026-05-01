@@ -11,6 +11,7 @@ import {
   MODEL_REGISTRY,
   getModelPricing,
   listModelDescriptorsForProvider,
+  resolveModelDescriptor,
   updateModelPricingInRegistry,
   type ModelDescriptor,
 } from "./modelRegistry";
@@ -66,7 +67,9 @@ export const ALL_MODELS: ModelEntry[] = MODEL_REGISTRY
   .map((m) => descriptorToEntry(m));
 
 export function findModel(modelId: string): ModelEntry | undefined {
-  return ALL_MODELS.find((m) => m.modelId === modelId);
+  const descriptor = resolveModelDescriptor(modelId);
+  const resolvedModelId = descriptor?.id ?? modelId;
+  return ALL_MODELS.find((m) => m.modelId === resolvedModelId);
 }
 
 export function getModelsForProvider(provider: ModelProvider): ModelEntry[] {

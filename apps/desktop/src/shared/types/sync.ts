@@ -340,7 +340,7 @@ export type SyncPairingResultPayload = {
 };
 
 export type SyncChangesetBatchPayload = {
-  batchId?: string | null;
+  batchId: string;
   reason: "catchup" | "broadcast" | "relay";
   fromDbVersion: number;
   toDbVersion: number;
@@ -348,7 +348,7 @@ export type SyncChangesetBatchPayload = {
 };
 
 export type SyncChangesetAckPayload = {
-  batchId?: string | null;
+  batchId: string;
   fromDbVersion: number;
   toDbVersion: number;
   appliedDbVersion: number;

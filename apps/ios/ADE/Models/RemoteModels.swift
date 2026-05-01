@@ -2800,7 +2800,7 @@ struct CrsqlChangeRow: Codable, Equatable {
 }
 
 struct SyncChangesetBatchPayload: Codable, Equatable {
-  var batchId: String?
+  var batchId: String
   var reason: String
   var fromDbVersion: Int
   var toDbVersion: Int
@@ -2813,7 +2813,7 @@ struct SyncChangesetAckPayload: Codable, Equatable {
     var message: String
   }
 
-  var batchId: String?
+  var batchId: String
   var fromDbVersion: Int
   var toDbVersion: Int
   var appliedDbVersion: Int

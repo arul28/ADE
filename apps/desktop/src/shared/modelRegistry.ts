@@ -239,7 +239,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     displayName: "GPT-5.4-Mini",
     family: "openai",
     authTypes: ["cli-subscription"],
-    contextWindow: 400_000,
+    contextWindow: 1_050_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],

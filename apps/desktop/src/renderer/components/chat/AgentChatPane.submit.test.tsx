@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type {
   AgentChatEventEnvelope,
@@ -1202,6 +1202,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("does not hydrate hidden inactive chat tiles", async () => {
+    vi.useFakeTimers();
     const session = buildSession("hidden-inactive-chat", {
       title: "Hidden inactive chat",
     });
@@ -1209,21 +1210,27 @@ describe("AgentChatPane submit recovery", () => {
     const readTranscriptTail = vi.fn().mockResolvedValue("");
     window.ade.sessions.readTranscriptTail = readTranscriptTail as any;
 
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={session.laneId}
-          lockSessionId={session.sessionId}
-          hideSessionTabs
-          initialSessionSummary={session}
-          layoutVariant="grid-tile"
-          isTileActive={false}
-        />
-      </MemoryRouter>,
-    );
+    try {
+      render(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={session.laneId}
+            lockSessionId={session.sessionId}
+            hideSessionTabs
+            initialSessionSummary={session}
+            layoutVariant="grid-tile"
+            isTileActive={false}
+          />
+        </MemoryRouter>,
+      );
 
-    await new Promise((resolve) => window.setTimeout(resolve, 550));
-    expect(readTranscriptTail).not.toHaveBeenCalled();
+      await act(async () => {
+        vi.advanceTimersByTime(550);
+      });
+      expect(readTranscriptTail).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows 'New chat' in the header when no session is selected", async () => {

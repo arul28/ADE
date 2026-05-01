@@ -1499,7 +1499,8 @@ final class ADETests: XCTestCase {
       UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
     }
 
-    let database = makeProjectLaneForeignKeyDatabase(baseURL: makeTemporaryDirectory())
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
     XCTAssertNil(database.initializationError)
     try database.executeSqlForTesting("""
       insert into projects (
@@ -1523,16 +1524,20 @@ final class ADETests: XCTestCase {
     let pendingLocalVersion = database.currentDbVersion()
     XCTAssertGreaterThan(pendingLocalVersion, initialCursor)
 
-    let restartedBeforeAck = SyncService(database: database)
+    database.close()
+    let databaseBeforeAck = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    let restartedBeforeAck = SyncService(database: databaseBeforeAck)
     restartedBeforeAck.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
     XCTAssertEqual(restartedBeforeAck.outboundLocalDbVersionForTesting(), initialCursor)
 
     restartedBeforeAck.advanceOutboundCursorForTesting(to: pendingLocalVersion)
-    let restartedAfterAck = SyncService(database: database)
+    databaseBeforeAck.close()
+    let databaseAfterAck = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    let restartedAfterAck = SyncService(database: databaseAfterAck)
     restartedAfterAck.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
     XCTAssertEqual(restartedAfterAck.outboundLocalDbVersionForTesting(), pendingLocalVersion)
 
-    database.close()
+    databaseAfterAck.close()
   }
 
   @MainActor
@@ -1552,7 +1557,8 @@ final class ADETests: XCTestCase {
       UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
     }
 
-    let database = makeProjectLaneForeignKeyDatabase(baseURL: makeTemporaryDirectory())
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
     XCTAssertNil(database.initializationError)
     try database.executeSqlForTesting("""
       insert into projects (
@@ -1583,11 +1589,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.outboundLocalDbVersionForTesting(), initialCursor)
 
     service.advanceOutboundCursorForTesting(to: pendingLocalVersion)
-    let restartedAfterAck = SyncService(database: database)
+    database.close()
+    let databaseAfterAck = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    let restartedAfterAck = SyncService(database: databaseAfterAck)
     restartedAfterAck.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
     XCTAssertEqual(restartedAfterAck.outboundLocalDbVersionForTesting(), pendingLocalVersion)
 
-    database.close()
+    databaseAfterAck.close()
   }
 
   func testDatabaseExportAndApplyChangesRoundTrip() throws {
@@ -5110,7 +5118,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(codexOpenAI?.models.map(\.id), ["gpt-5.5"])
     XCTAssertTrue(workModelIdsEquivalent("gpt-5.5", "openai/gpt-5.5"))
-    XCTAssertTrue(workModelIdsEquivalent("gpt-5.5", "openai/gpt-5.5"))
+    XCTAssertTrue(workModelIdsEquivalent("openai/gpt-5.5", "gpt-5.5"))
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-5.5"), "GPT-5.5")
     XCTAssertEqual(prettyWorkChatModelName("openai/gpt-5.5"), "GPT-5.5")
   }

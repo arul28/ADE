@@ -122,7 +122,12 @@ function isDarkTheme(theme: ThemeId): boolean {
 
 function terminalWebglRendererEnabled(): boolean {
   try {
-    return window.localStorage.getItem(TERMINAL_RENDERER_STORAGE_KEY) !== "dom";
+    const stored = window.localStorage.getItem(TERMINAL_RENDERER_STORAGE_KEY);
+    if (stored != null) return stored !== "dom";
+    const platform = window.navigator?.platform?.toLowerCase() ?? "";
+    const userAgent = window.navigator?.userAgent?.toLowerCase() ?? "";
+    if (platform.includes("linux") || userAgent.includes("linux")) return false;
+    return true;
   } catch {
     return true;
   }

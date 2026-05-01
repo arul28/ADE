@@ -512,10 +512,11 @@ interface TokenEntry {
 
 function resolveTokenPrice(model: string): { input: number; output: number } {
   const lower = (model ?? "").toLowerCase();
+  const isMiniModel = /(?:^|[\/._-])mini(?:$|[\/._-])/.test(lower);
   if (lower.includes("opus")) return TOKEN_PRICES["claude-opus"]!;
   if (lower.includes("sonnet")) return TOKEN_PRICES["claude-sonnet"]!;
   if (lower.includes("haiku")) return TOKEN_PRICES["claude-haiku"]!;
-  if (lower.includes("mini")) return TOKEN_PRICES["openai-mini"]!;
+  if (isMiniModel) return TOKEN_PRICES["openai-mini"]!;
   if (lower.includes("codex") || lower.includes("gpt") || lower.includes("o3") || lower.includes("o4"))
     return TOKEN_PRICES["codex"]!;
   return TOKEN_PRICES["default"]!;

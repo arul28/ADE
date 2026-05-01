@@ -1073,7 +1073,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
 
     const rebroadcast = await clientB.queue.next("changeset_batch");
     const payload = rebroadcast.payload as {
-      batchId?: string;
+      batchId: string;
       fromDbVersion: number;
       toDbVersion: number;
       changes: unknown[];
@@ -1084,9 +1084,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(host.getPeerStates().find((peer) => peer.deviceId === "peer-b")?.syncLag).toBeGreaterThan(0);
     clientB.ws.send(encodeSyncEnvelope({
       type: "changeset_ack",
-      requestId: payload.batchId ?? "rebroadcast-ack",
+      requestId: payload.batchId,
       payload: {
-        batchId: payload.batchId ?? null,
+        batchId: payload.batchId,
         fromDbVersion: payload.fromDbVersion,
         toDbVersion: payload.toDbVersion,
         appliedDbVersion: dbB.sync.getDbVersion(),

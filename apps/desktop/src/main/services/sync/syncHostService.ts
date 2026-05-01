@@ -106,6 +106,7 @@ const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
+const MAX_CHANGESET_ACK_RETRIES = 6;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
@@ -185,8 +186,6 @@ type PersistedMobileCommand = {
   completedAtMs: number;
 };
 
-const mobileCommandResultCache = new Map<string, CachedMobileCommand>();
-
 function stableJsonValue(value: unknown): unknown {
   if (value == null) return value;
   if (Array.isArray(value)) return value.map(stableJsonValue);
@@ -212,31 +211,6 @@ function mobileCommandCacheKey(projectRoot: string, peer: PeerState, commandId: 
 function addMobileCommandWaiter(record: CachedMobileCommand, peer: PeerState, requestId: string | null): void {
   if (record.waiters.some((waiter) => waiter.peer === peer && waiter.requestId === requestId)) return;
   record.waiters.push({ peer, requestId });
-}
-
-function pruneMobileCommandResultCache(nowMs = Date.now()): void {
-  for (const [key, record] of mobileCommandResultCache) {
-    const referenceMs = record.completedAtMs ?? record.acceptedAtMs;
-    if (nowMs - referenceMs > MOBILE_COMMAND_RESULT_CACHE_TTL_MS) {
-      mobileCommandResultCache.delete(key);
-    }
-  }
-  if (mobileCommandResultCache.size <= MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES) return;
-
-  const completed = [...mobileCommandResultCache.entries()]
-    .filter(([, record]) => record.completedAtMs != null)
-    .sort(([, left], [, right]) => (left.completedAtMs ?? left.acceptedAtMs) - (right.completedAtMs ?? right.acceptedAtMs));
-  for (const [key] of completed) {
-    if (mobileCommandResultCache.size <= MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES) break;
-    mobileCommandResultCache.delete(key);
-  }
-  const inFlight = [...mobileCommandResultCache.entries()]
-    .filter(([, record]) => record.completedAtMs == null)
-    .sort(([, left], [, right]) => left.acceptedAtMs - right.acceptedAtMs);
-  for (const [key] of inFlight) {
-    if (mobileCommandResultCache.size <= MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES) break;
-    mobileCommandResultCache.delete(key);
-  }
 }
 
 type SyncHostServiceArgs = {
@@ -523,10 +497,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const peers = new Set<PeerState>();
+  const mobileCommandResultCache = new Map<string, CachedMobileCommand>();
   let commandReplayCount = 0;
   let commandConflictCount = 0;
   let lastCommandResultLatencyMs: number | null = null;
   let lastChangesetAckLatencyMs: number | null = null;
+
+  const pruneMobileCommandResultCache = (nowMs = Date.now()): void => {
+    for (const [key, record] of mobileCommandResultCache) {
+      if (record.completedAtMs == null) continue;
+      if (nowMs - record.completedAtMs > MOBILE_COMMAND_RESULT_CACHE_TTL_MS) {
+        mobileCommandResultCache.delete(key);
+      }
+    }
+    if (mobileCommandResultCache.size <= MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES) return;
+
+    const completed = [...mobileCommandResultCache.entries()]
+      .filter(([, record]) => record.completedAtMs != null)
+      .sort(([, left], [, right]) => (left.completedAtMs ?? left.acceptedAtMs) - (right.completedAtMs ?? right.acceptedAtMs));
+    for (const [key] of completed) {
+      if (mobileCommandResultCache.size <= MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES) break;
+      mobileCommandResultCache.delete(key);
+    }
+  };
 
   const readPersistedCommandLedger = (): PersistedMobileCommand[] => {
     try {
@@ -1698,6 +1691,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (peer.pendingChangesetBatch) {
         if (nowMs - peer.pendingChangesetBatch.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
           const pending = peer.pendingChangesetBatch;
+          if (pending.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
+            args.logger.warn("sync_host.changeset_ack_timeout", {
+              peerDeviceId: peer.metadata.deviceId,
+              batchId: pending.batchId,
+              fromDbVersion: pending.fromDbVersion,
+              toDbVersion: pending.toDbVersion,
+              retryCount: pending.retryCount,
+            });
+            try {
+              peer.ws.close(4000, "Changeset acknowledgement timed out");
+            } catch {
+              // ignore close failures
+            }
+            continue;
+          }
           const resent = resendPendingChangesetBatch(peer);
           args.logger.debug("sync_host.changeset_ack_retry", {
             peerDeviceId: peer.metadata.deviceId,
@@ -1736,19 +1744,28 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       args.logger.debug("sync_host.changeset_ack_ignored", {
         peerDeviceId: peer.metadata?.deviceId ?? null,
         expectedBatchId: pending.batchId,
-        receivedBatchId: payload.batchId ?? null,
+        receivedBatchId: payload.batchId,
       });
       return;
     }
     if (!payload.ok) {
+      pending.retryCount += 1;
       pending.sentAtMs = Date.now();
       args.logger.warn("sync_host.changeset_ack_failed", {
         peerDeviceId: peer.metadata?.deviceId ?? null,
         batchId: pending.batchId,
         fromDbVersion: pending.fromDbVersion,
         toDbVersion: pending.toDbVersion,
+        retryCount: pending.retryCount,
         error: payload.error?.message ?? "Changeset apply failed.",
       });
+      if (pending.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
+        try {
+          peer.ws.close(4000, "Changeset apply failed repeatedly");
+        } catch {
+          // ignore close failures
+        }
+      }
       return;
     }
     if (payload.toDbVersion < pending.toDbVersion) return;
@@ -2306,6 +2323,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       case "changeset_batch": {
         const payload = (envelope.payload ?? {}) as SyncChangesetBatchPayload;
+        const batchId = payload.batchId || envelope.requestId || "";
         const changes = Array.isArray(payload.changes) ? payload.changes as CrsqlChangeRow[] : [];
         try {
           let appliedCount = 0;
@@ -2318,7 +2336,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             broadcastBrainStatus();
           }
           sendRequired(peer, "changeset_ack", {
-            batchId: payload.batchId ?? null,
+            batchId,
             fromDbVersion: Number(payload.fromDbVersion ?? 0),
             toDbVersion: Number(payload.toDbVersion ?? 0),
             appliedDbVersion: args.db.sync.getDbVersion(),
@@ -2327,7 +2345,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           } satisfies SyncChangesetAckPayload, envelope.requestId);
         } catch (error) {
           sendRequired(peer, "changeset_ack", {
-            batchId: payload.batchId ?? null,
+            batchId,
             fromDbVersion: Number(payload.fromDbVersion ?? 0),
             toDbVersion: Number(payload.toDbVersion ?? 0),
             appliedDbVersion: args.db.sync.getDbVersion(),
