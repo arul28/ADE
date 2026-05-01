@@ -356,7 +356,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   }, [creatingTab, onToggle, open, tabs.length]);
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (tabs.length === 0) return undefined;
     const ptyBridge = window.ade?.pty;
     if (!ptyBridge?.onExit) return undefined;
     const unsubscribe = ptyBridge.onExit((ev: PtyExitEvent) => {
@@ -367,7 +367,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       )));
     });
     return unsubscribe;
-  }, [open]);
+  }, [tabs.length]);
 
   // Drop drawer tabs when their session is deleted from the sidebar so the user
   // can't keep working in a shell whose backing session no longer exists.

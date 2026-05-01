@@ -1579,7 +1579,8 @@ export function createPtyService({
             launchedDirectCommand = true;
           } catch (err) {
             lastErr = err;
-            startupCommand ||= buildDirectCommandShellFallback(directCommand, directArgs) ?? "";
+            const shellFallbackCmd = buildDirectCommandShellFallback(directCommand, directArgs);
+            if (shellFallbackCmd) startupCommand ||= shellFallbackCmd;
           }
         }
         if (!created && (!directCommand || startupCommand)) {
