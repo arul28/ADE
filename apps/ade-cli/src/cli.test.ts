@@ -437,6 +437,24 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps git user-identity and prs list-open to typed RPC tools", () => {
+    const identity = buildCliPlan(["git", "user-identity"]);
+    expect(identity.kind).toBe("execute");
+    if (identity.kind !== "execute") return;
+    expect(identity.steps[0]?.params).toEqual({
+      name: "git_get_user_identity",
+      arguments: {},
+    });
+
+    const openPrs = buildCliPlan(["prs", "list-open"]);
+    expect(openPrs.kind).toBe("execute");
+    if (openPrs.kind !== "execute") return;
+    expect(openPrs.steps[0]?.params).toEqual({
+      name: "prs_list_open",
+      arguments: {},
+    });
+  });
+
   it("uses the parent ADE project when invoked inside an ADE-managed lane worktree", () => {
     const rawRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-roots-"));
     // findProjectRoots canonicalizes symlinks (e.g. /var -> /private/var on macOS).

@@ -387,13 +387,13 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --chat-session <id>         Owner chat session for the single-owner lock.
     --no-build                  Skip xcodebuild.
     --mode snapshot|live        Inspector launch mode; default live.
-    --foreground                Bring Simulator.app forward instead of background.
+    --foreground                Open and bring Simulator.app forward.
     --arg KEY=VALUE             Extra service args for advanced launch options.
 `,
   shutdown: `${ADE_BANNER}
   iOS Simulator: shutdown
 
-  Stops streams, releases the drawer session, and tears down the idb companion.
+  Stops streams, releases the drawer session, and tears down simulator helper processes.
   Aliases: stop, teardown, end, end-session.
 
     $ ade --socket ios-sim shutdown --text
@@ -519,9 +519,11 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "stream-start": `${ADE_BANNER}
   iOS Simulator: stream-start
 
-  Starts a visual stream. Prefer live-start/auto for the drawer UI when
-  idb+idb_companion+ffmpeg are installed, preview-start as a simctl screenshot-poll fallback,
-  and window-start only for native Simulator.app diagnostics. Aliases:
+  Starts a visual stream. auto resolves to iosurface-indigo first when full
+  Xcode supports ADE's private helpers, then Simulator.app window capture when
+  visible-window capture is allowed, then idb MJPEG, then simctl screenshot
+  polling. The H.264+ffmpeg idb stream is recovery-only after idb MJPEG fails.
+  Aliases:
   start-stream, stream, window-start,
   start-window, mirror-start, live-start, start-live, preview-start, start-preview.
 
@@ -532,15 +534,17 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --device, --udid <id>  Simulator device.
     --fps <n>              Target fps.
-    --backend auto|simulator-window-capture|idb-mjpeg|idb-h264-ffmpeg-mjpeg|simctl-screenshot-poll
+    --backend auto|iosurface-indigo|simulator-window-capture|idb-mjpeg|idb-h264-ffmpeg-mjpeg|simctl-screenshot-poll
     --window, --mirror     Force window capture.
-    --idb, --live          Prefer idb stream (auto-picks h264+ffmpeg, falls back to MJPEG).
+    --idb, --live          Use auto backend resolution.
     --simctl, --preview    Force simctl screenshot polling.
 `,
   "stream-status": `${ADE_BANNER}
   iOS Simulator: stream-status
 
-  Shows running backend, fps, latency, stream URL, frame count, and last error.
+  Shows running backend, fallback/degradation reason, helper pid, fps, latency,
+  stream URL, frame count, input backend, and last error. Low idle fps is normal
+  on iosurface-indigo because frames are event-driven when the simulator is still.
 
     $ ade --socket ios-sim stream-status --text
 `,
@@ -568,7 +572,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   tap: `${ADE_BANNER}
   iOS Simulator: tap
 
-  Sends a tap through idb to the active launched app.
+  Sends a tap through the active input backend, preferring Indigo with idb fallback.
 
     $ ade --socket ios-sim tap --x 120 --y 420 --text
     $ ade --socket ios-sim tap 120 420 --text
@@ -581,7 +585,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   drag: `${ADE_BANNER}
   iOS Simulator: drag / swipe
 
-  Sends a swipe through idb. "swipe" is an alias of drag.
+  Sends a swipe through the active input backend. "swipe" is an alias of drag.
 
     $ ade --socket ios-sim drag --start-x 120 --start-y 700 --end-x 120 --end-y 250 --text
     $ ade --socket ios-sim swipe 120 700 120 250 --duration-ms 250 --text
@@ -681,6 +685,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git unstage --lane <lane> src/file.ts     Unstage one file
     $ ade git commit --lane <lane> [-m <message>]   Commit, generating a message when omitted
     $ ade git push --lane <lane> --set-upstream     Push through ADE
+    $ ade git branches --lane <lane> --text         List branches with last-commit metadata
+    $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
     $ ade git stash push|list|apply|pop             Use ADE lane stash actions
     $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
     $ ade diff changes --lane <lane> --text         Inspect changed files
@@ -700,6 +706,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Creating or linking a PR persists the lane mapping in ADE so the PR tab tracks it.
 
     $ ade prs list --text                           List PRs known to ADE
+    $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open and map a GitHub PR from a lane
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
@@ -809,7 +816,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
   surface. For drawer/shared session state, prefer desktop socket mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch keeps Simulator.app hidden by default; use --foreground only when you
+  Launch is headless by default; use --foreground only when you
   need the native Simulator window in front. idb is optional for direct
   pointer/text control and the low-latency MJPEG live stream.
 
@@ -824,7 +831,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim apps --device <udid> --text      List launchable apps (listLaunchTargets)
     $ ade --socket ios-sim launch --target <id>    Build/install/launch and update drawer state
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
-    $ ade --socket ios-sim shutdown                Tear down session, streams, idb companion (alias: stop)
+    $ ade --socket ios-sim shutdown                Tear down session, streams, helper processes (alias: stop)
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
@@ -838,7 +845,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Streaming:
-    $ ade ios-sim live-start --fps 30              Low-latency idb live stream
+    $ ade ios-sim live-start --fps 30              Auto live stream (IOSurface first)
     $ ade ios-sim preview-start --fps 8            simctl screenshot-poll fallback
     $ ade ios-sim window-start --fps 60            Native Simulator.app window capture diagnostic
     $ ade ios-sim stream-status --text             Backend/fps/latency/URL (getStreamStatus)
@@ -846,9 +853,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Input and selection:
     $ ade --socket ios-sim select --x 120 --y 420  Add UI context to drawer chat (selectPoint)
-    $ ade ios-sim tap 120 420                      Tap through idb (tap)
-    $ ade ios-sim drag 120 700 120 250             Drag through idb (drag)
-    $ ade ios-sim swipe 120 700 120 250            Swipe through idb (swipe)
+    $ ade ios-sim tap 120 420                      Tap active simulator app (tap)
+    $ ade ios-sim drag 120 700 120 250             Drag active simulator app (drag)
+    $ ade ios-sim swipe 120 700 120 250            Swipe active simulator app (swipe)
     $ ade ios-sim type "hello" --text              Type into the launched app (typeText)
 `,
   "app-control": `${ADE_BANNER}
@@ -1541,6 +1548,9 @@ function buildGitPlan(args: string[]): CliPlan {
     return { kind: "execute", label: "git commit message", steps: [actionCallStep("result", "generate_commit_message", withLane({ amend: readFlag(args, ["--amend"]) }))] };
   }
   if (sub === "branches" || sub === "branch") return { kind: "execute", label: "git branches", steps: [actionCallStep("result", "git_list_branches", withLane())] };
+  if (sub === "user-identity" || sub === "user" || sub === "identity") {
+    return { kind: "execute", label: "git user identity", steps: [actionCallStep("result", "git_get_user_identity", withLane())] };
+  }
   if (sub === "checkout") {
     const branchName = requireValue(readValue(args, ["--branch", "--branch-name"]) ?? firstPositional(args), "branchName");
     const create = readFlag(args, ["--create", "-b"]);
@@ -1675,6 +1685,9 @@ function buildPrPlan(args: string[]): CliPlan {
   const withPr = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(prId ? { prId } : {}) });
 
   if (sub === "list" || sub === "ls") return { kind: "execute", label: "PR list", steps: [actionStep("result", "pr", "listAll", collectGenericObjectArgs(args))] };
+  if (sub === "list-open" || sub === "open" || sub === "list-repo-open") {
+    return { kind: "execute", label: "PR list open", steps: [actionCallStep("result", "prs_list_open", {})] };
+  }
   if (sub === "show" || sub === "detail" || sub === "view") {
     const id = requireValue(prId ?? firstPositional(args), "prId");
     return { kind: "execute", label: "PR detail", steps: [actionArgsListStep("result", "pr", "getDetail", [id])] };
@@ -2291,7 +2304,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
       ?? (readFlag(args, ["--window", "--mirror"]) ? "simulator-window-capture" : readFlag(args, ["--idb", "--live"]) ? "auto" : readFlag(args, ["--simctl", "--preview"]) ? "simctl-screenshot-poll" : readValue(args, ["--backend"]) ?? "auto");
     const defaultFps = requestedBackend === "simulator-window-capture"
       ? 60
-      : requestedBackend === "idb-mjpeg" || requestedBackend === "idb-h264-ffmpeg-mjpeg"
+      : requestedBackend === "iosurface-indigo" || requestedBackend === "idb-mjpeg" || requestedBackend === "idb-h264-ffmpeg-mjpeg"
         ? 30
         : requestedBackend === "simctl-screenshot-poll"
           ? 8
@@ -4043,11 +4056,19 @@ function formatIosSimStream(value: unknown): string {
   const status = isRecord(value) ? value : {};
   return renderKeyValues("ADE iOS simulator stream", [
     ["running", status.running],
-    ["backend", status.backend],
+    ["requested backend", status.requestedBackend],
+    ["resolved backend", status.backend],
+    ["fallback reason", status.fallbackReason],
+    ["degradation reason", status.degradationReason],
     ["device", status.deviceUdid],
     ["fps", status.fps ?? status.targetFps],
     ["frames", status.frameCount],
     ["avg latency ms", status.averageLatencyMs],
+    ["latency p50 ms", status.latencyP50Ms],
+    ["latency p95 ms", status.latencyP95Ms],
+    ["helper pid", status.helperPid],
+    ["input backend", status.inputBackend],
+    ["error code", isRecord(status.error) ? status.error.code : null],
     ["started", status.startedAt],
     ["last frame", status.lastFrameAt],
     ["stream url", status.streamUrl],
@@ -4379,7 +4400,7 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "file read") return "file-read";
   if (label === "file tree" || label === "file workspaces") return "files-tree";
   if (label === "file search" || label === "file quick-open") return "files-search";
-  if (label === "pr list") return "prs-list";
+  if (label === "pr list" || label === "pr list open") return "prs-list";
   if (label === "pr detail" || label === "pr health") return "pr-detail";
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";

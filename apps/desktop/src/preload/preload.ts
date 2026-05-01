@@ -177,8 +177,11 @@ import type {
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
+  BranchPullRequest,
   GitBranchSummary,
   GitListBranchesArgs,
+  GitGetUserIdentityArgs,
+  GitUserIdentity,
   GitCheckoutBranchArgs,
   GitPushArgs,
   GitRevertArgs,
@@ -2589,6 +2592,10 @@ contextBridge.exposeInMainWorld("ade", {
       args: GitListBranchesArgs,
     ): Promise<GitBranchSummary[]> =>
       gitBranchesCache.get(serializeIpcCacheArgs(args)),
+    getUserIdentity: async (
+      args: GitGetUserIdentityArgs,
+    ): Promise<GitUserIdentity> =>
+      ipcRenderer.invoke(IPC.gitGetUserIdentity, args),
     checkoutBranch: async (
       args: GitCheckoutBranchArgs,
     ): Promise<GitActionResult> =>
@@ -2723,6 +2730,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsGetForLane, { laneId }),
     listAll: async (): Promise<PrSummary[]> =>
       ipcRenderer.invoke(IPC.prsListAll),
+    listOpenForRepo: async (): Promise<BranchPullRequest[]> =>
+      ipcRenderer.invoke(IPC.prsListOpenForRepo),
     refresh: async (
       args: { prId?: string; prIds?: string[] } = {},
     ): Promise<PrSummary[]> => ipcRenderer.invoke(IPC.prsRefresh, args),

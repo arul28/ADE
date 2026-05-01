@@ -20,20 +20,20 @@ called from a non-darwin host.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | The whole feature backend: tool-readiness probes (xcrun, xcodebuild, idb, idb_companion, ffmpeg), simctl device + app discovery, build/install/launch with progress events (with hardened `simctl bootstatus` and `simctl install` timeouts), screenshot + ADEInspector + accessibility hit-test, streaming backends (`idb-h264-ffmpeg-mjpeg`, `idb-mjpeg`, `simctl-screenshot-poll`, `simulator-window-capture`) with `auto` resolution and runtime fallback when a backend produces no frames, tap/drag/swipe/type via idb, single-owner session locking, Preview Lab integration via Xcode MCP, and selection emission. Exports `__testSetIosSimulatorProcessHooks`, `resolveIosSimulatorStreamBackend`, and `shouldOpenSimulatorAppForLaunch` for the unit tests. |
+| `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | The whole feature backend: tool-readiness probes (xcrun, xcodebuild, IOSurface/Indigo helpers, idb, idb_companion, ffmpeg), simctl device + app discovery, build/install/launch with progress events (with hardened `simctl bootstatus` and `simctl install` timeouts), screenshot + ADEInspector + accessibility hit-test, streaming backends (`iosurface-indigo`, `idb-mjpeg`, `idb-h264-ffmpeg-mjpeg`, `simctl-screenshot-poll`, `simulator-window-capture`) with `auto` resolution and runtime fallback when a backend produces no frames, tap/drag/swipe/type through Indigo with idb fallback, single-owner session locking, Preview Lab integration via Xcode MCP, and selection emission. Exports `__testSetIosSimulatorProcessHooks`, `detectIosurfaceIndigoCapability`, `resolveIosSimulatorStreamBackend`, and `shouldOpenSimulatorAppForLaunch` for the unit tests. |
 | `apps/desktop/src/main/services/ios/iosSimulatorService.test.ts` | Service unit tests covering backend resolution, launch foreground/background flag, and timeout-mapped error messages via the `__testSetIosSimulatorProcessHooks` injector. |
-| `apps/desktop/src/shared/types/iosSimulator.ts` | All cross-process types: `IosSimulatorStatus`, `IosSimulatorDevice`, `IosSimulatorLaunchTarget`, `IosSimulatorSession`, `IosSimulatorLaunchProgress`, `IosSimulatorStreamStatus`, `IosSimulatorStreamBackend` (now a four-member union — `simctl-screenshot-poll` \| `idb-mjpeg` \| `idb-h264-ffmpeg-mjpeg` \| `simulator-window-capture`), `IosSimulatorWindowSource`, `IosSimulatorWindowState` + `IosSimulatorWindowIssue` (`not-running` \| `hidden` \| `minimized` \| `no-window` \| `unknown`), `IosScreenSnapshot`, `IosScreenElement`, `IosInspectorSnapshot`, `IosInspectableElement`, `IosElementContextItem`, `IosSimulatorEventPayload`, plus the `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE` error sentinel. |
+| `apps/desktop/src/shared/types/iosSimulator.ts` | All cross-process types: `IosSimulatorStatus`, `IosSimulatorDevice`, `IosSimulatorLaunchTarget`, `IosSimulatorSession`, `IosSimulatorLaunchProgress`, `IosSimulatorStreamStatus`, `IosSimulatorStreamBackend` (`iosurface-indigo` \| `simctl-screenshot-poll` \| `idb-mjpeg` \| `idb-h264-ffmpeg-mjpeg` \| `simulator-window-capture`), `IosSimulatorWindowSource`, `IosSimulatorWindowState` + `IosSimulatorWindowIssue` (`not-running` \| `hidden` \| `minimized` \| `no-window` \| `unknown`), `IosScreenSnapshot`, `IosScreenElement`, `IosInspectorSnapshot`, `IosInspectableElement`, `IosElementContextItem`, `IosSimulatorEventPayload`, plus the `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE` error sentinel. |
 | `apps/desktop/src/shared/ipc.ts` | `IPC.iosSimulator*` channel constants (one per service method, plus `iosSimulatorGetWindowState`, `iosSimulatorListWindowSources`, and the single push channel `ade.iosSimulator.event`). |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.iosSimulator.*` invoke handlers, the chat-session-aware arg validator (`incomingChatSessionId` must match the active drawer owner), the `ade.iosSimulator.event` push relay, and the macOS Simulator-window plumbing: `getSimulatorWindowState` (osascript probe of `process "Simulator"` for visibility / window count / minimized count), `prepareSimulatorWindowForCapture` (open `-g`, unminimize, park under the left side of the ADE BrowserWindow), and `followSimulatorWindowUnderAde` (re-park on `move`/`resize`, cleared on shutdown). |
 | `apps/desktop/src/main/services/adeActions/registry.ts` | Maps the service onto the `ios_simulator` action namespace consumed by the ADE CLI / agent tools (`getStatus`, `listDevices`, `listLaunchTargets`, `launch`, `shutdown`, `screenshot`, `getScreenSnapshot`, `getInspectorSnapshot`, `inspectPoint`, `getPreviewCapability`, `listPreviewTargets`, `renderPreview`, `openPreviewWorkspace`, `startStream`, `stopStream`, `getStreamStatus`, `tap`, `typeText`, `drag`, `swipe`, `selectPoint`). |
 | `apps/desktop/src/preload/preload.ts` | `window.ade.iosSimulator` bridge and `onEvent(listener)` push subscription. |
-| `apps/desktop/src/renderer/components/chat/ChatIosSimulatorPanel.tsx` | Drawer UI: tool-readiness checklist, device + target pickers, launch progress, live preview playback (idb live MJPEG decoded to a `<canvas>` via `fetch` + `ReadableStream` JPEG framing as the default, with screenshot-poll fallback and explicit `simulator-window-capture` for diagnostics), `interact` vs `inspect` mode, hit-test overlay drawn from `getScreenSnapshot`, drag-to-select region capture on a frozen simulator screenshot (`SimulatorCaptureSelection`) that emits an `IosElementContextItem` for the cropped region, Preview Lab tab (`renderPreview` + workspace open), `getSimulatorWindowState`-driven warnings when window capture is selected and Simulator.app is hidden/minimized, and attachment + context emission. |
+| `apps/desktop/src/renderer/components/chat/ChatIosSimulatorPanel.tsx` | Drawer UI: tool-readiness checklist, device + target pickers, launch progress, live preview playback (the service's MJPEG URL decoded to a `<canvas>` via `fetch` + `ReadableStream` JPEG framing; IOSurface is preferred, idb/simctl are fallbacks, and explicit `simulator-window-capture` remains available for diagnostics), `interact` vs `inspect` mode, hit-test overlay drawn from `getScreenSnapshot`, drag-to-select region capture on a frozen simulator screenshot (`SimulatorCaptureSelection`) that emits an `IosElementContextItem` for the cropped region, Preview Lab tab (`renderPreview` + workspace open), `getSimulatorWindowState`-driven warnings when window capture is selected and Simulator.app is hidden/minimized, and attachment + context emission. |
 | `apps/desktop/src/renderer/components/chat/ChatIosSimulatorPanel.test.tsx` | Renderer panel tests. |
 | `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Mounts `ChatIosSimulatorPanel` behind a header toggle (`iosSimulatorAvailable`), brokers the screenshot-attachment + context-item flow into the composer, and gates the toggle on `iosSimulatorStatus.supported`. |
 | `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Renders `IosElementContextItem[]` as inline composer chips: switches to a contenteditable rich-input variant when the user has attached one or more iOS elements, serialises chip nodes back into the prompt on submit, and pairs each element with its captured screenshot when one was added in the same gesture. |
 | `apps/desktop/src/renderer/components/chat/ChatAttachmentTray.tsx` | Includes iOS-element instance handling: `createIosContextInstanceId`, `getIosContextAttachmentPath`, and `formatIosElementContextForPrompt` (the prompt-side serialisation). |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Mentions `ade ios-sim` so prompts know the surface exists. |
-| `apps/ade-cli/src/cli.ts` | `ade ios-sim` (aliased `ade ios`, `ade simulator`) subcommand: status / devices / apps / launch / shutdown / actions / screenshot / snapshot / inspector / inspect / preview-status / previews / preview-render / preview-open / window-start / live-start / preview-start / stream-status / stream-stop / select / tap / drag / swipe / type, with focused `ade help ios-sim <subcommand>` pages for agent discovery. `live-start` now requests the `auto` backend so the service picks `idb-h264-ffmpeg-mjpeg` → `idb-mjpeg` → `simctl-screenshot-poll` based on which tools are installed; `--backend` accepts the new `idb-mjpeg` value for the direct MJPEG path. |
+| `apps/ade-cli/src/cli.ts` | `ade ios-sim` (aliased `ade ios`, `ade simulator`) subcommand: status / devices / apps / launch / shutdown / actions / screenshot / snapshot / inspector / inspect / preview-status / previews / preview-render / preview-open / window-start / live-start / preview-start / stream-status / stream-stop / select / tap / drag / swipe / type, with focused `ade help ios-sim <subcommand>` pages for agent discovery. `live-start` requests the `auto` backend so the service picks `iosurface-indigo` first when available, then falls back through window/idb/simctl paths; `--backend` accepts every explicit backend value. |
 | `apps/ios/ADE/Debug/ADEInspectorKit/ADEInspectable.swift` | The Swift side: the `.adeInspectable("componentId", ...)` view modifier and the `.adeInspectorHost()` host modifier that publish per-frame element snapshots (component id, source file/line, accessibility identifier, point + pixel frames) into `Documents/ade-inspector-elements.json` inside the running app's data container. DEBUG-only — release builds compile to a no-op. |
 
 ## Detail docs
@@ -80,13 +80,14 @@ called from a non-darwin host.
    -configuration Debug build`; install uses `xcrun simctl install`
    with a 180 s timeout (same stuck-CoreSimulator error mapping);
    launch uses `xcrun simctl launch --terminate-running-process
-   <udid> <bundleId>`. The default path keeps Simulator.app in the
-   background (`open -g -a Simulator`) and reopens it the same way
-   after `simctl launch` so it never steals focus. Pass
+   <udid> <bundleId>`. The default path does not open Simulator.app;
+   the live drawer stream is headless when IOSurface/idb/simctl backends
+   are active. Pass
    `keepSimulatorInBackground: false` (or `--foreground` from the CLI)
    to bring Simulator.app forward explicitly. Smooth drawer streaming
    no longer depends on a visible Simulator.app window — the default
-   live stream is idb-driven (see Streaming below). The
+   live stream is IOSurface-driven when the private helpers are
+   available (see Streaming below), then idb/simctl fallbacks. The
    `simulator-window-capture` backend still requires a real,
    unminimized Simulator window: hidden/minimized windows stop
    producing captured frames even though idb/simctl input still
@@ -103,18 +104,25 @@ called from a non-darwin host.
 
 5. **Streaming.** Stream backends share one `IosSimulatorStreamStatus`.
    The `auto` resolver in `resolveIosSimulatorStreamBackend(requested,
-   tools)` maps a requested `auto` to the first backend whose tools are
-   installed: `idb-h264-ffmpeg-mjpeg` (idb + idb_companion + ffmpeg) →
-   `idb-mjpeg` (idb + idb_companion) → `simctl-screenshot-poll`. Both
-   idb backends arm a startup timer (5 s for `idb-mjpeg`, 15 s for
-   `idb-h264-ffmpeg-mjpeg`); if no JPEG frame has been observed by then
-   they emit `stream-error`, stop the stream, and start the next
-   fallback automatically (idb-mjpeg → idb-h264 → screenshot poll;
-   idb-h264 → screenshot poll), so `live-start` succeeds on hosts where
-   one idb path silently produces no frames. Default fps is 30 for the
-   idb backends, 8 for screenshot poll.
-   - `idb-h264-ffmpeg-mjpeg` (`live-start --idb`/`auto` preferred path,
-     drawer default when ffmpeg is installed) — exact-screen stream
+   tools)` maps `auto` to: `iosurface-indigo` → visible
+   `simulator-window-capture` → `idb-mjpeg` → `simctl-screenshot-poll`.
+   `idb-h264-ffmpeg-mjpeg` is recovery-only after `idb-mjpeg` fails; it
+   is no longer a first pick just because `ffmpeg` is installed.
+   Fallback and degradation reasons are carried in stream status so the
+   drawer and CLI can explain why a lower backend is active. Default fps
+   is 60 for window capture, 30 for IOSurface/idb, 8 for screenshot poll.
+   - `iosurface-indigo` (`live-start`/`auto` preferred path) — ADE
+     lazily compiles `apps/desktop/native/ios-sim-helpers/sim-capture.swift`
+     and `sim-input.m` for the selected full Xcode, caches them under
+     `native/ios-sim-helpers/build/<xcode-version>-<hash>/`, reads
+     length-prefixed JPEG IOSurface frames from the helper, and bridges
+     them into the same localhost multipart MJPEG endpoint used by every
+     caller. Requires macOS, full Xcode 17.x or 26.x, `swiftc`, and
+     `clang`; CLT-only machines fall back cleanly. ADE currently gates this
+     path off in packaged builds until helper signing/notarization is cleared,
+     and new Xcode majors should be added only after helper compile/smoke and
+     real simulator validation.
+   - `idb-h264-ffmpeg-mjpeg` (recovery-only) — exact-screen stream
      through `idb video-stream --format h264` transcoded to MJPEG via
      `ffmpeg`. The renderer reads the MJPEG endpoint with `fetch` +
      `ReadableStream`, frames JPEGs out of the byte stream, and draws
@@ -161,9 +169,14 @@ called from a non-darwin host.
    `source: "coordinate-fallback"`.
 
 7. **Input.** `tap`, `drag`, `swipe` (alias of `drag`), and `typeText`
-   all route through idb against the active companion; `idb_companion`
-   is launched lazily and torn down 30 s after last use
-   (`COMPANION_IDLE_STOP_MS`).
+   route through an input backend abstraction. Indigo touch input is
+   preferred whenever IOSurface capability is available, including
+   explicit non-IOSurface capture modes, and idb remains the fallback.
+   If Indigo input fails twice in 60 s, ADE sticks to idb for the rest
+   of that session and emits a status event with the reason. Text/key
+   input currently falls back to idb because the helper only implements
+   touch/button Indigo events. `idb_companion` is launched lazily and
+   torn down 30 s after last use (`COMPANION_IDLE_STOP_MS`).
 
 8. **Shutdown.** `shutdown({ force? })` stops the stream, kills the
    transcoder, releases the idb companion, clears `activeSession`,
@@ -194,10 +207,10 @@ live in `registerIpc.ts`. The renderer talks to these through
 | `ade.iosSimulator.openPreviewWorkspace` | `openPreviewWorkspace()` | Open the lane's iOS project in Xcode. |
 | `ade.iosSimulator.startStream` | `startStream({ backend?, fps? })` | Start one of the streaming backends. |
 | `ade.iosSimulator.stopStream` | `stopStream()` | Stop streaming. |
-| `ade.iosSimulator.getStreamStatus` | `getStreamStatus()` | Backend, fps, latency, URL. |
+| `ade.iosSimulator.getStreamStatus` | `getStreamStatus()` | Requested/resolved backend, fallback/degradation reason, fps, latency p50/p95, helper pid, URL. |
 | `ade.iosSimulator.getWindowState` | `getSimulatorWindowState()` | Returns `IosSimulatorWindowState` (`appRunning`, `visible`, `windowCount`, `minimizedWindowCount`, `capturable`, `issue`, `message`) by running an osascript probe of `process "Simulator"`. Used by the panel to warn when window-capture mode cannot produce frames. |
 | `ade.iosSimulator.listWindowSources` | `listSimulatorWindowSources()` | Renderer-side helper for picking the Simulator.app window. Calls `prepareSimulatorWindowForCapture` first when there is an active session so the window is unminimized and parked before `desktopCapturer.getSources` enumerates. |
-| `ade.iosSimulator.tap` / `typeText` / `drag` / `swipe` | input verbs | Routed through idb. |
+| `ade.iosSimulator.tap` / `typeText` / `drag` / `swipe` | input verbs | Routed through Indigo when available, with idb fallback. |
 | `ade.iosSimulator.selectPoint` | `selectPoint({ x, y })` | Hit-test + emit a `selection` event so the chat composer can attach the resulting `IosElementContextItem`. |
 | `ade.iosSimulator.event` | (push) | `IosSimulatorEventPayload` union: `session-started`, `session-updated`, `session-released`, `selection`, `launch-progress`, `stream-started`, `stream-status`, `stream-stopped`, `stream-frame`, `stream-error`. |
 
@@ -242,7 +255,7 @@ ade ios-sim preview-open
 Streaming:
 
 ```
-ade ios-sim live-start --fps 30     # auto: idb-h264-ffmpeg-mjpeg → idb-mjpeg → simctl-screenshot-poll
+ade ios-sim live-start --fps 30     # auto: iosurface-indigo → window/idb/simctl fallbacks
 ade ios-sim live-start --backend idb-mjpeg --fps 30
 ade ios-sim preview-start --fps 8   # simctl-screenshot-poll
 ade ios-sim window-start --fps 60   # simulator-window-capture (diagnostic only)
@@ -329,11 +342,12 @@ chip attached.
   no-op, intentionally — re-launching from the same chat must not
   bounce the simulator.
 - **Do not minimize or hide Simulator.app for window capture.** The
-  smooth drawer path uses macOS window capture, so Simulator.app must
-  stay visible and unminimized even when it is parked underneath ADE.
-  Hiding or minimizing the native window freezes captured frames, though
-  idb/simctl input may still reach the device. Surface that state as a
-  warning instead of pretending the stream is healthy.
+  primary drawer path is headless IOSurface capture, but explicit
+  `simulator-window-capture` still depends on a visible, unminimized
+  Simulator.app window. Hiding or minimizing the native window freezes
+  captured frames, though Indigo/idb/simctl input may still reach the
+  device. Surface that state as a warning instead of pretending the
+  stream is healthy.
 - **Stream backend stickiness.** Switching backends mid-session must
   call `stopStream()` first; the renderer relies on
   `stream-stopped → stream-started` ordering to clear the previous
@@ -345,11 +359,11 @@ chip attached.
   snapshot — `getScreenSnapshot` reports
   `providers[].error: "No ADEInspector snapshot has been published by
   the active app."` and falls back to accessibility-only data.
-- **idb_companion is reference-counted.** `ensureCompanion` increments
-  on every input/accessibility call and the timer only fires after
-  `COMPANION_IDLE_STOP_MS` of zero refcount. Bypassing
-  `ensureCompanion` for one verb leaves the timer dangling and the
-  companion gets killed mid-call.
+- **Helper ownership matters.** IOSurface capture and Indigo input are
+  owned by the active simulator session and are killed on release.
+  `idb_companion` remains lazy fallback infrastructure for accessibility,
+  text, and degraded input, and is stopped after `COMPANION_IDLE_STOP_MS`
+  when idle.
 - **Screenshot pairing window.** `AgentChatPane` tracks the most
   recent attachment via `latestAttachmentRef` and only stamps an
   `attachmentPath` onto the iOS element if the attachment was added

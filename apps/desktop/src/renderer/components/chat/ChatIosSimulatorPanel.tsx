@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
-import { ArrowClockwise, ArrowSquareOut, BracketsCurly, CheckCircle, Circle, Copy, CursorClick, DeviceMobile, FileCode, ImageSquare, Lightning, Lock, Play, Power, Selection, SpinnerGap, TextT, WarningCircle, Wrench } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, BracketsCurly, CheckCircle, Circle, Copy, CursorClick, Desktop, DeviceMobile, FileCode, ImageSquare, Lightning, Lock, Play, Power, Selection, SpinnerGap, TextT, WarningCircle, Wrench } from "@phosphor-icons/react";
 import type {
   AgentChatFileRef,
   IosElementContextItem,
@@ -113,7 +113,7 @@ type PreviewCaptureSelection = {
 type LiveVisual =
   | {
       kind: "window";
-      status: "starting" | "active" | "error";
+      status: "starting" | "reconnecting" | "active" | "error";
       sourceId: string | null;
       sourceName: string | null;
       width: number | null;
@@ -122,12 +122,14 @@ type LiveVisual =
     }
   | {
       kind: "mjpeg";
-      status: "starting" | "active" | "error";
+      status: "starting" | "reconnecting" | "active" | "error";
       url: string | null;
       width: number | null;
       height: number | null;
       error: string | null;
     };
+
+type DeviceBackedStreamRequestBackend = "auto" | NonNullable<IosSimulatorStreamStatus["backend"]>;
 
 type VideoFrameMetadata = {
   presentationTime?: number;
@@ -149,6 +151,13 @@ type ToolDescriptor = {
   required: boolean;
 };
 
+const LIVE_STREAM_FALLBACK_WINDOW_MS = 30_000;
+const LIVE_STREAM_FAILURES_BEFORE_FALLBACK = 2;
+const LIVE_STREAM_FAILURE_RESET_AFTER_MS = 10_000;
+const LIVE_CANVAS_MAX_DEVICE_PIXEL_RATIO = 2;
+const LIVE_RECONNECT_MESSAGE = "Live simulator stream paused. Reconnecting...";
+const LIVE_FALLBACK_MESSAGE = "Live stream had trouble reconnecting. Switching to a fallback view...";
+
 const TOOL_DESCRIPTORS: Record<ToolKey, ToolDescriptor> = {
   xcrun: {
     title: "Xcode command-line tools",
@@ -160,6 +169,11 @@ const TOOL_DESCRIPTORS: Record<ToolKey, ToolDescriptor> = {
     description: "Needed to build and install your app onto the simulator.",
     required: true,
   },
+  iosurface_indigo: {
+    title: "IOSurface helpers",
+    description: "Primary low-latency streaming and touch input path. Requires a supported full Xcode.",
+    required: false,
+  },
   simulator_window: {
     title: "iOS runtime",
     description: "Install an iOS runtime in Xcode > Settings > Platforms.",
@@ -167,7 +181,7 @@ const TOOL_DESCRIPTORS: Record<ToolKey, ToolDescriptor> = {
   },
   idb: {
     title: "idb",
-    description: "Optional. Enables fallback streaming plus tap, drag, and type.",
+    description: "Fallback streaming, accessibility reads, and pointer/text control when Indigo is unavailable.",
     required: false,
   },
   idb_companion: {
@@ -177,10 +191,19 @@ const TOOL_DESCRIPTORS: Record<ToolKey, ToolDescriptor> = {
   },
   ffmpeg: {
     title: "ffmpeg",
-    description: "Optional. Used for the fallback H.264 transcode stream.",
+    description: "Recovery-only transcode path after idb MJPEG fails.",
     required: false,
   },
 };
+
+function streamBackendLabel(backend: IosSimulatorStreamStatus["backend"]): string {
+  if (backend === "iosurface-indigo") return "native simulator stream";
+  if (backend === "simulator-window-capture") return "Simulator window";
+  if (backend === "idb-mjpeg") return "fallback stream";
+  if (backend === "idb-h264-ffmpeg-mjpeg") return "recovery stream";
+  if (backend === "simctl-screenshot-poll") return "screenshot fallback";
+  return "stream";
+}
 
 function makeReactKeysById<T extends { id: string }>(items: T[]): string[] {
   const seen = new Map<string, number>();
@@ -672,11 +695,21 @@ async function drawJpegFrameToCanvas(frame: ByteBuffer, canvas: HTMLCanvasElemen
   const bitmap = await createImageBitmap(new Blob([frame], { type: "image/jpeg" }));
   const { width, height } = bitmap;
   try {
-    canvas.width = width;
-    canvas.height = height;
+    const pixelRatio = Math.max(1, Math.min(LIVE_CANVAS_MAX_DEVICE_PIXEL_RATIO, window.devicePixelRatio || 1));
+    const visibleWidth = Math.max(1, canvas.clientWidth || width);
+    const visibleHeight = Math.max(1, canvas.clientHeight || height);
+    const scale = Math.min(
+      1,
+      (visibleWidth * pixelRatio) / Math.max(1, width),
+      (visibleHeight * pixelRatio) / Math.max(1, height),
+    );
+    const canvasWidth = Math.max(1, Math.round(width * scale));
+    const canvasHeight = Math.max(1, Math.round(height * scale));
+    if (canvas.width !== canvasWidth) canvas.width = canvasWidth;
+    if (canvas.height !== canvasHeight) canvas.height = canvasHeight;
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) throw new Error("Canvas rendering is not available for the live simulator stream.");
-    context.drawImage(bitmap, 0, 0);
+    context.drawImage(bitmap, 0, 0, canvasWidth, canvasHeight);
     return { width, height };
   } finally {
     bitmap.close();
@@ -697,8 +730,42 @@ async function playMjpegStreamToCanvas(
   if (!response.body) throw new Error("Live simulator stream did not expose a readable body.");
   const reader = response.body.getReader();
   let buffer: ByteBuffer = new Uint8Array(0);
+  let pendingFrame: ByteBuffer | null = null;
+  let renderError: unknown = null;
+  let renderPromise: Promise<void> | null = null;
+  const waitForPaint = () => new Promise<void>((resolve) => {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => resolve());
+      return;
+    }
+    window.setTimeout(resolve, 0);
+  });
+  const renderLatestFrame = () => {
+    if (renderPromise) return;
+    renderPromise = (async () => {
+      try {
+        for (;;) {
+          if (signal.aborted) return;
+          const frame = pendingFrame;
+          if (!frame) return;
+          pendingFrame = null;
+          const rendered = await drawJpegFrameToCanvas(frame, canvas);
+          if (signal.aborted) return;
+          onFrame(rendered);
+          await waitForPaint();
+        }
+      } catch (error) {
+        renderError = error;
+        void reader.cancel().catch(() => {});
+      } finally {
+        renderPromise = null;
+        if (pendingFrame && !renderError && !signal.aborted) renderLatestFrame();
+      }
+    })();
+  };
   try {
     for (;;) {
+      if (renderError) throw renderError;
       const { value, done } = await reader.read();
       if (done) break;
       if (signal.aborted) return;
@@ -707,10 +774,11 @@ async function playMjpegStreamToCanvas(
       const extracted = extractLatestJpegFrame(buffer);
       buffer = extracted.rest;
       if (!extracted.frame) continue;
-      const rendered = await drawJpegFrameToCanvas(extracted.frame, canvas);
-      if (signal.aborted) return;
-      onFrame(rendered);
+      pendingFrame = extracted.frame;
+      renderLatestFrame();
     }
+    if (renderPromise) await renderPromise;
+    if (renderError) throw renderError;
   } finally {
     reader.releaseLock();
   }
@@ -828,6 +896,8 @@ export function ChatIosSimulatorPanel({
   const [simulatorCaptureActive, setSimulatorCaptureActive] = useState(false);
   const [simulatorCaptureSelection, setSimulatorCaptureSelection] = useState<PreviewCaptureSelection | null>(null);
   const [liveVisual, setLiveVisual] = useState<LiveVisual | null>(null);
+  const [simulatorWindowSessionId, setSimulatorWindowSessionId] = useState<string | null>(null);
+  const [mjpegPlaybackEpoch, setMjpegPlaybackEpoch] = useState(0);
   const [windowScreenRect, setWindowScreenRect] = useState<WindowScreenRect | null>(null);
   const [simulatorWindowState, setSimulatorWindowState] = useState<IosSimulatorWindowState | null>(null);
   const [streamStatus, setStreamStatus] = useState<IosSimulatorStreamStatus | null>(null);
@@ -852,6 +922,9 @@ export function ChatIosSimulatorPanel({
   const liveFrameWindowStartRef = useRef(0);
   const liveRestartTimerRef = useRef<number | null>(null);
   const liveRestartAttemptedAtRef = useRef(0);
+  const lastResolvedStreamBackendRef = useRef<IosSimulatorStreamStatus["backend"]>(null);
+  const liveDeviceStreamFailureTimestampsRef = useRef<number[]>([]);
+  const lastLiveMjpegFrameAtRef = useRef(0);
   const windowCaptureRecoveryTimerRef = useRef<number | null>(null);
   const windowCaptureRecoveryAttemptedAtRef = useRef(0);
   const lastWindowFrameAtRef = useRef(0);
@@ -865,6 +938,7 @@ export function ChatIosSimulatorPanel({
     return status?.activeDevice ?? devices[0] ?? null;
   }, [devices, selectedDeviceUdid, status?.activeDevice]);
   const activeSession = status?.activeSession ?? null;
+  const simulatorWindowModeEnabled = Boolean(activeSession?.id && simulatorWindowSessionId === activeSession.id);
 
   const visibleLaunchTargets = useMemo(() => {
     const projectTargets = launchTargets.filter((target) => target.kind === "project");
@@ -937,8 +1011,11 @@ export function ChatIosSimulatorPanel({
       : null
   ), [mediaHeight, mediaWidth, simulatorCaptureSelection]);
 
-  const controlAvailable = (status?.tools.find((tool) => tool.name === "idb")?.available ?? false)
-    && (status?.tools.find((tool) => tool.name === "idb_companion")?.available ?? false);
+  const toolByName = useMemo(() => new Map((status?.tools ?? []).map((tool) => [tool.name, tool])), [status?.tools]);
+  const iosurfaceInputAvailable = toolByName.get("iosurface_indigo")?.available ?? false;
+  const idbInputAvailable = (toolByName.get("idb")?.available ?? false)
+    && (toolByName.get("idb_companion")?.available ?? false);
+  const controlAvailable = iosurfaceInputAvailable || idbInputAvailable;
 
   const missingRequiredTools = useMemo(() => (
     (status?.tools ?? []).filter((tool) => !tool.available && (TOOL_DESCRIPTORS[tool.name]?.required ?? false))
@@ -947,6 +1024,43 @@ export function ChatIosSimulatorPanel({
     (status?.tools ?? []).filter((tool) => !tool.available && !(TOOL_DESCRIPTORS[tool.name]?.required ?? false))
   ), [status?.tools]);
   const showSetupChecklist = Boolean(status?.supported) && missingRequiredTools.length > 0;
+  const bestPerformanceItems = useMemo(() => {
+    const iosurface = toolByName.get("iosurface_indigo");
+    const xcode = toolByName.get("xcodebuild");
+    const xcrun = toolByName.get("xcrun");
+    const runtime = toolByName.get("simulator_window");
+    const idb = toolByName.get("idb");
+    const companion = toolByName.get("idb_companion");
+    return [
+      {
+        key: "native-streaming",
+        label: "Native simulator streaming",
+        ok: Boolean(iosurface?.available),
+        detail: iosurface?.available
+          ? "Ready for the low-latency native stream and touch path."
+          : iosurface?.detail || "Select a supported full Xcode with SimulatorKit available.",
+      },
+      {
+        key: "xcode-runtime",
+        label: "Xcode and iOS runtime",
+        ok: Boolean(xcode?.available && xcrun?.available && runtime?.available),
+        detail: xcode?.available && xcrun?.available && runtime?.available
+          ? "Build, boot, launch, and screenshot commands are available."
+          : "Install full Xcode and an iOS Simulator runtime in Xcode Settings.",
+      },
+      {
+        key: "fallback-tools",
+        label: "Fallback stream tools",
+        ok: Boolean(idb?.available && companion?.available),
+        detail: idb?.available && companion?.available
+          ? "idb fallback is ready if the native stream is unavailable."
+          : "Install idb and idb_companion for the strongest fallback path.",
+      },
+    ];
+  }, [toolByName]);
+  const bestPerformanceReady = bestPerformanceItems.every((item) => item.ok);
+  const bestPerformanceMissingCount = bestPerformanceItems.filter((item) => !item.ok).length;
+  const showBestPerformanceChecklist = Boolean(status?.supported) && !showSetupChecklist;
   const previewSetupSteps = previewCapability?.setupSteps ?? [];
   const previewIssue = useMemo(() => {
     if (!previewCapability) {
@@ -1011,6 +1125,16 @@ export function ChatIosSimulatorPanel({
     return owner !== sessionId ? owner : null;
   }, [activeSession?.chatSessionId, sessionId]);
   const ownedByOtherChat = otherChatSessionId !== null;
+
+  const toggleSimulatorWindowMode = useCallback(() => {
+    if (!activeSession || ownedByOtherChat) return;
+    const enable = simulatorWindowSessionId !== activeSession.id;
+    liveDeviceStreamFailureTimestampsRef.current = [];
+    setSimulatorWindowSessionId(enable ? activeSession.id : null);
+    setMessage(enable
+      ? "Opening Simulator.app and switching to window streaming..."
+      : "Switching back to the headless simulator stream...");
+  }, [activeSession, ownedByOtherChat, simulatorWindowSessionId]);
 
   const launchRef = useRef<(() => Promise<void>) | null>(null);
 
@@ -1094,7 +1218,8 @@ export function ChatIosSimulatorPanel({
     }
   }, [projectRoot, selectedElement?.sourceFile, selectedElement?.sourceLine]);
 
-  const stopRendererLiveVisual = useCallback(() => {
+  const stopRendererLiveVisual = useCallback((options: { preserveVisual?: boolean } = {}) => {
+    const preserveVisual = options.preserveVisual === true;
     if (liveRestartTimerRef.current != null) {
       window.clearTimeout(liveRestartTimerRef.current);
       liveRestartTimerRef.current = null;
@@ -1116,6 +1241,13 @@ export function ChatIosSimulatorPanel({
     liveFrameCountRef.current = 0;
     liveFrameWindowStartRef.current = 0;
     lastWindowFrameAtRef.current = 0;
+    if (preserveVisual) {
+      setLiveVisual((current) => current?.kind === "mjpeg"
+        ? { ...current, status: "reconnecting", error: null }
+        : current);
+      return;
+    }
+    lastLiveMjpegFrameAtRef.current = 0;
     windowScreenRectRef.current = null;
     setWindowScreenRect(null);
     setLiveVisual(null);
@@ -1171,7 +1303,7 @@ export function ChatIosSimulatorPanel({
       error: null,
     });
     let source: IosSimulatorWindowSource | null = null;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
       source = pickSimulatorWindowSource(await window.ade.iosSimulator.listSimulatorWindowSources(), device);
       if (source) break;
       await wait(250);
@@ -1191,29 +1323,53 @@ export function ChatIosSimulatorPanel({
     });
   }, []);
 
-  const startDeviceBackedLiveVisual = useCallback(async (device: IosSimulatorDevice) => {
-    setLiveVisual({
-      kind: "mjpeg",
-      status: "starting",
-      url: null,
-      width: null,
-      height: null,
-      error: null,
-    });
-    const nextStatus = await window.ade.iosSimulator.startStream({ deviceUdid: device.udid, backend: "auto", fps: 30 });
+  const startDeviceBackedLiveVisual = useCallback(async (
+    device: IosSimulatorDevice,
+    options: { backend?: DeviceBackedStreamRequestBackend; preserveVisual?: boolean } = {},
+  ) => {
+    const requestedBackend = options.backend ?? "auto";
+    if (options.preserveVisual) {
+      setLiveVisual((current) => current?.kind === "mjpeg"
+        ? { ...current, status: "reconnecting", url: null, error: null }
+        : {
+            kind: "mjpeg",
+            status: "reconnecting",
+            url: null,
+            width: null,
+            height: null,
+            error: null,
+          });
+    } else {
+      setLiveVisual({
+        kind: "mjpeg",
+        status: "starting",
+        url: null,
+        width: null,
+        height: null,
+        error: null,
+      });
+    }
+    const nextStatus = await window.ade.iosSimulator.startStream({ deviceUdid: device.udid, backend: requestedBackend });
+    if (nextStatus.backend) lastResolvedStreamBackendRef.current = nextStatus.backend;
+    if (nextStatus.backend === "simulator-window-capture") {
+      setStreamStatus(nextStatus);
+      await startWindowCaptureVisual(device);
+      return;
+    }
     if (!nextStatus.streamUrl) {
       throw new Error(nextStatus.lastError ?? "Live stream did not provide a drawable URL.");
     }
     setStreamStatus(nextStatus);
-    setLiveVisual({
+    setMjpegPlaybackEpoch((epoch) => epoch + 1);
+    setLiveVisual((current) => ({
       kind: "mjpeg",
       status: "starting",
       url: nextStatus.streamUrl,
-      width: null,
-      height: null,
+      width: current?.kind === "mjpeg" ? current.width : null,
+      height: current?.kind === "mjpeg" ? current.height : null,
       error: null,
-    });
-  }, []);
+    }));
+  }, [startWindowCaptureVisual]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -1269,6 +1425,18 @@ export function ChatIosSimulatorPanel({
     }
   }, [activeDevice?.udid, projectRoot, selectedDeviceUdid]);
 
+  useEffect(() => {
+    if (streamStatus?.backend) lastResolvedStreamBackendRef.current = streamStatus.backend;
+  }, [streamStatus?.backend]);
+
+  const chooseDeviceBackedFallbackBackend = useCallback((
+    currentBackend: IosSimulatorStreamStatus["backend"],
+  ): DeviceBackedStreamRequestBackend | null => {
+    if (currentBackend === "iosurface-indigo") return idbInputAvailable ? "idb-mjpeg" : "simctl-screenshot-poll";
+    if (currentBackend === "idb-mjpeg" || currentBackend === "idb-h264-ffmpeg-mjpeg") return "simctl-screenshot-poll";
+    return null;
+  }, [idbInputAvailable]);
+
   const scheduleDeviceBackedStreamRestart = useCallback((reason: string) => {
     if (
       mode !== "interact"
@@ -1283,30 +1451,61 @@ export function ChatIosSimulatorPanel({
     const now = Date.now();
     if (now - liveRestartAttemptedAtRef.current < 1_500) return;
     liveRestartAttemptedAtRef.current = now;
-    setMessage(`${reason} Restarting live simulator stream...`);
+    const recentFailures = [
+      ...liveDeviceStreamFailureTimestampsRef.current.filter((timestamp) => now - timestamp < LIVE_STREAM_FALLBACK_WINDOW_MS),
+      now,
+    ];
+    liveDeviceStreamFailureTimestampsRef.current = recentFailures;
+    const currentBackend = streamStatus?.backend ?? lastResolvedStreamBackendRef.current;
+    const fallbackBackend = recentFailures.length >= LIVE_STREAM_FAILURES_BEFORE_FALLBACK
+      ? chooseDeviceBackedFallbackBackend(currentBackend)
+      : null;
+    const restartBackend = fallbackBackend ?? "auto";
+    const reconnectMessage = fallbackBackend ? LIVE_FALLBACK_MESSAGE : LIVE_RECONNECT_MESSAGE;
+    setMessage(reconnectMessage);
+    setLiveVisual((current) => current?.kind === "mjpeg"
+      ? {
+          ...current,
+          status: "reconnecting",
+          url: null,
+          error: fallbackBackend ? `${reason} Trying a fallback view now.` : null,
+        }
+      : current);
     liveRestartTimerRef.current = window.setTimeout(() => {
       liveRestartTimerRef.current = null;
       void (async () => {
         try {
-          stopRendererLiveVisual();
+          stopRendererLiveVisual({ preserveVisual: true });
           await window.ade.iosSimulator.stopStream().catch(() => {});
-          await startDeviceBackedLiveVisual(activeDevice);
+          await startDeviceBackedLiveVisual(activeDevice, { backend: restartBackend, preserveVisual: true });
           void refreshSnapshot({ silent: true, priority: true });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          setLiveVisual({
-            kind: "mjpeg",
-            status: "error",
-            url: null,
-            width: null,
-            height: null,
-            error: `Live stream failed. ${message}`,
-          });
+          setLiveVisual((current) => current?.kind === "mjpeg"
+            ? { ...current, status: "error", error: `Live stream failed. ${message}` }
+            : {
+                kind: "mjpeg",
+                status: "error",
+                url: null,
+                width: null,
+                height: null,
+                error: `Live stream failed. ${message}`,
+              });
           setMessage(`Live stream failed. ${message}`);
         }
       })();
     }, 500);
-  }, [activeDevice, activeSession, liveVisualKind, mode, refreshSnapshot, startDeviceBackedLiveVisual, stopRendererLiveVisual]);
+  }, [
+    activeDevice,
+    activeSession,
+    chooseDeviceBackedFallbackBackend,
+    liveVisualKind,
+    mode,
+    refreshSnapshot,
+    startDeviceBackedLiveVisual,
+    stopRendererLiveVisual,
+    streamStatus?.backend,
+  ]);
 
   const scheduleWindowCaptureRecovery = useCallback((reason: string) => {
     if (
@@ -1333,6 +1532,7 @@ export function ChatIosSimulatorPanel({
           void refreshSnapshot({ silent: true, priority: true });
         } catch (windowError) {
           const windowMessage = windowError instanceof Error ? windowError.message : String(windowError);
+          setSimulatorWindowSessionId(null);
           setMessage(`Simulator window capture unavailable. Starting fallback stream... ${windowMessage}`);
           await window.ade.iosSimulator.stopStream().catch(() => {});
           await startDeviceBackedLiveVisual(activeDevice);
@@ -1385,21 +1585,36 @@ export function ChatIosSimulatorPanel({
     const controller = new AbortController();
     mjpegPlaybackAbortRef.current = controller;
     void playMjpegStreamToCanvas(liveMjpegUrl, canvas, controller.signal, (frame) => {
+      const now = Date.now();
+      lastLiveMjpegFrameAtRef.current = now;
+      const newestFailureAt = liveDeviceStreamFailureTimestampsRef.current.at(-1) ?? 0;
+      if (newestFailureAt && now - newestFailureAt > LIVE_STREAM_FAILURE_RESET_AFTER_MS) {
+        liveDeviceStreamFailureTimestampsRef.current = [];
+      }
+      setMessage((current) => (
+        current === LIVE_RECONNECT_MESSAGE || current === LIVE_FALLBACK_MESSAGE ? null : current
+      ));
       liveFrameCountRef.current += 1;
-      setLiveVisual((current) => current?.kind === "mjpeg" && current.url === liveMjpegUrl
-        ? {
-            ...current,
-            status: "active",
-            width: frame.width || current.width,
-            height: frame.height || current.height,
-            error: null,
-          }
-        : current);
+      setLiveVisual((current) => {
+        if (current?.kind !== "mjpeg" || current.url !== liveMjpegUrl) return current;
+        const width = frame.width || current.width;
+        const height = frame.height || current.height;
+        if (current.status === "active" && current.width === width && current.height === height && current.error == null) {
+          return current;
+        }
+        return {
+          ...current,
+          status: "active",
+          width,
+          height,
+          error: null,
+        };
+      });
     }).catch((error) => {
       if (controller.signal.aborted || isAbortError(error)) return;
       const message = error instanceof Error ? error.message : String(error);
       setLiveVisual((current) => current?.kind === "mjpeg" && current.url === liveMjpegUrl
-        ? { ...current, status: "error", error: `Live simulator stream could not be decoded. ${message}` }
+        ? { ...current, status: "reconnecting", url: null, error: `Live simulator stream could not be decoded. ${message}` }
         : current);
       scheduleDeviceBackedStreamRestart("Live simulator stream stopped.");
     });
@@ -1407,13 +1622,17 @@ export function ChatIosSimulatorPanel({
       controller.abort();
       if (mjpegPlaybackAbortRef.current === controller) mjpegPlaybackAbortRef.current = null;
     };
-  }, [liveMjpegUrl, liveVisualKind, mode, scheduleDeviceBackedStreamRestart]);
+  }, [liveMjpegUrl, liveVisualKind, mjpegPlaybackEpoch, mode, scheduleDeviceBackedStreamRestart]);
 
   useEffect(() => {
     void refreshStatus().catch((error) => {
       setMessage(error instanceof Error ? error.message : String(error));
     });
   }, [refreshStatus]);
+
+  useEffect(() => {
+    setSimulatorWindowSessionId((current) => (current && current === activeSession?.id ? current : null));
+  }, [activeSession?.id]);
 
   useEffect(() => {
     const unsubscribe = window.ade.iosSimulator.onEvent((event) => {
@@ -1436,14 +1655,43 @@ export function ChatIosSimulatorPanel({
         return;
       }
       if (event.type === "stream-started" || event.type === "stream-status" || event.type === "stream-stopped" || event.type === "stream-error") {
+        if (event.status.backend) lastResolvedStreamBackendRef.current = event.status.backend;
         setStreamStatus(event.status);
         if ((event.type === "stream-started" || event.type === "stream-status") && event.status.streamUrl) {
+          if (event.status.lastFrameAt) {
+            setMessage((current) => (
+              current === LIVE_RECONNECT_MESSAGE || current === LIVE_FALLBACK_MESSAGE ? null : current
+            ));
+          }
+          if (event.type === "stream-started") setMjpegPlaybackEpoch((epoch) => epoch + 1);
+          setLiveVisual((current) => {
+            if (current?.kind !== "mjpeg") return current;
+            let status: typeof current.status;
+            if (event.status.lastFrameAt) {
+              status = "active";
+            } else if (current.status === "reconnecting") {
+              status = "reconnecting";
+            } else {
+              status = "starting";
+            }
+            return {
+              ...current,
+              status,
+              url: event.status.streamUrl ?? current.url,
+              error: null,
+            };
+          });
+        }
+        if (event.type === "stream-started" && (event.status.degradationReason || event.status.fallbackReason)) {
+          setMessage(event.status.degradationReason ?? event.status.fallbackReason ?? null);
+        }
+        if ((event.type === "stream-stopped" || event.type === "stream-error") && !event.status.streamUrl) {
           setLiveVisual((current) => current?.kind === "mjpeg"
             ? {
                 ...current,
-                status: event.status.lastFrameAt ? "active" : "starting",
-                url: event.status.streamUrl ?? current.url,
-                error: null,
+                status: event.type === "stream-error" ? "reconnecting" : current.status,
+                url: null,
+                error: event.status.lastError ?? current.error,
               }
             : current);
         }
@@ -1489,14 +1737,24 @@ export function ChatIosSimulatorPanel({
     ) {
       return;
     }
-    const startupGraceMs = streamStatus.backend === "idb-h264-ffmpeg-mjpeg"
-      ? 18_000
-      : streamStatus.backend === "idb-mjpeg"
-        ? 8_000
-        : 5_000;
+    let startupGraceMs: number;
+    switch (streamStatus.backend) {
+      case "idb-h264-ffmpeg-mjpeg":
+        startupGraceMs = 18_000;
+        break;
+      case "idb-mjpeg":
+        startupGraceMs = 8_000;
+        break;
+      case "iosurface-indigo":
+        startupGraceMs = 10_000;
+        break;
+      default:
+        startupGraceMs = 5_000;
+    }
     const timer = window.setInterval(() => {
       const lastFrameMs = streamStatus.lastFrameAt ? Date.parse(streamStatus.lastFrameAt) : 0;
       const startedMs = streamStatus.startedAt ? Date.parse(streamStatus.startedAt) : 0;
+      if (streamStatus.backend === "iosurface-indigo" && lastFrameMs) return;
       const staleAfterMs = lastFrameMs ? 5_000 : startupGraceMs;
       const referenceMs = lastFrameMs || startedMs;
       if (referenceMs && Date.now() - referenceMs > staleAfterMs) {
@@ -1552,27 +1810,33 @@ export function ChatIosSimulatorPanel({
       || !activeSession
       || activeSession.deviceUdid !== activeDevice.udid
     ) {
+      liveDeviceStreamFailureTimestampsRef.current = [];
+      lastResolvedStreamBackendRef.current = null;
       stopRendererLiveVisual();
       void window.ade.iosSimulator.stopStream().catch(() => {});
       return;
     }
     let cancelled = false;
     const device = activeDevice;
+    const useSimulatorWindow = simulatorWindowModeEnabled;
     void (async () => {
       try {
+        liveDeviceStreamFailureTimestampsRef.current = [];
+        lastResolvedStreamBackendRef.current = null;
         stopRendererLiveVisual();
-        try {
+        if (useSimulatorWindow) {
           await startWindowCaptureVisual(device);
-        } catch (windowError) {
-          if (cancelled) return;
-          const windowMessage = windowError instanceof Error ? windowError.message : String(windowError);
-          setMessage(`Simulator window capture unavailable. Starting fallback stream... ${windowMessage}`);
-          await window.ade.iosSimulator.stopStream().catch(() => {});
+        } else {
           await startDeviceBackedLiveVisual(device);
         }
       } catch (streamError) {
         if (cancelled) return;
         const message = streamError instanceof Error ? streamError.message : String(streamError);
+        if (useSimulatorWindow) {
+          setSimulatorWindowSessionId(null);
+          setMessage(`Simulator.app stream unavailable. Returning to the headless stream. ${message}`);
+          return;
+        }
         setLiveVisual({
           kind: "mjpeg",
           status: "error",
@@ -1586,10 +1850,12 @@ export function ChatIosSimulatorPanel({
     })();
     return () => {
       cancelled = true;
+      liveDeviceStreamFailureTimestampsRef.current = [];
+      lastResolvedStreamBackendRef.current = null;
       stopRendererLiveVisual();
       void window.ade.iosSimulator.stopStream().catch(() => {});
     };
-  }, [activeDevice, activeSession, mode, startDeviceBackedLiveVisual, startWindowCaptureVisual, status?.supported, stopRendererLiveVisual]);
+  }, [activeDevice, activeSession, mode, simulatorWindowModeEnabled, startDeviceBackedLiveVisual, startWindowCaptureVisual, status?.supported, stopRendererLiveVisual]);
 
   useEffect(() => {
     if (mode !== "interact" || liveVisualKind !== "window" || !activeSession) {
@@ -2361,8 +2627,16 @@ export function ChatIosSimulatorPanel({
       } else if (streamStatus.targetFps) {
         fpsLabel = `target ${streamStatus.targetFps} fps`;
       }
-      const latencyLabel = streamStatus.averageLatencyMs ? ` — ${streamStatus.averageLatencyMs} ms avg capture` : "";
-      simulatorModeHint = `Live ${streamStatus.backend ?? "stream"} ${fpsLabel}${latencyLabel}`.trim();
+      let latencyLabel = "";
+      if (streamStatus.latencyP50Ms || streamStatus.latencyP95Ms) {
+        latencyLabel = ` - ${streamStatus.latencyP50Ms ?? "?"}/${streamStatus.latencyP95Ms ?? "?"} ms p50/p95`;
+      } else if (streamStatus.averageLatencyMs) {
+        latencyLabel = ` - ${streamStatus.averageLatencyMs} ms avg`;
+      }
+      const reason = streamStatus.degradationReason ?? streamStatus.fallbackReason ?? null;
+      const reasonLabel = reason ? ` - ${reason}` : "";
+      const pidLabel = streamStatus.helperPid ? ` - pid ${streamStatus.helperPid}` : "";
+      simulatorModeHint = `Live via ${streamBackendLabel(streamStatus.backend)} ${fpsLabel}${latencyLabel}${pidLabel}${reasonLabel}`.trim();
     } else {
       simulatorModeHint = "Tap to control the simulator. Click and drag to scroll or swipe.";
     }
@@ -2399,7 +2673,24 @@ export function ChatIosSimulatorPanel({
         .filter((item): item is IosSimulatorLaunchProgress => Boolean(item))
     : [];
   const showLaunchProgress = launchBusy && visibleLaunchProgress.length > 0;
-  const canShowLiveVisual = mode === "interact" && liveVisual && liveVisual.status !== "error";
+  let liveVisualOverlayTitle: string | null = null;
+  let liveVisualOverlayDetail: string | null = null;
+  switch (liveVisual?.status) {
+    case "reconnecting":
+      liveVisualOverlayTitle = "Reconnecting live view...";
+      liveVisualOverlayDetail = liveVisual.error ?? streamStatus?.degradationReason ?? streamStatus?.fallbackReason ?? null;
+      break;
+    case "starting":
+      liveVisualOverlayTitle = "Starting live view...";
+      break;
+    case "error":
+      liveVisualOverlayTitle = "Live view paused";
+      liveVisualOverlayDetail = liveVisual.error;
+      break;
+  }
+  const canShowLiveVisual = mode === "interact"
+    && liveVisual
+    && (liveVisual.status !== "error" || (liveVisual.kind === "mjpeg" && Boolean(liveVisual.url)));
   const canShowSnapshot = mode === "inspect" && Boolean(snapshotImage);
   const hasActiveSession = Boolean(activeSession);
   const interactionDisabled = ownedByOtherChat || showSetupChecklist;
@@ -2461,6 +2752,37 @@ export function ChatIosSimulatorPanel({
             <div className="font-sans text-[10px] text-muted-fg/52">
               {activeSurface === "simulator" ? "Simulator mode" : "Preview mode"}
             </div>
+            {activeSurface === "simulator" && hasActiveSession && !ownedByOtherChat ? (
+              <div className="group relative">
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                    simulatorWindowModeEnabled
+                      ? "border-cyan-300/25 bg-cyan-400/12 text-cyan-50/85 hover:bg-cyan-400/18"
+                      : "border-white/[0.07] bg-white/[0.03] text-muted-fg/62 hover:text-fg/86",
+                  )}
+                  onClick={toggleSimulatorWindowMode}
+                  disabled={busy || launchBusy}
+                  aria-describedby="ios-simulator-window-mode-tip"
+                >
+                  <Desktop size={12} />
+                  {simulatorWindowModeEnabled ? "Use ADE stream" : "Show iOS window"}
+                </button>
+                <div
+                  id="ios-simulator-window-mode-tip"
+                  role="tooltip"
+                  className="pointer-events-none absolute right-0 top-[calc(100%+6px)] z-30 hidden w-72 rounded-md border border-white/[0.08] bg-zinc-950/95 px-3 py-2 text-left font-sans text-[10px] leading-4 text-muted-fg/70 shadow-xl backdrop-blur group-focus-within:block group-hover:block"
+                >
+                  <div className="mb-1 font-medium text-fg/85">
+                    {simulatorWindowModeEnabled ? "ADE stream" : "Real iOS window"}
+                  </div>
+                  {simulatorWindowModeEnabled
+                    ? "Switches this chat back to ADE's built-in stream. Your app keeps running; only the live view changes."
+                    : "Opens Apple's iOS Simulator window and mirrors it into ADE. Useful when you want to compare against the real simulator. Resets for the next iOS session."}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -2654,10 +2976,34 @@ export function ChatIosSimulatorPanel({
         </div>
       ) : null}
 
-      {missingOptionalTools.length && !showSetupChecklist ? (
-        <div className="shrink-0 rounded-md border border-white/[0.07] bg-white/[0.02] px-2.5 py-1.5 font-sans text-[10px] text-muted-fg/55">
-          Optional: {missingOptionalTools.map((tool) => TOOL_DESCRIPTORS[tool.name]?.title ?? tool.name).join(", ")} not installed.
-        </div>
+      {showBestPerformanceChecklist ? (
+        <details className="group shrink-0 rounded-md border border-white/[0.07] bg-white/[0.02] px-2.5 py-1.5 font-sans text-[10px] text-muted-fg/60">
+          <summary className="flex cursor-pointer list-none items-center gap-2 outline-none [&::-webkit-details-marker]:hidden">
+            <Lightning size={12} className={bestPerformanceReady ? "text-emerald-200/75" : "text-amber-200/75"} />
+            <span className="font-medium text-fg/72">Best simulator performance</span>
+            <span className={cn(
+              "ml-auto rounded px-1.5 py-[1px] font-medium",
+              bestPerformanceReady ? "bg-emerald-500/12 text-emerald-100/75" : "bg-amber-400/12 text-amber-100/75",
+            )}>
+              {bestPerformanceReady ? "Ready" : `${bestPerformanceMissingCount} item${bestPerformanceMissingCount === 1 ? "" : "s"} need attention`}
+            </span>
+          </summary>
+          <div className="mt-2 grid gap-1.5">
+            {bestPerformanceItems.map((item) => (
+              <div key={item.key} className="flex items-start gap-2 rounded-md border border-white/[0.05] bg-black/15 px-2 py-1.5">
+                {item.ok ? (
+                  <CheckCircle size={12} weight="fill" className="mt-0.5 shrink-0 text-emerald-300/75" />
+                ) : (
+                  <Circle size={12} weight="fill" className="mt-0.5 shrink-0 text-amber-200/65" />
+                )}
+                <div className="min-w-0">
+                  <div className="text-[10px] font-medium text-fg/75">{item.label}</div>
+                  <div className="mt-0.5 text-[10px] leading-4 text-muted-fg/55">{item.detail}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
       ) : null}
 
       <div className="relative min-h-0 flex-1 overflow-hidden rounded-md border border-white/[0.08] bg-black/35">
@@ -2985,15 +3331,30 @@ export function ChatIosSimulatorPanel({
                   className="h-full w-full object-contain"
                   aria-label="iOS Simulator live stream"
                 />
-                {liveVisual.status === "starting" ? (
-                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/35 text-muted-fg/55">
-                    <SpinnerGap size={22} className="animate-spin" />
+                {liveVisualOverlayTitle ? (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/24 px-4 text-muted-fg/70">
+                    <div className="flex max-w-[280px] items-center gap-2 rounded-md border border-white/[0.08] bg-black/65 px-3 py-2 shadow-lg backdrop-blur">
+                      {liveVisual.status === "error" ? (
+                        <WarningCircle size={15} className="shrink-0 text-amber-200/80" />
+                      ) : (
+                        <SpinnerGap size={15} className="shrink-0 animate-spin text-cyan-100/80" />
+                      )}
+                      <div className="min-w-0">
+                        <div className="font-sans text-[11px] font-medium text-fg/78">{liveVisualOverlayTitle}</div>
+                        {liveVisualOverlayDetail ? (
+                          <div className="mt-0.5 line-clamp-2 font-sans text-[10px] leading-4 text-muted-fg/60">{liveVisualOverlayDetail}</div>
+                        ) : null}
+                      </div>
+                    </div>
                   </div>
                 ) : null}
               </>
             ) : (
-              <div className="flex h-full min-h-[300px] items-center justify-center text-muted-fg/45">
-                <SpinnerGap size={22} className="animate-spin" />
+              <div className="flex h-full min-h-[300px] items-center justify-center px-4 text-muted-fg/55">
+                <div className="flex items-center gap-2 rounded-md border border-white/[0.07] bg-black/35 px-3 py-2">
+                  <SpinnerGap size={15} className="animate-spin text-cyan-100/75" />
+                  <span className="font-sans text-[11px]">{liveVisualOverlayTitle ?? "Starting live view..."}</span>
+                </div>
               </div>
             )}
           </div>
@@ -3020,57 +3381,59 @@ export function ChatIosSimulatorPanel({
               onLoad={updateInspectBounds}
             />
             <div
-              className="pointer-events-auto absolute left-3 top-3 z-10 flex items-center gap-1.5"
+              className="pointer-events-auto absolute left-3 top-3 z-10 flex flex-col items-start gap-1.5"
               onPointerDown={(event) => event.stopPropagation()}
             >
-              <div className="flex rounded-md border border-white/[0.07] bg-black/60 p-0.5 shadow-lg backdrop-blur">
-                <button
-                  type="button"
-                  className="inline-flex h-7 items-center gap-1 rounded px-2 font-sans text-[10px] font-medium text-muted-fg/55 transition-colors hover:text-fg/85"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setLastSimulatorMode("interact");
-                    setMode("interact");
-                  }}
-                >
-                  <CursorClick size={11} />
-                  Control
-                </button>
+              <div className="flex items-center gap-1.5">
+                <div className="flex rounded-md border border-white/[0.07] bg-black/60 p-0.5 shadow-lg backdrop-blur">
+                  <button
+                    type="button"
+                    className="inline-flex h-7 items-center gap-1 rounded px-2 font-sans text-[10px] font-medium text-muted-fg/55 transition-colors hover:text-fg/85"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setLastSimulatorMode("interact");
+                      setMode("interact");
+                    }}
+                  >
+                    <CursorClick size={11} />
+                    Control
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      "inline-flex h-7 items-center gap-1 rounded px-2 font-sans text-[10px] font-medium transition-colors",
+                      mode === "inspect" ? "bg-cyan-500/22 text-cyan-100/95" : "text-muted-fg/55 hover:text-fg/85",
+                    )}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setLastSimulatorMode("inspect");
+                      setMode("inspect");
+                    }}
+                  >
+                    <Selection size={11} />
+                    Inspect
+                  </button>
+                </div>
                 <button
                   type="button"
                   className={cn(
-                    "inline-flex h-7 items-center gap-1 rounded px-2 font-sans text-[10px] font-medium transition-colors",
-                    mode === "inspect" ? "bg-cyan-500/22 text-cyan-100/95" : "text-muted-fg/55 hover:text-fg/85",
+                    "inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-black/60 px-2 font-sans text-[10px] font-medium shadow-lg backdrop-blur transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                    simulatorCaptureActive ? "text-amber-50/90 ring-1 ring-amber-300/30" : "text-muted-fg/65 hover:text-fg/90",
                   )}
                   onClick={(event) => {
                     event.stopPropagation();
-                    setLastSimulatorMode("inspect");
-                    setMode("inspect");
+                    setSimulatorCaptureSelection(null);
+                    setSimulatorCaptureActive((current) => !current);
+                    setHoveredElement(null);
                   }}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  disabled={!snapshot?.screenshot.dataUrl || ownedByOtherChat}
+                  title="Drag a screenshot region to attach it to chat with simulator context"
                 >
-                  <Selection size={11} />
-                  Inspect
+                  <ImageSquare size={11} />
+                  Screenshot
                 </button>
               </div>
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-black/60 px-2 font-sans text-[10px] font-medium shadow-lg backdrop-blur transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-                  simulatorCaptureActive ? "text-amber-50/90 ring-1 ring-amber-300/30" : "text-muted-fg/65 hover:text-fg/90",
-                )}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setSimulatorCaptureSelection(null);
-                  setSimulatorCaptureActive((current) => !current);
-                  setHoveredElement(null);
-                }}
-                onPointerDown={(event) => event.stopPropagation()}
-                disabled={!snapshot?.screenshot.dataUrl || ownedByOtherChat}
-                title="Drag a screenshot region to attach it to chat with simulator context"
-              >
-                <ImageSquare size={11} />
-                Screenshot
-              </button>
               <button
                 type="button"
                 className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.07] bg-black/60 px-2 font-sans text-[10px] font-medium text-muted-fg/65 shadow-lg backdrop-blur transition-colors hover:text-fg/90 disabled:cursor-not-allowed disabled:opacity-40"
@@ -3210,7 +3573,7 @@ export function ChatIosSimulatorPanel({
         ) : null}
         {mode === "interact" && !controlAvailable && !showSetupChecklist && !ownedByOtherChat ? (
           <div className="rounded-md border border-amber-400/15 bg-amber-500/10 px-2 py-1.5 font-sans text-[11px] text-amber-100/70">
-            Install idb + idb_companion to tap, drag, and type from the live view.
+            Install a supported full Xcode for native touch input, or idb + idb_companion for fallback tap, drag, and text.
           </div>
         ) : null}
       </div>
