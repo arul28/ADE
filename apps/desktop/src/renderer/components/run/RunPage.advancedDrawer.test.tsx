@@ -158,6 +158,37 @@ describe("RunPage Advanced lane runtime drawer", () => {
     expect((await screen.findByTestId("terminal-view")).textContent).toBe("terminal-new:pty-new");
   });
 
+  it("opens the terminal drawer without creating a shell from the plain toggle", async () => {
+    render(<RunPage />);
+    fireEvent.click(screen.getByRole("button", { name: /^terminal$/i }));
+
+    expect(await screen.findByText("Open a shell or run a command to attach a terminal.")).toBeTruthy();
+    expect(vi.mocked((window as unknown as { ade: { pty: { create: ReturnType<typeof vi.fn> } } }).ade.pty.create)).not.toHaveBeenCalled();
+  });
+
+  it("surfaces shell creation failures from the shared terminal drawer", async () => {
+    const create = vi.mocked((window as unknown as { ade: { pty: { create: ReturnType<typeof vi.fn> } } }).ade.pty.create);
+    create.mockRejectedValueOnce(new Error("missing shell"));
+
+    render(<RunPage />);
+    fireEvent.click(screen.getByRole("button", { name: /new shell/i }));
+
+    expect(await screen.findByText("missing shell")).toBeTruthy();
+  });
+
+  it("disposes run shell terminals when RunPage unmounts", async () => {
+    const { unmount } = render(<RunPage />);
+    fireEvent.click(screen.getByRole("button", { name: /new shell/i }));
+    expect((await screen.findByTestId("terminal-view")).textContent).toBe("terminal-new:pty-new");
+
+    unmount();
+
+    expect(vi.mocked((window as unknown as { ade: { pty: { dispose: ReturnType<typeof vi.fn> } } }).ade.pty.dispose)).toHaveBeenCalledWith({
+      ptyId: "pty-new",
+      sessionId: "terminal-new",
+    });
+  });
+
   it("reveals a run command terminal returned by the process service", async () => {
     const definition = {
       id: "proc-1",

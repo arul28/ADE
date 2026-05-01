@@ -50,8 +50,11 @@ type ChatTerminalDrawerProps = {
   onToggle: () => void;
   laneId: string;
   chatSessionId?: string | null;
+  autoCreateOnOpen?: boolean;
   createRequestNonce?: number;
+  disposeTabsOnUnmount?: boolean;
   emptyMessage?: string;
+  onCreateError?: (message: string) => void;
   revealRequest?: {
     terminalId: string;
     ptyId: string;
@@ -127,8 +130,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   onToggle,
   laneId,
   chatSessionId,
+  autoCreateOnOpen = true,
   createRequestNonce = 0,
+  disposeTabsOnUnmount = false,
   emptyMessage = "Create a terminal to start working in this chat.",
+  onCreateError,
   revealRequest,
 }: ChatTerminalDrawerProps) {
   const uiStateKey = drawerStateKey(chatSessionId, laneId);
@@ -154,6 +160,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const lastHandledRevealRef = useRef<{ chatKey: string; nonce: number } | null>(null);
 
   tabsRef.current = tabs;
+
+  const reportCreateError = useCallback((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    onCreateError?.(message);
+  }, [onCreateError]);
 
   useEffect(() => {
     restoringUiStateRef.current = true;
@@ -227,10 +238,12 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
       setTabs((prev) => [...prev, nextEntry]);
       setActiveTabId(tabId);
+    } catch (error) {
+      reportCreateError(error);
     } finally {
       setCreatingTab(false);
     }
-  }, [chatSessionId, creatingTab, laneId]);
+  }, [chatSessionId, creatingTab, laneId, reportCreateError]);
 
   useEffect(() => {
     if (!chatSessionId) return;
@@ -335,7 +348,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     const last = lastHandledRevealRef.current;
     const revealActive = revealRequest != null
       && !(last && last.chatKey === uiStateKey && last.nonce === revealRequest.nonce);
-    if (revealActive || tabs.length > 0) {
+    if (!autoCreateOnOpen || revealActive || tabs.length > 0) {
       pendingAutoCreateRef.current = false;
       return;
     }
@@ -343,7 +356,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
     pendingAutoCreateRef.current = false;
     void createTab();
-  }, [createTab, creatingTab, open, restoringTabs, revealRequest, tabs.length, uiStateKey]);
+  }, [autoCreateOnOpen, createTab, creatingTab, open, restoringTabs, revealRequest, tabs.length, uiStateKey]);
 
   useEffect(() => {
     if (tabs.length > 0) {
@@ -356,7 +369,6 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   }, [creatingTab, onToggle, open, tabs.length]);
 
   useEffect(() => {
-    if (tabs.length === 0) return undefined;
     const ptyBridge = window.ade?.pty;
     if (!ptyBridge?.onExit) return undefined;
     const unsubscribe = ptyBridge.onExit((ev: PtyExitEvent) => {
@@ -367,7 +379,14 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       )));
     });
     return unsubscribe;
-  }, [tabs.length]);
+  }, []);
+
+  useEffect(() => () => {
+    if (!disposeTabsOnUnmount) return;
+    for (const tab of tabsRef.current) {
+      window.ade.pty.dispose({ ptyId: tab.ptyId, sessionId: tab.sessionId }).catch(() => {});
+    }
+  }, [disposeTabsOnUnmount]);
 
   // Drop drawer tabs when their session is deleted from the sidebar so the user
   // can't keep working in a shell whose backing session no longer exists.

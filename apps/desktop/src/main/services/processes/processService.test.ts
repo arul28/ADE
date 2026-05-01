@@ -1075,6 +1075,7 @@ describe("processService PTY-backed run commands", () => {
       });
       expect(tail).toContain("failed to start");
       expect(tail).toContain("./missing-script.sh dev");
+      expect(tail).toContain(`[ADE] Working directory: ${fs.realpathSync(tmpDir)}`);
       expect(tail).toContain("spawn ./missing-script.sh ENOENT");
     } finally {
       service.disposeAll();

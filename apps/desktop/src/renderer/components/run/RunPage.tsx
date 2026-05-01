@@ -1227,9 +1227,12 @@ export function RunPage() {
           open={terminalDrawerOpen}
           onToggle={() => setTerminalDrawerOpen((open) => !open)}
           laneId={fallbackRunLaneId}
+          autoCreateOnOpen={false}
           revealRequest={terminalRevealRequest}
           createRequestNonce={terminalCreateRequestNonce}
+          disposeTabsOnUnmount
           emptyMessage="Open a shell or run a command to attach a terminal."
+          onCreateError={setActionError}
         />
       ) : null}
 
