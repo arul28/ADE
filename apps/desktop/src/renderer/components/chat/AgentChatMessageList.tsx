@@ -2751,9 +2751,10 @@ function renderEvent(
   /* ── Cloud status lifecycle ── */
   if (event.type === "cloud_status") {
     const status = (event.status ?? "").toLowerCase();
-    const live = status === "creating" || status === "running";
+    const inProgress = status === "creating" || status === "running";
+    const live = inProgress && Boolean(options?.turnActive);
     const failed = status === "error" || status === "cancelled" || status === "expired";
-    const tone = live
+    const tone = inProgress
       ? "text-violet-200/80"
       : failed
         ? "text-red-300/75"
@@ -2774,18 +2775,20 @@ function renderEvent(
     return (
       <div className={cn(
         "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
-        live
+        inProgress
           ? "border-violet-300/22"
           : failed
             ? "border-red-400/20 bg-red-500/[0.05]"
             : "border-emerald-400/20 bg-emerald-500/[0.05]",
         tone,
-      )} style={live ? { background: "rgba(167,139,250,0.06)" } : undefined}>
+      )} style={inProgress ? { background: "rgba(167,139,250,0.06)" } : undefined}>
         {live ? (
           <span className="relative flex h-2 w-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60" style={{ background: "#A78BFA" }} />
             <span className="relative inline-flex h-2 w-2 rounded-full" style={{ background: "#A78BFA" }} />
           </span>
+        ) : inProgress ? (
+          <span className="inline-flex h-2 w-2 rounded-full" style={{ background: "#A78BFA" }} />
         ) : (
           <CloudArrowUp size={11} weight="fill" />
         )}

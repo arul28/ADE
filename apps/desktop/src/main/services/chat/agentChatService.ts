@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -13628,13 +13628,13 @@ export function createAgentChatService(args: {
   const CURSOR_CLOUD_ARTIFACT_MAX_BYTES = 10 * 1024 * 1024;
   const CURSOR_CLOUD_ARTIFACT_DIR = "cursor-cloud-artifacts";
 
-  const detectLaneGitRemoteUrl = (laneRoot: string): string | null => {
+  const detectLaneGitRemoteUrl = async (laneRoot: string): Promise<string | null> => {
     try {
-      const result = spawnSync("git", ["-C", laneRoot, "remote", "get-url", "origin"], {
-        timeout: 4000,
-        encoding: "utf8",
+      const result = await runGit(["remote", "get-url", "origin"], {
+        cwd: laneRoot,
+        timeoutMs: 4000,
       });
-      if (result.status !== 0) return null;
+      if (result.exitCode !== 0) return null;
       const url = result.stdout.trim();
       return url.length > 0 ? url : null;
     } catch {
@@ -13749,13 +13749,13 @@ export function createAgentChatService(args: {
     }
   };
 
-  const resolveCloudRepoUrl = (
+  const resolveCloudRepoUrl = async (
     managed: ManagedChatSession,
     overrides: AgentChatCloudOverrides | undefined,
-  ): string => {
+  ): Promise<string> => {
     const direct = overrides?.repoUrl?.trim();
     if (direct) return direct;
-    const remote = detectLaneGitRemoteUrl(managed.laneWorktreePath);
+    const remote = await detectLaneGitRemoteUrl(managed.laneWorktreePath);
     if (!remote) {
       throw new Error(
         "Cursor Cloud requires a repo URL. Configure a git remote on the lane or pass cloudOverrides.repoUrl.",
@@ -13861,7 +13861,7 @@ export function createAgentChatService(args: {
           payload,
         );
       } else {
-        const repoUrl = resolveCloudRepoUrl(managed, args.cloudOverrides);
+        const repoUrl = await resolveCloudRepoUrl(managed, args.cloudOverrides);
         const payload: CursorSdkCloudSendStreamPayload = {
           apiKey,
           promptText,

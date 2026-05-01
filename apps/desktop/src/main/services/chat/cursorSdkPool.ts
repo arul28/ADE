@@ -288,13 +288,25 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     }
     if (message.type === "hook_request") {
       void (async () => {
-        const decision = bridge.onHookRequest
-          ? await bridge.onHookRequest(message.request)
-          : {
+        let decision;
+        try {
+          decision = bridge.onHookRequest
+            ? await bridge.onHookRequest(message.request)
+            : {
+              permission: "deny" as const,
+              user_message: "ADE is not ready to approve Cursor tool calls.",
+              agent_message: "ADE is not ready to approve Cursor tool calls.",
+            };
+        } catch (err) {
+          args.logger?.error?.("agent_chat.cursor_sdk_hook_error", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          decision = {
             permission: "deny" as const,
-            user_message: "ADE is not ready to approve Cursor tool calls.",
-            agent_message: "ADE is not ready to approve Cursor tool calls.",
+            user_message: "Hook evaluation failed.",
+            agent_message: "Hook evaluation failed due to an internal error.",
           };
+        }
         child.send?.({
           type: "hook_response",
           requestId: message.requestId,

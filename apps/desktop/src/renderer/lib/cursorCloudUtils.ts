@@ -18,6 +18,6 @@ export function repoMatchKey(url: string | null | undefined): string {
     // Strip any leading user@ (e.g. https://user@host/...)
     s = s.replace(/^[^/@]+@/, "");
   }
-  s = s.replace(/\.git$/i, "").replace(/\/+$/, "").toLowerCase();
+  s = s.replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
   return s;
 }

@@ -5610,7 +5610,7 @@ async function runTool(args: {
       prSvc.getComments(prId),
       prSvc.getReviews(prId),
       prSvc.getChecks(prId),
-      prSvc.getReviewThreads(prId),
+      prSvc.getReviewThreads(prId).catch(() => []),
     ]);
     return summarizePrReviewComments(prId, comments, reviews, checks, reviewThreads);
   }

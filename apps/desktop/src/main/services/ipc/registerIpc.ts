@@ -6505,10 +6505,12 @@ export function registerIpc({
     }
     if (!worktreePath) return fallback;
     const [remoteRes, branchRes] = await Promise.all([
-      runGit(["remote", "get-url", "origin"], { cwd: worktreePath, timeoutMs: 8_000 }),
-      knownBranch ? Promise.resolve(null) : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }),
+      runGit(["remote", "get-url", "origin"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
+      knownBranch
+        ? Promise.resolve(null)
+        : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
     ]);
-    const rawRemote = remoteRes.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
+    const rawRemote = remoteRes?.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
     // Strip embedded credentials/userinfo (e.g. https://user:token@host/...)
     // before exposing the URL to the renderer, so secrets do not cross the IPC
     // boundary.

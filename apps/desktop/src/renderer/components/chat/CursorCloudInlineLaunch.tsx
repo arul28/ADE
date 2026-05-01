@@ -125,7 +125,11 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
   }, [defaultBranch]);
 
   useEffect(() => {
-    if (!laneId) return;
+    if (!laneId) {
+      setBranches([]);
+      setBranchesLoaded(false);
+      return;
+    }
     let cancelled = false;
     void window.ade.git
       .listBranches({ laneId })
@@ -264,12 +268,15 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
 
   useImperativeHandle(ref, () => ({ launchWithPrompt }), [launchWithPrompt]);
 
-  const prPillLabel = detectedPr
-    ? detectedPr.prNumber != null
-      ? `PR #${detectedPr.prNumber}`
-      : prFallbackLabel(detectedPr.prUrl)
+  const selectedRepoMatchesLaneRepo =
+    repoMatchKey(repoUrl) !== "" && repoMatchKey(repoUrl) === repoMatchKey(laneGitRemote);
+  const effectiveDetectedPr = selectedRepoMatchesLaneRepo ? detectedPr : null;
+  const prPillLabel = effectiveDetectedPr
+    ? effectiveDetectedPr.prNumber != null
+      ? `PR #${effectiveDetectedPr.prNumber}`
+      : prFallbackLabel(effectiveDetectedPr.prUrl)
     : null;
-  const prPillTitle = detectedPr?.title?.trim() || null;
+  const prPillTitle = effectiveDetectedPr?.title?.trim() || null;
 
   return (
     <div className="space-y-2">
@@ -361,7 +368,7 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
           className="h-7 w-44 animate-pulse rounded-md border border-white/[0.04] bg-white/[0.02]"
           aria-label="Checking for an open pull request"
         />
-      ) : detectedPr ? (
+      ) : effectiveDetectedPr ? (
         <SmartTooltip
           forceEnabled
           content={{
@@ -371,7 +378,7 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
         >
           <button
             type="button"
-            onClick={() => openExternalUrl(detectedPr.prUrl)}
+            onClick={() => openExternalUrl(effectiveDetectedPr.prUrl)}
             className="group inline-flex max-w-full items-center gap-1.5 rounded-md border border-violet-300/30 bg-violet-500/[0.12] px-2.5 py-1 text-violet-100/90 transition-colors hover:border-violet-300/50 hover:bg-violet-500/[0.18]"
             aria-label="Open detected pull request"
           >
