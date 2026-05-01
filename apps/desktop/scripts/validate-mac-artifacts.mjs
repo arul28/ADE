@@ -112,6 +112,38 @@ async function assertPathExists(targetPath, description) {
   }
 }
 
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRuntimeUnpackedPath(resourcesPath) {
+  const archAsarPath = path.join(resourcesPath, process.arch === "arm64" ? "app-arm64.asar.unpacked" : "app-x64.asar.unpacked");
+  if (await pathExists(archAsarPath)) {
+    return archAsarPath;
+  }
+  return path.join(resourcesPath, "app.asar.unpacked");
+}
+
+async function resolveRuntimeUnpackedPaths(resourcesPath) {
+  const candidates = [
+    path.join(resourcesPath, "app.asar.unpacked"),
+    path.join(resourcesPath, "app-arm64.asar.unpacked"),
+    path.join(resourcesPath, "app-x64.asar.unpacked"),
+  ];
+  const existing = [];
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) {
+      existing.push(candidate);
+    }
+  }
+  return existing;
+}
+
 async function assertExecutable(targetPath, description) {
   const stat = await fs.stat(targetPath);
   if ((stat.mode & 0o111) !== 0o111) {
@@ -224,9 +256,13 @@ async function validateSignedApp(appPath, description) {
 async function validatePackageHygiene(appPath, description) {
   const resourcesPath = path.join(appPath, "Contents", "Resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
-  const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
+  const unpackedPaths = await resolveRuntimeUnpackedPaths(resourcesPath);
   const maxAppAsarBytes = readByteLimit("ADE_MAX_APP_ASAR_BYTES", DEFAULT_MAX_APP_ASAR_BYTES);
   const maxUnpackedBytes = readByteLimit("ADE_MAX_APP_ASAR_UNPACKED_BYTES", DEFAULT_MAX_UNPACKED_BYTES);
+
+  if (unpackedPaths.length === 0) {
+    throw new Error(`[release:mac] Missing unpacked runtime payload for ${description}: ${resourcesPath}`);
+  }
 
   const appAsarStat = await fs.stat(appAsarPath);
   if (appAsarStat.size > maxAppAsarBytes) {
@@ -236,10 +272,13 @@ async function validatePackageHygiene(appPath, description) {
     );
   }
 
-  const unpackedBytes = await computeRecursiveFileSize(unpackedPath);
+  let unpackedBytes = 0;
+  for (const unpackedPath of unpackedPaths) {
+    unpackedBytes += await computeRecursiveFileSize(unpackedPath);
+  }
   if (unpackedBytes > maxUnpackedBytes) {
     throw new Error(
-      `[release:mac] app.asar.unpacked is too large for ${description}: ${unpackedBytes} bytes ` +
+      `[release:mac] unpacked runtime payload is too large for ${description}: ${unpackedBytes} bytes ` +
         `(limit ${maxUnpackedBytes})`
     );
   }
@@ -259,7 +298,7 @@ async function validatePackagedRuntime(appPath, description) {
   const executablePath = path.join(appPath, "Contents", "MacOS", appName);
   const resourcesPath = path.join(appPath, "Contents", "Resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
-  const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
+  const unpackedPath = await resolveRuntimeUnpackedPath(resourcesPath);
   const adeCliPath = path.join(resourcesPath, "ade-cli", "cli.cjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
@@ -270,7 +309,7 @@ async function validatePackagedRuntime(appPath, description) {
   console.log(`[release:mac] Smoke testing packaged runtime payload for ${description}`);
   await assertPathExists(executablePath, "packaged app executable");
   await assertPathExists(appAsarPath, "app.asar payload");
-  await assertPathExists(unpackedPath, "app.asar.unpacked runtime payload");
+  await assertPathExists(unpackedPath, "unpacked runtime payload");
   await assertPathExists(adeCliPath, "bundled ADE CLI entry");
   await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");

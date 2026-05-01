@@ -15,6 +15,13 @@ function platformArchDir(): string {
   return `${process.platform}-${process.arch}`;
 }
 
+function packagedAsarName(): string {
+  if (process.platform === "darwin") {
+    return process.arch === "arm64" ? "app-arm64.asar" : "app-x64.asar";
+  }
+  return "app.asar";
+}
+
 let cachedCrsqlitePath: string | null | undefined;
 
 function findRepoRoot(startDir: string): string | null {
@@ -46,6 +53,7 @@ export function resolveCrsqliteExtensionPath(): string | null {
     if (moduleRepoRoot) repoRootSet.add(moduleRepoRoot);
   }
   const candidates = [
+    process.resourcesPath ? path.join(process.resourcesPath, `${packagedAsarName()}.unpacked`, relativePath) : null,
     process.resourcesPath ? path.join(process.resourcesPath, "app.asar.unpacked", relativePath) : null,
     process.resourcesPath ? path.join(process.resourcesPath, relativePath) : null,
     path.resolve(process.cwd(), relativePath),

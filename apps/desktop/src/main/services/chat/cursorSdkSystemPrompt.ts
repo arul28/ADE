@@ -204,6 +204,10 @@ export const findAdeCliHelpDigestFile = (moduleDir: string | undefined): string 
   const fsSync = require("node:fs") as typeof import("node:fs");
   const candidates: string[] = [];
   if (process.resourcesPath) {
+    if (process.platform === "darwin") {
+      const archAsar = process.arch === "arm64" ? "app-arm64.asar" : "app-x64.asar";
+      candidates.push(path.join(process.resourcesPath, `${archAsar}.unpacked`, "resources", "ade-cli-help.txt"));
+    }
     candidates.push(path.join(process.resourcesPath, "app.asar.unpacked", "resources", "ade-cli-help.txt"));
     candidates.push(path.join(process.resourcesPath, "resources", "ade-cli-help.txt"));
   }

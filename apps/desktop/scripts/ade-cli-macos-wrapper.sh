@@ -32,7 +32,12 @@ if [ ! -x "$APP_EXE" ] && [ -d "$CONTENTS_DIR/MacOS" ]; then
 fi
 
 if [ -x "$APP_EXE" ]; then
-  NODE_PATH_VALUE="$RESOURCES_DIR/app.asar.unpacked/node_modules:$RESOURCES_DIR/app.asar/node_modules"
+  ARCH_NAME=$(uname -m)
+  case "$ARCH_NAME" in
+    arm64) ARCH_ASAR="app-arm64.asar" ;;
+    *) ARCH_ASAR="app-x64.asar" ;;
+  esac
+  NODE_PATH_VALUE="$RESOURCES_DIR/$ARCH_ASAR.unpacked/node_modules:$RESOURCES_DIR/app.asar.unpacked/node_modules:$RESOURCES_DIR/$ARCH_ASAR/node_modules:$RESOURCES_DIR/app.asar/node_modules"
   if [ -n "${NODE_PATH:-}" ]; then
     NODE_PATH_VALUE="$NODE_PATH_VALUE:$NODE_PATH"
   fi
