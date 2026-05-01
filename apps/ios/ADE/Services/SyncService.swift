@@ -3250,6 +3250,7 @@ final class SyncService: ObservableObject {
   func rebaseContinueGit(laneId: String) async throws { _ = try await sendCommand(action: "git.rebaseContinue", args: ["laneId": laneId]) }
   func rebaseAbortGit(laneId: String) async throws { _ = try await sendCommand(action: "git.rebaseAbort", args: ["laneId": laneId]) }
 
+  @MainActor
   func listChatModels(provider: String) async throws -> [AgentChatModelInfo] {
     let normalizedProvider = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let cacheKey = chatModelsCacheKey(provider: normalizedProvider)
@@ -3288,6 +3289,7 @@ final class SyncService: ObservableObject {
     }
   }
 
+  @MainActor
   func cachedChatModelCatalog() -> AgentChatModelCatalog? {
     let cacheKey = chatModelsCacheKey(provider: "catalog")
     guard let cached = chatModelCatalogCache[cacheKey] else { return nil }
@@ -3295,6 +3297,7 @@ final class SyncService: ObservableObject {
     return cached.catalog
   }
 
+  @MainActor
   func getChatModelCatalog() async throws -> AgentChatModelCatalog {
     let cacheKey = chatModelsCacheKey(provider: "catalog")
     let now = Date()
