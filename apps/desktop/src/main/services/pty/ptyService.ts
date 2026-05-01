@@ -182,6 +182,17 @@ function resolveShellCandidates(): ShellSpec[] {
   return uniq.map((file) => ({ file, args: [] }));
 }
 
+function quotePosixShellArg(value: string): string {
+  if (!value.length) return "''";
+  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function buildDirectCommandShellFallback(command: string, args: string[]): string | null {
+  if (process.platform === "win32") return null;
+  return ["exec", command, ...args].map(quotePosixShellArg).join(" ");
+}
+
 function clampDims(cols: number, rows: number): { cols: number; rows: number } {
   const safeCols = Number.isFinite(cols) ? Math.max(20, Math.min(400, Math.floor(cols))) : 80;
   const safeRows = Number.isFinite(rows) ? Math.max(6, Math.min(200, Math.floor(rows))) : 24;
@@ -1568,6 +1579,8 @@ export function createPtyService({
             launchedDirectCommand = true;
           } catch (err) {
             lastErr = err;
+            const shellFallbackCmd = buildDirectCommandShellFallback(directCommand, directArgs);
+            if (shellFallbackCmd) startupCommand ||= shellFallbackCmd;
           }
         }
         if (!created && (!directCommand || startupCommand)) {

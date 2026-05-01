@@ -1000,6 +1000,90 @@ describe("processService PTY-backed run commands", () => {
     }
   });
 
+  it("writes PTY startup failures into the run transcript", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-start-failure-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const projectId = "proj-start-failure";
+    const logger = createLogger();
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    const sessionStore = new Map<string, { id: string; transcriptPath: string }>();
+    const dataListeners = new Set<(event: { laneId: string; ptyId: string; sessionId: string; data: string }) => void>();
+    const exitListeners = new Set<(event: { laneId: string; ptyId: string; sessionId: string; exitCode: number | null }) => void>();
+
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-fail", projectId, "Lane Fail", null, "worktree", "main", "feature/fail", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "bad-command", command: ["./missing-script.sh", "dev"], cwd: "." },
+    ]);
+    const ptyService = {
+      create: vi.fn(async (args: any) => {
+        const transcriptPath = path.join(tmpDir, ".ade", "transcripts", `${args.sessionId}.log`);
+        fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+        fs.writeFileSync(transcriptPath, "", "utf8");
+        sessionStore.set(args.sessionId, { id: args.sessionId, transcriptPath });
+        throw new Error("spawn ./missing-script.sh ENOENT");
+      }),
+      dispose: vi.fn(),
+      onData: vi.fn((listener: (event: { laneId: string; ptyId: string; sessionId: string; data: string }) => void) => {
+        dataListeners.add(listener);
+        return () => dataListeners.delete(listener);
+      }),
+      onExit: vi.fn((listener: (event: { laneId: string; ptyId: string; sessionId: string; exitCode: number | null }) => void) => {
+        exitListeners.add(listener);
+        return () => exitListeners.delete(listener);
+      }),
+    } as any;
+    const service = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-fail")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      sessionService: {
+        get: vi.fn((sessionId: string) => sessionStore.get(sessionId) ?? null),
+      } as any,
+      ptyService,
+      broadcastEvent: () => {},
+    });
+
+    try {
+      await expect(service.start({ laneId: "lane-fail", processId: "bad-command" })).rejects.toThrow("ENOENT");
+      const runtime = service.listRuntime("lane-fail")[0]!;
+      expect(runtime.status).toBe("crashed");
+      const tail = service.getLogTail({
+        laneId: "lane-fail",
+        processId: "bad-command",
+        runId: runtime.runId,
+      });
+      expect(tail).toContain("failed to start");
+      expect(tail).toContain("./missing-script.sh dev");
+      expect(tail).toContain(`[ADE] Working directory: ${fs.realpathSync(tmpDir)}`);
+      expect(tail).toContain("spawn ./missing-script.sh ENOENT");
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("getLogTail({ runId }) returns only the specified run's transcript", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-logtail-"));
     const dbPath = path.join(tmpDir, "kv.sqlite");

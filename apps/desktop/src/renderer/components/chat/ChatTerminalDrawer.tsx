@@ -50,6 +50,11 @@ type ChatTerminalDrawerProps = {
   onToggle: () => void;
   laneId: string;
   chatSessionId?: string | null;
+  autoCreateOnOpen?: boolean;
+  createRequestNonce?: number;
+  disposeTabsOnUnmount?: boolean;
+  emptyMessage?: string;
+  onCreateError?: (message: string) => void;
   revealRequest?: {
     terminalId: string;
     ptyId: string;
@@ -125,6 +130,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   onToggle,
   laneId,
   chatSessionId,
+  autoCreateOnOpen = true,
+  createRequestNonce = 0,
+  disposeTabsOnUnmount = false,
+  emptyMessage = "Create a terminal to start working in this chat.",
+  onCreateError,
   revealRequest,
 }: ChatTerminalDrawerProps) {
   const uiStateKey = drawerStateKey(chatSessionId, laneId);
@@ -140,6 +150,9 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const pendingAutoCreateRef = useRef(false);
   const tabsRef = useRef<TabEntry[]>([]);
   const restoringUiStateRef = useRef(false);
+  const lastHandledCreateRequestRef = useRef(0);
+  const createRequestHandledThisOpenRef = useRef(false);
+  const revealHandledThisOpenRef = useRef(false);
   // revealRequest is edge-triggered (the parent re-uses the same prop slot
   // across renders). Track the (chatKey, nonce) we've already applied so a
   // stale request from a previous chat doesn't keep blocking the new chat's
@@ -147,6 +160,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const lastHandledRevealRef = useRef<{ chatKey: string; nonce: number } | null>(null);
 
   tabsRef.current = tabs;
+
+  const reportCreateError = useCallback((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    onCreateError?.(message);
+  }, [onCreateError]);
 
   useEffect(() => {
     restoringUiStateRef.current = true;
@@ -220,10 +238,12 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
       setTabs((prev) => [...prev, nextEntry]);
       setActiveTabId(tabId);
+    } catch (error) {
+      reportCreateError(error);
     } finally {
       setCreatingTab(false);
     }
-  }, [chatSessionId, creatingTab, laneId]);
+  }, [chatSessionId, creatingTab, laneId, reportCreateError]);
 
   useEffect(() => {
     if (!chatSessionId) return;
@@ -278,6 +298,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     );
     if (existing) {
       setActiveTabId(existing.id);
+      revealHandledThisOpenRef.current = true;
       return;
     }
     const tabId = `chat-term-${revealRequest.terminalId}`;
@@ -290,7 +311,16 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     };
     setTabs((prev) => [...prev, nextEntry]);
     setActiveTabId(tabId);
+    revealHandledThisOpenRef.current = true;
   }, [revealRequest, uiStateKey]);
+
+  useEffect(() => {
+    if (!open || creatingTab || createRequestNonce <= 0 || lastHandledCreateRequestRef.current === createRequestNonce) return;
+    lastHandledCreateRequestRef.current = createRequestNonce;
+    pendingAutoCreateRef.current = false;
+    createRequestHandledThisOpenRef.current = true;
+    void createTab();
+  }, [createRequestNonce, createTab, creatingTab, open]);
 
   useEffect(() => {
     const wasOpen = previousOpenRef.current;
@@ -302,13 +332,23 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     }
 
     if (!wasOpen) pendingAutoCreateRef.current = true;
+    if (createRequestHandledThisOpenRef.current) {
+      createRequestHandledThisOpenRef.current = false;
+      pendingAutoCreateRef.current = false;
+      return;
+    }
+    if (revealHandledThisOpenRef.current) {
+      revealHandledThisOpenRef.current = false;
+      pendingAutoCreateRef.current = false;
+      return;
+    }
     // Treat already-consumed reveal requests as null so switching chats with
     // a stale revealRequest in props doesn't block auto-create on the new
     // drawer.
     const last = lastHandledRevealRef.current;
     const revealActive = revealRequest != null
       && !(last && last.chatKey === uiStateKey && last.nonce === revealRequest.nonce);
-    if (revealActive || tabs.length > 0) {
+    if (!autoCreateOnOpen || revealActive || tabs.length > 0) {
       pendingAutoCreateRef.current = false;
       return;
     }
@@ -316,7 +356,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
     pendingAutoCreateRef.current = false;
     void createTab();
-  }, [createTab, creatingTab, open, restoringTabs, revealRequest, tabs.length, uiStateKey]);
+  }, [autoCreateOnOpen, createTab, creatingTab, open, restoringTabs, revealRequest, tabs.length, uiStateKey]);
 
   useEffect(() => {
     if (tabs.length > 0) {
@@ -329,7 +369,9 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   }, [creatingTab, onToggle, open, tabs.length]);
 
   useEffect(() => {
-    const unsubscribe = window.ade.pty.onExit((ev: PtyExitEvent) => {
+    const ptyBridge = window.ade?.pty;
+    if (!ptyBridge?.onExit) return undefined;
+    const unsubscribe = ptyBridge.onExit((ev: PtyExitEvent) => {
       setTabs((prev) => prev.map((tab) => (
         tab.ptyId === ev.ptyId
           ? { ...tab, exited: true }
@@ -338,6 +380,13 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     });
     return unsubscribe;
   }, []);
+
+  useEffect(() => () => {
+    if (!disposeTabsOnUnmount) return;
+    for (const tab of tabsRef.current) {
+      window.ade.pty.dispose({ ptyId: tab.ptyId, sessionId: tab.sessionId }).catch(() => {});
+    }
+  }, [disposeTabsOnUnmount]);
 
   // Drop drawer tabs when their session is deleted from the sidebar so the user
   // can't keep working in a shell whose backing session no longer exists.
@@ -513,7 +562,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
           />
         ) : (
           <div className="flex h-full items-center justify-center px-4 font-mono text-[11px] text-muted-fg">
-            Create a terminal to start working in this chat.
+            {emptyMessage}
           </div>
         )}
       </div>
