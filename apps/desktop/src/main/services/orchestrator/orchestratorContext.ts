@@ -1301,7 +1301,7 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
       displayName: "GPT-5.3 Codex",
       strengths: ["agentic coding", "implementation", "testing", "code review"],
       weaknesses: ["older than GPT-5.5 for general tasks"],
-      costTier: "medium",
+      costTier: "high",
       bestFor: ["implementation", "review"],
       parallelCapable: true,
       reasoningTiers: ["low", "medium", "high", "xhigh"]

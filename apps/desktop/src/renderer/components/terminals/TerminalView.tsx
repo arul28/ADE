@@ -121,16 +121,18 @@ function isDarkTheme(theme: ThemeId): boolean {
 }
 
 function terminalWebglRendererEnabled(): boolean {
+  let stored: string | null = null;
   try {
-    const stored = window.localStorage.getItem(TERMINAL_RENDERER_STORAGE_KEY);
-    if (stored != null) return stored !== "dom";
-    const platform = window.navigator?.platform?.toLowerCase() ?? "";
-    const userAgent = window.navigator?.userAgent?.toLowerCase() ?? "";
-    if (platform.includes("linux") || userAgent.includes("linux")) return false;
-    return true;
+    stored = window.localStorage.getItem(TERMINAL_RENDERER_STORAGE_KEY);
   } catch {
-    return true;
+    // Storage can be unavailable in hardened/browser-like environments; still
+    // honor the Linux renderer fallback below.
   }
+  if (stored != null) return stored !== "dom";
+  const platform = window.navigator?.platform?.toLowerCase() ?? "";
+  const userAgent = window.navigator?.userAgent?.toLowerCase() ?? "";
+  if (platform.includes("linux") || userAgent.includes("linux")) return false;
+  return true;
 }
 
 function cloneHealth(health: TerminalHealthCounters): TerminalHealthCounters {

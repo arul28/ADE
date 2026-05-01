@@ -1561,7 +1561,12 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect((result.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
     expect(createSpy).toHaveBeenCalledTimes(1);
     await waitFor(() => fs.existsSync(path.join(projectRoot, ".ade", "cache", "sync-mobile-command-ledger.json")));
-    expect(fs.readFileSync(path.join(projectRoot, ".ade", "cache", "sync-mobile-command-ledger.json"), "utf8")).toContain("cmd-quick-run");
+    const commandLedgerPath = path.join(projectRoot, ".ade", "cache", "sync-mobile-command-ledger.json");
+    const quickRunLedger = fs.readFileSync(commandLedgerPath, "utf8");
+    expect(quickRunLedger).toContain("cmd-quick-run");
+    expect(quickRunLedger).toContain("argsFingerprint");
+    expect(quickRunLedger).not.toContain("argsKey");
+    expect(quickRunLedger).not.toContain("npm test");
 
     client.ws.send(encodeSyncEnvelope({
       type: "command",
@@ -1615,6 +1620,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const workListResult = await client.queue.next("command_result");
     const workSessions = (workListResult.payload as { ok: boolean; result: Array<{ id: string }> }).result;
     expect(workSessions.map((entry) => entry.id)).toEqual(["session-1"]);
+    const afterWorkListLedger = fs.readFileSync(commandLedgerPath, "utf8");
+    expect(afterWorkListLedger).not.toContain("cmd-work-list");
+    expect(afterWorkListLedger).not.toContain("prior output");
 
     client.ws.send(encodeSyncEnvelope({
       type: "command",

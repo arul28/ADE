@@ -41,6 +41,7 @@ type PendingChangesetBatch = {
 };
 
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
+const MAX_CHANGESET_ACK_RETRIES = 6;
 
 export function createSyncPeerService(args: SyncPeerServiceArgs) {
   let ws: WebSocket | null = null;
@@ -177,6 +178,14 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     const nowMs = Date.now();
     if (pendingOutboundChangeset) {
       if (nowMs - pendingOutboundChangeset.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
+        if (pendingOutboundChangeset.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
+          args.logger.warn("sync_peer.changeset_ack_timeout_exhausted", {
+            batchId: pendingOutboundChangeset.batchId,
+            retryCount: pendingOutboundChangeset.retryCount,
+          });
+          disconnectInternal("error", null, "Changeset acknowledgement timed out.");
+          return;
+        }
         pendingOutboundChangeset.sentAtMs = nowMs;
         pendingOutboundChangeset.retryCount += 1;
         sendOutboundChangeset(pendingOutboundChangeset);
@@ -321,6 +330,16 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         const payload = envelope.payload as SyncChangesetAckPayload;
         if (!pendingOutboundChangeset || payload.batchId !== pendingOutboundChangeset.batchId) break;
         if (!payload.ok) {
+          if (pendingOutboundChangeset.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
+            const message = payload.error?.message ?? "Changeset apply failed repeatedly.";
+            args.logger.warn("sync_peer.changeset_ack_failed_exhausted", {
+              batchId: pendingOutboundChangeset.batchId,
+              retryCount: pendingOutboundChangeset.retryCount,
+              error: message,
+            });
+            disconnectInternal("error", null, message);
+            break;
+          }
           pendingOutboundChangeset.sentAtMs = Date.now();
           pendingOutboundChangeset.retryCount += 1;
           args.logger.warn("sync_peer.changeset_ack_failed", {

@@ -370,6 +370,41 @@ describe("TerminalView", () => {
     }
   });
 
+  it("uses the DOM renderer on Linux when localStorage is unavailable", async () => {
+    vi.useRealTimers();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const originalPlatform = window.navigator.platform;
+    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "Linux x86_64",
+      });
+      render(<TerminalView ptyId="pty-linux-storage" sessionId="session-linux-storage" isActive />);
+
+      await waitFor(
+        () => {
+          const runtime = getTerminalRuntimeSnapshot("session-linux-storage");
+          expect(runtime?.renderer).toBe("dom");
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      getItemSpy.mockRestore();
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+      vi.useFakeTimers();
+    }
+  });
+
   it("rejects implausible fit results, restores the last good size, and skips PTY resize", async () => {
     render(<TerminalView ptyId="pty-recover" sessionId="session-recover" isActive />);
     await flushAllTimers();

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -166,6 +166,7 @@ type CachedMobileCommand = {
   commandId: string;
   action: string;
   argsKey: string;
+  argsFingerprint: string;
   ack: SyncCommandAckPayload;
   result: SyncCommandResultPayload | null;
   waiters: CachedMobileCommandWaiter[];
@@ -179,12 +180,30 @@ type PersistedMobileCommand = {
   deviceId: string;
   commandId: string;
   action: string;
-  argsKey: string;
+  argsFingerprint: string;
   ack: SyncCommandAckPayload;
   result: SyncCommandResultPayload;
   acceptedAtMs: number;
   completedAtMs: number;
 };
+
+const PERSISTED_MOBILE_COMMAND_ACTIONS = new Set<string>([
+  "lanes.presence.announce",
+  "lanes.presence.release",
+  "notification_prefs",
+  "work.runQuickCommand",
+  "work.closeSession",
+  "processes.start",
+  "processes.stop",
+  "processes.kill",
+  "chat.interrupt",
+  "chat.approve",
+  "chat.respondToInput",
+  "chat.dispose",
+  "chat.archive",
+  "chat.unarchive",
+  "chat.delete",
+]);
 
 function stableJsonValue(value: unknown): unknown {
   if (value == null) return value;
@@ -200,6 +219,46 @@ function stableJsonValue(value: unknown): unknown {
 
 function stableJsonKey(value: unknown): string {
   return JSON.stringify(stableJsonValue(value)) ?? "null";
+}
+
+function mobileCommandArgsFingerprint(argsKey: string): string {
+  return createHash("sha256").update(argsKey).digest("hex");
+}
+
+function safeObjectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function persistedMobileCommandResult(action: string, result: SyncCommandResultPayload): SyncCommandResultPayload | null {
+  if (!PERSISTED_MOBILE_COMMAND_ACTIONS.has(action)) return null;
+  if (!result.ok) {
+    return {
+      commandId: result.commandId,
+      ok: false,
+      error: {
+        code: result.error?.code ?? "command_failed",
+        message: "Command failed before reconnect.",
+      },
+    };
+  }
+  if (action === "work.runQuickCommand") {
+    const raw = safeObjectValue(result.result);
+    const replayResult: Record<string, unknown> = {};
+    if (typeof raw?.sessionId === "string") replayResult.sessionId = raw.sessionId;
+    if (typeof raw?.ptyId === "string") replayResult.ptyId = raw.ptyId;
+    return {
+      commandId: result.commandId,
+      ok: true,
+      result: Object.keys(replayResult).length > 0 ? replayResult : { ok: true },
+    };
+  }
+  return {
+    commandId: result.commandId,
+    ok: true,
+    result: { ok: true },
+  };
 }
 
 function mobileCommandCacheKey(projectRoot: string, peer: PeerState, commandId: string): string | null {
@@ -541,6 +600,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const commands: PersistedMobileCommand[] = [];
     for (const [key, record] of mobileCommandResultCache) {
       if (!record.result || record.completedAtMs == null) continue;
+      const persistedResult = persistedMobileCommandResult(record.action, record.result);
+      if (!persistedResult) continue;
       if (!key.startsWith(`${args.projectRoot}:`)) continue;
       if (nowMs - record.completedAtMs > MOBILE_COMMAND_RESULT_CACHE_TTL_MS) continue;
       const deviceId = key.slice(`${args.projectRoot}:`.length).split(":")[0] ?? "";
@@ -550,9 +611,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         deviceId,
         commandId: record.commandId,
         action: record.action,
-        argsKey: record.argsKey,
+        argsFingerprint: record.argsFingerprint,
         ack: record.ack,
-        result: record.result,
+        result: persistedResult,
         acceptedAtMs: record.acceptedAtMs,
         completedAtMs: record.completedAtMs,
       });
@@ -565,12 +626,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const command of readPersistedCommandLedger()) {
       if (command.projectRoot !== args.projectRoot) continue;
       if (nowMs - command.completedAtMs > MOBILE_COMMAND_RESULT_CACHE_TTL_MS) continue;
+      const replayResult = persistedMobileCommandResult(command.action, command.result);
+      if (!replayResult) continue;
+      const legacyArgsKey = (command as { argsKey?: unknown }).argsKey;
+      const argsFingerprint = typeof command.argsFingerprint === "string"
+        ? command.argsFingerprint
+        : typeof legacyArgsKey === "string"
+        ? mobileCommandArgsFingerprint(legacyArgsKey)
+        : null;
+      if (!argsFingerprint) continue;
       mobileCommandResultCache.set(command.key, {
         commandId: command.commandId,
         action: command.action,
-        argsKey: command.argsKey,
+        argsKey: argsFingerprint,
+        argsFingerprint,
         ack: command.ack,
-        result: command.result,
+        result: replayResult,
         waiters: [],
         acceptedAtMs: command.acceptedAtMs,
         completedAtMs: command.completedAtMs,
@@ -1926,6 +1997,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const commandId = toOptionalString(payload.commandId) ?? requestId ?? `cmd-${Date.now()}`;
     const commandCacheKey = mobileCommandCacheKey(args.projectRoot, peer, commandId);
     const commandArgsKey = stableJsonKey(payload.args ?? {});
+    const commandArgsFingerprint = mobileCommandArgsFingerprint(commandArgsKey);
     pruneMobileCommandResultCache();
 
     const sendResult = (record: CachedMobileCommand | null, result: SyncCommandResultPayload) => {
@@ -1956,6 +2028,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         commandId,
         action: payload.action,
         argsKey: commandArgsKey,
+        argsFingerprint: commandArgsFingerprint,
         ack,
         result: null,
         waiters: [{ peer, requestId }],
@@ -1967,7 +2040,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
     const existingCommand = commandCacheKey ? mobileCommandResultCache.get(commandCacheKey) : null;
     if (existingCommand) {
-      if (existingCommand.action !== payload.action || existingCommand.argsKey !== commandArgsKey) {
+      if (existingCommand.action !== payload.action || existingCommand.argsFingerprint !== commandArgsFingerprint) {
         commandConflictCount += 1;
         const mismatchResult: SyncCommandResultPayload = {
           commandId,

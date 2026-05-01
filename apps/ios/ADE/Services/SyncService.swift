@@ -681,6 +681,7 @@ final class SyncService: ObservableObject {
   private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
   private let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
   private let outboundSyncStateMaxEntries = 128
+  private let maxChangesetAckRetries = 6
   private let keychain = KeychainService()
   private let database: DatabaseService
   private let socketSessionDelegate: SyncSocketSessionDelegate
@@ -5491,6 +5492,10 @@ final class SyncService: ObservableObject {
       lastError = nil
       return
     }
+    guard pending.retryCount < maxChangesetAckRetries else {
+      failPendingOutboundChangeset("The desktop stopped accepting phone changes. Reconnecting now.")
+      return
+    }
     pending.retryCount += 1
     pending.sentAt = ProcessInfo.processInfo.systemUptime
     pendingOutboundChangeset = pending
@@ -5508,6 +5513,10 @@ final class SyncService: ObservableObject {
     let now = ProcessInfo.processInfo.systemUptime
     if var pending = pendingOutboundChangeset {
       if now - pending.sentAt >= 10 {
+        guard pending.retryCount < maxChangesetAckRetries else {
+          failPendingOutboundChangeset("The desktop did not acknowledge phone changes in time. Reconnecting now.")
+          return
+        }
         pending.sentAt = now
         pending.retryCount += 1
         pendingOutboundChangeset = pending
@@ -5538,6 +5547,20 @@ final class SyncService: ObservableObject {
     pendingOutboundChangeset = pending
     persistPendingOutboundChangesetForActiveProject(pending)
     sendOutboundChangeset(pending)
+  }
+
+  private func failPendingOutboundChangeset(_ message: String) {
+    pendingOutboundChangeset = nil
+    clearPendingOutboundChangesetForActiveProject()
+    handleTransportFailure(
+      NSError(
+        domain: "ADE",
+        code: 27,
+        userInfo: [NSLocalizedDescriptionKey: message]
+      ),
+      phase: .disconnected,
+      connectionState: .disconnected
+    )
   }
 
   private func resolve(requestId: String?, result: Result<Any, Error>) {
