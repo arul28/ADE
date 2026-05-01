@@ -3229,6 +3229,8 @@ export function registerIpc({
     const { storeApiKey } = await import("../ai/apiKeyStore");
     storeApiKey(arg.provider, arg.key);
     try {
+      // The key store mutation already succeeded; invalidation is a freshness
+      // step so settings save/delete should not fail if a runtime cache is gone.
       ctx.aiIntegrationService.invalidateProviderReadinessCaches();
     } catch (error) {
       ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
@@ -3243,6 +3245,8 @@ export function registerIpc({
     const { deleteApiKey } = await import("../ai/apiKeyStore");
     deleteApiKey(arg.provider);
     try {
+      // The key store mutation already succeeded; invalidation is a freshness
+      // step so settings save/delete should not fail if a runtime cache is gone.
       ctx.aiIntegrationService.invalidateProviderReadinessCaches();
     } catch (error) {
       ctx.logger.warn("ai.api_key_cache_invalidation_failed", {

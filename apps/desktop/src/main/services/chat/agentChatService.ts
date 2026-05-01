@@ -1292,6 +1292,14 @@ function normalizeReasoningEffort(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function catalogDescriptorInfoKey(
+  group: ModelProviderGroup,
+  providerKey: string,
+  descriptorId: string,
+): string {
+  return `${group}:${providerKey}:${descriptorId}`;
+}
+
 function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescriptor | null {
   if (session.modelId) {
     return getModelById(session.modelId) ?? resolveModelAlias(session.modelId) ?? null;
@@ -16898,11 +16906,6 @@ export function createAgentChatService(args: {
 
   const getModelCatalog = async (): Promise<AgentChatModelCatalog> => {
     const catalogProviders: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode"];
-    const descriptorInfoKey = (
-      group: ModelProviderGroup,
-      providerKey: string,
-      descriptorId: string,
-    ): string => `${group}:${providerKey}:${descriptorId}`;
     const modelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {
         try {
@@ -16939,7 +16942,7 @@ export function createAgentChatService(args: {
           ...(runtimeTiers?.length ? { reasoningTiers: runtimeTiers } : {}),
         };
         descriptors.push(patched);
-        descriptorInfo.set(descriptorInfoKey(provider, patched.family, patched.id), { provider, info });
+        descriptorInfo.set(catalogDescriptorInfoKey(provider, patched.family, patched.id), { provider, info });
       }
     }
 
@@ -16963,7 +16966,7 @@ export function createAgentChatService(args: {
             key: subsection.key,
             label: subsection.label,
             models: subsection.models.map((descriptor) => {
-              const entry = descriptorInfo.get(descriptorInfoKey(group.key, provider.key, descriptor.id));
+              const entry = descriptorInfo.get(catalogDescriptorInfoKey(group.key, provider.key, descriptor.id));
               const runtimeProvider = entry?.provider ?? resolveProviderGroupForModel(descriptor);
               const runtimeModelId = entry?.info.id ?? getRuntimeModelRefForDescriptor(descriptor, runtimeProvider);
               const reasoningEfforts = entry?.info.reasoningEfforts

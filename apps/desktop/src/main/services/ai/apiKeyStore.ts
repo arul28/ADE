@@ -229,6 +229,15 @@ function writeMacosKeychainProviderIndex(providers: Iterable<string>): void {
   );
 }
 
+function tryWriteMacosKeychainProviderIndex(providers: Iterable<string>): void {
+  try {
+    writeMacosKeychainProviderIndex(providers);
+  } catch {
+    // The provider index only powers discovery/listing. Keep the just-written
+    // secret usable in this process even if the secondary index write fails.
+  }
+}
+
 function knownProviderCandidates(extraProviders?: Iterable<string>): string[] {
   const providers = new Set<string>(Object.keys(ENV_KEY_PROVIDERS));
   for (const provider of extraProviders ?? []) {
@@ -390,9 +399,9 @@ export function storeApiKey(provider: string, key: string): void {
   const store = ensureStore();
   if (isMacosKeychainAvailable()) {
     writeMacosKeychainSecret(normalizedProvider, normalizedKey);
-    const index = readMacosKeychainProviderIndex();
-    writeMacosKeychainProviderIndex(new Set([...index.providers, normalizedProvider]));
     store[normalizedProvider] = normalizedKey;
+    const index = readMacosKeychainProviderIndex();
+    tryWriteMacosKeychainProviderIndex(new Set([...index.providers, normalizedProvider]));
     return;
   }
   const nextStore = { ...store, [normalizedProvider]: normalizedKey };
@@ -420,9 +429,9 @@ export function deleteApiKey(provider: string): void {
   const store = ensureStore();
   if (isMacosKeychainAvailable()) {
     deleteMacosKeychainSecret(normalizedProvider);
-    const index = readMacosKeychainProviderIndex();
-    writeMacosKeychainProviderIndex(index.providers.filter((entry) => entry !== normalizedProvider));
     delete store[normalizedProvider];
+    const index = readMacosKeychainProviderIndex();
+    tryWriteMacosKeychainProviderIndex(index.providers.filter((entry) => entry !== normalizedProvider));
     return;
   }
   const nextStore = { ...store };

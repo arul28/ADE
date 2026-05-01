@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  __buildCursorSdkHookCommandForTests,
   cursorSdkHookScriptPath,
   cursorSdkHooksJsonPath,
   ensureCursorSdkUserHook,
@@ -160,6 +161,30 @@ describe("Cursor SDK hook installation", () => {
       })).toThrow(/control characters/);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a direct cmd set prefix for packaged Electron hooks on Windows", () => {
+    const originalPlatform = process.platform;
+    const originalElectron = process.versions.electron;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    Object.defineProperty(process.versions, "electron", { value: "37.0.0", configurable: true });
+    try {
+      const command = __buildCursorSdkHookCommandForTests(
+        undefined,
+        String.raw`C:\Users\Ada Lovelace\.cursor\hooks\ade-tool-gate.cjs`,
+      );
+      expect(command).toBe(
+        `set ELECTRON_RUN_AS_NODE=1&& "${process.execPath}" "C:\\Users\\Ada Lovelace\\.cursor\\hooks\\ade-tool-gate.cjs"`,
+      );
+      expect(command).not.toContain("cmd /d /s /c");
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      if (originalElectron === undefined) {
+        Reflect.deleteProperty(process.versions, "electron");
+      } else {
+        Object.defineProperty(process.versions, "electron", { value: originalElectron, configurable: true });
+      }
     }
   });
 });

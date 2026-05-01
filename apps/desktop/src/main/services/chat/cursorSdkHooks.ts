@@ -26,22 +26,26 @@ function shellQuote(value: string): string {
 }
 
 function windowsCmdQuote(value: string): string {
-  if (/[\0\r\n]/.test(value)) {
-    throw new Error("Cursor hook command paths cannot contain control characters.");
+  if (/[\0\r\n"%]/.test(value)) {
+    throw new Error("Cursor hook command paths cannot contain control characters or Windows cmd expansion characters.");
   }
-  return `"${value.replace(/(["^&|<>%])/g, "^$1")}"`;
+  return `"${value}"`;
+}
+
+function commandPathQuote(value: string): string {
+  return process.platform === "win32" ? windowsCmdQuote(value) : shellQuote(value);
 }
 
 function buildHookCommand(nodePath: string | undefined, scriptPath: string): string {
   const explicitNode = nodePath?.trim();
-  if (explicitNode) return `${shellQuote(explicitNode)} ${shellQuote(scriptPath)}`;
+  if (explicitNode) return `${commandPathQuote(explicitNode)} ${commandPathQuote(scriptPath)}`;
   if (process.versions.electron) {
     if (process.platform === "win32") {
-      return `cmd /d /s /c "set ELECTRON_RUN_AS_NODE=1&& ${windowsCmdQuote(process.execPath)} ${windowsCmdQuote(scriptPath)}"`;
+      return `set ELECTRON_RUN_AS_NODE=1&& ${windowsCmdQuote(process.execPath)} ${windowsCmdQuote(scriptPath)}`;
     }
     return `ELECTRON_RUN_AS_NODE=1 ${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
   }
-  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+  return `${commandPathQuote(process.execPath)} ${commandPathQuote(scriptPath)}`;
 }
 
 function readObject(value: unknown): Record<string, unknown> | null {
@@ -216,6 +220,8 @@ main().catch((error) => {
 `;
   fs.writeFileSync(scriptPath, source, { mode: 0o755 });
 }
+
+export const __buildCursorSdkHookCommandForTests = buildHookCommand;
 
 export function ensureCursorSdkUserHook(args: {
   userHomeDir: string;

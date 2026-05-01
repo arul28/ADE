@@ -44,7 +44,10 @@ function securityArg(args: string[], flag: string): string {
   return index >= 0 ? args[index + 1] ?? "" : "";
 }
 
-function installSecurityMock(keychain: Map<string, string>): void {
+function installSecurityMock(
+  keychain: Map<string, string>,
+  options: { failProviderIndexWrites?: boolean } = {},
+): void {
   spawnSyncMock.mockImplementation((_command: string, rawArgs: string[]) => {
     const args = rawArgs.map(String);
     const command = args[0];
@@ -64,6 +67,9 @@ function installSecurityMock(keychain: Map<string, string>): void {
       };
     }
     if (command === "add-generic-password") {
+      if (options.failProviderIndexWrites && account === "__ade_provider_index__") {
+        return { status: 1, stdout: "", stderr: "provider index write failed" };
+      }
       keychain.set(account, securityArg(args, "-w"));
       return { status: 0, stdout: "", stderr: "" };
     }
@@ -129,6 +135,38 @@ describe("apiKeyStore", () => {
     expect(keychain.get("cursor")).toBe("crsr_test_key");
     expect(keychain.get("__ade_provider_index__")).toContain("cursor");
     expect(fs.existsSync(path.join(tempRoot, ".ade", "secrets", "api-keys.v1.bin"))).toBe(false);
+  });
+
+  it("keeps a stored Keychain key usable when the provider index write fails", async () => {
+    installSecurityMock(keychain, { failProviderIndexWrites: true });
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot);
+
+    store.storeApiKey("cursor", "crsr_test_key");
+
+    expect(store.getApiKey("cursor")).toBe("crsr_test_key");
+    expect(store.listStoredProviders()).toContain("cursor");
+    expect(keychain.get("cursor")).toBe("crsr_test_key");
+    expect(keychain.has("__ade_provider_index__")).toBe(false);
+    expect(store.getApiKeyStoreStatus().macosKeychainError).toContain("provider index write failed");
+  });
+
+  it("removes a deleted Keychain key from memory when the provider index write fails", async () => {
+    keychain.set("__ade_provider_index__", JSON.stringify(["cursor"]));
+    keychain.set("cursor", "crsr_test_key");
+    installSecurityMock(keychain, { failProviderIndexWrites: true });
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot);
+
+    expect(store.getApiKey("cursor")).toBe("crsr_test_key");
+
+    store.deleteApiKey("cursor");
+
+    expect(store.getApiKey("cursor")).toBeNull();
+    expect(store.listStoredProviders()).not.toContain("cursor");
+    expect(keychain.has("cursor")).toBe(false);
+    expect(keychain.get("__ade_provider_index__")).toContain("cursor");
+    expect(store.getApiKeyStoreStatus().macosKeychainError).toContain("provider index write failed");
   });
 
   it("migrates a decryptable legacy safeStorage blob into macOS Keychain", async () => {

@@ -104,6 +104,8 @@ function ensurePrivateDirectory(dir: string): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   let fd: number | null = null;
   try {
+    // Older Node/platform pairs can omit these open flags; fstat below still
+    // verifies the directory shape when the constants are unavailable.
     fd = fs.openSync(
       dir,
       fs.constants.O_RDONLY

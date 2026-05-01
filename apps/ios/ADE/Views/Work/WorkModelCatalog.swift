@@ -472,6 +472,7 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
     }
   }
 
+  append(trimmed)
   if let registryId = workCanonicalClaudeRegistryId(for: trimmed) {
     append(registryId)
   }
@@ -484,7 +485,6 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
   if let runtimeId = workCodexRuntimeModelId(for: trimmed) {
     append(runtimeId)
   }
-  append(trimmed)
   if trimmed.lowercased().hasPrefix("openai/") {
     append(String(trimmed.dropFirst("openai/".count)))
   }
