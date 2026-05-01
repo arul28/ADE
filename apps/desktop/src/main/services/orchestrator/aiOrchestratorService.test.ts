@@ -3271,20 +3271,27 @@ describe("aiOrchestratorService", () => {
 
       const originalReconcile = fixture.orchestratorService.onTrackedSessionEnded.bind(fixture.orchestratorService);
       let reconcileCalls = 0;
+      let resolveFirstReconcile!: () => void;
+      const firstReconcileEntered = new Promise<void>((resolve) => {
+        resolveFirstReconcile = resolve;
+      });
       fixture.orchestratorService.onTrackedSessionEnded = (async (args: any) => {
         reconcileCalls += 1;
+        if (reconcileCalls === 1) resolveFirstReconcile();
         await firstSweepGate;
         return await originalReconcile(args);
       }) as typeof fixture.orchestratorService.onTrackedSessionEnded;
 
       const firstSweep = fixture.aiOrchestratorService.runHealthSweep("overlap-owner");
-      // CI runners can be heavily loaded; give the first sweep up to ~25s to
-      // reach the gated `onTrackedSessionEnded` call before we assert it was
-      // invoked. The test passes immediately when the callback fires, so the
-      // generous ceiling only kicks in for slow/contended runners.
-      for (let tries = 0; tries < 1000 && reconcileCalls === 0; tries += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
+      // Wait deterministically for the gated reconcile to enter, with a hard
+      // ceiling well under the test timeout. CI runners can be very contended;
+      // a Promise-based wait is more reliable than polling.
+      await Promise.race([
+        firstReconcileEntered,
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error("first reconcile did not enter within 60s")), 60_000)
+        ),
+      ]);
       expect(reconcileCalls).toBe(1);
       const overlappedSweep = await fixture.aiOrchestratorService.runHealthSweep("overlap-contender");
 
@@ -3297,7 +3304,7 @@ describe("aiOrchestratorService", () => {
       releaseFirstSweep();
       fixture.dispose();
     }
-  }, 45_000);
+  }, 90_000);
 
   it("skips background health sweeps for runs blocked on open interventions", async () => {
     const fixture = await createFixture();

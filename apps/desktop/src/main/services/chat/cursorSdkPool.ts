@@ -334,7 +334,15 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     agentName: args.agentName ?? null,
     policy: args.policy,
   };
-  const result = await pooled.request<{ agentId: string }>("init", initPayload);
+  let result: { agentId: string };
+  try {
+    result = await pooled.request<{ agentId: string }>("init", initPayload);
+  } catch (error) {
+    // If init fails, the worker child is still alive — dispose it so we don't
+    // leak a fork()'d process per failed connection attempt.
+    pooled.dispose();
+    throw error;
+  }
   pooled.agentId = result.agentId;
   const generation = ++cursorSdkGenCounter;
   pools.set(args.poolKey, { ref: 1, generation, pooled });
