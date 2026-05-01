@@ -85,6 +85,8 @@ describe("modelRegistry", () => {
       "openai/gpt-5.4",
       "openai/gpt-5.4-mini",
       "openai/gpt-5.3-codex",
+      "openai/gpt-5.3-codex-spark",
+      "openai/gpt-5.2",
     ]);
 
     // API-key OpenAI models are now discovered dynamically through OpenCode,
@@ -107,6 +109,32 @@ describe("modelRegistry", () => {
       displayName: "GPT-5.4-Mini",
       reasoningTiers: ["low", "medium", "high", "xhigh"],
     });
+  });
+
+  it("exposes GPT-5.3-Codex-Spark as a Codex CLI model", () => {
+    expect(getModelById("openai/gpt-5.3-codex-spark")).toMatchObject({
+      displayName: "GPT-5.3-Codex-Spark",
+      providerRoute: "codex-cli",
+      providerModelId: "gpt-5.3-codex-spark",
+      cliCommand: "codex",
+      isCliWrapped: true,
+      family: "openai",
+      contextWindow: 128_000,
+      capabilities: expect.objectContaining({ vision: false, reasoning: true }),
+    });
+    expect(resolveModelAlias("spark")?.id).toBe("openai/gpt-5.3-codex-spark");
+  });
+
+  it("exposes GPT-5.2 as a Codex CLI model", () => {
+    expect(getModelById("openai/gpt-5.2")).toMatchObject({
+      displayName: "GPT-5.2",
+      providerRoute: "codex-cli",
+      providerModelId: "gpt-5.2",
+      cliCommand: "codex",
+      isCliWrapped: true,
+      family: "openai",
+    });
+    expect(resolveModelAlias("gpt-5.2-codex")?.id).toBe("openai/gpt-5.2");
   });
 
   it("marks CLI-wrapped models as CLI subscription in the shared model source helper", () => {
@@ -179,11 +207,12 @@ describe("modelRegistry", () => {
         family: "anthropic",
         providerRoute: "claude-cli",
         providerModelId: "claude-opus-4-7",
-        contextWindow: 1_000_000,
+        contextWindow: 200_000,
         maxOutputTokens: 128_000,
         inputPricePer1M: 5,
         outputPricePer1M: 25,
       });
+      expect(opus?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
     });
 
     it("exposes the 1M Opus 4.7 variant with the xhigh reasoning tier and legacy aliases", () => {

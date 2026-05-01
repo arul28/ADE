@@ -62,18 +62,25 @@ struct WorkNewChatSheet: View {
         tint: providerTint("codex")
       ),
       WorkProviderOption(
-        id: "opencode",
-        title: "OpenCode",
-        subtitle: "Open runtime workflows and tools",
-        icon: providerIcon("opencode"),
-        tint: providerTint("opencode")
-      ),
-      WorkProviderOption(
         id: "cursor",
         title: "Cursor",
         subtitle: "Cursor-native chat sessions",
         icon: providerIcon("cursor"),
         tint: providerTint("cursor")
+      ),
+      WorkProviderOption(
+        id: "droid",
+        title: "Droid",
+        subtitle: "Factory Droid sessions",
+        icon: providerIcon("droid"),
+        tint: providerTint("droid")
+      ),
+      WorkProviderOption(
+        id: "opencode",
+        title: "OpenCode",
+        subtitle: "Open runtime workflows and tools",
+        icon: providerIcon("opencode"),
+        tint: providerTint("opencode")
       ),
     ]
   }

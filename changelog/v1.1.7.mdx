@@ -3,7 +3,7 @@ title: "v1.1.7"
 description: "Release notes for ADE v1.1.7 — April 29, 2026"
 ---
 
-v1.1.7 is one of the largest ADE releases to date — 19 commits, 415 files, ~+48k/-16k lines. Headline beats: an in-chat **iOS Simulator** panel with auto-resolving visual stream, full **Factory Droid** ACP chat support alongside Claude / Cursor / Codex, **Windows code-signing + sync parity** for the Windows desktop build, **lane branch switching** with a first-class branch selector, **Live Activity & Lock Screen widget polish** on iOS, and a wholesale removal of the legacy context-packs system in favor of on-demand context doc generation. Plus dozens of smaller fixes across PRs, automations, terminals, sync, and the chat composer. Ships in **TestFlight build 9** of 1.1.1.
+v1.1.7 is one of the largest ADE releases to date — 19 commits, 415 files, ~+48k/-16k lines. Headline beats: an in-chat **iOS Simulator** panel with auto-resolving visual stream, full **Factory Droid** ACP chat support alongside Claude / Cursor SDK / Codex, **Windows code-signing + sync parity** for the Windows desktop build, **lane branch switching** with a first-class branch selector, **Live Activity & Lock Screen widget polish** on iOS, and a wholesale removal of the legacy context-packs system in favor of on-demand context doc generation. Plus dozens of smaller fixes across PRs, automations, terminals, sync, and the chat composer. Ships in **TestFlight build 9** of 1.1.1.
 
 ---
 
@@ -23,10 +23,10 @@ v1.1.7 is one of the largest ADE releases to date — 19 commits, 415 files, ~+4
   </Tab>
 
   <Tab title="Factory Droid Chat">
-    Factory Droid joins Claude Code and Cursor as a first-class ACP chat provider.
+    Factory Droid joins Claude Code and Cursor as a first-class chat provider.
 
-    - **Droid ACP runtime.** `droidAcpPool` spawns `droid exec --output-format acp` and pools JSON-RPC connections by lane the same way the Cursor pool does. Authentication runs through Droid's CLI plus `FACTORY_API_KEY`. Dynamic `droid/*` model descriptors are discovered at runtime with provider-side defaults.
-    - **Shared ACP host client.** `acpHostClient` factors the JSON-RPC handshake, lifecycle probing, and steer-queue plumbing out of the Cursor pool so Droid (and any future ACP provider) reuses one well-tested client. Cursor was migrated onto it in the same PR.
+    - **Droid ACP runtime.** `droidAcpPool` spawns `droid exec --output-format acp` and pools JSON-RPC connections by lane. Authentication runs through Droid's CLI plus `FACTORY_API_KEY`. Dynamic `droid/*` model descriptors are discovered at runtime with provider-side defaults.
+    - **Shared ACP host client.** `acpHostClient` factors the JSON-RPC handshake, lifecycle probing, and steer-queue plumbing into one well-tested client for Droid and any future ACP provider.
     - **End-to-end chat wiring.** `DroidRuntime` is plumbed through `agentChatService` for turn execution, steer queue, interrupts, permission prompts, and persistence. AI status, model picker grouping, providers settings, and missions permissions all learn the new `droid` provider.
     - **Pool reliability.** Acquires are now serialized per pool key with a shared pending-init lock, so two simultaneous chat opens cannot double-spawn. Stale pool entries are evicted on child `close`/`error`. Init/handshake failures kill the process and log the stderr tail. ACP terminal cwds resolve within the lane root, and `waitForTerminalExit` is capped with a SIGKILL escalation + close wait to avoid stuck terminals.
   </Tab>

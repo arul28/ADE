@@ -9,6 +9,8 @@ const mockState = vi.hoisted(() => ({
   inspectLocalProvider: vi.fn(),
   clearCursorCliModelsCache: vi.fn(),
   discoverCursorCliModelDescriptors: vi.fn(),
+  discoverCursorSdkModelDescriptors: vi.fn(),
+  probeCursorSdkModelDiscovery: vi.fn(),
   getApiKeyStoreStatus: vi.fn(),
   initModelsDevService: vi.fn(),
   probeClaudeRuntimeHealth: vi.fn(),
@@ -38,6 +40,8 @@ vi.mock("./localModelDiscovery", () => ({
 vi.mock("../chat/cursorModelsDiscovery", () => ({
   clearCursorCliModelsCache: (...args: unknown[]) => mockState.clearCursorCliModelsCache(...args),
   discoverCursorCliModelDescriptors: (...args: unknown[]) => mockState.discoverCursorCliModelDescriptors(...args),
+  discoverCursorSdkModelDescriptors: (...args: unknown[]) => mockState.discoverCursorSdkModelDescriptors(...args),
+  probeCursorSdkModelDiscovery: (...args: unknown[]) => mockState.probeCursorSdkModelDiscovery(...args),
 }));
 
 vi.mock("./apiKeyStore", () => ({
@@ -67,7 +71,7 @@ vi.mock("../opencode/openCodeBinaryManager", () => ({
   resolveOpenCodeBinary: (...args: unknown[]) => mockState.resolveOpenCodeBinary(...args),
 }));
 
-import { getLocalProviderDefaultEndpoint } from "../../../shared/modelRegistry";
+import { createDynamicCursorCliModelDescriptor, getLocalProviderDefaultEndpoint } from "../../../shared/modelRegistry";
 import { createAiIntegrationService } from "./aiIntegrationService";
 
 type ServiceFactoryOptions = {
@@ -243,6 +247,18 @@ beforeEach(() => {
   }));
   mockState.clearCursorCliModelsCache.mockImplementation(() => undefined);
   mockState.discoverCursorCliModelDescriptors.mockResolvedValue([]);
+  mockState.discoverCursorSdkModelDescriptors.mockResolvedValue([
+    createDynamicCursorCliModelDescriptor("auto", "Auto"),
+    createDynamicCursorCliModelDescriptor("composer-2", "Composer 2"),
+  ]);
+  mockState.probeCursorSdkModelDiscovery.mockResolvedValue({
+    rows: [
+      { id: "auto", displayName: "Auto" },
+      { id: "composer-2", displayName: "Composer 2" },
+    ],
+    failureKind: null,
+    errorMessage: null,
+  });
   mockState.getApiKeyStoreStatus.mockReturnValue({
     secureStorageAvailable: true,
     legacyPlaintextDetected: false,
@@ -434,5 +450,81 @@ describe("aiIntegrationService", () => {
       { id: "openai", name: "OpenAI", connected: true, modelCount: 1 },
     ]);
     expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
+  });
+
+  it("invalidates provider readiness caches after API key verification", async () => {
+    const { service } = makeService({
+      providerMode: "guest",
+      availability: { claude: false, codex: false, cursor: false, droid: false },
+    });
+
+    const initialStatus = await service.getStatus();
+    expect(initialStatus.detectedAuth?.some((entry) => entry.type === "api-key" && entry.provider === "cursor")).toBe(false);
+
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    mockState.buildProviderConnections.mockResolvedValue(makeProviderConnections({
+      claude: false,
+      codex: false,
+      cursor: true,
+      droid: false,
+    }));
+    mockState.verifyProviderApiKey.mockResolvedValue({
+      provider: "cursor",
+      ok: true,
+      message: "Connection verified successfully.",
+      endpoint: "Cursor.me",
+      statusCode: null,
+      verifiedAt: "2026-03-17T19:00:00.000Z",
+    });
+
+    await expect(service.verifyApiKeyConnection("cursor")).resolves.toMatchObject({
+      provider: "cursor",
+      ok: true,
+      source: "store",
+    });
+
+    const refreshedStatus = await service.getStatus();
+    expect(mockState.detectAllAuth.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(refreshedStatus.detectedAuth).toContainEqual({
+      type: "api-key",
+      provider: "cursor",
+      source: "store",
+    });
+    expect(refreshedStatus.availableProviders.cursor).toBe(true);
+    expect(refreshedStatus.availableModelIds).toContain("cursor/auto");
+    expect(mockState.clearCursorCliModelsCache).toHaveBeenCalled();
+    expect(mockState.clearOpenCodeInventoryCache).toHaveBeenCalled();
+  });
+
+  it("does not verify Cursor when agent model access rejects the key", async () => {
+    const { service } = makeService({
+      providerMode: "guest",
+      availability: { claude: false, codex: false, cursor: false, droid: false },
+    });
+
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    mockState.verifyProviderApiKey.mockResolvedValue({
+      provider: "cursor",
+      ok: true,
+      message: "Connection verified successfully.",
+      endpoint: "Cursor.me",
+      statusCode: null,
+      verifiedAt: "2026-03-17T19:00:00.000Z",
+    });
+    mockState.probeCursorSdkModelDiscovery.mockResolvedValue({
+      rows: [],
+      failureKind: "auth",
+      errorMessage: "Cursor model API returned HTTP 401.",
+    });
+
+    await expect(service.verifyApiKeyConnection("cursor")).resolves.toMatchObject({
+      provider: "cursor",
+      ok: false,
+      source: "store",
+    });
   });
 });

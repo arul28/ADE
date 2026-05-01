@@ -25,6 +25,7 @@ import {
   evaluateCursorSdkHook,
   summarizeCursorHook,
 } from "./cursorSdkPolicy";
+import { ensureCursorSdkUserHook } from "./cursorSdkHooks";
 
 type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;
@@ -45,7 +46,43 @@ function post(message: CursorSdkWorkerResponse): void {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+  const message = error.message.trim();
+  const detailEntries: string[] = [];
+  const record = error as Error & {
+    code?: unknown;
+    status?: unknown;
+    operation?: unknown;
+    endpoint?: unknown;
+    requestId?: unknown;
+    toJSON?: () => unknown;
+  };
+  for (const key of ["code", "status", "operation", "endpoint", "requestId"] as const) {
+    const value = record[key];
+    if (value !== undefined && value !== null && String(value).trim().length) {
+      detailEntries.push(`${key}=${String(value)}`);
+    }
+  }
+  if (detailEntries.length === 0 && typeof record.toJSON === "function") {
+    try {
+      const json = record.toJSON();
+      if (json && typeof json === "object" && !Array.isArray(json)) {
+        for (const [key, value] of Object.entries(json as Record<string, unknown>)) {
+          if (value !== undefined && value !== null && String(value).trim().length) {
+            detailEntries.push(`${key}=${String(value)}`);
+          }
+        }
+      }
+    } catch {
+      // Best effort.
+    }
+  }
+  const primary = message && message !== "Error"
+    ? message
+    : error.name && error.name !== "Error"
+      ? error.name
+      : "Unknown Cursor SDK error";
+  return detailEntries.length ? `${primary} (${detailEntries.join(", ")})` : primary;
 }
 
 async function getSdk(): Promise<CursorSdkModule> {
@@ -53,136 +90,6 @@ async function getSdk(): Promise<CursorSdkModule> {
     sdkModule = await import("@cursor/sdk");
   }
   return sdkModule;
-}
-
-function ensureDir(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true });
-}
-
-function writeJson(filePath: string, value: unknown): void {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-}
-
-function cursorCliConfig(policy: CursorSdkPermissionPolicy): Record<string, unknown> {
-  if (policy.approvalPolicy === "never") {
-    return {
-      version: 1,
-      approvalMode: "unrestricted",
-      permissions: {
-        allow: ["Shell(**)", "Read(**)", "Write(**)", "Mcp(**)"],
-        deny: [],
-      },
-      sandbox: {
-        mode: "disabled",
-        networkAccess: "allow_all",
-      },
-    };
-  }
-  return {
-    version: 1,
-    approvalMode: "allowlist",
-    permissions: {
-      allow: [],
-      deny: [],
-    },
-    sandbox: {
-      mode: "disabled",
-      networkAccess: "user_config_with_defaults",
-    },
-  };
-}
-
-function writeHookBridgeScript(scriptPath: string): void {
-  ensureDir(path.dirname(scriptPath));
-  const source = `#!/usr/bin/env node
-const net = require("node:net");
-
-function readStdin() {
-  return new Promise((resolve, reject) => {
-    let text = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => { text += chunk; });
-    process.stdin.on("end", () => resolve(text));
-    process.stdin.on("error", reject);
-  });
-}
-
-function parseArg(name) {
-  const index = process.argv.indexOf(name);
-  return index >= 0 ? process.argv[index + 1] : null;
-}
-
-async function main() {
-  const socketPath = parseArg("--socket");
-  if (!socketPath) throw new Error("Missing --socket");
-  const rawText = await readStdin();
-  let payload = {};
-  try {
-    payload = rawText.trim() ? JSON.parse(rawText) : {};
-  } catch (error) {
-    payload = { parseError: error && error.message ? error.message : String(error), rawText };
-  }
-  const client = net.createConnection(socketPath);
-  await new Promise((resolve, reject) => {
-    client.once("connect", resolve);
-    client.once("error", reject);
-  });
-  client.write(JSON.stringify({ payload }) + "\\n");
-  let responseText = "";
-  client.setEncoding("utf8");
-  client.on("data", (chunk) => {
-    responseText += chunk;
-    const newline = responseText.indexOf("\\n");
-    if (newline >= 0) {
-      const line = responseText.slice(0, newline);
-      try {
-        const response = JSON.parse(line);
-        process.stdout.write(JSON.stringify(response));
-        client.end();
-      } catch (error) {
-        process.stdout.write(JSON.stringify({
-          permission: "deny",
-          user_message: "ADE could not parse the Cursor hook decision.",
-          agent_message: "ADE could not parse the Cursor hook decision."
-        }));
-        client.end();
-      }
-    }
-  });
-  await new Promise((resolve) => client.once("close", resolve));
-}
-
-main().catch((error) => {
-  process.stdout.write(JSON.stringify({
-    permission: "deny",
-    user_message: "ADE Cursor hook bridge failed.",
-    agent_message: error && error.message ? error.message : String(error)
-  }));
-  process.exitCode = 1;
-});
-`;
-  fs.writeFileSync(scriptPath, source, { mode: 0o755 });
-}
-
-function writeCursorHome(init: CursorSdkWorkerInit): void {
-  const cursorDir = path.join(init.homeDir, ".cursor");
-  const hooksDir = path.join(cursorDir, "hooks");
-  ensureDir(hooksDir);
-  const hookScript = path.join(hooksDir, "ade-tool-gate.cjs");
-  writeHookBridgeScript(hookScript);
-  writeJson(path.join(cursorDir, "cli-config.json"), cursorCliConfig(init.policy));
-  writeJson(path.join(cursorDir, "hooks.json"), {
-    version: 1,
-    hooks: {
-      preToolUse: [
-        {
-          command: `"${process.execPath}" "${hookScript}" --socket "${init.socketPath}"`,
-          failClosed: true,
-        },
-      ],
-    },
-  });
 }
 
 function removeSocketIfNeeded(socketPath: string): void {
@@ -244,6 +151,7 @@ async function handleHookSocketLine(init: CursorSdkWorkerInit, socket: net.Socke
     request,
     policy: init.policy,
     laneRoot: init.laneRoot,
+    userHomeDir: init.userHomeDir,
   });
   if (localDecision === "allow") {
     socket.end(`${JSON.stringify(allowCursorHook())}\n`);
@@ -267,18 +175,25 @@ function requestHookDecision(request: CursorSdkHookRequest): Promise<CursorSdkHo
 
 async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string; modelSdkId: string }> {
   initState = init;
-  process.env.HOME = init.homeDir;
-  process.env.USERPROFILE = init.homeDir;
+  process.env.HOME = init.userHomeDir;
+  process.env.USERPROFILE = init.userHomeDir;
+  process.env.ADE_CURSOR_SDK_SOCKET = init.socketPath;
+  process.env.ADE_CURSOR_SDK_LANE_ROOT = init.laneRoot;
+  process.env.ADE_CURSOR_SDK_SESSION_ID = init.sessionId;
+  process.env.ADE_CURSOR_SDK_STATE_ROOT = init.stateRoot;
   if (init.apiKey?.trim()) {
     process.env.CURSOR_API_KEY = init.apiKey.trim();
   } else {
     delete process.env.CURSOR_API_KEY;
   }
-  ensureDir(init.homeDir);
-  ensureDir(init.stateRoot);
-  writeCursorHome(init);
+  fs.mkdirSync(init.userHomeDir, { recursive: true });
+  fs.mkdirSync(init.stateRoot, { recursive: true });
+  const hook = ensureCursorSdkUserHook({ userHomeDir: init.userHomeDir });
   await startHookServer(init);
   const { Agent } = await getSdk();
+  // Keep these fields aligned with Cursor's TypeScript SDK docs:
+  // local.cwd selects the workspace, platform.stateRoot isolates durable ADE
+  // state, sandboxOptions is terminal policy, and hooks gate tool execution.
   const agentOptions: AgentOptions = {
     apiKey: init.apiKey?.trim() || undefined,
     model: { id: init.modelSdkId },
@@ -296,6 +211,18 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   agent = init.agentId?.trim()
     ? await Agent.resume(init.agentId.trim(), agentOptions)
     : await Agent.create(agentOptions);
+  post({
+    type: "log",
+    level: "debug",
+    message: "Cursor SDK local runtime initialized.",
+    detail: {
+      laneRoot: init.laneRoot,
+      userHomeDir: init.userHomeDir,
+      stateRoot: init.stateRoot,
+      hookPath: hook.hooksPath,
+      hookChanged: hook.changed,
+    },
+  });
   post({ type: "ready", agentId: agent.agentId, modelSdkId: init.modelSdkId, transport: "sdk" });
   return { agentId: agent.agentId, modelSdkId: init.modelSdkId };
 }
@@ -336,7 +263,7 @@ async function cancelRun(): Promise<void> {
 async function updatePolicy(policy: CursorSdkPermissionPolicy): Promise<void> {
   if (!initState) throw new Error("Cursor SDK worker is not initialized.");
   initState.policy = policy;
-  writeCursorHome(initState);
+  ensureCursorSdkUserHook({ userHomeDir: initState.userHomeDir });
 }
 
 async function dispose(): Promise<void> {
@@ -563,23 +490,41 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
     const cloudAgent = await Agent.create(buildCloudCreateOptions(req.payload));
     const sendOpts = req.payload.modelSdkId?.trim() ? { model: { id: req.payload.modelSdkId.trim() } } : undefined;
     const run = await cloudAgent.send(req.payload.promptText, sendOpts);
-    return streamCloudRun({
+    const result = await streamCloudRun({
       requestId: req.requestId,
       agentId: cloudAgent.agentId,
       run,
       modelSdkId: req.payload.modelSdkId,
     });
+    try {
+      const info = await Agent.get(cloudAgent.agentId, { apiKey: req.payload.apiKey?.trim() || undefined });
+      return {
+        ...(result && typeof result === "object" ? result as Record<string, unknown> : {}),
+        agentName: typeof info.name === "string" ? info.name : null,
+      };
+    } catch {
+      return result;
+    }
   }
   if (req.type === "cloud.followup") {
     const cloudAgent = await Agent.resume(req.payload.agentId, buildCloudResumeOptions(req.payload));
     const sendOpts = req.payload.modelSdkId?.trim() ? { model: { id: req.payload.modelSdkId.trim() } } : undefined;
     const run = await cloudAgent.send(req.payload.promptText, sendOpts);
-    return streamCloudRun({
+    const result = await streamCloudRun({
       requestId: req.requestId,
       agentId: cloudAgent.agentId,
       run,
       modelSdkId: req.payload.modelSdkId,
     });
+    try {
+      const info = await Agent.get(cloudAgent.agentId, { apiKey: req.payload.apiKey?.trim() || undefined });
+      return {
+        ...(result && typeof result === "object" ? result as Record<string, unknown> : {}),
+        agentName: typeof info.name === "string" ? info.name : null,
+      };
+    } catch {
+      return result;
+    }
   }
   if (req.type === "cloud.run.cancel") {
     const entry = cloudRuns.get(req.payload.runId);
@@ -735,4 +680,3 @@ post({
   level: "debug",
   message: `Cursor SDK worker booted in ${process.cwd()} (${os.platform()})`,
 });
-

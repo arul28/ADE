@@ -15,6 +15,7 @@ import { getLocalProviderDefaultEndpoint, type LocalProviderFamily } from "../..
 import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
+import { reportProviderRuntimeAuthFailure } from "./providerRuntimeHealth";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
 
@@ -816,6 +817,9 @@ async function verifyCursorApiKey(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const authFailed = /auth|unauthorized|forbidden|invalid|api key/i.test(message);
+    if (authFailed) {
+      reportProviderRuntimeAuthFailure("cursor", "Cursor rejected the configured API key. Check the key from the Cursor dashboard integrations page.");
+    }
     return {
       provider: "cursor",
       ok: false,

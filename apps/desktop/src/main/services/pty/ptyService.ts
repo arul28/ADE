@@ -30,6 +30,7 @@ import type {
   TerminalSessionSummary,
   TerminalToolType
 } from "../../../shared/types";
+import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk } from "../../utils/terminalPreview";
@@ -124,9 +125,32 @@ function deterministicCliTitleFromSeed(seed: string): string {
 function isCliPlaceholderTitle(title: string | null | undefined, toolType: TerminalToolType | null | undefined): boolean {
   const normalized = String(title ?? "").trim().toLowerCase();
   if (!normalized.length) return true;
+  if (isProviderSlashCommandInput(normalized)) return true;
   if (toolType === "codex") return normalized === "codex" || normalized === "codex cli" || normalized === "codex session";
   if (toolType === "claude") return normalized === "claude" || normalized === "claude cli" || normalized === "claude session" || normalized === "claude code";
   return false;
+}
+
+function sanitizeGeneratedCliTitle(raw: string): string {
+  const title = stripAnsi(raw)
+    .replace(/\p{Extended_Pictographic}/gu, "")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N})\]]+$/gu, "")
+    .trim()
+    .slice(0, 80)
+    .trim();
+  if (!title.length) return "";
+  if (isProviderSlashCommandInput(title)) return "";
+  const collapsed = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const rejected = new Set([
+    "model", "models", "status", "help", "clear", "compact", "resume",
+    "chat", "session", "claude", "claude code", "codex", "codex cli",
+    "untitled", "untitled chat", "new chat", "new session",
+    "completed", "done", "finished", "success",
+  ]);
+  if (/^(new session|new chat|untitled chat|untitled)\b/u.test(collapsed)) return "";
+  return rejected.has(collapsed) ? "" : title;
 }
 
 function isSessionManuallyNamed(
@@ -385,6 +409,7 @@ export function createPtyService({
       entry.cliUserTitleLineBuffer = entry.cliUserTitleLineBuffer.slice(idx + 1);
       const seed = sanitizeCliUserTitleSeed(segment);
       if (seed.length < CLI_USER_TITLE_SEED_MIN_LEN) continue;
+      if (isProviderSlashCommandInput(seed)) continue;
 
       entry.cliUserTitleCommitted = true;
       if (entry.aiTitleTimer) {
@@ -433,7 +458,7 @@ export function createPtyService({
         })
         .then((result) => {
           if (entry.disposed) return;
-          const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
+          const title = sanitizeGeneratedCliTitle(result.text);
           if (!title) return;
           if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
             logger.info("pty.cli_user_title_skipped_user_renamed", { sessionId: entry.sessionId });
@@ -650,7 +675,7 @@ export function createPtyService({
                 timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
                 ...(titleModelId ? { model: titleModelId } : {}),
               });
-              const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
+              const finalTitle = sanitizeGeneratedCliTitle(titleResult.text);
               if (finalTitle) {
                 // Re-check in case user renamed during AI call
                 if (isSessionManuallyNamed(sessionService, sessionId)) {
@@ -1375,6 +1400,7 @@ export function createPtyService({
       ?? summary.chatSessionId
       ?? null;
     const activeTerminalId = chatSessionId ? activeTerminalByChatSession.get(chatSessionId) ?? null : null;
+    const fallbackStatus = live ? "running" : summary.status;
     return {
       terminalId: summary.id,
       ptyId: live?.[0] ?? summary.ptyId ?? null,
@@ -1382,12 +1408,12 @@ export function createPtyService({
       laneId: summary.laneId,
       laneName: summary.laneName,
       title: summary.title,
-      status: summary.status,
-      runtimeState: computeRuntimeState(summary.id, summary.status),
+      status: fallbackStatus,
+      runtimeState: computeRuntimeState(summary.id, fallbackStatus),
       active: Boolean(activeTerminalId && activeTerminalId === summary.id),
       startedAt: summary.startedAt,
-      endedAt: summary.endedAt,
-      exitCode: summary.exitCode,
+      endedAt: live ? null : summary.endedAt,
+      exitCode: live ? null : summary.exitCode,
       pid: live?.[1].pty.pid ?? null,
     };
   };
@@ -1879,7 +1905,7 @@ export function createPtyService({
               ...(titleModelId ? { model: titleModelId } : {}),
             })
             .then((result) => {
-              const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
+              const title = sanitizeGeneratedCliTitle(result.text);
               if (title) {
                 // Re-check in case user renamed during AI call
                 if (isSessionManuallyNamed(sessionService, sessionId)) {
@@ -2104,14 +2130,25 @@ export function createPtyService({
     },
 
     enrichSessions<T extends TerminalSessionSummary>(rows: T[]): T[] {
-      return rows.map((row) => ({
-        ...row,
-        runtimeState: this.getRuntimeState(row.id, row.status),
-        chatSessionId: row.chatSessionId
-          ?? terminalChatSessions.get(row.id)
-          ?? liveEntryBySessionId(row.id)?.[1].chatSessionId
-          ?? null,
-      }));
+      return rows.map((row) => {
+        const live = liveEntryBySessionId(row.id);
+        const fallbackStatus = live ? "running" : row.status;
+        return {
+          ...row,
+          ...(live
+            ? {
+                ptyId: live[0],
+                status: "running" as const,
+                endedAt: null,
+                exitCode: null,
+              }
+            : {}),
+          runtimeState: computeRuntimeState(row.id, fallbackStatus),
+          chatSessionId: live
+            ? terminalChatSessions.get(row.id) ?? live[1].chatSessionId ?? row.chatSessionId ?? null
+            : row.chatSessionId ?? terminalChatSessions.get(row.id) ?? null,
+        };
+      });
     },
 
     dispose({ ptyId, sessionId }: { ptyId: string; sessionId?: string }): void {

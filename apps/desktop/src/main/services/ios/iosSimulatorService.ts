@@ -72,6 +72,7 @@ const IOSURFACE_TAP_HOLD_MS = 45;
 const IOSURFACE_FAILURE_WINDOW_MS = 60_000;
 const IOSURFACE_MAX_FAILURES_PER_WINDOW = 2;
 const IOSURFACE_SUPPORTED_XCODE_MAJORS = new Set([17, 26]);
+const IOS_SIM_HELPER_SOURCE_FILES = ["build.sh", "sim-capture.swift", "sim-input.m"] as const;
 const INSTALL_HINT_XCODE = "Install Xcode from the App Store, then run xcode-select --install.";
 const INSTALL_HINT_XCODE_CLI = "Run xcode-select --install to install the Xcode command line tools.";
 const INSTALL_HINT_IOSURFACE_INDIGO = "Install a supported full Xcode (17.x or 26.x) and select it with xcode-select so ADE can build the private IOSurface/Indigo helpers.";
@@ -298,6 +299,10 @@ export function __testSetIosSimulatorProcessHooks(hooks: {
   };
 }
 
+export function __testResetIosurfaceCapabilityCache(): void {
+  iosurfaceCapabilityCache = null;
+}
+
 export function shouldOpenSimulatorAppForLaunch(keepSimulatorInBackground?: boolean | null): boolean {
   return keepSimulatorInBackground === false;
 }
@@ -379,21 +384,72 @@ function latencyPercentiles(samples: number[]): LatencyPercentiles {
 }
 
 function iosSimHelperRoot(): string | null {
+  const envRoot = process.env.ADE_IOS_SIM_HELPER_ROOT?.trim();
   const candidates = [
+    envRoot || null,
+    process.resourcesPath ? path.join(process.resourcesPath, "native", "ios-sim-helpers") : null,
+    process.resourcesPath ? path.join(process.resourcesPath, "app.asar.unpacked", "native", "ios-sim-helpers") : null,
     path.join(process.cwd(), "native", "ios-sim-helpers"),
     path.join(process.cwd(), "apps", "desktop", "native", "ios-sim-helpers"),
+    path.resolve(__dirname, "../../native/ios-sim-helpers"),
     path.resolve(__dirname, "../../../../native/ios-sim-helpers"),
-  ];
-  return candidates.find((candidate) => fs.existsSync(path.join(candidate, "build.sh"))) ?? null;
+  ].filter(Boolean) as string[];
+  return candidates.find(hasIosSimHelperSources) ?? null;
+}
+
+function hasIosSimHelperSources(candidate: string): boolean {
+  return IOS_SIM_HELPER_SOURCE_FILES.every((fileName) => fs.existsSync(path.join(candidate, fileName)));
 }
 
 function hashHelperSources(helperRoot: string): string {
   const hash = createHash("sha256");
-  for (const fileName of ["sim-capture.swift", "sim-input.m", "build.sh"]) {
+  for (const fileName of IOS_SIM_HELPER_SOURCE_FILES) {
     hash.update(fileName);
     hash.update(fs.readFileSync(path.join(helperRoot, fileName)));
   }
   return hash.digest("hex");
+}
+
+function findContainingAppBundle(targetPath: string): string | null {
+  const resolved = path.resolve(targetPath);
+  const parts = resolved.split(path.sep);
+  let current = resolved.startsWith(path.sep) ? path.sep : "";
+  for (const part of parts) {
+    if (!part) continue;
+    current = current === path.sep ? path.join(current, part) : path.join(current, part);
+    if (part.endsWith(".app")) return current;
+  }
+  return null;
+}
+
+function electronUserDataPath(): string | null {
+  try {
+    const electron = require("electron") as { app?: { getPath?: (name: string) => string } };
+    const userData = electron.app?.getPath?.("userData");
+    return typeof userData === "string" && userData.trim().length > 0 ? userData : null;
+  } catch {
+    return null;
+  }
+}
+
+function fallbackIosSimHelperCacheRoot(): string {
+  const home = os.homedir();
+  if (process.platform === "darwin" && home) {
+    return path.join(home, "Library", "Caches", "ADE");
+  }
+  return path.join(os.tmpdir(), "ADE");
+}
+
+function iosSimHelperBuildRoot(helperRoot: string): string | null {
+  const explicitRoot = process.env.ADE_IOS_SIM_HELPER_BUILD_ROOT?.trim();
+  if (explicitRoot) return explicitRoot;
+  const resourcesRoot = process.resourcesPath ? path.resolve(process.resourcesPath) : null;
+  const resolvedHelperRoot = path.resolve(helperRoot);
+  const helperIsInsidePackagedApp =
+    Boolean(findContainingAppBundle(resolvedHelperRoot)) ||
+    Boolean(resourcesRoot && (resolvedHelperRoot === resourcesRoot || resolvedHelperRoot.startsWith(`${resourcesRoot}${path.sep}`)));
+  if (!helperIsInsidePackagedApp) return null;
+  return path.join(electronUserDataPath() ?? fallbackIosSimHelperCacheRoot(), "ios-sim-helpers");
 }
 
 let iosurfaceCapabilityCache: {
@@ -428,32 +484,20 @@ function simulatorKitFrameworkPath(developerDir: string): string | null {
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
-function isPackagedElectronRuntime(): boolean {
-  if (process.env.ADE_IOS_SURFACE_ALLOW_PACKAGED === "1") return false;
-  try {
-    const electron = require("electron") as { app?: { isPackaged?: boolean } };
-    return Boolean(electron.app?.isPackaged);
-  } catch {
-    return false;
-  }
-}
-
 function unsupportedIosurfaceEnvironment(): IosurfaceIndigoCapability | null {
   if (process.platform !== "darwin") {
     return { available: false, reason: "IOSurface simulator streaming is only available on macOS." };
   }
-  if (isPackagedElectronRuntime()) {
-    return {
-      available: false,
-      reason: "IOSurface simulator streaming is disabled in packaged ADE builds until helper signing and notarization are cleared. Using the idb/window/simctl fallback chain.",
-    };
-  }
   return null;
 }
 
-async function buildIosurfaceIndigoHelpers(helperRoot: string): Promise<IosurfaceIndigoHelperBundle> {
+async function buildIosurfaceIndigoHelpers(helperRoot: string, buildRoot: string | null): Promise<IosurfaceIndigoHelperBundle> {
+  const env = buildRoot
+    ? { ...process.env, ADE_IOS_SIM_HELPER_BUILD_ROOT: buildRoot }
+    : undefined;
   const { stdout } = await run("bash", [path.join(helperRoot, "build.sh"), "--print-json", "--smoke"], {
     timeoutMs: 120_000,
+    env,
   });
   const parsed = JSON.parse(stdout.trim()) as Partial<IosurfaceIndigoHelperBundle>;
   const { xcodeVersion, sourceHash, buildDir, capture, input } = parsed;
@@ -507,7 +551,7 @@ export async function detectIosurfaceIndigoCapability(): Promise<IosurfaceIndigo
     }
     try {
       hashHelperSources(helperRoot);
-      const helpers = await buildIosurfaceIndigoHelpers(helperRoot);
+      const helpers = await buildIosurfaceIndigoHelpers(helperRoot, iosSimHelperBuildRoot(helperRoot));
       return { available: true, xcodeVersion, developerDir, helpers };
     } catch (error) {
       return {
@@ -3901,9 +3945,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         stderr: stderr.trim() || null,
       });
       void (async () => {
+        const nextBackend = cachedCommandExists("ffmpeg") ? "idb-h264-ffmpeg-mjpeg" : "simctl-screenshot-poll";
+        const fallbackReason = `Using ${nextBackend} fallback because ${detail}`;
+        const failedStatus: IosSimulatorStreamStatus = {
+          ...streamStatus,
+          running: false,
+          fallbackReason,
+          degradationReason: detail,
+          lastError: detail,
+          error: { code: "idb-mjpeg-no-frames", exitCode: null, signal: null },
+        };
+        emit({ type: "stream-error", status: failedStatus });
         await stopStream();
-        emit({ type: "stream-error", status: { ...streamStatus, lastError: detail } });
-        streamRequestContext = { ...streamRequestContext, degradationReason: detail };
+        streamRequestContext = { ...streamRequestContext, fallbackReason, degradationReason: detail };
         if (cachedCommandExists("ffmpeg")) {
           await startIdbH264FfmpegStream(device, fps);
         } else {
@@ -4008,9 +4062,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         ffmpegStderr: transcoderStderr.trim() || null,
       });
       void (async () => {
+        const fallbackReason = `Using simctl-screenshot-poll fallback because ${detail}`;
+        const failedStatus: IosSimulatorStreamStatus = {
+          ...streamStatus,
+          running: false,
+          fallbackReason,
+          degradationReason: detail,
+          lastError: detail,
+          error: { code: "idb-h264-no-frames", exitCode: null, signal: null },
+        };
+        emit({ type: "stream-error", status: failedStatus });
         await stopStream();
-        emit({ type: "stream-error", status: { ...streamStatus, lastError: detail } });
-        streamRequestContext = { ...streamRequestContext, degradationReason: detail };
+        streamRequestContext = { ...streamRequestContext, fallbackReason, degradationReason: detail };
         await startSimctlPreview(device, Math.min(8, fps));
       })().catch((error) => {
         const status = setStreamStopped(error instanceof Error ? error.message : String(error));

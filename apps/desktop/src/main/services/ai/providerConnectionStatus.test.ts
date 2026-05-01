@@ -254,4 +254,30 @@ describe("buildProviderConnections", () => {
       else process.env.CURSOR_API_KEY = prevKey;
     }
   });
+
+  it("downgrades Cursor runtime availability when SDK model access rejects the key", async () => {
+    const prevKey = process.env.CURSOR_API_KEY;
+    process.env.CURSOR_API_KEY = "test-key";
+    mockState.getProviderRuntimeHealth.mockImplementation((provider: string) => {
+      if (provider === "cursor") {
+        return {
+          provider: "cursor",
+          state: "auth-failed",
+          message: "Cursor rejected the configured API key for agent/model access.",
+          checkedAt: "2026-05-01T12:00:00.000Z",
+        };
+      }
+      return null;
+    });
+    try {
+      const result = await buildProviderConnections(mergeCliStatuses([]));
+      expect(result.cursor.authAvailable).toBe(true);
+      expect(result.cursor.runtimeDetected).toBe(true);
+      expect(result.cursor.runtimeAvailable).toBe(false);
+      expect(result.cursor.blocker).toBe("Cursor rejected the configured API key for agent/model access.");
+    } finally {
+      if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = prevKey;
+    }
+  });
 });

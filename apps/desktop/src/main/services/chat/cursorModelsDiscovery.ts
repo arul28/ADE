@@ -6,15 +6,76 @@ import {
 import { spawnAsync } from "../shared/utils";
 import type { SDKModel } from "@cursor/sdk";
 import { createHash } from "node:crypto";
+import {
+  reportProviderRuntimeAuthFailure,
+  reportProviderRuntimeReady,
+} from "../ai/providerRuntimeHealth";
 
 export type CursorCliModelRow = { id: string; displayName?: string };
-type CursorCliModelDiscoveryMode = "probe" | "cached-or-fallback";
+type CursorCliModelDiscoveryMode = "probe" | "cached-or-fallback" | "cached-only";
+export type CursorModelDiscoveryFailureKind = "auth" | "timeout" | "unavailable";
+export type CursorSdkModelDiscoveryResult = {
+  rows: CursorCliModelRow[];
+  failureKind: CursorModelDiscoveryFailureKind | null;
+  errorMessage: string | null;
+  fromCache?: boolean;
+};
 
 let cached: { at: number; models: CursorCliModelRow[] } | null = null;
 let sdkCached: { at: number; keyHash: string; models: CursorCliModelRow[] } | null = null;
+let sdkWarmInFlight: { keyHash: string; promise: Promise<CursorCliModelRow[]> } | null = null;
+let sdkCacheGeneration = 0;
 const TTL_MS = 120_000;
+const SDK_MODEL_LIST_TIMEOUT_MS = 5_000;
+const CURSOR_MODELS_API_URL = "https://api.cursor.com/v0/models";
+const CURSOR_AGENT_AUTH_BLOCKER =
+  "Cursor rejected the configured API key for agent/model access. Re-enter a Cursor API key from the Cursor dashboard integrations page.";
 
-const FALLBACK_SDK_IDS = ["auto", "composer-2"];
+class CursorModelDiscoveryError extends Error {
+  readonly kind: CursorModelDiscoveryFailureKind;
+
+  constructor(kind: CursorModelDiscoveryFailureKind, message: string) {
+    super(message);
+    this.name = "CursorModelDiscoveryError";
+    this.kind = kind;
+  }
+}
+
+const MINIMAL_FALLBACK_SDK_ROWS: CursorCliModelRow[] = [
+  { id: "auto", displayName: "Auto" },
+  { id: "composer-2", displayName: "Composer 2" },
+];
+
+const ACTIVE_FALLBACK_SDK_ROWS: CursorCliModelRow[] = [
+  ...MINIMAL_FALLBACK_SDK_ROWS,
+  { id: "composer-1.5", displayName: "Composer 1.5" },
+  { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
+  { id: "claude-opus-4-5", displayName: "Claude Opus 4.5" },
+  { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
+  { id: "claude-sonnet-4-5", displayName: "Claude Sonnet 4.5" },
+  { id: "claude-sonnet-4", displayName: "Claude Sonnet 4" },
+  { id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5" },
+  { id: "gpt-5.4", displayName: "GPT-5.4" },
+  { id: "gpt-5.4-mini", displayName: "GPT-5.4 Mini" },
+  { id: "gpt-5.4-nano", displayName: "GPT-5.4 Nano" },
+  { id: "gpt-5.3-codex", displayName: "GPT-5.3 Codex" },
+  { id: "gpt-5.3-codex-spark", displayName: "GPT-5.3 Codex Spark" },
+  { id: "gpt-5.2", displayName: "GPT-5.2" },
+  { id: "gpt-5.2-codex", displayName: "GPT-5.2 Codex" },
+  { id: "gpt-5.1", displayName: "GPT-5.1" },
+  { id: "gpt-5.1-codex-max", displayName: "GPT-5.1 Codex Max" },
+  { id: "gpt-5.1-codex-mini", displayName: "GPT-5.1 Codex Mini" },
+  { id: "gpt-5-mini", displayName: "GPT-5 Mini" },
+  { id: "gemini-3.1-pro", displayName: "Gemini 3.1 Pro" },
+  { id: "gemini-3-flash", displayName: "Gemini 3 Flash" },
+  { id: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash" },
+  { id: "grok-4-20", displayName: "Grok 4.20" },
+  { id: "kimi-k2.5", displayName: "Kimi K2.5" },
+];
+
+function fallbackCursorSdkRows(mode?: CursorCliModelDiscoveryMode): CursorCliModelRow[] {
+  return mode === "probe" ? ACTIVE_FALLBACK_SDK_ROWS : MINIMAL_FALLBACK_SDK_ROWS;
+}
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;]*m/g, "");
@@ -53,11 +114,71 @@ export function parseCursorCliModelsStdout(stdout: string): CursorCliModelRow[] 
 export function clearCursorCliModelsCache(): void {
   cached = null;
   sdkCached = null;
+  sdkWarmInFlight = null;
+  sdkCacheGeneration += 1;
 }
 
 function hashKeyForCache(key: string | null | undefined): string {
   const text = String(key ?? "");
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+function readErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    if (typeof record.message === "string" && record.message.trim()) return record.message.trim();
+  }
+  return String(error ?? "Unknown Cursor model discovery error.");
+}
+
+function readErrorStatus(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const record = error as Record<string, unknown>;
+  for (const key of ["status", "statusCode"] as const) {
+    if (typeof record[key] === "number") return record[key];
+    if (typeof record[key] === "string" && /^\d+$/.test(record[key])) return Number(record[key]);
+  }
+  const embedded = readErrorMessage(error).match(/\b(?:status|statusCode|HTTP)\s*[=:]?\s*(401|403|408|429|5\d\d)\b/i);
+  return embedded ? Number(embedded[1]) : null;
+}
+
+function classifyCursorModelDiscoveryError(error: unknown): CursorModelDiscoveryFailureKind {
+  if (error instanceof CursorModelDiscoveryError) return error.kind;
+  const status = readErrorStatus(error);
+  if (status === 401 || status === 403) return "auth";
+  const message = readErrorMessage(error).toLowerCase();
+  if (
+    message.includes("authentication")
+    || message.includes("unauthorized")
+    || message.includes("forbidden")
+    || message.includes("invalid api key")
+    || message.includes("api key")
+  ) {
+    return "auth";
+  }
+  if (message.includes("timeout") || message.includes("timed out") || status === 408) return "timeout";
+  return "unavailable";
+}
+
+function toCursorModelDiscoveryError(error: unknown): CursorModelDiscoveryError {
+  if (error instanceof CursorModelDiscoveryError) return error;
+  return new CursorModelDiscoveryError(
+    classifyCursorModelDiscoveryError(error),
+    readErrorMessage(error),
+  );
+}
+
+function recordCursorModelDiscoverySuccess(rows: CursorCliModelRow[]): void {
+  if (rows.length) reportProviderRuntimeReady("cursor");
+}
+
+function recordCursorModelDiscoveryFailure(error: unknown): CursorModelDiscoveryError {
+  const discoveryError = toCursorModelDiscoveryError(error);
+  if (discoveryError.kind === "auth") {
+    reportProviderRuntimeAuthFailure("cursor", CURSOR_AGENT_AUTH_BLOCKER);
+  }
+  return discoveryError;
 }
 
 function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
@@ -73,23 +194,186 @@ function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
   return rows;
 }
 
-export async function listCursorModelsFromSdk(apiKey?: string | null): Promise<CursorCliModelRow[]> {
+function normalizeCursorModelRows(models: unknown[]): CursorCliModelRow[] {
+  const rows: CursorCliModelRow[] = [];
+  const seen = new Set<string>();
+  for (const model of models) {
+    if (typeof model === "string") {
+      const id = model.trim();
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        rows.push({ id });
+      }
+      continue;
+    }
+    if (!model || typeof model !== "object") continue;
+    const record = model as Record<string, unknown>;
+    const id = typeof record.id === "string"
+      ? record.id.trim()
+      : typeof record.model === "string"
+        ? record.model.trim()
+        : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const displayName = typeof record.displayName === "string"
+      ? record.displayName.trim()
+      : typeof record.name === "string"
+        ? record.name.trim()
+        : "";
+    rows.push(displayName ? { id, displayName } : { id });
+  }
+  return rows;
+}
+
+function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] | null {
   const now = Date.now();
   const normalizedApiKey = apiKey?.trim() || undefined;
   const keyHash = hashKeyForCache(normalizedApiKey);
   if (sdkCached && sdkCached.keyHash === keyHash && now - sdkCached.at < TTL_MS && sdkCached.models.length) {
     return sdkCached.models;
   }
+  return null;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
-    const { Cursor } = await import("@cursor/sdk");
-    const rows = normalizeSdkModelRows(await Cursor.models.list({ apiKey: normalizedApiKey }));
-    if (rows.length) sdkCached = { at: now, keyHash, models: rows };
-    return rows;
-  } catch {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error("Cursor model discovery timed out.")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
+async function fetchCursorModelsFromSdk(
+  apiKey: string | undefined,
+  keyHash: string,
+  generation: number,
+  timeoutMs: number,
+): Promise<CursorCliModelRow[]> {
+  const rows = await withTimeout((async () => {
+    let sdkError: unknown = null;
+    try {
+      const { Cursor } = await import("@cursor/sdk");
+      const sdkRows = normalizeSdkModelRows(await Cursor.models.list({ apiKey }));
+      if (sdkRows.length) return sdkRows;
+    } catch (error) {
+      sdkError = error;
+    }
+
+    try {
+      const apiRows = await fetchCursorModelsFromOfficialApi(apiKey);
+      if (apiRows.length) return apiRows;
+    } catch (apiError) {
+      const apiFailure = toCursorModelDiscoveryError(apiError);
+      if (apiFailure.kind === "auth") throw apiFailure;
+      if (sdkError && classifyCursorModelDiscoveryError(sdkError) === "auth") {
+        throw toCursorModelDiscoveryError(sdkError);
+      }
+      throw apiFailure;
+    }
+
+    if (sdkError) throw toCursorModelDiscoveryError(sdkError);
+    return [];
+  })(), timeoutMs);
+  if (rows.length && generation === sdkCacheGeneration) {
+    sdkCached = { at: Date.now(), keyHash, models: rows };
+  }
+  recordCursorModelDiscoverySuccess(rows);
+  return rows;
+}
+
+async function fetchCursorModelsFromOfficialApi(apiKey: string | undefined): Promise<CursorCliModelRow[]> {
+  const token = apiKey?.trim();
+  if (!token) return [];
+  const response = await fetch(CURSOR_MODELS_API_URL, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) {
+    throw new CursorModelDiscoveryError(
+      response.status === 401 || response.status === 403 ? "auth" : "unavailable",
+      `Cursor model API returned HTTP ${response.status}.`,
+    );
+  }
+  const payload = await response.json() as { models?: unknown };
+  return Array.isArray(payload.models) ? normalizeCursorModelRows(payload.models) : [];
+}
+
+function warmCursorModelsFromSdk(apiKey?: string | null): void {
+  const normalizedApiKey = apiKey?.trim() || undefined;
+  const keyHash = hashKeyForCache(normalizedApiKey);
+  if (sdkWarmInFlight?.keyHash === keyHash) return;
+
+  const generation = sdkCacheGeneration;
+  const promise = fetchCursorModelsFromSdk(
+    normalizedApiKey,
+    keyHash,
+    generation,
+    SDK_MODEL_LIST_TIMEOUT_MS,
+  ).catch((error) => {
+    recordCursorModelDiscoveryFailure(error);
+    return [];
+  });
+  sdkWarmInFlight = { keyHash, promise };
+  promise.finally(() => {
+    if (sdkWarmInFlight?.promise === promise) sdkWarmInFlight = null;
+  });
+}
+
+export async function probeCursorSdkModelDiscovery(
+  apiKey?: string | null,
+  options?: { timeoutMs?: number },
+): Promise<CursorSdkModelDiscoveryResult> {
+  const cachedRows = getCachedCursorSdkModels(apiKey);
+  if (cachedRows) {
+    return {
+      rows: cachedRows,
+      failureKind: null,
+      errorMessage: null,
+      fromCache: true,
+    };
+  }
+
+  const normalizedApiKey = apiKey?.trim() || undefined;
+  const keyHash = hashKeyForCache(normalizedApiKey);
+  const generation = sdkCacheGeneration;
+  try {
+    const rows = await fetchCursorModelsFromSdk(
+      normalizedApiKey,
+      keyHash,
+      generation,
+      Math.max(1, options?.timeoutMs ?? SDK_MODEL_LIST_TIMEOUT_MS),
+    );
+    return {
+      rows,
+      failureKind: null,
+      errorMessage: null,
+    };
+  } catch (error) {
+    const discoveryError = recordCursorModelDiscoveryFailure(error);
     // Best-effort: a transient SDK error or invalid key should not crash
     // model resolution — fallback IDs cover the common case.
-    return [];
+    return {
+      rows: [],
+      failureKind: discoveryError.kind,
+      errorMessage: discoveryError.message,
+    };
   }
+}
+
+export async function listCursorModelsFromSdk(
+  apiKey?: string | null,
+  options?: { timeoutMs?: number },
+): Promise<CursorCliModelRow[]> {
+  return (await probeCursorSdkModelDiscovery(apiKey, options)).rows;
 }
 
 function getCachedCursorModels(): CursorCliModelRow[] | null {
@@ -98,6 +382,18 @@ function getCachedCursorModels(): CursorCliModelRow[] | null {
     return cached.models;
   }
   return null;
+}
+
+function cursorRowsToDescriptors(rows: CursorCliModelRow[]): ModelDescriptor[] {
+  const seen = new Set<string>();
+  const descriptors: ModelDescriptor[] = [];
+  for (const row of rows) {
+    const id = String(row.id ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName));
+  }
+  return sortCursorCliDescriptorsForPicker(descriptors);
 }
 
 /**
@@ -174,28 +470,25 @@ export async function discoverCursorCliModelDescriptors(
   const rows = options?.mode === "cached-or-fallback"
     ? getCachedCursorModels() ?? []
     : await listCursorModelsFromCli(agentPath);
-  const useRows: CursorCliModelRow[] = rows.length ? rows : FALLBACK_SDK_IDS.map((id) => ({ id }));
-  const seen = new Set<string>();
-  const descriptors: ModelDescriptor[] = [];
-  for (const row of useRows) {
-    const id = String(row.id ?? "").trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName));
-  }
-  return sortCursorCliDescriptorsForPicker(descriptors);
+  const useRows: CursorCliModelRow[] = rows.length ? rows : fallbackCursorSdkRows(options?.mode);
+  return cursorRowsToDescriptors(useRows);
 }
 
-export async function discoverCursorSdkModelDescriptors(apiKey?: string | null): Promise<ModelDescriptor[]> {
-  const rows = await listCursorModelsFromSdk(apiKey);
-  const useRows: CursorCliModelRow[] = rows.length ? rows : FALLBACK_SDK_IDS.map((id) => ({ id }));
-  const seen = new Set<string>();
-  const descriptors: ModelDescriptor[] = [];
-  for (const row of useRows) {
-    const id = String(row.id ?? "").trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName));
+export async function discoverCursorSdkModelDescriptors(
+  apiKey?: string | null,
+  options?: { mode?: CursorCliModelDiscoveryMode; timeoutMs?: number },
+): Promise<ModelDescriptor[]> {
+  const result = options?.mode === "probe"
+    ? await probeCursorSdkModelDiscovery(apiKey, { timeoutMs: options?.timeoutMs })
+    : null;
+  const rows = result?.rows ?? getCachedCursorSdkModels(apiKey) ?? [];
+  if (!rows.length && options?.mode !== "probe") {
+    warmCursorModelsFromSdk(apiKey);
   }
-  return sortCursorCliDescriptorsForPicker(descriptors);
+  const useRows: CursorCliModelRow[] = rows.length
+    ? rows
+    : options?.mode === "cached-only" || result?.failureKind === "auth"
+      ? []
+      : fallbackCursorSdkRows(options?.mode);
+  return cursorRowsToDescriptors(useRows);
 }

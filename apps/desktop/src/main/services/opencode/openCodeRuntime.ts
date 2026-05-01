@@ -46,6 +46,7 @@ export type OpenCodeSessionHandle = {
   };
   lease: OpenCodeServerLease;
   sessionId: string;
+  initialTitle: string | null;
   directory: string;
   toolSelection: Record<string, boolean> | null;
   close(reason?: OpenCodeServerShutdownReason): Promise<void>;
@@ -75,7 +76,7 @@ type BuildOpenCodeConfigArgs = {
 
 type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
   directory: string;
-  title: string;
+  title?: string | null;
   sessionId?: string;
   ownerKind?: OpenCodeServerOwnerKind;
   ownerId?: string | null;
@@ -86,7 +87,7 @@ type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
 
 type RunOpenCodePromptArgs = BuildOpenCodeConfigArgs & {
   directory: string;
-  title: string;
+  title?: string | null;
   modelDescriptor: ModelDescriptor;
   prompt: string;
   system?: string;
@@ -374,6 +375,7 @@ function createOpenCodeSessionHandle(args: {
   client: OpencodeClient;
   lease: OpenCodeServerLease;
   sessionId: string;
+  initialTitle?: string | null;
   directory: string;
   toolSelection: Record<string, boolean> | null;
 }): OpenCodeSessionHandle {
@@ -387,6 +389,7 @@ function createOpenCodeSessionHandle(args: {
     },
     lease: args.lease,
     sessionId: args.sessionId,
+    initialTitle: trimToUndefined(args.initialTitle) ?? null,
     directory: args.directory,
     toolSelection: args.toolSelection,
     async close(reason = "handle_close") {
@@ -437,7 +440,7 @@ async function startOpenCodeSessionInternal(
 
   if (resolvedSessionId) {
     try {
-      await client.session.get({
+      const existing = await client.session.get({
         path: { id: resolvedSessionId },
         query: { directory: args.directory },
       });
@@ -445,6 +448,7 @@ async function startOpenCodeSessionInternal(
         client,
         lease,
         sessionId: resolvedSessionId,
+        initialTitle: existing.data?.title,
         directory: args.directory,
         toolSelection: null,
       });
@@ -455,7 +459,7 @@ async function startOpenCodeSessionInternal(
 
   const created = await client.session.create({
     query: { directory: args.directory },
-    body: { title: args.title },
+    body: trimToUndefined(args.title) ? { title: trimToUndefined(args.title) } : {},
   });
 
   if (!created.data) {
@@ -467,6 +471,7 @@ async function startOpenCodeSessionInternal(
     client,
     lease,
     sessionId: created.data.id,
+    initialTitle: created.data.title,
     directory: args.directory,
     toolSelection: null,
   });

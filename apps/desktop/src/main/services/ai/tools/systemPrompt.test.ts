@@ -93,9 +93,9 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("never re-invokes");
     });
 
-    it("describes the Cursor ACP runtime", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "cursor-acp" });
-      expect(result).toContain("Cursor agent via ACP");
+    it("describes the Cursor SDK runtime", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "cursor-sdk" });
+      expect(result).toContain("Cursor SDK");
     });
 
     it("describes the Droid ACP runtime", () => {

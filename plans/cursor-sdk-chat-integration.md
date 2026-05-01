@@ -3,7 +3,7 @@
 Status: implemented; retained as historical integration notes
 Date: 2026-04-29
 
-Current implementation note: Cursor chat in ADE is SDK-only. Cursor ACP fallback, `ADE_CURSOR_CHAT_TRANSPORT`, and the old Cursor-specific ACP pool/config/event mapper have been removed. Cursor auth is API-key based via `CURSOR_API_KEY` or ADE's encrypted API key store with provider id `cursor`.
+Current implementation note: Cursor chat in ADE is SDK-only. The old Cursor-specific alternate transport, `ADE_CURSOR_CHAT_TRANSPORT`, and its pool/config/event mapper have been removed. Cursor auth is API-key based via `CURSOR_API_KEY` or ADE's encrypted API key store with provider id `cursor`.
 
 ## Security note for the implementing agent
 
@@ -15,17 +15,17 @@ Do not add plaintext Cursor credentials to this plan or any repository file. Ass
 
 Replace ADE's Cursor chat runtime path with the Cursor TypeScript SDK for this spike, while keeping ADE's permission/control surface. The desired near-term outcome is:
 
-- Cursor local chats in ADE run through `@cursor/sdk`, not Cursor ACP.
-- Cursor ACP is removed, so the SDK path is the only Cursor path.
+- Cursor local chats in ADE run through `@cursor/sdk`.
+- The SDK path is the only Cursor path.
 - ADE still owns approvals, plan/read-only behavior, full-auto behavior, transcript/work-log mapping, cancellation, and process cleanup.
 - The UI feels native next to Claude and Codex controls.
 - The implementation is tested incrementally with a real Cursor API key via `CURSOR_API_KEY`.
 
-This is not just a transport swap. Cursor SDK has a richer runtime model than ACP, but it does not currently expose the same direct permission callback shape that ACP gives ADE. The integration should use an ADE-managed SDK worker process plus Cursor hooks as the permission bridge.
+This is not just a transport swap. Cursor SDK has a richer runtime model than the old path, but it does not currently expose the same direct permission callback shape ADE needs. The integration should use an ADE-managed SDK worker process plus Cursor hooks as the permission bridge.
 
 ## Why do this
 
-Cursor ACP works as a workaround, but it leaves ADE coupled to a CLI protocol surface instead of Cursor's new first-party agent API. The SDK gives ADE access to:
+The previous Cursor chat path left ADE coupled to a CLI protocol surface instead of Cursor's first-party agent API. The SDK gives ADE access to:
 
 - Cursor's same local/cloud agent harness used by desktop, CLI, and web.
 - Durable agent and run objects.
@@ -37,7 +37,7 @@ Cursor ACP works as a workaround, but it leaves ADE coupled to a CLI protocol su
 - Custom subagents.
 - Structured tool/thinking/status/task events and finer `onDelta` interaction updates.
 
-The strategic reason is cloud. ACP cannot launch or manage Cursor Cloud agents from ADE. SDK can.
+The strategic reason is cloud. The old path cannot launch or manage Cursor Cloud agents from ADE. SDK can.
 
 ## Sources
 
@@ -51,7 +51,7 @@ Primary Cursor sources:
 Local ADE source anchors:
 
 - Cursor SDK pool: `apps/desktop/src/main/services/chat/cursorSdkPool.ts`
-- Shared ACP host callbacks: `apps/desktop/src/main/services/chat/acpHostClient.ts`
+- Shared Droid host callbacks: `apps/desktop/src/main/services/chat/acpHostClient.ts`
 - Main chat runtime: `apps/desktop/src/main/services/chat/agentChatService.ts`
 - Current Cursor modes: `apps/desktop/src/shared/cursorModes.ts`
 - Chat types: `apps/desktop/src/shared/types/chat.ts`
@@ -114,15 +114,15 @@ Cloud SDK:
 
 ## Historical ADE behavior replaced by SDK policy
 
-Cursor ACP previously launched:
+The previous Cursor chat path launched:
 
 ```text
-agent acp --workspace <lane> --model <model> --sandbox <enabled|disabled> [--mode ask|plan] [--force]
+legacy cursor launch command removed
 ```
 
-Previous Cursor ACP launch mapping:
+Previous Cursor launch mapping:
 
-| ADE state | ACP launch |
+| ADE state | Legacy launch |
 | --- | --- |
 | Agent/default | `--sandbox enabled` |
 | Ask | `--mode ask --sandbox enabled` |
@@ -420,7 +420,7 @@ Cloud permissions caveat:
 - Do not claim ADE can approve every cloud tool call unless Cursor adds a usable request-response API or hook callbacks to ADE are proven for cloud.
 - Default cloud runs should not auto-create PRs.
 
-## Cursor ACP removal
+## Legacy Cursor transport removal
 
 Cursor SDK is the only active Cursor chat/runtime path.
 
@@ -428,7 +428,7 @@ In code:
 
 - `agentChatService` routes Cursor sessions through `cursorSdkPool`.
 - `cursorSdkWorker` owns the SDK agent, local/cloud runs, model/repo catalog requests, and the hook bridge.
-- Persisted Cursor runtime state uses SDK agent/run ids, not ACP session ids.
+- Persisted Cursor runtime state uses SDK agent/run ids, not legacy session ids.
 - Shared ACP host/client code remains for Factory Droid only.
 
 ## UI requirements
@@ -453,7 +453,7 @@ Composer:
 
 Session summary:
 
-- Show Cursor SDK vs ACP transport while the spike is active, at least in debug/status details.
+- Show Cursor SDK transport status while the spike is active, at least in debug/status details.
 - Show local vs cloud runtime if cloud is enabled.
 - Show current model from SDK catalog.
 
@@ -527,7 +527,7 @@ Run narrower targeted tests first while iterating. Finish with the broader check
 
 - Add `@cursor/sdk` to `apps/desktop/package.json`.
 - Add SDK pool/worker/protocol plumbing.
-- Remove the Cursor ACP runtime path.
+- Remove the legacy Cursor runtime path.
 - Add typed API-key auth and tests.
 
 Acceptance:
@@ -611,8 +611,7 @@ Acceptance:
 
 ### Phase 7: Model catalog
 
-- Use `Cursor.models.list()` for Cursor models when SDK transport is active.
-- Keep CLI model discovery as fallback for ACP mode.
+- Use `Cursor.models.list()` for Cursor models.
 - Preserve dynamic `cursor/<id>` model IDs in ADE's model registry.
 
 Acceptance:
@@ -667,7 +666,7 @@ Risk: Native optional package or bundling issues.
 
 ## Definition of done
 
-- Cursor SDK is the default and only active Cursor chat path unless ACP override is explicitly set.
+- Cursor SDK is the default and only active Cursor chat path.
 - Local Cursor SDK chat can answer, inspect, edit, run shell, stream, and cancel.
 - ADE permission presets work:
   - Ask/read-only denies side effects.

@@ -302,4 +302,32 @@ describe("ProvidersSection", () => {
     expect(await screen.findByText("Cursor connection verified.")).toBeTruthy();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
   });
+
+  it("forces a provider status refresh after verifying a stored Cursor API key", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
+    listApiKeysMock.mockReset();
+    listApiKeysMock.mockResolvedValue(["cursor"]);
+
+    render(<ProvidersSection />);
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      screen.getByLabelText("Verify Cursor API key").click();
+    });
+
+    await waitFor(() => {
+      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor");
+      expect(window.ade.ai.getStatus).toHaveBeenCalledWith({
+        force: true,
+        refreshOpenCodeInventory: true,
+      });
+    });
+  });
 });

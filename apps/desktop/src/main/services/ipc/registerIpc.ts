@@ -3225,13 +3225,17 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.aiStoreApiKey, async (_event, arg: { provider: string; key: string }): Promise<void> => {
+    const ctx = getCtx();
     const { storeApiKey } = await import("../ai/apiKeyStore");
     storeApiKey(arg.provider, arg.key);
+    ctx.aiIntegrationService.invalidateProviderReadinessCaches();
   });
 
   ipcMain.handle(IPC.aiDeleteApiKey, async (_event, arg: { provider: string }): Promise<void> => {
+    const ctx = getCtx();
     const { deleteApiKey } = await import("../ai/apiKeyStore");
     deleteApiKey(arg.provider);
+    ctx.aiIntegrationService.invalidateProviderReadinessCaches();
   });
 
   ipcMain.handle(IPC.aiListApiKeys, async (): Promise<string[]> => {
@@ -5458,7 +5462,7 @@ export function registerIpc({
         });
       }
     }
-    return {
+    return ctx.ptyService.enrichSessions([session])[0] ?? {
       ...session,
       runtimeState: ctx.ptyService.getRuntimeState(session.id, session.status)
     };

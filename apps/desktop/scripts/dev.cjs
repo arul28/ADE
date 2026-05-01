@@ -256,7 +256,11 @@ async function main() {
 
   const electronEnv = { VITE_DEV_SERVER_URL: devServerUrl };
   const launchElectron = () => {
-    const child = spawnProcess("electron", npxCommand, ["electron", ".", `--remote-debugging-port=${remoteDebugPort}`], electronEnv);
+    const electronArgs = ["electron", ".", `--remote-debugging-port=${remoteDebugPort}`];
+    if (process.platform === "darwin") {
+      electronArgs.push("-ApplePersistenceIgnoreState", "YES");
+    }
+    const child = spawnProcess("electron", npxCommand, electronArgs, electronEnv);
     electron = child;
     children.add(child);
     child.on("exit", (code, signal) => {

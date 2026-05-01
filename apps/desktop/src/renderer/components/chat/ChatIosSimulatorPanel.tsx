@@ -1218,6 +1218,12 @@ export function ChatIosSimulatorPanel({
     }
   }, [projectRoot, selectedElement?.sourceFile, selectedElement?.sourceLine]);
 
+  const cancelDeviceBackedStreamRestart = useCallback(() => {
+    if (liveRestartTimerRef.current == null) return;
+    window.clearTimeout(liveRestartTimerRef.current);
+    liveRestartTimerRef.current = null;
+  }, []);
+
   const stopRendererLiveVisual = useCallback((options: { preserveVisual?: boolean } = {}) => {
     const preserveVisual = options.preserveVisual === true;
     if (liveRestartTimerRef.current != null) {
@@ -1357,6 +1363,23 @@ export function ChatIosSimulatorPanel({
       return;
     }
     if (!nextStatus.streamUrl) {
+      setStreamStatus(nextStatus);
+      if (nextStatus.degradationReason || nextStatus.fallbackReason || !nextStatus.running) {
+        const detail = nextStatus.degradationReason ?? nextStatus.fallbackReason ?? nextStatus.lastError ?? LIVE_RECONNECT_MESSAGE;
+        setLiveVisual((current) => current?.kind === "mjpeg"
+          ? { ...current, status: "reconnecting", url: null, error: detail }
+          : {
+              kind: "mjpeg",
+              status: "reconnecting",
+              url: null,
+              width: null,
+              height: null,
+              error: detail,
+            });
+        setMessage(detail);
+        void refreshStatus().catch(() => {});
+        return;
+      }
       throw new Error(nextStatus.lastError ?? "Live stream did not provide a drawable URL.");
     }
     setStreamStatus(nextStatus);
@@ -1369,7 +1392,7 @@ export function ChatIosSimulatorPanel({
       height: current?.kind === "mjpeg" ? current.height : null,
       error: null,
     }));
-  }, [startWindowCaptureVisual]);
+  }, [refreshStatus, startWindowCaptureVisual]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -1655,6 +1678,10 @@ export function ChatIosSimulatorPanel({
         return;
       }
       if (event.type === "stream-started" || event.type === "stream-status" || event.type === "stream-stopped" || event.type === "stream-error") {
+        const serviceManagedFallback = Boolean(event.status.degradationReason || event.status.fallbackReason);
+        if (serviceManagedFallback || (event.type === "stream-started" && event.status.streamUrl)) {
+          cancelDeviceBackedStreamRestart();
+        }
         if (event.status.backend) lastResolvedStreamBackendRef.current = event.status.backend;
         setStreamStatus(event.status);
         if ((event.type === "stream-started" || event.type === "stream-status") && event.status.streamUrl) {
@@ -1695,7 +1722,7 @@ export function ChatIosSimulatorPanel({
               }
             : current);
         }
-        if (event.type === "stream-error" && event.status.lastError) setMessage(event.status.lastError);
+        if (event.type === "stream-error" && event.status.lastError && !serviceManagedFallback) setMessage(event.status.lastError);
         return;
       }
       if (event.type === "session-released") {
@@ -1714,7 +1741,7 @@ export function ChatIosSimulatorPanel({
     return () => {
       unsubscribe();
     };
-  }, [onAddContext, refreshStatus, sessionId]);
+  }, [cancelDeviceBackedStreamRestart, onAddContext, refreshStatus, sessionId]);
 
   useEffect(() => {
     if (
@@ -1722,11 +1749,21 @@ export function ChatIosSimulatorPanel({
       || liveVisualKind !== "mjpeg"
       || !streamStatus?.lastError
       || streamStatus.running
+      || streamStatus.degradationReason
+      || streamStatus.fallbackReason
     ) {
       return;
     }
     scheduleDeviceBackedStreamRestart("Live simulator stream stopped.");
-  }, [liveVisualKind, mode, scheduleDeviceBackedStreamRestart, streamStatus?.lastError, streamStatus?.running]);
+  }, [
+    liveVisualKind,
+    mode,
+    scheduleDeviceBackedStreamRestart,
+    streamStatus?.degradationReason,
+    streamStatus?.fallbackReason,
+    streamStatus?.lastError,
+    streamStatus?.running,
+  ]);
 
   useEffect(() => {
     if (

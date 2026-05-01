@@ -1136,7 +1136,7 @@ contextBridge.exposeInMainWorld("ade", {
     verifyApiKey: async (
       provider: string,
     ): Promise<AiApiKeyVerificationResult> =>
-      ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
+      clearAround(() => aiStatusCache.clear(), () => ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider })),
     updateConfig: async (config: Partial<AiConfig>): Promise<void> =>
       clearAround(() => aiStatusCache.clear(), () => ipcRenderer.invoke(IPC.aiUpdateConfig, config)),
     cursorCloudListRepositories: async (): Promise<CursorCloudRepository[]> =>

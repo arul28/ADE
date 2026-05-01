@@ -1,11 +1,15 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
+import path from "node:path";
 import { EventEmitter } from "node:events";
 import type { ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
+  __testResetIosurfaceCapabilityCache,
   __testSetIosSimulatorProcessHooks,
   createIosSimulatorService,
+  detectIosurfaceIndigoCapability,
   IosSimulatorOwnedBySessionError,
   iosurfaceInputScreenFromSnapshot,
   normalizeIosSimulatorPointForIndigo,
@@ -14,6 +18,7 @@ import {
   shouldOpenSimulatorAppForLaunch,
 } from "./iosSimulatorService";
 import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE } from "../../../shared/types/iosSimulator";
+import type { IosSimulatorEventPayload } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 
 const noopLogger: Logger = {
@@ -49,7 +54,86 @@ const simulatorDevicesJson = JSON.stringify({
 });
 
 afterEach(() => {
+  __testResetIosurfaceCapabilityCache();
   vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe("iosSimulatorService IOSurface helper capability", () => {
+  it("allows packaged helper sources and builds helpers outside the signed app bundle", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ios-helper-packaged-"));
+    const tempHome = path.join(tempRoot, "home");
+    const developerDir = path.join(tempRoot, "Xcode.app", "Contents", "Developer");
+    const simulatorKitDir = path.join(
+      developerDir,
+      "Platforms",
+      "iPhoneSimulator.platform",
+      "Developer",
+      "Library",
+      "PrivateFrameworks",
+      "SimulatorKit.framework",
+    );
+    const helperRoot = path.join(tempRoot, "ADE.app", "Contents", "Resources", "native", "ios-sim-helpers");
+    const previousHelperRoot = process.env.ADE_IOS_SIM_HELPER_ROOT;
+    const previousHelperBuildRoot = process.env.ADE_IOS_SIM_HELPER_BUILD_ROOT;
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const homeSpy = vi.spyOn(os, "homedir").mockReturnValue(tempHome);
+    let capturedBuildRoot: string | undefined;
+
+    fs.mkdirSync(simulatorKitDir, { recursive: true });
+    fs.mkdirSync(helperRoot, { recursive: true });
+    fs.writeFileSync(path.join(helperRoot, "build.sh"), "#!/usr/bin/env bash\n");
+    fs.writeFileSync(path.join(helperRoot, "sim-capture.swift"), "print(\"capture\")\n");
+    fs.writeFileSync(path.join(helperRoot, "sim-input.m"), "int main(void) { return 0; }\n");
+    process.env.ADE_IOS_SIM_HELPER_ROOT = helperRoot;
+    delete process.env.ADE_IOS_SIM_HELPER_BUILD_ROOT;
+
+    const runMock = vi.fn(async (command: string, commandArgs: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+      if (command === "/usr/bin/xcode-select") return { stdout: `${developerDir}\n`, stderr: "" };
+      if (command === "xcodebuild") return { stdout: "Xcode 26.3\nBuild version 17C52\n", stderr: "" };
+      if (command === "bash" && commandArgs[0] === path.join(helperRoot, "build.sh")) {
+        capturedBuildRoot = options?.env?.ADE_IOS_SIM_HELPER_BUILD_ROOT;
+        const buildDir = path.join(capturedBuildRoot ?? helperRoot, "xcode-26.3-test");
+        return {
+          stdout: JSON.stringify({
+            xcodeVersion: "26.3",
+            sourceHash: "test-hash",
+            buildDir,
+            capture: path.join(buildDir, "sim-capture"),
+            input: path.join(buildDir, "sim-input"),
+          }),
+          stderr: "",
+        };
+      }
+      throw new Error(`unexpected command: ${command} ${commandArgs.join(" ")}`);
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      commandExists: () => true,
+    });
+
+    try {
+      const capability = await detectIosurfaceIndigoCapability();
+      expect(capability.available).toBe(true);
+      expect(capturedBuildRoot).toBe(path.join(tempHome, "Library", "Caches", "ADE", "ios-sim-helpers"));
+      expect(capturedBuildRoot).not.toContain(".app");
+    } finally {
+      restoreHooks();
+      platformSpy.mockRestore();
+      homeSpy.mockRestore();
+      if (previousHelperRoot == null) {
+        delete process.env.ADE_IOS_SIM_HELPER_ROOT;
+      } else {
+        process.env.ADE_IOS_SIM_HELPER_ROOT = previousHelperRoot;
+      }
+      if (previousHelperBuildRoot == null) {
+        delete process.env.ADE_IOS_SIM_HELPER_BUILD_ROOT;
+      } else {
+        process.env.ADE_IOS_SIM_HELPER_BUILD_ROOT = previousHelperBuildRoot;
+      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("iosSimulatorService cross-platform safety", () => {
@@ -263,6 +347,89 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
       expect(spawnMock).toHaveBeenCalledWith("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" });
     } finally {
       service.dispose();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("falls back from a frame-less idb MJPEG stream to drawable simulator screenshots", async () => {
+    vi.useFakeTimers();
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const events: IosSimulatorEventPayload[] = [];
+    const companionServers: net.Server[] = [];
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "ps") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "io" && commandArgs[3] === "screenshot") {
+        const outputPath = commandArgs.at(-1);
+        if (outputPath) fs.writeFileSync(outputPath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+        return { stdout: "", stderr: "" };
+      }
+      if (command === "/usr/bin/xcode-select") return { stdout: "", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const spawnMock = vi.fn<[string, string[], unknown?], ChildProcess>((command, commandArgs) => {
+      const child = mockChildProcess();
+      Object.defineProperty(child, "exitCode", { configurable: true, value: null });
+      Object.defineProperty(child, "signalCode", { configurable: true, value: null });
+      if (command === "idb_companion") {
+        const portArg = commandArgs[commandArgs.indexOf("--grpc-port") + 1];
+        const port = Number(portArg);
+        const server = net.createServer((socket) => socket.end());
+        server.listen(port, "127.0.0.1");
+        companionServers.push(server);
+        child.kill = vi.fn(() => {
+          server.close();
+          return true;
+        }) as unknown as ChildProcess["kill"];
+      }
+      return child;
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      spawn: spawnMock as unknown as typeof nodeSpawn,
+      commandExists: (command) => command === "xcrun" || command === "idb" || command === "idb_companion",
+    });
+    const service = createIosSimulatorService({
+      projectRoot: os.tmpdir(),
+      logger: noopLogger,
+      onEvent: (payload) => {
+        events.push(payload);
+      },
+    });
+
+    try {
+      const initialStatus = await service.startStream({ deviceUdid: "device-1", backend: "idb-mjpeg", fps: 30 });
+      expect(initialStatus.backend).toBe("idb-mjpeg");
+      expect(initialStatus.streamUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/ios-simulator\/stream\.mjpg$/);
+
+      await vi.advanceTimersByTimeAsync(5_100);
+      await vi.waitFor(() => {
+        expect(events.some((event) => (
+          event.type === "stream-error"
+          && event.status.backend === "idb-mjpeg"
+          && event.status.degradationReason?.includes("idb MJPEG produced no frames")
+        ))).toBe(true);
+        expect(events.some((event) => (
+          event.type === "stream-started"
+          && event.status.backend === "simctl-screenshot-poll"
+          && typeof event.status.streamUrl === "string"
+        ))).toBe(true);
+      });
+      await vi.waitFor(() => {
+        expect(service.getStreamStatus().frameCount).toBeGreaterThan(0);
+      });
+
+      const finalStatus = service.getStreamStatus();
+      expect(finalStatus.backend).toBe("simctl-screenshot-poll");
+      expect(finalStatus.running).toBe(true);
+      expect(finalStatus.streamUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/ios-simulator\/stream\.mjpg$/);
+      expect(finalStatus.frameCount).toBeGreaterThan(0);
+    } finally {
+      service.dispose();
+      for (const server of companionServers) server.close();
       restoreHooks();
       platformSpy.mockRestore();
     }

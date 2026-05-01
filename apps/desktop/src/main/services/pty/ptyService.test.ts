@@ -1205,6 +1205,49 @@ describe("ptyService", () => {
       expect(sessionService.get(createdSessionId)?.goal).toBe("Fix the flaky login tests");
     });
 
+    it("ignores provider slash commands when choosing the first CLI title seed", async () => {
+      const { service, sessionService } = createHarness();
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(createdSessionId).toBeTruthy();
+
+      service.write({ ptyId, data: "/model\r" });
+
+      expect(sessionService.get(createdSessionId)?.title).toBe("Codex CLI");
+      expect(sessionService.get(createdSessionId)?.goal ?? null).toBeNull();
+
+      service.write({ ptyId, data: "Fix the flaky login tests\r" });
+
+      expect(sessionService.get(createdSessionId)?.title).toBe("Fix the flaky login tests");
+      expect(sessionService.get(createdSessionId)?.goal).toBe("Fix the flaky login tests");
+    });
+
+    it("treats legacy slash-command CLI titles as placeholders", async () => {
+      const { service, sessionService } = createHarness();
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "/model",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(createdSessionId).toBeTruthy();
+
+      service.write({ ptyId, data: "Fix the flaky login tests\r" });
+
+      expect(sessionService.get(createdSessionId)?.title).toBe("Fix the flaky login tests");
+      expect(sessionService.get(createdSessionId)?.goal).toBe("Fix the flaky login tests");
+    });
+
     it("sets a compact fallback title from the first CLI prompt while AI naming is pending", async () => {
       const { service, sessionService } = createHarness();
       const { ptyId } = await service.create({
@@ -1251,6 +1294,29 @@ describe("ptyService", () => {
 
       expect(sessionService.get(createdSessionId)?.title).toBe("Manual title");
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("rejects low-signal AI titles for raw CLI sessions", async () => {
+      const aiIntegrationService = {
+        getMode: vi.fn(() => "subscription"),
+        summarizeTerminal: vi.fn(async () => ({ text: "/model" })),
+      };
+      const { service, sessionService } = createHarness({ aiIntegrationService });
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(createdSessionId).toBeTruthy();
+
+      service.write({ ptyId, data: "Fix the flaky login tests\r" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(sessionService.get(createdSessionId)?.title).toBe("Fix the flaky login tests");
     });
 
     it("backfills a missing tracked CLI resume target from the flushed transcript tail on exit", async () => {
@@ -1413,6 +1479,36 @@ describe("ptyService", () => {
       const rows = [{ id: sessionId, status: "running" as const, extra: "data" }];
       const enriched = service.enrichSessions(rows as any);
       expect(enriched[0]).toMatchObject({ id: sessionId, runtimeState: "running", extra: "data" });
+    });
+
+    it("overlays live PTY attachment when a persisted row drifted to ended", async () => {
+      const { service, sessionService } = createHarness();
+      const { ptyId, sessionId } = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+      sessionService.end({
+        sessionId,
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      const stale = sessionService.get(sessionId);
+      expect(stale).toMatchObject({ status: "completed", ptyId: null });
+
+      const enriched = service.enrichSessions([stale] as any);
+      expect(enriched[0]).toMatchObject({
+        id: sessionId,
+        ptyId,
+        status: "running",
+        endedAt: null,
+        exitCode: null,
+        runtimeState: "running",
+      });
     });
 
     it("falls back to status-derived state for unknown sessions", () => {

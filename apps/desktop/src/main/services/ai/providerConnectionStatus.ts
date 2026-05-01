@@ -38,6 +38,7 @@ export async function buildProviderConnections(
   ]);
   const claudeRuntimeHealth = getProviderRuntimeHealth("claude");
   const codexRuntimeHealth = getProviderRuntimeHealth("codex");
+  const cursorRuntimeHealth = getProviderRuntimeHealth("cursor");
 
   const deriveProviderFlags = (
     cli: CliAuthStatus | null,
@@ -224,7 +225,7 @@ export async function buildProviderConnections(
     ],
     blocker: cursorBlocker,
   };
-  // Cursor has no runtime-health probe yet.
+  applyRuntimeHealth(cursor, cursorRuntimeHealth);
 
   const droidCli = cliStatuses.find((entry) => entry.cli === "droid") ?? null;
   const factoryEnvAuth = Boolean(process.env.FACTORY_API_KEY?.trim());

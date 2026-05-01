@@ -124,4 +124,54 @@ describe("preload OAuth bridge", () => {
     unsubscribe();
     expect(removeListener).toHaveBeenCalledWith(IPC.reviewEvent, listener);
   });
+
+  it("clears the AI status bridge cache after API key verification", async () => {
+    const status = {
+      mode: "guest",
+      availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.aiGetStatus) return status;
+      if (channel === IPC.aiVerifyApiKey) {
+        return {
+          provider: "cursor",
+          ok: true,
+          message: "Verified",
+          verifiedAt: "2026-03-17T19:00:00.000Z",
+        };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.ai.getStatus();
+    await bridge.ai.getStatus();
+    expect(invoke.mock.calls.filter(([channel]) => channel === IPC.aiGetStatus)).toHaveLength(1);
+
+    await bridge.ai.verifyApiKey("cursor");
+    await bridge.ai.getStatus();
+
+    expect(invoke).toHaveBeenCalledWith(IPC.aiVerifyApiKey, { provider: "cursor" });
+    expect(invoke.mock.calls.filter(([channel]) => channel === IPC.aiGetStatus)).toHaveLength(2);
+  });
 });

@@ -537,10 +537,11 @@ processes.start  →  processService.startByDefinition
 ## Gotchas
 
 - `ptyService.enrichSessions` (called from `registerIpc.sessionsList`)
-  overlays live runtime state onto rows returned from
-  `sessionService.list`. Callers that bypass `registerIpc` must either
-  run sessions through `enrichSessions` or explicitly derive
-  `runtimeState` from `status`.
+  overlays live PTY attachment state onto rows returned from
+  `sessionService.list`: `status`, `ptyId`, `endedAt`, `exitCode`,
+  and `runtimeState`. Callers that bypass `registerIpc` must either run
+  sessions through `enrichSessions` or explicitly reconcile live PTYs
+  before trusting persisted lifecycle fields.
 - `registerIpc.sessionsList` and `.sessionsGet` both lazily hydrate
   resume targets via `ptyService.ensureResumeTargets` for tracked,
   ended Claude/Codex rows whose `resumeMetadata.targetId` is blank.

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import type { SafeStorage } from "electron";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
@@ -22,19 +23,61 @@ type StoredKeys = Record<string, string>;
 
 export type ApiKeyStoreStatus = {
   secureStorageAvailable: boolean;
+  macosKeychainAvailable: boolean;
+  macosKeychainService: string | null;
+  macosKeychainError: string | null;
   encryptedStorePath: string | null;
   legacyPlaintextDetected: boolean;
   legacyPlaintextPath: string | null;
   decryptionFailed: boolean;
 };
 
+const ENV_KEY_PROVIDERS: Record<string, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GOOGLE_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+  xai: "XAI_API_KEY",
+  groq: "GROQ_API_KEY",
+  together: "TOGETHER_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  cursor: "CURSOR_API_KEY",
+};
+
+const MACOS_SECURITY_BIN = "/usr/bin/security";
+const MACOS_KEYCHAIN_SERVICE = "com.ade.desktop.api-keys.v1";
+const MACOS_KEYCHAIN_PROVIDER_INDEX_ACCOUNT = "__ade_provider_index__";
+const MACOS_KEYCHAIN_MISSING_PATTERNS = [
+  /could not be found/i,
+  /item could not be found/i,
+  /the specified item could not be found/i,
+];
+const SECURITY_TIMEOUT_MS = 5_000;
+
 let storePath: string | null = null;
 let legacyStorePath: string | null = null;
 let cache: StoredKeys | null = null;
 let decryptionFailed = false;
+let macosKeychainError: string | null = null;
+
+export function __setSafeStorageForTests(next: SafeStorage | null): void {
+  safeStorage = next;
+  cache = null;
+}
 
 function isSecureStorageAvailable(): boolean {
   return Boolean(safeStorage && typeof safeStorage.isEncryptionAvailable === "function" && safeStorage.isEncryptionAvailable());
+}
+
+function isMacosKeychainAvailable(): boolean {
+  if (process.env.ADE_API_KEY_STORE_DISABLE_KEYCHAIN === "1") return false;
+  if (process.env.NODE_ENV === "test" && process.env.ADE_API_KEY_STORE_FORCE_KEYCHAIN === "1") return true;
+  return process.platform === "darwin" && fs.existsSync(MACOS_SECURITY_BIN);
+}
+
+function isPersistentSecureStorageAvailable(): boolean {
+  return isMacosKeychainAvailable() || isSecureStorageAvailable();
 }
 
 function normalizeStoredKeys(value: unknown): StoredKeys {
@@ -56,41 +99,237 @@ function ensureInitialized(): void {
   }
 }
 
-function ensureStore(): StoredKeys {
-  if (cache) return cache;
+type SecurityResult = {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  status: number | null;
+};
+
+function runSecurity(args: string[]): SecurityResult {
+  const result = spawnSync(MACOS_SECURITY_BIN, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: SECURITY_TIMEOUT_MS,
+  });
+  return {
+    ok: result.status === 0 && !result.error,
+    stdout: typeof result.stdout === "string" ? result.stdout : "",
+    stderr: typeof result.stderr === "string" ? result.stderr : result.error?.message ?? "",
+    status: typeof result.status === "number" ? result.status : null,
+  };
+}
+
+function securityMissing(result: SecurityResult): boolean {
+  if (result.status === 44) return true;
+  return MACOS_KEYCHAIN_MISSING_PATTERNS.some((pattern) => pattern.test(result.stderr));
+}
+
+function rememberKeychainError(action: string, result: SecurityResult): void {
+  const detail = result.stderr.trim().split(/\r?\n/)[0] || `status ${result.status ?? "unknown"}`;
+  macosKeychainError = `macOS Keychain ${action} failed: ${detail}`;
+}
+
+function clearKeychainError(): void {
+  macosKeychainError = null;
+}
+
+function trimTrailingNewline(value: string): string {
+  return value.replace(/(?:\r?\n)+$/, "");
+}
+
+function readMacosKeychainSecret(account: string): string | null {
+  if (!isMacosKeychainAvailable()) return null;
+  const result = runSecurity([
+    "find-generic-password",
+    "-a",
+    account,
+    "-s",
+    MACOS_KEYCHAIN_SERVICE,
+    "-w",
+  ]);
+  if (result.ok) {
+    clearKeychainError();
+    const value = trimTrailingNewline(result.stdout).trim();
+    return value.length ? value : null;
+  }
+  if (!securityMissing(result)) {
+    rememberKeychainError("read", result);
+  }
+  return null;
+}
+
+function writeMacosKeychainSecret(account: string, value: string): void {
+  if (!isMacosKeychainAvailable()) {
+    throw new Error("macOS Keychain is unavailable. Cannot persist API keys.");
+  }
+  const result = runSecurity([
+    "add-generic-password",
+    "-a",
+    account,
+    "-s",
+    MACOS_KEYCHAIN_SERVICE,
+    "-w",
+    value,
+    "-U",
+  ]);
+  if (!result.ok) {
+    rememberKeychainError("write", result);
+    throw new Error(macosKeychainError ?? "macOS Keychain write failed.");
+  }
+  clearKeychainError();
+}
+
+function deleteMacosKeychainSecret(account: string): void {
+  if (!isMacosKeychainAvailable()) return;
+  const result = runSecurity([
+    "delete-generic-password",
+    "-a",
+    account,
+    "-s",
+    MACOS_KEYCHAIN_SERVICE,
+  ]);
+  if (result.ok || securityMissing(result)) {
+    clearKeychainError();
+    return;
+  }
+  rememberKeychainError("delete", result);
+  throw new Error(macosKeychainError ?? "macOS Keychain delete failed.");
+}
+
+function normalizeProviderList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const providers = new Set<string>();
+  for (const raw of value) {
+    if (typeof raw !== "string") continue;
+    const provider = raw.trim().toLowerCase();
+    if (provider.length) providers.add(provider);
+  }
+  return Array.from(providers).sort();
+}
+
+function readMacosKeychainProviderIndex(): { exists: boolean; providers: string[] } {
+  const raw = readMacosKeychainSecret(MACOS_KEYCHAIN_PROVIDER_INDEX_ACCOUNT);
+  if (!raw) return { exists: false, providers: [] };
+  try {
+    return { exists: true, providers: normalizeProviderList(JSON.parse(raw)) };
+  } catch {
+    macosKeychainError = "macOS Keychain provider index is unreadable.";
+    return { exists: true, providers: [] };
+  }
+}
+
+function writeMacosKeychainProviderIndex(providers: Iterable<string>): void {
+  writeMacosKeychainSecret(
+    MACOS_KEYCHAIN_PROVIDER_INDEX_ACCOUNT,
+    JSON.stringify(normalizeProviderList(Array.from(providers))),
+  );
+}
+
+function knownProviderCandidates(extraProviders?: Iterable<string>): string[] {
+  const providers = new Set<string>(Object.keys(ENV_KEY_PROVIDERS));
+  for (const provider of extraProviders ?? []) {
+    const normalized = provider.trim().toLowerCase();
+    if (normalized.length) providers.add(normalized);
+  }
+  return Array.from(providers).sort();
+}
+
+function readMacosKeychainStore(providerCandidates: Iterable<string>): StoredKeys {
+  const out: StoredKeys = {};
+  if (!isMacosKeychainAvailable()) return out;
+  for (const provider of providerCandidates) {
+    if (provider === MACOS_KEYCHAIN_PROVIDER_INDEX_ACCOUNT) continue;
+    const value = readMacosKeychainSecret(provider);
+    if (value) out[provider] = value;
+  }
+  return out;
+}
+
+function loadEncryptedStore(): StoredKeys {
   ensureInitialized();
 
   if (!storePath || !legacyStorePath) {
-    cache = {};
-    return cache;
+    return {};
   }
 
   if (!fs.existsSync(storePath)) {
     decryptionFailed = false;
-    cache = {};
-    return cache;
+    return {};
   }
 
   if (!isSecureStorageAvailable()) {
     decryptionFailed = true;
-    cache = {};
-    return cache;
+    return {};
   }
 
   try {
     const raw = fs.readFileSync(storePath);
     const decrypted = safeStorage!.decryptString(raw);
-    cache = normalizeStoredKeys(JSON.parse(decrypted));
     decryptionFailed = false;
-    return cache;
+    return normalizeStoredKeys(JSON.parse(decrypted));
   } catch {
     decryptionFailed = true;
-    cache = {};
-    return cache;
+    return {};
   }
 }
 
-function persist(): void {
+function migrateEncryptedStoreToMacosKeychain(encryptedStore: StoredKeys): void {
+  if (!isMacosKeychainAvailable()) return;
+  const providers = Object.keys(encryptedStore);
+  if (!providers.length) return;
+
+  const existingIndex = readMacosKeychainProviderIndex();
+  const nextProviders = new Set<string>(existingIndex.providers);
+  let changed = false;
+
+  for (const provider of providers) {
+    const value = encryptedStore[provider]?.trim();
+    if (!value) continue;
+    const existingValue = readMacosKeychainSecret(provider);
+    if (!existingValue) {
+      writeMacosKeychainSecret(provider, value);
+    }
+    nextProviders.add(provider);
+    changed = true;
+  }
+
+  if (changed) {
+    writeMacosKeychainProviderIndex(nextProviders);
+  }
+}
+
+function ensureStore(): StoredKeys {
+  if (cache) return cache;
+  ensureInitialized();
+
+  const encryptedStore = loadEncryptedStore();
+  if (isMacosKeychainAvailable()) {
+    const indexBeforeMigration = readMacosKeychainProviderIndex();
+    if (!indexBeforeMigration.exists) {
+      try {
+        migrateEncryptedStoreToMacosKeychain(encryptedStore);
+      } catch {
+        // If Keychain migration is blocked, keep the decryptable encrypted
+        // store as the active fallback instead of dropping existing keys.
+      }
+    }
+
+    const index = readMacosKeychainProviderIndex();
+    const keychainProviders = knownProviderCandidates(index.exists ? index.providers : [
+      ...index.providers,
+      ...Object.keys(encryptedStore),
+    ]);
+    const keychainStore = readMacosKeychainStore(keychainProviders);
+    cache = index.exists ? keychainStore : { ...encryptedStore, ...keychainStore };
+    return cache;
+  }
+
+  cache = encryptedStore;
+  return cache;
+}
+
+function persistEncryptedStore(): void {
   if (!storePath || !cache) return;
   if (!isSecureStorageAvailable()) {
     throw new Error("OS secure storage is unavailable. Cannot persist API keys.");
@@ -111,12 +350,16 @@ export function initApiKeyStore(projectRoot: string): void {
   legacyStorePath = layout.legacyApiKeysPath;
   cache = null;
   decryptionFailed = false;
+  macosKeychainError = null;
 }
 
 export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
   if (!storePath || !legacyStorePath) {
     return {
-      secureStorageAvailable: isSecureStorageAvailable(),
+      secureStorageAvailable: isPersistentSecureStorageAvailable(),
+      macosKeychainAvailable: isMacosKeychainAvailable(),
+      macosKeychainService: isMacosKeychainAvailable() ? MACOS_KEYCHAIN_SERVICE : null,
+      macosKeychainError,
       encryptedStorePath: null,
       legacyPlaintextDetected: false,
       legacyPlaintextPath: null,
@@ -124,7 +367,10 @@ export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
     };
   }
   return {
-    secureStorageAvailable: isSecureStorageAvailable(),
+    secureStorageAvailable: isPersistentSecureStorageAvailable(),
+    macosKeychainAvailable: isMacosKeychainAvailable(),
+    macosKeychainService: isMacosKeychainAvailable() ? MACOS_KEYCHAIN_SERVICE : null,
+    macosKeychainError,
     encryptedStorePath: storePath,
     legacyPlaintextDetected: Boolean(legacyStorePath && fs.existsSync(legacyStorePath)),
     legacyPlaintextPath: legacyStorePath && fs.existsSync(legacyStorePath) ? legacyStorePath : null,
@@ -140,21 +386,14 @@ export function storeApiKey(provider: string, key: string): void {
   }
   const store = ensureStore();
   store[normalizedProvider] = normalizedKey;
-  persist();
+  if (isMacosKeychainAvailable()) {
+    writeMacosKeychainSecret(normalizedProvider, normalizedKey);
+    const index = readMacosKeychainProviderIndex();
+    writeMacosKeychainProviderIndex(new Set([...index.providers, normalizedProvider]));
+    return;
+  }
+  persistEncryptedStore();
 }
-
-const ENV_KEY_PROVIDERS: Record<string, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  google: "GOOGLE_API_KEY",
-  mistral: "MISTRAL_API_KEY",
-  deepseek: "DEEPSEEK_API_KEY",
-  xai: "XAI_API_KEY",
-  groq: "GROQ_API_KEY",
-  together: "TOGETHER_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  cursor: "CURSOR_API_KEY",
-};
 
 export function getApiKey(provider: string): string | null {
   const normalizedProvider = provider.trim().toLowerCase();
@@ -175,7 +414,13 @@ export function deleteApiKey(provider: string): void {
   if (!normalizedProvider.length) return;
   const store = ensureStore();
   delete store[normalizedProvider];
-  persist();
+  if (isMacosKeychainAvailable()) {
+    deleteMacosKeychainSecret(normalizedProvider);
+    const index = readMacosKeychainProviderIndex();
+    writeMacosKeychainProviderIndex(index.providers.filter((entry) => entry !== normalizedProvider));
+    return;
+  }
+  persistEncryptedStore();
 }
 
 export function listStoredProviders(): string[] {

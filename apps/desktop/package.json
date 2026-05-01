@@ -34,6 +34,7 @@
     "test:coverage": "vitest run --coverage",
     "test:orchestrator-smoke": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts --reporter=verbose",
     "test:orchestrator-complex-mock": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts -t \"complex mock prompt\" --reporter=verbose",
+    "test:chat-model-runtime-audit": "node ./scripts/audit-chat-model-runtime.mjs --mode=dry-run --max-per-provider=2",
     "ade:dev": "npm --prefix ../ade-cli run dev -- --project-root ../..",
     "ade:build": "npm --prefix ../ade-cli run build",
     "ade:typecheck": "npm --prefix ../ade-cli run typecheck",
@@ -185,6 +186,16 @@
       {
         "from": "scripts/ade-cli-install-path.cmd",
         "to": "ade-cli/install-path.cmd"
+      },
+      {
+        "from": "native/ios-sim-helpers",
+        "to": "native/ios-sim-helpers",
+        "filter": [
+          "README.md",
+          "build.sh",
+          "sim-capture.swift",
+          "sim-input.m"
+        ]
       }
     ],
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",

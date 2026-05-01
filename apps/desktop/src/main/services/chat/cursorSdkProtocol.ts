@@ -35,7 +35,7 @@ export type CursorSdkHookRequest = {
 export type CursorSdkWorkerInit = {
   sessionId: string;
   laneRoot: string;
-  homeDir: string;
+  userHomeDir: string;
   stateRoot: string;
   socketPath: string;
   modelSdkId: string;
@@ -123,6 +123,7 @@ export type CursorSdkCloudArtifactDownloadResult = {
 export type CursorSdkCloudRunStartedResult = {
   agentId: string;
   runId: string;
+  agentName?: string | null;
   modelSdkId?: string | null;
   status?: string;
 };

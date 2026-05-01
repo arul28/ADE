@@ -17,6 +17,25 @@ struct WorkModelOption: Identifiable, Hashable {
   /// (e.g. "claude" for the CLAUDE brand avatar). For OpenCode-routed
   /// models this is still the upstream family so the logo stays brand-true.
   let provider: String
+  /// Reasoning efforts supplied by the paired desktop host. Empty means the
+  /// host did not advertise a selectable reasoning control for this model.
+  let reasoningEfforts: [AgentChatModelReasoningEffort]
+
+  init(
+    id: String,
+    displayName: String,
+    tier: Tier,
+    tagline: String,
+    provider: String,
+    reasoningEfforts: [AgentChatModelReasoningEffort] = []
+  ) {
+    self.id = id
+    self.displayName = displayName
+    self.tier = tier
+    self.tagline = tagline
+    self.provider = provider
+    self.reasoningEfforts = reasoningEfforts
+  }
 }
 
 extension WorkModelOption {
@@ -114,6 +133,8 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
           WorkModelOption(id: "gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "Affordable · 1M context", provider: "codex"),
           WorkModelOption(id: "gpt-5.4-mini", displayName: "GPT-5.4-Mini", tier: .fast, tagline: "Cheaper 1M-context variant", provider: "codex"),
           WorkModelOption(id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex", tier: .balanced, tagline: "Tuned for code edits", provider: "codex"),
+          WorkModelOption(id: "gpt-5.3-codex-spark", displayName: "GPT-5.3-Codex-Spark", tier: .fast, tagline: "Text-only Codex fast path", provider: "codex"),
+          WorkModelOption(id: "gpt-5.2", displayName: "GPT-5.2", tier: .balanced, tagline: "Prior-gen GPT-5", provider: "codex"),
         ]
       )
     ]
@@ -336,6 +357,92 @@ func workModelCatalogGroups(
   )
 }
 
+func workModelCatalogGroups(
+  hostCatalog: AgentChatModelCatalog,
+  currentModelId: String,
+  currentProvider: String
+) -> [WorkModelCatalogGroup] {
+  let groups = hostCatalog.groups.map { group in
+    WorkModelCatalogGroup(
+      key: group.key,
+      displayName: group.displayName,
+      providers: group.providers.map { provider in
+        let models = provider.subsections
+          .flatMap(\.models)
+          .filter(\.isAvailable)
+          .map { model in
+            workDynamicModelOption(
+              from: model,
+              topLevelProvider: group.key,
+              providerKey: provider.key
+            )
+          }
+        return WorkModelProvider(
+          key: provider.key,
+          displayName: provider.displayName,
+          models: workDeduplicatedModelOptions(models)
+        )
+      }
+      .filter { !$0.models.isEmpty || group.key == "opencode" }
+    )
+  }
+  .filter { !$0.providers.isEmpty }
+
+  return injectCurrentWorkModelIfNeeded(
+    into: groups,
+    currentModelId: currentModelId,
+    currentProvider: currentProvider
+  )
+}
+
+private func workDynamicModelOption(
+  from model: AgentChatModelCatalogModel,
+  topLevelProvider: String,
+  providerKey: String
+) -> WorkModelOption {
+  let displayName = model.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    ? model.id
+    : model.displayName
+  let trimmedDescription = model.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let tagline: String
+  if !trimmedDescription.isEmpty, trimmedDescription.localizedCaseInsensitiveCompare(displayName) != .orderedSame {
+    tagline = trimmedDescription
+  } else {
+    var parts: [String] = []
+    if model.isDefault {
+      parts.append("Default on the paired host")
+    }
+    if model.supportsReasoning == true {
+      parts.append("Reasoning")
+    }
+    if model.supportsTools == true {
+      parts.append("Tools")
+    }
+    tagline = parts.isEmpty ? "Available on the paired host" : parts.joined(separator: " · ")
+  }
+
+  let normalized = model.id.lowercased()
+  let tier: WorkModelOption.Tier
+  if normalized.contains("thinking") {
+    tier = .reasoning
+  } else if normalized.contains("mini") || normalized.contains("spark") || normalized.contains("flash") || normalized == "auto" || normalized.contains("haiku") {
+    tier = .fast
+  } else if normalized.contains("opus") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
+    tier = .flagship
+  } else {
+    tier = .balanced
+  }
+
+  return WorkModelOption(
+    id: model.id,
+    displayName: displayName,
+    tier: tier,
+    tagline: tagline,
+    provider: workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
+    reasoningEfforts: model.reasoningEfforts ?? []
+  )
+}
+
 private func workCuratedModelLookup(from groups: [WorkModelCatalogGroup]) -> [String: WorkModelOption] {
   var lookup: [String: WorkModelOption] = [:]
   for group in groups {
@@ -378,6 +485,12 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
   }
 
   append(trimmed)
+  if let registryId = workCanonicalClaudeRegistryId(for: trimmed) {
+    append(registryId)
+  }
+  if let runtimeId = workClaudeRuntimeModelId(for: trimmed) {
+    append(runtimeId)
+  }
   if let registryId = workCanonicalCodexRegistryId(for: trimmed) {
     append(registryId)
   }
@@ -394,6 +507,36 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
   return keys
 }
 
+private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
+  switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7":
+    return "anthropic/claude-opus-4-7"
+  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m":
+    return "anthropic/claude-opus-4-7-1m"
+  case "sonnet", "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
+    return "anthropic/claude-sonnet-4-6"
+  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5":
+    return "anthropic/claude-haiku-4-5"
+  default:
+    return nil
+  }
+}
+
+private func workClaudeRuntimeModelId(for raw: String) -> String? {
+  switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7":
+    return "claude-opus-4-7"
+  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m":
+    return "claude-opus-4-7[1m]"
+  case "sonnet", "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
+    return "sonnet"
+  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5":
+    return "haiku"
+  default:
+    return nil
+  }
+}
+
 private func workCanonicalCodexRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":
@@ -404,6 +547,10 @@ private func workCanonicalCodexRegistryId(for raw: String) -> String? {
     return "openai/gpt-5.4-mini"
   case "gpt-5.3-codex", "openai/gpt-5.3-codex":
     return "openai/gpt-5.3-codex"
+  case "gpt-5.3", "gpt-5.3-codex-spark", "gpt-5.3-spark", "codex-spark", "spark", "openai/gpt-5.3-codex-spark":
+    return "openai/gpt-5.3-codex-spark"
+  case "gpt-5.2", "gpt-5.2-codex", "openai/gpt-5.2", "openai/gpt-5.2-codex":
+    return "openai/gpt-5.2"
   default:
     return nil
   }
@@ -417,6 +564,12 @@ private func workCodexRuntimeModelId(for raw: String) -> String? {
     return "gpt-5.4"
   case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
     return "gpt-5.4-mini"
+  case "gpt-5.3", "gpt-5.3-codex", "openai/gpt-5.3-codex":
+    return "gpt-5.3-codex"
+  case "gpt-5.3-codex-spark", "gpt-5.3-spark", "codex-spark", "spark", "openai/gpt-5.3-codex-spark":
+    return "gpt-5.3-codex-spark"
+  case "gpt-5.2", "gpt-5.2-codex", "openai/gpt-5.2", "openai/gpt-5.2-codex":
+    return "gpt-5.2"
   default:
     return nil
   }
@@ -446,6 +599,10 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
     return "GPT-5.4-Mini"
   case "gpt-5.3-codex", "openai/gpt-5.3-codex":
     return "GPT-5.3-Codex"
+  case "gpt-5.3-codex-spark", "gpt-5.3-spark", "codex-spark", "spark", "openai/gpt-5.3-codex-spark":
+    return "GPT-5.3-Codex-Spark"
+  case "gpt-5.2", "gpt-5.2-codex", "openai/gpt-5.2", "openai/gpt-5.2-codex":
+    return "GPT-5.2"
   default:
     return nil
   }
@@ -631,7 +788,8 @@ private func workDynamicModelOption(
     displayName: displayName,
     tier: tier,
     tagline: tagline,
-    provider: curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey)
+    provider: curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
+    reasoningEfforts: model.reasoningEfforts ?? []
   )
 }
 

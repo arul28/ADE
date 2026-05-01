@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -108,6 +108,28 @@ describe("SessionListPane", () => {
 
     expect(screen.getAllByText("Mobile-created lane")).toHaveLength(2);
     expect(screen.getByText("Mobile Tool Streaming UI")).toBeTruthy();
+  });
+
+  it("bolds only the session name in sidebar cards", () => {
+    const session = makeSession({
+      id: "session-style",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Style target session",
+      lastOutputPreview: "Ran the latest command",
+    });
+    renderPane({
+      runningFiltered: [session],
+      sessionsGroupedByLane: new Map([[session.laneId, [session]]]),
+    });
+
+    const title = screen.getByText("Style target session");
+    const row = title.closest("button");
+    expect(row).toBeTruthy();
+
+    expect(title.className).toContain("font-semibold");
+    expect(within(row!).getByText("Codex").className).not.toContain("font-semibold");
+    expect(within(row!).getByText("Ran the latest command").className).not.toContain("font-semibold");
   });
 
   it("marks old running CLI and shell sessions", () => {

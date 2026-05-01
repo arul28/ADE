@@ -15,9 +15,9 @@ Setup takes about 30 seconds: open **Settings → Notifications → Mobile Push*
 
 ---
 
-## Cursor ACP integration
+## Legacy Cursor integration
 
-Cursor's agent can now connect to ADE directly as a chat provider via the **Agent Control Protocol (ACP)**. When Cursor is installed and authenticated, its models appear in the chat model selector alongside Claude, Codex, and OpenCode. ADE manages the ACP session pool and maps ACP events to its standard chat event model, so the UI behaves consistently across all providers.
+Cursor's agent can now connect to ADE directly as a chat provider. When Cursor is installed and authenticated, its models appear in the chat model selector alongside Claude, Codex, and OpenCode. ADE manages the session pool and maps provider events to its standard chat event model, so the UI behaves consistently across all providers. This older implementation has since been replaced by the Cursor SDK path.
 
 The `ade` CLI is on `PATH` for Cursor-backed sessions, giving Cursor agents access to lane, git, PR, and action tools.
 

@@ -64,10 +64,9 @@ actionable insight per memory, SAVE vs DO-NOT-SAVE lists, the
   `item/completed` where `item.type === "contextCompaction"`; the
   Codex runtime emits `context_compact` on completion. Codex has no
   pre-compact hook equivalent.
-- **Cursor / ACP** — no compaction signal. Neither the base ACP spec
-  nor Cursor's extensions define a compaction or summarization
-  notification. Cursor summarizes internally but keeps it hidden from
-  the protocol. No indicator possible today.
+- **Cursor SDK** — no exposed compaction signal. Cursor may summarize
+  internally, but the SDK does not expose a compaction or summarization
+  notification ADE can render today.
 
 ### Caveats
 
@@ -275,7 +274,7 @@ counts.
 - **Pre-compact hook nudge is Claude-only.** Only the Claude Agent
   SDK exposes a `PreCompact` hook that fires *before* compaction and
   can influence it. Compaction *boundary events* are wired for
-  Claude, OpenCode, and Codex; Cursor/ACP has no signal to listen
+  Claude, OpenCode, and Codex; Cursor SDK has no signal to listen
   for.
 - **Procedural learning clustering is text-similarity based.** If
   `normalizeText` drops too much signal (e.g., stripping numbers in a

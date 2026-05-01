@@ -107,7 +107,8 @@ const LOCAL_PROVIDER_ENDPOINTS: Record<LocalProviderFamily, string> = {
 
 export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ---- Anthropic (CLI-wrapped via claude) ----
-  // Claude chat surfaces in ADE use the native low/medium/high effort ladder.
+  // Claude chat surfaces use the native Agent SDK effort ladder. Keep these
+  // tiers aligned with the launch validation path.
   {
     id: "anthropic/claude-opus-4-7",
     shortId: "opus",
@@ -115,10 +116,10 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     displayName: "Claude Opus 4.7",
     family: "anthropic",
     authTypes: ["cli-subscription"],
-    contextWindow: 1_000_000,
+    contextWindow: 200_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
     color: "#D97706",
     providerRoute: "claude-cli",
     providerModelId: "claude-opus-4-7",
@@ -255,6 +256,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   {
     id: "openai/gpt-5.3-codex",
     shortId: "gpt-5.3-codex",
+    aliases: ["gpt-5.3"],
     displayName: "GPT-5.3-Codex",
     family: "openai",
     authTypes: ["cli-subscription"],
@@ -270,6 +272,42 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 1.5,
     outputPricePer1M: 6,
     costTier: "high",
+  },
+  {
+    id: "openai/gpt-5.3-codex-spark",
+    shortId: "gpt-5.3-codex-spark",
+    aliases: ["gpt-5.3-spark", "codex-spark", "spark"],
+    displayName: "GPT-5.3-Codex-Spark",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 128_000,
+    maxOutputTokens: 128_000,
+    capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#22C55E",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.3-codex-spark",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    costTier: "low",
+  },
+  {
+    id: "openai/gpt-5.2",
+    shortId: "gpt-5.2",
+    aliases: ["openai/gpt-5.2-codex", "gpt-5.2-codex"],
+    displayName: "GPT-5.2",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#059669",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.2",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    costTier: "medium",
   },
 
   // ---- Cursor SDK models: discovered at runtime via @cursor/sdk (see cursorModelsDiscovery + getResolvedAvailableModels) ----
@@ -551,7 +589,7 @@ export function createDynamicOpenCodeModelDescriptor(
   const aliases = options?.aliases?.map((alias) => alias.trim()).filter(Boolean) ?? [];
   const family: ProviderFamily = (opPid && OPENCODE_PROVIDER_FAMILY_MAP[opPid]) || "opencode";
   const isLocal = opPid ? LOCAL_OPENCODE_PROVIDERS.has(opPid) : false;
-  const authTypes: AuthType[] = isLocal ? ["local"] : ["api-key"];
+  const authTypes: AuthType[] = isLocal ? ["local"] : opPid === "openrouter" ? ["openrouter"] : ["api-key"];
   const color = options?.color ?? (opPid && OPENCODE_PROVIDER_COLORS[opPid]) ?? "#2563EB";
   return {
     id,

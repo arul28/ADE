@@ -57,6 +57,7 @@ import { inspectLocalProvider } from "./localModelDiscovery";
 import {
   discoverCursorSdkModelDescriptors,
   clearCursorCliModelsCache,
+  probeCursorSdkModelDiscovery,
 } from "../chat/cursorModelsDiscovery";
 import { discoverDroidCliModelDescriptors, clearDroidCliModelsCache } from "../chat/droidModelsDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
@@ -135,6 +136,9 @@ export type AiIntegrationStatus = {
   opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
   apiKeyStore?: {
     secureStorageAvailable: boolean;
+    macosKeychainAvailable?: boolean;
+    macosKeychainService?: string | null;
+    macosKeychainError?: string | null;
     legacyPlaintextDetected: boolean;
     decryptionFailed: boolean;
     encryptedStorePath?: string | null;
@@ -897,12 +901,13 @@ export function createAiIntegrationService(args: {
 
     let available = getAvailableModels(auth);
     const discoveryMode = options?.discoverCliModels === true ? "probe" : "cached-or-fallback";
+    const cursorDiscoveryMode = options?.discoverCliModels === true ? "probe" : "cached-only";
 
     const cursorApiKey = getCursorApiKeyFromAuth(auth);
     if (cursorApiKey) {
       let cursorModels: Awaited<ReturnType<typeof discoverCursorSdkModelDescriptors>> = [];
       try {
-        cursorModels = await discoverCursorSdkModelDescriptors(cursorApiKey);
+        cursorModels = await discoverCursorSdkModelDescriptors(cursorApiKey, { mode: cursorDiscoveryMode });
       } catch {
         cursorModels = [];
       }
@@ -939,31 +944,52 @@ export function createAiIntegrationService(args: {
 
   const verifyApiKeyConnection = async (provider: string): Promise<AiApiKeyVerificationResult> => {
     const normalizedProvider = String(provider ?? "").trim().toLowerCase();
-    const auth = await detectAuth();
+    let invalidateInFinally = true;
+    try {
+      const auth = await detectAuth();
 
-    const apiEntry =
-      normalizedProvider === "openrouter"
-        ? auth.find((entry): entry is Extract<DetectedAuth, { type: "openrouter" }> => entry.type === "openrouter")
-        : auth.find(
-            (entry): entry is Extract<DetectedAuth, { type: "api-key" }> =>
-              entry.type === "api-key" && entry.provider === normalizedProvider
-          );
+      const apiEntry =
+        normalizedProvider === "openrouter"
+          ? auth.find((entry): entry is Extract<DetectedAuth, { type: "openrouter" }> => entry.type === "openrouter")
+          : auth.find(
+              (entry): entry is Extract<DetectedAuth, { type: "api-key" }> =>
+                entry.type === "api-key" && entry.provider === normalizedProvider
+            );
 
-    if (!apiEntry) {
+      if (!apiEntry) {
+        return {
+          provider: normalizedProvider,
+          ok: false,
+          message: "No API key configured for this provider.",
+          verifiedAt: new Date().toISOString(),
+        };
+      }
+
+      const providerName = apiEntry.type === "openrouter" ? "openrouter" : apiEntry.provider;
+      const verification = await verifyProviderApiKey(providerName, apiEntry.key);
+      if (providerName === "cursor" && verification.ok) {
+        invalidateProviderReadinessCaches();
+        invalidateInFinally = false;
+        const discovery = await probeCursorSdkModelDiscovery(apiEntry.key, { timeoutMs: 3_000 });
+        if (discovery.failureKind === "auth") {
+          return {
+            ...verification,
+            ok: false,
+            message:
+              "Cursor account verification succeeded, but Cursor rejected this API key for agent/model access. Re-enter a key from the Cursor dashboard integrations page.",
+            source: apiEntry.source,
+          };
+        }
+      }
       return {
-        provider: normalizedProvider,
-        ok: false,
-        message: "No API key configured for this provider.",
-        verifiedAt: new Date().toISOString(),
+        ...verification,
+        source: apiEntry.source,
       };
+    } finally {
+      if (invalidateInFinally) {
+        invalidateProviderReadinessCaches();
+      }
     }
-
-    const providerName = apiEntry.type === "openrouter" ? "openrouter" : apiEntry.provider;
-    const verification = await verifyProviderApiKey(providerName, apiEntry.key);
-    return {
-      ...verification,
-      source: apiEntry.source,
-    };
   };
 
   const requireCursorCloudApiKey = async (): Promise<string> => {
@@ -1484,6 +1510,21 @@ export function createAiIntegrationService(args: {
   const STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
   let statusCache: { result: AiIntegrationStatus; cachedAt: number; runtimeHealthVersion: number } | null = null;
   const statusRequestsInFlight = new Map<string, Promise<AiIntegrationStatus>>();
+  let providerReadinessCacheGeneration = 0;
+
+  const invalidateProviderReadinessCaches = (): void => {
+    providerReadinessCacheGeneration += 1;
+    statusCache = null;
+    statusRequestsInFlight.clear();
+    modelListCache.clear();
+    resetProviderRuntimeHealth();
+    resetClaudeRuntimeProbeCache();
+    resetLocalProviderDetectionCache();
+    clearCursorCliModelsCache();
+    clearDroidCliModelsCache();
+    clearOpenCodeInventoryCache();
+    replaceDynamicOpenCodeModelDescriptors([]);
+  };
 
   const executeReadOnlyOneShotTask = async (args: {
     feature: AiFeatureKey;
@@ -1527,18 +1568,15 @@ export function createAiIntegrationService(args: {
         return statusCache.result;
       }
       if (options?.force) {
-        resetProviderRuntimeHealth();
-        resetClaudeRuntimeProbeCache();
-        resetLocalProviderDetectionCache();
-        clearCursorCliModelsCache();
-        clearDroidCliModelsCache();
-        modelListCache.clear();
+        invalidateProviderReadinessCaches();
         runtimeHealthVersion = getProviderRuntimeHealthVersion();
       }
+      const requestGeneration = providerReadinessCacheGeneration;
       const requestKey = [
         options?.force === true ? "force" : "default",
         options?.refreshOpenCodeInventory === true ? "refresh-opencode" : "reuse-opencode",
         String(runtimeHealthVersion),
+        String(requestGeneration),
       ].join(":");
       const existingRequest = statusRequestsInFlight.get(requestKey);
       if (existingRequest) {
@@ -1701,7 +1739,9 @@ export function createAiIntegrationService(args: {
             opencodeProviders: opencodeInventory.providers,
             apiKeyStore: timeSyncPhase("api_key_store_status", () => getApiKeyStoreStatus()),
           };
-          statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion };
+          if (requestGeneration === providerReadinessCacheGeneration) {
+            statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion };
+          }
           logger.info("ai.status.summary", {
             ...phaseContext,
             durationMs: Date.now() - totalStartedAt,
@@ -1765,6 +1805,7 @@ export function createAiIntegrationService(args: {
 
     getAvailabilityAsync,
     resolveModelForTask,
+    invalidateProviderReadinessCaches,
 
     // Backward-compatible convenience methods used by migrated services.
     async generateNarrative(args: {

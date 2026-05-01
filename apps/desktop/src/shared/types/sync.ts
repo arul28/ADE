@@ -565,6 +565,7 @@ export type SyncRemoteCommandAction =
   | "chat.unarchive"
   | "chat.delete"
   | "chat.models"
+  | "chat.modelCatalog"
   | "cto.getRoster"
   | "cto.ensureSession"
   | "cto.ensureAgentSession"

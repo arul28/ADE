@@ -12,13 +12,16 @@ streaming and touch input on macOS.
   Indigo; unsupported keyboard/text operations are reported as typed failures so
   ADE can fall back to idb for that method.
 - `build.sh` compiles both helpers lazily into `build/xcode-<version>-<hash>/`.
+  Set `ADE_IOS_SIM_HELPER_BUILD_ROOT` to place that cache somewhere else;
+  packaged ADE builds use this to keep generated binaries outside the signed
+  `.app` bundle.
 
 These helpers intentionally use Apple private frameworks. They are local
 developer tooling, not app runtime code. Keep the supported Xcode major-version
 set explicit in `iosSimulatorService.ts`, and expand it only after testing the
-helpers against that Xcode. `iosurface-indigo` is currently gated off in
-packaged ADE builds until the helper signing/notarization story is cleared; set
-`ADE_IOS_SURFACE_ALLOW_PACKAGED=1` only for explicit packaging experiments.
+helpers against that Xcode. Packaged ADE builds ship these sources as resources
+and compile the selected-Xcode helper binaries into the user's ADE cache at
+runtime.
 
 To rebuild manually:
 
