@@ -192,7 +192,7 @@ const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
 };
 
 const DEFAULT_CLAUDE_TASK_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
-const DEFAULT_CODEX_TASK_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
+const DEFAULT_CODEX_TASK_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
 
 const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   planning: {

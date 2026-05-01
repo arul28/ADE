@@ -18,7 +18,7 @@ function makePhaseCard(overrides: Partial<PhaseCard> = {}): PhaseCard {
     name: "Development",
     description: "Implement planned work.",
     instructions: "Execute implementation tasks.",
-    model: { modelId: "openai/gpt-5.4-codex", thinkingLevel: "medium" },
+    model: { modelId: "openai/gpt-5.4", thinkingLevel: "medium" },
     budget: {},
     orderingConstraints: {},
     askQuestions: { enabled: false },

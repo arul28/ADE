@@ -129,37 +129,67 @@ enum ADEColor {
     "anthropic/claude-haiku-4-5": 0x06B6D4,
     "haiku": 0x06B6D4,
     // OpenAI / Codex
-    "openai/gpt-5.5-codex": 0x10A37F,
-    "gpt-5.5-codex": 0x10A37F,
-    "openai/gpt-5.4-codex": 0x10A37F,
-    "gpt-5.4-codex": 0x10A37F,
-    "openai/gpt-5.4-mini-codex": 0x34D399,
-    "gpt-5.4-mini-codex": 0x34D399,
+    "openai/gpt-5.5": 0x10A37F,
+    "gpt-5.5": 0x10A37F,
+    "openai/gpt-5.4": 0x10A37F,
+    "gpt-5.4": 0x10A37F,
+    "openai/gpt-5.4-mini": 0x34D399,
+    "gpt-5.4-mini": 0x34D399,
     "openai/gpt-5.3-codex": 0x10B981,
     "gpt-5.3-codex": 0x10B981,
-    "openai/gpt-5.3-codex-spark": 0x34D399,
-    "gpt-5.3-codex-spark": 0x34D399,
-    "openai/gpt-5.2-codex": 0x10B981,
-    "gpt-5.2-codex": 0x10B981,
-    "openai/gpt-5.1-codex-max": 0x10B981,
-    "gpt-5.1-codex-max": 0x10B981,
-    "openai/gpt-5.1-codex-mini": 0x2DD4BF,
-    "gpt-5.1-codex-mini": 0x2DD4BF,
     // Local
     "ollama/llama-3.3": 0x71717A,
     "llama-3.3": 0x71717A,
   ]
 
+  private static func modelLookupCandidates(for modelId: String?) -> [String] {
+    guard let raw = modelId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return [] }
+    var candidates: [String] = []
+    func append(_ value: String) {
+      let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      if !normalized.isEmpty && !candidates.contains(normalized) {
+        candidates.append(normalized)
+      }
+    }
+
+    append(raw)
+    let lower = raw.lowercased()
+    if lower.hasPrefix("openai/") {
+      append(String(lower.dropFirst("openai/".count)))
+    }
+    if lower.hasPrefix("anthropic/") {
+      append(String(lower.dropFirst("anthropic/".count)))
+    }
+
+    switch lower {
+    case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":
+      append("openai/gpt-5.5")
+      append("gpt-5.5")
+    case "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex":
+      append("openai/gpt-5.4")
+      append("gpt-5.4")
+    case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
+      append("openai/gpt-5.4-mini")
+      append("gpt-5.4-mini")
+    case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
+      append("anthropic/claude-opus-4-7-1m")
+      append("opus-1m")
+    default:
+      break
+    }
+
+    return candidates
+  }
+
   /// Resolve a model id (registry id or short id) to its brand color.
   /// Returns nil when the model isn't in the registry; callers should fall back to `providerBrand`.
   static func modelBrand(for modelId: String?) -> Color? {
-    guard let raw = modelId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
-    if let hexValue = modelColors[raw] {
-      return Color(uiColor: hex(hexValue))
-    }
-    let lower = raw.lowercased()
-    if let hexValue = modelColors[lower] {
-      return Color(uiColor: hex(hexValue))
+    let candidates = modelLookupCandidates(for: modelId)
+    guard let lower = candidates.first else { return nil }
+    for candidate in candidates {
+      if let hexValue = modelColors[candidate] {
+        return Color(uiColor: hex(hexValue))
+      }
     }
     // Heuristic fallback for dynamic Cursor SDK ids: `cursor/<id>`.
     if lower.hasPrefix("cursor/") {
@@ -197,32 +227,23 @@ enum ADEColor {
     "sonnet": ["low", "medium", "high"],
     // Claude Haiku intentionally absent — no reasoning tiers.
     // OpenAI / Codex
-    "openai/gpt-5.5-codex": ["low", "medium", "high", "xhigh"],
-    "gpt-5.5-codex": ["low", "medium", "high", "xhigh"],
-    "openai/gpt-5.4-codex": ["low", "medium", "high", "xhigh"],
-    "gpt-5.4-codex": ["low", "medium", "high", "xhigh"],
-    "openai/gpt-5.4-mini-codex": ["low", "medium", "high", "xhigh"],
-    "gpt-5.4-mini-codex": ["low", "medium", "high", "xhigh"],
+    "openai/gpt-5.5": ["low", "medium", "high", "xhigh"],
+    "gpt-5.5": ["low", "medium", "high", "xhigh"],
+    "openai/gpt-5.4": ["low", "medium", "high", "xhigh"],
+    "gpt-5.4": ["low", "medium", "high", "xhigh"],
+    "openai/gpt-5.4-mini": ["low", "medium", "high", "xhigh"],
+    "gpt-5.4-mini": ["low", "medium", "high", "xhigh"],
     "openai/gpt-5.3-codex": ["low", "medium", "high", "xhigh"],
     "gpt-5.3-codex": ["low", "medium", "high", "xhigh"],
-    "openai/gpt-5.3-codex-spark": ["low", "medium", "high", "xhigh"],
-    "gpt-5.3-codex-spark": ["low", "medium", "high", "xhigh"],
-    "openai/gpt-5.2-codex": ["low", "medium", "high", "xhigh"],
-    "gpt-5.2-codex": ["low", "medium", "high", "xhigh"],
-    "openai/gpt-5.1-codex-max": ["low", "medium", "high", "xhigh"],
-    "gpt-5.1-codex-max": ["low", "medium", "high", "xhigh"],
-    "openai/gpt-5.1-codex-mini": ["medium", "high"],
-    "gpt-5.1-codex-mini": ["medium", "high"],
   ]
 
   /// Return the reasoning tiers supported by a model, or nil when the model
   /// doesn't expose tiers (e.g. Haiku). Used by the composer to decide whether
   /// to render the effort picker.
   static func reasoningTiers(for modelId: String?) -> [String]? {
-    guard let raw = modelId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
-    if let tiers = modelReasoningTiers[raw] { return tiers }
-    let lower = raw.lowercased()
-    if let tiers = modelReasoningTiers[lower] { return tiers }
+    for candidate in modelLookupCandidates(for: modelId) {
+      if let tiers = modelReasoningTiers[candidate] { return tiers }
+    }
     return nil
   }
 

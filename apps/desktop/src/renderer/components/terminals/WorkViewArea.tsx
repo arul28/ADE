@@ -75,6 +75,7 @@ function SessionSurface({
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
         isTileActive={isActive}
+        isTileVisible={layoutVariant === "grid-tile" ? true : isActive}
         shouldAutofocusComposer={shouldAutofocus}
       />
     );

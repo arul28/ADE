@@ -44,7 +44,7 @@ const resolvedArg2 =
   async (_a: any, _b: any) =>
     v;
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
-  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
+  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
   getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
 
@@ -3258,7 +3258,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           sessionId: "chat-review-1",
           laneId: MOCK_LANES[1]?.id ?? "lane-auth",
           provider: "codex",
-          model: "GPT-5.4 Codex",
+          model: "GPT-5.4",
           modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
           title: "Review: feature/auth-flow vs main",
           surface: "automation",

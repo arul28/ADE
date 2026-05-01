@@ -116,6 +116,7 @@ async function connectClient(args: {
   dbVersion: number;
   platform?: "macOS" | "linux" | "windows" | "iOS" | "unknown";
   deviceType?: "desktop" | "phone" | "vps" | "unknown";
+  capabilities?: string[];
 }) {
   const ws = new WebSocket(`ws://127.0.0.1:${args.port}`);
   await new Promise<void>((resolve, reject) => {
@@ -135,6 +136,7 @@ async function connectClient(args: {
         deviceType: args.deviceType ?? "desktop",
         siteId: args.siteId,
         dbVersion: args.dbVersion,
+        capabilities: args.capabilities ?? ["changesetAck"],
       },
     },
     compressionThresholdBytes: 100_000,
@@ -925,6 +927,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-brain-"), createLogger() as any);
     const dbA = await openKvDb(makeDbPath("ade-sync-peer-a-"), createLogger() as any);
     const dbB = await openKvDb(makeDbPath("ade-sync-peer-b-"), createLogger() as any);
+    const dbC = await openKvDb(makeDbPath("ade-sync-peer-c-"), createLogger() as any);
     const projectRoot = makeProjectRoot("ade-sync-host-project-");
     const workspaceRoot = path.join(projectRoot, "workspace");
     fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -1025,6 +1028,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       brainDb.close();
       dbA.close();
       dbB.close();
+      dbC.close();
     });
 
     const port = await host.waitUntilListening();
@@ -1054,6 +1058,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       type: "changeset_batch",
       requestId: "changes-a",
       payload: {
+        batchId: "changes-a",
         reason: "relay",
         fromDbVersion: beforeVersion,
         toDbVersion: dbA.sync.getDbVersion(),
@@ -1066,12 +1071,55 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       const replicated = brainDb.getJson<{ value: string }>("replicated-state");
       return replicated?.value === "hello";
     });
+    const sourceAck = await clientA.queue.next("changeset_ack");
+    expect((sourceAck.payload as { ok: boolean; batchId?: string }).ok).toBe(true);
+    expect((sourceAck.payload as { ok: boolean; batchId?: string }).batchId).toBe("changes-a");
 
     const rebroadcast = await clientB.queue.next("changeset_batch");
-    const payload = rebroadcast.payload as { changes: unknown[] };
+    const payload = rebroadcast.payload as {
+      batchId: string;
+      fromDbVersion: number;
+      toDbVersion: number;
+      changes: unknown[];
+    };
     expect(payload.changes.length).toBeGreaterThan(0);
     dbB.sync.applyChanges(payload.changes as any);
     expect(dbB.getJson<{ value: string }>("replicated-state")).toEqual({ value: "hello" });
+    expect(host.getPeerStates().find((peer) => peer.deviceId === "peer-b")?.syncLag).toBeGreaterThan(0);
+    clientB.ws.send(encodeSyncEnvelope({
+      type: "changeset_ack",
+      requestId: payload.batchId,
+      payload: {
+        batchId: payload.batchId,
+        fromDbVersion: payload.fromDbVersion,
+        toDbVersion: payload.toDbVersion,
+        appliedDbVersion: dbB.sync.getDbVersion(),
+        appliedCount: payload.changes.length,
+        ok: true,
+      },
+      compressionThresholdBytes: 100_000,
+    }));
+    await waitFor(() => host.getPeerStates().find((peer) => peer.deviceId === "peer-b")?.syncLag === 0);
+
+    const legacyClient = await connectClient({
+      port,
+      token,
+      deviceId: "peer-legacy",
+      deviceName: "Peer Legacy",
+      siteId: dbC.sync.getSiteId(),
+      dbVersion: 0,
+      capabilities: [],
+    });
+    activeDisposers.push(legacyClient.close);
+    const legacyBatch = await legacyClient.queue.next("changeset_batch");
+    const legacyPayload = legacyBatch.payload as {
+      batchId: string;
+      toDbVersion: number;
+      changes: unknown[];
+    };
+    expect(legacyPayload.batchId).toBeTruthy();
+    expect(legacyPayload.changes.length).toBeGreaterThan(0);
+    await waitFor(() => host.getPeerStates().find((peer) => peer.deviceId === "peer-legacy")?.syncLag === 0);
   }, 60_000);
 
   it("serves workspace file operations and artifact reads while blocking .git access", async () => {
@@ -1536,6 +1584,51 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const result = await client.queue.next("command_result");
     expect((result.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
     expect(createSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => fs.existsSync(path.join(projectRoot, ".ade", "cache", "sync-mobile-command-ledger.json")));
+    const commandLedgerPath = path.join(projectRoot, ".ade", "cache", "sync-mobile-command-ledger.json");
+    const quickRunLedger = fs.readFileSync(commandLedgerPath, "utf8");
+    expect(quickRunLedger).toContain("cmd-quick-run");
+    expect(quickRunLedger).toContain("argsFingerprint");
+    expect(quickRunLedger).not.toContain("argsKey");
+    expect(quickRunLedger).not.toContain("npm test");
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-quick-run-retry",
+      payload: {
+        commandId: "cmd-quick-run",
+        action: "work.runQuickCommand",
+        args: {
+          laneId: "lane-1",
+          title: "Run tests",
+          startupCommand: "npm test",
+        },
+      },
+    }));
+    const replayAck = await client.queue.next("command_ack");
+    expect((replayAck.payload as { accepted: boolean }).accepted).toBe(true);
+    const replayResult = await client.queue.next("command_result");
+    expect((replayResult.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
+    expect(createSpy).toHaveBeenCalledTimes(1);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-quick-run-conflict",
+      payload: {
+        commandId: "cmd-quick-run",
+        action: "work.runQuickCommand",
+        args: {
+          laneId: "lane-2",
+          title: "Run a different command",
+          startupCommand: "npm run lint",
+        },
+      },
+    }));
+    const mismatchAck = await client.queue.next("command_ack");
+    expect((mismatchAck.payload as { accepted: boolean }).accepted).toBe(false);
+    const mismatchResult = await client.queue.next("command_result");
+    expect((mismatchResult.payload as { ok: boolean; error?: { code: string } }).error?.code).toBe("duplicate_command_mismatch");
+    expect(createSpy).toHaveBeenCalledTimes(1);
 
     client.ws.send(encodeSyncEnvelope({
       type: "command",
@@ -1551,6 +1644,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const workListResult = await client.queue.next("command_result");
     const workSessions = (workListResult.payload as { ok: boolean; result: Array<{ id: string }> }).result;
     expect(workSessions.map((entry) => entry.id)).toEqual(["session-1"]);
+    const afterWorkListLedger = fs.readFileSync(commandLedgerPath, "utf8");
+    expect(afterWorkListLedger).not.toContain("cmd-work-list");
+    expect(afterWorkListLedger).not.toContain("prior output");
 
     client.ws.send(encodeSyncEnvelope({
       type: "command",

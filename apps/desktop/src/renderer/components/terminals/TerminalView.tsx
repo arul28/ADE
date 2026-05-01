@@ -121,11 +121,18 @@ function isDarkTheme(theme: ThemeId): boolean {
 }
 
 function terminalWebglRendererEnabled(): boolean {
+  let stored: string | null = null;
   try {
-    return window.localStorage.getItem(TERMINAL_RENDERER_STORAGE_KEY) === "webgl";
+    stored = window.localStorage.getItem(TERMINAL_RENDERER_STORAGE_KEY);
   } catch {
-    return false;
+    // Storage can be unavailable in hardened/browser-like environments; still
+    // honor the Linux renderer fallback below.
   }
+  if (stored != null) return stored !== "dom";
+  const platform = window.navigator?.platform?.toLowerCase() ?? "";
+  const userAgent = window.navigator?.userAgent?.toLowerCase() ?? "";
+  if (platform.includes("linux") || userAgent.includes("linux")) return false;
+  return true;
 }
 
 function cloneHealth(health: TerminalHealthCounters): TerminalHealthCounters {
@@ -796,7 +803,7 @@ function createRuntime(args: {
   const term = new Terminal({
     allowProposedApi: true,
     convertEol: true,
-    cursorBlink: false,
+    cursorBlink: true,
     cursorInactiveStyle: "none",
     documentOverride: document,
     scrollback: args.preferences.scrollback,

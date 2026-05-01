@@ -331,12 +331,13 @@ describe("TerminalView", () => {
   it("fits to the container and resizes the PTY when the fit result is valid", async () => {
     vi.useRealTimers();
     try {
+      window.localStorage.setItem("ade.terminalRenderer", "webgl");
       render(<TerminalView ptyId="pty-valid" sessionId="session-valid" isActive />);
 
       await waitFor(
         () => {
           const runtime = getTerminalRuntimeSnapshot("session-valid");
-          expect(runtime?.renderer).toBe("dom");
+          expect(runtime?.renderer).toBe("webgl");
           expect(runtime?.health.fitRecoveries).toBe(0);
           expect((window as any).ade.pty.resize).toHaveBeenCalledWith({
             ptyId: "pty-valid",
@@ -351,20 +352,55 @@ describe("TerminalView", () => {
     }
   });
 
-  it("uses the WebGL renderer when explicitly opted in", async () => {
+  it("uses the DOM renderer when explicitly opted out", async () => {
     vi.useRealTimers();
     try {
-      window.localStorage.setItem("ade.terminalRenderer", "webgl");
-      render(<TerminalView ptyId="pty-webgl" sessionId="session-webgl" isActive />);
+      window.localStorage.setItem("ade.terminalRenderer", "dom");
+      render(<TerminalView ptyId="pty-dom-opt-out" sessionId="session-dom-opt-out" isActive />);
 
       await waitFor(
         () => {
-          const runtime = getTerminalRuntimeSnapshot("session-webgl");
-          expect(runtime?.renderer).toBe("webgl");
+          const runtime = getTerminalRuntimeSnapshot("session-dom-opt-out");
+          expect(runtime?.renderer).toBe("dom");
         },
         { timeout: 10_000 },
       );
     } finally {
+      vi.useFakeTimers();
+    }
+  });
+
+  it("uses the DOM renderer on Linux when localStorage is unavailable", async () => {
+    vi.useRealTimers();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const originalPlatform = window.navigator.platform;
+    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "Linux x86_64",
+      });
+      render(<TerminalView ptyId="pty-linux-storage" sessionId="session-linux-storage" isActive />);
+
+      await waitFor(
+        () => {
+          const runtime = getTerminalRuntimeSnapshot("session-linux-storage");
+          expect(runtime?.renderer).toBe("dom");
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      getItemSpy.mockRestore();
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
       vi.useFakeTimers();
     }
   });

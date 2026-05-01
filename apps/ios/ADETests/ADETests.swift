@@ -1482,6 +1482,122 @@ final class ADETests: XCTestCase {
     reopened.close()
   }
 
+  @MainActor
+  func testSyncServicePersistsOutboundCursorAcrossRestart() throws {
+    let outboundCursorKey = "ade.sync.outboundSyncCursors"
+    let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    UserDefaults.standard.removeObject(forKey: outboundCursorKey)
+    UserDefaults.standard.removeObject(forKey: pendingOutboundChangesetsKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: outboundCursorKey)
+      UserDefaults.standard.removeObject(forKey: pendingOutboundChangesetsKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project-one', 'Project One', 'main', '2026-03-15T00:00:00.000Z', '2026-03-15T00:00:00.000Z'
+      )
+    """)
+
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
+    let initialCursor = service.outboundLocalDbVersionForTesting()
+
+    try database.executeSqlForTesting("""
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path, parent_lane_id, status, created_at, archived_at
+      ) values (
+        'lane-restart', 'project-1', 'Restart proof', null, 'worktree', 'origin/main', 'feature/restart', '/tmp/restart', null, 'active', '2026-03-15T00:00:00.000Z', null
+      )
+    """)
+    let pendingLocalVersion = database.currentDbVersion()
+    XCTAssertGreaterThan(pendingLocalVersion, initialCursor)
+
+    database.close()
+    let databaseBeforeAck = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    let restartedBeforeAck = SyncService(database: databaseBeforeAck)
+    restartedBeforeAck.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
+    XCTAssertEqual(restartedBeforeAck.outboundLocalDbVersionForTesting(), initialCursor)
+
+    restartedBeforeAck.advanceOutboundCursorForTesting(to: pendingLocalVersion)
+    databaseBeforeAck.close()
+    let databaseAfterAck = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    let restartedAfterAck = SyncService(database: databaseAfterAck)
+    restartedAfterAck.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
+    XCTAssertEqual(restartedAfterAck.outboundLocalDbVersionForTesting(), pendingLocalVersion)
+
+    databaseAfterAck.close()
+  }
+
+  @MainActor
+  func testSyncServicePreservesPendingOutboundChangesetAcrossProjectSwitch() throws {
+    let outboundCursorKey = "ade.sync.outboundSyncCursors"
+    let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    UserDefaults.standard.removeObject(forKey: outboundCursorKey)
+    UserDefaults.standard.removeObject(forKey: pendingOutboundChangesetsKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: outboundCursorKey)
+      UserDefaults.standard.removeObject(forKey: pendingOutboundChangesetsKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('project-1', '/tmp/project-one', 'Project One', 'main', '2026-03-15T00:00:00.000Z', '2026-03-15T00:00:00.000Z'),
+        ('project-2', '/tmp/project-two', 'Project Two', 'main', '2026-03-15T00:00:00.000Z', '2026-03-15T00:00:00.000Z')
+    """)
+
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
+    let initialCursor = service.outboundLocalDbVersionForTesting()
+
+    try database.executeSqlForTesting("""
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path, parent_lane_id, status, created_at, archived_at
+      ) values (
+        'lane-switch', 'project-1', 'Switch proof', null, 'worktree', 'origin/main', 'feature/switch', '/tmp/switch', null, 'active', '2026-03-15T00:00:00.000Z', null
+      )
+    """)
+    let pendingLocalVersion = database.currentDbVersion()
+    XCTAssertGreaterThan(pendingLocalVersion, initialCursor)
+
+    service.setActiveProjectForTesting(projectId: "project-2", rootPath: "/tmp/project-two")
+    XCTAssertEqual(service.outboundLocalDbVersionForTesting(), pendingLocalVersion)
+
+    service.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
+    XCTAssertEqual(service.outboundLocalDbVersionForTesting(), initialCursor)
+
+    service.advanceOutboundCursorForTesting(to: pendingLocalVersion)
+    database.close()
+    let databaseAfterAck = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    let restartedAfterAck = SyncService(database: databaseAfterAck)
+    restartedAfterAck.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
+    XCTAssertEqual(restartedAfterAck.outboundLocalDbVersionForTesting(), pendingLocalVersion)
+
+    databaseAfterAck.close()
+  }
+
   func testDatabaseExportAndApplyChangesRoundTrip() throws {
     let source = makeDatabase(baseURL: makeTemporaryDirectory())
     let target = makeDatabase(baseURL: makeTemporaryDirectory())
@@ -1509,6 +1625,25 @@ final class ADETests: XCTestCase {
 
     source.close()
     target.close()
+  }
+
+  func testSyncChangesetBatchPayloadDecodesLegacyBatchWithoutBatchId() throws {
+    let data = """
+    {
+      "reason": "relay",
+      "fromDbVersion": 12,
+      "toDbVersion": 14,
+      "changes": []
+    }
+    """.data(using: .utf8)!
+
+    let decoded = try JSONDecoder().decode(SyncChangesetBatchPayload.self, from: data)
+
+    XCTAssertEqual(decoded.batchId, "legacy:12:14:0:empty")
+    XCTAssertEqual(decoded.reason, "relay")
+    XCTAssertEqual(decoded.fromDbVersion, 12)
+    XCTAssertEqual(decoded.toDbVersion, 14)
+    XCTAssertTrue(decoded.changes.isEmpty)
   }
 
   func testDatabaseAppliesPackedTextPrimaryKeysFromDesktopChanges() throws {
@@ -2870,6 +3005,39 @@ final class ADETests: XCTestCase {
     } catch {
       XCTAssertEqual((error as NSError).localizedDescription, "This action requires a live connection to the host.")
     }
+  }
+
+  @MainActor
+  func testFireAndForgetRemoteCommandQueuesWithStableCommandIdWhenOffline() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "chat.approve",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    await service.sendRemoteCommand(.approveSession, payload: [
+      "sessionId": "session-1",
+      "itemId": "approval-1",
+    ])
+
+    let queued = service.pendingOperationsForTesting()
+    XCTAssertEqual(service.pendingOperationCount, 1)
+    XCTAssertEqual(queued.count, 1)
+    XCTAssertEqual(queued.first?.kind, "command")
+    XCTAssertEqual(queued.first?.action, "chat.approve")
+    XCTAssertTrue(queued.first?.id.hasPrefix("ios-") == true)
   }
 
   func testPrActionAvailabilityMatchesDesktopBaseline() {
@@ -4856,12 +5024,12 @@ final class ADETests: XCTestCase {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
     let codexGroup = groups.first(where: { $0.key == "codex" })
     let openAIProvider = codexGroup?.providers.first(where: { $0.key == "openai" })
-    let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5-codex" })
+    let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5" })
 
     XCTAssertEqual(gpt55?.displayName, "GPT-5.5")
     XCTAssertEqual(gpt55?.tier, .flagship)
-    XCTAssertNotNil(ADEColor.modelBrand(for: "gpt-5.5-codex"))
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.5-codex"), ["low", "medium", "high", "xhigh"])
+    XCTAssertNotNil(ADEColor.modelBrand(for: "gpt-5.5"))
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.5"), ["low", "medium", "high", "xhigh"])
   }
 
   func testDynamicWorkModelCatalogBuildsFromLiveHostModels() {
@@ -4869,14 +5037,27 @@ final class ADETests: XCTestCase {
       availableModelsByProvider: [
         "codex": [
           AgentChatModelInfo(
-            id: "gpt-5.5-codex",
+            id: "gpt-5.5",
             displayName: "GPT-5.5",
             description: "Latest Codex model",
             isDefault: true,
             reasoningEfforts: nil,
             maxThinkingTokens: nil,
-            modelId: nil,
-            family: nil,
+            modelId: "openai/gpt-5.5",
+            family: "openai",
+            supportsReasoning: true,
+            supportsTools: true,
+            color: nil
+          ),
+          AgentChatModelInfo(
+            id: "gpt-5.4",
+            displayName: "GPT-5.4",
+            description: nil,
+            isDefault: false,
+            reasoningEfforts: nil,
+            maxThinkingTokens: nil,
+            modelId: "openai/gpt-5.4",
+            family: "openai",
             supportsReasoning: true,
             supportsTools: true,
             color: nil
@@ -4917,12 +5098,48 @@ final class ADETests: XCTestCase {
 
     let codexGroup = groups.first(where: { $0.key == "codex" })
     let codexOpenAI = codexGroup?.providers.first(where: { $0.key == "openai" })
-    XCTAssertEqual(codexOpenAI?.models.first?.id, "gpt-5.5-codex")
-    XCTAssertEqual(codexOpenAI?.models.first?.tagline, "Flagship · 400K context")
+    XCTAssertEqual(codexOpenAI?.models.map(\.id), ["gpt-5.5", "gpt-5.4"])
+    XCTAssertEqual(codexOpenAI?.models.first?.tagline, "Flagship · 1M context")
+    XCTAssertEqual(codexOpenAI?.models.first?.displayName, "GPT-5.5")
 
     let cursorGroup = groups.first(where: { $0.key == "cursor" })
     XCTAssertEqual(cursorGroup?.providers.map(\.key), ["anthropic", "cursor"])
     XCTAssertEqual(cursorGroup?.providers.first?.models.first?.provider, "claude")
+  }
+
+  func testWorkModelCatalogTreatsCodexRuntimeAndRegistryIdsAsSameModel() {
+    let groups = workModelCatalogGroups(
+      availableModelsByProvider: [
+        "codex": [
+          AgentChatModelInfo(
+            id: "gpt-5.5",
+            displayName: "GPT-5.5",
+            description: nil,
+            isDefault: true,
+            reasoningEfforts: nil,
+            maxThinkingTokens: nil,
+            modelId: "openai/gpt-5.5",
+            family: "openai",
+            supportsReasoning: true,
+            supportsTools: true,
+            color: nil
+          ),
+        ],
+      ],
+      currentModelId: "openai/gpt-5.5",
+      currentProvider: "codex"
+    )
+
+    let codexOpenAI = groups
+      .first(where: { $0.key == "codex" })?
+      .providers
+      .first(where: { $0.key == "openai" })
+
+    XCTAssertEqual(codexOpenAI?.models.map(\.id), ["gpt-5.5"])
+    XCTAssertTrue(workModelIdsEquivalent("gpt-5.5", "openai/gpt-5.5"))
+    XCTAssertTrue(workModelIdsEquivalent("openai/gpt-5.5", "gpt-5.5"))
+    XCTAssertEqual(workKnownModelDisplayName("openai/gpt-5.5"), "GPT-5.5")
+    XCTAssertEqual(prettyWorkChatModelName("openai/gpt-5.5"), "GPT-5.5")
   }
 
   func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {
@@ -5190,7 +5407,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:01:03.000Z",
         sequence: 6,
-        event: .done(status: "completed", summary: "Completed\ngpt-5.4-mini", usage: nil, turnId: "turn-2", model: "gpt-5.4-mini", modelId: "openai/gpt-5.4-mini-codex")
+        event: .done(status: "completed", summary: "Completed\ngpt-5.4-mini", usage: nil, turnId: "turn-2", model: "gpt-5.4-mini", modelId: "openai/gpt-5.4-mini")
       ),
     ]
     let timeline = buildWorkTimeline(
@@ -5208,7 +5425,7 @@ final class ADETests: XCTestCase {
       return message
     }
     XCTAssertEqual(assistantMessages.map(\.turnProvider), ["claude", "codex"])
-    XCTAssertEqual(assistantMessages.map(\.turnModelId), ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4-mini-codex"])
+    XCTAssertEqual(assistantMessages.map(\.turnModelId), ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4-mini"])
 
     let separated = injectWorkTurnSeparators(
       into: timeline,

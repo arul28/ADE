@@ -59,6 +59,25 @@ const PTY_DATA_BATCH_INTERVAL_MS = 16;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 
+function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
+  return typeof env[key] === "string" && env[key]!.trim().length > 0;
+}
+
+function withInteractiveTerminalColorEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = { ...env };
+  const term = next.TERM?.trim().toLowerCase() ?? "";
+  if (!term || term === "dumb") {
+    next.TERM = "xterm-256color";
+  }
+  if (!hasEnvValue(next, "COLORTERM")) {
+    next.COLORTERM = "truecolor";
+  }
+  if (!hasEnvValue(next, "NO_COLOR") && !hasEnvValue(next, "FORCE_COLOR")) {
+    next.FORCE_COLOR = "1";
+  }
+  return next;
+}
+
 function sanitizeCliUserTitleSeed(raw: string): string {
   const stripped = stripAnsi(raw)
     .replace(/\r\n/g, "\n")
@@ -1537,7 +1556,7 @@ export function createPtyService({
         ...((await getLaneRuntimeEnv?.(laneId)) ?? {}),
         ...(args.env ?? {})
       };
-      const launchEnv = getAdeCliAgentEnv?.(baseLaunchEnv) ?? baseLaunchEnv;
+      const launchEnv = withInteractiveTerminalColorEnv(getAdeCliAgentEnv?.(baseLaunchEnv) ?? baseLaunchEnv);
       const shouldBackfillResumeTarget =
         existingSession
         && isTrackedCliToolType(toolTypeHint)

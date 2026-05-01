@@ -124,8 +124,8 @@ describe("mergeChatHistorySnapshot", () => {
 
 describe("parallel launch helpers", () => {
   it("keeps same-family model lane suffixes distinct", () => {
-    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4-codex"))).toBe("codex-gpt-5-4");
-    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4-mini-codex"))).toBe("codex-gpt-5-4-mini");
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4"))).toBe("codex-gpt-5-4");
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4-mini"))).toBe("codex-gpt-5-4-mini");
   });
 
   it("preserves the default attachment review request when project docs are prepended", () => {

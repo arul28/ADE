@@ -2548,7 +2548,7 @@ describe("launchPrIssueResolutionChat", () => {
     const result = await previewPrIssueResolutionPrompt(deps as any, {
       prId: pr.id,
       scope: "checks",
-      modelId: "openai/gpt-5.4-codex",
+      modelId: "openai/gpt-5.4",
       reasoning: "high",
       permissionMode: "guarded_edit",
       additionalInstructions: "Keep commits tight and rerun focused tests first.",
@@ -2566,7 +2566,7 @@ describe("launchPrIssueResolutionChat", () => {
     const result = await previewPrIssueResolutionPrompt(deps as any, {
       prId: pr.id,
       scope: "checks",
-      modelId: "openai/gpt-5.4-codex",
+      modelId: "openai/gpt-5.4",
       reasoning: "high",
       permissionMode: "guarded_edit",
       additionalInstructions: null,
@@ -2590,7 +2590,7 @@ describe("launchPrIssueResolutionChat", () => {
     const result = await launchPrIssueResolutionChat(deps as any, {
       prId: pr.id,
       scope: "checks",
-      modelId: "openai/gpt-5.4-codex",
+      modelId: "openai/gpt-5.4",
       reasoning: "high",
       permissionMode: "guarded_edit",
       additionalInstructions: "Run focused tests before full CI.",
@@ -2600,7 +2600,7 @@ describe("launchPrIssueResolutionChat", () => {
       laneId: lane.id,
       provider: "codex",
       model: "gpt-5.4",
-      modelId: "openai/gpt-5.4-codex",
+      modelId: "openai/gpt-5.4",
       surface: "work",
       sessionProfile: "workflow",
       permissionMode: "default",
@@ -2643,7 +2643,7 @@ describe("launchPrIssueResolutionChat", () => {
     await expect(launchPrIssueResolutionChat(deps as any, {
       prId: pr.id,
       scope: "checks",
-      modelId: "openai/gpt-5.4-codex",
+      modelId: "openai/gpt-5.4",
     })).rejects.toThrow("Failing checks are not currently actionable");
   });
 

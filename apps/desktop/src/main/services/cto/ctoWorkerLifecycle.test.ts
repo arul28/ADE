@@ -1202,7 +1202,7 @@ describe("workerAgentService (file group)", () => {
         role: "engineer",
         reportsTo: manager.id,
         adapterType: "codex-local",
-        adapterConfig: { model: "gpt-5.3-codex-spark" },
+        adapterConfig: { model: "gpt-5.4-mini" },
         capabilities: ["api", "tests"],
       });
       expect(edited.name).toBe("Backend Engineer");

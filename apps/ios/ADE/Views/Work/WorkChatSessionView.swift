@@ -51,16 +51,11 @@ struct WorkChatSessionView: View {
   let onSelectRuntimeMode: @MainActor (String) async -> Void
   let onSelectEffort: @MainActor (String) async -> Void
 
-  /// Optional lane list forwarded from the parent so the `@`-mention picker can offer lane names.
-  /// When nil the `@` button is still shown but the sheet will display an empty list.
   var lanes: [LaneSummary] = []
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
   @State var modelUpdateInFlight = false
-  @State var mentionsSheetPresented = false
-  @State var slashSheetPresented = false
-  @State var pendingComposerInsert: String?
 
   var sessionStatus: String {
     normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
@@ -361,9 +356,6 @@ struct WorkChatSessionView: View {
         artifactRefreshInFlight: artifactRefreshInFlight,
         artifactRefreshError: artifactRefreshError,
         onOpenProof: { artifactDrawerPresented = true },
-        pendingInsert: $pendingComposerInsert,
-        onOpenMentions: { mentionsSheetPresented = true },
-        onOpenSlash: { slashSheetPresented = true },
         onSend: onSend,
         onSent: {
           scrollToLatest(proxy, animated: true)
@@ -502,18 +494,6 @@ struct WorkChatSessionView: View {
           }
         )
       }
-      .sheet(isPresented: $mentionsSheetPresented) {
-        WorkMentionsPickerSheet(lanes: lanes) { token in
-          pendingComposerInsert = token
-          mentionsSheetPresented = false
-        }
-      }
-      .sheet(isPresented: $slashSheetPresented) {
-        WorkSlashCommandsSheet(provider: chatSummary?.provider ?? session.toolType ?? "") { token in
-          pendingComposerInsert = token
-          slashSheetPresented = false
-        }
-      }
     }
   }
 }
@@ -582,16 +562,13 @@ private struct WorkChatComposerCard: View {
   let artifactRefreshInFlight: Bool
   let artifactRefreshError: String?
   let onOpenProof: () -> Void
-  @Binding var pendingInsert: String?
-  let onOpenMentions: () -> Void
-  let onOpenSlash: () -> Void
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
   var body: some View {
-    WorkChatComposerDraftInput(
-      chatSummary: chatSummary,
-      queuedSteerCount: queuedSteerCount,
+      WorkChatComposerDraftInput(
+        chatSummary: chatSummary,
+        queuedSteerCount: queuedSteerCount,
       pendingInputCount: pendingInputCount,
       canCompose: canCompose,
       canSend: canSend,
@@ -603,16 +580,13 @@ private struct WorkChatComposerCard: View {
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSelectEffort: onSelectEffort,
       artifactCount: artifactCount,
-      latestArtifact: latestArtifact,
-      artifactRefreshInFlight: artifactRefreshInFlight,
-      artifactRefreshError: artifactRefreshError,
-      onOpenProof: onOpenProof,
-      pendingInsert: $pendingInsert,
-      onOpenMentions: onOpenMentions,
-      onOpenSlash: onOpenSlash,
-      onSend: onSend,
-      onSent: onSent
-    )
+        latestArtifact: latestArtifact,
+        artifactRefreshInFlight: artifactRefreshInFlight,
+        artifactRefreshError: artifactRefreshError,
+        onOpenProof: onOpenProof,
+        onSend: onSend,
+        onSent: onSent
+      )
     .padding(.horizontal, 14)
     .padding(.vertical, 14)
     .background(composerSurface)
@@ -659,9 +633,6 @@ private struct WorkChatComposerDraftInput: View {
   let artifactRefreshInFlight: Bool
   let artifactRefreshError: String?
   let onOpenProof: () -> Void
-  @Binding var pendingInsert: String?
-  let onOpenMentions: () -> Void
-  let onOpenSlash: () -> Void
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
@@ -681,8 +652,7 @@ private struct WorkChatComposerDraftInput: View {
     VStack(alignment: .leading, spacing: 12) {
       WorkChatComposerTextField(
         draftState: draftState,
-        canCompose: canCompose,
-        pendingInsert: $pendingInsert
+        canCompose: canCompose
       )
 
       HStack(alignment: .center, spacing: 8) {
@@ -696,46 +666,6 @@ private struct WorkChatComposerDraftInput: View {
         )
 
         Spacer(minLength: 0)
-
-        // @ mentions button
-        Button(action: onOpenMentions) {
-          Image(systemName: "at")
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .frame(width: 28, height: 28)
-            .background(ADEColor.raisedBackground.opacity(0.7), in: Circle())
-            .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.6))
-        }
-        .buttonStyle(.plain)
-        .disabled(!canCompose)
-        .accessibilityLabel("Insert @ mention")
-        .adeInspectable(
-          "Work.Chat.Composer.MentionsButton",
-          metadata: [
-            "label": "Insert @ mention",
-            "role": "button"
-          ]
-        )
-
-        // / slash-command button
-        Button(action: onOpenSlash) {
-          Text("/")
-            .font(.system(size: 14, weight: .bold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .frame(width: 28, height: 28)
-            .background(ADEColor.raisedBackground.opacity(0.7), in: Circle())
-            .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.6))
-        }
-        .buttonStyle(.plain)
-        .disabled(!canCompose)
-        .accessibilityLabel("Insert slash command")
-        .adeInspectable(
-          "Work.Chat.Composer.SlashButton",
-          metadata: [
-            "label": "Insert slash command",
-            "role": "button"
-          ]
-        )
 
         WorkProofComposerButton(
           count: artifactCount,
@@ -817,13 +747,6 @@ private final class WorkChatComposerDraftState: ObservableObject {
     return value
   }
 
-  func insertToken(_ token: String) {
-    if !text.isEmpty && !text.hasSuffix(" ") && !text.hasSuffix("\n") {
-      text += " "
-    }
-    text += token
-  }
-
   func restoreUnsentText(_ value: String) {
     let currentDraft = trimmedText
     guard currentDraft != value else { return }
@@ -838,7 +761,6 @@ private final class WorkChatComposerDraftState: ObservableObject {
 private struct WorkChatComposerTextField: View {
   @ObservedObject var draftState: WorkChatComposerDraftState
   let canCompose: Bool
-  @Binding var pendingInsert: String?
   @FocusState private var composerFocused: Bool
 
   var body: some View {
@@ -853,12 +775,6 @@ private struct WorkChatComposerTextField: View {
       .textInputAutocapitalization(.sentences)
       .focused($composerFocused)
       .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-      .onChange(of: pendingInsert) { _, token in
-        guard let token, !token.isEmpty else { return }
-        draftState.insertToken(token)
-        pendingInsert = nil
-        composerFocused = true
-      }
   }
 }
 

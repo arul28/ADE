@@ -11,6 +11,7 @@ import {
   MODEL_REGISTRY,
   getModelPricing,
   listModelDescriptorsForProvider,
+  resolveModelDescriptor,
   updateModelPricingInRegistry,
   type ModelDescriptor,
 } from "./modelRegistry";
@@ -46,7 +47,7 @@ function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boole
 }
 
 const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
-const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5-codex";
+const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
 
 // CLI-wrapped Anthropic models (claude provider)
 export const CLAUDE_MODELS: ModelEntry[] = MODEL_REGISTRY
@@ -66,7 +67,9 @@ export const ALL_MODELS: ModelEntry[] = MODEL_REGISTRY
   .map((m) => descriptorToEntry(m));
 
 export function findModel(modelId: string): ModelEntry | undefined {
-  return ALL_MODELS.find((m) => m.modelId === modelId);
+  const descriptor = resolveModelDescriptor(modelId);
+  const resolvedModelId = descriptor?.id ?? modelId;
+  return ALL_MODELS.find((m) => m.modelId === resolvedModelId);
 }
 
 export function getModelsForProvider(provider: ModelProvider): ModelEntry[] {
@@ -137,7 +140,7 @@ const CLAUDE_SONNET: ModelConfig = { provider: "claude", modelId: "anthropic/cla
 const CLAUDE_HAIKU: ModelConfig = { provider: "claude", modelId: "anthropic/claude-haiku-4-5", thinkingLevel: "low" };
 const CLAUDE_OPUS: ModelConfig = { provider: "claude", modelId: "anthropic/claude-opus-4-7", thinkingLevel: "high" };
 const CODEX_STANDARD: ModelConfig = { provider: "codex", modelId: DEFAULT_CODEX_MODEL_ID, thinkingLevel: "medium" };
-const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "openai/gpt-5.1-codex-mini", thinkingLevel: "low" };
+const CODEX_MINI: ModelConfig = { provider: "codex", modelId: "openai/gpt-5.4-mini", thinkingLevel: "low" };
 
 export const BUILT_IN_PROFILES: MissionModelProfile[] = [
   {
@@ -196,7 +199,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     decisionTimeoutCapHours: 24,
     phaseDefaults: {
       planning: CLAUDE_OPUS,
-      implementation: { provider: "codex", modelId: "openai/gpt-5.1-codex-max", thinkingLevel: "high" },
+      implementation: { provider: "codex", modelId: DEFAULT_CODEX_MODEL_ID, thinkingLevel: "high" },
       testing: CODEX_STANDARD,
       validation: CLAUDE_OPUS,
       codeReview: CLAUDE_OPUS,

@@ -10,9 +10,9 @@ extension WorkSessionSettingsSheet {
       models = loadedModels
 
       let matchedModelId =
-        loadedModels.first(where: { $0.id == selectedModelId })?.id
-        ?? loadedModels.first(where: { $0.id == summary.modelId })?.id
-        ?? loadedModels.first(where: { $0.id == summary.model })?.id
+        loadedModels.first(where: { workModelIdsEquivalent($0.id, selectedModelId) || workModelIdsEquivalent($0.modelId, selectedModelId) })?.id
+        ?? loadedModels.first(where: { workModelIdsEquivalent($0.id, summary.modelId) || workModelIdsEquivalent($0.modelId, summary.modelId) })?.id
+        ?? loadedModels.first(where: { workModelIdsEquivalent($0.id, summary.model) || workModelIdsEquivalent($0.modelId, summary.model) })?.id
         ?? loadedModels.first(where: { $0.displayName == summary.model })?.id
         ?? loadedModels.first(where: \.isDefault)?.id
         ?? loadedModels.first?.id
@@ -43,7 +43,7 @@ extension WorkSessionSettingsSheet {
     }
 
     let titleChanged = trimmedTitle != resolvedInitialTitle
-    let modelChanged = selectedModelId != resolvedInitialModelId
+    let modelChanged = !workModelIdsEquivalent(selectedModelId, resolvedInitialModelId)
     let normalizedReasoning = selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
     let reasoningPayload = normalizedReasoning.isEmpty ? "" : normalizedReasoning
     let reasoningChanged = reasoningPayload != resolvedInitialReasoningEffort

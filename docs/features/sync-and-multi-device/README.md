@@ -68,8 +68,9 @@ only when they join the same sync cluster.
 ┌────────────────────────────────────────────────────────────────┐
 │ Sync transport (ws)                                            │
 │   - SyncEnvelope: hello, pairing, changeset_batch,             │
-│     heartbeat, file_request/response, terminal_*, chat_*,      │
-│     brain_status, project_catalog/project_switch,              │
+│     changeset_ack, heartbeat, file_request/response,           │
+│     terminal_*, chat_*, brain_status,                          │
+│     project_catalog/project_switch,                            │
 │     command / command_ack / command_result                     │
 │   - JSON payloads; gzip+base64 above threshold (4KB default)   │
 └────────────────────────────────────────────────────────────────┘
@@ -308,8 +309,8 @@ Envelopes are JSON with fields:
 {
   version: 1,
   type: "hello" | "hello_ok" | "hello_error" | "pairing_request" |
-        "pairing_result" | "changeset_batch" | "heartbeat" |
-        "file_request" | "file_response" |
+        "pairing_result" | "changeset_batch" | "changeset_ack" |
+        "heartbeat" | "file_request" | "file_response" |
         "terminal_subscribe" | "terminal_unsubscribe" |
         "terminal_snapshot" | "terminal_data" | "terminal_exit" |
         "terminal_input" | "terminal_resize" |
@@ -337,6 +338,19 @@ Heartbeat interval is 30 seconds; a peer only gets closed after
 `missedHeartbeatCount` on the first miss rather than disconnecting
 immediately). Reconnection resumes from the last-known `db_version`
 so no changesets are lost.
+
+`changeset_batch` envelopes carry a `batchId`; the receiver replies
+with a `changeset_ack` once `applyChanges` commits (or with an error
+code on failure). The host keeps the batch in `pendingChangesetBatch`
+until the ack lands, retransmitting on timeout so a dropped wifi blip
+cannot lose a batch. `pendingChangesetPeerCount` is surfaced through
+`brain_status` for diagnostics.
+
+Mobile-originated `command` envelopes are deduplicated through a
+short-lived `mobileCommandResultCache` (TTL 30 minutes, 512 entries)
+plus a persisted journal, so a phone that retries the same
+`commandId` after a reconnect receives the cached `command_ack` /
+`command_result` instead of double-executing the action.
 
 ### Sub-protocols at a glance
 

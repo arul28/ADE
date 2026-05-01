@@ -77,7 +77,7 @@ function renderPanel(overrides: Partial<PrConvergencePanelProps> = {}) {
     items: [],
     convergence: makeConvergence(),
     checks: [],
-    modelId: "openai/gpt-5.4-codex",
+    modelId: "openai/gpt-5.4",
     reasoningEffort: "high",
     permissionMode: "guarded_edit" as AiPermissionMode,
     busy: false,

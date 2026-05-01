@@ -2800,10 +2800,63 @@ struct CrsqlChangeRow: Codable, Equatable {
 }
 
 struct SyncChangesetBatchPayload: Codable, Equatable {
+  var batchId: String
   var reason: String
   var fromDbVersion: Int
   var toDbVersion: Int
   var changes: [CrsqlChangeRow]
+
+  init(batchId: String, reason: String, fromDbVersion: Int, toDbVersion: Int, changes: [CrsqlChangeRow]) {
+    self.batchId = batchId
+    self.reason = reason
+    self.fromDbVersion = fromDbVersion
+    self.toDbVersion = toDbVersion
+    self.changes = changes
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    reason = try container.decode(String.self, forKey: .reason)
+    fromDbVersion = try container.decode(Int.self, forKey: .fromDbVersion)
+    toDbVersion = try container.decode(Int.self, forKey: .toDbVersion)
+    changes = try container.decode([CrsqlChangeRow].self, forKey: .changes)
+    let decodedBatchId = try container.decodeIfPresent(String.self, forKey: .batchId)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let decodedBatchId, !decodedBatchId.isEmpty {
+      batchId = decodedBatchId
+    } else {
+      batchId = Self.legacyBatchId(fromDbVersion: fromDbVersion, toDbVersion: toDbVersion, changes: changes)
+    }
+  }
+
+  private static func legacyBatchId(fromDbVersion: Int, toDbVersion: Int, changes: [CrsqlChangeRow]) -> String {
+    guard let last = changes.last else {
+      return "legacy:\(fromDbVersion):\(toDbVersion):0:empty"
+    }
+    return "legacy:\(fromDbVersion):\(toDbVersion):\(changes.count):\(last.table):\(last.dbVersion):\(last.seq)"
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case batchId
+    case reason
+    case fromDbVersion
+    case toDbVersion
+    case changes
+  }
+}
+
+struct SyncChangesetAckPayload: Codable, Equatable {
+  struct AckError: Codable, Equatable {
+    var code: String
+    var message: String
+  }
+
+  var batchId: String
+  var fromDbVersion: Int
+  var toDbVersion: Int
+  var appliedDbVersion: Int
+  var appliedCount: Int
+  var ok: Bool
+  var error: AckError?
 }
 
 struct ApplyRemoteChangesResult: Equatable {

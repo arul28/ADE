@@ -420,7 +420,7 @@ describe("headlessLinearServices", () => {
     });
     expect(session.title).toBe("CTO Headless Session");
     expect(session.model).toBe("gpt-5.5");
-    expect(session.modelId).toBe("openai/gpt-5.5-codex");
+    expect(session.modelId).toBe("openai/gpt-5.5");
 
     services.dispose();
   });
@@ -440,7 +440,7 @@ describe("headlessLinearServices", () => {
     });
 
     expect(codex.model).toBe("gpt-5.5");
-    expect(codex.modelId).toBe("openai/gpt-5.5-codex");
+    expect(codex.modelId).toBe("openai/gpt-5.5");
     expect(claude.model).toBe("opus-1m");
     expect(claude.modelId).toBe("anthropic/claude-opus-4-7-1m");
 

@@ -189,7 +189,7 @@ function makeConfig(overrides: Partial<ReviewRunConfig> = {}): ReviewRunConfig {
     compareAgainst: { kind: "default_branch" },
     selectionMode: "full_diff",
     dirtyOnly: false,
-    modelId: "openai/gpt-5.4-codex",
+    modelId: "openai/gpt-5.4",
     reasoningEffort: "medium",
     budgets: {
       maxFiles: 60,
@@ -493,8 +493,8 @@ function createHarness(args: {
     return {
       sessionId: `session-review-${sessionCount}`,
       provider: "codex",
-      model: "gpt-5.4-codex",
-      modelId: "openai/gpt-5.4-codex",
+      model: "gpt-5.4",
+      modelId: "openai/gpt-5.4",
       outputText,
     };
   });
@@ -530,16 +530,16 @@ function createHarness(args: {
           id: `session-review-${sessionCount}`,
           laneId: "lane-review",
           provider: "codex",
-          model: "gpt-5.4-codex",
-          modelId: "openai/gpt-5.4-codex",
+          model: "gpt-5.4",
+          modelId: "openai/gpt-5.4",
         };
       }),
       getSessionSummary: vi.fn(async (sessionId: string) => ({
         sessionId,
         laneId: "lane-review",
         provider: "codex",
-        model: "gpt-5.4-codex",
-        modelId: "openai/gpt-5.4-codex",
+        model: "gpt-5.4",
+        modelId: "openai/gpt-5.4",
         title: "Review transcript",
         surface: "automation",
         status: "idle",

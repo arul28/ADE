@@ -1,6 +1,7 @@
 import { WebSocket, type RawData } from "ws";
 import type {
   SyncBrainStatusPayload,
+  SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
   SyncClientStatus,
   SyncCommandAckPayload,
@@ -32,6 +33,15 @@ type PendingRequest = {
 };
 
 type InternalStatus = SyncClientStatus;
+type PendingChangesetBatch = {
+  batchId: string;
+  payload: SyncChangesetBatchPayload;
+  sentAtMs: number;
+  retryCount: number;
+};
+
+const CHANGESET_ACK_TIMEOUT_MS = 10_000;
+const MAX_CHANGESET_ACK_RETRIES = 6;
 
 export function createSyncPeerService(args: SyncPeerServiceArgs) {
   let ws: WebSocket | null = null;
@@ -40,9 +50,9 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let connectionDraft: SyncDesktopConnectionDraft | null = null;
   let latestBrainStatus: SyncBrainStatusPayload | null = null;
-  let latestBrainMetadata: SyncPeerMetadata | null = null;
   let outboundLocalDbVersion = args.db.sync.getDbVersion();
   let latestRemoteDbVersion = 0;
+  let pendingOutboundChangeset: PendingChangesetBatch | null = null;
   const pendingRequests = new Map<string, PendingRequest>();
   let pendingConnect: { resolve: () => void; reject: (error: Error) => void } | null = null;
 
@@ -118,31 +128,96 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       deviceType: localDevice.deviceType,
       siteId: localDevice.siteId,
       dbVersion: latestRemoteDbVersion,
+      capabilities: ["changesetAck"],
     };
+  };
+
+  const sendChangesetAck = (
+    batch: SyncChangesetBatchPayload,
+    ok: boolean,
+    appliedDbVersion: number,
+    appliedCount: number,
+    error?: unknown,
+  ) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const payload: SyncChangesetAckPayload = {
+      batchId: batch.batchId,
+      fromDbVersion: Number(batch.fromDbVersion ?? 0),
+      toDbVersion: Number(batch.toDbVersion ?? 0),
+      appliedDbVersion,
+      appliedCount,
+      ok,
+      ...(error
+        ? { error: { code: "changeset_apply_failed", message: error instanceof Error ? error.message : String(error) } }
+        : {}),
+    };
+    ws.send(
+      encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: batch.batchId,
+        payload,
+        compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+      }),
+    );
+  };
+
+  const sendOutboundChangeset = (pending: PendingChangesetBatch) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(
+      encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId: pending.batchId,
+        payload: pending.payload,
+        compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+      }),
+    );
+    return true;
   };
 
   const sendLocalChanges = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const nowMs = Date.now();
+    if (pendingOutboundChangeset) {
+      if (nowMs - pendingOutboundChangeset.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
+        if (pendingOutboundChangeset.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
+          args.logger.warn("sync_peer.changeset_ack_timeout_exhausted", {
+            batchId: pendingOutboundChangeset.batchId,
+            retryCount: pendingOutboundChangeset.retryCount,
+          });
+          disconnectInternal("error", null, "Changeset acknowledgement timed out.");
+          return;
+        }
+        pendingOutboundChangeset.sentAtMs = nowMs;
+        pendingOutboundChangeset.retryCount += 1;
+        sendOutboundChangeset(pendingOutboundChangeset);
+      }
+      return;
+    }
     const currentDbVersion = args.db.sync.getDbVersion();
     if (currentDbVersion <= outboundLocalDbVersion) return;
     const localSiteId = args.deviceRegistryService.getLocalSiteId();
     const changes = args.db.sync
       .exportChangesSince(outboundLocalDbVersion)
       .filter((change) => change.site_id === localSiteId);
-    outboundLocalDbVersion = currentDbVersion;
-    if (!changes.length) return;
-    ws.send(
-      encodeSyncEnvelope({
-        type: "changeset_batch",
-        payload: {
-          reason: "relay",
-          fromDbVersion: latestRemoteDbVersion,
-          toDbVersion: latestRemoteDbVersion,
-          changes,
-        },
-        compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
-      }),
-    );
+    const previousDbVersion = outboundLocalDbVersion;
+    if (!changes.length) {
+      outboundLocalDbVersion = currentDbVersion;
+      return;
+    }
+    const batchId = `changeset:${currentLocalPeerMetadata().deviceId}:${previousDbVersion}:${currentDbVersion}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+    pendingOutboundChangeset = {
+      batchId,
+      payload: {
+        batchId,
+        reason: "relay",
+        fromDbVersion: previousDbVersion,
+        toDbVersion: currentDbVersion,
+        changes,
+      },
+      sentAtMs: nowMs,
+      retryCount: 0,
+    };
+    sendOutboundChangeset(pendingOutboundChangeset);
   };
 
   const startRelay = () => {
@@ -185,8 +260,8 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       }
     }
     ws = null;
+    pendingOutboundChangeset = null;
     latestBrainStatus = null;
-    latestBrainMetadata = null;
     status.state = state;
     status.connectedAt = null;
     status.lastSeenAt = null;
@@ -209,7 +284,6 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
           brain: SyncPeerMetadata;
           serverDbVersion: number;
         };
-        latestBrainMetadata = payload.brain;
         latestRemoteDbVersion = Math.max(0, Math.floor(payload.serverDbVersion ?? 0));
         status.state = "connected";
         status.connectedAt = nowIso();
@@ -220,7 +294,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         if (connectionDraft) {
           connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
         }
-        outboundLocalDbVersion = args.db.sync.getDbVersion();
+        outboundLocalDbVersion = Math.min(outboundLocalDbVersion, args.db.sync.getDbVersion());
         emitStatus();
         startRelay();
         startHeartbeatFallback();
@@ -238,19 +312,61 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       case "changeset_batch": {
         const payload = (envelope.payload ?? {}) as SyncChangesetBatchPayload;
         const changes = Array.isArray(payload.changes) ? payload.changes : [];
-        if (changes.length) {
-          args.db.sync.applyChanges(changes);
-          args.onRemoteChangesApplied?.();
+        try {
+          if (changes.length) {
+            args.db.sync.applyChanges(changes);
+            args.onRemoteChangesApplied?.();
+          }
+          latestRemoteDbVersion = Math.max(latestRemoteDbVersion, Math.floor(payload.toDbVersion ?? latestRemoteDbVersion));
+          if (connectionDraft) connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
+          sendChangesetAck(payload, true, args.db.sync.getDbVersion(), changes.length);
+          emitStatus();
+        } catch (error) {
+          sendChangesetAck(payload, false, args.db.sync.getDbVersion(), 0, error);
+          throw error;
         }
-        latestRemoteDbVersion = Math.max(latestRemoteDbVersion, Math.floor(payload.toDbVersion ?? latestRemoteDbVersion));
-        if (connectionDraft) connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
+        break;
+      }
+      case "changeset_ack": {
+        const payload = envelope.payload as SyncChangesetAckPayload;
+        if (!pendingOutboundChangeset || payload.batchId !== pendingOutboundChangeset.batchId) break;
+        if (!payload.ok) {
+          if (pendingOutboundChangeset.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
+            const message = payload.error?.message ?? "Changeset apply failed repeatedly.";
+            args.logger.warn("sync_peer.changeset_ack_failed_exhausted", {
+              batchId: pendingOutboundChangeset.batchId,
+              retryCount: pendingOutboundChangeset.retryCount,
+              error: message,
+            });
+            disconnectInternal("error", null, message);
+            break;
+          }
+          pendingOutboundChangeset.sentAtMs = Date.now();
+          pendingOutboundChangeset.retryCount += 1;
+          args.logger.warn("sync_peer.changeset_ack_failed", {
+            batchId: pendingOutboundChangeset.batchId,
+            error: payload.error?.message ?? "Changeset apply failed.",
+          });
+          break;
+        }
+        if (payload.toDbVersion < pendingOutboundChangeset.payload.toDbVersion) break;
+        const acknowledgedRemoteVersion = Math.max(
+          latestRemoteDbVersion,
+          pendingOutboundChangeset.payload.toDbVersion,
+          Math.floor(payload.toDbVersion ?? 0),
+        );
+        latestRemoteDbVersion = acknowledgedRemoteVersion;
+        if (connectionDraft) {
+          connectionDraft.lastRemoteDbVersion = acknowledgedRemoteVersion;
+        }
+        outboundLocalDbVersion = Math.max(outboundLocalDbVersion, pendingOutboundChangeset.payload.toDbVersion);
+        pendingOutboundChangeset = null;
         emitStatus();
         break;
       }
       case "brain_status": {
         const payload = envelope.payload as SyncBrainStatusPayload;
         latestBrainStatus = payload;
-        latestBrainMetadata = payload.brain;
         status.brainDeviceId = payload.brain.deviceId;
         status.hostName = payload.brain.deviceName;
         const localDeviceId = args.deviceRegistryService.getLocalDeviceId();

@@ -26,7 +26,7 @@ struct WorkNewChatSheet: View {
   ]
 
   var selectedModel: AgentChatModelInfo? {
-    models.first(where: { $0.id == selectedModelId })
+    models.first(where: { workModelIdsEquivalent($0.id, selectedModelId) || workModelIdsEquivalent($0.modelId, selectedModelId) })
   }
 
   var trimmedInitialMessage: String {
@@ -397,7 +397,10 @@ struct WorkNewChatSheet: View {
       let loadedModels = try await syncService.listChatModels(provider: requestedProvider)
       guard provider == requestedProvider else { return }
       models = loadedModels
-      if resetSelection || loadedModels.contains(where: { $0.id == selectedModelId }) == false {
+      let matchingSelection = loadedModels.first {
+        workModelIdsEquivalent($0.id, selectedModelId) || workModelIdsEquivalent($0.modelId, selectedModelId)
+      }
+      if resetSelection || matchingSelection == nil {
         if let preferred = loadedModels.first(where: \.isDefault) ?? loadedModels.first {
           selectedModelId = preferred.id
           selectedReasoningEffort = ""
@@ -405,6 +408,9 @@ struct WorkNewChatSheet: View {
           selectedModelId = ""
           selectedReasoningEffort = ""
         }
+      } else if let matchingSelection, selectedModelId != matchingSelection.id {
+        selectedModelId = matchingSelection.id
+        selectedReasoningEffort = ""
       }
       errorMessage = nil
     } catch {

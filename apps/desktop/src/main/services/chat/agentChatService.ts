@@ -1233,15 +1233,29 @@ const CLAUDE_THINKING_SETTINGS = {
 
 const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
 
-const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("codex").map((descriptor) => ({
-  id: descriptor.providerModelId,
-  displayName: descriptor.displayName,
-  description: describeCodexModel(descriptor.displayName),
-  isDefault: descriptor.id === DEFAULT_CODEX_DESCRIPTOR?.id,
-  reasoningEfforts: descriptor.reasoningTiers?.length
-    ? CODEX_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
-    : CODEX_REASONING_EFFORTS,
-}));
+function codexModelInfoFromDescriptor(
+  descriptor: ModelDescriptor,
+  overrides?: Partial<Pick<AgentChatModelInfo, "description" | "isDefault">>,
+): AgentChatModelInfo {
+  return {
+    id: descriptor.providerModelId,
+    displayName: descriptor.displayName,
+    description: overrides?.description ?? describeCodexModel(descriptor.displayName),
+    isDefault: overrides?.isDefault ?? descriptor.id === DEFAULT_CODEX_DESCRIPTOR?.id,
+    reasoningEfforts: descriptor.reasoningTiers?.length
+      ? CODEX_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
+      : CODEX_REASONING_EFFORTS,
+    modelId: descriptor.id,
+    family: descriptor.family,
+    supportsReasoning: descriptor.capabilities.reasoning,
+    supportsTools: descriptor.capabilities.tools,
+    color: descriptor.color,
+  };
+}
+
+const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("codex").map((descriptor) =>
+  codexModelInfoFromDescriptor(descriptor)
+);
 
 const CLAUDE_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("claude").map((descriptor) => ({
   id: descriptor.providerModelId,
@@ -1366,6 +1380,17 @@ function validateReasoningEffort(provider: "codex" | "claude", effort: string | 
   const known = provider === "codex" ? KNOWN_CODEX_EFFORTS : KNOWN_CLAUDE_EFFORTS;
   const fallback = provider === "codex" ? DEFAULT_REASONING_EFFORT : "medium";
   return known.has(aliased) ? aliased : fallback;
+}
+
+function resolveCodexReasoningEffortForRuntime(
+  primary: string | null | undefined,
+  fallback?: string | null,
+): string {
+  return (
+    validateReasoningEffort("codex", normalizeReasoningEffort(primary))
+    ?? validateReasoningEffort("codex", normalizeReasoningEffort(fallback))
+    ?? DEFAULT_REASONING_EFFORT
+  );
 }
 
 function buildClaudeV2ExecutableArgs(args: {
@@ -2292,16 +2317,36 @@ function codexSandboxPolicyType(sandbox: AgentChatCodexSandbox): string {
   }
 }
 
+function codexApprovalPolicyWireValue(approvalPolicy: AgentChatCodexApprovalPolicy): string {
+  switch (approvalPolicy) {
+    case "untrusted":
+      return "unlessTrusted";
+    case "on-request":
+      return "onRequest";
+    case "on-failure":
+      return "onFailure";
+    case "never":
+      return "never";
+    default:
+      return approvalPolicy satisfies never;
+  }
+}
+
 /** Spread-ready codex thread lifecycle policy args or empty object if null. */
 function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Record<string, string> {
-  return policy ? { approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox } : {};
+  return policy
+    ? {
+        approvalPolicy: codexApprovalPolicyWireValue(policy.approvalPolicy),
+        sandbox: codexSandboxPolicyType(policy.sandbox),
+      }
+    : {};
 }
 
 /** Spread-ready codex per-turn policy args or empty object if null. */
 function codexTurnPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Record<string, unknown> {
   return policy
     ? {
-        approvalPolicy: policy.approvalPolicy,
+        approvalPolicy: codexApprovalPolicyWireValue(policy.approvalPolicy),
         sandboxPolicy: { type: codexSandboxPolicyType(policy.sandbox) },
       }
     : {};
@@ -2318,6 +2363,13 @@ const CODEX_SANDBOX_CAMEL_CASE_ALIASES: Record<string, AgentChatCodexSandbox> = 
   readOnly: "read-only",
   workspaceWrite: "workspace-write",
   dangerFullAccess: "danger-full-access",
+};
+
+const CODEX_APPROVAL_POLICY_ALIASES: Record<string, AgentChatCodexApprovalPolicy> = {
+  unlessTrusted: "untrusted",
+  onRequest: "on-request",
+  onFailure: "on-failure",
+  never: "never",
 };
 
 function normalizeCodexRuntimeSandbox(value: unknown): AgentChatCodexSandbox | undefined {
@@ -2397,7 +2449,9 @@ function normalizePersistedClaudePermissionMode(value: unknown): AgentChatClaude
 }
 
 function normalizePersistedCodexApprovalPolicy(value: unknown): AgentChatCodexApprovalPolicy | undefined {
-  return normalizePersistedEnum(value, VALID_CODEX_APPROVAL_POLICIES);
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return normalizePersistedEnum(trimmed, VALID_CODEX_APPROVAL_POLICIES) ?? CODEX_APPROVAL_POLICY_ALIASES[trimmed];
 }
 
 function normalizePersistedCodexSandbox(value: unknown): AgentChatCodexSandbox | undefined {
@@ -10562,9 +10616,15 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     codexPolicy: CodexPolicy,
   ): Promise<void> => {
+    const reasoningEffort = validateReasoningEffort(
+      "codex",
+      normalizeReasoningEffort(managed.session.reasoningEffort),
+    ) ?? DEFAULT_REASONING_EFFORT;
+    managed.session.reasoningEffort = reasoningEffort;
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
+      reasoningEffort,
       ...codexPolicyArgs(codexPolicy),
       experimentalRawEvents: false,
       persistExtendedHistory: true
@@ -11313,7 +11373,7 @@ export function createAgentChatService(args: {
       runtime = await startCodexRuntime(tempSession);
       const response = await runtime.request<{ data?: Array<Record<string, unknown>> }>("model/list", {});
       const rows = Array.isArray(response?.data) ? response.data : [];
-      const models = rows
+      const appServerModels = rows
         .map((row): AgentChatModelInfo | null => {
           const id = typeof row.id === "string" ? row.id.trim() : "";
           if (!id) return null;
@@ -11362,18 +11422,38 @@ export function createAgentChatService(args: {
         })
         .filter((entry): entry is AgentChatModelInfo => entry != null);
 
-      if (models.length) {
-        const preferredIdx = models.findIndex((entry) => entry.id === DEFAULT_CODEX_MODEL);
-        if (preferredIdx >= 0) {
-          return models.map((entry, index) => ({
+      if (appServerModels.length) {
+        const byRegistryId = new Map<string, AgentChatModelInfo>();
+        const extras: AgentChatModelInfo[] = [];
+        for (const entry of appServerModels) {
+          const descriptor = resolveModelDescriptorForProvider(entry.id, "codex");
+          if (descriptor) {
+            byRegistryId.set(descriptor.id, entry);
+          } else {
+            extras.push(entry);
+          }
+        }
+
+        const ordered = listModelDescriptorsForProvider("codex")
+          .filter((descriptor) => byRegistryId.has(descriptor.id))
+          .map((descriptor) => {
+            const appServerEntry = byRegistryId.get(descriptor.id);
+            return codexModelInfoFromDescriptor(descriptor, {
+              description: appServerEntry?.description ?? describeCodexModel(descriptor.displayName),
+              isDefault: descriptor.id === DEFAULT_CODEX_DESCRIPTOR?.id,
+            });
+          });
+
+        const preferredIds = new Set(ordered.map((entry) => entry.id));
+        const dedupedExtras = extras.filter((entry) => !preferredIds.has(entry.id));
+        const result = [...ordered, ...dedupedExtras];
+        if (result.length) {
+          const hasRegistryDefault = result.some((entry) => entry.modelId === DEFAULT_CODEX_DESCRIPTOR?.id);
+          return result.map((entry, index) => ({
             ...entry,
-            isDefault: index === preferredIdx,
+            isDefault: entry.modelId === DEFAULT_CODEX_DESCRIPTOR?.id || (!hasRegistryDefault && (entry.isDefault || index === 0)),
           }));
         }
-        if (!models.some((entry) => entry.isDefault)) {
-          models[0] = { ...models[0]!, isDefault: true };
-        }
-        return models;
       }
       return CODEX_FALLBACK_MODELS;
     } catch {
@@ -14912,10 +14992,16 @@ export function createAgentChatService(args: {
 
         if (threadIdToResume) {
           try {
+            const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
+              managed.session.reasoningEffort,
+              readPersistedState(sessionId)?.reasoningEffort,
+            );
+            managed.session.reasoningEffort = resumeReasoningEffort;
             const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
               threadId: threadIdToResume,
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
+              reasoningEffort: resumeReasoningEffort,
               ...codexPolicyArgs(codexPolicy),
               persistExtendedHistory: true
             });
@@ -15716,9 +15802,10 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
-      if (!managed.session.reasoningEffort) {
-        managed.session.reasoningEffort = persisted?.reasoningEffort ?? DEFAULT_REASONING_EFFORT;
-      }
+      managed.session.reasoningEffort = resolveCodexReasoningEffortForRuntime(
+        managed.session.reasoningEffort,
+        persisted?.reasoningEffort,
+      );
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
         const { codexPolicy } = resolveCodexThreadParams(managed);
@@ -15727,6 +15814,7 @@ export function createAgentChatService(args: {
             threadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
+            reasoningEffort: managed.session.reasoningEffort,
             ...codexPolicyArgs(codexPolicy),
             persistExtendedHistory: true
           });
