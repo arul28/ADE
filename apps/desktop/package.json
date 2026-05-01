@@ -227,7 +227,7 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
       "mergeASARs": true,
-      "x64ArchFiles": "{Contents/Resources/app.asar.unpacked/node_modules/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/vendor/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**/*,Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-x64/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/**/*,Contents/Resources/app.asar.unpacked/node_modules/sqlite3/build/Release/node_sqlite3.node}"
+      "x64ArchFiles": "{Contents/Resources/app.asar.unpacked/{node_modules,vendor}/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/**/*,Contents/Resources/app.asar.unpacked/node_modules/sqlite3/build/Release/node_sqlite3.node}"
     }
   }
 }
