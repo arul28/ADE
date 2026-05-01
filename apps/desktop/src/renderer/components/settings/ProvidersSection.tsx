@@ -452,6 +452,11 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setError(null);
     setNotice(null);
     setVerifyingProvider(provider);
+    setVerificationByProvider((prev) => {
+      const next = { ...prev };
+      delete next[provider];
+      return next;
+    });
     try {
       invalidateAiDiscoveryCache();
       const result = await window.ade.ai.verifyApiKey(provider);
@@ -474,6 +479,11 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setError(null);
     setNotice(null);
     setVerifyingProvider("cursor");
+    setVerificationByProvider((prev) => {
+      const next = { ...prev };
+      delete next.cursor;
+      return next;
+    });
     try {
       await window.ade.ai.storeApiKey("cursor", trimmed);
       invalidateAiDiscoveryCache();

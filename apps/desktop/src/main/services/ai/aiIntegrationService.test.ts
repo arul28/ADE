@@ -479,11 +479,13 @@ describe("aiIntegrationService", () => {
       verifiedAt: "2026-03-17T19:00:00.000Z",
     });
 
-    await expect(service.verifyApiKeyConnection("cursor")).resolves.toMatchObject({
+    const result = await service.verifyApiKeyConnection("cursor");
+    expect(result).toMatchObject({
       provider: "cursor",
       ok: true,
       source: "store",
     });
+    expect(JSON.stringify(result)).not.toContain("crsr_test");
 
     const refreshedStatus = await service.getStatus();
     expect(mockState.detectAllAuth.mock.calls.length).toBeGreaterThanOrEqual(3);
@@ -521,10 +523,44 @@ describe("aiIntegrationService", () => {
       errorMessage: "Cursor model API returned HTTP 401.",
     });
 
-    await expect(service.verifyApiKeyConnection("cursor")).resolves.toMatchObject({
+    const result = await service.verifyApiKeyConnection("cursor");
+    expect(result).toMatchObject({
       provider: "cursor",
       ok: false,
       source: "store",
     });
+    expect(JSON.stringify(result)).not.toContain("crsr_test");
+  });
+
+  it("does not fail Cursor verification on non-auth model probe failures", async () => {
+    const { service } = makeService({
+      providerMode: "guest",
+      availability: { claude: false, codex: false, cursor: false, droid: false },
+    });
+
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    mockState.verifyProviderApiKey.mockResolvedValue({
+      provider: "cursor",
+      ok: true,
+      message: "Connection verified successfully.",
+      endpoint: "Cursor.me",
+      statusCode: null,
+      verifiedAt: "2026-03-17T19:00:00.000Z",
+    });
+    mockState.probeCursorSdkModelDiscovery.mockResolvedValue({
+      rows: [],
+      failureKind: "unavailable",
+      errorMessage: "Cursor model API returned HTTP 503.",
+    });
+
+    const result = await service.verifyApiKeyConnection("cursor");
+    expect(result).toMatchObject({
+      provider: "cursor",
+      ok: true,
+      source: "store",
+    });
+    expect(JSON.stringify(result)).not.toContain("crsr_test");
   });
 });

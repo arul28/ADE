@@ -150,4 +150,16 @@ describe("Cursor SDK hook installation", () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it("rejects hook command paths with control characters", () => {
+    const home = tempHome();
+    try {
+      expect(() => ensureCursorSdkUserHook({
+        userHomeDir: home,
+        nodePath: `/node\npath/bin/node`,
+      })).toThrow(/control characters/);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

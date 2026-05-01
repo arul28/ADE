@@ -19,7 +19,29 @@ function writeJson(filePath: string, value: unknown): void {
 }
 
 function shellQuote(value: string): string {
+  if (/[\0\r\n]/.test(value)) {
+    throw new Error("Cursor hook command paths cannot contain control characters.");
+  }
   return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+function windowsCmdQuote(value: string): string {
+  if (/[\0\r\n]/.test(value)) {
+    throw new Error("Cursor hook command paths cannot contain control characters.");
+  }
+  return `"${value.replace(/(["^&|<>%])/g, "^$1")}"`;
+}
+
+function buildHookCommand(nodePath: string | undefined, scriptPath: string): string {
+  const explicitNode = nodePath?.trim();
+  if (explicitNode) return `${shellQuote(explicitNode)} ${shellQuote(scriptPath)}`;
+  if (process.versions.electron) {
+    if (process.platform === "win32") {
+      return `cmd /d /s /c "set ELECTRON_RUN_AS_NODE=1&& ${windowsCmdQuote(process.execPath)} ${windowsCmdQuote(scriptPath)}"`;
+    }
+    return `ELECTRON_RUN_AS_NODE=1 ${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+  }
+  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
 }
 
 function readObject(value: unknown): Record<string, unknown> | null {
@@ -206,7 +228,7 @@ export function ensureCursorSdkUserHook(args: {
   const config = readHooksFile(hooksPath);
   const hooks = readObject(config.hooks) ?? {};
   const existingPreToolUse = Array.isArray(hooks.preToolUse) ? hooks.preToolUse : [];
-  const command = `${shellQuote(args.nodePath ?? process.execPath)} ${shellQuote(scriptPath)}`;
+  const command = buildHookCommand(args.nodePath, scriptPath);
   const adeEntry = { command, failClosed: true };
   const nextPreToolUse = [
     ...existingPreToolUse.filter((entry) => !isAdeHookEntry(entry)),

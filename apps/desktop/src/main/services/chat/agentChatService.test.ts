@@ -909,11 +909,9 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
 }
 
 async function waitForSessionTitle(sessionService: ReturnType<typeof createMockSessionService>, sessionId: string, title: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (sessionService.get(sessionId)?.title === title) return;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  throw new Error(`Timed out waiting for session title '${title}'.`);
+  await vi.waitFor(() => {
+    expect(sessionService.get(sessionId)?.title).toBe(title);
+  }, { timeout: 1_000 });
 }
 
 // ---------------------------------------------------------------------------
@@ -3363,8 +3361,7 @@ describe("createAgentChatService", () => {
         method: "thread/name/updated",
         params: { threadId: "thread-1", name: "Should Not Win" },
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(sessionService.get(session.id)?.title).toBe("Manual Title");
+      await waitForSessionTitle(sessionService, session.id, "Manual Title");
     });
 
     it("lets OpenCode session.updated titles beat ADE AI fallback", async () => {
@@ -3401,6 +3398,9 @@ describe("createAgentChatService", () => {
       });
 
       await service.sendMessage({ sessionId: session.id, text: "Use ACP title." }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(typeof mockState.droidPooled.bridge.onSessionUpdate).toBe("function");
+      }, { timeout: 1_000 });
       mockState.droidPooled.bridge.onSessionUpdate?.({
         sessionId: "droid-acp-session-1",
         update: {
@@ -5801,7 +5801,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("keeps the requested Codex reasoning effort while applying effective thread policy", async () => {
+    it("persists the runtime-effective Codex reasoning effort while applying effective thread policy", async () => {
       mockState.codexResponseOverrides.set("thread/start", () => ({
         thread: { id: "thread-effective-start" },
         approvalPolicy: "onFailure",
@@ -5843,18 +5843,18 @@ describe("createAgentChatService", () => {
       } | undefined;
       expect(turnStartParams?.approvalPolicy).toBe("on-failure");
       expect(turnStartParams?.sandboxPolicy?.type).toBe("workspaceWrite");
-      expect(turnStartParams?.effort).toBe("xhigh");
+      expect(turnStartParams?.effort).toBe("high");
 
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.codexApprovalPolicy).toBe("on-failure");
       expect(summary?.codexSandbox).toBe("workspace-write");
       expect(summary?.permissionMode).toBe("default");
-      expect(summary?.reasoningEffort).toBe("xhigh");
+      expect(summary?.reasoningEffort).toBe("high");
 
       const persisted = readPersistedChatState(session.id);
       expect(persisted.codexApprovalPolicy).toBe("on-failure");
       expect(persisted.codexSandbox).toBe("workspace-write");
-      expect(persisted.reasoningEffort).toBe("xhigh");
+      expect(persisted.reasoningEffort).toBe("high");
     });
 
     it("re-resumes Codex threads when permission mode changes mid-session", async () => {
@@ -6185,7 +6185,7 @@ describe("createAgentChatService", () => {
       expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
     });
 
-    it("keeps requested Codex reasoning effort while applying effective policy on resume", async () => {
+    it("keeps runtime-effective Codex reasoning effort while applying effective policy on resume", async () => {
       mockState.codexResponseOverrides.set("thread/resume", () => ({
         thread: { id: "thread-effective-resume" },
         approvalPolicy: "onFailure",
@@ -6219,13 +6219,13 @@ describe("createAgentChatService", () => {
       expect(resumed.codexApprovalPolicy).toBe("on-failure");
       expect(resumed.codexSandbox).toBe("workspace-write");
       expect(resumed.permissionMode).toBe("default");
-      expect(resumed.reasoningEffort).toBe("xhigh");
+      expect(resumed.reasoningEffort).toBe("high");
 
       const persistedAfter = readPersistedChatState(session.id);
       expect(persistedAfter.threadId).toBe("thread-effective-resume");
       expect(persistedAfter.codexApprovalPolicy).toBe("on-failure");
       expect(persistedAfter.codexSandbox).toBe("workspace-write");
-      expect(persistedAfter.reasoningEffort).toBe("xhigh");
+      expect(persistedAfter.reasoningEffort).toBe("high");
     });
 
     it("throws when resuming an unknown session", async () => {

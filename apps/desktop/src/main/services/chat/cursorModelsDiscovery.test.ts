@@ -148,19 +148,12 @@ describe("parseCursorCliModelsStdout", () => {
     );
   });
 
-  it("uses the full active fallback when Cursor model APIs cannot enumerate", async () => {
+  it("uses only conservative fallback rows when Cursor model APIs cannot enumerate", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503 })));
 
     const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-    const ids = descriptors.map((descriptor) => descriptor.id);
-
-    expect(ids).toContain("cursor/auto");
-    expect(ids).toContain("cursor/composer-2");
-    expect(ids).toContain("cursor/claude-sonnet-4-6");
-    expect(ids).toContain("cursor/gpt-5.4");
-    expect(ids).toContain("cursor/gemini-3.1-pro");
-    expect(ids.length).toBeGreaterThan(2);
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["cursor/auto", "cursor/composer-2"]);
   });
 
   it("does not show fallback models when Cursor rejects agent/model auth", async () => {
@@ -174,6 +167,22 @@ describe("parseCursorCliModelsStdout", () => {
 
     const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
     expect(descriptors).toEqual([]);
+  });
+
+  it("suppresses fallback rows after a warm auth failure", async () => {
+    cursorModelsListMock.mockRejectedValue(new Error("AuthenticationError (status=401, endpoint=GET /v1/models)"));
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const initial = await discoverCursorSdkModelDescriptors("crsr_test");
+    expect(initial.map((descriptor) => descriptor.id)).toEqual(["cursor/auto", "cursor/composer-2"]);
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const afterFailure = await discoverCursorSdkModelDescriptors("crsr_test");
+    expect(afterFailure).toEqual([]);
   });
 
   it("bounds direct Cursor SDK model list discovery with a timeout", async () => {

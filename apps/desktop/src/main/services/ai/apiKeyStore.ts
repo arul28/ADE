@@ -163,6 +163,9 @@ function writeMacosKeychainSecret(account: string, value: string): void {
   if (!isMacosKeychainAvailable()) {
     throw new Error("macOS Keychain is unavailable. Cannot persist API keys.");
   }
+  // `/usr/bin/security add-generic-password` does not support a non-interactive
+  // stdin password sentinel: `-w -` stores a literal dash. Keep this path
+  // synchronous and tightly scoped until we replace it with a native binding.
   const result = runSecurity([
     "add-generic-password",
     "-a",
@@ -329,13 +332,13 @@ function ensureStore(): StoredKeys {
   return cache;
 }
 
-function persistEncryptedStore(): void {
-  if (!storePath || !cache) return;
+function persistEncryptedStore(nextStore: StoredKeys = cache ?? {}): void {
+  if (!storePath) return;
   if (!isSecureStorageAvailable()) {
     throw new Error("OS secure storage is unavailable. Cannot persist API keys.");
   }
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
-  const encrypted = safeStorage!.encryptString(JSON.stringify(cache));
+  const encrypted = safeStorage!.encryptString(JSON.stringify(nextStore));
   fs.writeFileSync(storePath, encrypted);
   try {
     fs.chmodSync(storePath, 0o600);
@@ -385,14 +388,16 @@ export function storeApiKey(provider: string, key: string): void {
     throw new Error("Provider and key are required.");
   }
   const store = ensureStore();
-  store[normalizedProvider] = normalizedKey;
   if (isMacosKeychainAvailable()) {
     writeMacosKeychainSecret(normalizedProvider, normalizedKey);
     const index = readMacosKeychainProviderIndex();
     writeMacosKeychainProviderIndex(new Set([...index.providers, normalizedProvider]));
+    store[normalizedProvider] = normalizedKey;
     return;
   }
-  persistEncryptedStore();
+  const nextStore = { ...store, [normalizedProvider]: normalizedKey };
+  persistEncryptedStore(nextStore);
+  cache = nextStore;
 }
 
 export function getApiKey(provider: string): string | null {
@@ -413,14 +418,17 @@ export function deleteApiKey(provider: string): void {
   const normalizedProvider = provider.trim().toLowerCase();
   if (!normalizedProvider.length) return;
   const store = ensureStore();
-  delete store[normalizedProvider];
   if (isMacosKeychainAvailable()) {
     deleteMacosKeychainSecret(normalizedProvider);
     const index = readMacosKeychainProviderIndex();
     writeMacosKeychainProviderIndex(index.providers.filter((entry) => entry !== normalizedProvider));
+    delete store[normalizedProvider];
     return;
   }
-  persistEncryptedStore();
+  const nextStore = { ...store };
+  delete nextStore[normalizedProvider];
+  persistEncryptedStore(nextStore);
+  cache = nextStore;
 }
 
 export function listStoredProviders(): string[] {

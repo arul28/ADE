@@ -234,6 +234,7 @@ function trimShellToken(token: string): string {
 function looksLikePathToken(token: string): boolean {
   const cleaned = trimShellToken(token);
   if (!cleaned || cleaned.startsWith("-") || cleaned.includes("://")) return false;
+  if (/^[A-Za-z]:[\\/]/.test(cleaned)) return true;
   if (
     cleaned === ".."
     || cleaned.startsWith("../")
@@ -248,6 +249,10 @@ function looksLikePathToken(token: string): boolean {
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(cleaned)) return false;
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(cleaned)) return false;
   return true;
+}
+
+function isWindowsAbsolutePath(candidate: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(candidate.trim());
 }
 
 function collectShellCommandPaths(command: string, out: string[]): void {
@@ -293,12 +298,13 @@ function collectPotentialPaths(value: unknown, out: string[] = [], pathContext =
 
 function nearestExistingPath(filePath: string): string | null {
   let current = path.resolve(filePath);
-  for (;;) {
+  for (let depth = 0; depth < 128; depth += 1) {
     if (fs.existsSync(current)) return current;
     const parent = path.dirname(current);
     if (parent === current) return null;
     current = parent;
   }
+  return null;
 }
 
 function realPathWithNearestExistingAncestor(filePath: string): string {
@@ -401,6 +407,9 @@ function pathGuardReason(args: {
     candidates.push(args.value.trim());
   }
   for (const candidate of candidates) {
+    if (process.platform !== "win32" && isWindowsAbsolutePath(candidate)) {
+      return `Path is outside the active lane: ${candidate}`;
+    }
     const resolved = resolveCandidatePath(candidate, cwd, args.userHomeDir);
     const realResolved = realPathWithNearestExistingAncestor(resolved);
     const relative = path.relative(laneRoot, resolved);

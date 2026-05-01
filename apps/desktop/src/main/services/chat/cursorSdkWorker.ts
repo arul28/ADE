@@ -57,24 +57,21 @@ function errorMessage(error: unknown): string {
     requestId?: unknown;
     toJSON?: () => unknown;
   };
-  for (const key of ["code", "status", "operation", "endpoint", "requestId"] as const) {
-    const value = record[key];
-    if (value !== undefined && value !== null && String(value).trim().length) {
-      detailEntries.push(`${key}=${String(value)}`);
-    }
-  }
-  if (detailEntries.length === 0 && typeof record.toJSON === "function") {
+  let jsonRecord: Record<string, unknown> | null = null;
+  if (typeof record.toJSON === "function") {
     try {
       const json = record.toJSON();
       if (json && typeof json === "object" && !Array.isArray(json)) {
-        for (const [key, value] of Object.entries(json as Record<string, unknown>)) {
-          if (value !== undefined && value !== null && String(value).trim().length) {
-            detailEntries.push(`${key}=${String(value)}`);
-          }
-        }
+        jsonRecord = json as Record<string, unknown>;
       }
     } catch {
-      // Best effort.
+      jsonRecord = null;
+    }
+  }
+  for (const key of ["code", "status", "operation", "endpoint", "requestId"] as const) {
+    const value = record[key] ?? jsonRecord?.[key];
+    if (value !== undefined && value !== null && String(value).trim().length) {
+      detailEntries.push(`${key}=${String(value)}`);
     }
   }
   const primary = message && message !== "Error"

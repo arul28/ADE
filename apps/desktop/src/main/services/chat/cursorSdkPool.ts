@@ -102,14 +102,25 @@ function sanitizeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 function ensurePrivateDirectory(dir: string): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const stat = fs.lstatSync(dir);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-    throw new Error(`Cursor SDK socket directory is not a private directory: ${dir}`);
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(
+      dir,
+      fs.constants.O_RDONLY
+        | (fs.constants.O_DIRECTORY ?? 0)
+        | (fs.constants.O_NOFOLLOW ?? 0),
+    );
+    const stat = fs.fstatSync(fd);
+    if (!stat.isDirectory()) {
+      throw new Error(`Cursor SDK socket directory is not a private directory: ${dir}`);
+    }
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+      throw new Error(`Cursor SDK socket directory is not owned by the current user: ${dir}`);
+    }
+    fs.fchmodSync(fd, 0o700);
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
   }
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
-    throw new Error(`Cursor SDK socket directory is not owned by the current user: ${dir}`);
-  }
-  fs.chmodSync(dir, 0o700);
 }
 
 function ensurePrivateSocketPath(socketPath: string): void {

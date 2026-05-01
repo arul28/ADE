@@ -3291,6 +3291,7 @@ final class SyncService: ObservableObject {
   func cachedChatModelCatalog() -> AgentChatModelCatalog? {
     let cacheKey = chatModelsCacheKey(provider: "catalog")
     guard let cached = chatModelCatalogCache[cacheKey] else { return nil }
+    guard Date().timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL else { return nil }
     return cached.catalog
   }
 

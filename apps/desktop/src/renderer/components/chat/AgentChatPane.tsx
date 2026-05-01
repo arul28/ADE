@@ -2442,11 +2442,16 @@ export function AgentChatPane({
         || status.providerConnections?.cursor?.runtimeAvailable === true;
       if (!cursorReady) return available;
 
-      const cursorModels = await getAgentChatModelsCached({
-        projectRoot,
-        provider: "cursor",
-        activateRuntime: true,
-      }).catch(() => []);
+      let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;
+      try {
+        cursorModels = await getAgentChatModelsCached({
+          projectRoot,
+          provider: "cursor",
+          activateRuntime: true,
+        });
+      } catch {
+        return available;
+      }
       if (!cursorModels.length) {
         const withoutCursor = orderModelIds(available.filter((id) => !isCursorModelId(id)));
         setAvailableModelIds(withoutCursor);

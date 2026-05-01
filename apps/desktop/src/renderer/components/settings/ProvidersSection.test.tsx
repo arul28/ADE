@@ -6,6 +6,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
 
+vi.mock("@lobehub/icons", () => {
+  const brand = () => {
+    const Component = () => null;
+    Object.assign(Component, {
+      Avatar: () => null,
+      Color: () => null,
+      Combine: () => null,
+      Text: () => null,
+      colorPrimary: "#888",
+      title: "stub",
+    });
+    return Component;
+  };
+  return {
+    Anthropic: brand(),
+    Claude: brand(),
+    Codex: brand(),
+    Cursor: brand(),
+    Gemini: brand(),
+    Google: brand(),
+    Grok: brand(),
+    Groq: brand(),
+    Kimi: brand(),
+    OpenAI: brand(),
+    OpenCode: brand(),
+    OpenRouter: brand(),
+    XAI: brand(),
+  };
+});
+
 function buildStatus(
   claudeRuntimeAvailable: boolean,
   localModels: string[] = [],

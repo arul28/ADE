@@ -1678,8 +1678,12 @@ export function ChatIosSimulatorPanel({
         return;
       }
       if (event.type === "stream-started" || event.type === "stream-status" || event.type === "stream-stopped" || event.type === "stream-error") {
-        const serviceManagedFallback = Boolean(event.status.degradationReason || event.status.fallbackReason);
-        if (serviceManagedFallback || (event.type === "stream-started" && event.status.streamUrl)) {
+        const fallbackMessage = event.status.degradationReason ?? event.status.fallbackReason ?? null;
+        const serviceManagedFallback = Boolean(fallbackMessage);
+        const recoveredStream =
+          (event.type === "stream-started" || event.type === "stream-status")
+          && Boolean(event.status.streamUrl && event.status.lastFrameAt);
+        if (serviceManagedFallback || recoveredStream || (event.type === "stream-started" && event.status.streamUrl)) {
           cancelDeviceBackedStreamRestart();
         }
         if (event.status.backend) lastResolvedStreamBackendRef.current = event.status.backend;
@@ -1709,8 +1713,8 @@ export function ChatIosSimulatorPanel({
             };
           });
         }
-        if (event.type === "stream-started" && (event.status.degradationReason || event.status.fallbackReason)) {
-          setMessage(event.status.degradationReason ?? event.status.fallbackReason ?? null);
+        if (event.type === "stream-started" && fallbackMessage) {
+          setMessage(fallbackMessage);
         }
         if ((event.type === "stream-stopped" || event.type === "stream-error") && !event.status.streamUrl) {
           setLiveVisual((current) => current?.kind === "mjpeg"
@@ -1718,11 +1722,14 @@ export function ChatIosSimulatorPanel({
                 ...current,
                 status: event.type === "stream-error" ? "reconnecting" : current.status,
                 url: null,
-                error: event.status.lastError ?? current.error,
+                error: fallbackMessage ?? event.status.lastError ?? current.error,
               }
             : current);
         }
-        if (event.type === "stream-error" && event.status.lastError && !serviceManagedFallback) setMessage(event.status.lastError);
+        if (event.type === "stream-error") {
+          if (fallbackMessage) setMessage(fallbackMessage);
+          else if (event.status.lastError) setMessage(event.status.lastError);
+        }
         return;
       }
       if (event.type === "session-released") {

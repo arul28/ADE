@@ -1057,7 +1057,9 @@ async function main() {
       results = await runSmokeCases(client, cases, lane.id, options);
     }
 
-    const ok = results.every((result) => result.ok);
+    const ok = options.mode === "list"
+      ? true
+      : models.length > 0 && cases.length > 0 && results.length > 0 && results.every((result) => result.ok);
     const payload = {
       ok,
       mode: options.mode,

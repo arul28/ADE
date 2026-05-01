@@ -75,6 +75,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "git.rebaseContinue",
   "git.rebaseAbort",
   "chat.models",
+  "chat.modelCatalog",
   "chat.listSessions",
   "chat.create",
   "chat.getSummary",

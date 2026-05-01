@@ -358,6 +358,7 @@ export function buildProviderGroupBlocks(
             subsections: [],
             modelCount: 0,
           });
+          existingFamilies.add(id);
         }
       }
       providers.sort((a, b) => compareProviderKeys(a.key, b.key));
@@ -371,4 +372,3 @@ export function buildProviderGroupBlocks(
 export function createModelOrderMap(): Map<string, number> {
   return new Map(MODEL_REGISTRY.map((model, index) => [model.id, index]));
 }
-

@@ -83,8 +83,12 @@ if [[ ! -x "$CAPTURE" || ! -x "$INPUT" ]]; then
 fi
 
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --sign - "$CAPTURE" >/dev/null 2>&1 || true
-  codesign --force --sign - "$INPUT" >/dev/null 2>&1 || true
+  if ! codesign --force --sign - "$CAPTURE" >/dev/null 2>&1; then
+    echo "warning: failed to ad-hoc sign $CAPTURE" >&2
+  fi
+  if ! codesign --force --sign - "$INPUT" >/dev/null 2>&1; then
+    echo "warning: failed to ad-hoc sign $INPUT" >&2
+  fi
 fi
 
 if [[ "$SMOKE" == "1" ]]; then

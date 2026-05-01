@@ -371,7 +371,7 @@ func workModelCatalogGroups(
           .flatMap(\.models)
           .filter(\.isAvailable)
           .map { model in
-            workDynamicModelOption(
+            workCatalogModelOption(
               from: model,
               topLevelProvider: group.key,
               providerKey: provider.key
@@ -395,7 +395,7 @@ func workModelCatalogGroups(
   )
 }
 
-private func workDynamicModelOption(
+private func workCatalogModelOption(
   from model: AgentChatModelCatalogModel,
   topLevelProvider: String,
   providerKey: String
@@ -421,22 +421,10 @@ private func workDynamicModelOption(
     tagline = parts.isEmpty ? "Available on the paired host" : parts.joined(separator: " · ")
   }
 
-  let normalized = model.id.lowercased()
-  let tier: WorkModelOption.Tier
-  if normalized.contains("thinking") {
-    tier = .reasoning
-  } else if normalized.contains("mini") || normalized.contains("spark") || normalized.contains("flash") || normalized == "auto" || normalized.contains("haiku") {
-    tier = .fast
-  } else if normalized.contains("opus") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
-    tier = .flagship
-  } else {
-    tier = .balanced
-  }
-
   return WorkModelOption(
     id: model.id,
     displayName: displayName,
-    tier: tier,
+    tier: workDynamicModelTier(for: model.id),
     tagline: tagline,
     provider: workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
     reasoningEfforts: model.reasoningEfforts ?? []
@@ -484,19 +472,19 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
     }
   }
 
-  append(trimmed)
   if let registryId = workCanonicalClaudeRegistryId(for: trimmed) {
+    append(registryId)
+  }
+  if let registryId = workCanonicalCodexRegistryId(for: trimmed) {
     append(registryId)
   }
   if let runtimeId = workClaudeRuntimeModelId(for: trimmed) {
     append(runtimeId)
   }
-  if let registryId = workCanonicalCodexRegistryId(for: trimmed) {
-    append(registryId)
-  }
   if let runtimeId = workCodexRuntimeModelId(for: trimmed) {
     append(runtimeId)
   }
+  append(trimmed)
   if trimmed.lowercased().hasPrefix("openai/") {
     append(String(trimmed.dropFirst("openai/".count)))
   }
@@ -767,30 +755,29 @@ private func workDynamicModelOption(
     tagline = parts.isEmpty ? "Available on the paired host" : parts.joined(separator: " · ")
   }
 
-  let tier: WorkModelOption.Tier
-  if let curated {
-    tier = curated.tier
-  } else {
-    let normalized = model.id.lowercased()
-    if normalized.contains("thinking") {
-      tier = .reasoning
-    } else if normalized.contains("mini") || normalized.contains("flash") || normalized == "auto" || normalized.contains("haiku") {
-      tier = .fast
-    } else if normalized.contains("opus") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
-      tier = .flagship
-    } else {
-      tier = .balanced
-    }
-  }
-
   return WorkModelOption(
     id: model.id,
     displayName: displayName,
-    tier: tier,
+    tier: workDynamicModelTier(for: model.id, curated: curated),
     tagline: tagline,
     provider: curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
     reasoningEfforts: model.reasoningEfforts ?? []
   )
+}
+
+private func workDynamicModelTier(for modelId: String, curated: WorkModelOption? = nil) -> WorkModelOption.Tier {
+  if let curated { return curated.tier }
+  let normalized = modelId.lowercased()
+  if normalized.contains("thinking") {
+    return .reasoning
+  }
+  if normalized.contains("mini") || normalized.contains("spark") || normalized.contains("flash") || normalized == "auto" || normalized.contains("haiku") {
+    return .fast
+  }
+  if normalized.contains("opus") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
+    return .flagship
+  }
+  return .balanced
 }
 
 private func workDeduplicatedModelOptions(_ models: [WorkModelOption]) -> [WorkModelOption] {

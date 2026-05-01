@@ -2146,7 +2146,7 @@ export function createPtyService({
           runtimeState: computeRuntimeState(row.id, fallbackStatus),
           chatSessionId: live
             ? terminalChatSessions.get(row.id) ?? live[1].chatSessionId ?? row.chatSessionId ?? null
-            : row.chatSessionId ?? terminalChatSessions.get(row.id) ?? null,
+            : terminalChatSessions.get(row.id) ?? row.chatSessionId ?? null,
         };
       });
     },

@@ -121,6 +121,8 @@ describe("Cursor SDK policy", () => {
       "git -C /tmp status",
       "npm --prefix ../other test",
       "npm --prefix=/tmp/outside test",
+      "npm --prefix=C:\\Users\\admin\\outside test",
+      "git -C C:\\Users\\admin\\outside status",
       "AWS_SHARED_CREDENTIALS_FILE=/Users/admin/.aws/credentials aws sts get-caller-identity",
       "cd /outside && ls",
       "echo ok > /tmp/ade-outside.txt",

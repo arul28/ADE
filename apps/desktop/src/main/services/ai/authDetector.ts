@@ -15,7 +15,10 @@ import { getLocalProviderDefaultEndpoint, type LocalProviderFamily } from "../..
 import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
-import { reportProviderRuntimeAuthFailure } from "./providerRuntimeHealth";
+import {
+  reportProviderRuntimeAuthFailure,
+  reportProviderRuntimeReady,
+} from "./providerRuntimeHealth";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
 
@@ -804,6 +807,7 @@ async function verifyCursorApiKey(
         );
       }),
     ]);
+    reportProviderRuntimeReady("cursor");
     return {
       provider: "cursor",
       ok: true,

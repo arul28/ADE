@@ -208,6 +208,9 @@ async function main() {
   if (!Number.isFinite(remoteDebugPort) || remoteDebugPort <= 0 || remoteDebugPort > 65535) {
     throw new Error(`Invalid Electron remote debugging port: ${remoteDebugPortRaw}`);
   }
+  if (!(await isPortFree(remoteDebugPort))) {
+    throw new Error(`Electron remote debugging port ${remoteDebugPort} is already in use.`);
+  }
   if (process.env.ADE_APP_CONTROL_CDP_PORT) {
     process.stdout.write(`[ade] honoring ADE App Control CDP port ${remoteDebugPort}\n`);
   }

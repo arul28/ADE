@@ -24,6 +24,7 @@ export type CursorSdkModelDiscoveryResult = {
 let cached: { at: number; models: CursorCliModelRow[] } | null = null;
 let sdkCached: { at: number; keyHash: string; models: CursorCliModelRow[] } | null = null;
 let sdkWarmInFlight: { keyHash: string; promise: Promise<CursorCliModelRow[]> } | null = null;
+let sdkLastFailure: { at: number; keyHash: string; kind: CursorModelDiscoveryFailureKind; message: string } | null = null;
 let sdkCacheGeneration = 0;
 const TTL_MS = 120_000;
 const SDK_MODEL_LIST_TIMEOUT_MS = 5_000;
@@ -46,35 +47,8 @@ const MINIMAL_FALLBACK_SDK_ROWS: CursorCliModelRow[] = [
   { id: "composer-2", displayName: "Composer 2" },
 ];
 
-const ACTIVE_FALLBACK_SDK_ROWS: CursorCliModelRow[] = [
-  ...MINIMAL_FALLBACK_SDK_ROWS,
-  { id: "composer-1.5", displayName: "Composer 1.5" },
-  { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
-  { id: "claude-opus-4-5", displayName: "Claude Opus 4.5" },
-  { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
-  { id: "claude-sonnet-4-5", displayName: "Claude Sonnet 4.5" },
-  { id: "claude-sonnet-4", displayName: "Claude Sonnet 4" },
-  { id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5" },
-  { id: "gpt-5.4", displayName: "GPT-5.4" },
-  { id: "gpt-5.4-mini", displayName: "GPT-5.4 Mini" },
-  { id: "gpt-5.4-nano", displayName: "GPT-5.4 Nano" },
-  { id: "gpt-5.3-codex", displayName: "GPT-5.3 Codex" },
-  { id: "gpt-5.3-codex-spark", displayName: "GPT-5.3 Codex Spark" },
-  { id: "gpt-5.2", displayName: "GPT-5.2" },
-  { id: "gpt-5.2-codex", displayName: "GPT-5.2 Codex" },
-  { id: "gpt-5.1", displayName: "GPT-5.1" },
-  { id: "gpt-5.1-codex-max", displayName: "GPT-5.1 Codex Max" },
-  { id: "gpt-5.1-codex-mini", displayName: "GPT-5.1 Codex Mini" },
-  { id: "gpt-5-mini", displayName: "GPT-5 Mini" },
-  { id: "gemini-3.1-pro", displayName: "Gemini 3.1 Pro" },
-  { id: "gemini-3-flash", displayName: "Gemini 3 Flash" },
-  { id: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash" },
-  { id: "grok-4-20", displayName: "Grok 4.20" },
-  { id: "kimi-k2.5", displayName: "Kimi K2.5" },
-];
-
-function fallbackCursorSdkRows(mode?: CursorCliModelDiscoveryMode): CursorCliModelRow[] {
-  return mode === "probe" ? ACTIVE_FALLBACK_SDK_ROWS : MINIMAL_FALLBACK_SDK_ROWS;
+function fallbackCursorSdkRows(): CursorCliModelRow[] {
+  return MINIMAL_FALLBACK_SDK_ROWS;
 }
 
 function stripAnsi(text: string): string {
@@ -115,6 +89,7 @@ export function clearCursorCliModelsCache(): void {
   cached = null;
   sdkCached = null;
   sdkWarmInFlight = null;
+  sdkLastFailure = null;
   sdkCacheGeneration += 1;
 }
 
@@ -181,6 +156,17 @@ function recordCursorModelDiscoveryFailure(error: unknown): CursorModelDiscovery
   return discoveryError;
 }
 
+function rememberCursorModelDiscoveryFailure(keyHash: string, error: unknown): CursorModelDiscoveryError {
+  const discoveryError = recordCursorModelDiscoveryFailure(error);
+  sdkLastFailure = {
+    at: Date.now(),
+    keyHash,
+    kind: discoveryError.kind,
+    message: discoveryError.message,
+  };
+  return discoveryError;
+}
+
 function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
   const rows: CursorCliModelRow[] = [];
   const seen = new Set<string>();
@@ -235,6 +221,14 @@ function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] |
   return null;
 }
 
+function getRecentCursorSdkFailure(apiKey?: string | null): typeof sdkLastFailure {
+  const normalizedApiKey = apiKey?.trim() || undefined;
+  const keyHash = hashKeyForCache(normalizedApiKey);
+  if (!sdkLastFailure || sdkLastFailure.keyHash !== keyHash) return null;
+  if (Date.now() - sdkLastFailure.at > TTL_MS) return null;
+  return sdkLastFailure;
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
@@ -283,6 +277,9 @@ async function fetchCursorModelsFromSdk(
   if (rows.length && generation === sdkCacheGeneration) {
     sdkCached = { at: Date.now(), keyHash, models: rows };
   }
+  if (rows.length && sdkLastFailure?.keyHash === keyHash) {
+    sdkLastFailure = null;
+  }
   recordCursorModelDiscoverySuccess(rows);
   return rows;
 }
@@ -319,7 +316,7 @@ function warmCursorModelsFromSdk(apiKey?: string | null): void {
     generation,
     SDK_MODEL_LIST_TIMEOUT_MS,
   ).catch((error) => {
-    recordCursorModelDiscoveryFailure(error);
+    rememberCursorModelDiscoveryFailure(keyHash, error);
     return [];
   });
   sdkWarmInFlight = { keyHash, promise };
@@ -358,7 +355,7 @@ export async function probeCursorSdkModelDiscovery(
       errorMessage: null,
     };
   } catch (error) {
-    const discoveryError = recordCursorModelDiscoveryFailure(error);
+    const discoveryError = rememberCursorModelDiscoveryFailure(keyHash, error);
     // Best-effort: a transient SDK error or invalid key should not crash
     // model resolution — fallback IDs cover the common case.
     return {
@@ -470,7 +467,7 @@ export async function discoverCursorCliModelDescriptors(
   const rows = options?.mode === "cached-or-fallback"
     ? getCachedCursorModels() ?? []
     : await listCursorModelsFromCli(agentPath);
-  const useRows: CursorCliModelRow[] = rows.length ? rows : fallbackCursorSdkRows(options?.mode);
+  const useRows: CursorCliModelRow[] = rows.length ? rows : fallbackCursorSdkRows();
   return cursorRowsToDescriptors(useRows);
 }
 
@@ -482,13 +479,15 @@ export async function discoverCursorSdkModelDescriptors(
     ? await probeCursorSdkModelDiscovery(apiKey, { timeoutMs: options?.timeoutMs })
     : null;
   const rows = result?.rows ?? getCachedCursorSdkModels(apiKey) ?? [];
+  const recentFailure = getRecentCursorSdkFailure(apiKey);
+  const knownAuthFailure = result?.failureKind === "auth" || recentFailure?.kind === "auth";
   if (!rows.length && options?.mode !== "probe") {
     warmCursorModelsFromSdk(apiKey);
   }
   const useRows: CursorCliModelRow[] = rows.length
     ? rows
-    : options?.mode === "cached-only" || result?.failureKind === "auth"
+    : options?.mode === "cached-only" || knownAuthFailure
       ? []
-      : fallbackCursorSdkRows(options?.mode);
+      : fallbackCursorSdkRows();
   return cursorRowsToDescriptors(useRows);
 }

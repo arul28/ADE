@@ -180,6 +180,10 @@ struct WorkModelPickerSheet: View {
   @MainActor
   private func loadLiveCatalog() async {
     isLoadingCatalog = true
+    defer {
+      isLoadingCatalog = false
+      syncSelectionStateToCatalog()
+    }
     usingCuratedFallback = false
 
     if liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
@@ -206,8 +210,6 @@ struct WorkModelPickerSheet: View {
         usingCuratedFallback = true
       }
     }
-    isLoadingCatalog = false
-    syncSelectionStateToCatalog()
   }
 
   private func catalogLocation(for modelId: String) -> (groupKey: String, providerKey: String)? {
@@ -263,9 +265,12 @@ struct WorkModelPickerSheet: View {
   }
 
   private func supportedReasoningTiers(for model: WorkModelOption) -> [String] {
-    model.reasoningEfforts
-      .map { $0.effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-      .filter { !$0.isEmpty }
+    var seen = Set<String>()
+    return model.reasoningEfforts.compactMap { effort in
+      let tier = effort.effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      guard !tier.isEmpty, seen.insert(tier).inserted else { return nil }
+      return tier
+    }
   }
 
   private func reasoningLabel(for tier: String) -> String {

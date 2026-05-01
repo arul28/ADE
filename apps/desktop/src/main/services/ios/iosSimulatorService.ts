@@ -385,14 +385,20 @@ function latencyPercentiles(samples: number[]): LatencyPercentiles {
 
 function iosSimHelperRoot(): string | null {
   const envRoot = process.env.ADE_IOS_SIM_HELPER_ROOT?.trim();
+  const processWithElectron = process as NodeJS.Process & { defaultApp?: boolean };
+  const packagedApp = Boolean(
+    process.resourcesPath
+    && findContainingAppBundle(process.resourcesPath)
+    && !processWithElectron.defaultApp,
+  );
   const candidates = [
     envRoot || null,
     process.resourcesPath ? path.join(process.resourcesPath, "native", "ios-sim-helpers") : null,
     process.resourcesPath ? path.join(process.resourcesPath, "app.asar.unpacked", "native", "ios-sim-helpers") : null,
-    path.join(process.cwd(), "native", "ios-sim-helpers"),
-    path.join(process.cwd(), "apps", "desktop", "native", "ios-sim-helpers"),
-    path.resolve(__dirname, "../../native/ios-sim-helpers"),
-    path.resolve(__dirname, "../../../../native/ios-sim-helpers"),
+    packagedApp ? null : path.join(process.cwd(), "native", "ios-sim-helpers"),
+    packagedApp ? null : path.join(process.cwd(), "apps", "desktop", "native", "ios-sim-helpers"),
+    packagedApp ? null : path.resolve(__dirname, "../../native/ios-sim-helpers"),
+    packagedApp ? null : path.resolve(__dirname, "../../../../native/ios-sim-helpers"),
   ].filter(Boolean) as string[];
   return candidates.find(hasIosSimHelperSources) ?? null;
 }

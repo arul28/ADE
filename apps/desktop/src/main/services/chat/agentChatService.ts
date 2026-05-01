@@ -311,6 +311,7 @@ type PersistedChatState = {
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
+  runtimeTitleAdopted?: boolean;
   permissionMode?: AgentChatSession["permissionMode"];
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
@@ -1387,7 +1388,7 @@ function normalizeUsagePayload(
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
 
 const EFFORT_ALIASES: Record<string, Record<string, string>> = {
-  codex: {},
+  codex: { max: "xhigh" },
   claude: {},
 };
 
@@ -1405,7 +1406,7 @@ function validateReasoningEffortForDescriptor(
 ): string | null {
   const validated = validateReasoningEffort(provider, effort);
   if (!validated) return null;
-  if (provider === "claude" && descriptor?.reasoningTiers?.length && !descriptor.reasoningTiers.includes(validated)) {
+  if (descriptor?.reasoningTiers?.length && !descriptor.reasoningTiers.includes(validated)) {
     return null;
   }
   return validated;
@@ -1414,10 +1415,11 @@ function validateReasoningEffortForDescriptor(
 function resolveCodexReasoningEffortForRuntime(
   primary: string | null | undefined,
   fallback?: string | null,
+  descriptor?: ModelDescriptor | null,
 ): string {
   return (
-    validateReasoningEffort("codex", normalizeReasoningEffort(primary))
-    ?? validateReasoningEffort("codex", normalizeReasoningEffort(fallback))
+    validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(primary), descriptor)
+    ?? validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(fallback), descriptor)
     ?? DEFAULT_REASONING_EFFORT
   );
 }
@@ -2490,7 +2492,7 @@ function applyCodexEffectiveThreadState(
         requestedReasoningEffort,
         runtimeReasoningEffort: reasoningEffort,
       });
-      managed.session.reasoningEffort = requestedReasoningEffort;
+      managed.session.reasoningEffort = reasoningEffort;
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       return;
     }
@@ -5382,7 +5384,7 @@ export function createAgentChatService(args: {
       sessionId: managed.session.id,
       provider: managed.session.provider,
       source,
-      title,
+      titleLength: title.length,
     });
     persistChatState(managed);
     return title;
@@ -6057,6 +6059,7 @@ export function createAgentChatService(args: {
       ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
       ...(managed.session.cursorModeId !== undefined ? { cursorModeId: managed.session.cursorModeId } : {}),
       ...(managed.session.cursorConfigValues ? { cursorConfigValues: managed.session.cursorConfigValues } : {}),
+      ...(managed.runtimeTitleAdopted ? { runtimeTitleAdopted: true } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
       ...(managed.session.surface ? { surface: managed.session.surface } : {}),
@@ -6305,6 +6308,7 @@ export function createAgentChatService(args: {
           ? { lastLaneDirectiveKey: record.lastLaneDirectiveKey.trim() }
           : {}),
         ...(record.manuallyNamed === true ? { manuallyNamed: true } : {}),
+        ...(record.runtimeTitleAdopted === true ? { runtimeTitleAdopted: true } : {}),
         ...(record.awaitingInput === true ? { awaitingInput: true } : {}),
         ...(typeof record.requestedCwd === "string" && record.requestedCwd.trim().length
           ? { requestedCwd: record.requestedCwd.trim() }
@@ -7204,7 +7208,7 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
-      runtimeTitleAdopted: false,
+      runtimeTitleAdopted: persisted?.runtimeTitleAdopted === true,
       manuallyNamed: persisted?.manuallyNamed === true || row.manuallyNamed === true,
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
@@ -10768,9 +10772,10 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     codexPolicy: CodexPolicy,
   ): Promise<void> => {
-    const reasoningEffort = validateReasoningEffort(
+    const reasoningEffort = validateReasoningEffortForDescriptor(
       "codex",
       normalizeReasoningEffort(managed.session.reasoningEffort),
+      resolveSessionModelDescriptor(managed.session),
     ) ?? DEFAULT_REASONING_EFFORT;
     managed.session.reasoningEffort = reasoningEffort;
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
@@ -15168,7 +15173,11 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
-      const nextReasoningEffort = validateReasoningEffort("codex", normalizeReasoningEffort(reasoningEffort));
+      const nextReasoningEffort = validateReasoningEffortForDescriptor(
+        "codex",
+        normalizeReasoningEffort(reasoningEffort),
+        resolveSessionModelDescriptor(managed.session),
+      );
       if (nextReasoningEffort) {
         managed.session.reasoningEffort = nextReasoningEffort;
       } else if (!managed.session.reasoningEffort) {
@@ -15201,6 +15210,7 @@ export function createAgentChatService(args: {
             const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
               managed.session.reasoningEffort,
               readPersistedState(sessionId)?.reasoningEffort,
+              resolveSessionModelDescriptor(managed.session),
             );
             managed.session.reasoningEffort = resumeReasoningEffort;
             const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
@@ -16025,6 +16035,7 @@ export function createAgentChatService(args: {
       managed.session.reasoningEffort = resolveCodexReasoningEffortForRuntime(
         managed.session.reasoningEffort,
         persisted?.reasoningEffort,
+        resolveSessionModelDescriptor(managed.session),
       );
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
@@ -16887,6 +16898,11 @@ export function createAgentChatService(args: {
 
   const getModelCatalog = async (): Promise<AgentChatModelCatalog> => {
     const catalogProviders: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode"];
+    const descriptorInfoKey = (
+      group: ModelProviderGroup,
+      providerKey: string,
+      descriptorId: string,
+    ): string => `${group}:${providerKey}:${descriptorId}`;
     const modelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {
         try {
@@ -16923,7 +16939,7 @@ export function createAgentChatService(args: {
           ...(runtimeTiers?.length ? { reasoningTiers: runtimeTiers } : {}),
         };
         descriptors.push(patched);
-        descriptorInfo.set(patched.id, { provider, info });
+        descriptorInfo.set(descriptorInfoKey(provider, patched.family, patched.id), { provider, info });
       }
     }
 
@@ -16947,7 +16963,7 @@ export function createAgentChatService(args: {
             key: subsection.key,
             label: subsection.label,
             models: subsection.models.map((descriptor) => {
-              const entry = descriptorInfo.get(descriptor.id);
+              const entry = descriptorInfo.get(descriptorInfoKey(group.key, provider.key, descriptor.id));
               const runtimeProvider = entry?.provider ?? resolveProviderGroupForModel(descriptor);
               const runtimeModelId = entry?.info.id ?? getRuntimeModelRefForDescriptor(descriptor, runtimeProvider);
               const reasoningEfforts = entry?.info.reasoningEfforts
@@ -17315,7 +17331,7 @@ export function createAgentChatService(args: {
       if (reasoningEffort !== undefined) {
         const requested = normalizeReasoningEffort(reasoningEffort);
         managed.session.reasoningEffort = nextProvider === "codex"
-          ? validateReasoningEffort("codex", requested)
+          ? validateReasoningEffortForDescriptor("codex", requested, descriptor)
           : nextProvider === "claude"
             ? validateReasoningEffortForDescriptor("claude", requested, descriptor)
             : nextProvider === "opencode"
@@ -17344,10 +17360,11 @@ export function createAgentChatService(args: {
     } else if (reasoningEffort !== undefined) {
       const prev = managed.session.reasoningEffort ?? null;
       const requested = normalizeReasoningEffort(reasoningEffort);
+      const descriptor = resolveSessionModelDescriptor(managed.session);
       managed.session.reasoningEffort = managed.session.provider === "codex"
-        ? validateReasoningEffort("codex", requested)
+        ? validateReasoningEffortForDescriptor("codex", requested, descriptor)
         : managed.session.provider === "claude"
-          ? validateReasoningEffortForDescriptor("claude", requested, resolveSessionModelDescriptor(managed.session))
+          ? validateReasoningEffortForDescriptor("claude", requested, descriptor)
           : managed.session.provider === "opencode"
             ? requested
             : null;

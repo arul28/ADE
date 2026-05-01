@@ -970,15 +970,21 @@ export function createAiIntegrationService(args: {
       if (providerName === "cursor" && verification.ok) {
         invalidateProviderReadinessCaches();
         invalidateInFinally = false;
-        const discovery = await probeCursorSdkModelDiscovery(apiEntry.key, { timeoutMs: 3_000 });
-        if (discovery.failureKind === "auth") {
-          return {
-            ...verification,
-            ok: false,
-            message:
-              "Cursor account verification succeeded, but Cursor rejected this API key for agent/model access. Re-enter a key from the Cursor dashboard integrations page.",
-            source: apiEntry.source,
-          };
+        try {
+          const discovery = await probeCursorSdkModelDiscovery(apiEntry.key, { timeoutMs: 3_000 });
+          if (discovery.failureKind === "auth") {
+            return {
+              ...verification,
+              ok: false,
+              message:
+                "Cursor account verification succeeded, but Cursor rejected this API key for agent/model access. Re-enter a key from the Cursor dashboard integrations page.",
+              source: apiEntry.source,
+            };
+          }
+        } catch (error) {
+          logger.warn("ai.cursor.discovery_probe_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
       return {
