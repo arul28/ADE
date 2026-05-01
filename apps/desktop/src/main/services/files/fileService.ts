@@ -366,7 +366,6 @@ export function createFileService({
       if (await isIgnoredPath(rootPath, rel, includeIgnored)) continue;
       if (entry.name === ".git") continue;
 
-      const childAbs = path.join(dirPath, entry.name);
       const node: FileTreeNode = {
         name: entry.name,
         path: rel,

@@ -1,6 +1,6 @@
 /**
  * In-memory map of absolute file path → unsaved editor text for workspace file UIs.
- * The main process reads this via `window.__ADE_GET_DIRTY_FILE_TEXT__` during Cursor ACP reads.
+ * The main process reads this via `window.__ADE_GET_DIRTY_FILE_TEXT__` during provider file reads.
  */
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath, normalizePathForComparison } from "./pathUtils";
 

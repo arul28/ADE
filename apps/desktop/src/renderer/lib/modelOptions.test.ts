@@ -143,9 +143,9 @@ describe("deriveConfiguredModelIds", () => {
     }
   });
 
-  it("includes Cursor CLI models from availableModelIds by default", () => {
+  it("includes Cursor SDK models from availableModelIds when Cursor API key auth is present", () => {
     const status = makeStatus({
-      detectedAuth: [{ type: "cli-subscription", cli: "cursor", authenticated: true }],
+      detectedAuth: [{ type: "api-key", provider: "cursor", source: "store" }],
       availableModelIds: ["cursor/auto", "cursor/composer-2", "openai/gpt-5.4-pro"],
     });
     const ids = deriveConfiguredModelIds(status);
@@ -156,16 +156,16 @@ describe("deriveConfiguredModelIds", () => {
       const descriptor = getModelById(id);
       expect(descriptor).toBeTruthy();
       expect(descriptor!.family).toBe("cursor");
-      expect(descriptor!.isCliWrapped).toBe(true);
+      expect(descriptor!.authTypes).toContain("api-key");
+      expect(descriptor!.isCliWrapped).toBe(false);
     }
   });
 
-  it("always includes Cursor CLI models (includeCursor option is ignored)", () => {
+  it("includes Cursor SDK models by default", () => {
     const status = makeStatus({
-      detectedAuth: [{ type: "cli-subscription", cli: "cursor", authenticated: true }],
+      detectedAuth: [{ type: "api-key", provider: "cursor", source: "store" }],
       availableModelIds: ["cursor/auto", "cursor/composer-2"],
     });
-    // The includeCursor option is no longer functional — all models are included.
     const ids = deriveConfiguredModelIds(status, {});
     expect(ids).toContain("cursor/auto");
     expect(ids).toContain("cursor/composer-2");

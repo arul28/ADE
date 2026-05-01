@@ -29,7 +29,7 @@ import {
 } from "../shared/utils";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 
-/** Bridge hooks for an ACP host (Cursor agent, Droid exec, etc.). */
+/** Bridge hooks for an ACP host such as Factory Droid. */
 export type AcpHostBridge = {
   onPermission: ((req: RequestPermissionRequest) => Promise<RequestPermissionResponse>) | null;
   onSessionUpdate: ((n: SessionNotification) => void) | null;
@@ -92,14 +92,14 @@ async function resolveDirtyText(
 }
 
 export type CreateAcpHostClientOptions = {
-  /** Log prefix, e.g. `[CursorAcpPool]` */
+  /** Log prefix, e.g. `[DroidAcpPool]` */
   logPrefix: string;
 };
 
 const WAIT_FOR_TERMINAL_EXIT_MAX_MS = 5 * 60_000;
 
 /**
- * ACP `Client` implementation shared by Cursor (`agent acp`) and Factory Droid (`droid exec --output-format acp`).
+ * ACP `Client` implementation for Factory Droid (`droid exec --output-format acp`).
  */
 export function createAcpHostClient(
   bridge: AcpHostBridge,

@@ -7,6 +7,7 @@ import {
   CaretDown,
   CaretLeft,
   CaretRight,
+  CloudArrowUp,
   Warning,
   Terminal,
   FileCode,
@@ -2401,6 +2402,27 @@ function renderEvent(
 
   /* ── System Notice ── */
   if (event.type === "system_notice") {
+    if (event.noticeKind === "info" && event.message === "Promoted to Cursor Cloud") {
+      return (
+        <div
+          className="inline-flex max-w-full items-center gap-2 rounded-full border border-violet-300/22 px-3 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)]"
+          style={{ background: "rgba(167,139,250,0.07)", color: "rgba(216,200,255,0.85)" }}
+        >
+          <CloudArrowUp size={11} weight="fill" style={{ color: "#A78BFA" }} />
+          <span className="font-medium">Promoted to cloud</span>
+          <a
+            href="#/cloud"
+            onClick={(e) => {
+              e.preventDefault();
+              try { window.location.hash = "#/cloud"; } catch { /* noop */ }
+            }}
+            className="inline-flex items-center gap-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-violet-200/70 hover:text-violet-100"
+          >
+            open in /cloud
+          </a>
+        </div>
+      );
+    }
     const kindStyles: Record<string, { border: string; bg: string; text: string; icon: typeof Warning }> = {
       auth: { border: "border-amber-500/18", bg: "bg-amber-500/[0.06]", text: "text-amber-300", icon: Warning },
       rate_limit: { border: "border-red-500/18", bg: "bg-red-500/[0.06]", text: "text-red-300", icon: Warning },
@@ -2725,6 +2747,82 @@ function renderEvent(
     );
   }
 
+  /* ── Cloud status lifecycle ── */
+  if (event.type === "cloud_status") {
+    const status = (event.status ?? "").toLowerCase();
+    const live = status === "creating" || status === "running";
+    const failed = status === "error" || status === "cancelled" || status === "expired";
+    const tone = live
+      ? "text-violet-200/80"
+      : failed
+        ? "text-red-300/75"
+        : "text-emerald-300/70";
+    const label = status === "creating"
+      ? "Provisioning cloud VM"
+      : status === "running"
+        ? "Running in cloud"
+        : status === "finished"
+          ? "Cloud run finished"
+          : status === "cancelled"
+            ? "Cloud run cancelled"
+            : status === "expired"
+              ? "Cloud run expired"
+              : status === "error"
+                ? "Cloud run failed"
+                : `Cloud · ${status}`;
+    return (
+      <div className={cn(
+        "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
+        live
+          ? "border-violet-300/22"
+          : failed
+            ? "border-red-400/20 bg-red-500/[0.05]"
+            : "border-emerald-400/20 bg-emerald-500/[0.05]",
+        tone,
+      )} style={live ? { background: "rgba(167,139,250,0.06)" } : undefined}>
+        {live ? (
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60" style={{ background: "#A78BFA" }} />
+            <span className="relative inline-flex h-2 w-2 rounded-full" style={{ background: "#A78BFA" }} />
+          </span>
+        ) : (
+          <CloudArrowUp size={11} weight="fill" />
+        )}
+        <span className="font-medium">{label}</span>
+        {event.detail ? <span className="truncate text-fg/45">· {event.detail}</span> : null}
+        {event.gitBranch ? <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/35">{event.gitBranch}</span> : null}
+        {event.prUrl ? (
+          <a
+            href={event.prUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-violet-200/70 hover:text-violet-100"
+          >
+            PR
+          </a>
+        ) : null}
+      </div>
+    );
+  }
+
+  /* ── Cloud artifact (auto-pulled into lane) ── */
+  if (event.type === "cloud_artifact") {
+    const sizeKb = typeof event.sizeBytes === "number" && event.sizeBytes > 0
+      ? `${(event.sizeBytes / 1024).toFixed(1)} KB`
+      : null;
+    const filename = (event.path ?? "").split(/[\\/]/).pop() || event.path;
+    return (
+      <div
+        className="inline-flex items-center gap-2 rounded-md border border-violet-300/15 bg-violet-500/[0.05] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-violet-100/80"
+      >
+        <CloudArrowUp size={10} weight="fill" />
+        <span className="font-medium">Pulled</span>
+        <span className="truncate font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/65" title={event.lanePath || event.path}>{filename}</span>
+        {sizeKb ? <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">{sizeKb}</span> : null}
+      </div>
+    );
+  }
+
   /* ── Activity ── */
   if (event.type === "activity") {
     const animate = Boolean(options?.turnActive) && !options?.sessionEnded;
@@ -2803,8 +2901,9 @@ function renderEvent(
     const costLabel = typeof event.costUsd === "number" && event.costUsd > 0
       ? `$${event.costUsd < 0.01 ? event.costUsd.toFixed(4) : event.costUsd.toFixed(2)}`
       : null;
+    const isCloud = event.runtime === "cloud";
     const hasUsageData = Boolean(inputTokens || outputTokens || cacheRead || cacheCreation || costLabel || modelLabel);
-    if (event.status === "completed" && !hasUsageData) {
+    if (event.status === "completed" && !hasUsageData && !isCloud) {
       return null;
     }
     const statusTone = doneStatusToneClass(event.status);
@@ -2817,6 +2916,20 @@ function renderEvent(
             <span className="inline-flex items-center gap-1.5 text-fg/30">
               <ModelGlyph modelId={event.modelId} model={event.model} size={11} className="shrink-0 text-violet-400/40" />
               <span className="font-medium">{modelLabel}</span>
+            </span>
+          ) : null}
+          {isCloud ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em]"
+              style={{
+                borderColor: "rgba(167,139,250,0.30)",
+                background: "rgba(167,139,250,0.10)",
+                color: "rgba(216,200,255,0.90)",
+              }}
+              title="This turn ran in Cursor Cloud"
+            >
+              <CloudArrowUp size={9} weight="fill" />
+              cloud
             </span>
           ) : null}
           {inputTokens ? <span className="text-fg/25">In <span className="font-medium text-fg/35">{inputTokens}</span></span> : null}

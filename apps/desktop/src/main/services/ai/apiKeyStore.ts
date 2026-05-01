@@ -153,6 +153,7 @@ const ENV_KEY_PROVIDERS: Record<string, string> = {
   groq: "GROQ_API_KEY",
   together: "TOGETHER_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
+  cursor: "CURSOR_API_KEY",
 };
 
 export function getApiKey(provider: string): string | null {

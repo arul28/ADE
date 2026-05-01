@@ -61,7 +61,7 @@ export function sortOpenCodeProvidersByCategory(providers: ModelProviderBlock[])
 
 export type ModelSubsection = {
   key: string;
-  /** Human-readable subsection title (e.g. Cursor CLI line family). Empty when a single default bucket. */
+  /** Human-readable subsection title (e.g. Cursor model family). Empty when a single default bucket. */
   label: string;
   models: ModelDescriptor[];
 };
@@ -166,10 +166,10 @@ export function providerBadgeColor(provider: string, models: ModelDescriptor[]):
 
 /** Classify a model into one of the five top-level provider groups. */
 export function classifyProviderGroup(model: ModelDescriptor): ProviderGroupKey {
+  if (model.family === "cursor") return "cursor";
   if (model.isCliWrapped) {
     if (model.family === "anthropic" || model.cliCommand === "claude") return "claude";
     if (model.family === "openai" || model.cliCommand === "codex") return "codex";
-    if (model.family === "cursor" || model.cliCommand === "cursor") return "cursor";
     if (model.family === "factory" || model.cliCommand === "droid") return "droid";
   }
   return "opencode";

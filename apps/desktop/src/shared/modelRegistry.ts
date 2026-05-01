@@ -347,7 +347,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "low",
   },
 
-  // ---- Cursor CLI models: discovered at runtime via `agent models` (see cursorModelsDiscovery + getResolvedAvailableModels) ----
+  // ---- Cursor SDK models: discovered at runtime via @cursor/sdk (see cursorModelsDiscovery + getResolvedAvailableModels) ----
 
   // ---- Local (Ollama) ----
   {
@@ -685,12 +685,12 @@ export function ensureOpenCodeBaseURL(url: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Cursor CLI — dynamic descriptors (`cursor/<providerModelId>` from `agent models`)
+// Cursor SDK — dynamic descriptors (`cursor/<providerModelId>` from @cursor/sdk)
 // ---------------------------------------------------------------------------
 
 export type CursorCliLineGroup = "auto" | "anthropic" | "composer" | "openai" | "google" | "grok" | "other";
 
-/** Order of Cursor CLI sub-sections inside the subscription bucket model picker. */
+/** Order of Cursor SDK sub-sections inside the subscription bucket model picker. */
 export const CURSOR_CLI_LINE_ORDER: CursorCliLineGroup[] = [
   "auto",
   "anthropic",
@@ -768,19 +768,19 @@ export function createDynamicCursorCliModelDescriptor(
     shortId: providerModelId,
     displayName: display,
     family: "cursor",
-    authTypes: ["cli-subscription"],
+    authTypes: ["api-key"],
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
     capabilities: ALL_CAPS,
     color: colorForCursorSdkId(providerModelId),
-    providerRoute: "cursor-cli",
+    providerRoute: "cursor-sdk",
     providerModelId,
     cliCommand: "cursor",
-    isCliWrapped: true,
+    isCliWrapped: false,
   };
 }
 
-/** Sort Cursor CLI models for pickers: line group order, then display name. */
+/** Sort Cursor SDK models for pickers: line group order, then display name. */
 export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]): ModelDescriptor[] {
   const rank = (g: CursorCliLineGroup) => {
     const i = CURSOR_CLI_LINE_ORDER.indexOf(g);
@@ -1214,18 +1214,18 @@ export function resolveCliProviderForModel(
 
 /**
  * Resolve a model descriptor to its provider group ("claude" | "codex" | "cursor" | "droid" | "opencode").
- * CLI-wrapped models map to their CLI runtime; all others map to "opencode".
+ * Native provider models map to their runtime; OpenCode-backed and local API models map to "opencode".
  */
 export function resolveProviderGroupForModel(
   descriptor: ModelDescriptor,
 ): ModelProviderGroup {
+  if (descriptor.family === "cursor") return "cursor";
   return resolveCliProviderForModel(descriptor) ?? "opencode";
 }
 
 /**
  * Resolve the chat session provider and model ref for a model descriptor.
- * CLI-wrapped models route to their native runtime (claude/codex/cursor/droid);
- * everything else goes through the OpenCode runtime.
+ * Native models route to their provider runtime; everything else goes through the OpenCode runtime.
  */
 export function resolveChatProviderForDescriptor(
   descriptor: ModelDescriptor,
@@ -1261,7 +1261,7 @@ function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescript
     if (descriptor.deprecated) return false;
     if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
     if (provider === "codex") return descriptor.isCliWrapped && descriptor.family === "openai";
-    if (provider === "cursor") return descriptor.isCliWrapped && descriptor.family === "cursor";
+    if (provider === "cursor") return descriptor.family === "cursor";
     if (provider === "droid") return descriptor.isCliWrapped && descriptor.family === "factory";
     return !descriptor.isCliWrapped;
   });
@@ -1333,7 +1333,7 @@ function pickDefaultOpenCodeModel(models: ModelDescriptor[]): ModelDescriptor | 
   ]);
 }
 
-/** Default when choosing among Cursor CLI models from `agent models` (prefers Auto, then Sonnet, Composer, GPT‑5.4). */
+/** Default when choosing among Cursor SDK models (prefers Auto, then Sonnet, Composer, GPT-5.4). */
 export function pickDefaultCursorDescriptorFromCliList(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
     (m) => m.providerModelId === "auto",

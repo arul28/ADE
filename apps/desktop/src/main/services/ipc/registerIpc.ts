@@ -516,6 +516,20 @@ import type {
   FeedbackPreparedDraft,
   FeedbackSubmission,
   FeedbackSubmitDraftArgs,
+  CursorCloudAgentSummary,
+  CursorCloudArtifactDownload,
+  CursorCloudArtifactSummary,
+  CursorCloudCreateRunRequest,
+  CursorCloudCreateRunResult,
+  CursorCloudFollowUpRequest,
+  CursorCloudFollowUpResult,
+  CursorCloudListAgentsResult,
+  CursorCloudListRunsResult,
+  CursorCloudRepository,
+  CursorCloudOpenChatRequest,
+  CursorCloudOpenChatResult,
+  CursorCloudStreamRunRequest,
+  CursorCloudStreamRunResult,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -1453,7 +1467,7 @@ function mapPrAiPermissionMode(mode: AiPermissionMode): AgentChatPermissionMode 
 function mapPrAiPermissionModeToNativeFields(
   mode: AiPermissionMode,
   provider: string,
-): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode">> {
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId">> {
   const legacy = mapPrAiPermissionMode(mode);
   if (provider === "claude") {
     const map: Record<string, AgentChatClaudePermissionMode> = {
@@ -1474,6 +1488,11 @@ function mapPrAiPermissionModeToNativeFields(
     if (legacy === "edit") return { droidPermissionMode: "auto-low" };
     return { droidPermissionMode: "read-only" };
   }
+  if (provider === "cursor") {
+    if (legacy === "full-auto") return { cursorModeId: "full-auto" };
+    if (legacy === "plan") return { cursorModeId: "plan" };
+    return { cursorModeId: "agent" };
+  }
   const umap: Record<string, AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",
     "edit": "edit",
@@ -1483,7 +1502,7 @@ function mapPrAiPermissionModeToNativeFields(
 }
 
 function deriveAiPermissionModeFromSummary(
-  summary: Pick<AgentChatSessionSummary, "provider" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode"> | null | undefined,
+  summary: Pick<AgentChatSessionSummary, "provider" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"> | null | undefined,
 ): AiPermissionMode | null {
   if (!summary) return null;
   if (summary.provider === "claude") {
@@ -1503,6 +1522,12 @@ function deriveAiPermissionModeFromSummary(
     if (summary.droidPermissionMode === "auto-high") return "full_edit";
     if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "guarded_edit";
     if (summary.droidPermissionMode === "read-only") return "read_only";
+    return null;
+  }
+  if (summary.provider === "cursor") {
+    if (summary.cursorModeId === "full-auto") return "full_edit";
+    if (summary.cursorModeId === "agent") return "guarded_edit";
+    if (summary.cursorModeId === "ask" || summary.cursorModeId === "plan") return "read_only";
     return null;
   }
   if (summary.opencodePermissionMode === "full-auto") return "full_edit";
@@ -2653,6 +2678,118 @@ export function registerIpc({
       local: snapshot.local ?? {},
     });
   });
+
+  ipcMain.handle(IPC.aiCursorCloudListRepositories, async (): Promise<CursorCloudRepository[]> => {
+    const ctx = getCtx();
+    return ctx.aiIntegrationService.listCursorCloudRepositories();
+  });
+
+  ipcMain.handle(
+    IPC.aiCursorCloudListAgents,
+    async (_event, arg: { includeArchived?: boolean; limit?: number; cursor?: string | null }): Promise<CursorCloudListAgentsResult> => {
+      const ctx = getCtx();
+      return ctx.aiIntegrationService.listCursorCloudAgents(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudListRuns,
+    async (_event, arg: { agentId: string; limit?: number; cursor?: string | null }): Promise<CursorCloudListRunsResult> => {
+      const ctx = getCtx();
+      return ctx.aiIntegrationService.listCursorCloudRuns(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudCreateRun,
+    async (_event, arg: CursorCloudCreateRunRequest): Promise<CursorCloudCreateRunResult> => {
+      const ctx = getCtx();
+      return ctx.aiIntegrationService.createCursorCloudRun(arg);
+    },
+  );
+
+  ipcMain.handle(IPC.aiCursorCloudArchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.aiIntegrationService.archiveCursorCloudAgent(arg.agentId);
+  });
+
+  ipcMain.handle(IPC.aiCursorCloudUnarchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.aiIntegrationService.unarchiveCursorCloudAgent(arg.agentId);
+  });
+
+  ipcMain.handle(IPC.aiCursorCloudDeleteAgent, async (_event, arg: { agentId: string }): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.aiIntegrationService.deleteCursorCloudAgent(arg.agentId);
+  });
+
+  ipcMain.handle(
+    IPC.aiCursorCloudGetAgent,
+    async (_event, arg: { agentId: string }): Promise<CursorCloudAgentSummary | null> => {
+      const ctx = getCtx();
+      return await ctx.aiIntegrationService.getCursorCloudAgent(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudListArtifacts,
+    async (_event, arg: { agentId: string }): Promise<CursorCloudArtifactSummary[]> => {
+      const ctx = getCtx();
+      const items = await ctx.aiIntegrationService.listCursorCloudArtifacts(arg.agentId);
+      return items.map((entry) => ({
+        path: entry.path,
+        ...(typeof entry.sizeBytes === "number" ? { sizeBytes: entry.sizeBytes } : {}),
+        ...(entry.updatedAt !== undefined ? { updatedAt: entry.updatedAt } : {}),
+        ...(entry.mimeType !== undefined ? { mimeType: entry.mimeType } : {}),
+      }));
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudDownloadArtifact,
+    async (_event, arg: { agentId: string; path: string }): Promise<CursorCloudArtifactDownload> => {
+      const ctx = getCtx();
+      return await ctx.aiIntegrationService.downloadCursorCloudArtifact(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudCancelRun,
+    async (_event, arg: { agentId: string; runId: string }): Promise<void> => {
+      const ctx = getCtx();
+      await ctx.agentChatService.cancelCursorCloudRun(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudFollowUp,
+    async (_event, arg: CursorCloudFollowUpRequest): Promise<CursorCloudFollowUpResult> => {
+      const ctx = getCtx();
+      return await ctx.agentChatService.cursorCloudFollowUp(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudOpenChat,
+    async (_event, arg: CursorCloudOpenChatRequest): Promise<CursorCloudOpenChatResult> => {
+      const ctx = getCtx();
+      return await ctx.agentChatService.openCursorCloudChat({
+        cloudAgentId: arg.cloudAgentId,
+        laneId: arg.laneId,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudStreamRun,
+    async (_event, arg: CursorCloudStreamRunRequest): Promise<CursorCloudStreamRunResult> => {
+      // Subscription is opportunistic: if the session has the cloud agent associated
+      // and the worker bridge is alive, events will already be flowing. The renderer
+      // uses the returned subscriptionId only as an opaque correlation token.
+      void arg;
+      return { subscriptionId: `cursor-cloud-stream-${arg.agentId}-${arg.runId}` };
+    },
+  );
 
   ipcMain.handle(IPC.syncGetStatus, async (): Promise<SyncRoleSnapshot> => {
     return await (await requireSyncService()).getStatus();
@@ -5615,6 +5752,90 @@ export function registerIpc({
   ipcMain.handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {
     const ctx = getCtx();
     return await ctx.gitService.getSyncStatus(arg);
+  });
+
+  ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
+    const ctx = getCtx();
+    const laneId = (arg?.laneId ?? "").trim();
+    const fallback = { remoteUrl: null, branch: null } as const;
+    if (!laneId) return fallback;
+    let worktreePath: string;
+    let knownBranch: string | null = null;
+    try {
+      const info = ctx.laneService.getLaneBaseAndBranch(laneId);
+      worktreePath = info.worktreePath;
+      knownBranch = info.branchRef?.trim() || null;
+    } catch {
+      return fallback;
+    }
+    if (!worktreePath) return fallback;
+    const [remoteRes, branchRes] = await Promise.all([
+      runGit(["remote", "get-url", "origin"], { cwd: worktreePath, timeoutMs: 8_000 }),
+      knownBranch ? Promise.resolve(null) : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }),
+    ]);
+    const remoteUrl = remoteRes.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
+    let branch = knownBranch;
+    if (!branch && branchRes && branchRes.exitCode === 0) {
+      const out = branchRes.stdout.trim();
+      branch = out && out !== "HEAD" ? out : null;
+    }
+    return { remoteUrl, branch };
+  });
+
+  ipcMain.handle(IPC.gitGetOpenPrForBranch, async (_event, arg: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> => {
+    const ctx = getCtx();
+    const fallback = { prUrl: null, prNumber: null, title: null, headRefName: null } as const;
+    const laneId = (arg?.laneId ?? "").trim();
+    if (!laneId) return fallback;
+    let worktreePath: string;
+    let laneBranch: string | null = null;
+    try {
+      const info = ctx.laneService.getLaneBaseAndBranch(laneId);
+      worktreePath = info.worktreePath;
+      laneBranch = info.branchRef?.trim() || null;
+    } catch {
+      return fallback;
+    }
+    if (!worktreePath) return fallback;
+    const branch = (arg?.branch ?? "").trim() || laneBranch;
+    if (!branch) return fallback;
+
+    try {
+      const stdout = await new Promise<string>((resolve) => {
+        let settled = false;
+        let out = "";
+        const child = spawn("gh", ["pr", "list", "--head", branch, "--state", "open", "--json", "url,number,title,headRefName", "--limit", "1"], {
+          cwd: worktreePath,
+          env: process.env,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        const finish = (value: string) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          try { child.kill("SIGKILL"); } catch { /* noop */ }
+          resolve(value);
+        };
+        const timer = setTimeout(() => finish(""), 8_000);
+        child.stdout.on("data", (d: Buffer | string) => {
+          out += Buffer.isBuffer(d) ? d.toString("utf8") : String(d);
+        });
+        child.stderr.on("data", () => { /* swallow — may contain auth state */ });
+        child.on("error", () => finish(""));
+        child.on("close", (code) => finish(code === 0 ? out : ""));
+      });
+      if (!stdout.trim()) return fallback;
+      const parsed: unknown = JSON.parse(stdout);
+      if (!Array.isArray(parsed) || parsed.length === 0) return fallback;
+      const entry = parsed[0] as Record<string, unknown>;
+      const prUrl = typeof entry.url === "string" && entry.url ? entry.url : null;
+      const prNumber = typeof entry.number === "number" ? entry.number : null;
+      const title = typeof entry.title === "string" && entry.title ? entry.title : null;
+      const headRefName = typeof entry.headRefName === "string" && entry.headRefName ? entry.headRefName : null;
+      return { prUrl, prNumber, title, headRefName };
+    } catch {
+      return fallback;
+    }
   });
 
   ipcMain.handle(IPC.gitSync, async (_event, arg: GitSyncArgs): Promise<GitActionResult> => {

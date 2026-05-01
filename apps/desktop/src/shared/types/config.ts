@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { ProviderMode, ModelId } from "./core";
-import type { AgentChatModelInfo } from "./chat";
+import type { AgentChatModelInfo, AgentChatSession } from "./chat";
 import type { LaneType } from "./lanes";
 import type { MissionExecutionPolicy, MissionPermissionConfig, MissionProviderPermissions } from "./missions";
 import type { MissionModelConfig, ModelConfig } from "./models";
@@ -988,6 +988,7 @@ export type AiProviderCredentialSource =
   | "claude-credentials-file"
   | "codex-auth-file"
   | "cursor-env"
+  | "cursor-api-key-store"
   | "factory-env";
 
 export type AiProviderConnectionSource = {
@@ -1027,6 +1028,106 @@ export type AiApiKeyVerificationResult = {
   endpoint?: string;
   statusCode?: number | null;
   verifiedAt: string;
+};
+
+export type CursorCloudRepository = {
+  url: string;
+};
+
+export type CursorCloudAgentSummary = {
+  agentId: string;
+  name: string;
+  summary: string;
+  status?: "running" | "finished" | "error";
+  archived?: boolean;
+  lastModified?: number | null;
+  createdAt?: number | null;
+  repos?: string[];
+  webUrl?: string | null;
+};
+
+export type CursorCloudRunSummary = {
+  runId: string;
+  agentId: string;
+  status: string;
+  modelId?: string | null;
+  durationMs?: number | null;
+  result?: unknown;
+  git?: unknown;
+};
+
+export type CursorCloudListAgentsResult = {
+  items: CursorCloudAgentSummary[];
+  nextCursor?: string;
+};
+
+export type CursorCloudListRunsResult = {
+  items: CursorCloudRunSummary[];
+  nextCursor?: string;
+};
+
+export type CursorCloudCreateRunRequest = {
+  promptText: string;
+  repoUrl: string;
+  startingRef?: string | null;
+  modelId?: string | null;
+  agentName?: string | null;
+  workOnCurrentBranch?: boolean;
+  autoCreatePR?: boolean;
+  skipReviewerRequest?: boolean;
+  /** Existing PR url to attach the cloud agent to. */
+  prUrl?: string | null;
+};
+
+export type CursorCloudCreateRunResult = {
+  agent: CursorCloudAgentSummary;
+  run: CursorCloudRunSummary;
+};
+
+export type CursorCloudFollowUpRequest = {
+  agentId: string;
+  prompt: string;
+  modelId?: string | null;
+};
+
+export type CursorCloudFollowUpResult = {
+  runId: string;
+  status: string;
+};
+
+export type CursorCloudArtifactSummary = {
+  path: string;
+  sizeBytes?: number;
+  updatedAt?: string | null;
+  mimeType?: string | null;
+};
+
+export type CursorCloudArtifactDownload = {
+  path: string;
+  /** Base64-encoded artifact contents over IPC. */
+  contents: string;
+  mimeType: string | null;
+  sizeBytes: number;
+};
+
+export type CursorCloudOpenChatRequest = {
+  cloudAgentId: string;
+  laneId: string;
+};
+
+export type CursorCloudOpenChatResult = {
+  sessionId: string;
+  session?: AgentChatSession;
+};
+
+export type CursorCloudStreamRunRequest = {
+  agentId: string;
+  runId: string;
+  sessionId: string;
+};
+
+export type CursorCloudStreamRunResult = {
+  subscriptionId: string;
 };
 
 export type AiLocalProviderConfig = {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache } from "./aiDiscoveryCache";
+import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "./aiDiscoveryCache";
 
 const getStatusMock = vi.fn();
 const modelsMock = vi.fn();
@@ -85,6 +85,58 @@ describe("aiDiscoveryCache", () => {
       force: false,
       refreshOpenCodeInventory: true,
     });
+  });
+
+  it("peekAiStatusCached returns null before any fetch and the cached value after", async () => {
+    expect(peekAiStatusCached("/project/a")).toBeNull();
+
+    getStatusMock.mockResolvedValueOnce({
+      mode: "subscription",
+      availableProviders: { claude: true, codex: false, cursor: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+    });
+
+    await getAiStatusCached({ projectRoot: "/project/a" });
+
+    const peeked = peekAiStatusCached("/project/a");
+    expect(peeked).not.toBeNull();
+    expect(peeked?.mode).toBe("subscription");
+    // Other projects should not see this entry.
+    expect(peekAiStatusCached("/project/b")).toBeNull();
+  });
+
+  it("peekAiStatusCached still returns the previous value while a refresh is in flight", async () => {
+    getStatusMock.mockResolvedValueOnce({
+      mode: "guest",
+      availableProviders: { claude: false, codex: false, cursor: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+    });
+    await getAiStatusCached({ projectRoot: "/project/a" });
+
+    let resolveNext!: (value: any) => void;
+    getStatusMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveNext = resolve;
+        }),
+    );
+
+    const inFlight = getAiStatusCached({ projectRoot: "/project/a", force: true });
+    // While the forced refresh is pending, the previously-cached value should
+    // still be readable synchronously — that's what lets the chat picker seed
+    // its initial state without flashing "not configured".
+    expect(peekAiStatusCached("/project/a")?.mode).toBe("guest");
+
+    resolveNext({
+      mode: "subscription",
+      availableProviders: { claude: true, codex: false, cursor: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+    });
+    await inFlight;
+    expect(peekAiStatusCached("/project/a")?.mode).toBe("subscription");
   });
 
   it("does not let a warm generic status cache swallow an explicit OpenCode refresh", async () => {

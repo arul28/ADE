@@ -48,7 +48,7 @@ const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
   tools: { heading: "Developer tools", sub: "ADE needs git for version control. The bundled ade command is added to agent sessions; installing it here also makes it available in your Terminal." },
   ai: {
     heading: "Runtime providers",
-    sub: "Set up the four ADE runtime providers: Claude, Codex, and Cursor use their native CLIs. OpenCode powers API-backed and local model chats (LM Studio, Ollama). After a CLI is installed and signed in, its models appear automatically.",
+    sub: "Set up ADE runtime providers. Claude and Codex use their native CLIs. Cursor uses a Cursor API key for SDK chat and Cursor Cloud agents. OpenCode powers API-backed and local model chats.",
   },
   helpers: { heading: "Background helpers", sub: "These lightweight helpers run in the background while you work. They are optional and can be changed anytime in Settings." },
   github: { heading: "GitHub Integration", sub: "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." },

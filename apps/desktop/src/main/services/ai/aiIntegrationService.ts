@@ -9,6 +9,13 @@ import type {
   AiProviderConnections,
   AiRuntimeConnections,
   AiRuntimeConnectionStatus,
+  CursorCloudAgentSummary,
+  CursorCloudCreateRunRequest,
+  CursorCloudCreateRunResult,
+  CursorCloudListAgentsResult,
+  CursorCloudListRunsResult,
+  CursorCloudRepository,
+  CursorCloudRunSummary,
 } from "../../../shared/types";
 import {
   decodeOpenCodeRegistryId,
@@ -44,12 +51,14 @@ import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
 import { isRecord } from "../shared/utils";
 import { parseStructuredOutput } from "./utils";
-import { getApiKeyStoreStatus } from "./apiKeyStore";
+import { getAllApiKeys, getApiKeyStoreStatus } from "./apiKeyStore";
 import type { createMemoryService } from "../memory/memoryService";
 import { inspectLocalProvider } from "./localModelDiscovery";
-import { discoverCursorCliModelDescriptors, clearCursorCliModelsCache } from "../chat/cursorModelsDiscovery";
+import {
+  discoverCursorSdkModelDescriptors,
+  clearCursorCliModelsCache,
+} from "../chat/cursorModelsDiscovery";
 import { discoverDroidCliModelDescriptors, clearDroidCliModelsCache } from "../chat/droidModelsDiscovery";
-import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
@@ -340,8 +349,65 @@ function toCliAvailability(auth: DetectedAuth[]): {
   return {
     claude: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "claude"),
     codex: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "codex"),
-    cursor: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "cursor"),
+    cursor: auth.some((entry) => entry.type === "api-key" && entry.provider === "cursor"),
     droid: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "droid"),
+  };
+}
+
+function getCursorApiKeyFromAuth(auth: DetectedAuth[]): string | null {
+  const entry = auth.find(
+    (candidate): candidate is Extract<DetectedAuth, { type: "api-key" }> =>
+      candidate.type === "api-key" && candidate.provider === "cursor",
+  );
+  return entry?.key?.trim() || null;
+}
+
+function readString(value: unknown): string | null {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length ? text : null;
+}
+
+function readNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function normalizeCursorCloudAgent(raw: unknown): CursorCloudAgentSummary {
+  const record = isRecord(raw) ? raw : {};
+  const target = isRecord(record.target) ? record.target : {};
+  const agentId = readString(record.agentId) ?? readString(record.id) ?? "";
+  const repos = Array.isArray(record.repos)
+    ? record.repos.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+    : [];
+  const status = readString(record.status)?.toLowerCase();
+  return {
+    agentId,
+    name: readString(record.name) ?? "Cursor cloud agent",
+    summary: readString(record.summary) ?? "",
+    ...(status === "running" || status === "finished" || status === "error" ? { status } : {}),
+    archived: typeof record.archived === "boolean" ? record.archived : undefined,
+    lastModified: readNumber(record.lastModified),
+    createdAt: readNumber(record.createdAt),
+    repos,
+    webUrl: readString(record.webUrl) ?? readString(target.url) ?? (agentId ? `https://cursor.com/agents?id=${encodeURIComponent(agentId)}` : null),
+  };
+}
+
+function normalizeCursorCloudRun(raw: unknown, fallbackAgentId?: string | null): CursorCloudRunSummary {
+  const record = isRecord(raw) ? raw : {};
+  const model = isRecord(record.model) ? record.model : {};
+  return {
+    runId: readString(record.id) ?? readString(record.runId) ?? "",
+    agentId: readString(record.agentId) ?? fallbackAgentId ?? "",
+    status: readString(record.status) ?? "unknown",
+    modelId: readString(model.id) ?? readString(record.modelId),
+    durationMs: readNumber(record.durationMs),
+    result: record.result,
+    git: record.git,
   };
 }
 
@@ -441,7 +507,7 @@ function toCliRuntimeConnection(status: NonNullable<AiProviderConnections>[keyof
     runtimeDetected: status.runtimeDetected,
     runtimeAvailable: status.runtimeAvailable,
     health: status.runtimeAvailable ? "ready" : status.runtimeDetected ? "reachable" : "not_configured",
-    ...(source ? { source: source === "cursor-env" ? "env" : "store" as const } : {}),
+    ...(source ? { source: source === "cursor-env" || source === "factory-env" ? "env" : "store" as const } : {}),
     path: status.path,
     blocker: status.blocker,
     lastCheckedAt: status.lastCheckedAt,
@@ -762,12 +828,17 @@ export function createAiIntegrationService(args: {
     const statuses = getCachedCliAuthStatuses();
     const claude = statuses.find((entry) => entry.cli === "claude");
     const codex = statuses.find((entry) => entry.cli === "codex");
-    const cursor = statuses.find((entry) => entry.cli === "cursor");
     const droid = statuses.find((entry) => entry.cli === "droid");
+    let cursorStoredAuth = false;
+    try {
+      cursorStoredAuth = Boolean(getAllApiKeys().cursor?.trim());
+    } catch {
+      // API key store may not be initialized yet
+    }
     return {
       claude: Boolean(claude?.installed && (claude.authenticated || !claude.verified)),
       codex: Boolean(codex?.installed && (codex.authenticated || !codex.verified)),
-      cursor: Boolean(cursor?.installed && (cursor.authenticated || !cursor.verified)),
+      cursor: Boolean(process.env.CURSOR_API_KEY?.trim() || cursorStoredAuth),
       droid: Boolean(droid?.installed && (droid.authenticated || !droid.verified)),
     };
   };
@@ -788,22 +859,19 @@ export function createAiIntegrationService(args: {
 
     let available = getAvailableModels(auth);
 
-    const hasCursorCliAuth = auth.some(
-      (entry) =>
-        entry.type === "cli-subscription"
-        && entry.cli === "cursor"
-        && entry.authenticated !== false,
-    );
-    if (hasCursorCliAuth) {
+    const cursorApiKey = getCursorApiKeyFromAuth(auth);
+    if (cursorApiKey) {
+      let cursorModels: Awaited<ReturnType<typeof discoverCursorSdkModelDescriptors>> = [];
       try {
-        const { path: agentPath } = resolveCursorAgentExecutable();
-        const cursorModels = await discoverCursorCliModelDescriptors(agentPath);
+        cursorModels = await discoverCursorSdkModelDescriptors(cursorApiKey);
+      } catch {
+        cursorModels = [];
+      }
+      if (cursorModels.length) {
         available = [
           ...available.filter((descriptor) => !(descriptor.family === "cursor" && descriptor.isCliWrapped)),
           ...cursorModels,
         ];
-      } catch {
-        // Cursor CLI missing or `agent models` failed — omit dynamic Cursor list
       }
     }
 
@@ -857,6 +925,192 @@ export function createAiIntegrationService(args: {
       ...verification,
       source: apiEntry.source,
     };
+  };
+
+  const requireCursorCloudApiKey = async (): Promise<string> => {
+    const key = getCursorApiKeyFromAuth(await detectAuth());
+    if (!key) {
+      throw new Error("Add a Cursor API key before using Cursor Cloud agents.");
+    }
+    return key;
+  };
+
+  const listCursorCloudRepositories = async (): Promise<CursorCloudRepository[]> => {
+    const apiKey = await requireCursorCloudApiKey();
+    const { Cursor } = await import("@cursor/sdk");
+    const repos = await Cursor.repositories.list({ apiKey });
+    return repos
+      .map((repo) => ({ url: String(repo.url ?? "").trim() }))
+      .filter((repo) => repo.url.length > 0);
+  };
+
+  const listCursorCloudAgents = async (args?: {
+    includeArchived?: boolean;
+    limit?: number;
+    cursor?: string | null;
+  }): Promise<CursorCloudListAgentsResult> => {
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await import("@cursor/sdk");
+    const result = await Agent.list({
+      runtime: "cloud",
+      apiKey,
+      includeArchived: args?.includeArchived,
+      limit: args?.limit,
+      cursor: args?.cursor?.trim() || undefined,
+    });
+    return {
+      items: result.items.map(normalizeCursorCloudAgent),
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+    };
+  };
+
+  const listCursorCloudRuns = async (args: {
+    agentId: string;
+    limit?: number;
+    cursor?: string | null;
+  }): Promise<CursorCloudListRunsResult> => {
+    const agentId = args.agentId.trim();
+    if (!agentId) throw new Error("Cursor cloud agent id is required.");
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await import("@cursor/sdk");
+    const result = await Agent.listRuns(agentId, {
+      runtime: "cloud",
+      apiKey,
+      limit: args.limit,
+      cursor: args.cursor?.trim() || undefined,
+    });
+    return {
+      items: result.items.map((run) => normalizeCursorCloudRun(run, agentId)),
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+    };
+  };
+
+  const createCursorCloudRun = async (
+    args: CursorCloudCreateRunRequest,
+  ): Promise<CursorCloudCreateRunResult> => {
+    const promptText = args.promptText.trim();
+    const repoUrl = args.repoUrl.trim();
+    if (!promptText) throw new Error("Prompt is required.");
+    if (!repoUrl) throw new Error("Cursor cloud repo is required.");
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await import("@cursor/sdk");
+    const agent = await Agent.create({
+      apiKey,
+      ...(args.modelId?.trim() ? { model: { id: args.modelId.trim() } } : {}),
+      ...(args.agentName?.trim() ? { name: args.agentName.trim() } : {}),
+      cloud: {
+        repos: [{
+          url: repoUrl,
+          ...(args.startingRef?.trim() ? { startingRef: args.startingRef.trim() } : {}),
+        }],
+        workOnCurrentBranch: args.workOnCurrentBranch === true,
+        autoCreatePR: args.autoCreatePR === true,
+        skipReviewerRequest: args.skipReviewerRequest !== false,
+      },
+    });
+    const run = await agent.send(promptText);
+    const agentSummary: CursorCloudAgentSummary = {
+      agentId: agent.agentId,
+      name: args.agentName?.trim() || "Cursor cloud agent",
+      summary: promptText.slice(0, 180),
+      status: "running",
+      archived: false,
+      repos: [repoUrl],
+      webUrl: `https://cursor.com/agents?id=${encodeURIComponent(agent.agentId)}`,
+    };
+    return {
+      agent: agentSummary,
+      run: normalizeCursorCloudRun(run, agent.agentId),
+    };
+  };
+
+  const archiveCursorCloudAgent = async (agentId: string): Promise<void> => {
+    const id = agentId.trim();
+    if (!id) throw new Error("Cursor cloud agent id is required.");
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await import("@cursor/sdk");
+    await Agent.archive(id, { apiKey });
+  };
+
+  const unarchiveCursorCloudAgent = async (agentId: string): Promise<void> => {
+    const id = agentId.trim();
+    if (!id) throw new Error("Cursor cloud agent id is required.");
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await import("@cursor/sdk");
+    await Agent.unarchive(id, { apiKey });
+  };
+
+  const deleteCursorCloudAgent = async (agentId: string): Promise<void> => {
+    const id = agentId.trim();
+    if (!id) throw new Error("Cursor cloud agent id is required.");
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await import("@cursor/sdk");
+    await Agent.delete(id, { apiKey });
+  };
+
+  const getCursorCloudAgent = async (agentId: string): Promise<CursorCloudAgentSummary | null> => {
+    const id = agentId.trim();
+    if (!id) throw new Error("Cursor cloud agent id is required.");
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await import("@cursor/sdk");
+    try {
+      const raw = await Agent.get(id, { apiKey });
+      return normalizeCursorCloudAgent(raw);
+    } catch {
+      return null;
+    }
+  };
+
+  const listCursorCloudArtifacts = async (
+    agentId: string,
+  ): Promise<Array<{ path: string; sizeBytes?: number; updatedAt?: string | null; mimeType?: string | null }>> => {
+    const id = agentId.trim();
+    if (!id) throw new Error("Cursor cloud agent id is required.");
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await import("@cursor/sdk");
+    const cloudAgent = await Agent.resume(id, { apiKey });
+    try {
+      const artifacts = await cloudAgent.listArtifacts();
+      return artifacts.map((entry) => ({
+        path: entry.path,
+        sizeBytes: entry.sizeBytes,
+        updatedAt: entry.updatedAt ?? null,
+      }));
+    } finally {
+      try {
+        await (cloudAgent as { [Symbol.asyncDispose]?: () => Promise<void> })[Symbol.asyncDispose]?.();
+      } catch {
+        try { (cloudAgent as { close?: () => void }).close?.(); } catch { /* ignore */ }
+      }
+    }
+  };
+
+  const downloadCursorCloudArtifact = async (args: {
+    agentId: string;
+    path: string;
+  }): Promise<{ path: string; contents: string; mimeType: string | null; sizeBytes: number }> => {
+    const id = args.agentId.trim();
+    const artifactPath = typeof args.path === "string" ? args.path : "";
+    if (!id) throw new Error("Cursor cloud agent id is required.");
+    if (!artifactPath.length) throw new Error("Cursor cloud artifact path is required.");
+    const apiKey = await requireCursorCloudApiKey();
+    const { Agent } = await import("@cursor/sdk");
+    const cloudAgent = await Agent.resume(id, { apiKey });
+    try {
+      const buffer = await cloudAgent.downloadArtifact(artifactPath);
+      return {
+        path: artifactPath,
+        contents: Buffer.from(buffer).toString("base64"),
+        mimeType: null,
+        sizeBytes: buffer.byteLength,
+      };
+    } finally {
+      try {
+        await (cloudAgent as { [Symbol.asyncDispose]?: () => Promise<void> })[Symbol.asyncDispose]?.();
+      } catch {
+        try { (cloudAgent as { close?: () => void }).close?.(); } catch { /* ignore */ }
+      }
+    }
   };
 
   const getMode = (): AiProviderMode => {
@@ -1391,6 +1645,16 @@ export function createAiIntegrationService(args: {
 
     getAvailability: getAvailabilitySync,
     verifyApiKeyConnection,
+    listCursorCloudRepositories,
+    listCursorCloudAgents,
+    listCursorCloudRuns,
+    createCursorCloudRun,
+    archiveCursorCloudAgent,
+    unarchiveCursorCloudAgent,
+    deleteCursorCloudAgent,
+    getCursorCloudAgent,
+    listCursorCloudArtifacts,
+    downloadCursorCloudArtifact,
 
     getAvailabilityAsync,
     resolveModelForTask,

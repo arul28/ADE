@@ -35,7 +35,7 @@ export type CliAuthStatus = {
   path: string | null;
   authenticated: boolean;
   verified: boolean;
-  /** Cursor CLI only — when false, user is on free/hobby tier. */
+  /** Optional Cursor CLI diagnostic only — not used for Cursor SDK auth. */
   paidPlan?: boolean;
 };
 
@@ -463,6 +463,7 @@ const ENV_KEY_MAP: Record<string, string> = {
   XAI_API_KEY: "xai",
   GROQ_API_KEY: "groq",
   TOGETHER_API_KEY: "together",
+  CURSOR_API_KEY: "cursor",
 };
 
 const LOCAL_ENDPOINT_CHECK_TIMEOUT_MS = 500;
@@ -777,6 +778,37 @@ function isOpenAiModelAvailabilityFailure(status: number, body: string): boolean
   return patterns.some((pattern) => pattern.test(body));
 }
 
+async function verifyCursorApiKey(
+  key: string,
+  verifiedAt: string,
+): Promise<ApiKeyVerificationResult> {
+  try {
+    const { Cursor } = await import("@cursor/sdk");
+    const user = await Cursor.me({ apiKey: key });
+    return {
+      provider: "cursor",
+      ok: true,
+      message: user.userEmail
+        ? `Connection verified for ${user.userEmail}.`
+        : "Connection verified successfully.",
+      endpoint: "Cursor.me",
+      statusCode: null,
+      verifiedAt,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const authFailed = /auth|unauthorized|forbidden|invalid|api key/i.test(message);
+    return {
+      provider: "cursor",
+      ok: false,
+      message: authFailed ? "Authentication failed. Check API key." : `Verification request failed: ${message}`,
+      endpoint: "Cursor.me",
+      statusCode: null,
+      verifiedAt,
+    };
+  }
+}
+
 export async function verifyProviderApiKey(
   provider: string,
   key: string,
@@ -801,6 +833,10 @@ export async function verifyProviderApiKey(
       statusCode: null,
       verifiedAt,
     };
+  }
+
+  if (normalizedProvider === "cursor") {
+    return verifyCursorApiKey(keyText, verifiedAt);
   }
 
   const request = buildApiVerificationRequest(normalizedProvider, keyText);
@@ -1095,22 +1131,6 @@ export async function detectAllAuth(
       verified: cli.verified,
       ...(cli.cli === "cursor" && typeof cli.paidPlan === "boolean" ? { paidPlan: cli.paidPlan } : {}),
     });
-  }
-
-  const cursorKey = process.env.CURSOR_API_KEY?.trim() || process.env.CURSOR_AUTH_TOKEN?.trim();
-  if (cursorKey) {
-    const hasCursorCli = results.some((r) => r.type === "cli-subscription" && r.cli === "cursor");
-    if (!hasCursorCli) {
-      const resolved = resolveExecutableFromKnownLocations("agent");
-      results.push({
-        type: "cli-subscription",
-        cli: "cursor",
-        path: resolved?.path ?? "agent",
-        authenticated: true,
-        verified: true,
-        paidPlan: true,
-      });
-    }
   }
 
   const factoryKey = process.env.FACTORY_API_KEY?.trim();

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -115,6 +115,9 @@ import type {
   AgentChatSteerArgs,
   AgentChatSteerResult,
   AgentChatSendArgs,
+  AgentChatRuntime,
+  AgentChatCloudOverrides,
+  AgentChatCloudRunStatus,
   AgentChatSuggestLaneNameArgs,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
@@ -201,28 +204,62 @@ import type {
   ResumeSessionRequest,
   ResumeSessionResponse,
 } from "@agentclientprotocol/sdk";
-import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
 import {
-  acquireCursorAcpConnection,
-  releaseCursorAcpConnection,
-  type CursorAcpLaunchSettings,
-  type CursorAcpPooled,
-} from "./cursorAcpPool";
+  acquireCursorSdkConnection,
+  releaseCursorSdkConnection,
+  runCursorSdkCloudRequest,
+  type CursorSdkPooled,
+  type CursorSdkRuntimeMeta,
+} from "./cursorSdkPool";
 import {
   acquireDroidAcpConnection,
   releaseDroidAcpConnection,
   type DroidAcpLaunchSettings,
   type DroidAcpPooled,
 } from "./droidAcpPool";
-import { discoverCursorCliModelDescriptors } from "./cursorModelsDiscovery";
+import { discoverCursorSdkModelDescriptors } from "./cursorModelsDiscovery";
 import { discoverDroidCliModelDescriptors } from "./droidModelsDiscovery";
+import {
+  mapCursorSdkMessageToChatEvents,
+  mapCursorSdkRunResultToDoneEvent,
+  mapTurnEndedTokensToEvent,
+} from "./cursorSdkEventMapper";
+import {
+  allowCursorHook,
+  approvalPolicyLabel,
+  denyCursorHook,
+  evaluateCursorSdkHook,
+  resolveCursorSdkPolicy,
+} from "./cursorSdkPolicy";
+import type {
+  CursorSdkCloudArtifactDescriptor,
+  CursorSdkCloudArtifactDownloadResult,
+  CursorSdkCloudFollowupPayload,
+  CursorSdkCloudRunStartedResult,
+  CursorSdkCloudSendStreamPayload,
+  CursorSdkHookDecision,
+  CursorSdkHookRequest,
+  CursorSdkPermissionPolicy,
+} from "./cursorSdkProtocol";
+import {
+  buildCursorSdkSystemPrompt,
+  CURSOR_SDK_PROMPT_INJECT_ENV,
+  findAdeCliHelpDigestFile,
+  isCursorSdkPromptInjectEnabled,
+  loadAdeCliHelpDigest,
+  readProjectRulesText,
+  type CursorSdkRuntime,
+} from "./cursorSdkSystemPrompt";
+import { promises as fsPromises } from "node:fs";
 import {
   mapAcpSessionNotificationToChatEvents,
   mapStopReasonToTerminalEvents,
   parseAcpTerminalIdFromCommandItemId,
-} from "./cursorAcpEventMapper";
-import { readCursorAcpConfigSnapshot } from "./cursorAcpConfigState";
+} from "./acpEventMapper";
+import { readAcpConfigSnapshot } from "./acpConfigState";
+import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
+import { getApiKey } from "../ai/apiKeyStore";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { TurnMemoryPolicyState } from "../ai/tools/memoryTools";
@@ -274,10 +311,20 @@ type PersistedChatState = {
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
   threadId?: string;
-  /** Cursor ACP session id for resume across app restarts (best-effort). */
+  /** ACP session id for Droid resume across app restarts (best-effort). */
   acpSessionId?: string;
   sdkSessionId?: string;
   providerSessionId?: string;
+  /** Cursor SDK agent/run ids for resume across app restarts. */
+  cursorSdkAgentProtocolVersion?: number;
+  cursorSdkAgentId?: string;
+  cursorSdkRunId?: string;
+  /** Durable Cursor Cloud agent id once this session has been promoted to cloud. */
+  cursorCloudAgentId?: string;
+  /** Default runtime for new turns in this session. Set on promotion. */
+  cursorRuntime?: AgentChatRuntime;
+  /** First turn id at which the session flipped to cloud (renders the system bubble). */
+  cursorPromotedTurnId?: string;
   recentConversationEntries?: PersistedRecentConversationEntry[];
   continuitySummary?: string | null;
   continuitySummaryUpdatedAt?: string | null;
@@ -519,17 +566,36 @@ type OpenCodeRuntime = {
   toolStateByPartId: Map<string, string>;
 };
 
-type CursorPermissionWaiter = {
-  options: PermissionOption[];
-  resolve: (value: RequestPermissionResponse) => void;
+type CursorPermissionWaiter =
+  | {
+      sdkHook?: false;
+      options: PermissionOption[];
+      resolve: (value: RequestPermissionResponse) => void;
+    }
+  | {
+      sdkHook: true;
+      toolName: string;
+      options: PermissionOption[];
+      resolve: (value: CursorSdkHookDecision) => void;
+    };
+
+type CursorCloudActiveRun = {
+  agentId: string;
+  runId: string;
+  turnId: string | null;
+  modelSdkId: string | null;
 };
 
 type CursorRuntime = {
   kind: "cursor";
   poolKey: string;
   poolGeneration: number;
-  pooled: CursorAcpPooled | null;
-  acpSessionId: string | null;
+  sdk: CursorSdkPooled;
+  sdkAgentId: string | null;
+  sdkRunId: string | null;
+  sdkPolicy: CursorSdkPermissionPolicy | null;
+  sdkApprovedTools: Set<string>;
+  sdkControlBuffer: string | null;
   activeTurnId: string | null;
   busy: boolean;
   interrupted: boolean;
@@ -544,6 +610,10 @@ type CursorRuntime = {
   availableModeIds: string[];
   defaultModeId: string | null;
   configOptions: AgentChatCursorConfigOption[];
+  /** Per-runId tracking for active cloud runs (cancel + stream demux). */
+  cloudRuns: Map<string, CursorCloudActiveRun>;
+  /** RunId attached to the currently active cloud turn, when runtime === "cloud". */
+  activeCloudRunId: string | null;
 };
 
 type DroidRuntime = {
@@ -568,10 +638,42 @@ type DroidRuntime = {
 
 type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime;
 
+function cancelCursorPermissionWaiter(waiter: CursorPermissionWaiter, reason: string): void {
+  if (waiter.sdkHook) {
+    waiter.resolve(denyCursorHook(reason));
+    return;
+  }
+  waiter.resolve({ outcome: { outcome: "cancelled" } });
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+/**
+ * `Cursor SDK Run.conversation()` returns a list of message-shaped records.
+ * The shape can vary across SDK versions, so we walk it tolerantly: any
+ * record that already looks like an SDK message gets fed back through
+ * `mapCursorSdkMessageToChatEvents`; anything that just exposes
+ * `{ role, text }` becomes a user/assistant text event directly.
+ */
+function flattenCloudConversationMessages(conversation: unknown): unknown[] {
+  if (!conversation) return [];
+  if (Array.isArray(conversation)) return conversation;
+  const record = asRecord(conversation);
+  if (!record) return [];
+  if (Array.isArray(record.messages)) return record.messages;
+  if (Array.isArray(record.content)) return record.content;
+  if (Array.isArray(record.items)) return record.items;
+  return [];
+}
+
+function isCloudRunStillLive(status: string | null | undefined): boolean {
+  if (!status) return false;
+  const lower = status.toLowerCase();
+  return lower === "creating" || lower === "running" || lower === "queued";
 }
 
 function pickCodexTurnId(...values: unknown[]): string | undefined {
@@ -1018,6 +1120,8 @@ type PreparedSendMessage = {
   turnId?: string;
   optimisticCursorTurnStart?: boolean;
   optimisticAcpTurnStart?: boolean;
+  runtime?: AgentChatRuntime;
+  cloudOverrides?: AgentChatCloudOverrides;
 };
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
@@ -1039,6 +1143,7 @@ type ResolvedChatConfig = {
 };
 
 const MAX_PENDING_STEERS = 10;
+const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 
 const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
@@ -2787,48 +2892,24 @@ function enforceManagedLocalHarnessPermissionMode(
   managed.session.opencodePermissionMode = harnessPermissions.requestedOpenCodePermissionMode ?? managed.session.opencodePermissionMode;
 }
 
-function resolveCursorSessionModeId(
-  session: Pick<AgentChatSession, "cursorModeId" | "opencodePermissionMode" | "permissionMode">,
-): string | null {
-  const explicit = typeof session.cursorModeId === "string" ? session.cursorModeId.trim() : "";
-  if (explicit.length) {
-    return explicit === "agent" || explicit === "default" ? null : explicit;
+function getCursorSdkApiKey(): string | null {
+  try {
+    const stored = getApiKey("cursor")?.trim();
+    if (stored) return stored;
+  } catch {
+    // API key store is initialized by the Electron main process; unit tests may
+    // exercise chat helpers before that setup runs.
   }
-  return resolveSessionOpenCodePermissionMode(session, "edit") === "plan" ? "plan" : null;
+  const env = process.env.CURSOR_API_KEY?.trim();
+  return env || null;
 }
 
-function resolveCursorAcpLaunchSettings(
-  session: Pick<AgentChatSession, "cursorModeId" | "opencodePermissionMode" | "permissionMode">,
-): CursorAcpLaunchSettings {
-  const explicitCursorModeId = typeof session.cursorModeId === "string"
-    ? session.cursorModeId.trim().toLowerCase()
-    : "";
-  if (!explicitCursorModeId.length) {
-    const legacyMode = resolveSessionOpenCodePermissionMode(session, "edit");
-    if (legacyMode === "full-auto") {
-      return {
-        mode: null,
-        sandbox: "disabled",
-        force: true,
-      };
-    }
-  }
-  return {
-    mode: (() => {
-      const desiredModeId = resolveCursorSessionModeId(session);
-      return desiredModeId === "ask" || desiredModeId === "plan" ? desiredModeId : null;
-    })(),
-    sandbox: "enabled",
-    force: false,
-  };
-}
+const ACP_SERVER_LIST_KEY = ["m", "cpServers"].join("");
 
-const CURSOR_ACP_SERVER_LIST_KEY = ["m", "cpServers"].join("");
-
-function cursorAcpSessionRequest<T extends Record<string, unknown>>(request: T): T {
+function acpSessionRequest<T extends Record<string, unknown>>(request: T): T {
   return {
     ...request,
-    [CURSOR_ACP_SERVER_LIST_KEY]: [],
+    [ACP_SERVER_LIST_KEY]: [],
   } as T;
 }
 
@@ -2927,6 +3008,13 @@ function syncCursorModeSnapshot(managed: ManagedChatSession, runtime: CursorRunt
   delete managed.session.cursorModeSnapshot;
 }
 
+function resolveCursorDisplayModeId(
+  session: Pick<AgentChatSession, "cursorModeId">,
+  policy: CursorSdkPermissionPolicy,
+): string {
+  return session.cursorModeId === "full-auto" ? "full-auto" : policy.chatMode;
+}
+
 function resolveCursorRuntimeModelSdkId(
   session: Pick<AgentChatSession, "model" | "modelId">,
 ): string {
@@ -2981,18 +3069,6 @@ function resolveDroidAcpLaunchSettings(
     default:
       return { autonomy: "low" };
   }
-}
-
-function normalizeCursorReportedModelId(
-  modelId: string | null | undefined,
-  availableModelIds: readonly string[] = [],
-): string | null {
-  const trimmed = String(modelId ?? "").trim();
-  if (!trimmed.length) return null;
-  const looksLikeSdkModelId = /^[\w.-]+$/i.test(trimmed);
-  if (availableModelIds.includes(trimmed) && looksLikeSdkModelId) return trimmed;
-  const descriptor = getModelById(`cursor/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "cursor");
-  return descriptor?.family === "cursor" ? descriptor.providerModelId : null;
 }
 
 function normalizeDroidReportedModelId(
@@ -3310,7 +3386,7 @@ export function createAgentChatService(args: {
 
   const managedSessions = new Map<string, ManagedChatSession>();
   const acpHostSessionOwners = new Map<string, ManagedChatSession>();
-  const acpHostBridgeWired = new WeakSet<CursorAcpPooled | DroidAcpPooled>();
+  const acpHostBridgeWired = new WeakSet<DroidAcpPooled>();
   /**
    * Dedup guard for Droid ACP session notifications.
    *
@@ -5779,7 +5855,7 @@ export function createAgentChatService(args: {
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
-      ...((managed.runtime?.kind === "cursor" || managed.runtime?.kind === "droid") && managed.runtime.acpSessionId
+      ...(managed.runtime?.kind === "droid" && managed.runtime.acpSessionId
         ? { acpSessionId: managed.runtime.acpSessionId }
         : {}),
       ...(managed.runtime?.kind === "claude"
@@ -5799,7 +5875,30 @@ export function createAgentChatService(args: {
         : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
       ...(managed.runtime?.kind === "opencode"
         ? { providerSessionId: managed.runtime.handle.sessionId }
-        : prevPersisted?.providerSessionId ? { providerSessionId: prevPersisted.providerSessionId } : {}),
+        : managed.session.provider === "opencode" && prevPersisted?.providerSessionId ? { providerSessionId: prevPersisted.providerSessionId } : {}),
+      ...(managed.runtime?.kind === "cursor" && managed.runtime.sdkAgentId
+        ? {
+            cursorSdkAgentProtocolVersion: CURSOR_SDK_AGENT_PROTOCOL_VERSION,
+            cursorSdkAgentId: managed.runtime.sdkAgentId,
+          }
+        : prevPersisted?.cursorSdkAgentId && prevPersisted.cursorSdkAgentProtocolVersion === CURSOR_SDK_AGENT_PROTOCOL_VERSION
+          ? {
+              cursorSdkAgentProtocolVersion: CURSOR_SDK_AGENT_PROTOCOL_VERSION,
+              cursorSdkAgentId: prevPersisted.cursorSdkAgentId,
+            }
+          : {}),
+      ...(managed.runtime?.kind === "cursor" && managed.runtime.sdkRunId
+        ? { cursorSdkRunId: managed.runtime.sdkRunId }
+        : prevPersisted?.cursorSdkRunId ? { cursorSdkRunId: prevPersisted.cursorSdkRunId } : {}),
+      ...(managed.session.cursorCloudAgentId
+        ? { cursorCloudAgentId: managed.session.cursorCloudAgentId }
+        : prevPersisted?.cursorCloudAgentId ? { cursorCloudAgentId: prevPersisted.cursorCloudAgentId } : {}),
+      ...(managed.session.cursorRuntime
+        ? { cursorRuntime: managed.session.cursorRuntime }
+        : prevPersisted?.cursorRuntime ? { cursorRuntime: prevPersisted.cursorRuntime } : {}),
+      ...(managed.session.cursorPromotedTurnId
+        ? { cursorPromotedTurnId: managed.session.cursorPromotedTurnId }
+        : prevPersisted?.cursorPromotedTurnId ? { cursorPromotedTurnId: prevPersisted.cursorPromotedTurnId } : {}),
       ...(managed.recentConversationEntries.length
         ? {
             recentConversationEntries: managed.recentConversationEntries.map((entry) => ({
@@ -5903,6 +6002,25 @@ export function createAgentChatService(args: {
       const providerSessionId = typeof record.providerSessionId === "string" && record.providerSessionId.trim().length
         ? record.providerSessionId.trim()
         : undefined;
+      const cursorSdkAgentProtocolVersion = typeof record.cursorSdkAgentProtocolVersion === "number"
+        ? record.cursorSdkAgentProtocolVersion
+        : undefined;
+      const cursorSdkAgentId = typeof record.cursorSdkAgentId === "string" && record.cursorSdkAgentId.trim().length
+        ? record.cursorSdkAgentId.trim()
+        : undefined;
+      const cursorSdkRunId = typeof record.cursorSdkRunId === "string" && record.cursorSdkRunId.trim().length
+        ? record.cursorSdkRunId.trim()
+        : undefined;
+      const cursorCloudAgentId = typeof record.cursorCloudAgentId === "string" && record.cursorCloudAgentId.trim().length
+        ? record.cursorCloudAgentId.trim()
+        : undefined;
+      const cursorRuntime: AgentChatRuntime | undefined =
+        record.cursorRuntime === "cloud" || record.cursorRuntime === "local"
+          ? (record.cursorRuntime as AgentChatRuntime)
+          : undefined;
+      const cursorPromotedTurnId = typeof record.cursorPromotedTurnId === "string" && record.cursorPromotedTurnId.trim().length
+        ? record.cursorPromotedTurnId.trim()
+        : undefined;
       const approvalOverrides = Array.isArray(record.approvalOverrides)
         ? record.approvalOverrides.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
         : undefined;
@@ -5956,6 +6074,12 @@ export function createAgentChatService(args: {
           : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(providerSessionId ? { providerSessionId } : {}),
+        ...(cursorSdkAgentProtocolVersion ? { cursorSdkAgentProtocolVersion } : {}),
+        ...(cursorSdkAgentId ? { cursorSdkAgentId } : {}),
+        ...(cursorSdkRunId ? { cursorSdkRunId } : {}),
+        ...(cursorCloudAgentId ? { cursorCloudAgentId } : {}),
+        ...(cursorRuntime ? { cursorRuntime } : {}),
+        ...(cursorPromotedTurnId ? { cursorPromotedTurnId } : {}),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
         ...(pendingSteers?.length ? { pendingSteers } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
@@ -6527,15 +6651,11 @@ export function createAgentChatService(args: {
     }
     if (managed.runtime?.kind === "cursor") {
       const rt = managed.runtime;
-      if (rt.acpSessionId) {
-        acpHostSessionOwners.delete(rt.acpSessionId);
-        void closeAcpSession(rt.pooled?.connection, rt.acpSessionId).catch(() => {});
-      }
       for (const [, w] of rt.permissionWaiters) {
-        w.resolve({ outcome: { outcome: "cancelled" } });
+        cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the session closed.");
       }
       rt.permissionWaiters.clear();
-      if (rt.pooled) releaseCursorAcpConnection(rt.poolKey, rt.poolGeneration);
+      releaseCursorSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "droid") {
@@ -6546,7 +6666,7 @@ export function createAgentChatService(args: {
         void closeAcpSession(rt.pooled?.connection, rt.acpSessionId).catch(() => {});
       }
       for (const [, w] of rt.permissionWaiters) {
-        w.resolve({ outcome: { outcome: "cancelled" } });
+        cancelCursorPermissionWaiter(w, "Tool approval was cancelled because the session closed.");
       }
       rt.permissionWaiters.clear();
       if (rt.pooled) releaseDroidAcpConnection(rt.poolKey, rt.poolGeneration);
@@ -6847,6 +6967,9 @@ export function createAgentChatService(args: {
         ...(persisted?.cursorModeSnapshot ? { cursorModeSnapshot: persisted.cursorModeSnapshot } : {}),
         ...(persisted?.cursorModeId !== undefined ? { cursorModeId: persisted.cursorModeId } : {}),
         ...(persisted?.cursorConfigValues ? { cursorConfigValues: persisted.cursorConfigValues } : {}),
+        ...(persisted?.cursorCloudAgentId ? { cursorCloudAgentId: persisted.cursorCloudAgentId } : {}),
+        ...(persisted?.cursorRuntime ? { cursorRuntime: persisted.cursorRuntime } : {}),
+        ...(persisted?.cursorPromotedTurnId ? { cursorPromotedTurnId: persisted.cursorPromotedTurnId } : {}),
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
@@ -11697,6 +11820,8 @@ export function createAgentChatService(args: {
     reasoningEffort,
     executionMode,
     interactionMode,
+    runtime,
+    cloudOverrides,
     allowActiveSession = false,
   }: AgentChatSendArgs & { allowActiveSession?: boolean }): PreparedSendMessage | null => {
     const trimmed = text.trim();
@@ -11839,6 +11964,8 @@ export function createAgentChatService(args: {
       laneDirectiveKey: providerSlashCommand ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
       providerSlashCommand,
       forceClaudeUserMessage: managed.session.provider === "claude" && !providerSlashCommand && slashCommand != null,
+      ...(runtime ? { runtime } : {}),
+      ...(cloudOverrides ? { cloudOverrides } : {}),
     };
   };
 
@@ -11922,17 +12049,23 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
-  const cursorPoolKeyFor = (managed: ManagedChatSession): string => {
-    const launch = resolveCursorAcpLaunchSettings(managed.session);
-    return [
-      managed.session.laneId,
-      managed.laneWorktreePath,
-      managed.session.model,
-      launch.mode ?? "default",
-      launch.sandbox,
-      launch.force ? "force" : "guarded",
-    ].join(":");
-  };
+  const cursorSdkPoolKeyFor = (
+    managed: ManagedChatSession,
+    policy: CursorSdkPermissionPolicy,
+    modelSdkId: string,
+  ): string => [
+    "sdk",
+    managed.session.id,
+    managed.session.laneId,
+    managed.laneWorktreePath,
+    modelSdkId,
+    policy.chatMode,
+    policy.approvalPolicy,
+    policy.force ? "force" : "guarded",
+  ].join(":");
+
+  const normalizeCursorSdkToolName = (name: string): string =>
+    name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
 
   const mapChatDecisionToCursorPermission = (
     decision: AgentChatApprovalDecision | undefined,
@@ -11959,6 +12092,82 @@ export function createAgentChatService(args: {
       if (id) return { outcome: { outcome: "selected", optionId: id } };
     }
     return { outcome: { outcome: "cancelled" } };
+  };
+
+  const mapChatDecisionToCursorSdkHook = (
+    decision: AgentChatApprovalDecision | undefined,
+  ): CursorSdkHookDecision => {
+    if (decision === "accept" || decision === "accept_for_session") {
+      return allowCursorHook();
+    }
+    return denyCursorHook("ADE denied this Cursor tool call.");
+  };
+
+  const cursorSdkAdeControlDirective = (): string =>
+    [
+      "ADE renders Cursor planning controls from private fenced control blocks in assistant text.",
+      "ADE consumes these blocks and removes them from the visible transcript; treat them as private formatting instructions and do not explain this mechanism in user-facing replies.",
+      "Any prior transcript text that says ADE planning controls are unavailable or require external planning tools is obsolete.",
+      "To publish a visible plan, include ```ade_update_plan followed by JSON like {\"explanation\":\"...\",\"steps\":[{\"text\":\"Inspect wiring\",\"status\":\"pending\"}]} and close the fence.",
+      "To ask a blocking question, output only ```ade_request_user_input followed by JSON like {\"title\":\"Input requested\",\"questions\":[{\"id\":\"scope\",\"header\":\"Scope\",\"question\":\"Which scope should I use?\",\"options\":[{\"label\":\"UI\"},{\"label\":\"Backend\"}],\"allowsFreeform\":true}]} and close the fence, then stop.",
+      "When a plan is ready for approval, include ```ade_plan_approval followed by JSON like {\"planDescription\":\"1. Inspect\\n2. Patch\\n3. Verify\"} and close the fence.",
+    ].join(" ");
+
+  const buildCursorSdkInjectedSystemPrompt = async (args: {
+    runtime: CursorSdkRuntime;
+    laneWorktreePath: string | undefined;
+  }): Promise<string> => {
+    if (!isCursorSdkPromptInjectEnabled(process.env[CURSOR_SDK_PROMPT_INJECT_ENV])) return "";
+    const moduleDir = typeof __dirname === "string" ? __dirname : undefined;
+    const cliFile = findAdeCliHelpDigestFile(moduleDir);
+    let cliHelpDigest = "";
+    if (cliFile) {
+      try {
+        const stat = await fsPromises.stat(cliFile);
+        if (stat.isFile()) {
+          cliHelpDigest = await loadAdeCliHelpDigest(path.dirname(cliFile));
+        }
+      } catch {
+        cliHelpDigest = "";
+      }
+    }
+    let rulesText = "";
+    try {
+      rulesText = await readProjectRulesText(args.laneWorktreePath);
+    } catch {
+      rulesText = "";
+    }
+    const built = buildCursorSdkSystemPrompt({
+      runtime: args.runtime,
+      laneWorktreePath: args.laneWorktreePath,
+      cliHelpDigest,
+      rulesText,
+      envInjectFlag: process.env[CURSOR_SDK_PROMPT_INJECT_ENV],
+    });
+    return built.text;
+  };
+
+  const buildCursorSdkModeDirective = (policy: CursorSdkPermissionPolicy): string | null => {
+    if (policy.chatMode === "ask") {
+      return [
+        "System context: Cursor Ask mode is active.",
+        "Answer from inspection only. Do not modify files.",
+        "Do not run shell commands unless ADE explicitly allows a read-only inspection.",
+        cursorSdkAdeControlDirective(),
+      ].join(" ");
+    }
+    if (policy.chatMode === "plan") {
+      return [
+        "System context: Cursor Plan mode is active.",
+        "Produce a concrete implementation plan before changing files.",
+        "Do not modify files or run side-effecting shell commands until the user switches mode or grants approval.",
+        cursorSdkAdeControlDirective(),
+      ].join(" ");
+    }
+    if (policy.approvalPolicy === "never") {
+      return `System context: Cursor Full auto is active. Continue autonomously inside the active lane while respecting ADE hard safety guards. ${cursorSdkAdeControlDirective()}`;
+    }
+    return `System context: Cursor Agent mode is active. Use ADE approval outcomes from approval messages. ${cursorSdkAdeControlDirective()}`;
   };
 
   const cursorPermissionOptionLabel = (kind: PermissionOption["kind"]): string => {
@@ -12004,6 +12213,446 @@ export function createAgentChatService(args: {
     },
     turnId: turnId ?? null,
   });
+
+  const buildCursorSdkPendingInputRequest = (
+    itemId: string,
+    req: CursorSdkHookRequest,
+    turnId?: string | null,
+  ): PendingInputRequest => ({
+    requestId: itemId,
+    itemId,
+    source: "cursor",
+    kind: "permissions",
+    title: "Cursor SDK permission required",
+    description: req.summary || req.title || "Cursor wants to use a tool.",
+    questions: [],
+    allowsFreeform: false,
+    blocking: true,
+    canProceedWithoutAnswer: false,
+    options: [
+      { label: "Allow once", value: "allow_once" },
+      { label: "Allow for session", value: "allow_always", recommended: true },
+      { label: "Reject once", value: "reject_once" },
+    ],
+    providerMetadata: {
+      cursorSdk: true,
+      toolName: req.toolName,
+      title: req.title,
+      summary: req.summary,
+      risk: req.risk,
+      cwd: req.cwd,
+      raw: req.raw,
+      toolInput: req.toolInput,
+    },
+    turnId: turnId ?? null,
+  });
+
+  type CursorSdkControlAction = {
+    kind: "request_user_input" | "update_plan" | "plan_approval";
+    payload: Record<string, unknown>;
+    raw: string;
+  };
+
+  const cursorControlString = (value: unknown): string | null => {
+    const text = typeof value === "string" ? value.trim() : "";
+    return text.length ? text : null;
+  };
+
+  const normalizeCursorControlQuestions = (value: unknown): PendingInputQuestion[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    const questions = value.flatMap((entry, index) => {
+      const record = asRecord(entry);
+      const question = cursorControlString(record?.question);
+      if (!record || !question) return [];
+      const rawOptions = Array.isArray(record.options) ? record.options : [];
+      const options = rawOptions.flatMap((option) => {
+        const optionRecord = asRecord(option);
+        const label = cursorControlString(optionRecord?.label);
+        if (!optionRecord || !label) return [];
+        const previewFormat: "markdown" | "html" | undefined =
+          optionRecord.previewFormat === "markdown"
+            ? "markdown"
+            : optionRecord.previewFormat === "html"
+              ? "html"
+              : undefined;
+        return [{
+          label,
+          value: cursorControlString(optionRecord.value) ?? label,
+          ...(cursorControlString(optionRecord.description) ? { description: cursorControlString(optionRecord.description)! } : {}),
+          ...(optionRecord.recommended === true ? { recommended: true } : {}),
+          ...(cursorControlString(optionRecord.preview) ? { preview: cursorControlString(optionRecord.preview)! } : {}),
+          ...(previewFormat ? { previewFormat } : {}),
+        }];
+      });
+      return [{
+        id: cursorControlString(record.id) ?? `question_${index + 1}`,
+        header: cursorControlString(record.header) ?? `Question ${index + 1}`,
+        question,
+        ...(options.length ? { options } : {}),
+        ...(record.multiSelect === true ? { multiSelect: true } : {}),
+        ...(record.allowsFreeform !== undefined ? { allowsFreeform: record.allowsFreeform === true } : { allowsFreeform: true }),
+        ...(record.isSecret === true ? { isSecret: true } : {}),
+        ...(cursorControlString(record.defaultAssumption) ? { defaultAssumption: cursorControlString(record.defaultAssumption) } : {}),
+        ...(cursorControlString(record.impact) ? { impact: cursorControlString(record.impact) } : {}),
+      }];
+    });
+    return questions.length ? questions : undefined;
+  };
+
+  const formatCursorControlAnswers = (
+    request: PendingInputRequest,
+    response: {
+      answers?: Record<string, string | string[]>;
+      responseText?: string | null;
+    },
+  ): string => {
+    const normalized = normalizePendingInputAnswers(request, response.answers, response.responseText);
+    const lines = Object.entries(normalized).flatMap(([id, values]) => {
+      if (!values.length) return [];
+      const question = request.questions.find((entry) => entry.id === id);
+      const label = question?.header?.trim() || question?.question?.trim() || id;
+      return [`- ${label}: ${values.join(", ")}`];
+    });
+    if (response.responseText?.trim()) {
+      lines.push(`- Freeform: ${response.responseText.trim()}`);
+    }
+    return lines.length ? lines.join("\n") : "No answer text was provided.";
+  };
+
+  const waitForCursorControlFollowupSlot = async (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+  ): Promise<boolean> => {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (managed.closed || managed.runtime !== runtime) return false;
+      if (!runtime.busy && !runtime.activeTurnId) return true;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return false;
+  };
+
+  const queueCursorControlFollowup = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    text: string,
+  ): void => {
+    void (async () => {
+      const ready = await waitForCursorControlFollowupSlot(managed, runtime);
+      if (!ready || managed.closed || managed.runtime !== runtime) return;
+      await runCursorTurn(managed, {
+        promptText: text,
+        displayText: "",
+        attachments: [],
+        resolvedAttachments: [],
+        optimisticCursorTurnStart: true,
+      });
+    })().catch((error) => {
+      logger.warn("agent_chat.cursor_control_followup_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const CURSOR_SDK_CONTROL_BUFFER_LIMIT = 256 * 1024;
+  const CURSOR_SDK_CONTROL_OPENINGS = [
+    "```ade_request_user_input",
+    "```ade_update_plan",
+    "```ade_plan_approval",
+  ];
+  const CURSOR_SDK_CONTROL_OPEN_RE = /```ade_(request_user_input|update_plan|plan_approval)/g;
+
+  const trailingCursorControlPrefixLength = (text: string): number => {
+    const max = Math.min(
+      text.length,
+      Math.max(...CURSOR_SDK_CONTROL_OPENINGS.map((entry) => entry.length)) - 1,
+    );
+    for (let length = max; length > 0; length -= 1) {
+      const suffix = text.slice(-length);
+      if (CURSOR_SDK_CONTROL_OPENINGS.some((opening) => opening.startsWith(suffix))) {
+        return length;
+      }
+    }
+    return 0;
+  };
+
+  const findNextCursorControlOpening = (
+    text: string,
+    fromIndex: number,
+  ): { index: number; payloadStart: number; kind: CursorSdkControlAction["kind"] } | null => {
+    CURSOR_SDK_CONTROL_OPEN_RE.lastIndex = fromIndex;
+    for (;;) {
+      const match = CURSOR_SDK_CONTROL_OPEN_RE.exec(text);
+      if (!match) return null;
+      const next = text[CURSOR_SDK_CONTROL_OPEN_RE.lastIndex] ?? "";
+      if (/[\w-]/.test(next)) continue;
+      return {
+        index: match.index,
+        payloadStart: CURSOR_SDK_CONTROL_OPEN_RE.lastIndex,
+        kind: match[1] as CursorSdkControlAction["kind"],
+      };
+    }
+  };
+
+  const parseCursorSdkControlBlocks = (
+    runtime: CursorRuntime,
+    text: string,
+  ): { text: string; actions: CursorSdkControlAction[] } => {
+    const source = runtime.sdkControlBuffer ? `${runtime.sdkControlBuffer}${text}` : text;
+    runtime.sdkControlBuffer = null;
+    const actions: CursorSdkControlAction[] = [];
+    let stripped = "";
+    let cursor = 0;
+    for (;;) {
+      const opening = findNextCursorControlOpening(source, cursor);
+      if (!opening) {
+        stripped += source.slice(cursor);
+        break;
+      }
+
+      stripped += source.slice(cursor, opening.index);
+      const closeIndex = source.indexOf("```", opening.payloadStart);
+      if (closeIndex < 0) {
+        const pending = source.slice(opening.index);
+        if (pending.length <= CURSOR_SDK_CONTROL_BUFFER_LIMIT) {
+          runtime.sdkControlBuffer = pending;
+        } else {
+          logger.warn("agent_chat.cursor_control_buffer_exceeded", {
+            kind: opening.kind,
+            bytes: pending.length,
+          });
+        }
+        return {
+          text: stripped.replace(/\n{3,}/g, "\n\n"),
+          actions,
+        };
+      }
+
+      const raw = source.slice(opening.payloadStart, closeIndex).trim();
+      try {
+        const payload = asRecord(JSON.parse(raw));
+        if (payload) {
+          actions.push({ kind: opening.kind, payload, raw });
+        } else {
+          logger.warn("agent_chat.cursor_control_payload_invalid", { kind: opening.kind, raw });
+        }
+      } catch (error) {
+        logger.warn("agent_chat.cursor_control_payload_parse_failed", {
+          kind: opening.kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      cursor = closeIndex + 3;
+    }
+
+    const trailingPrefixLength = trailingCursorControlPrefixLength(stripped);
+    if (trailingPrefixLength > 0) {
+      runtime.sdkControlBuffer = stripped.slice(-trailingPrefixLength);
+      stripped = stripped.slice(0, -trailingPrefixLength);
+    }
+
+    return {
+      text: stripped.replace(/\n{3,}/g, "\n\n"),
+      actions,
+    };
+  };
+
+  const emitCursorSdkControlInputRequest = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    payload: Record<string, unknown>,
+  ): void => {
+    const itemId = randomUUID();
+    const title = cursorControlString(payload.title) ?? "Input requested";
+    const body =
+      cursorControlString(payload.body)
+      ?? cursorControlString(payload.question)
+      ?? "Cursor needs input before it can continue.";
+    const questions = normalizeCursorControlQuestions(payload.questions) ?? [{
+      id: "answer",
+      header: "Question 1",
+      question: body,
+      allowsFreeform: true,
+    }];
+    const request: PendingInputRequest = {
+      requestId: itemId,
+      itemId,
+      source: "cursor",
+      kind: questions.some((question) => question.options?.length) ? "structured_question" : "question",
+      title,
+      description: questions[0]?.question ?? body,
+      questions,
+      allowsFreeform: questions.some((question) => question.allowsFreeform !== false),
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: {
+        cursorSdk: true,
+        control: "request_user_input",
+      },
+      turnId: runtime.activeTurnId ?? null,
+    };
+
+    managed.localPendingInputs.set(itemId, {
+      request,
+      resolve: (response: {
+        decision?: AgentChatApprovalDecision;
+        answers?: Record<string, string | string[]>;
+        responseText?: string | null;
+      }) => {
+        const accepted = response.decision === "accept" || response.decision === "accept_for_session";
+        const answerText = formatCursorControlAnswers(request, response);
+        queueCursorControlFollowup(
+          managed,
+          runtime,
+          accepted
+            ? `The user answered the Cursor planning question:\n${answerText}\n\nContinue from this answer.`
+            : "The user declined the Cursor planning question. Continue with reasonable assumptions or ask a narrower question.",
+        );
+      },
+    });
+    emitPendingInputRequest(managed, request, {
+      kind: "tool_call",
+      description: request.description ?? body,
+      detail: { cursorSdk: true, control: "request_user_input" },
+    });
+  };
+
+  const emitCursorSdkPlanApprovalRequest = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    payload: Record<string, unknown>,
+  ): void => {
+    const itemId = randomUUID();
+    const summary =
+      cursorControlString(payload.planDescription)
+      ?? cursorControlString(payload.plan)
+      ?? cursorControlString(payload.summary)
+      ?? "Plan ready for review.";
+    const request: PendingInputRequest = {
+      requestId: itemId,
+      itemId,
+      source: "cursor",
+      kind: "plan_approval",
+      title: "Plan ready for review",
+      description: summary,
+      questions: [{
+        id: "plan_decision",
+        header: "Implementation plan",
+        question: summary,
+        options: [
+          { label: "Approve and implement", value: "approve", recommended: true },
+          { label: "Reject and revise", value: "reject" },
+        ],
+        allowsFreeform: true,
+      }],
+      allowsFreeform: true,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: {
+        cursorSdk: true,
+        control: "plan_approval",
+        planContent: summary,
+      },
+      turnId: runtime.activeTurnId ?? null,
+    };
+
+    managed.localPendingInputs.set(itemId, {
+      request,
+      resolve: (response: {
+        decision?: AgentChatApprovalDecision;
+        answers?: Record<string, string | string[]>;
+        responseText?: string | null;
+      }) => {
+        const approved = response.decision === "accept" || response.decision === "accept_for_session";
+        const feedback = typeof response.responseText === "string" && response.responseText.trim().length
+          ? response.responseText.trim()
+          : null;
+        if (approved) {
+          managed.session.cursorModeId = "agent";
+          runtime.currentModeId = "agent";
+          runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
+          syncCursorModeSnapshot(managed, runtime);
+          persistChatState(managed);
+          if (runtime.sdk) {
+            void runtime.sdk.updatePolicy(runtime.sdkPolicy).catch((error) => {
+              logger.warn("agent_chat.cursor_sdk_policy_update_failed", {
+                sessionId: managed.session.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          }
+          queueCursorControlFollowup(
+            managed,
+            runtime,
+            "The user approved the plan. Continue implementation under ADE approval gates.",
+          );
+        } else {
+          queueCursorControlFollowup(
+            managed,
+            runtime,
+            feedback
+              ? `The user rejected the plan with this feedback:\n${feedback}\n\nRevise the plan before implementing.`
+              : "The user rejected the plan. Revise the plan before implementing.",
+          );
+        }
+      },
+    });
+    emitPendingInputRequest(managed, request, {
+      kind: "tool_call",
+      description: "Plan ready for approval",
+      detail: { cursorSdk: true, control: "plan_approval", planContent: summary },
+    });
+  };
+
+  const handleCursorSdkControlAction = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    action: CursorSdkControlAction,
+  ): void => {
+    if (action.kind === "request_user_input") {
+      emitCursorSdkControlInputRequest(managed, runtime, action.payload);
+      return;
+    }
+    if (action.kind === "update_plan") {
+      const todoItems = normalizeClaudeTodoItems({ todos: action.payload.todos });
+      if (todoItems) {
+        emitChatEvent(managed, {
+          type: "todo_update",
+          items: todoItems,
+          ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+        });
+      }
+      const normalized = parseCodexPlanPayload(action.payload);
+      if (normalized) {
+        emitChatEvent(managed, {
+          type: "plan",
+          steps: normalized.steps,
+          explanation: normalized.explanation,
+          ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+        });
+      }
+      return;
+    }
+    emitCursorSdkPlanApprovalRequest(managed, runtime, action.payload);
+  };
+
+  const emitCursorSdkMappedEvent = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    event: AgentChatEvent,
+  ): void => {
+    if (event.type !== "text") {
+      emitChatEvent(managed, event);
+      return;
+    }
+    const parsed = parseCursorSdkControlBlocks(runtime, event.text);
+    for (const action of parsed.actions) {
+      handleCursorSdkControlAction(managed, runtime, action);
+    }
+    if (parsed.text.length > 0 && (!parsed.actions.length || parsed.text.trim().length > 0)) {
+      emitChatEvent(managed, { ...event, text: parsed.text });
+    }
+  };
 
   const syncCursorSessionDescriptor = (
     managed: ManagedChatSession,
@@ -12107,33 +12756,6 @@ export function createAgentChatService(args: {
     return /^[\w.:()+-]+$/i.test(trimmed) ? trimmed : null;
   };
 
-  const applyCursorConfigSnapshot = (
-    managed: ManagedChatSession,
-    runtime: CursorRuntime,
-    configOptions: ReturnType<typeof readCursorAcpConfigSnapshot>,
-  ): void => {
-    runtime.modeConfigId = configOptions.modeConfigId;
-    runtime.availableModeIds = configOptions.availableModeIds;
-    runtime.modelConfigId = configOptions.modelConfigId;
-    runtime.availableModelIds = configOptions.availableModelIds;
-    runtime.configOptions = configOptions.configOptions;
-
-    const currentModeId = configOptions.currentModeId?.trim() ?? "";
-    if (currentModeId.length) {
-      runtime.currentModeId = currentModeId;
-      if (currentModeId !== "plan") {
-        runtime.defaultModeId = currentModeId;
-      }
-    }
-
-    const currentModelId = normalizeCursorReportedModelId(configOptions.currentModelId, runtime.availableModelIds);
-    if (currentModelId) {
-      runtime.currentModelId = currentModelId;
-      syncCursorSessionDescriptor(managed, currentModelId);
-    }
-    syncCursorModeSnapshot(managed, runtime);
-  };
-
   const applyDroidModelSnapshot = (
     _managed: ManagedChatSession,
     runtime: DroidRuntime,
@@ -12142,13 +12764,13 @@ export function createAgentChatService(args: {
         currentModelId?: string | null;
         availableModels?: Array<{ modelId?: string | null; name?: string | null } | null> | null;
       } | null;
-      configOptions?: Parameters<typeof readCursorAcpConfigSnapshot>[0];
+      configOptions?: Parameters<typeof readAcpConfigSnapshot>[0];
     } | null | undefined,
   ): {
     currentModelId: string | null;
     modelConfigId: string | null;
   } => {
-    const configSnapshot = readCursorAcpConfigSnapshot(payload?.configOptions);
+    const configSnapshot = readAcpConfigSnapshot(payload?.configOptions);
     updateDroidAcpModelLookups(runtime, payload?.models?.availableModels);
     for (const modelId of configSnapshot.availableModelIds) {
       const rawModelId = String(modelId ?? "").trim();
@@ -12201,7 +12823,7 @@ export function createAgentChatService(args: {
     }
 
     try {
-      const loaded = await loadSession(cursorAcpSessionRequest({
+      const loaded = await loadSession(acpSessionRequest({
         sessionId,
         cwd: managed.laneWorktreePath,
       }) as Parameters<typeof loadSession>[0]);
@@ -12315,190 +12937,6 @@ export function createAgentChatService(args: {
     }
   };
 
-  const ensureCursorSessionState = async (
-    managed: ManagedChatSession,
-    runtime: CursorRuntime,
-  ): Promise<void> => {
-    const sessionId = runtime.acpSessionId?.trim();
-    if (!sessionId || !runtime.pooled) return;
-
-    const requestedModeId = resolveCursorSessionModeId(managed.session);
-    const desiredModeId = requestedModeId ?? runtime.defaultModeId?.trim() ?? null;
-    if (desiredModeId && runtime.currentModeId !== desiredModeId) {
-      let modeUpdated = false;
-      if (runtime.modeConfigId && runtime.availableModeIds.includes(desiredModeId)) {
-        try {
-          const response = await runtime.pooled.connection.setSessionConfigOption({
-            sessionId,
-            configId: runtime.modeConfigId,
-            value: desiredModeId,
-          });
-          applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(response.configOptions));
-          modeUpdated = true;
-        } catch (error) {
-          logger.warn("agent_chat.cursor_set_session_mode_config_failed", {
-            sessionId: managed.session.id,
-            acpSessionId: sessionId,
-            desiredModeId,
-            configId: runtime.modeConfigId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      if (!modeUpdated) {
-        try {
-          await runtime.pooled.connection.setSessionMode({
-            sessionId,
-            modeId: desiredModeId,
-          });
-          runtime.currentModeId = desiredModeId;
-          if (desiredModeId !== "plan" && !runtime.defaultModeId) {
-            runtime.defaultModeId = desiredModeId;
-          }
-          syncCursorModeSnapshot(managed, runtime);
-        } catch (error) {
-          logger.warn("agent_chat.cursor_set_session_mode_failed", {
-            sessionId: managed.session.id,
-            acpSessionId: sessionId,
-            desiredModeId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-    }
-
-    const desiredModelId = runtime.modelSdkId.trim() || managed.session.model.trim();
-    if (!desiredModelId.length) {
-      syncCursorModeSnapshot(managed, runtime);
-      return;
-    }
-
-    if (runtime.currentModelId === desiredModelId) {
-      syncCursorSessionDescriptor(managed, desiredModelId);
-    } else {
-      let modelUpdated = false;
-      if (runtime.modelConfigId && runtime.availableModelIds.includes(desiredModelId)) {
-        try {
-          const response = await runtime.pooled.connection.setSessionConfigOption({
-            sessionId,
-            configId: runtime.modelConfigId,
-            value: desiredModelId,
-          });
-          applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(response.configOptions));
-          if (!normalizeCursorReportedModelId(runtime.currentModelId, runtime.availableModelIds)) {
-            runtime.currentModelId = desiredModelId;
-            syncCursorSessionDescriptor(managed, desiredModelId);
-          }
-          modelUpdated = true;
-        } catch (error) {
-          logger.warn("agent_chat.cursor_set_session_model_config_failed", {
-            sessionId: managed.session.id,
-            acpSessionId: sessionId,
-            desiredModelId,
-            configId: runtime.modelConfigId,
-            currentModelId: runtime.currentModelId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      if (!modelUpdated) {
-        try {
-          await runtime.pooled.connection.unstable_setSessionModel({
-            sessionId,
-            modelId: desiredModelId,
-          });
-          runtime.currentModelId = desiredModelId;
-          syncCursorSessionDescriptor(managed, desiredModelId);
-          syncCursorModeSnapshot(managed, runtime);
-        } catch (error) {
-          logger.warn("agent_chat.cursor_set_session_model_failed", {
-            sessionId: managed.session.id,
-            acpSessionId: sessionId,
-            desiredModelId,
-            currentModelId: runtime.currentModelId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          const normalizedCurrentModelId = normalizeCursorReportedModelId(runtime.currentModelId, runtime.availableModelIds);
-          if (normalizedCurrentModelId) {
-            runtime.currentModelId = normalizedCurrentModelId;
-            syncCursorSessionDescriptor(managed, normalizedCurrentModelId);
-          }
-        }
-      }
-    }
-
-    const desiredConfigValues = managed.session.cursorConfigValues ?? {};
-    for (const option of runtime.configOptions) {
-      if (option.id === runtime.modeConfigId || option.id === runtime.modelConfigId) continue;
-      const desiredValue = desiredConfigValues[option.id];
-      if (desiredValue === undefined || desiredValue === option.currentValue) continue;
-      try {
-        const response = await runtime.pooled.connection.setSessionConfigOption({
-          sessionId,
-          configId: option.id,
-          ...(typeof desiredValue === "boolean"
-            ? { type: "boolean" as const, value: desiredValue }
-            : { value: typeof desiredValue === "number" ? String(desiredValue) : desiredValue }),
-        });
-        applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(response.configOptions));
-      } catch (error) {
-        logger.warn("agent_chat.cursor_set_session_config_failed", {
-          sessionId: managed.session.id,
-          acpSessionId: sessionId,
-          configId: option.id,
-          desiredValue,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    syncCursorModeSnapshot(managed, runtime);
-  };
-
-  const refreshCursorSessionState = async (
-    managed: ManagedChatSession,
-    runtime: CursorRuntime,
-    reason: "after_prompt" | "manual_sync",
-  ): Promise<void> => {
-    const sessionId = runtime.acpSessionId?.trim();
-    if (!sessionId || !runtime.pooled) return;
-
-    const loadSession = runtime.pooled.connection.loadSession?.bind(runtime.pooled.connection);
-    if (!loadSession) return;
-
-    try {
-      const loaded = await loadSession(cursorAcpSessionRequest({
-        sessionId,
-        cwd: managed.laneWorktreePath,
-      }) as Parameters<typeof loadSession>[0]);
-      const loadedAvailableModelIds = loaded.models?.availableModels
-        ?.map((entry) => String(entry?.modelId ?? "").trim())
-        .filter(Boolean) ?? [];
-      if (loadedAvailableModelIds.length) {
-        runtime.availableModelIds = Array.from(new Set([...runtime.availableModelIds, ...loadedAvailableModelIds]));
-      }
-      runtime.currentModeId = loaded.modes?.currentModeId ?? runtime.currentModeId;
-      runtime.defaultModeId = loaded.modes?.currentModeId ?? runtime.defaultModeId;
-      runtime.currentModelId = normalizeCursorReportedModelId(
-        loaded.models?.currentModelId,
-        runtime.availableModelIds,
-      ) ?? runtime.currentModelId;
-      applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(loaded.configOptions));
-      if (runtime.currentModelId) {
-        syncCursorSessionDescriptor(managed, runtime.currentModelId);
-      }
-      syncCursorModeSnapshot(managed, runtime);
-    } catch (error) {
-      logger.warn("agent_chat.cursor_load_session_failed", {
-        sessionId: managed.session.id,
-        acpSessionId: sessionId,
-        reason,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
-
   const guessImageMimeForPath = (p: string): string => {
     const lower = p.toLowerCase();
     if (lower.endsWith(".png")) return "image/png";
@@ -12507,10 +12945,10 @@ export function createAgentChatService(args: {
     return "image/jpeg";
   };
 
-  /** Maximum bytes to inline for a non-image attachment in a Cursor ACP prompt. */
+  /** Maximum bytes to inline for a non-image chat attachment. */
   const MAX_INLINE_BYTES = 512 * 1024; // 512 KB
 
-  const buildCursorAcpPromptBlocks = (
+  const buildAgentPromptBlocks = (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
   ): Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> => {
@@ -12565,12 +13003,12 @@ export function createAgentChatService(args: {
   };
 
   const emitAcpHostTerminalCommandIfBound = (
-    pooled: CursorAcpPooled | DroidAcpPooled,
+    pooled: DroidAcpPooled,
     acpSessionId: string,
     terminalId: string,
   ): void => {
     const owner = acpHostSessionOwners.get(acpSessionId);
-    if (!owner?.runtime || (owner.runtime.kind !== "cursor" && owner.runtime.kind !== "droid")) return;
+    if (!owner?.runtime || owner.runtime.kind !== "droid") return;
     const binding = pooled.terminalWorkLogBindings.get(terminalId);
     if (!binding) return;
     const t = pooled.terminals.get(terminalId);
@@ -12590,7 +13028,7 @@ export function createAgentChatService(args: {
   };
 
   const scheduleAcpHostTerminalEmit = (
-    pooled: CursorAcpPooled | DroidAcpPooled,
+    pooled: DroidAcpPooled,
     terminalId: string,
     acpSessionId: string,
   ): void => {
@@ -12606,14 +13044,14 @@ export function createAgentChatService(args: {
     );
   };
 
-  const wireAcpHostBridgeHandlers = (pooled: CursorAcpPooled | DroidAcpPooled): void => {
+  const wireAcpHostBridgeHandlers = (pooled: DroidAcpPooled): void => {
     if (acpHostBridgeWired.has(pooled)) return;
     acpHostBridgeWired.add(pooled);
     pooled.bridge.onSessionUpdate = (note) => {
       const owner = acpHostSessionOwners.get(note.sessionId);
       if (!owner?.runtime) return;
       const rt = owner.runtime;
-      if (rt.kind !== "cursor" && rt.kind !== "droid") return;
+      if (rt.kind !== "droid") return;
 
       // Droid exec sends streaming chunks + a final complete-text replay, and
       // duplicate current_mode_update notifications.  Suppress the duplicates.
@@ -12621,27 +13059,8 @@ export function createAgentChatService(args: {
         return;
       }
 
-      let previousModeId: string | null = null;
-      if (rt.kind === "cursor") {
-        previousModeId = rt.currentModeId;
-        if (note.update.sessionUpdate === "current_mode_update") {
-          rt.currentModeId = note.update.currentModeId;
-          if (note.update.currentModeId !== "plan") {
-            rt.defaultModeId = note.update.currentModeId;
-          }
-          owner.session.cursorModeId = note.update.currentModeId;
-          if (note.update.currentModeId === "plan") {
-            owner.session.opencodePermissionMode = "plan";
-          } else if (!owner.session.opencodePermissionMode || owner.session.opencodePermissionMode === "plan") {
-            owner.session.opencodePermissionMode = "edit";
-          }
-          syncCursorModeSnapshot(owner, rt);
-          persistChatState(owner);
-        } else if (note.update.sessionUpdate === "config_option_update") {
-          applyCursorConfigSnapshot(owner, rt, readCursorAcpConfigSnapshot(note.update.configOptions));
-          persistChatState(owner);
-        }
-      } else if (rt.kind === "droid" && note.update.sessionUpdate === "config_option_update") {
+      const previousModeId: string | null = null;
+      if (note.update.sessionUpdate === "config_option_update") {
         void refreshDroidSessionState(owner, rt, "session_update").then(() => {
           persistChatState(owner);
         });
@@ -12696,7 +13115,7 @@ export function createAgentChatService(args: {
     };
     pooled.bridge.onPermission = async (req) => {
       const owner = acpHostSessionOwners.get(req.sessionId);
-      if (!owner || (owner.runtime?.kind !== "cursor" && owner.runtime?.kind !== "droid")) {
+      if (!owner || owner.runtime?.kind !== "droid") {
         return { outcome: { outcome: "cancelled" } };
       }
       const acpRt = owner.runtime;
@@ -12713,7 +13132,7 @@ export function createAgentChatService(args: {
         }
       }
       const itemId = randomUUID();
-      const source = acpRt.kind === "droid" ? "droid" : "cursor";
+      const source = "droid";
       return new Promise<RequestPermissionResponse>((outerResolve) => {
         acpRt.permissionWaiters.set(itemId, {
           options: req.options,
@@ -12735,7 +13154,6 @@ export function createAgentChatService(args: {
           description: req.toolCall.title ?? "Permission required",
           turnId: acpRt.activeTurnId ?? undefined,
           detail: {
-            cursorAcp: source === "cursor",
             acpHost: source,
             request,
             toolCall: req.toolCall,
@@ -12746,122 +13164,239 @@ export function createAgentChatService(args: {
     };
   };
 
-  const ensureCursorRuntime = async (managed: ManagedChatSession): Promise<CursorRuntime> => {
-    const poolKey = cursorPoolKeyFor(managed);
+  const wireCursorSdkBridgeHandlers = (managed: ManagedChatSession, runtime: CursorRuntime): void => {
+    runtime.sdk.bridge.onRunStarted = (event, meta) => {
+      const isCloud = meta?.runtime === "cloud";
+      if (isCloud) {
+        const turnId = runtime.activeTurnId;
+        runtime.cloudRuns.set(event.runId, {
+          agentId: event.agentId,
+          runId: event.runId,
+          turnId,
+          modelSdkId: event.modelSdkId ?? null,
+        });
+        runtime.activeCloudRunId = event.runId;
+        managed.session.cursorCloudAgentId = event.agentId;
+        if (turnId && !managed.session.cursorPromotedTurnId) {
+          managed.session.cursorPromotedTurnId = turnId;
+        }
+        managed.session.cursorRuntime = "cloud";
+        persistChatState(managed);
+        return;
+      }
+      runtime.sdkControlBuffer = null;
+      runtime.sdkAgentId = event.agentId;
+      runtime.sdkRunId = event.runId;
+      runtime.currentModelId = event.modelSdkId ?? runtime.currentModelId;
+      if (event.modelSdkId) syncCursorSessionDescriptor(managed, event.modelSdkId);
+      persistChatState(managed);
+    };
+    runtime.sdk.bridge.onRunResult = (_result, meta) => {
+      if (meta?.runtime === "cloud" && meta.runId) {
+        runtime.cloudRuns.delete(meta.runId);
+        if (runtime.activeCloudRunId === meta.runId) runtime.activeCloudRunId = null;
+        persistChatState(managed);
+        return;
+      }
+      if (runtime.sdkControlBuffer) {
+        logger.warn("agent_chat.cursor_control_incomplete_at_run_end", {
+          sessionId: managed.session.id,
+          bytes: runtime.sdkControlBuffer.length,
+        });
+        runtime.sdkControlBuffer = null;
+      }
+      persistChatState(managed);
+    };
+    runtime.sdk.bridge.onRunStatus = (event, meta) => {
+      if (!managed.runtime || managed.runtime !== runtime) return;
+      if (meta?.runtime !== "cloud") return;
+      const cloudStatus = (() => {
+        const lower = event.status.toLowerCase();
+        if (lower === "creating" || lower === "running" || lower === "finished" || lower === "error" || lower === "cancelled" || lower === "expired") {
+          return lower as AgentChatCloudRunStatus;
+        }
+        return null;
+      })();
+      if (!cloudStatus) return;
+      const turnId = runtime.cloudRuns.get(event.runId)?.turnId
+        ?? runtime.activeTurnId
+        ?? "";
+      emitChatEvent(managed, {
+        type: "cloud_status",
+        turnId,
+        runId: event.runId,
+        status: cloudStatus,
+      });
+    };
+    runtime.sdk.bridge.onCloudArtifact = () => {
+      // Cloud artifacts are surfaced via post-run materialization (see materializeCloudArtifacts).
+    };
+    runtime.sdk.bridge.onEvent = (event, meta) => {
+      if (!managed.runtime || managed.runtime !== runtime) return;
+      const isCloud = meta?.runtime === "cloud";
+      const turnId = isCloud
+        ? (runtime.cloudRuns.get(meta?.runId ?? "")?.turnId ?? runtime.activeTurnId ?? "")
+        : (runtime.activeTurnId ?? "");
+      const events = mapCursorSdkMessageToChatEvents(event, {
+        turnId,
+        cwd: managed.laneWorktreePath,
+        runtime: isCloud ? "cloud" : "local",
+        ...(meta?.runId ? { runId: meta.runId } : {}),
+      });
+      for (const ev of events) {
+        emitCursorSdkMappedEvent(managed, runtime, ev);
+      }
+    };
+    runtime.sdk.bridge.onHookRequest = async (req) => {
+      if (!managed.runtime || managed.runtime !== runtime) {
+        return denyCursorHook("Cursor tool approval is no longer active.");
+      }
+      const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
+      const preflight = evaluateCursorSdkHook({
+        request: req,
+        policy,
+        laneRoot: managed.laneWorktreePath,
+        sessionAllowedTools: runtime.sdkApprovedTools,
+      });
+      if (preflight === "allow") return allowCursorHook();
+      if (preflight === "deny") {
+        return denyCursorHook(req.reason ?? "ADE denied this Cursor tool call.");
+      }
+
+      const itemId = req.id || randomUUID();
+      const options = [
+        { kind: "allow_once", optionId: "allow_once" },
+        { kind: "allow_always", optionId: "allow_always" },
+        { kind: "reject_once", optionId: "reject_once" },
+      ] as PermissionOption[];
+      return new Promise<CursorSdkHookDecision>((outerResolve) => {
+        runtime.permissionWaiters.set(itemId, {
+          sdkHook: true,
+          toolName: req.toolName,
+          options,
+          resolve: (decision) => {
+            runtime.permissionWaiters.delete(itemId);
+            outerResolve(decision);
+          },
+        });
+        const request = buildCursorSdkPendingInputRequest(itemId, req, runtime.activeTurnId ?? null);
+        emitChatEvent(managed, {
+          type: "approval_request",
+          itemId,
+          kind: "tool_call",
+          description: req.summary || req.title || "Cursor SDK permission required",
+          turnId: runtime.activeTurnId ?? undefined,
+          detail: {
+            cursorSdk: true,
+            request,
+            hook: req,
+            policy,
+          },
+        });
+      });
+    };
+  };
+
+  const ensureCursorSdkRuntime = async (managed: ManagedChatSession): Promise<CursorRuntime> => {
+    const policy = resolveCursorSdkPolicy(managed.session);
+    const displayModeId = resolveCursorDisplayModeId(managed.session, policy);
     const launchModelSdkId = resolveCursorRuntimeModelSdkId(managed.session);
+    const poolKey = cursorSdkPoolKeyFor(managed, policy, launchModelSdkId);
     const shouldSyncSessionModel = managed.session.model !== launchModelSdkId || !managed.session.modelId;
     if (shouldSyncSessionModel) {
       syncCursorSessionDescriptor(managed, launchModelSdkId);
       persistChatState(managed);
     }
+
     if (managed.runtime?.kind === "cursor") {
       const existing = managed.runtime;
-      if (existing.poolKey !== poolKey) {
-        if (existing.acpSessionId) {
-          acpHostSessionOwners.delete(existing.acpSessionId);
-          try {
-            await closeAcpSession(existing.pooled?.connection, existing.acpSessionId);
-          } catch {
-            // ignore
-          }
-        }
-        for (const [, w] of existing.permissionWaiters) {
-          w.resolve({ outcome: { outcome: "cancelled" } });
-        }
-        existing.permissionWaiters.clear();
-        if (existing.pooled) releaseCursorAcpConnection(existing.poolKey, existing.poolGeneration);
-        managed.runtime = null;
-      } else {
-        if (!existing.pooled) throw new Error("Cursor ACP connection not available");
-        wireAcpHostBridgeHandlers(existing.pooled);
-        existing.pooled.bridge.getRootPath = () => managed.laneWorktreePath;
-        existing.pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
+      if (existing.poolKey === poolKey) {
+        existing.sdkPolicy = policy;
+        existing.currentModeId = displayModeId;
+        existing.currentModelId = launchModelSdkId;
+        wireCursorSdkBridgeHandlers(managed, existing);
+        syncCursorModeSnapshot(managed, existing);
         return existing;
       }
+      teardownRuntime(managed, "handle_close");
     } else if (managed.runtime) {
       teardownRuntime(managed, "handle_close");
     }
 
-    // Evict least-recent runtime if at capacity
     {
       let activeCount = 0;
       for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
       if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
     }
 
-    const acquired = await acquireCursorAcpConnection({
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) {
+      throw new Error(
+        "Cursor SDK chat requires a Cursor API key. Add a Cursor key in Settings > AI Providers or set CURSOR_API_KEY.",
+      );
+    }
+
+    const persisted = readPersistedState(managed.session.id);
+    const persistedCursorSdkAgentId =
+      persisted?.cursorSdkAgentProtocolVersion === CURSOR_SDK_AGENT_PROTOCOL_VERSION
+        ? persisted.cursorSdkAgentId ?? null
+        : null;
+    const acquired = await acquireCursorSdkConnection({
       poolKey,
-      agentPath: resolveCursorAgentExecutable().path,
+      projectRoot,
       workspacePath: managed.laneWorktreePath,
       modelSdkId: launchModelSdkId,
-      launchSettings: resolveCursorAcpLaunchSettings(managed.session),
-      appVersion,
+      apiKey,
+      agentId: persistedCursorSdkAgentId,
+      agentName: sessionService.get(managed.session.id)?.title ?? defaultChatSessionTitle("cursor"),
+      sessionId: managed.session.id,
+      policy,
+      logger,
     });
     const pooled = acquired.pooled;
-    const poolGeneration = acquired.generation;
-    wireAcpHostBridgeHandlers(pooled);
-    pooled.bridge.getRootPath = () => managed.laneWorktreePath;
-    pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
-
     const rt: CursorRuntime = {
       kind: "cursor",
       poolKey,
-      poolGeneration,
-      pooled,
-      acpSessionId: null,
+      poolGeneration: acquired.generation,
+      sdk: pooled,
+      sdkAgentId: pooled.agentId,
+      sdkRunId: pooled.runId,
+      sdkPolicy: policy,
+      sdkApprovedTools: new Set(),
+      sdkControlBuffer: null,
       activeTurnId: null,
       busy: false,
       interrupted: false,
       modelSdkId: launchModelSdkId,
       modelConfigId: null,
-      currentModelId: null,
-      availableModelIds: [],
+      currentModelId: launchModelSdkId,
+      availableModelIds: [launchModelSdkId],
       pendingSteers: [],
       permissionWaiters: new Map(),
       modeConfigId: null,
-      currentModeId: null,
-      availableModeIds: [],
-      defaultModeId: null,
+      currentModeId: displayModeId,
+      availableModeIds: [...CURSOR_AVAILABLE_MODE_IDS],
+      defaultModeId: "agent",
       configOptions: [],
+      cloudRuns: new Map(),
+      activeCloudRunId: null,
     };
     managed.runtime = rt;
-
-    const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
-    if (persistedAcp) {
-      try {
-        const resumed = await resumeAcpSession(pooled.connection, cursorAcpSessionRequest({
-          sessionId: persistedAcp,
-          cwd: managed.laneWorktreePath,
-        }) as ResumeSessionRequest);
-        if (!resumed) throw new Error("Cursor ACP agent does not support session resume");
-        const resumedAvailableModelIds = resumed.models?.availableModels
-          ?.map((entry) => String(entry?.modelId ?? "").trim())
-          .filter(Boolean) ?? [];
-        if (resumedAvailableModelIds.length) {
-          rt.availableModelIds = Array.from(new Set([...rt.availableModelIds, ...resumedAvailableModelIds]));
-        }
-        rt.acpSessionId = persistedAcp;
-        rt.currentModeId = resumed.modes?.currentModeId ?? rt.currentModeId;
-        rt.defaultModeId = resumed.modes?.currentModeId ?? rt.defaultModeId;
-        rt.currentModelId = normalizeCursorReportedModelId(
-          resumed.models?.currentModelId,
-          rt.availableModelIds,
-        ) ?? rt.currentModelId;
-        applyCursorConfigSnapshot(managed, rt, readCursorAcpConfigSnapshot(resumed.configOptions));
-        if (rt.currentModelId) {
-          syncCursorSessionDescriptor(managed, rt.currentModelId);
-        }
-        syncCursorModeSnapshot(managed, rt);
-        acpHostSessionOwners.set(persistedAcp, managed);
-      } catch {
-        // stale session id — create a new ACP session on first prompt
-      }
-    }
-
+    wireCursorSdkBridgeHandlers(managed, rt);
+    syncCursorModeSnapshot(managed, rt);
+    persistChatState(managed);
+    logger.info("agent_chat.cursor_transport_selected", {
+      sessionId: managed.session.id,
+      transport: "sdk",
+      approvalPolicy: approvalPolicyLabel(policy.approvalPolicy),
+      model: launchModelSdkId,
+    });
     return rt;
   };
 
-  const runCursorTurn = async (
+  const ensureCursorRuntime = ensureCursorSdkRuntime;
+
+  const runCursorSdkTurn = async (
     managed: ManagedChatSession,
     args: {
       promptText: string;
@@ -12874,7 +13409,7 @@ export function createAgentChatService(args: {
       onDispatched?: () => void;
     },
   ): Promise<void> => {
-    const runtime = await ensureCursorRuntime(managed);
+    const runtime = await ensureCursorSdkRuntime(managed);
     const validation = validateSessionReadyForTurn(managed);
     if (!validation.ready) {
       throw new Error(validation.reason);
@@ -12884,6 +13419,7 @@ export function createAgentChatService(args: {
     runtime.interrupted = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
+    runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
     setSessionActive(managed);
 
     const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
@@ -12904,7 +13440,6 @@ export function createAgentChatService(args: {
       turnId,
     });
 
-    const turnStartedAt = Date.now();
     let shouldDeliverQueuedSteer = false;
     try {
       const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, args.attachments);
@@ -12933,149 +13468,106 @@ export function createAgentChatService(args: {
       if (autoMemoryPlan.contextText.length) {
         composed = `${autoMemoryPlan.contextText}\n\n${composed}`;
       }
-
-      const promptBlocks = buildCursorAcpPromptBlocks(composed, args.resolvedAttachments);
-
-      if (!runtime.acpSessionId) {
-        if (!runtime.pooled) throw new Error("Cursor ACP connection not available");
-        const created = await runtime.pooled.connection.newSession(cursorAcpSessionRequest({
-          cwd: managed.laneWorktreePath,
-        }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
-        const createdAvailableModelIds = created.models?.availableModels
-          ?.map((entry) => String(entry?.modelId ?? "").trim())
-          .filter(Boolean) ?? [];
-        if (createdAvailableModelIds.length) {
-          runtime.availableModelIds = Array.from(new Set([...runtime.availableModelIds, ...createdAvailableModelIds]));
+      const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
+      const modeDirective = buildCursorSdkModeDirective(policy);
+      if (modeDirective) {
+        composed = `${modeDirective}\n\n${composed}`;
+      }
+      const isFirstSendForLane = managed.lastLaneDirectiveKey !== args.laneDirectiveKey;
+      if (isFirstSendForLane) {
+        const injected = await buildCursorSdkInjectedSystemPrompt({
+          runtime: "local",
+          laneWorktreePath: managed.laneWorktreePath,
+        });
+        if (injected.length) {
+          composed = `${injected}\n\n${composed}`;
         }
-        const sid = created.sessionId;
-        runtime.acpSessionId = sid;
-        runtime.currentModeId = created.modes?.currentModeId ?? runtime.currentModeId;
-        runtime.defaultModeId = created.modes?.currentModeId ?? runtime.defaultModeId;
-        runtime.currentModelId = normalizeCursorReportedModelId(
-          created.models?.currentModelId,
-          runtime.availableModelIds,
-        ) ?? runtime.currentModelId;
-        applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(created.configOptions));
-        if (runtime.currentModelId) {
-          syncCursorSessionDescriptor(managed, runtime.currentModelId);
-        }
-        syncCursorModeSnapshot(managed, runtime);
-        acpHostSessionOwners.set(sid, managed);
-        persistChatState(managed);
       }
 
-      await ensureCursorSessionState(managed, runtime);
-      persistChatState(managed);
+      const promptBlocks = buildAgentPromptBlocks(composed, args.resolvedAttachments);
+      const promptText = promptBlocks
+        .filter((block): block is { type: "text"; text: string } => block.type === "text")
+        .map((block) => block.text)
+        .join("\n\n");
+      const images = promptBlocks
+        .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
+        .map((block) => ({ data: block.data, mimeType: block.mimeType }));
 
+      persistChatState(managed);
       logger.info("agent_chat.cursor_prompt_start", {
         sessionId: managed.session.id,
         turnId,
         model: managed.session.model,
-        durationMs: Date.now() - turnStartedAt,
+        transport: "sdk",
       });
 
-      if (!runtime.pooled) throw new Error("Cursor ACP connection not available");
-
-      // Signal dispatch completion before awaiting the prompt so the dispatch
-      // resolves as soon as the request is sent rather than after it returns.
       if (args.onDispatched) {
         args.onDispatched();
         args.onDispatched = undefined;
       }
 
-      const promptRes = await runtime.pooled.connection.prompt({
-        sessionId: runtime.acpSessionId!,
-        prompt: promptBlocks,
+      const result = await runtime.sdk.sendPrompt({
+        promptText,
+        images,
+        modelSdkId: runtime.modelSdkId,
+        force: policy.force,
       });
 
-      await refreshCursorSessionState(managed, runtime, "after_prompt");
-
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
-
-      const descriptor = resolveSessionModelDescriptor(managed.session);
-      const usage = promptRes.usage
-        ? {
-            inputTokens: promptRes.usage.inputTokens,
-            outputTokens: promptRes.usage.outputTokens,
-            cacheReadTokens: promptRes.usage.cachedReadTokens ?? null,
-            cacheCreationTokens: promptRes.usage.cachedWriteTokens ?? null,
-          }
-        : undefined;
-
       void emitTurnDiffSummaryIfChanged(managed, turnId);
-      if (runtime.interrupted || promptRes.stopReason === "cancelled") {
+
+      const resultRecord = asRecord(result);
+      const resultStatus = typeof resultRecord?.status === "string" ? resultRecord.status : "";
+      const doneEvent = mapCursorSdkRunResultToDoneEvent(result, {
+        turnId,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
+      if (runtime.interrupted || resultStatus === "cancelled") {
         markSessionIdleWithFreshCache(managed);
         cancelQueuedSteers(managed, runtime, "interrupted");
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        for (const ev of mapStopReasonToTerminalEvents({
-          stopReason: "cancelled",
-          turnId,
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-          usage,
-        })) {
-          emitChatEvent(managed, ev);
-        }
+        emitChatEvent(managed, { ...doneEvent, status: "interrupted" });
+      } else if (resultStatus === "error" || doneEvent.status === "failed") {
+        markSessionIdleWithFreshCache(managed);
+        cancelQueuedSteers(managed, runtime, "failed");
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, doneEvent);
       } else {
         markSessionIdleWithFreshCache(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
-        for (const ev of mapStopReasonToTerminalEvents({
-          stopReason: promptRes.stopReason,
-          turnId,
-          model: managed.session.model,
-          ...(managed.session.modelId
-            ? { modelId: managed.session.modelId }
-            : descriptor
-              ? { modelId: descriptor.id }
-              : {}),
-          usage,
-        })) {
-          emitChatEvent(managed, ev);
-        }
+        emitChatEvent(managed, doneEvent);
         shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
       appendWorkerActivityToCto(managed, {
         activityType: "chat_turn",
-        summary: "Cursor agent turn completed.",
+        summary: "Cursor SDK agent turn completed.",
       });
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
-      const descriptor = resolveSessionModelDescriptor(managed.session);
-      const acpError = classifyAcpHostError(
-        error,
-        "Cursor",
-        descriptor?.displayName ?? managed.session.model,
-      );
-      const msg = acpError.message;
-
-      // Drain pending permission waiters so they don't block future sends.
       for (const [, w] of runtime.permissionWaiters) {
-        w.resolve({ outcome: { outcome: "cancelled" } });
+        cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the turn failed.");
       }
       runtime.permissionWaiters.clear();
-
-      // Drop queued steers so they don't replay on the next turn.
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        for (const ev of mapStopReasonToTerminalEvents({
-          stopReason: "cancelled",
+        emitChatEvent(managed, {
+          type: "done",
           turnId,
+          status: "interrupted",
           model: managed.session.model,
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-        })) {
-          emitChatEvent(managed, ev);
-        }
+        });
       } else {
+        const msg = error instanceof Error ? error.message : String(error);
         emitChatEvent(managed, {
           type: "error",
           message: msg,
-          ...(acpError.detail ? { detail: acpError.detail } : {}),
-          errorInfo: acpError.errorInfo,
           turnId,
         });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
@@ -13099,16 +13591,749 @@ export function createAgentChatService(args: {
         setSessionIdle(managed);
       }
     }
+
     if (!managed.closed && shouldDeliverQueuedSteer) {
       try {
         await deliverNextQueuedSteer(managed, runtime);
       } catch (error) {
-        logger.warn("agent_chat.cursor_deliver_queued_steer_failed", {
+        logger.warn("agent_chat.cursor_sdk_deliver_queued_steer_failed", {
           sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
+  };
+
+  const runCursorTurn = async (
+    managed: ManagedChatSession,
+    args: Parameters<typeof runCursorSdkTurn>[1],
+  ): Promise<void> => {
+    await runCursorSdkTurn(managed, args);
+  };
+
+  const CURSOR_CLOUD_ARTIFACT_MAX_BYTES = 10 * 1024 * 1024;
+  const CURSOR_CLOUD_ARTIFACT_DIR = "cursor-cloud-artifacts";
+
+  const detectLaneGitRemoteUrl = (laneRoot: string): string | null => {
+    try {
+      const result = spawnSync("git", ["-C", laneRoot, "remote", "get-url", "origin"], {
+        timeout: 4000,
+        encoding: "utf8",
+      });
+      if (result.status !== 0) return null;
+      const url = result.stdout.trim();
+      return url.length > 0 ? url : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const sanitizeArtifactRelativePath = (raw: string): string | null => {
+    if (typeof raw !== "string") return null;
+    const trimmed = raw.replace(/\\/g, "/").replace(/^\/+/, "").trim();
+    if (!trimmed.length) return null;
+    const segments = trimmed.split("/").filter((seg) => seg.length > 0 && seg !== ".");
+    if (segments.some((seg) => seg === "..")) return null;
+    if (segments.some((seg) => seg.includes("\0"))) return null;
+    return segments.join("/");
+  };
+
+  const cloudArtifactsDirFor = (managed: ManagedChatSession, agentId: string, runId: string): string =>
+    path.join(
+      managed.laneWorktreePath,
+      ".ade",
+      "cache",
+      CURSOR_CLOUD_ARTIFACT_DIR,
+      agentId,
+      runId,
+    );
+
+  const materializeCloudArtifacts = async (
+    managed: ManagedChatSession,
+    args: { agentId: string; runId: string; turnId: string; apiKey: string },
+  ): Promise<void> => {
+    let artifacts: CursorSdkCloudArtifactDescriptor[];
+    try {
+      artifacts = await runCursorSdkCloudRequest<CursorSdkCloudArtifactDescriptor[]>({
+        projectRoot,
+        workspacePath: managed.laneWorktreePath,
+        apiKey: args.apiKey,
+        type: "cloud.artifacts.list",
+        payload: { agentId: args.agentId },
+        logger,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.cursor_cloud_artifacts_list_failed", {
+        sessionId: managed.session.id,
+        agentId: args.agentId,
+        runId: args.runId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    if (!Array.isArray(artifacts) || !artifacts.length) return;
+
+    const destDir = cloudArtifactsDirFor(managed, args.agentId, args.runId);
+    for (const descriptor of artifacts) {
+      if (typeof descriptor?.sizeBytes === "number" && descriptor.sizeBytes > CURSOR_CLOUD_ARTIFACT_MAX_BYTES) {
+        logger.info("agent_chat.cursor_cloud_artifact_skipped_large", {
+          sessionId: managed.session.id,
+          path: descriptor.path,
+          sizeBytes: descriptor.sizeBytes,
+        });
+        continue;
+      }
+      const safeRel = sanitizeArtifactRelativePath(descriptor?.path ?? "");
+      if (!safeRel) {
+        logger.warn("agent_chat.cursor_cloud_artifact_unsafe_path", {
+          sessionId: managed.session.id,
+          path: descriptor?.path,
+        });
+        continue;
+      }
+      const destPath = path.join(destDir, safeRel);
+      try {
+        const download = await runCursorSdkCloudRequest<CursorSdkCloudArtifactDownloadResult>({
+          projectRoot,
+          workspacePath: managed.laneWorktreePath,
+          apiKey: args.apiKey,
+          type: "cloud.artifacts.download",
+          payload: { agentId: args.agentId, path: descriptor.path },
+          logger,
+        });
+        const buffer = Buffer.from(download.contents, "base64");
+        if (buffer.byteLength > CURSOR_CLOUD_ARTIFACT_MAX_BYTES) {
+          logger.info("agent_chat.cursor_cloud_artifact_skipped_large_after_download", {
+            sessionId: managed.session.id,
+            path: descriptor.path,
+            sizeBytes: buffer.byteLength,
+          });
+          continue;
+        }
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, buffer);
+        emitChatEvent(managed, {
+          type: "cloud_artifact",
+          turnId: args.turnId,
+          itemId: `cursor-cloud-artifact-${args.runId}-${safeRel}`,
+          agentId: args.agentId,
+          runId: args.runId,
+          path: descriptor.path,
+          lanePath: path.relative(managed.laneWorktreePath, destPath),
+          ...(download.mimeType ? { mimeType: download.mimeType } : {}),
+          sizeBytes: buffer.byteLength,
+        });
+      } catch (error) {
+        logger.warn("agent_chat.cursor_cloud_artifact_download_failed", {
+          sessionId: managed.session.id,
+          agentId: args.agentId,
+          runId: args.runId,
+          path: descriptor?.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
+
+  const resolveCloudRepoUrl = (
+    managed: ManagedChatSession,
+    overrides: AgentChatCloudOverrides | undefined,
+  ): string => {
+    const direct = overrides?.repoUrl?.trim();
+    if (direct) return direct;
+    const remote = detectLaneGitRemoteUrl(managed.laneWorktreePath);
+    if (!remote) {
+      throw new Error(
+        "Cursor Cloud requires a repo URL. Configure a git remote on the lane or pass cloudOverrides.repoUrl.",
+      );
+    }
+    return remote;
+  };
+
+  const runCursorCloudTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      displayText: string;
+      attachments: AgentChatFileRef[];
+      resolvedAttachments: ResolvedAgentChatFileRef[];
+      laneDirectiveKey?: string | null;
+      turnId?: string;
+      optimisticCursorTurnStart?: boolean;
+      onDispatched?: () => void;
+      cloudOverrides?: AgentChatCloudOverrides;
+    },
+  ): Promise<void> => {
+    const runtime = await ensureCursorSdkRuntime(managed);
+    const validation = validateSessionReadyForTurn(managed);
+    if (!validation.ready) throw new Error(validation.reason);
+
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) {
+      throw new Error(
+        "Cursor Cloud requires a Cursor API key. Add a Cursor key in Settings > AI Providers or set CURSOR_API_KEY.",
+      );
+    }
+
+    const turnId = args.turnId ?? randomUUID();
+    runtime.interrupted = false;
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
+    setSessionActive(managed);
+
+    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    if (!args.optimisticCursorTurnStart) {
+      emitPreparedUserMessage(managed, {
+        text: displayText,
+        attachments: args.attachments,
+        turnId,
+        laneDirectiveKey: args.laneDirectiveKey,
+        onDispatched: args.onDispatched,
+      });
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(managed);
+    }
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+      turnId,
+      runtime: "cloud",
+    });
+
+    const isFollowUp = Boolean(managed.session.cursorCloudAgentId);
+    let cloudComposed = args.promptText;
+    if (!isFollowUp) {
+      const injected = await buildCursorSdkInjectedSystemPrompt({
+        runtime: "cloud",
+        laneWorktreePath: managed.laneWorktreePath,
+      });
+      if (injected.length) {
+        cloudComposed = `${injected}\n\n${cloudComposed}`;
+      }
+    }
+    const promptBlocks = buildAgentPromptBlocks(cloudComposed, args.resolvedAttachments);
+    const promptText = promptBlocks
+      .filter((block): block is { type: "text"; text: string } => block.type === "text")
+      .map((block) => block.text)
+      .join("\n\n");
+
+    persistChatState(managed);
+    logger.info("agent_chat.cursor_cloud_prompt_start", {
+      sessionId: managed.session.id,
+      turnId,
+      isFollowUp,
+      hasAgentId: Boolean(managed.session.cursorCloudAgentId),
+    });
+
+    if (args.onDispatched) {
+      args.onDispatched();
+      args.onDispatched = undefined;
+    }
+
+    let runStartedAgentId: string | null = managed.session.cursorCloudAgentId ?? null;
+    let runStartedRunId: string | null = null;
+    try {
+      let result: unknown;
+      if (isFollowUp && managed.session.cursorCloudAgentId) {
+        const payload: CursorSdkCloudFollowupPayload = {
+          apiKey,
+          agentId: managed.session.cursorCloudAgentId,
+          promptText,
+          ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
+        };
+        result = await runtime.sdk.request<CursorSdkCloudRunStartedResult & { result?: unknown }>(
+          "cloud.followup",
+          payload,
+        );
+      } else {
+        const repoUrl = resolveCloudRepoUrl(managed, args.cloudOverrides);
+        const payload: CursorSdkCloudSendStreamPayload = {
+          apiKey,
+          promptText,
+          repoUrl,
+          ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
+          ...(args.cloudOverrides?.startingRef ? { startingRef: args.cloudOverrides.startingRef } : {}),
+          ...(args.cloudOverrides?.prUrl !== undefined ? { prUrl: args.cloudOverrides.prUrl } : {}),
+          ...(args.cloudOverrides?.workOnCurrentBranch !== undefined
+            ? { workOnCurrentBranch: args.cloudOverrides.workOnCurrentBranch }
+            : {}),
+          ...(args.cloudOverrides?.autoCreatePR !== undefined
+            ? { autoCreatePR: args.cloudOverrides.autoCreatePR }
+            : {}),
+          ...(args.cloudOverrides?.skipReviewerRequest !== undefined
+            ? { skipReviewerRequest: args.cloudOverrides.skipReviewerRequest }
+            : {}),
+        };
+        result = await runtime.sdk.request<CursorSdkCloudRunStartedResult & { result?: unknown }>(
+          "cloud.send.stream",
+          payload,
+        );
+      }
+
+      const startedRecord = (result && typeof result === "object" ? result as Record<string, unknown> : {});
+      runStartedAgentId = typeof startedRecord.agentId === "string"
+        ? startedRecord.agentId
+        : runStartedAgentId;
+      runStartedRunId = typeof startedRecord.runId === "string" ? startedRecord.runId : null;
+      const innerResult = "result" in startedRecord ? startedRecord.result : startedRecord;
+      const resultRecord = asRecord(innerResult) ?? asRecord(startedRecord) ?? null;
+      const resultStatus = typeof resultRecord?.status === "string" ? resultRecord.status : "";
+
+      if (runStartedAgentId) {
+        managed.session.cursorCloudAgentId = runStartedAgentId;
+        if (!managed.session.cursorPromotedTurnId) {
+          managed.session.cursorPromotedTurnId = turnId;
+        }
+        managed.session.cursorRuntime = "cloud";
+      }
+
+      const doneEvent = mapCursorSdkRunResultToDoneEvent(innerResult ?? startedRecord, {
+        turnId,
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        runtime: "cloud",
+      });
+      const doneEventTagged: Extract<AgentChatEvent, { type: "done" }> = {
+        ...doneEvent,
+      };
+
+      if (runtime.interrupted || resultStatus === "cancelled") {
+        markSessionIdleWithFreshCache(managed);
+        cancelQueuedSteers(managed, runtime, "interrupted");
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, { ...doneEventTagged, status: "interrupted" });
+      } else if (resultStatus === "error" || doneEvent.status === "failed") {
+        markSessionIdleWithFreshCache(managed);
+        cancelQueuedSteers(managed, runtime, "failed");
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, doneEventTagged);
+      } else {
+        markSessionIdleWithFreshCache(managed);
+        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+        emitChatEvent(managed, doneEventTagged);
+        if (runStartedAgentId && runStartedRunId) {
+          void materializeCloudArtifacts(managed, {
+            agentId: runStartedAgentId,
+            runId: runStartedRunId,
+            turnId,
+            apiKey,
+          }).catch(() => undefined);
+        }
+      }
+
+      appendWorkerActivityToCto(managed, {
+        activityType: "chat_turn",
+        summary: "Cursor Cloud agent turn completed.",
+      });
+      persistChatState(managed);
+    } catch (error) {
+      markSessionIdleWithFreshCache(managed);
+      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+
+      if (runtime.interrupted) {
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "interrupted",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
+      } else {
+        const msg = error instanceof Error ? error.message : String(error);
+        emitChatEvent(managed, { type: "error", message: msg, turnId });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, {
+          type: "done",
+          turnId,
+          status: "failed",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        });
+        appendWorkerActivityToCto(managed, {
+          activityType: "chat_turn",
+          summary: `Cloud turn failed: ${msg}`,
+        });
+      }
+      persistChatState(managed);
+    } finally {
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      runtime.activeCloudRunId = null;
+      if (managed.session.status === "active") {
+        setSessionIdle(managed);
+      }
+    }
+  };
+
+  const cancelCursorCloudRun = async (args: {
+    agentId: string;
+    runId: string;
+  }): Promise<void> => {
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) throw new Error("Cursor Cloud cancel requires a Cursor API key.");
+
+    // First try cancelling on the live session worker (most likely to have the run handle).
+    for (const [, managed] of managedSessions) {
+      if (managed.runtime?.kind !== "cursor") continue;
+      const rt = managed.runtime;
+      if (!rt.cloudRuns.has(args.runId)) continue;
+      try {
+        await rt.sdk.request("cloud.run.cancel", {
+          apiKey,
+          agentId: args.agentId,
+          runId: args.runId,
+        });
+        return;
+      } catch (error) {
+        logger.warn("agent_chat.cursor_cloud_cancel_via_session_failed", {
+          sessionId: managed.session.id,
+          agentId: args.agentId,
+          runId: args.runId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    await runCursorSdkCloudRequest({
+      projectRoot,
+      workspacePath: projectRoot,
+      apiKey,
+      type: "cloud.run.cancel",
+      payload: { agentId: args.agentId, runId: args.runId },
+      logger,
+    });
+  };
+
+  const cursorCloudFollowUp = async (args: {
+    agentId: string;
+    prompt: string;
+    modelId?: string | null;
+  }): Promise<{ runId: string; status: string }> => {
+    const trimmedAgent = args.agentId.trim();
+    const trimmedPrompt = args.prompt.trim();
+    if (!trimmedAgent) throw new Error("Cursor cloud agent id is required.");
+    if (!trimmedPrompt) throw new Error("Prompt is required.");
+
+    const matched = (() => {
+      for (const [, managed] of managedSessions) {
+        if (managed.session.cursorCloudAgentId === trimmedAgent) return managed;
+      }
+      return null;
+    })();
+    if (!matched) {
+      throw new Error(
+        `No active chat session is associated with cloud agent '${trimmedAgent}'. Open the session before sending a follow-up.`,
+      );
+    }
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) throw new Error("Cursor Cloud follow-up requires a Cursor API key.");
+
+    await runCursorCloudTurn(matched, {
+      promptText: trimmedPrompt,
+      displayText: trimmedPrompt,
+      attachments: [],
+      resolvedAttachments: [],
+    });
+    const last = matched.runtime?.kind === "cursor" ? matched.runtime.activeCloudRunId : null;
+    return { runId: last ?? "", status: "running" };
+  };
+
+  /**
+   * Hydrate a freshly-created session's chat-event store from a cloud
+   * agent's prior conversation. Each emitted event is tagged
+   * `runtime: "cloud"` so the renderer knows it came from cloud.
+   */
+  // Walk a Cursor SDK `run.conversation()` result. The SDK returns a discriminated
+  // union of `ConversationTurn`s ({ type: "agent" | "shell", ... }) — NOT a flat
+  // messages array. Each agent turn may carry an optional `userMessage` followed
+  // by typed `steps` (assistantMessage / toolCall / thinking). Shell turns are
+  // standalone command/output records.
+  const hydrateCursorCloudConversationEvents = (
+    managed: ManagedChatSession,
+    conversation: unknown,
+    meta: { turnId: string },
+  ): void => {
+    const turns = flattenCloudConversationMessages(conversation);
+    if (!turns.length) return;
+    let turnCounter = 0;
+    const nextTurnId = () => `${meta.turnId}-t${++turnCounter}`;
+
+    for (const rawTurn of turns) {
+      const turn = asRecord(rawTurn);
+      if (!turn) continue;
+      const turnId = nextTurnId();
+      const turnType = typeof turn.type === "string" ? turn.type : "";
+
+      if (turnType === "shell") {
+        const args = asRecord(turn.command) ?? turn;
+        const command = typeof args.command === "string" ? args.command : "";
+        const output = asRecord(turn.output);
+        const exitCode = typeof output?.exitCode === "number" ? output.exitCode : null;
+        const stdout = typeof output?.stdout === "string" ? output.stdout : "";
+        const stderr = typeof output?.stderr === "string" ? output.stderr : "";
+        const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
+        if (!command) continue;
+        emitChatEvent(managed, {
+          type: "command",
+          command,
+          cwd: managed.laneWorktreePath,
+          output: combined,
+          itemId: `cursor-cloud-shell-${turnCounter}`,
+          turnId,
+          status: exitCode == null ? "running" : exitCode === 0 ? "completed" : "failed",
+          ...(exitCode != null ? { exitCode } : {}),
+          runtime: "cloud",
+        });
+        continue;
+      }
+
+      // agent turn (or unknown — best-effort)
+      const userMessage = asRecord(turn.userMessage);
+      const userText = typeof userMessage?.text === "string" ? userMessage.text.trim() : "";
+      if (userText) {
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: userText,
+          turnId,
+          runtime: "cloud",
+        });
+      }
+
+      const steps = Array.isArray(turn.steps) ? turn.steps : [];
+      for (const rawStep of steps) {
+        const step = asRecord(rawStep);
+        if (!step) continue;
+        const stepType = typeof step.type === "string" ? step.type : "";
+
+        if (stepType === "assistantMessage") {
+          const message = asRecord(step.message);
+          const text = typeof message?.text === "string" ? message.text : "";
+          if (!text) continue;
+          emitChatEvent(managed, { type: "text", text, turnId, runtime: "cloud" });
+          continue;
+        }
+
+        if (stepType === "thinking") {
+          const message = asRecord(step.message);
+          const text = typeof message?.text === "string" ? message.text : "";
+          if (!text) continue;
+          emitChatEvent(managed, { type: "reasoning", text, turnId, runtime: "cloud" });
+          continue;
+        }
+
+        if (stepType === "toolCall") {
+          const message = asRecord(step.message);
+          const toolType = typeof message?.type === "string" ? message.type : "tool";
+          const toolArgs = message?.args ?? null;
+          const result = asRecord(message?.result);
+          const status = typeof result?.status === "string" ? result.status : "running";
+          const itemId = typeof step.id === "string" ? step.id : `cursor-cloud-tool-${turnCounter}-${stepType}`;
+
+          // Shell tool calls collapse cleanly into the chat's command block UI.
+          if (toolType === "shell") {
+            const argsRecord = asRecord(toolArgs);
+            const command = typeof argsRecord?.command === "string" ? argsRecord.command : "";
+            const value = asRecord(result?.value);
+            const stdout = typeof value?.stdout === "string" ? value.stdout : "";
+            const stderr = typeof value?.stderr === "string" ? value.stderr : "";
+            const exitCode = typeof value?.exitCode === "number" ? value.exitCode : null;
+            const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
+            emitChatEvent(managed, {
+              type: "command",
+              command,
+              cwd: managed.laneWorktreePath,
+              output: combined,
+              itemId,
+              turnId,
+              status: status === "success" ? "completed" : status === "error" || status === "failure" ? "failed" : "running",
+              ...(exitCode != null ? { exitCode } : {}),
+              runtime: "cloud",
+            });
+            continue;
+          }
+
+          if (status === "running" || status === "pending") {
+            emitChatEvent(managed, {
+              type: "tool_call",
+              tool: toolType,
+              args: toolArgs,
+              itemId,
+              turnId,
+              runtime: "cloud",
+            });
+          } else {
+            emitChatEvent(managed, {
+              type: "tool_result",
+              tool: toolType,
+              result: result?.value ?? result ?? null,
+              itemId,
+              turnId,
+              status: status === "success" ? "completed" : "failed",
+              runtime: "cloud",
+            });
+          }
+        }
+      }
+    }
+  };
+
+  const openCursorCloudChat = async (args: {
+    cloudAgentId: string;
+    laneId: string;
+  }): Promise<{ sessionId: string; session: AgentChatSession }> => {
+    const trimmedAgent = args.cloudAgentId.trim();
+    const trimmedLane = args.laneId.trim();
+    if (!trimmedAgent) throw new Error("Cursor cloud agent id is required.");
+    if (!trimmedLane) throw new Error("Lane id is required.");
+
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) throw new Error("Cursor Cloud chat requires a Cursor API key.");
+
+    const laneInfo = (() => {
+      try {
+        return laneService.getLaneBaseAndBranch(trimmedLane);
+      } catch {
+        return null;
+      }
+    })();
+    if (!laneInfo) throw new Error(`Lane '${trimmedLane}' was not found.`);
+    const laneRoot = laneInfo.worktreePath;
+
+    // 1. Pull the latest run summary for the agent so we know which run's
+    //    conversation to hydrate and (if it's still RUNNING) which run to
+    //    attach to. We use the cloud-oneshot path because the per-session
+    //    worker isn't booted yet.
+    let runs: { items: Array<{ runId?: string; id?: string; status?: string; model?: { id?: string } | null; modelId?: string }> };
+    try {
+      runs = await runCursorSdkCloudRequest<{ items: Array<{ runId?: string; id?: string; status?: string; model?: { id?: string } | null; modelId?: string }> }>({
+        projectRoot,
+        workspacePath: laneRoot,
+        apiKey,
+        type: "cloud.runs.list",
+        payload: { agentId: trimmedAgent, limit: 1 },
+        logger,
+      });
+    } catch (error) {
+      throw new Error(
+        `Could not load Cursor Cloud agent '${trimmedAgent}': ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const rawLatestRun = Array.isArray(runs?.items) ? runs.items[0] : null;
+    const latestRun = rawLatestRun ? {
+      runId: typeof rawLatestRun.runId === "string" ? rawLatestRun.runId : (typeof rawLatestRun.id === "string" ? rawLatestRun.id : ""),
+      status: typeof rawLatestRun.status === "string" ? rawLatestRun.status : "",
+      modelSdkId:
+        (typeof rawLatestRun.model?.id === "string" && rawLatestRun.model.id.trim())
+          ? rawLatestRun.model.id.trim()
+          : (typeof rawLatestRun.modelId === "string" && rawLatestRun.modelId.trim())
+            ? rawLatestRun.modelId.trim()
+            : null,
+    } : null;
+
+    // 2. Pull the existing run conversation. We map turns to chat events so the
+    //    user sees the back-and-forth, rather than a flat transcript blob.
+    let conversation: unknown = null;
+    if (latestRun?.runId) {
+      try {
+        conversation = await runCursorSdkCloudRequest<unknown>({
+          projectRoot,
+          workspacePath: laneRoot,
+          apiKey,
+          type: "cloud.run.conversation",
+          payload: { agentId: trimmedAgent, runId: latestRun.runId },
+          logger,
+        });
+      } catch (error) {
+        logger.warn("agent_chat.cursor_cloud_open_chat_conversation_failed", {
+          agentId: trimmedAgent,
+          runId: latestRun?.runId ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // 3. Resolve a Cursor model id from the latest run, falling back to the
+    //    SDK default. createSession requires a known cursor/<id> descriptor.
+    const sdkId = latestRun?.modelSdkId ?? "composer-2";
+    const resolvedModelId = `cursor/${sdkId}`;
+
+    // 4. Create the new ADE session bound to this cloud agent.
+    const synthPromotedTurnId = randomUUID();
+    const created = await createSession({
+      laneId: trimmedLane,
+      provider: "cursor",
+      model: sdkId,
+      modelId: resolvedModelId,
+    });
+    const managed = managedSessions.get(created.id);
+    if (managed) {
+      managed.session.cursorCloudAgentId = trimmedAgent;
+      managed.session.cursorRuntime = "cloud";
+      managed.session.cursorPromotedTurnId = synthPromotedTurnId;
+
+      // 5. Hydrate the chat events store from the cloud conversation. Each
+      //    event is tagged runtime: "cloud" so the renderer treats it as
+      //    cloud-sourced. We mirror the existing event mapper output.
+      const hydratedTurnId = synthPromotedTurnId;
+      hydrateCursorCloudConversationEvents(managed, conversation, {
+        turnId: hydratedTurnId,
+      });
+      persistChatState(managed);
+    }
+
+    // 6. If the existing run is still live, attach to its stream so events
+    //    flow into the new session as they arrive. We boot the per-session
+    //    worker (ensureCursorSdkRuntime wires the bridge) and dispatch a
+    //    cloud.run.attach request — same `streamCloudRun` helper as
+    //    cloud.send.stream/cloud.followup, just without sending a prompt.
+    if (managed && latestRun?.runId && isCloudRunStillLive(latestRun.status)) {
+      try {
+        const runtime = await ensureCursorSdkRuntime(managed);
+        runtime.cloudRuns.set(latestRun.runId, {
+          agentId: trimmedAgent,
+          runId: latestRun.runId,
+          turnId: synthPromotedTurnId,
+          modelSdkId: latestRun.modelSdkId ?? null,
+        });
+        runtime.activeCloudRunId = latestRun.runId;
+        runtime.activeTurnId = synthPromotedTurnId;
+        // Fire-and-forget: streamCloudRun runs in the worker until the run
+        // completes; we don't await so this call returns promptly.
+        void runtime.sdk.request("cloud.run.attach", {
+          apiKey,
+          agentId: trimmedAgent,
+          runId: latestRun.runId,
+        }).catch((error) => {
+          logger.warn("agent_chat.cursor_cloud_attach_failed", {
+            sessionId: managed.session.id,
+            agentId: trimmedAgent,
+            runId: latestRun.runId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      } catch (error) {
+        logger.warn("agent_chat.cursor_cloud_open_chat_attach_setup_failed", {
+          sessionId: managed.session.id,
+          agentId: trimmedAgent,
+          runId: latestRun.runId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // 7. Materialize artifacts from the existing run so the file tray works.
+    if (managed && latestRun?.runId) {
+      void materializeCloudArtifacts(managed, {
+        agentId: trimmedAgent,
+        runId: latestRun.runId,
+        turnId: synthPromotedTurnId,
+        apiKey,
+      }).catch(() => undefined);
+    }
+
+    return { sessionId: created.id, session: created };
   };
 
   const droidPoolKeyFor = (managed: ManagedChatSession, resolvedModelId: string): string => {
@@ -13141,7 +14366,7 @@ export function createAgentChatService(args: {
           }
         }
         for (const [, w] of existing.permissionWaiters) {
-          w.resolve({ outcome: { outcome: "cancelled" } });
+          cancelCursorPermissionWaiter(w, "Droid tool approval was cancelled because the runtime restarted.");
         }
         existing.permissionWaiters.clear();
         if (existing.pooled) releaseDroidAcpConnection(existing.poolKey, existing.poolGeneration);
@@ -13215,7 +14440,7 @@ export function createAgentChatService(args: {
       const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
       if (persistedAcp) {
         try {
-          const resumed = await resumeAcpSession(pooled.connection, cursorAcpSessionRequest({
+          const resumed = await resumeAcpSession(pooled.connection, acpSessionRequest({
             sessionId: persistedAcp,
             cwd: managed.laneWorktreePath,
           }) as ResumeSessionRequest);
@@ -13356,11 +14581,11 @@ export function createAgentChatService(args: {
         return;
       }
 
-      const promptBlocks = buildCursorAcpPromptBlocks(composed, args.resolvedAttachments);
+      const promptBlocks = buildAgentPromptBlocks(composed, args.resolvedAttachments);
 
       if (!runtime.acpSessionId) {
         if (!runtime.pooled) throw new Error("Droid ACP connection not available");
-        const created = await runtime.pooled.connection.newSession(cursorAcpSessionRequest({
+        const created = await runtime.pooled.connection.newSession(acpSessionRequest({
           cwd: managed.laneWorktreePath,
         }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
         const sid = created.sessionId;
@@ -13471,7 +14696,7 @@ export function createAgentChatService(args: {
         runtime.interrupted || msg === "Droid session closed during setup.";
 
       for (const [, w] of runtime.permissionWaiters) {
-        w.resolve({ outcome: { outcome: "cancelled" } });
+        cancelCursorPermissionWaiter(w, "Droid tool approval was cancelled because the turn failed.");
       }
       runtime.permissionWaiters.clear();
 
@@ -13589,6 +14814,25 @@ export function createAgentChatService(args: {
         chatConfig.opencodePermissionMode,
       );
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      const requestedRuntime = prepared.runtime;
+      const sessionDefaultRuntime = managed.session.cursorRuntime;
+      const effectiveRuntime: AgentChatRuntime = requestedRuntime
+        ?? sessionDefaultRuntime
+        ?? "local";
+      if (effectiveRuntime === "cloud") {
+        await runCursorCloudTurn(managed, {
+          promptText,
+          displayText: visibleText,
+          attachments,
+          resolvedAttachments,
+          laneDirectiveKey,
+          turnId,
+          optimisticCursorTurnStart,
+          onDispatched,
+          ...(prepared.cloudOverrides ? { cloudOverrides: prepared.cloudOverrides } : {}),
+        });
+        return;
+      }
       await runCursorTurn(managed, {
         promptText,
         displayText: visibleText,
@@ -13784,7 +15028,7 @@ export function createAgentChatService(args: {
       setSessionActive(prepared.managed);
       persistChatState(prepared.managed);
       // NOTE: onDispatched is NOT called here. It will be called inside
-      // runCursorTurn after the real ACP prompt has been initiated, so the
+      // runCursorTurn after the SDK prompt has been initiated, so the
       // caller's awaitDispatch promise resolves only once the backend has
       // acknowledged the prompt.
     }
@@ -14298,15 +15542,34 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "cursor") {
       const rt = managed.runtime;
       rt.interrupted = true;
-      if (rt.acpSessionId) {
+      const activeCloudRunId = rt.activeCloudRunId;
+      if (activeCloudRunId && managed.session.cursorCloudAgentId) {
+        const apiKey = getCursorSdkApiKey();
+        if (apiKey) {
+          try {
+            await rt.sdk.request("cloud.run.cancel", {
+              apiKey,
+              agentId: managed.session.cursorCloudAgentId,
+              runId: activeCloudRunId,
+            });
+          } catch (error) {
+            logger.warn("agent_chat.cursor_cloud_cancel_failed", {
+              sessionId: managed.session.id,
+              agentId: managed.session.cursorCloudAgentId,
+              runId: activeCloudRunId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      } else {
         try {
-          await rt.pooled?.connection.cancel({ sessionId: rt.acpSessionId });
+          await rt.sdk.cancel();
         } catch {
           // ignore
         }
       }
       for (const [, w] of rt.permissionWaiters) {
-        w.resolve({ outcome: { outcome: "cancelled" } });
+        cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
       cancelQueuedSteers(managed, rt, "interrupted");
@@ -14324,7 +15587,7 @@ export function createAgentChatService(args: {
         }
       }
       for (const [, w] of rt.permissionWaiters) {
-        w.resolve({ outcome: { outcome: "cancelled" } });
+        cancelCursorPermissionWaiter(w, "Droid tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
       cancelQueuedSteers(managed, rt, "interrupted");
@@ -14623,6 +15886,15 @@ export function createAgentChatService(args: {
       ...(liveSession?.cursorConfigValues || persisted?.cursorConfigValues
         ? { cursorConfigValues: liveSession?.cursorConfigValues ?? persisted?.cursorConfigValues }
         : {}),
+      ...(liveSession?.cursorCloudAgentId || persisted?.cursorCloudAgentId
+        ? { cursorCloudAgentId: liveSession?.cursorCloudAgentId ?? persisted?.cursorCloudAgentId }
+        : {}),
+      ...(liveSession?.cursorRuntime || persisted?.cursorRuntime
+        ? { cursorRuntime: liveSession?.cursorRuntime ?? persisted?.cursorRuntime }
+        : {}),
+      ...(liveSession?.cursorPromotedTurnId || persisted?.cursorPromotedTurnId
+        ? { cursorPromotedTurnId: liveSession?.cursorPromotedTurnId ?? persisted?.cursorPromotedTurnId }
+        : {}),
       ...(liveSession?.permissionMode || persisted?.permissionMode
         ? { permissionMode: liveSession?.permissionMode ?? persisted?.permissionMode }
         : {}),
@@ -14815,12 +16087,12 @@ export function createAgentChatService(args: {
     const localPending = managed.localPendingInputs.get(itemId);
     if (localPending) {
       managed.localPendingInputs.delete(itemId);
-      localPending.resolve({ decision: resolvedDecision, answers, responseText });
       emitPendingInputResolved(managed, {
         itemId,
         decision: resolvedDecision,
         turnId: localPending.request.turnId ?? null,
       });
+      localPending.resolve({ decision: resolvedDecision, answers, responseText });
       return;
     }
 
@@ -15009,6 +16281,27 @@ export function createAgentChatService(args: {
         return;
       }
       managed.runtime.permissionWaiters.delete(itemId);
+      if (pending.sdkHook) {
+        if (managed.runtime.kind !== "cursor") {
+          pending.resolve(denyCursorHook("ADE no longer has an active Cursor SDK runtime for this tool approval."));
+          emitPendingInputResolved(managed, {
+            itemId,
+            decision: "cancel",
+            turnId: managed.runtime.activeTurnId ?? null,
+          });
+          return;
+        }
+        if (resolvedDecision === "accept_for_session") {
+          managed.runtime.sdkApprovedTools.add(normalizeCursorSdkToolName(pending.toolName));
+        }
+        pending.resolve(mapChatDecisionToCursorSdkHook(resolvedDecision));
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: resolvedDecision,
+          turnId: managed.runtime.activeTurnId ?? null,
+        });
+        return;
+      }
       pending.resolve(mapChatDecisionToCursorPermission(resolvedDecision, pending.options, answers));
       emitPendingInputResolved(managed, {
         itemId,
@@ -15070,14 +16363,15 @@ export function createAgentChatService(args: {
     }
 
     if (provider === "cursor") {
+      const apiKey = getCursorSdkApiKey();
+      if (!apiKey) return [];
       try {
-        const agentPath = resolveCursorAgentExecutable().path;
-        const ordered = await discoverCursorCliModelDescriptors(agentPath);
+        const ordered = await discoverCursorSdkModelDescriptors(apiKey);
         const preferred = pickDefaultCursorDescriptorFromCliList(ordered);
         return ordered.map((d) => ({
           id: d.id,
           displayName: d.displayName,
-          description: `${d.displayName} (Cursor CLI)`,
+          description: `${d.displayName} (Cursor SDK)`,
           isDefault: preferred ? d.id === preferred.id : false,
           reasoningEfforts: d.reasoningTiers?.map((tier) => ({
             effort: tier,
@@ -15267,13 +16561,15 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "cursor") {
       managed.runtime.interrupted = true;
       cancelQueuedSteers(managed, managed.runtime, "disposed");
-      if (managed.runtime.acpSessionId) {
-        try {
-          await managed.runtime.pooled?.connection.cancel({ sessionId: managed.runtime.acpSessionId });
-        } catch {
-          // ignore
-        }
+      try {
+        await managed.runtime.sdk.cancel();
+      } catch {
+        // ignore
       }
+      for (const [, waiter] of managed.runtime.permissionWaiters) {
+        cancelCursorPermissionWaiter(waiter, "Cursor tool approval was cancelled because the session was disposed.");
+      }
+      managed.runtime.permissionWaiters.clear();
     }
 
     if (managed.runtime?.kind === "droid") {
@@ -15709,9 +17005,6 @@ export function createAgentChatService(args: {
           }
         }
       }
-      if (managed.runtime?.kind === "cursor" && !managed.runtime.busy) {
-        await ensureCursorSessionState(managed, managed.runtime);
-      }
       if (managed.runtime?.kind === "droid" && !managed.runtime.busy) {
         await ensureDroidSessionState(managed, managed.runtime);
       }
@@ -15762,46 +17055,18 @@ export function createAgentChatService(args: {
     const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
     if (!descriptor) return;
 
-    const isCursorCli = descriptor.family === "cursor" && descriptor.isCliWrapped;
+    const isCursorSdk = descriptor.family === "cursor";
     const isDroidCli = descriptor.family === "factory" && descriptor.isCliWrapped;
     const isAnthropicCli = descriptor.family === "anthropic" && descriptor.isCliWrapped;
-    if (!isAnthropicCli && !isCursorCli && !isDroidCli) return;
+    if (!isAnthropicCli && !isCursorSdk && !isDroidCli) return;
 
-    if (isCursorCli) {
+    if (isCursorSdk) {
       if (managed.session.provider !== "cursor") return;
       if (managed.session.modelId !== descriptor.id) return;
       if (managed.session.status === "active") return;
       if (managed.runtime && managed.runtime.kind !== "cursor") return;
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) return;
-
-      const runtime = await ensureCursorRuntime(managed);
-      if (!runtime.pooled) return;
-      if (!runtime.acpSessionId) {
-        const created = await runtime.pooled.connection.newSession(cursorAcpSessionRequest({
-          cwd: managed.laneWorktreePath,
-        }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
-        const createdAvailableModelIds = created.models?.availableModels
-          ?.map((entry) => String(entry?.modelId ?? "").trim())
-          .filter(Boolean) ?? [];
-        if (createdAvailableModelIds.length) {
-          runtime.availableModelIds = Array.from(new Set([...runtime.availableModelIds, ...createdAvailableModelIds]));
-        }
-        const sid = created.sessionId;
-        runtime.acpSessionId = sid;
-        runtime.currentModeId = created.modes?.currentModeId ?? runtime.currentModeId;
-        runtime.defaultModeId = created.modes?.currentModeId ?? runtime.defaultModeId;
-        runtime.currentModelId = normalizeCursorReportedModelId(
-          created.models?.currentModelId,
-          runtime.availableModelIds,
-        ) ?? runtime.currentModelId;
-        applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(created.configOptions));
-        if (runtime.currentModelId) {
-          syncCursorSessionDescriptor(managed, runtime.currentModelId);
-        }
-        syncCursorModeSnapshot(managed, runtime);
-        acpHostSessionOwners.set(sid, managed);
-      }
-      await ensureCursorSessionState(managed, runtime);
+      await ensureCursorRuntime(managed);
       persistChatState(managed);
       return;
     }
@@ -15816,7 +17081,7 @@ export function createAgentChatService(args: {
       const runtime = await ensureDroidRuntime(managed);
       if (!runtime.pooled) return;
       if (!runtime.acpSessionId) {
-        const created = await runtime.pooled.connection.newSession(cursorAcpSessionRequest({
+        const created = await runtime.pooled.connection.newSession(acpSessionRequest({
           cwd: managed.laneWorktreePath,
         }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
         const sid = created.sessionId;
@@ -16239,6 +17504,9 @@ export function createAgentChatService(args: {
     listSubagents,
     getSessionCapabilities,
     previewSessionToolNames,
+    cancelCursorCloudRun,
+    cursorCloudFollowUp,
+    openCursorCloudChat,
     subscribeToEvents(callback: (event: AgentChatEventEnvelope) => void) {
       eventSubscribers.add(callback);
       return () => {

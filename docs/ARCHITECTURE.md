@@ -118,8 +118,11 @@ bridge.
   Linear, tests, proof, memory, settings, the iOS Simulator (`ade
   ios-sim` / `ade ios` / `ade simulator` — see
   [features/ios-simulator/README.md](./features/ios-simulator/README.md)),
-  and a generic `ade actions run <domain.action>` escape hatch for
-  every registered ADE service action.
+  the Cursor Cloud bridge (`ade cursor cloud agents | runs |
+  artifacts | repos | models | me` — talks directly to `@cursor/sdk`
+  without going through the ADE socket), and a generic `ade actions
+  run <domain.action>` escape hatch for every registered ADE service
+  action.
 - **Proof subcommands** — `ade proof capture` (alias of `screenshot`),
   `ade proof attach <path>`, `ade proof record`, `ade proof launch`,
   `ade proof interact`, `ade proof list/status/environment/ingest`.
@@ -357,6 +360,7 @@ ade.missions.* / ade.orchestrator.*
 ade.cto.*                    # identity, core memory, agent roster, Linear
 ade.sessions.*               # terminal session CRUD
 ade.agentChat.*              # agent chat sessions, model inventory, parallel launch state
+ade.ai.cursorCloud.*         # Cursor background-agents bridge: listRepositories, listAgents, listRuns, getAgent, createRun, followUp, streamRun, cancelRun, archiveAgent / unarchiveAgent / deleteAgent, listArtifacts / downloadArtifact, openChat (mirror an existing cloud agent into an ADE chat session)
 ade.automations.*
 ade.processes.* / ade.tests.* # processes also expose group bulk ops:
                              # ade.processes.startGroup / stopGroup / restartGroup
@@ -414,7 +418,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `ai/` | `aiIntegrationService.ts`, `authDetector.ts`, `providerConnectionStatus.ts`, `claudeRuntimeProbe.ts`, `modelsDevService.ts`, `compactionEngine.ts`, `tools/*` | Provider routing, detection, tool definitions, compaction. |
 | `agentTools/` | `agentToolsService.ts` | Agent tool registry metadata surfaced to the renderer. |
 | `automations/` | `automationService.ts`, `automationPlannerService.ts`, `automationIngressService.ts`, `automationSecretService.ts` | Rule lifecycle, NL → rule planner, inbound triggers, per-rule secrets. |
-| `chat/` | `agentChatService.ts`, `buildClaudeV2Message.ts`, `cursorAcp*`, `sessionRecovery.ts` | Agent chat sessions (lane-scoped + mission worker/coordinator). Builds Claude messages, manages Cursor ACP pool, recovers sessions on restart, and derives prompt-based lane names for parallel model launches. |
+| `chat/` | `agentChatService.ts`, `buildClaudeV2Message.ts`, `cursorSdk*` (`cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`), `sessionRecovery.ts` | Agent chat sessions (lane-scoped + mission worker/coordinator). Builds Claude messages, hosts the Cursor SDK in a Node worker pool (replaces the older `cursorAcp*` files), recovers sessions on restart, and derives prompt-based lane names for parallel model launches. |
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |

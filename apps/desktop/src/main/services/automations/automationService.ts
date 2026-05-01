@@ -1207,6 +1207,13 @@ export function createAutomationService({
     return permissionConfig.providers?.opencode ?? "edit";
   };
 
+  const cursorModeIdForPermissionMode = (mode: string | null | undefined): string => {
+    if (mode === "full-auto") return "full-auto";
+    if (mode === "plan") return "plan";
+    if (mode === "read-only") return "ask";
+    return "agent";
+  };
+
   const requiresPublishGate = (rule: AutomationRule): boolean =>
     Boolean(rule.verification.verifyBeforePublish)
     && rule.verification.mode !== "dry-run"
@@ -1849,6 +1856,7 @@ export function createAutomationService({
           sessionProfile: "workflow",
           reasoningEffort,
           permissionMode,
+          ...(providerGroup === "cursor" ? { cursorModeId: cursorModeIdForPermissionMode(permissionMode) } : {}),
           ...(providerGroup === "codex" && permissionConfig.providers?.codexSandbox
             ? { codexSandbox: permissionConfig.providers.codexSandbox }
             : {}),
@@ -2249,6 +2257,7 @@ export function createAutomationService({
         sessionProfile: "workflow",
         reasoningEffort,
         permissionMode,
+        ...(providerGroup === "cursor" ? { cursorModeId: cursorModeIdForPermissionMode(permissionMode) } : {}),
         ...(providerGroup === "codex" && !verificationRequired && !dryRun && permissionConfig.providers?.codexSandbox
           ? { codexSandbox: permissionConfig.providers.codexSandbox }
           : {}),

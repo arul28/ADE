@@ -10,7 +10,7 @@ import type { AgentPermissionMode } from "./agentExecutor";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { resolveClaudeCliModel } from "./claudeModelUtils";
 import { resolveCodexExecutable } from "./codexExecutable";
-import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
+import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
@@ -67,11 +67,6 @@ function buildCodexSandbox(mode: AgentPermissionMode | undefined): "read-only" |
   if (mode === "full-auto") return "danger-full-access";
   if (mode === "edit") return "workspace-write";
   return "read-only";
-}
-
-function buildCursorArgsMode(mode: AgentPermissionMode | undefined): "plan" | "ask" | null {
-  if (mode === "read-only" || mode == null) return "ask";
-  return null;
 }
 
 async function runCommand(args: {
@@ -259,44 +254,45 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
 
 async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
-  const sessionId = args.sessionId?.trim() || null;
-  const cliArgs = [
-    "--print",
-    "--output-format",
-    "text",
-    "--trust",
-    "--workspace",
-    args.cwd,
-    "--model",
-    args.descriptor.providerModelId,
-  ];
-  const mode = buildCursorArgsMode(args.permissionMode);
-  if (mode) {
-    cliArgs.push("--mode", mode);
-  }
-  if (sessionId) {
-    cliArgs.push("--resume", sessionId);
-  }
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
-  cliArgs.push(combinedPrompt);
-
-  const resolved = resolveCursorAgentExecutable({ auth: args.auth });
-  const result = await runCommand({
-    command: resolved.path,
-    argv: cliArgs,
-    cwd: args.cwd,
-    timeoutMs: args.timeoutMs,
-  });
-  if (result.exitCode !== 0) {
-    throw new Error(`Cursor agent exited with code ${result.exitCode ?? "unknown"}${result.stderr.trim() ? `\n\n${result.stderr.trim()}` : ""}`);
+  const apiKey = args.auth?.find(
+    (entry): entry is Extract<DetectedAuth, { type: "api-key" }> =>
+      entry.type === "api-key" && entry.provider === "cursor",
+  )?.key?.trim() || getApiKey("cursor")?.trim();
+  if (!apiKey) {
+    throw new Error("Cursor tasks require a Cursor API key. Add one in Settings > AI Providers.");
   }
-  const text = result.stdout.trim();
+  const { Agent } = await import("@cursor/sdk");
+  const agent = args.sessionId?.trim()
+    ? await Agent.resume(args.sessionId.trim(), {
+        apiKey,
+        model: { id: args.descriptor.providerModelId },
+        local: { cwd: args.cwd, sandboxOptions: { enabled: false } },
+      })
+    : await Agent.create({
+        apiKey,
+        model: { id: args.descriptor.providerModelId },
+        name: `ADE ${args.feature}`,
+        local: { cwd: args.cwd, sandboxOptions: { enabled: false } },
+      });
+  const run = await agent.send(combinedPrompt, {
+    model: { id: args.descriptor.providerModelId },
+    local: { force: args.permissionMode === "full-auto" },
+  });
+  const result = await run.wait();
+  if (result.status === "error") {
+    throw new Error(result.result?.trim() || "Cursor SDK task failed.");
+  }
+  if (result.status === "cancelled") {
+    throw new Error("Cursor SDK task was cancelled.");
+  }
+  const text = (result.result ?? "").trim();
   return {
     text,
     structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null,
-    sessionId,
+    sessionId: agent.agentId,
   };
 }
 

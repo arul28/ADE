@@ -122,9 +122,9 @@ export function deriveConfiguredModelIds(
   const { includeCursor = true, includeDroid = true } = options ?? {};
   const runtimeConnections = (status as { runtimeConnections?: Record<string, AiRuntimeConnectionStatus> } | null | undefined)?.runtimeConnections;
 
-  // Derive available models from detectedAuth. For Cursor CLI, merge in
-  // `status.availableModelIds` entries under `cursor/*` (main lists them after
-  // `agent models`); local runtimes also merge in discovered loaded models.
+  // Derive available models from detectedAuth. For Cursor SDK, merge in
+  // `status.availableModelIds` entries under `cursor/*`; local runtimes also
+  // merge in discovered loaded models.
   const ids = new Set<ModelId>();
 
   // Build a set of local model IDs that are already represented by an OpenCode
@@ -189,10 +189,10 @@ export function deriveConfiguredModelIds(
   }
 
   if (includeCursor) {
-    const cursorCliAuthed = status.detectedAuth?.some(
-      (a) => a.type === "cli-subscription" && a.cli === "cursor" && a.authenticated !== false,
+    const cursorAuthed = status.detectedAuth?.some(
+      (a) => a.type === "api-key" && a.provider === "cursor",
     );
-    if (cursorCliAuthed && status.availableModelIds?.length) {
+    if (cursorAuthed && status.availableModelIds?.length) {
       for (const raw of status.availableModelIds) {
         const id = String(raw ?? "").trim();
         if (id.startsWith("cursor/")) ids.add(id as ModelId);

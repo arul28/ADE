@@ -145,12 +145,12 @@ function buildCursorMemoryNotice(toolName: string, payload: Record<string, unkno
   };
 }
 
-export type CursorAcpMapperMeta = {
+export type AcpMapperMeta = {
   turnId: string;
   previousModeId?: string | null;
 };
 
-export type CursorAcpTerminalSnapshot = {
+export type AcpTerminalSnapshot = {
   output: string;
   cwd: string;
   commandLine: string;
@@ -170,8 +170,8 @@ export function parseAcpTerminalIdFromCommandItemId(itemId: string): string | nu
 
 export function mapAcpSessionNotificationToChatEvents(
   note: SessionNotification,
-  meta: CursorAcpMapperMeta,
-  resolveTerminal?: (terminalId: string) => CursorAcpTerminalSnapshot | null | undefined,
+  meta: AcpMapperMeta,
+  resolveTerminal?: (terminalId: string) => AcpTerminalSnapshot | null | undefined,
 ): AgentChatEvent[] {
   const { sessionId: _s, update } = note;
   const turnId = meta.turnId;

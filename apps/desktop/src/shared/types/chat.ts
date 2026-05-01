@@ -126,6 +126,16 @@ export type AgentChatCompletionReport = {
   blockerDescription?: string | null;
 };
 
+export type AgentChatRuntime = "local" | "cloud";
+
+export type AgentChatCloudRunStatus =
+  | "creating"
+  | "running"
+  | "finished"
+  | "error"
+  | "cancelled"
+  | "expired";
+
 export type AgentChatEvent =
   | {
       type: "user_message";
@@ -135,6 +145,7 @@ export type AgentChatEvent =
       steerId?: string;
       deliveryState?: "queued" | "delivered" | "inline" | "failed";
       processed?: boolean;
+      runtime?: AgentChatRuntime;
     }
   | {
       type: "text";
@@ -142,6 +153,7 @@ export type AgentChatEvent =
       messageId?: string;
       turnId?: string;
       itemId?: string;
+      runtime?: AgentChatRuntime;
     }
   | {
       type: "tool_call";
@@ -151,6 +163,7 @@ export type AgentChatEvent =
       logicalItemId?: string;
       parentItemId?: string;
       turnId?: string;
+      runtime?: AgentChatRuntime;
     }
   | {
       type: "tool_result";
@@ -161,6 +174,7 @@ export type AgentChatEvent =
       parentItemId?: string;
       turnId?: string;
       status?: "running" | "completed" | "failed" | "interrupted";
+      runtime?: AgentChatRuntime;
     }
   | {
       type: "file_change";
@@ -183,6 +197,7 @@ export type AgentChatEvent =
       exitCode?: number | null;
       durationMs?: number | null;
       status: "running" | "completed" | "failed";
+      runtime?: AgentChatRuntime;
     }
   | {
       type: "plan";
@@ -196,6 +211,7 @@ export type AgentChatEvent =
       turnId?: string;
       itemId?: string;
       summaryIndex?: number;
+      runtime?: AgentChatRuntime;
     }
   | {
       type: "approval_request";
@@ -235,6 +251,7 @@ export type AgentChatEvent =
         provider?: string;
         model?: string;
       };
+      runtime?: AgentChatRuntime;
     }
   | {
       type: "done";
@@ -252,12 +269,44 @@ export type AgentChatEvent =
       // Set only at render time when multiple done events from one cancellation
       // (parent + subagents) are consolidated into a single row.
       subagentStoppedCount?: number;
+      runtime?: AgentChatRuntime;
     }
   | {
       type: "activity";
       activity: "thinking" | "working" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling" | "web_searching" | "spawning_agent";
       detail?: string;
       turnId?: string;
+      runtime?: AgentChatRuntime;
+    }
+  | {
+      type: "tokens";
+      turnId: string;
+      itemId?: string;
+      runtime?: AgentChatRuntime;
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+    }
+  | {
+      type: "cloud_artifact";
+      turnId: string;
+      itemId: string;
+      agentId: string;
+      runId: string;
+      path: string;
+      lanePath: string;
+      mimeType?: string | null;
+      sizeBytes?: number;
+    }
+  | {
+      type: "cloud_status";
+      turnId: string;
+      runId: string;
+      status: AgentChatCloudRunStatus;
+      detail?: string | null;
+      gitBranch?: string | null;
+      prUrl?: string | null;
     }
   | {
       type: "step_boundary";
@@ -485,6 +534,12 @@ export type AgentChatSession = {
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
+  /** Durable Cursor Cloud agent id once this session has been promoted to cloud. */
+  cursorCloudAgentId?: string;
+  /** Default runtime for new turns in this session (set on promotion). */
+  cursorRuntime?: AgentChatRuntime;
+  /** Turn id at which the session was first promoted to cloud (renders the system bubble). */
+  cursorPromotedTurnId?: string;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -523,6 +578,9 @@ export type AgentChatSessionSummary = {
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+  cursorCloudAgentId?: string;
+  cursorRuntime?: AgentChatRuntime;
+  cursorPromotedTurnId?: string;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -685,6 +743,15 @@ export type AgentChatGetSummaryArgs = {
   sessionId: string;
 };
 
+export type AgentChatCloudOverrides = {
+  repoUrl?: string;
+  startingRef?: string | null;
+  autoCreatePR?: boolean;
+  workOnCurrentBranch?: boolean;
+  prUrl?: string | null;
+  skipReviewerRequest?: boolean;
+};
+
 export type AgentChatSendArgs = {
   sessionId: string;
   text: string;
@@ -693,6 +760,10 @@ export type AgentChatSendArgs = {
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
+  /** Selected runtime for this send. Omit to use the session default (cloud once promoted). */
+  runtime?: AgentChatRuntime;
+  /** Cloud-only launch overrides; ignored when runtime !== "cloud". */
+  cloudOverrides?: AgentChatCloudOverrides;
 };
 
 export type AgentChatSteerArgs = {

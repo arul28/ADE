@@ -3,7 +3,7 @@ import type { AgentChatCursorConfigOption } from "../../../shared/types";
 
 type SessionConfigSelectOptionState = Extract<SessionConfigOption, { type: "select" }>;
 
-export type CursorAcpConfigSnapshot = {
+export type AcpConfigSnapshot = {
   modeConfigId: string | null;
   currentModeId: string | null;
   availableModeIds: string[];
@@ -146,9 +146,9 @@ function findSelectOption(
   return null;
 }
 
-export function readCursorAcpConfigSnapshot(
+export function readAcpConfigSnapshot(
   configOptions: SessionConfigOption[] | null | undefined,
-): CursorAcpConfigSnapshot {
+): AcpConfigSnapshot {
   const modeOption = findSelectOption(configOptions, "mode");
   const modelOption = findSelectOption(configOptions, "model");
 

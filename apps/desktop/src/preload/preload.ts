@@ -48,6 +48,20 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  CursorCloudAgentSummary,
+  CursorCloudArtifactDownload,
+  CursorCloudArtifactSummary,
+  CursorCloudCreateRunRequest,
+  CursorCloudCreateRunResult,
+  CursorCloudFollowUpRequest,
+  CursorCloudFollowUpResult,
+  CursorCloudListAgentsResult,
+  CursorCloudListRunsResult,
+  CursorCloudRepository,
+  CursorCloudOpenChatRequest,
+  CursorCloudOpenChatResult,
+  CursorCloudStreamRunRequest,
+  CursorCloudStreamRunResult,
   OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
@@ -760,6 +774,60 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
     updateConfig: async (config: Partial<AiConfig>): Promise<void> =>
       ipcRenderer.invoke(IPC.aiUpdateConfig, config),
+    cursorCloudListRepositories: async (): Promise<CursorCloudRepository[]> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudListRepositories),
+    cursorCloudListAgents: async (args?: {
+      includeArchived?: boolean;
+      limit?: number;
+      cursor?: string | null;
+    }): Promise<CursorCloudListAgentsResult> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudListAgents, args ?? {}),
+    cursorCloudListRuns: async (args: {
+      agentId: string;
+      limit?: number;
+      cursor?: string | null;
+    }): Promise<CursorCloudListRunsResult> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudListRuns, args),
+    cursorCloudCreateRun: async (
+      args: CursorCloudCreateRunRequest,
+    ): Promise<CursorCloudCreateRunResult> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudCreateRun, args),
+    cursorCloudArchiveAgent: async (agentId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudArchiveAgent, { agentId }),
+    cursorCloudUnarchiveAgent: async (agentId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudUnarchiveAgent, { agentId }),
+    cursorCloudDeleteAgent: async (agentId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudDeleteAgent, { agentId }),
+    cursorCloudGetAgent: async (
+      agentId: string,
+    ): Promise<CursorCloudAgentSummary | null> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudGetAgent, { agentId }),
+    cursorCloudStreamRun: async (
+      args: CursorCloudStreamRunRequest,
+    ): Promise<CursorCloudStreamRunResult> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudStreamRun, args),
+    cursorCloudCancelRun: async (args: {
+      agentId: string;
+      runId: string;
+    }): Promise<void> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudCancelRun, args),
+    cursorCloudFollowUp: async (
+      args: CursorCloudFollowUpRequest,
+    ): Promise<CursorCloudFollowUpResult> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudFollowUp, args),
+    cursorCloudListArtifacts: async (
+      agentId: string,
+    ): Promise<CursorCloudArtifactSummary[]> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudListArtifacts, { agentId }),
+    cursorCloudDownloadArtifact: async (args: {
+      agentId: string;
+      path: string;
+    }): Promise<CursorCloudArtifactDownload> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudDownloadArtifact, args),
+    cursorCloudOpenChat: async (
+      args: CursorCloudOpenChatRequest,
+    ): Promise<CursorCloudOpenChatResult> =>
+      ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
   },
   sync: {
     getStatus: async (): Promise<SyncRoleSnapshot> =>
@@ -1987,6 +2055,10 @@ contextBridge.exposeInMainWorld("ade", {
       laneId: string;
     }): Promise<GitUpstreamSyncStatus> =>
       ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
+    getOriginRemote: async (args: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> =>
+      ipcRenderer.invoke(IPC.gitGetOriginRemote, args),
+    getOpenPrForBranch: async (args: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> =>
+      ipcRenderer.invoke(IPC.gitGetOpenPrForBranch, args),
     sync: async (args: GitSyncArgs): Promise<GitActionResult> =>
       ipcRenderer.invoke(IPC.gitSync, args),
     push: async (args: GitPushArgs): Promise<GitActionResult> =>
