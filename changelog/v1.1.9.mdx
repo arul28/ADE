@@ -1,0 +1,75 @@
+---
+title: "v1.1.9"
+description: "Release notes for ADE v1.1.9 — May 1, 2026"
+---
+
+v1.1.9 ships five commits since v1.1.8: Cursor SDK-backed chat, stronger iOS Simulator control, clearer run-tab failures, a more durable desktop-to-mobile sync path, and the next TestFlight build for the iOS companion. Ships in **TestFlight build 11** of 1.1.1.
+
+---
+
+## Desktop
+
+<Tabs>
+  <Tab title="Cursor SDK Chat">
+    Cursor moves from the older ACP integration to the Cursor SDK path, with cloud-run launch surfaces in chat and tighter provider status handling.
+
+    - **Cursor SDK runtime.** ADE now runs Cursor chat through `cursorSdkPool`, `cursorSdkWorker`, SDK event mapping, policy enforcement, and a dedicated system prompt path instead of the removed Cursor ACP pool. The chat service uses async git calls in the Cursor path and cleans up worker state on init failures.
+    - **Cursor Cloud launch.** `ChatCursorCloudPanel` and `CursorCloudInlineLaunch` let chats start Cursor Cloud runs against matching repositories and PRs, with guarded IPC inputs and external-link handling for PR targets.
+    - **Provider status.** Cursor provider checks distinguish a missing API key from an unavailable credential store, normalize API keys before model discovery, and clear stale `CURSOR_API_KEY` values when a reused SDK init has no key.
+    - **Model discovery.** Cursor model discovery catches SDK failures, handles string path candidates, and keeps the model catalog aligned with the new SDK-backed provider state.
+    - **Review inventory.** ADE PR review-comment summaries now include review threads, keep bot-thread signals, and expose actionable review-thread counts instead of treating issue comments as the only source.
+  </Tab>
+
+  <Tab title="iOS Simulator Control">
+    Simulator control gets native capture/input helpers, better stream behavior, and a richer chat panel for inspecting and driving the active iOS app.
+
+    - **Native simulator helpers.** New `sim-capture` and `sim-input` helpers provide native screenshot/stream and HID input paths, with build scripts and helper docs under `apps/desktop/native/ios-sim-helpers`.
+    - **Simulator service hardening.** `iosSimulatorService` handles native stream lifecycle, companion spawn errors, shutdown cleanup, input fallback checks, and background keep-alive flags more explicitly.
+    - **Chat panel updates.** `ChatIosSimulatorPanel` keeps MJPEG URLs stable across preserved visuals, exposes richer simulator state, and avoids restarting idle native streams after a valid frame.
+    - **ADE CLI surface.** The CLI and ADE RPC server document and expose the updated iOS Simulator actions so desktop chats can discover and drive the supported simulator flow.
+  </Tab>
+
+  <Tab title="Run, Lanes, and Files">
+    Daily desktop workflows get clearer failure states and less friction in lane, PR, and file surfaces.
+
+    - **Run-tab failures.** PTY startup errors are written into the run transcript, shell fallback assignment is guarded, and the PTY exit listener stays active so failed commands are visible instead of disappearing.
+    - **Run UI.** `CommandCard`, `RunPage`, and `ChatTerminalDrawer` tighten drawer behavior and terminal handling around failed or incomplete launches.
+    - **Branch picker.** Lane creation now has a dedicated branch picker with search utilities, PR-open filtering that includes drafts, relative-age refresh, and reset behavior when opening the create-lane dialog.
+    - **Files workspace.** The files service and floating files workspace handle file-state updates more reliably, with tests covering the updated file page and chat-pane interactions.
+    - **PR list stability.** PR listing caps pagination, fixes table formatting, and adds tests around issue and review-thread resolution paths.
+  </Tab>
+
+  <Tab title="Sync and Runtime">
+    The desktop sync host now coordinates mobile changesets more deliberately, while renderer/runtime defaults better match current ADE use.
+
+    - **Changeset acknowledgements.** Desktop sync host/peer code adds changeset ack handling with retry, command-result caching, legacy-batch tolerance, and capability gating so older peers do not receive unsupported ack traffic.
+    - **Model registry consolidation.** Desktop and shared model registry code align with the mobile model catalog changes, including Droid model discovery and switching expectations.
+    - **Terminal color environment.** Terminal launches preserve color-related environment behavior more consistently.
+    - **Renderer defaults.** The renderer enables WebGL by default for the updated desktop visual surface.
+    - **Docs and guidance.** Chat routing, sync, iOS companion, lane, PR, and architecture docs were updated to match the new Cursor SDK, simulator, and sync behavior.
+  </Tab>
+</Tabs>
+
+---
+
+## iOS
+
+<Tabs>
+  <Tab title="Mobile Sync">
+    The iOS companion gets a larger sync-service rework for desktop pairing and changeset application.
+
+    - **Changeset batching.** `SyncService` handles changeset batches, acknowledgement flow, retry-related metadata, and command-result caching in the same protocol shape as the desktop sync host.
+    - **Legacy tolerance.** The iOS sync path accepts legacy changeset batches while newer peers negotiate ack support by capability.
+    - **Connection resilience.** Desktop/mobile connection state is less brittle around reconnects, foreign-order batches, and command results that arrive after a peer has already seen the related request.
+    - **Test coverage.** `ADETests` adds focused coverage for the updated sync and model behavior.
+  </Tab>
+
+  <Tab title="Work Chat">
+    The Work chat surface gets layout and model-picker updates for the current desktop model registry.
+
+    - **New chat flow.** `WorkNewChatScreen` and `WorkNewChatSheet` refine the entry flow, composer behavior, and session setup for mobile chats.
+    - **Session view.** `WorkChatSessionView` and timeline helpers adjust message layout, model state, and interaction affordances for the updated chat protocol.
+    - **Model picker.** `WorkModelCatalog`, `WorkModelPickerSheet`, and `RemoteModels` consolidate provider grouping so Droid and related provider families appear in the expected buckets.
+    - **Design-system polish.** Shared ADE design tokens and work-session settings views were adjusted to match the updated mobile chat and model-selection surfaces.
+  </Tab>
+</Tabs>
