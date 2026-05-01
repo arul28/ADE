@@ -5587,7 +5587,7 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.effort).toBe("medium");
     });
 
-    it("keeps the requested Codex reasoning effort while applying effective thread policy", async () => {
+    it("persists the runtime-confirmed Codex reasoning effort while applying effective thread policy", async () => {
       mockState.codexResponseOverrides.set("thread/start", () => ({
         thread: { id: "thread-effective-start" },
         approvalPolicy: "onFailure",
@@ -5629,18 +5629,18 @@ describe("createAgentChatService", () => {
       } | undefined;
       expect(turnStartParams?.approvalPolicy).toBe("onFailure");
       expect(turnStartParams?.sandboxPolicy?.type).toBe("workspaceWrite");
-      expect(turnStartParams?.effort).toBe("xhigh");
+      expect(turnStartParams?.effort).toBe("high");
 
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.codexApprovalPolicy).toBe("on-failure");
       expect(summary?.codexSandbox).toBe("workspace-write");
       expect(summary?.permissionMode).toBe("default");
-      expect(summary?.reasoningEffort).toBe("xhigh");
+      expect(summary?.reasoningEffort).toBe("high");
 
       const persisted = readPersistedChatState(session.id);
       expect(persisted.codexApprovalPolicy).toBe("on-failure");
       expect(persisted.codexSandbox).toBe("workspace-write");
-      expect(persisted.reasoningEffort).toBe("xhigh");
+      expect(persisted.reasoningEffort).toBe("high");
     });
 
     it("re-resumes Codex threads when permission mode changes mid-session", async () => {
@@ -5865,7 +5865,7 @@ describe("createAgentChatService", () => {
       expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
     });
 
-    it("keeps persisted Codex reasoning effort while applying effective policy on resume", async () => {
+    it("persists runtime-confirmed Codex reasoning effort while applying effective policy on resume", async () => {
       mockState.codexResponseOverrides.set("thread/resume", () => ({
         thread: { id: "thread-effective-resume" },
         approvalPolicy: "onFailure",
@@ -5899,13 +5899,13 @@ describe("createAgentChatService", () => {
       expect(resumed.codexApprovalPolicy).toBe("on-failure");
       expect(resumed.codexSandbox).toBe("workspace-write");
       expect(resumed.permissionMode).toBe("default");
-      expect(resumed.reasoningEffort).toBe("xhigh");
+      expect(resumed.reasoningEffort).toBe("high");
 
       const persistedAfter = readPersistedChatState(session.id);
       expect(persistedAfter.threadId).toBe("thread-effective-resume");
       expect(persistedAfter.codexApprovalPolicy).toBe("on-failure");
       expect(persistedAfter.codexSandbox).toBe("workspace-write");
-      expect(persistedAfter.reasoningEffort).toBe("xhigh");
+      expect(persistedAfter.reasoningEffort).toBe("high");
     });
 
     it("throws when resuming an unknown session", async () => {

@@ -331,6 +331,7 @@ describe("TerminalView", () => {
   it("fits to the container and resizes the PTY when the fit result is valid", async () => {
     vi.useRealTimers();
     try {
+      window.localStorage.setItem("ade.terminalRenderer", "webgl");
       render(<TerminalView ptyId="pty-valid" sessionId="session-valid" isActive />);
 
       await waitFor(
@@ -441,6 +442,7 @@ describe("TerminalView", () => {
     // `await import("@xterm/addon-webgl")` may not settle under Vi's fake timers on CI shards.
     vi.useRealTimers();
     try {
+      window.localStorage.setItem("ade.terminalRenderer", "webgl");
       mockState.shouldThrowWebglAddon = true;
       const previousFallbacks = getTerminalRuntimeSnapshot("session-dom")?.health.rendererFallbacks ?? 0;
 
