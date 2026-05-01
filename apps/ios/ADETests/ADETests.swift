@@ -1627,6 +1627,25 @@ final class ADETests: XCTestCase {
     target.close()
   }
 
+  func testSyncChangesetBatchPayloadDecodesLegacyBatchWithoutBatchId() throws {
+    let data = """
+    {
+      "reason": "relay",
+      "fromDbVersion": 12,
+      "toDbVersion": 14,
+      "changes": []
+    }
+    """.data(using: .utf8)!
+
+    let decoded = try JSONDecoder().decode(SyncChangesetBatchPayload.self, from: data)
+
+    XCTAssertEqual(decoded.batchId, "legacy:12:14:0:empty")
+    XCTAssertEqual(decoded.reason, "relay")
+    XCTAssertEqual(decoded.fromDbVersion, 12)
+    XCTAssertEqual(decoded.toDbVersion, 14)
+    XCTAssertTrue(decoded.changes.isEmpty)
+  }
+
   func testDatabaseAppliesPackedTextPrimaryKeysFromDesktopChanges() throws {
     let database = makeDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
