@@ -128,6 +128,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       deviceType: localDevice.deviceType,
       siteId: localDevice.siteId,
       dbVersion: latestRemoteDbVersion,
+      capabilities: ["changesetAck"],
     };
   };
 

@@ -447,6 +447,12 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       deviceType: peer.deviceType ?? "unknown",
       siteId: String(peer.siteId).trim(),
       dbVersion: Number(peer.dbVersion ?? 0),
+      capabilities: Array.isArray(peer.capabilities)
+        ? peer.capabilities
+          .filter((capability): capability is string => typeof capability === "string")
+          .map((capability) => capability.trim())
+          .filter(Boolean)
+        : [],
     },
     auth: normalizedAuth,
   };
@@ -1422,6 +1428,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return `changeset:${deviceId}:${fromDbVersion}:${toDbVersion}:${Date.now()}:${randomBytes(4).toString("hex")}`;
   }
 
+  function peerSupportsChangesetAck(peer: PeerState): boolean {
+    return Array.isArray(peer.metadata?.capabilities) && peer.metadata.capabilities.includes("changesetAck");
+  }
+
   function sendNextChangesetBatch(
     peer: PeerState,
     reason: SyncChangesetBatchPayload["reason"],
@@ -1795,7 +1805,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId);
       const pending = sendNextChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, currentDbVersion, changes);
       if (pending) {
-        peer.pendingChangesetBatch = pending;
+        if (peerSupportsChangesetAck(peer)) {
+          peer.pendingChangesetBatch = pending;
+        } else {
+          peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
+        }
         lastBroadcastAt = nowIso();
       } else {
         args.logger.debug("sync_host.changeset_deferred_backpressure", {
@@ -2344,6 +2358,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           },
           projectCatalog: {
             enabled: Boolean(args.projectCatalogProvider),
+          },
+          changesetAck: {
+            enabled: true,
           },
           bootstrapAuth: true,
           pairingAuth: {

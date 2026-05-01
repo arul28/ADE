@@ -768,6 +768,7 @@ final class SyncService: ObservableObject {
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
   private var supportsChatStreaming = false
+  private var supportsChangesetAck = false
   private var projectSelectionTask: Task<Void, Never>?
   private var projectSelectionGeneration: UInt64 = 0
   private var healthyConnectionSampleCount = 0
@@ -4927,6 +4928,7 @@ final class SyncService: ObservableObject {
       "deviceType": "phone",
       "siteId": database.localSiteId(),
       "dbVersion": latestRemoteDbVersion,
+      "capabilities": ["changesetAck"],
     ]
   }
 
@@ -5136,6 +5138,23 @@ final class SyncService: ObservableObject {
       }
       return false
     }()
+    supportsChangesetAck = {
+      if let changesetAck = features?["changesetAck"] as? [String: Any],
+         let enabled = changesetAck["enabled"] as? Bool {
+        return enabled
+      }
+      if let value = features?["changesetAck"] as? Bool {
+        return value
+      }
+      if let changesetAck = features?["changeset_ack"] as? [String: Any],
+         let enabled = changesetAck["enabled"] as? Bool {
+        return enabled
+      }
+      if let value = features?["changeset_ack"] as? Bool {
+        return value
+      }
+      return false
+    }()
     remoteProjectCatalog = []
     pendingProjectCatalogChunks.removeAll()
     let commandDescriptors: [SyncRemoteCommandDescriptor] = {
@@ -5207,6 +5226,10 @@ final class SyncService: ObservableObject {
     )
     saveProfile(profile)
     resetOutboundCursorStateForActiveProject()
+    if !supportsChangesetAck {
+      pendingOutboundChangeset = nil
+      clearPendingOutboundChangesetForActiveProject()
+    }
     startRelayLoop()
     startInitialHydrationTask(for: connectionGeneration)
     restoreChatEventSubscriptions()
@@ -5512,6 +5535,14 @@ final class SyncService: ObservableObject {
     guard canSendLiveRequests() else { return }
     let now = ProcessInfo.processInfo.systemUptime
     if var pending = pendingOutboundChangeset {
+      if !supportsChangesetAck {
+        sendOutboundChangeset(pending)
+        pendingOutboundChangeset = nil
+        clearPendingOutboundChangesetForActiveProject()
+        advanceOutboundCursorForActiveProject(to: pending.payload.toDbVersion)
+        lastSyncAt = Date()
+        return
+      }
       if now - pending.sentAt >= 10 {
         guard pending.retryCount < maxChangesetAckRetries else {
           failPendingOutboundChangeset("The desktop did not acknowledge phone changes in time. Reconnecting now.")
@@ -5544,9 +5575,14 @@ final class SyncService: ObservableObject {
     )
     latestRemoteDbVersion = max(latestRemoteDbVersion, currentDbVersion)
     let pending = PendingOutboundChangeset(payload: payload, sentAt: now, retryCount: 0)
-    pendingOutboundChangeset = pending
-    persistPendingOutboundChangesetForActiveProject(pending)
     sendOutboundChangeset(pending)
+    if supportsChangesetAck {
+      pendingOutboundChangeset = pending
+      persistPendingOutboundChangesetForActiveProject(pending)
+    } else {
+      advanceOutboundCursorForActiveProject(to: payload.toDbVersion)
+      lastSyncAt = Date()
+    }
   }
 
   private func failPendingOutboundChangeset(_ message: String) {

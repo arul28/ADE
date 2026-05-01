@@ -43,6 +43,7 @@ export type SyncPeerMetadata = {
   deviceType: SyncPeerDeviceType;
   siteId: string;
   dbVersion: number;
+  capabilities?: string[];
 };
 
 export type SyncPeerConnectionState = SyncPeerMetadata & {
@@ -208,6 +209,9 @@ export type SyncFeatureFlags = {
     enabled: true;
   };
   projectCatalog: {
+    enabled: boolean;
+  };
+  changesetAck: {
     enabled: boolean;
   };
   bootstrapAuth: true;

@@ -116,6 +116,7 @@ async function connectClient(args: {
   dbVersion: number;
   platform?: "macOS" | "linux" | "windows" | "iOS" | "unknown";
   deviceType?: "desktop" | "phone" | "vps" | "unknown";
+  capabilities?: string[];
 }) {
   const ws = new WebSocket(`ws://127.0.0.1:${args.port}`);
   await new Promise<void>((resolve, reject) => {
@@ -135,6 +136,7 @@ async function connectClient(args: {
         deviceType: args.deviceType ?? "desktop",
         siteId: args.siteId,
         dbVersion: args.dbVersion,
+        capabilities: args.capabilities ?? ["changesetAck"],
       },
     },
     compressionThresholdBytes: 100_000,
@@ -925,6 +927,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-brain-"), createLogger() as any);
     const dbA = await openKvDb(makeDbPath("ade-sync-peer-a-"), createLogger() as any);
     const dbB = await openKvDb(makeDbPath("ade-sync-peer-b-"), createLogger() as any);
+    const dbC = await openKvDb(makeDbPath("ade-sync-peer-c-"), createLogger() as any);
     const projectRoot = makeProjectRoot("ade-sync-host-project-");
     const workspaceRoot = path.join(projectRoot, "workspace");
     fs.mkdirSync(workspaceRoot, { recursive: true });
@@ -1025,6 +1028,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       brainDb.close();
       dbA.close();
       dbB.close();
+      dbC.close();
     });
 
     const port = await host.waitUntilListening();
@@ -1096,6 +1100,26 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       compressionThresholdBytes: 100_000,
     }));
     await waitFor(() => host.getPeerStates().find((peer) => peer.deviceId === "peer-b")?.syncLag === 0);
+
+    const legacyClient = await connectClient({
+      port,
+      token,
+      deviceId: "peer-legacy",
+      deviceName: "Peer Legacy",
+      siteId: dbC.sync.getSiteId(),
+      dbVersion: 0,
+      capabilities: [],
+    });
+    activeDisposers.push(legacyClient.close);
+    const legacyBatch = await legacyClient.queue.next("changeset_batch");
+    const legacyPayload = legacyBatch.payload as {
+      batchId: string;
+      toDbVersion: number;
+      changes: unknown[];
+    };
+    expect(legacyPayload.batchId).toBeTruthy();
+    expect(legacyPayload.changes.length).toBeGreaterThan(0);
+    await waitFor(() => host.getPeerStates().find((peer) => peer.deviceId === "peer-legacy")?.syncLag === 0);
   }, 60_000);
 
   it("serves workspace file operations and artifact reads while blocking .git access", async () => {
