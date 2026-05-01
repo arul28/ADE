@@ -47,6 +47,7 @@ import type {
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
+import { openExternalUrl } from "../../lib/openExternal";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
@@ -2792,14 +2793,13 @@ function renderEvent(
         {event.detail ? <span className="truncate text-fg/45">· {event.detail}</span> : null}
         {event.gitBranch ? <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/35">{event.gitBranch}</span> : null}
         {event.prUrl ? (
-          <a
-            href={event.prUrl}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            type="button"
+            onClick={() => openExternalUrl(event.prUrl!)}
             className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-violet-200/70 hover:text-violet-100"
           >
             PR
-          </a>
+          </button>
         ) : null}
       </div>
     );

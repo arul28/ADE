@@ -3,6 +3,7 @@ import { ArrowSquareOut, CloudArrowUp, X } from "@phosphor-icons/react";
 import type { CursorCloudRepository } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { openExternalUrl } from "../../lib/openExternal";
+import { repoMatchKey } from "../../lib/cursorCloudUtils";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
@@ -37,20 +38,6 @@ function repoLabel(url: string): string {
   const parts = trimmed.split("/");
   if (parts.length >= 2) return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
   return trimmed;
-}
-
-function repoMatchKey(url: string | null | undefined): string {
-  if (!url) return "";
-  let s = url.trim();
-  if (!s) return "";
-  const sshMatch = s.match(/^[^@]+@([^:]+):(.+)$/);
-  if (sshMatch) s = `${sshMatch[1]}/${sshMatch[2]}`;
-  else {
-    s = s.replace(/^[a-z+]+:\/\//i, "");
-    s = s.replace(/^[^/@]+@/, "");
-  }
-  s = s.replace(/\.git$/i, "").replace(/\/+$/, "").toLowerCase();
-  return s;
 }
 
 function errorMessage(error: unknown): string {
@@ -90,7 +77,6 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
   const [detectedPr, setDetectedPr] = useState<DetectedPr | null>(null);
   const [prDetectPending, setPrDetectPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const cancelledRef = useRef(false);
   const pendingDetectionRef = useRef<Promise<DetectedPr | null> | null>(null);
   const detectedPrRef = useRef<DetectedPr | null>(null);
 
@@ -108,11 +94,11 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
   }, [cursorModelIds]);
 
   useEffect(() => {
-    cancelledRef.current = false;
+    let cancelled = false;
     void window.ade.ai
       .cursorCloudListRepositories()
       .then((next) => {
-        if (cancelledRef.current) return;
+        if (cancelled) return;
         setRepos(next);
         setReposLoaded(true);
         setRepoUrl((current) => {
@@ -126,9 +112,11 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
         });
       })
       .catch((err) => {
-        if (!cancelledRef.current) setError(errorMessage(err));
+        if (cancelled) return;
+        setReposLoaded(true);
+        setError(errorMessage(err));
       });
-    return () => { cancelledRef.current = true; };
+    return () => { cancelled = true; };
   }, [laneGitRemote]);
 
   useEffect(() => {
@@ -246,7 +234,15 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 6000)),
         ]);
       }
-      const resolvedPr = detectedPrRef.current;
+      // Only reuse a detected PR when the selected repo still matches the lane
+      // it was detected against. Otherwise the user could ship a mismatched
+      // repoUrl/prUrl pair to the cloud API.
+      const detectedRepoKey = repoMatchKey(laneGitRemote);
+      const selectedRepoKey = repoMatchKey(trimmedRepo);
+      const resolvedPr =
+        detectedRepoKey !== "" && detectedRepoKey === selectedRepoKey
+          ? detectedPrRef.current
+          : null;
       const attachToPr = resolvedPr?.prUrl ?? null;
       const created = await window.ade.ai.cursorCloudCreateRun({
         promptText: trimmedPrompt,
@@ -264,7 +260,7 @@ export const CursorCloudInlineLaunch = forwardRef<CursorCloudInlineLaunchHandle,
       setError(errorMessage(err));
       return null;
     }
-  }, [autoCreatePR, branch, modelId, onLaunched, onMissingFields, repoUrl, workOnCurrentBranch]);
+  }, [autoCreatePR, branch, laneGitRemote, modelId, onLaunched, onMissingFields, repoUrl, workOnCurrentBranch]);
 
   useImperativeHandle(ref, () => ({ launchWithPrompt }), [launchWithPrompt]);
 

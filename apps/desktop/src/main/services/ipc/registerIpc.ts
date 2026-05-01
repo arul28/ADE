@@ -3361,12 +3361,19 @@ export function registerIpc({
 
   ipcMain.handle(
     IPC.aiCursorCloudStreamRun,
-    async (_event, arg: CursorCloudStreamRunRequest): Promise<CursorCloudStreamRunResult> => {
-      // Subscription is opportunistic: if the session has the cloud agent associated
-      // and the worker bridge is alive, events will already be flowing. The renderer
-      // uses the returned subscriptionId only as an opaque correlation token.
-      void arg;
-      return { subscriptionId: `cursor-cloud-stream-${arg.agentId}-${arg.runId}` };
+    async (_event, arg: unknown): Promise<CursorCloudStreamRunResult> => {
+      // Subscription is opportunistic: events flow through the existing session
+      // IPC channel as soon as the worker bridge is alive. The returned
+      // subscriptionId is an opaque correlation token only — it carries no
+      // routing semantics and the renderer cannot demultiplex concurrent runs
+      // by it.
+      const record = (arg ?? {}) as Record<string, unknown>;
+      const agentId = typeof record.agentId === "string" ? record.agentId.trim() : "";
+      const runId = typeof record.runId === "string" ? record.runId.trim() : "";
+      if (!agentId || !runId) {
+        throw new Error("Cursor Cloud stream request requires agentId and runId.");
+      }
+      return { subscriptionId: `cursor-cloud-stream-${agentId}-${runId}` };
     },
   );
 
@@ -6484,7 +6491,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
     const ctx = getCtx();
-    const laneId = (arg?.laneId ?? "").trim();
+    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
     const fallback = { remoteUrl: null, branch: null } as const;
     if (!laneId) return fallback;
     let worktreePath: string;
@@ -6501,7 +6508,26 @@ export function registerIpc({
       runGit(["remote", "get-url", "origin"], { cwd: worktreePath, timeoutMs: 8_000 }),
       knownBranch ? Promise.resolve(null) : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }),
     ]);
-    const remoteUrl = remoteRes.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
+    const rawRemote = remoteRes.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
+    // Strip embedded credentials/userinfo (e.g. https://user:token@host/...)
+    // before exposing the URL to the renderer, so secrets do not cross the IPC
+    // boundary.
+    const remoteUrl = ((): string | null => {
+      if (!rawRemote) return rawRemote;
+      try {
+        const parsed = new URL(rawRemote);
+        if (parsed.username || parsed.password) {
+          parsed.username = "";
+          parsed.password = "";
+          return parsed.toString();
+        }
+        return rawRemote;
+      } catch {
+        // Non-URL form (e.g. SSH `git@host:owner/repo.git`) — return unchanged;
+        // these never embed user credentials.
+        return rawRemote;
+      }
+    })();
     let branch = knownBranch;
     if (!branch && branchRes && branchRes.exitCode === 0) {
       const out = branchRes.stdout.trim();
@@ -6513,7 +6539,7 @@ export function registerIpc({
   ipcMain.handle(IPC.gitGetOpenPrForBranch, async (_event, arg: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> => {
     const ctx = getCtx();
     const fallback = { prUrl: null, prNumber: null, title: null, headRefName: null } as const;
-    const laneId = (arg?.laneId ?? "").trim();
+    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
     if (!laneId) return fallback;
     let worktreePath: string;
     let laneBranch: string | null = null;
@@ -6525,7 +6551,8 @@ export function registerIpc({
       return fallback;
     }
     if (!worktreePath) return fallback;
-    const branch = (arg?.branch ?? "").trim() || laneBranch;
+    const requestedBranch = typeof arg?.branch === "string" ? arg.branch.trim() : "";
+    const branch = requestedBranch || laneBranch;
     if (!branch) return fallback;
 
     try {

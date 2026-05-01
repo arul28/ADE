@@ -791,9 +791,18 @@ async function verifyCursorApiKey(
   key: string,
   verifiedAt: string,
 ): Promise<ApiKeyVerificationResult> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
     const { Cursor } = await import("@cursor/sdk");
-    const user = await Cursor.me({ apiKey: key });
+    const user = await Promise.race([
+      Cursor.me({ apiKey: key }),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error("Verification timed out.")),
+          API_KEY_VERIFY_TIMEOUT_MS,
+        );
+      }),
+    ]);
     return {
       provider: "cursor",
       ok: true,
@@ -815,6 +824,8 @@ async function verifyCursorApiKey(
       statusCode: null,
       verifiedAt,
     };
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 

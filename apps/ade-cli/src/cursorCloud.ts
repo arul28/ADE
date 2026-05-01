@@ -180,10 +180,10 @@ function trimWhitespace(value: string | null | undefined): string | undefined {
 }
 
 /** Top-level entry point. Dispatches to the right group/sub handler. */
-export async function runCursorCloud(args: Args, _outputMode: CursorOutputMode): Promise<CursorCloudExecutionResult> {
+export async function runCursorCloud(args: Args, outputMode: CursorOutputMode): Promise<CursorCloudExecutionResult> {
   const cleaned = [...args];
   const apiKey = resolveApiKey(cleaned);
-  const output: CursorOutputMode = readFlag(cleaned, ["--text"]) ? "text" : readFlag(cleaned, ["--json"]) ? "json" : "json";
+  const output: CursorOutputMode = readFlag(cleaned, ["--text"]) ? "text" : readFlag(cleaned, ["--json"]) ? "json" : outputMode;
   const pretty = readFlag(cleaned, ["--compact"]) ? false : true;
   const opts: CursorCloudOptions = { apiKey, output, pretty };
 

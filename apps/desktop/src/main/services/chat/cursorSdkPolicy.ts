@@ -210,7 +210,18 @@ function pathGuardReason(args: {
 }): string | null {
   const laneRoot = path.resolve(args.laneRoot);
   const cwd = path.resolve(args.cwd || laneRoot);
-  for (const candidate of collectPotentialPaths(args.value)) {
+  const candidates = collectPotentialPaths(args.value);
+  // If the tool input is itself a non-empty string path (e.g. a Bash command's
+  // `cd /etc`-style argument), include it as a candidate so the lane/protected
+  // path checks below still apply.
+  if (
+    candidates.length === 0
+    && typeof args.value === "string"
+    && args.value.trim().length > 0
+  ) {
+    candidates.push(args.value.trim());
+  }
+  for (const candidate of candidates) {
     const resolved = path.resolve(path.isAbsolute(candidate) ? candidate : cwd, path.isAbsolute(candidate) ? "" : candidate);
     const relative = path.relative(laneRoot, resolved);
     if (relative.startsWith("..") || path.isAbsolute(relative)) {

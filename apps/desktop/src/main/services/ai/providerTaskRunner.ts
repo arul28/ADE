@@ -281,7 +281,19 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
     model: { id: args.descriptor.providerModelId },
     local: { force: args.permissionMode === "full-auto" },
   });
-  const result = await run.wait();
+  const timeoutMs = args.timeoutMs ?? 120_000;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const result = await Promise.race([
+    run.wait(),
+    new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        run.cancel().catch(() => {});
+        reject(new Error(`Cursor SDK task timed out after ${timeoutMs}ms.`));
+      }, timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  });
   if (result.status === "error") {
     throw new Error(result.result?.trim() || "Cursor SDK task failed.");
   }

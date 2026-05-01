@@ -271,6 +271,8 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   process.env.USERPROFILE = init.homeDir;
   if (init.apiKey?.trim()) {
     process.env.CURSOR_API_KEY = init.apiKey.trim();
+  } else {
+    delete process.env.CURSOR_API_KEY;
   }
   ensureDir(init.homeDir);
   ensureDir(init.stateRoot);
@@ -324,6 +326,10 @@ async function sendPrompt(payload: { promptText: string; images?: Array<{ data: 
 }
 
 async function cancelRun(): Promise<void> {
+  for (const [, resolve] of hookWaiters) {
+    resolve(denyCursorHook("Run cancelled."));
+  }
+  hookWaiters.clear();
   await currentRun?.cancel();
 }
 

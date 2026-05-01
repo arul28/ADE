@@ -15,15 +15,18 @@ const SUBCOMMANDS = [
   "prs",
   "run",
   "shell",
+  "terminal",
   "chat",
   "agent",
   "cto",
   "linear",
   "automations",
+  "flow",
   "coordinator",
   "tests",
   "proof",
   "ios-sim",
+  "app-control",
   "memory",
   "settings",
   "actions",
@@ -48,15 +51,9 @@ function runHelp(args) {
 
 function main() {
   if (!fs.existsSync(cliPath)) {
-    fs.mkdirSync(outDir, { recursive: true });
-    const stub = [
-      "# ADE CLI help digest",
-      "# TODO: ade-cli dist/cli.cjs not found at build time; rebuild ade-cli and rerun `npm run regen-cli-help`.",
-      "",
-    ].join("\n");
-    fs.writeFileSync(outPath, stub, "utf8");
-    process.stderr.write(`[regen-ade-cli-help] cli not found at ${cliPath}; wrote stub.\n`);
-    return;
+    throw new Error(
+      `[regen-ade-cli-help] missing ${cliPath}. Run \`npm --prefix apps/ade-cli run build\` first.`,
+    );
   }
   fs.mkdirSync(outDir, { recursive: true });
   const parts = [];

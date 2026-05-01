@@ -16,6 +16,7 @@ import type {
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { openExternalUrl } from "../../lib/openExternal";
+import { repoMatchKey } from "../../lib/cursorCloudUtils";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
@@ -65,26 +66,6 @@ function repoLabel(url: string): string {
   const parts = trimmed.split("/");
   if (parts.length >= 2) return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
   return trimmed;
-}
-
-// Normalize a git remote URL to a canonical "host/owner/repo" key so we can
-// match a lane's `git@github.com:owner/repo.git` against Cursor Cloud's
-// `https://github.com/owner/repo` form.
-function repoMatchKey(url: string | null | undefined): string {
-  if (!url) return "";
-  let s = url.trim();
-  if (!s) return "";
-  // SSH form: git@host:owner/repo(.git)
-  const sshMatch = s.match(/^[^@]+@([^:]+):(.+)$/);
-  if (sshMatch) {
-    s = `${sshMatch[1]}/${sshMatch[2]}`;
-  } else {
-    s = s.replace(/^[a-z+]+:\/\//i, "");
-    // Strip any leading user@ (e.g. https://user@host/...)
-    s = s.replace(/^[^/@]+@/, "");
-  }
-  s = s.replace(/\.git$/i, "").replace(/\/+$/, "").toLowerCase();
-  return s;
 }
 
 function errorMessage(error: unknown): string {

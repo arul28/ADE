@@ -172,17 +172,22 @@ export async function buildProviderConnections(
   const cursorCli = cliStatuses.find((entry) => entry.cli === "cursor") ?? null;
   const cursorEnvAuth = Boolean(process.env.CURSOR_API_KEY?.trim());
   let cursorStoredAuth = false;
+  let cursorStoreUnavailable = false;
   try {
     cursorStoredAuth = Boolean(getAllApiKeys().cursor?.trim());
   } catch {
-    // API key store may not be initialized yet
+    // API key store may not be initialized yet (or read failed); surface as a
+    // distinct state so the blocker copy doesn't lie about the absence of a key.
+    cursorStoreUnavailable = true;
   }
   const cursorSdkAuth = Boolean(cursorEnvAuth || cursorStoredAuth);
   let cursorCredsSource: "cursor-env" | "cursor-api-key-store" | undefined;
   if (cursorEnvAuth) cursorCredsSource = "cursor-env";
   else if (cursorStoredAuth) cursorCredsSource = "cursor-api-key-store";
+  // Runtime is bundled with the app — it always exists. Only auth-related
+  // fields should depend on whether a Cursor API key is present.
   const cursorFlags = {
-    runtimeDetected: cursorSdkAuth,
+    runtimeDetected: true,
     cliAuthenticated: false,
     cliExplicitlyUnauthenticated: false,
     localCredsDetected: cursorSdkAuth,
@@ -192,7 +197,9 @@ export async function buildProviderConnections(
 
   const cursorBlocker: string | null = cursorSdkAuth
     ? null
-    : "Enter a Cursor API key from https://cursor.com/dashboard/integrations.";
+    : cursorStoreUnavailable
+      ? "ADE could not read the Cursor API key store yet. Retry after the key store is ready."
+      : "Enter a Cursor API key from https://cursor.com/dashboard/integrations.";
 
   const cursor: AiProviderConnectionStatus = {
     ...createUnavailableStatus("cursor", checkedAt),
@@ -200,7 +207,7 @@ export async function buildProviderConnections(
     runtimeDetected: cursorFlags.runtimeDetected,
     runtimeAvailable: cursorFlags.runtimeAvailable,
     usageAvailable: cursorFlags.runtimeAvailable,
-    path: cursorSdkAuth ? "@cursor/sdk" : null,
+    path: "@cursor/sdk",
     sources: [
       {
         kind: "local-credentials",

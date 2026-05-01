@@ -3778,7 +3778,8 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.summary).toEqual(
       expect.objectContaining({
         totalComments: 1,
-        actionableComments: 1,
+        actionableComments: 2,
+        actionableReviewThreadCount: 1,
         reviewsRequiringChanges: 1,
         checksStatus: "passing",
       }),
@@ -3789,9 +3790,17 @@ describe("adeRpcServer", () => {
         body: "Please fix the loading state.",
       }),
     );
+    expect(response.structuredContent.reviewThreads[0]).toEqual(
+      expect.objectContaining({
+        id: "thread-1",
+        path: "src/index.ts",
+        line: 12,
+      }),
+    );
     expect(fixture.runtime.prService.getComments).toHaveBeenCalledWith("pr-123");
     expect(fixture.runtime.prService.getReviews).toHaveBeenCalledWith("pr-123");
     expect(fixture.runtime.prService.getChecks).toHaveBeenCalledWith("pr-123");
+    expect(fixture.runtime.prService.getReviewThreads).toHaveBeenCalledWith("pr-123");
   });
 
   it("routes pr_refresh_issue_inventory with checks, review threads, and issue comments", async () => {

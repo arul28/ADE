@@ -79,10 +79,16 @@ export async function listCursorModelsFromSdk(apiKey?: string | null): Promise<C
   if (sdkCached && sdkCached.keyHash === keyHash && now - sdkCached.at < TTL_MS && sdkCached.models.length) {
     return sdkCached.models;
   }
-  const { Cursor } = await import("@cursor/sdk");
-  const rows = normalizeSdkModelRows(await Cursor.models.list({ apiKey: apiKey?.trim() || undefined }));
-  if (rows.length) sdkCached = { at: now, keyHash, models: rows };
-  return rows;
+  try {
+    const { Cursor } = await import("@cursor/sdk");
+    const rows = normalizeSdkModelRows(await Cursor.models.list({ apiKey: apiKey?.trim() || undefined }));
+    if (rows.length) sdkCached = { at: now, keyHash, models: rows };
+    return rows;
+  } catch {
+    // Best-effort: a transient SDK error or invalid key should not crash
+    // model resolution — fallback IDs cover the common case.
+    return [];
+  }
 }
 
 function getCachedCursorModels(): CursorCliModelRow[] | null {
