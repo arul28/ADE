@@ -1,0 +1,315 @@
+import type { AgentChatCloudRunStatus, AgentChatEvent, AgentChatRuntime } from "../../../shared/types";
+
+type SdkMessageRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readString(value: unknown): string | null {
+  const text = typeof value === "string" ? value : "";
+  return text.length ? text : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeToolName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed.length) return "tool";
+  return trimmed;
+}
+
+function summarizeResult(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (result == null) return "";
+  try {
+    return JSON.stringify(result, null, 2);
+  } catch {
+    return String(result);
+  }
+}
+
+function extractCommand(args: unknown): string | null {
+  const record = asRecord(args);
+  return readString(record?.command) ?? readString(record?.cmd) ?? readString(record?.shellCommand);
+}
+
+function extractCwd(args: unknown, fallback: string): string {
+  const record = asRecord(args);
+  return readString(record?.cwd) ?? readString(record?.workingDirectory) ?? fallback;
+}
+
+function extractExitCode(result: unknown): number | null {
+  const record = asRecord(result);
+  return readNumber(record?.exitCode) ?? readNumber(record?.exit_code) ?? readNumber(record?.code);
+}
+
+function extractTextContent(message: unknown): string[] {
+  const record = asRecord(message);
+  const content = asRecord(record?.message)?.content;
+  if (!Array.isArray(content)) return [];
+  const out: string[] = [];
+  for (const block of content) {
+    const blockRecord = asRecord(block);
+    if (blockRecord?.type === "text") {
+      const text = readString(blockRecord.text);
+      if (text) out.push(text);
+    }
+  }
+  return out;
+}
+
+export type CursorSdkEventMapperMeta = {
+  turnId: string;
+  cwd: string;
+  runtime?: AgentChatRuntime;
+  runId?: string;
+};
+
+function tagRuntime<T>(event: T, runtime?: AgentChatRuntime): T {
+  if (!runtime || runtime === "local") return event;
+  return { ...event, runtime } as T;
+}
+
+function normalizeCloudStatus(raw: string | null): AgentChatCloudRunStatus | null {
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  switch (lower) {
+    case "creating":
+    case "running":
+    case "finished":
+    case "error":
+    case "cancelled":
+    case "expired":
+      return lower;
+    default:
+      return null;
+  }
+}
+
+export function mapCursorSdkMessageToChatEvents(
+  message: unknown,
+  meta: CursorSdkEventMapperMeta,
+): AgentChatEvent[] {
+  const record = asRecord(message) as SdkMessageRecord | null;
+  if (!record) return [];
+  const type = readString(record.type);
+  const turnId = meta.turnId;
+  const runtime = meta.runtime ?? "local";
+
+  switch (type) {
+    case "assistant":
+      return extractTextContent(record).map((text) =>
+        tagRuntime({ type: "text" as const, text, turnId }, runtime),
+      );
+    case "thinking": {
+      const text = readString(record.text);
+      if (!text) return [];
+      return [tagRuntime({
+        type: "reasoning" as const,
+        text,
+        turnId,
+        itemId: readString(record.run_id) ?? undefined,
+      }, runtime)];
+    }
+    case "tool_call": {
+      const callId = readString(record.call_id) ?? readString(record.id) ?? `cursor-sdk-tool-${Date.now()}`;
+      const tool = normalizeToolName(readString(record.name) ?? "tool");
+      const status = readString(record.status) ?? "running";
+      const args = record.args;
+      const result = record.result;
+      const out: AgentChatEvent[] = [];
+      const lowerTool = tool.toLowerCase();
+      const command = lowerTool === "shell" || lowerTool === "bash" || lowerTool === "terminal"
+        ? extractCommand(args)
+        : null;
+      if (command) {
+        out.push(tagRuntime({
+          type: "command" as const,
+          command,
+          cwd: extractCwd(args, meta.cwd),
+          output: status === "running" ? "" : summarizeResult(result),
+          itemId: callId,
+          turnId,
+          status: status === "error" ? "failed" : status === "completed" ? "completed" : "running",
+          ...(status !== "running" ? { exitCode: extractExitCode(result) } : {}),
+        }, runtime));
+        return out;
+      }
+
+      if (status === "running") {
+        out.push(tagRuntime({ type: "tool_call" as const, tool, args, itemId: callId, turnId }, runtime));
+      } else {
+        out.push(tagRuntime({
+          type: "tool_result" as const,
+          tool,
+          result,
+          itemId: callId,
+          turnId,
+          status: status === "error" ? "failed" : "completed",
+        }, runtime));
+      }
+      return out;
+    }
+    case "task": {
+      const text = readString(record.text);
+      if (!text) return [];
+      return [tagRuntime({
+        type: "activity" as const,
+        activity: "spawning_agent" as const,
+        detail: text,
+        turnId,
+      }, runtime)];
+    }
+    case "status": {
+      const statusText = readString(record.status);
+      const detail = readString(record.message);
+      if (runtime === "cloud") {
+        const cloudStatus = normalizeCloudStatus(statusText);
+        if (!cloudStatus) {
+          if (statusText) {
+            return [tagRuntime({
+              type: "activity" as const,
+              activity: "working" as const,
+              detail: detail ?? `Cursor Cloud: ${statusText}`,
+              turnId,
+            }, runtime)];
+          }
+          return [];
+        }
+        const runId = meta.runId ?? readString(record.run_id) ?? "";
+        const gitBranch = readString(record.gitBranch ?? asRecord(record.git)?.branch);
+        const prUrl = readString(record.prUrl ?? asRecord(record.git)?.prUrl);
+        const cloudEvent: Extract<AgentChatEvent, { type: "cloud_status" }> = {
+          type: "cloud_status",
+          turnId,
+          runId,
+          status: cloudStatus,
+          ...(detail ? { detail } : {}),
+          ...(gitBranch ? { gitBranch } : {}),
+          ...(prUrl ? { prUrl } : {}),
+        };
+        return [cloudEvent];
+      }
+      if (statusText === "RUNNING") {
+        return [tagRuntime({
+          type: "activity" as const,
+          activity: "working" as const,
+          detail: detail ?? "Cursor SDK running",
+          turnId,
+        }, runtime)];
+      }
+      if (statusText === "CREATING") {
+        return [tagRuntime({
+          type: "activity" as const,
+          activity: "working" as const,
+          detail: detail ?? "Cursor SDK starting",
+          turnId,
+        }, runtime)];
+      }
+      if (statusText === "ERROR") {
+        return [{ type: "error", message: detail ?? "Cursor SDK run failed.", turnId }];
+      }
+      return [];
+    }
+    case "request": {
+      const requestId = readString(record.request_id) ?? `cursor-sdk-request-${Date.now()}`;
+      return [{
+        type: "approval_request",
+        itemId: requestId,
+        kind: "tool_call",
+        description: "Cursor SDK emitted a request event.",
+        turnId,
+        detail: record,
+      }];
+    }
+    default:
+      return [];
+  }
+}
+
+export type CursorSdkRunResultMeta = {
+  turnId: string;
+  model: string;
+  modelId?: string;
+  runtime?: AgentChatRuntime;
+};
+
+export function mapCursorSdkRunResultToDoneEvent(
+  result: unknown,
+  meta: CursorSdkRunResultMeta,
+): Extract<AgentChatEvent, { type: "done" }> {
+  const record = asRecord(result);
+  const status = readString(record?.status);
+  const doneStatus =
+    status === "cancelled" ? "interrupted"
+      : status === "error" ? "failed"
+      : "completed";
+  const usageRecord = asRecord(record?.usage);
+  const usage = usageRecord
+    ? {
+        ...(readNumber(usageRecord.inputTokens ?? usageRecord.input_tokens) != null
+          ? { inputTokens: readNumber(usageRecord.inputTokens ?? usageRecord.input_tokens) ?? undefined }
+          : {}),
+        ...(readNumber(usageRecord.outputTokens ?? usageRecord.output_tokens) != null
+          ? { outputTokens: readNumber(usageRecord.outputTokens ?? usageRecord.output_tokens) ?? undefined }
+          : {}),
+        ...(readNumber(usageRecord.cacheReadTokens ?? usageRecord.cache_read_tokens) != null
+          ? { cacheReadTokens: readNumber(usageRecord.cacheReadTokens ?? usageRecord.cache_read_tokens) ?? undefined }
+          : {}),
+        ...(readNumber(usageRecord.cacheCreationTokens ?? usageRecord.cache_creation_tokens) != null
+          ? { cacheCreationTokens: readNumber(usageRecord.cacheCreationTokens ?? usageRecord.cache_creation_tokens) ?? undefined }
+          : {}),
+      }
+    : undefined;
+  return {
+    type: "done",
+    turnId: meta.turnId,
+    status: doneStatus,
+    model: meta.model,
+    ...(meta.modelId ? { modelId: meta.modelId } : {}),
+    ...(meta.runtime && meta.runtime !== "local" ? { runtime: meta.runtime } : {}),
+    ...(usage && Object.keys(usage).length ? { usage } : {}),
+  };
+}
+
+export type CursorSdkTurnEndedTokensMeta = {
+  turnId: string;
+  itemId?: string;
+  runtime?: AgentChatRuntime;
+};
+
+export function mapTurnEndedTokensToEvent(
+  update: unknown,
+  meta: CursorSdkTurnEndedTokensMeta,
+): Extract<AgentChatEvent, { type: "tokens" }> | null {
+  const record = asRecord(update);
+  const usage = asRecord(record?.usage) ?? record;
+  if (!usage) return null;
+  const inputTokens = readNumber(usage.inputTokens ?? usage.input_tokens);
+  const outputTokens = readNumber(usage.outputTokens ?? usage.output_tokens);
+  const cacheReadTokens = readNumber(usage.cacheReadTokens ?? usage.cache_read_tokens);
+  const cacheWriteTokens = readNumber(
+    usage.cacheWriteTokens
+      ?? usage.cache_write_tokens
+      ?? usage.cacheCreationTokens
+      ?? usage.cache_creation_tokens,
+  );
+  if (inputTokens == null && outputTokens == null && cacheReadTokens == null && cacheWriteTokens == null) {
+    return null;
+  }
+  return {
+    type: "tokens",
+    turnId: meta.turnId,
+    ...(meta.itemId ? { itemId: meta.itemId } : {}),
+    ...(meta.runtime && meta.runtime !== "local" ? { runtime: meta.runtime } : {}),
+    ...(inputTokens != null ? { inputTokens } : {}),
+    ...(outputTokens != null ? { outputTokens } : {}),
+    ...(cacheReadTokens != null ? { cacheReadTokens } : {}),
+    ...(cacheWriteTokens != null ? { cacheWriteTokens } : {}),
+  };
+}

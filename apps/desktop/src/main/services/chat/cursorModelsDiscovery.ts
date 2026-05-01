@@ -4,11 +4,14 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { spawnAsync } from "../shared/utils";
+import type { SDKModel } from "@cursor/sdk";
+import { createHash } from "node:crypto";
 
 export type CursorCliModelRow = { id: string; displayName?: string };
 type CursorCliModelDiscoveryMode = "probe" | "cached-or-fallback";
 
 let cached: { at: number; models: CursorCliModelRow[] } | null = null;
+let sdkCached: { at: number; keyHash: string; models: CursorCliModelRow[] } | null = null;
 const TTL_MS = 120_000;
 
 const FALLBACK_SDK_IDS = ["auto", "composer-2"];
@@ -49,6 +52,44 @@ export function parseCursorCliModelsStdout(stdout: string): CursorCliModelRow[] 
 
 export function clearCursorCliModelsCache(): void {
   cached = null;
+  sdkCached = null;
+}
+
+function hashKeyForCache(key: string | null | undefined): string {
+  const text = String(key ?? "");
+  return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
+  const rows: CursorCliModelRow[] = [];
+  const seen = new Set<string>();
+  for (const model of models) {
+    const id = String(model?.id ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const displayName = typeof model.displayName === "string" ? model.displayName.trim() : "";
+    rows.push(displayName ? { id, displayName } : { id });
+  }
+  return rows;
+}
+
+export async function listCursorModelsFromSdk(apiKey?: string | null): Promise<CursorCliModelRow[]> {
+  const now = Date.now();
+  const normalizedApiKey = apiKey?.trim() || undefined;
+  const keyHash = hashKeyForCache(normalizedApiKey);
+  if (sdkCached && sdkCached.keyHash === keyHash && now - sdkCached.at < TTL_MS && sdkCached.models.length) {
+    return sdkCached.models;
+  }
+  try {
+    const { Cursor } = await import("@cursor/sdk");
+    const rows = normalizeSdkModelRows(await Cursor.models.list({ apiKey: normalizedApiKey }));
+    if (rows.length) sdkCached = { at: now, keyHash, models: rows };
+    return rows;
+  } catch {
+    // Best-effort: a transient SDK error or invalid key should not crash
+    // model resolution — fallback IDs cover the common case.
+    return [];
+  }
 }
 
 function getCachedCursorModels(): CursorCliModelRow[] | null {
@@ -124,7 +165,7 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
 }
 
 /**
- * Full list of Cursor CLI models as registry descriptors (for AI status + chat pickers).
+ * Legacy Cursor CLI model discovery kept for older tests and migrations.
  */
 export async function discoverCursorCliModelDescriptors(
   agentPath: string,
@@ -133,6 +174,20 @@ export async function discoverCursorCliModelDescriptors(
   const rows = options?.mode === "cached-or-fallback"
     ? getCachedCursorModels() ?? []
     : await listCursorModelsFromCli(agentPath);
+  const useRows: CursorCliModelRow[] = rows.length ? rows : FALLBACK_SDK_IDS.map((id) => ({ id }));
+  const seen = new Set<string>();
+  const descriptors: ModelDescriptor[] = [];
+  for (const row of useRows) {
+    const id = String(row.id ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName));
+  }
+  return sortCursorCliDescriptorsForPicker(descriptors);
+}
+
+export async function discoverCursorSdkModelDescriptors(apiKey?: string | null): Promise<ModelDescriptor[]> {
+  const rows = await listCursorModelsFromSdk(apiKey);
   const useRows: CursorCliModelRow[] = rows.length ? rows : FALLBACK_SDK_IDS.map((id) => ({ id }));
   const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];

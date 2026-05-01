@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapAcpSessionNotificationToChatEvents } from "./cursorAcpEventMapper";
+import { mapAcpSessionNotificationToChatEvents } from "./acpEventMapper";
 
 describe("mapAcpSessionNotificationToChatEvents", () => {
   it("suppresses duplicate current mode notices when ACP repeats the same mode", () => {

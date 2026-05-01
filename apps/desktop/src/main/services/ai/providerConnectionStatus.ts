@@ -5,6 +5,7 @@ import {
   readClaudeCredentials,
   readCodexCredentials,
 } from "./providerCredentialSources";
+import { getAllApiKeys } from "./apiKeyStore";
 import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { nowIso } from "../shared/utils";
 
@@ -169,36 +170,36 @@ export async function buildProviderConnections(
   });
 
   const cursorCli = cliStatuses.find((entry) => entry.cli === "cursor") ?? null;
-  const cursorEnvAuth = Boolean(
-    process.env.CURSOR_API_KEY?.trim() || process.env.CURSOR_AUTH_TOKEN?.trim(),
-  );
-  const cursorRuntimeDetected = Boolean(cursorCli?.installed);
-  const cursorCliAuthenticated = Boolean(cursorCli?.installed && cursorCli.authenticated);
-  const cursorExplicitlyUnauthenticated = Boolean(
-    cursorCli?.installed && cursorCli.verified && !cursorCli.authenticated,
-  );
-  const cursorAuthAvailable = Boolean(cursorCliAuthenticated || cursorEnvAuth);
-  const cursorRuntimeAvailable = Boolean(
-    cursorAuthAvailable && cursorRuntimeDetected && !(cursorExplicitlyUnauthenticated && !cursorEnvAuth),
-  );
+  const cursorEnvAuth = Boolean(process.env.CURSOR_API_KEY?.trim());
+  let cursorStoredAuth = false;
+  let cursorStoreUnavailable = false;
+  try {
+    cursorStoredAuth = Boolean(getAllApiKeys().cursor?.trim());
+  } catch {
+    // API key store may not be initialized yet (or read failed); surface as a
+    // distinct state so the blocker copy doesn't lie about the absence of a key.
+    cursorStoreUnavailable = true;
+  }
+  const cursorSdkAuth = Boolean(cursorEnvAuth || cursorStoredAuth);
+  let cursorCredsSource: "cursor-env" | "cursor-api-key-store" | undefined;
+  if (cursorEnvAuth) cursorCredsSource = "cursor-env";
+  else if (cursorStoredAuth) cursorCredsSource = "cursor-api-key-store";
+  // Runtime is bundled with the app — it always exists. Only auth-related
+  // fields should depend on whether a Cursor API key is present.
   const cursorFlags = {
-    runtimeDetected: cursorRuntimeDetected,
-    cliAuthenticated: cursorCliAuthenticated,
-    cliExplicitlyUnauthenticated: cursorExplicitlyUnauthenticated,
-    localCredsDetected: cursorEnvAuth,
-    authAvailable: cursorAuthAvailable,
-    runtimeAvailable: cursorRuntimeAvailable,
+    runtimeDetected: true,
+    cliAuthenticated: false,
+    cliExplicitlyUnauthenticated: false,
+    localCredsDetected: cursorSdkAuth,
+    authAvailable: cursorSdkAuth,
+    runtimeAvailable: cursorSdkAuth,
   };
 
-  let cursorBlocker: string | null = null;
-  if (!cursorFlags.authAvailable && !cursorFlags.runtimeDetected) {
-    cursorBlocker = "No Cursor CLI (`agent`) or Cursor credentials were found locally.";
-  } else if (!cursorFlags.authAvailable) {
-    cursorBlocker = "Cursor CLI (`agent`) is installed but no login was detected. Run: agent login";
-  } else if (!cursorFlags.runtimeDetected) {
-    cursorBlocker =
-      "Cursor credentials exist, but ADE could not find the `agent` binary. Add Cursor’s CLI install directory to your PATH and refresh.";
-  }
+  const cursorBlocker: string | null = cursorSdkAuth
+    ? null
+    : cursorStoreUnavailable
+      ? "ADE could not read the Cursor API key store yet. Retry after the key store is ready."
+      : "Enter a Cursor API key from https://cursor.com/dashboard/integrations.";
 
   const cursor: AiProviderConnectionStatus = {
     ...createUnavailableStatus("cursor", checkedAt),
@@ -206,9 +207,13 @@ export async function buildProviderConnections(
     runtimeDetected: cursorFlags.runtimeDetected,
     runtimeAvailable: cursorFlags.runtimeAvailable,
     usageAvailable: cursorFlags.runtimeAvailable,
-    path: cursorCli?.path ?? null,
+    path: "@cursor/sdk",
     sources: [
-      { kind: "local-credentials", detected: cursorEnvAuth, source: cursorEnvAuth ? "cursor-env" : undefined },
+      {
+        kind: "local-credentials",
+        detected: cursorSdkAuth,
+        source: cursorCredsSource,
+      },
       {
         kind: "cli",
         detected: Boolean(cursorCli?.installed),

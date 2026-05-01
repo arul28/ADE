@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     "main/main": "src/main/main.ts",
+    "main/cursorSdkWorker": "src/main/services/chat/cursorSdkWorker.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
     "preload/preload": "src/preload/preload.ts"
   },
@@ -12,7 +13,7 @@ export default defineConfig({
   // Electron provides the "electron" module at runtime; bundling the npm package breaks it.
   // sql.js loads a wasm file from disk; keep it external so it can resolve its assets.
   // node-pty is native and must be resolved at runtime for Electron.
-  external: ["electron", "sql.js", "node-pty", "onnxruntime-node"],
+  external: ["electron", "sql.js", "node-pty", "onnxruntime-node", "@cursor/sdk", "sqlite3"],
   // @opencode-ai/sdk is ESM-only (no "require" export); force-inline it so
   // the CJS bundle doesn't emit a bare require() that Node/Electron can't resolve.
   noExternal: ["@opencode-ai/sdk"],

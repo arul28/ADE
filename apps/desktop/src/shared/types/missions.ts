@@ -34,7 +34,7 @@ export type MissionProviderPermissions = {
   claude?: AgentChatPermissionMode;
   /** Permission mode for Codex CLI workers */
   codex?: AgentChatPermissionMode;
-  /** Permission mode for Cursor CLI workers */
+  /** Permission mode for Cursor SDK workers */
   cursor?: AgentChatPermissionMode;
   /** Permission mode for Factory Droid CLI workers */
   droid?: AgentChatPermissionMode;

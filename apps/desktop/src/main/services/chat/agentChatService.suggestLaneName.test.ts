@@ -21,13 +21,9 @@ const mockState = vi.hoisted(() => ({
   uuidCounter: 0,
   codexThreadCounter: 0,
   codexTurnCounter: 0,
-  cursorSessionCounter: 0,
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
   codexCollaborationModes: [{ mode: "default" }, { mode: "plan" }] as Array<Record<string, unknown> | string>,
   codexLineHandler: null as ((line: string) => void) | null,
-  cursorAcquireCalls: [] as Array<Record<string, unknown>>,
-  cursorNewSessionCalls: [] as Array<Record<string, unknown>>,
-  cursorPromptCalls: [] as Array<Record<string, unknown>>,
   emitCodexPayload(payload: Record<string, unknown>) {
     mockState.codexLineHandler?.(JSON.stringify(payload));
   },
@@ -176,10 +172,6 @@ vi.mock("../ai/claudeCodeExecutable", () => ({
   resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/usr/local/bin/claude", source: "path" })),
 }));
 
-vi.mock("../ai/cursorAgentExecutable", () => ({
-  resolveCursorAgentExecutable: vi.fn(() => ({ path: "/usr/local/bin/agent", source: "path" })),
-}));
-
 vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => []),
 }));
@@ -214,39 +206,6 @@ vi.mock("../computerUse/proofObserver", () => ({
 
 vi.mock("../../../shared/chatTranscript", () => ({
   parseAgentChatTranscript: vi.fn(() => []),
-}));
-
-vi.mock("./cursorAcpPool", () => ({
-  acquireCursorAcpConnection: vi.fn(async () => ({
-    connection: {
-      newSession: vi.fn(async () => ({
-        sessionId: "cursor-acp-session-1",
-        modes: { currentModeId: "edit" },
-        models: { currentModelId: "auto" },
-        configOptions: [],
-      })),
-      prompt: vi.fn(async () => ({
-        stopReason: "end_turn",
-        usage: { inputTokens: 3, outputTokens: 5 },
-      })),
-      cancel: vi.fn(),
-      unstable_closeSession: vi.fn(),
-    },
-    bridge: {
-      onPermission: null,
-      onSessionUpdate: null,
-      getRootPath: () => "",
-      getDirtyFileText: null,
-      onTerminalOutputDelta: null,
-      flushTerminalOutput: null,
-      onTerminalDisposed: null,
-    },
-    terminals: new Map(),
-    terminalWorkLogBindings: new Map(),
-    terminalOutputTimers: new Map(),
-    dispose: vi.fn(),
-  })),
-  releaseCursorAcpConnection: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------

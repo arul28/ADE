@@ -229,7 +229,7 @@ describe("buildProviderConnections", () => {
     expect(result.claude.blocker).toBe("ADE could not launch the Claude runtime from this packaged app session.");
   });
 
-  it("marks Cursor runtime unavailable when agent is missing even if env API key is set", async () => {
+  it("marks Cursor runtime available through the SDK when an env API key is set", async () => {
     const prevKey = process.env.CURSOR_API_KEY;
     process.env.CURSOR_API_KEY = "test-key";
     try {
@@ -245,9 +245,10 @@ describe("buildProviderConnections", () => {
         ]),
       );
       expect(result.cursor.authAvailable).toBe(true);
-      expect(result.cursor.runtimeDetected).toBe(false);
-      expect(result.cursor.runtimeAvailable).toBe(false);
-      expect(result.cursor.blocker).toContain("could not find the `agent` binary");
+      expect(result.cursor.runtimeDetected).toBe(true);
+      expect(result.cursor.runtimeAvailable).toBe(true);
+      expect(result.cursor.path).toBe("@cursor/sdk");
+      expect(result.cursor.blocker).toBeNull();
     } finally {
       if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
       else process.env.CURSOR_API_KEY = prevKey;

@@ -38,6 +38,7 @@
     "ade:build": "npm --prefix ../ade-cli run build",
     "ade:typecheck": "npm --prefix ../ade-cli run typecheck",
     "ade:test": "npm --prefix ../ade-cli run test",
+    "regen-cli-help": "node ./scripts/regen-ade-cli-help.cjs",
     "lint": "node ./node_modules/eslint/bin/eslint.js \"src/**/*.{ts,tsx}\"",
     "rebuild:native": "node ./scripts/rebuild-native.mjs",
     "version:ci": "node ./scripts/set-ci-version.mjs",
@@ -46,6 +47,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.20.0",
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+    "@cursor/sdk": "^1.0.9",
     "@floating-ui/react": "^0.27.19",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
@@ -157,6 +159,10 @@
       "node_modules/@anthropic-ai/claude-agent-sdk/**",
       "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/**",
       "node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64/**",
+      "node_modules/@cursor/sdk/**",
+      "node_modules/@cursor/sdk-darwin-arm64/**",
+      "node_modules/@cursor/sdk-darwin-x64/**",
+      "node_modules/sqlite3/**",
       "vendor/crsqlite/**"
     ],
     "extraResources": [
@@ -221,7 +227,7 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
       "mergeASARs": true,
-      "x64ArchFiles": "{Contents/Resources/app.asar.unpacked/node_modules/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/vendor/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/**/*}"
+      "x64ArchFiles": "{Contents/Resources/app.asar.unpacked/node_modules/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/vendor/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**/*,Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-x64/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/**/*}"
     }
   }
 }

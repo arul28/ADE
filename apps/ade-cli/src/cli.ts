@@ -5,6 +5,11 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import YAML from "yaml";
+import {
+  CURSOR_CLOUD_HELP,
+  CursorCloudUsageError,
+  runCursorCloud,
+} from "./cursorCloud";
 import { type JsonRpcHandler, type JsonRpcId, type JsonRpcRequest } from "./jsonrpc";
 import { isAdeMcpNamedPipePath } from "../../desktop/src/shared/adeMcpIpc";
 
@@ -72,7 +77,8 @@ type FormatterId =
 
 type CliPlan =
   | { kind: "help"; text: string }
-  | { kind: "execute"; label: string; steps: InvocationStep[]; visualizer?: "lanes"; summary?: "status" | "doctor" | "auth"; formatter?: FormatterId; preferHeadless?: boolean };
+  | { kind: "execute"; label: string; steps: InvocationStep[]; visualizer?: "lanes"; summary?: "status" | "doctor" | "auth"; formatter?: FormatterId; preferHeadless?: boolean }
+  | { kind: "cursor-cloud"; rest: string[] };
 
 type CliConnection = {
   mode: "desktop-socket" | "headless";
@@ -284,6 +290,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade actions list | run | status               Escape hatch for every ADE service action
+    $ ade cursor cloud agents | runs | artifacts | repos | models | me
+                                                    Drive Cursor Cloud agents via @cursor/sdk
 
   Global options:
     --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
@@ -1008,6 +1016,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Run filter:
     --status <queued|running|succeeded|failed|cancelled|paused|all>
 `,
+  cursor: `${ADE_BANNER}
+${CURSOR_CLOUD_HELP.cloud}`,
 };
 
 function isRecord(value: unknown): value is JsonObject {
@@ -1146,6 +1156,36 @@ function firstPositional(args: string[]): string | null {
 
 function peekFirstPositional(args: string[]): string | null {
   return args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
+}
+
+function buildCursorHelp(args: string[]): string {
+  // Accepts forms like:
+  //   ade cursor --help                  -> top-level cloud help
+  //   ade cursor cloud --help            -> top-level cloud help
+  //   ade cursor cloud agents --help     -> agents group help
+  //   ade help cursor cloud agents       -> agents group help
+  const positionals: string[] = [];
+  for (const token of args) {
+    if (token === "--" || token.startsWith("-")) continue;
+    positionals.push(token.toLowerCase());
+  }
+  // Drop a leading "cursor" / "cloud" if present so we land on the group token.
+  while (positionals.length && (positionals[0] === "cursor" || positionals[0] === "cloud")) {
+    positionals.shift();
+  }
+  const group = positionals[0];
+  const aliasMap: Record<string, string> = {
+    agents: "agents", agent: "agents",
+    runs: "runs", run: "runs",
+    artifacts: "artifacts", artifact: "artifacts",
+    repos: "repos", repo: "repos", repositories: "repos",
+    models: "models", model: "models",
+    me: "me", whoami: "me", user: "me",
+  };
+  if (group && aliasMap[group] && CURSOR_CLOUD_HELP[aliasMap[group]]) {
+    return `${ADE_BANNER}${CURSOR_CLOUD_HELP[aliasMap[group]]}`;
+  }
+  return `${ADE_BANNER}${CURSOR_CLOUD_HELP.cloud}`;
 }
 
 function buildIosSimulatorHelp(args: string[]): string {
@@ -2988,6 +3028,9 @@ function buildCliPlan(command: string[]): CliPlan {
     if (primaryHelpKey === "ios-sim") {
       return { kind: "help", text: buildIosSimulatorHelp(args) };
     }
+    if (primaryHelpKey === "cursor") {
+      return { kind: "help", text: buildCursorHelp(args) };
+    }
     if (primaryHelpKey === "app-control") {
       return { kind: "help", text: buildAppControlHelp(args) };
     }
@@ -2998,6 +3041,9 @@ function buildCliPlan(command: string[]): CliPlan {
     const key = aliases[topic] ?? topic;
     if (key === "ios-sim") {
       return { kind: "help", text: buildIosSimulatorHelp(args) };
+    }
+    if (key === "cursor") {
+      return { kind: "help", text: buildCursorHelp(args) };
     }
     if (key === "app-control") {
       return { kind: "help", text: buildAppControlHelp(args) };
@@ -3061,7 +3107,27 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "memory") return buildMemoryPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
+  if (primary === "cursor") return buildCursorPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
+}
+
+function buildCursorPlan(args: string[]): CliPlan {
+  // ade cursor <surface> <group> <sub> ... — only "cloud" is wired today.
+  const surface = firstPositional(args);
+  if (!surface || surface === "help" || hasHelpFlag([surface])) {
+    return { kind: "help", text: HELP_BY_COMMAND.cursor ?? TOP_LEVEL_HELP };
+  }
+  if (surface !== "cloud") {
+    throw new CliUsageError(`Unknown 'ade cursor' surface '${surface}'. The only supported surface is 'cloud'.`);
+  }
+  if (hasHelpFlag(args)) {
+    const group = peekFirstPositional(args)?.toLowerCase();
+    if (group && CURSOR_CLOUD_HELP[group]) {
+      return { kind: "help", text: `${ADE_BANNER}${CURSOR_CLOUD_HELP[group]}` };
+    }
+    return { kind: "help", text: HELP_BY_COMMAND.cursor ?? TOP_LEVEL_HELP };
+  }
+  return { kind: "cursor-cloud", rest: args };
 }
 
 function findAdeManagedWorktreeRoot(startDir: string): { projectRoot: string; workspaceRoot: string } | null {
@@ -4576,15 +4642,26 @@ async function runCli(argv: string[]): Promise<{ output: string; exitCode: numbe
   console.log = writeDiagnostic;
   console.info = writeDiagnostic;
   console.warn = writeDiagnostic;
-  let result: unknown;
   try {
-    result = await executePlan(plan, parsed.options);
+    if (plan.kind === "cursor-cloud") {
+      // Cursor Cloud talks to @cursor/sdk directly. No ADE socket / no headless
+      // RPC. The function handles its own --json/--text/--compact parsing on
+      // the remaining tokens.
+      try {
+        const result = await runCursorCloud(plan.rest, parsed.options.text ? "text" : "json");
+        return result;
+      } catch (error) {
+        if (error instanceof CursorCloudUsageError) throw new CliUsageError(error.message);
+        throw error;
+      }
+    }
+    const result = await executePlan(plan, parsed.options);
+    return { output: formatOutput(result, parsed.options, inferFormatter(plan)), exitCode: 0 };
   } finally {
     console.log = originalConsole.log;
     console.info = originalConsole.info;
     console.warn = originalConsole.warn;
   }
-  return { output: formatOutput(result, parsed.options, inferFormatter(plan)), exitCode: 0 };
 }
 
 async function main(): Promise<void> {

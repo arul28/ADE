@@ -11,6 +11,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const streamText = vi.fn();
+const ORIGINAL_CURSOR_API_KEY = process.env.CURSOR_API_KEY;
 
 vi.mock("@opencode-ai/sdk", () => ({
   createOpencodeServer: vi.fn(async () => ({
@@ -28,7 +29,6 @@ const mockState = vi.hoisted(() => ({
   uuidCounter: 0,
   codexThreadCounter: 0,
   codexTurnCounter: 0,
-  cursorSessionCounter: 0,
   openCodeSessionCounter: 0,
   openCodeSessions: new Map<string, {
     events: any[];
@@ -42,9 +42,12 @@ const mockState = vi.hoisted(() => ({
   pendingCodexResponses: [] as Array<() => void>,
   codexCollaborationModes: [{ mode: "default" }, { mode: "plan" }] as Array<Record<string, unknown> | string>,
   codexLineHandler: null as ((line: string) => void) | null,
-  cursorAcquireCalls: [] as Array<Record<string, unknown>>,
-  cursorNewSessionCalls: [] as Array<Record<string, unknown>>,
-  cursorPromptCalls: [] as Array<Record<string, unknown>>,
+  cursorSdkAcquireCalls: [] as Array<Record<string, unknown>>,
+  cursorSdkSendCalls: [] as Array<Record<string, unknown>>,
+  cursorSdkPolicyUpdates: [] as Array<Record<string, unknown>>,
+  cursorSdkPooled: null as any,
+  cursorSdkCloudRequests: [] as Array<{ type: string; payload: Record<string, unknown> }>,
+  cursorSdkCloudResponses: new Map<string, unknown>(),
   droidAcquireCalls: [] as Array<Record<string, unknown>>,
   droidNewSessionCalls: [] as Array<Record<string, unknown>>,
   droidPromptCalls: [] as Array<Record<string, unknown>>,
@@ -401,10 +404,6 @@ vi.mock("../ai/claudeCodeExecutable", () => ({
   resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/usr/local/bin/claude", source: "path" })),
 }));
 
-vi.mock("../ai/cursorAgentExecutable", () => ({
-  resolveCursorAgentExecutable: vi.fn(() => ({ path: "/usr/local/bin/agent", source: "path" })),
-}));
-
 vi.mock("../ai/droidExecutable", () => ({
   resolveDroidExecutable: vi.fn(() => ({ path: "/usr/local/bin/droid", source: "path" })),
 }));
@@ -435,50 +434,69 @@ vi.mock("../../../shared/chatTranscript", () => ({
   parseAgentChatTranscript: vi.fn(() => []),
 }));
 
-vi.mock("./cursorAcpPool", () => ({
-  acquireCursorAcpConnection: vi.fn(async (args: Record<string, unknown>) => {
-    mockState.cursorAcquireCalls.push(args);
-    return {
-      generation: 1,
-      pooled: {
-        connection: {
-          newSession: vi.fn(async (params: Record<string, unknown>) => {
-            mockState.cursorNewSessionCalls.push(params);
-            mockState.cursorSessionCounter += 1;
-            return {
-              sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
-              modes: { currentModeId: "edit" },
-              models: { currentModelId: "auto" },
-              configOptions: [],
-            };
-          }),
-          prompt: vi.fn(async (params: Record<string, unknown>) => {
-            mockState.cursorPromptCalls.push(params);
-            return {
-              stopReason: "end_turn",
-              usage: { inputTokens: 3, outputTokens: 5 },
-            };
-          }),
-          cancel: vi.fn(),
-          unstable_closeSession: vi.fn(),
-        },
-        bridge: {
-          onPermission: null,
-          onSessionUpdate: null,
-          getRootPath: () => "",
-          getDirtyFileText: null,
-          onTerminalOutputDelta: null,
-          flushTerminalOutput: null,
-          onTerminalDisposed: null,
-        },
-        terminals: new Map(),
-        terminalWorkLogBindings: new Map(),
-        terminalOutputTimers: new Map(),
-        dispose: vi.fn(),
+vi.mock("./cursorSdkPool", () => ({
+  acquireCursorSdkConnection: vi.fn(async (args: Record<string, unknown>) => {
+    mockState.cursorSdkAcquireCalls.push(args);
+    const pooled = {
+      process: { exitCode: null, killed: false },
+      bridge: {
+        onEvent: null as any,
+        onRunStarted: null as any,
+        onRunResult: null as any,
+        onHookRequest: null as any,
       },
+      agentId: "cursor-sdk-agent-1",
+      runId: null,
+      request: vi.fn(async (type: string, payload?: unknown) => {
+        if (type === "policy_update") {
+          mockState.cursorSdkPolicyUpdates.push(payload as Record<string, unknown>);
+        }
+        if (type === "cloud.send.stream") {
+          mockState.cursorSdkCloudRequests.push({ type, payload: (payload as Record<string, unknown>) ?? {} });
+          return {
+            agentId: "cloud-agent-1",
+            runId: "cloud-run-1",
+            status: "finished",
+            result: { status: "finished" },
+          };
+        }
+        if (type === "cloud.followup") {
+          mockState.cursorSdkCloudRequests.push({ type, payload: (payload as Record<string, unknown>) ?? {} });
+          return {
+            agentId: (payload as Record<string, unknown>)?.agentId ?? "cloud-agent-1",
+            runId: "cloud-run-2",
+            status: "finished",
+            result: { status: "finished" },
+          };
+        }
+        if (type === "cloud.run.cancel") {
+          mockState.cursorSdkCloudRequests.push({ type, payload: (payload as Record<string, unknown>) ?? {} });
+          return { ok: true };
+        }
+        return {};
+      }),
+      sendPrompt: vi.fn(async (payload: Record<string, unknown>) => {
+        mockState.cursorSdkSendCalls.push(payload);
+        return { id: "cursor-sdk-run-1", status: "finished" };
+      }),
+      updatePolicy: vi.fn(async (policy: Record<string, unknown>) => {
+        mockState.cursorSdkPolicyUpdates.push(policy);
+      }),
+      cancel: vi.fn(async () => {}),
+      dispose: vi.fn(),
     };
+    mockState.cursorSdkPooled = pooled;
+    return { generation: 1, pooled };
   }),
-  releaseCursorAcpConnection: vi.fn(),
+  releaseCursorSdkConnection: vi.fn(),
+  runCursorSdkCatalogRequest: vi.fn(async () => []),
+  runCursorSdkCloudRequest: vi.fn(async (args: { type: string; payload: Record<string, unknown> }) => {
+    mockState.cursorSdkCloudRequests.push({ type: args.type, payload: args.payload });
+    if (mockState.cursorSdkCloudResponses.has(args.type)) {
+      return mockState.cursorSdkCloudResponses.get(args.type);
+    }
+    return {};
+  }),
 }));
 
 vi.mock("./droidAcpPool", () => ({
@@ -542,7 +560,7 @@ import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { runGit } from "../git/git";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { mapPermissionToClaude, mapPermissionToCodex } from "../orchestrator/permissionMapping";
-import { acquireCursorAcpConnection } from "./cursorAcpPool";
+import { acquireCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidAcpConnection } from "./droidAcpPool";
 import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
 import {
@@ -884,7 +902,6 @@ beforeEach(() => {
   mockState.uuidCounter = 0;
   mockState.codexThreadCounter = 0;
   mockState.codexTurnCounter = 0;
-  mockState.cursorSessionCounter = 0;
   mockState.openCodeSessionCounter = 0;
   mockState.openCodeSessions.clear();
   mockState.droidSessionCounter = 0;
@@ -894,13 +911,16 @@ beforeEach(() => {
   mockState.pendingCodexResponses = [];
   mockState.codexCollaborationModes = [{ mode: "default" }, { mode: "plan" }];
   mockState.codexLineHandler = null;
-  mockState.cursorAcquireCalls = [];
-  mockState.cursorNewSessionCalls = [];
-  mockState.cursorPromptCalls = [];
+  mockState.cursorSdkAcquireCalls = [];
+  mockState.cursorSdkSendCalls = [];
+  mockState.cursorSdkPolicyUpdates = [];
+  mockState.cursorSdkPooled = null;
+  mockState.cursorSdkCloudRequests = [];
+  mockState.cursorSdkCloudResponses = new Map<string, unknown>();
   mockState.droidAcquireCalls = [];
   mockState.droidNewSessionCalls = [];
   mockState.droidPromptCalls = [];
-  vi.mocked(acquireCursorAcpConnection).mockClear();
+  vi.mocked(acquireCursorSdkConnection).mockClear();
   vi.mocked(acquireDroidAcpConnection).mockClear();
   vi.mocked(streamText).mockReset();
   vi.mocked(unstable_v2_createSession).mockReset();
@@ -921,6 +941,11 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  if (ORIGINAL_CURSOR_API_KEY === undefined) {
+    delete process.env.CURSOR_API_KEY;
+  } else {
+    process.env.CURSOR_API_KEY = ORIGINAL_CURSOR_API_KEY;
+  }
   try {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   } catch { /* ignore */ }
@@ -9202,9 +9227,9 @@ describe("createAgentChatService", () => {
     });
   });
 
-  it("initializes the Cursor runtime before validating the first turn", async () => {
+  it("renders Cursor SDK private plan control blocks without exposing them as chat text", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];
-
     const { service } = createService({
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
     });
@@ -9212,229 +9237,43 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "cursor",
-      model: "auto",
-      modelId: "cursor/auto",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "plan",
     });
 
     await service.sendMessage({
       sessionId: session.id,
-      text: "Explain the failing test setup.",
+      text: "Plan this.",
     }, { awaitDispatch: true });
 
-    const completedEvent = await waitForEvent(
-      events,
-      (event): event is AgentChatEventEnvelope & {
-        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
-      } => event.event.type === "status" && event.event.turnStatus === "completed",
-    );
-
-    expect(completedEvent.sessionId).toBe(session.id);
-    expect(vi.mocked(acquireCursorAcpConnection)).toHaveBeenCalledTimes(1);
-    expect(mockState.cursorNewSessionCalls).toHaveLength(1);
-    expect(mockState.cursorPromptCalls).toHaveLength(1);
-    expect(
-      events.some((event) => event.event.type === "error" && event.event.message.includes("No runtime initialized")),
-    ).toBe(false);
-  });
-
-  it("emits the Cursor user bubble before ACP warmup completes", async () => {
-    const events: AgentChatEventEnvelope[] = [];
-    type CursorNewSessionResult = {
-      sessionId: string;
-      modes: { currentModeId: string };
-      models: {
-        currentModelId: string;
-        availableModels: Array<{ modelId: string; name: string }>;
-      };
-      configOptions: Array<Record<string, unknown>>;
-    };
-    let resolveNewSession: ((value: CursorNewSessionResult) => void) | null = null;
-
-    vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
-      mockState.cursorAcquireCalls.push(args);
-      return {
-        generation: 1,
-        pooled: {
-          connection: {
-            newSession: vi.fn(() => new Promise<CursorNewSessionResult>((resolve) => {
-              resolveNewSession = resolve;
-            })),
-            loadSession: vi.fn(async () => ({
-              modes: { currentModeId: "edit" },
-              models: {
-                currentModelId: "auto",
-                availableModels: [{ modelId: "auto", name: "Auto" }],
-              },
-              configOptions: [],
-            })),
-            prompt: vi.fn(async () => ({
-              stopReason: "end_turn",
-              usage: { inputTokens: 3, outputTokens: 5 },
-            })),
-            cancel: vi.fn(),
-            unstable_closeSession: vi.fn(),
-          },
-          bridge: {
-            onPermission: null,
-            onSessionUpdate: null,
-            getRootPath: () => "",
-            getDirtyFileText: null,
-            onTerminalOutputDelta: null,
-            flushTerminalOutput: null,
-            onTerminalDisposed: null,
-          },
-          terminals: new Map(),
-          terminalWorkLogBindings: new Map(),
-          terminalOutputTimers: new Map(),
-          dispose: vi.fn(),
-        },
-      } as any;
-    });
-
-    const { service } = createService({
-      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-    });
-
-    const session = await service.createSession({
-      laneId: "lane-1",
-      provider: "cursor",
-      model: "auto",
-      modelId: "cursor/auto",
-    });
-
-    let sendResolved = false;
-    const sendPromise = service.sendMessage({
-      sessionId: session.id,
-      text: "Start the work.",
-    }, { awaitDispatch: true }).then(() => {
-      sendResolved = true;
-    });
-
-    // Allow a few microticks for the optimistic UI events to be emitted.
-    for (let i = 0; i < 5; i += 1) {
-      await Promise.resolve();
-    }
-
-    // The user_message and status events should be emitted optimistically
-    // (before ACP warmup completes), even though awaitDispatch has NOT yet
-    // resolved -- it now waits for the real prompt to be acknowledged.
-    expect(sendResolved).toBe(false);
-    expect(
-      events.filter((event) => event.event.type === "user_message"),
-    ).toHaveLength(1);
-    const startedEvent = events.find(
-      (event): event is AgentChatEventEnvelope & {
-        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
-      } => event.event.type === "status" && event.event.turnStatus === "started",
-    );
-    expect(startedEvent).toBeTruthy();
-    expect(
-      events.some(
-        (event) =>
-          event.event.type === "activity"
-          && event.event.activity === "thinking"
-          && event.event.turnId === startedEvent!.event.turnId,
-      ),
-    ).toBe(true);
-
-    for (let i = 0; i < 20 && !resolveNewSession; i += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
-    expect(resolveNewSession).toBeTruthy();
-
-    const settleNewSession = resolveNewSession as unknown as (value: CursorNewSessionResult) => void;
-    settleNewSession({
-      sessionId: "cursor-acp-session-1",
-      modes: { currentModeId: "edit" },
-      models: {
-        currentModelId: "auto",
-        availableModels: [{ modelId: "auto", name: "Auto" }],
+    mockState.cursorSdkPooled.bridge.onEvent({
+      type: "assistant",
+      message: {
+        content: [{
+          type: "text",
+          text: [
+            "```ade_update_plan",
+            "{\"steps\":[{\"text\":\"Inspect current chat wiring\",\"status\":\"completed\"},{\"text\":\"Render ADE plan UI\",\"status\":\"in_progress\"}],\"explanation\":\"Cursor SDK should use ADE-native planning UI.\"}",
+            "```",
+          ].join("\n"),
+        }],
       },
-      configOptions: [],
     });
 
-    const completedEvent = await waitForEvent(
-      events,
-      (event): event is AgentChatEventEnvelope & {
-        event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
-      } => event.event.type === "done" && event.sessionId === session.id,
-    );
-
-    await sendPromise;
-
-    // awaitDispatch should now have resolved (after the prompt completed).
-    expect(sendResolved).toBe(true);
-    expect(completedEvent.event.status).toBe("completed");
-    expect(
-      events.filter((event) => event.event.type === "user_message"),
-    ).toHaveLength(1);
+    expect(events.some((event) =>
+      event.event.type === "plan"
+      && event.event.steps[1]?.text === "Render ADE plan UI"
+    )).toBe(true);
+    expect(events.some((event) =>
+      event.event.type === "text"
+      && event.event.text.includes("ade_update_plan")
+    )).toBe(false);
   });
 
-  it("delivers a queued Cursor message with attachments after the active turn completes", async () => {
+  it("buffers streamed Cursor SDK control blocks before rendering ADE plan UI", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];
-    let promptCall = 0;
-    let resolveFirstPrompt: ((value: { stopReason: string; usage: { inputTokens: number; outputTokens: number } }) => void) | null = null;
-
-    vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
-      mockState.cursorAcquireCalls.push(args);
-      return {
-        generation: 1,
-        pooled: {
-          connection: {
-            newSession: vi.fn(async (params: Record<string, unknown>) => {
-              mockState.cursorNewSessionCalls.push(params);
-              mockState.cursorSessionCounter += 1;
-              return {
-                sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
-                modes: { currentModeId: "edit" },
-                models: {
-                  currentModelId: "auto",
-                  availableModels: [{ modelId: "auto", name: "Auto" }],
-                },
-                configOptions: [],
-              };
-            }),
-            loadSession: vi.fn(async () => ({
-              modes: { currentModeId: "edit" },
-              models: {
-                currentModelId: "auto",
-                availableModels: [{ modelId: "auto", name: "Auto" }],
-              },
-              configOptions: [],
-            })),
-            prompt: vi.fn((params: Record<string, unknown>) => {
-              mockState.cursorPromptCalls.push(params);
-              promptCall += 1;
-              if (promptCall === 1) {
-                return new Promise((resolve) => {
-                  resolveFirstPrompt = resolve as typeof resolveFirstPrompt;
-                });
-              }
-              return Promise.resolve({
-                stopReason: "end_turn",
-                usage: { inputTokens: 2, outputTokens: 3 },
-              });
-            }),
-            cancel: vi.fn(),
-            unstable_closeSession: vi.fn(),
-          },
-          bridge: {
-            onPermission: null,
-            onSessionUpdate: null,
-            getRootPath: () => "",
-            getDirtyFileText: null,
-            onTerminalOutputDelta: null,
-            flushTerminalOutput: null,
-            onTerminalDisposed: null,
-          },
-          terminals: new Map(),
-          terminalWorkLogBindings: new Map(),
-          terminalOutputTimers: new Map(),
-          dispose: vi.fn(),
-        },
-      } as any;
-    });
-
     const { service } = createService({
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
     });
@@ -9442,143 +9281,48 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "cursor",
-      model: "auto",
-      modelId: "cursor/auto",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "plan",
     });
 
-    const sendPromise = service.sendMessage({
+    await service.sendMessage({
       sessionId: session.id,
-      text: "Handle the first request.",
+      text: "Plan this.",
+    }, { awaitDispatch: true });
+
+    mockState.cursorSdkPooled.bridge.onEvent({
+      type: "assistant",
+      message: {
+        content: [{
+          type: "text",
+          text: "```ade_",
+        }],
+      },
+    });
+    mockState.cursorSdkPooled.bridge.onEvent({
+      type: "assistant",
+      message: {
+        content: [{
+          type: "text",
+          text: "update_plan{\"steps\":[{\"text\":\"Buffered Cursor plan\",\"status\":\"in_progress\"}],\"explanation\":\"No raw controls should leak.\"}```",
+        }],
+      },
     });
 
-    for (let attempt = 0; attempt < 50 && mockState.cursorPromptCalls.length < 1; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    expect(mockState.cursorPromptCalls).toHaveLength(1);
-
-    const attachmentPath = path.join(tmpRoot, "cursor-steer-context.txt");
-    fs.writeFileSync(attachmentPath, "Follow the attachment details.");
-
-    const steerResult = await service.steer({
-      sessionId: session.id,
-      text: "Then send the queued follow-up.",
-      attachments: [{ path: attachmentPath, type: "file" }],
-    });
-    expect(steerResult.queued).toBe(true);
-
-    await waitForEvent(
-      events,
-      (event): event is AgentChatEventEnvelope =>
-        event.event.type === "user_message"
-        && (event.event as any).deliveryState === "queued"
-        && event.event.text === "Then send the queued follow-up."
-        && JSON.stringify((event.event as any).attachments ?? []).includes("cursor-steer-context.txt"),
-    );
-
-    expect(resolveFirstPrompt).toBeTruthy();
-    resolveFirstPrompt!({
-      stopReason: "end_turn",
-      usage: { inputTokens: 3, outputTokens: 5 },
-    });
-
-    await sendPromise;
-
-    for (let attempt = 0; attempt < 100 && mockState.cursorPromptCalls.length < 2; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    expect(mockState.cursorPromptCalls).toHaveLength(2);
-    expect(JSON.stringify(mockState.cursorPromptCalls[1])).toContain("Then send the queued follow-up.");
-    expect(JSON.stringify(mockState.cursorPromptCalls[1])).toContain("cursor-steer-context.txt");
-    expect(JSON.stringify(mockState.cursorPromptCalls[1])).toContain("Follow the attachment details.");
-
-    await waitForEvent(
-      events,
-      (event): event is AgentChatEventEnvelope =>
-        event.event.type === "system_notice"
-        && (event.event as any).message === "Delivering your queued message...",
-    );
-
-    await waitForEvent(
-      events,
-      (event): event is AgentChatEventEnvelope =>
-        event.event.type === "user_message"
-        && event.event.text === "Then send the queued follow-up."
-        && JSON.stringify((event.event as any).attachments ?? []).includes("cursor-steer-context.txt")
-        && (event.event as any).deliveryState !== "queued",
-    );
-
-    expect(
-      events.some(
-        (event) =>
-          event.event.type === "error"
-          && event.event.message.includes("Turn already active"),
-      ),
-    ).toBe(false);
+    expect(events.some((event) =>
+      event.event.type === "plan"
+      && event.event.steps[0]?.text === "Buffered Cursor plan"
+    )).toBe(true);
+    expect(events.some((event) =>
+      event.event.type === "text"
+      && (event.event.text.includes("ade_update_plan") || event.event.text.includes("```ade_"))
+    )).toBe(false);
   });
 
-  it("refreshes the Cursor session model from ACP after a turn completes", async () => {
+  it("drops malformed Cursor SDK control blocks without crashing or leaking raw text", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];
-
-    vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
-      mockState.cursorAcquireCalls.push(args);
-      return {
-        generation: 1,
-        pooled: {
-          connection: {
-            newSession: vi.fn(async (params: Record<string, unknown>) => {
-              mockState.cursorNewSessionCalls.push(params);
-              mockState.cursorSessionCounter += 1;
-              return {
-                sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
-                modes: { currentModeId: "edit" },
-                models: {
-                  currentModelId: "claude-4-sonnet",
-                  availableModels: [
-                    { modelId: "auto", name: "Auto" },
-                    { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
-                  ],
-                },
-                configOptions: [],
-              };
-            }),
-            prompt: vi.fn(async (params: Record<string, unknown>) => {
-              mockState.cursorPromptCalls.push(params);
-              return {
-                stopReason: "end_turn",
-                usage: { inputTokens: 2, outputTokens: 4 },
-              };
-            }),
-            loadSession: vi.fn(async () => ({
-              modes: { currentModeId: "edit" },
-              models: {
-                currentModelId: "auto",
-                availableModels: [
-                  { modelId: "auto", name: "Auto" },
-                  { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
-                ],
-              },
-              configOptions: [],
-            })),
-            cancel: vi.fn(),
-            unstable_closeSession: vi.fn(),
-          },
-          bridge: {
-            onPermission: null,
-            onSessionUpdate: null,
-            getRootPath: () => "",
-            getDirtyFileText: null,
-            onTerminalOutputDelta: null,
-            flushTerminalOutput: null,
-            onTerminalDisposed: null,
-          },
-          terminals: new Map(),
-          terminalWorkLogBindings: new Map(),
-          terminalOutputTimers: new Map(),
-          dispose: vi.fn(),
-        },
-      } as any;
-    });
-
     const { service } = createService({
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
     });
@@ -9586,101 +9330,198 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "cursor",
-      model: "claude-4-sonnet",
-      modelId: "cursor/claude-4-sonnet",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "plan",
     });
 
     await service.sendMessage({
       sessionId: session.id,
-      text: "Confirm the active model.",
+      text: "Plan this.",
     }, { awaitDispatch: true });
 
-    const doneEvent = await waitForEvent(
-      events,
-      (event): event is AgentChatEventEnvelope & {
-        event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
-      } => event.event.type === "done" && event.sessionId === session.id,
-    );
-    const updated = await service.getSessionSummary(session.id);
+    expect(() => {
+      mockState.cursorSdkPooled.bridge.onEvent({
+        type: "assistant",
+        message: {
+          content: [{
+            type: "text",
+            text: "Before ```ade_update_plan{\"steps\":[``` after",
+          }],
+        },
+      });
+    }).not.toThrow();
 
-    expect(updated?.model).toBe("auto");
-    expect(updated?.modelId).toBe("cursor/auto");
-    expect(doneEvent?.event.model).toBe("auto");
-    expect(doneEvent?.event.modelId).toBe("cursor/auto");
+    expect(events.some((event) =>
+      event.event.type === "text"
+      && (event.event.text.includes("ade_update_plan") || event.event.text.includes("```ade_"))
+    )).toBe(false);
   });
 
-  it("keeps the selected Cursor model when ACP reports an invalid current model id", async () => {
-    vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
-      mockState.cursorAcquireCalls.push(args);
-      return {
-        generation: 1,
-        pooled: {
-          connection: {
-            newSession: vi.fn(async (params: Record<string, unknown>) => {
-              mockState.cursorNewSessionCalls.push(params);
-            mockState.cursorSessionCounter += 1;
-            return {
-              sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
-              modes: { currentModeId: "edit" },
-              models: {
-                currentModelId: "default[]",
-                availableModels: [
-                  { modelId: "default[]", name: "Default" },
-                  { modelId: "auto", name: "Auto" },
-                  { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
-                ],
-              },
-                configOptions: [],
-              };
-            }),
-            prompt: vi.fn(async (params: Record<string, unknown>) => {
-              mockState.cursorPromptCalls.push(params);
-              return {
-                stopReason: "end_turn",
-                usage: { inputTokens: 2, outputTokens: 4 },
-              };
-            }),
-            cancel: vi.fn(),
-            unstable_closeSession: vi.fn(),
-          },
-          bridge: {
-            onPermission: null,
-            onSessionUpdate: null,
-            getRootPath: () => "",
-            getDirtyFileText: null,
-            onTerminalOutputDelta: null,
-            flushTerminalOutput: null,
-            onTerminalDisposed: null,
-          },
-          terminals: new Map(),
-          terminalWorkLogBindings: new Map(),
-          terminalOutputTimers: new Map(),
-          dispose: vi.fn(),
-        },
-      } as any;
+  it("preserves Cursor SDK text chunk spacing while parsing private controls", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
     });
-
-    const { service } = createService();
 
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "cursor",
-      model: "auto",
-      modelId: "cursor/auto",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "plan",
     });
 
     await service.sendMessage({
       sessionId: session.id,
-      text: "Run the next step.",
+      text: "Plan this.",
     }, { awaitDispatch: true });
 
-    const updated = await service.getSessionSummary(session.id);
-    const persisted = readPersistedChatState(session.id);
+    for (const text of ["Publishing", " a short", " demo", " plan."]) {
+      mockState.cursorSdkPooled.bridge.onEvent({
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text }],
+        },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
 
-    expect(updated?.model).toBe("auto");
-    expect(updated?.modelId).toBe("cursor/auto");
-    expect(persisted.model).toBe("auto");
-    expect(persisted.modelId).toBe("cursor/auto");
+    const streamedText = events
+      .filter((event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "text" }>;
+      } => event.event.type === "text")
+      .map((event) => event.event.text)
+      .join("");
+    expect(streamedText).toContain("Publishing a short demo plan.");
+  });
+
+  it("uses Cursor SDK private question control blocks for ADE pending input", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "plan",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Make a plan.",
+    }, { awaitDispatch: true });
+
+    mockState.cursorSdkPooled.bridge.onEvent({
+      type: "assistant",
+      message: {
+        content: [{
+          type: "text",
+          text: [
+            "```ade_request_user_input",
+            "{\"title\":\"Plan question\",\"questions\":[{\"id\":\"scope\",\"header\":\"Scope\",\"question\":\"Which scope should I plan around?\",\"options\":[{\"label\":\"UI flow\"},{\"label\":\"Backend flow\"}],\"allowsFreeform\":true}]}",
+            "```",
+          ].join("\n"),
+        }],
+      },
+    });
+
+    const questionEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? event.event.detail as { request?: { title?: string; kind?: string } } | undefined
+          : undefined;
+        return event.event.type === "approval_request"
+          && detail?.request?.title === "Plan question"
+          && detail.request.kind === "structured_question";
+      },
+    );
+
+    const sendCallCountBeforeAnswer = mockState.cursorSdkSendCalls.length;
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: questionEvent.event.itemId,
+      decision: "accept",
+      answers: { scope: ["UI flow"] },
+      responseText: "UI flow",
+    });
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (mockState.cursorSdkSendCalls.length > sendCallCountBeforeAnswer) break;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(sendCallCountBeforeAnswer);
+    expect(mockState.cursorSdkSendCalls.at(-1)?.promptText).toEqual(
+      expect.stringContaining("The user answered the Cursor planning question"),
+    );
+    expect(events.some((event) =>
+      event.event.type === "user_message"
+      && event.event.text.includes("The user answered the Cursor planning question")
+    )).toBe(false);
+  });
+
+  it("exits Cursor SDK plan mode through ADE plan approval control blocks", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorModeId: "plan",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Make a plan.",
+    }, { awaitDispatch: true });
+
+    mockState.cursorSdkPooled.bridge.onEvent({
+      type: "assistant",
+      message: {
+        content: [{
+          type: "text",
+          text: [
+            "```ade_plan_approval{\"planDescription\":\"1. Inspect wiring\\n2. Patch Cursor controls\\n3. Verify\"}```",
+          ].join("\n"),
+        }],
+      },
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && (event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval",
+    );
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+    });
+
+    expect(mockState.cursorSdkPolicyUpdates.at(-1)).toMatchObject({
+      chatMode: "agent",
+      approvalPolicy: "on-request",
+    });
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      cursorModeId: "agent",
+    });
   });
 
   it("realigns a new Droid ACP session to the selected model before prompting", async () => {
@@ -10013,31 +9854,6 @@ describe("createAgentChatService", () => {
     expect(updated?.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
   });
 
-  it("prefers an explicit Cursor mode over legacy full-auto launch settings", async () => {
-    const { service } = createService();
-
-    const session = await service.createSession({
-      laneId: "lane-1",
-      provider: "cursor",
-      model: "auto",
-      modelId: "cursor/auto",
-      cursorModeId: "ask",
-      opencodePermissionMode: "full-auto",
-    });
-
-    await service.sendMessage({
-      sessionId: session.id,
-      text: "Answer read-only.",
-    }, { awaitDispatch: true });
-
-    expect(mockState.cursorAcquireCalls).toHaveLength(1);
-    expect(mockState.cursorAcquireCalls[0]?.launchSettings).toEqual({
-      mode: "ask",
-      sandbox: "enabled",
-      force: false,
-    });
-  });
-
   it("surfaces structured Droid ACP failures without collapsing them to [object Object]", async () => {
     const events: AgentChatEventEnvelope[] = [];
 
@@ -10119,6 +9935,161 @@ describe("createAgentChatService", () => {
       category: "network",
       provider: "Factory Droid",
       model: "Claude Sonnet 4.6 (High)",
+    });
+  });
+
+  describe("Cursor Cloud routing", () => {
+    it("dispatches cloud.send.stream and persists cloud session fields on first cloud send", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Promote to cloud.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      const cloudCalls = mockState.cursorSdkCloudRequests.filter((r) => r.type === "cloud.send.stream");
+      expect(cloudCalls.length).toBeGreaterThan(0);
+      const sentPayload = cloudCalls[0].payload;
+      expect(sentPayload.repoUrl).toBe("https://github.com/example/repo.git");
+      expect(typeof sentPayload.promptText).toBe("string");
+
+      const refreshed = await service.getSessionSummary(session.id);
+      expect(refreshed?.cursorCloudAgentId).toBe("cloud-agent-1");
+      expect(refreshed?.cursorRuntime).toBe("cloud");
+      expect(refreshed?.cursorPromotedTurnId).toBeTruthy();
+    });
+
+    it("uses cloud.followup with the durable agentId on subsequent cloud sends", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "First.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      // Drain previous done so we can wait for the next one cleanly.
+      events.length = 0;
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Follow-up.",
+        runtime: "cloud",
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      const types = mockState.cursorSdkCloudRequests.map((r) => r.type);
+      expect(types).toEqual(expect.arrayContaining(["cloud.send.stream", "cloud.followup"]));
+      const followup = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.followup");
+      expect(followup?.payload.agentId).toBe("cloud-agent-1");
+    });
+
+    it("emits a 'done' event after a cloud send and flips session runtime to cloud", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Cloud, please.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+
+      const doneEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+      expect(doneEvent.event.status).toBe("completed");
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.cursorRuntime).toBe("cloud");
+    });
+
+    it("includes the cursorSdkSystemPrompt directive in the first cloud send promptText", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      process.env.ADE_CURSOR_PROMPT_INJECT = "1";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Hi cloud.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      const sent = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.send.stream");
+      expect(sent).toBeTruthy();
+      const promptText = String(sent!.payload.promptText ?? "");
+      // System-prompt sections should be present
+      expect(promptText).toContain("ADE control protocol");
+      expect(promptText).toContain("Cursor Cloud capability");
+      expect(promptText).toContain("runtime: cloud");
+      expect(promptText.length).toBeLessThanOrEqual(promptText.indexOf("Hi cloud.") + 1024);
     });
   });
 });

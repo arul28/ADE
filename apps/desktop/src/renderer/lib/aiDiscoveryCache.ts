@@ -36,6 +36,23 @@ function modelsCacheKey(
   return `${normalizeProjectRoot(projectRoot)}::${provider}::${activateRuntime ? "active" : "passive"}`;
 }
 
+/**
+ * Synchronous peek at the most recent AI status for `projectRoot`, regardless
+ * of TTL freshness. Returns `null` if nothing has ever been cached for this
+ * project in the current session.
+ *
+ * Designed for renderer components that want to seed initial state without
+ * flashing a "not configured" placeholder while the async re-check is in
+ * flight. Callers are expected to re-verify via `getAiStatusCached` and
+ * overwrite their state when the new value differs.
+ */
+export function peekAiStatusCached(
+  projectRoot: string | null | undefined,
+): AiSettingsStatus | null {
+  const key = statusCacheKey(projectRoot);
+  return aiStatusCache.get(key)?.value ?? null;
+}
+
 export async function getAiStatusCached(args: {
   projectRoot: string | null | undefined;
   force?: boolean;

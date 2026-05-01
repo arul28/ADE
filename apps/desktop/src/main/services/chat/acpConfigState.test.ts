@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
-import { readCursorAcpConfigSnapshot } from "./cursorAcpConfigState";
+import { readAcpConfigSnapshot } from "./acpConfigState";
 
-describe("readCursorAcpConfigSnapshot", () => {
+describe("readAcpConfigSnapshot", () => {
   it("extracts model and mode selectors when ACP categorizes them", () => {
     const configOptions: SessionConfigOption[] = [
       {
@@ -29,7 +29,7 @@ describe("readCursorAcpConfigSnapshot", () => {
       },
     ];
 
-    expect(readCursorAcpConfigSnapshot(configOptions)).toEqual({
+    expect(readAcpConfigSnapshot(configOptions)).toEqual({
       modeConfigId: "session-mode",
       currentModeId: "ask",
       availableModeIds: ["ask", "plan"],
@@ -89,7 +89,7 @@ describe("readCursorAcpConfigSnapshot", () => {
       },
     ];
 
-    expect(readCursorAcpConfigSnapshot(configOptions)).toEqual({
+    expect(readAcpConfigSnapshot(configOptions)).toEqual({
       modeConfigId: null,
       currentModeId: null,
       availableModeIds: [],
@@ -137,7 +137,7 @@ describe("readCursorAcpConfigSnapshot", () => {
       },
     ];
 
-    expect(readCursorAcpConfigSnapshot(configOptions)).toEqual({
+    expect(readAcpConfigSnapshot(configOptions)).toEqual({
       modeConfigId: "session-mode",
       currentModeId: null,
       availableModeIds: ["edit", "plan"],

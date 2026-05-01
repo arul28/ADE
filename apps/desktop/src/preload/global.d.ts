@@ -143,6 +143,20 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  CursorCloudAgentSummary,
+  CursorCloudArtifactDownload,
+  CursorCloudArtifactSummary,
+  CursorCloudCreateRunRequest,
+  CursorCloudCreateRunResult,
+  CursorCloudFollowUpRequest,
+  CursorCloudFollowUpResult,
+  CursorCloudListAgentsResult,
+  CursorCloudListRunsResult,
+  CursorCloudRepository,
+  CursorCloudOpenChatRequest,
+  CursorCloudOpenChatResult,
+  CursorCloudStreamRunRequest,
+  CursorCloudStreamRunResult,
   AdeCliInstallResult,
   AdeCliStatus,
   OpenCodeRuntimeSnapshot,
@@ -725,6 +739,28 @@ declare global {
         listApiKeys: () => Promise<string[]>;
         verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>) => Promise<void>;
+        cursorCloudListRepositories: () => Promise<CursorCloudRepository[]>;
+        cursorCloudListAgents: (args?: {
+          includeArchived?: boolean;
+          limit?: number;
+          cursor?: string | null;
+        }) => Promise<CursorCloudListAgentsResult>;
+        cursorCloudListRuns: (args: {
+          agentId: string;
+          limit?: number;
+          cursor?: string | null;
+        }) => Promise<CursorCloudListRunsResult>;
+        cursorCloudCreateRun: (args: CursorCloudCreateRunRequest) => Promise<CursorCloudCreateRunResult>;
+        cursorCloudArchiveAgent: (agentId: string) => Promise<void>;
+        cursorCloudUnarchiveAgent: (agentId: string) => Promise<void>;
+        cursorCloudDeleteAgent: (agentId: string) => Promise<void>;
+        cursorCloudGetAgent: (agentId: string) => Promise<CursorCloudAgentSummary | null>;
+        cursorCloudStreamRun: (args: CursorCloudStreamRunRequest) => Promise<CursorCloudStreamRunResult>;
+        cursorCloudCancelRun: (args: { agentId: string; runId: string }) => Promise<void>;
+        cursorCloudFollowUp: (args: CursorCloudFollowUpRequest) => Promise<CursorCloudFollowUpResult>;
+        cursorCloudListArtifacts: (agentId: string) => Promise<CursorCloudArtifactSummary[]>;
+        cursorCloudDownloadArtifact: (args: { agentId: string; path: string }) => Promise<CursorCloudArtifactDownload>;
+        cursorCloudOpenChat: (args: CursorCloudOpenChatRequest) => Promise<CursorCloudOpenChatResult>;
       };
       sync: {
         getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
@@ -1414,6 +1450,8 @@ declare global {
         getSyncStatus: (args: {
           laneId: string;
         }) => Promise<GitUpstreamSyncStatus>;
+        getOriginRemote: (args: { laneId: string }) => Promise<{ remoteUrl: string | null; branch: string | null }>;
+        getOpenPrForBranch: (args: { laneId: string; branch?: string }) => Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }>;
         sync: (args: GitSyncArgs) => Promise<GitActionResult>;
         push: (args: GitPushArgs) => Promise<GitActionResult>;
         getConflictState: (laneId: string) => Promise<GitConflictState>;

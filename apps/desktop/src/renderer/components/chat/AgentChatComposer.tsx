@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, Desktop, DeviceMobile, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
+import { At, CaretDown, Check, CloudArrowUp, Desktop, DeviceMobile, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -563,6 +563,17 @@ export function AgentChatComposer({
   showIosSimulatorToggle = false,
   iosSimulatorOpen = false,
   onToggleIosSimulator,
+  cursorCloudAvailable = false,
+  cursorCloudCanLaunch = false,
+  cursorCloudAgentId = null,
+  cursorCloudPaneOpen = false,
+  cursorCloudActiveCount = 0,
+  cursorCloudLaunchModeOpen = false,
+  cursorCloudLaunchPanel = null,
+  onOpenCloudLaunchMode,
+  onCloseCloudLaunchMode,
+  onOpenCloudBringToLocal,
+  onSubmitToCloud,
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
@@ -659,6 +670,24 @@ export function AgentChatComposer({
   showIosSimulatorToggle?: boolean;
   iosSimulatorOpen?: boolean;
   onToggleIosSimulator?: () => void;
+  cursorCloudAvailable?: boolean;
+  /**
+   * Whether the composer can launch a brand-new cloud run from the current chat. Only true for
+   * fresh chats with no events and no existing cloud agent — once a chat has any turns, the
+   * "Send to Cursor Cloud" affordance hides and the inline launch strip becomes unavailable.
+   * The "Open existing cloud chat" menu item is independent and remains visible whenever
+   * `cursorCloudAvailable` is true, since it spawns a separate session.
+   */
+  cursorCloudCanLaunch?: boolean;
+  cursorCloudAgentId?: string | null;
+  cursorCloudPaneOpen?: boolean;
+  cursorCloudActiveCount?: number;
+  cursorCloudLaunchModeOpen?: boolean;
+  cursorCloudLaunchPanel?: React.ReactNode;
+  onOpenCloudLaunchMode?: () => void;
+  onCloseCloudLaunchMode?: () => void;
+  onOpenCloudBringToLocal?: () => void;
+  onSubmitToCloud?: (promptText: string) => Promise<boolean> | boolean;
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
@@ -678,7 +707,6 @@ export function AgentChatComposer({
   const claudeModePickerRef = useRef<HTMLDivElement | null>(null);
   const [codexPresetPickerOpen, setCodexPresetPickerOpen] = useState(false);
   const codexPresetPickerRef = useRef<HTMLDivElement | null>(null);
-
   const [dragActive, setDragActive] = useState(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "at" | "slash"; query: string; cursorIndex: number } | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<{ top: number; left: number } | null>(null);
@@ -1942,9 +1970,25 @@ export function AgentChatComposer({
       onSubmit();
       return;
     }
+    // Cloud submit only fires when the chat is fresh enough to launch a new cloud run. Once any
+    // turns have been exchanged the inline launch strip is unavailable, so this branch is gated
+    // on `cursorCloudCanLaunch` to defend against a stale `cursorCloudLaunchModeOpen=true`.
+    if (
+      cursorCloudAvailable
+      && cursorCloudCanLaunch
+      && cursorCloudLaunchModeOpen
+      && onSubmitToCloud
+    ) {
+      const trimmed = draft.trim();
+      if (!trimmed.length) return;
+      void Promise.resolve(onSubmitToCloud(trimmed)).then((ok) => {
+        if (ok) onDraftChange("");
+      });
+      return;
+    }
     if (busy || !modelId || (!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length)) return;
     onSubmit();
-  }, [appControlContextItems.length, attachments, busy, draft, iosElementContextItems.length, modelId, onApproval, onDraftChange, onSubmit, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, modelId, onApproval, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
@@ -2583,6 +2627,19 @@ export function AgentChatComposer({
               </SmartTooltip>
             ) : null}
 
+            {cursorCloudAvailable && (onOpenCloudLaunchMode || onOpenCloudBringToLocal) ? (
+              <CursorCloudActionMenu
+                canLaunch={cursorCloudCanLaunch}
+                paneOpen={cursorCloudPaneOpen}
+                launchModeOpen={cursorCloudLaunchModeOpen}
+                cloudAgentId={cursorCloudAgentId}
+                activeCount={cursorCloudActiveCount}
+                onOpenLaunchMode={onOpenCloudLaunchMode}
+                onCloseLaunchMode={onCloseCloudLaunchMode}
+                onOpenBringToLocal={onOpenCloudBringToLocal}
+              />
+            ) : null}
+
             {showIosSimulatorToggle && onToggleIosSimulator ? (
               <SmartTooltip
                 content={{
@@ -2675,39 +2732,59 @@ export function AgentChatComposer({
                 </SmartTooltip>
               </>
             ) : (
-              <SmartTooltip
-                content={{
-                  label: parallelChatMode ? "Send to lanes" : "Send message",
-                  description: parallelChatMode
-                    ? "Create child lanes and send this prompt with its attachments to every configured model."
-                    : "Send this prompt to the selected model.",
-                  effect: sendButtonTitle(),
-                }}
-              >
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex h-8 min-h-0 items-center justify-center rounded-lg border px-2.5 transition-all",
-                    sendEnabled
-                      ? "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]"
-                      : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
-                  )}
-                  disabled={!sendEnabled}
-                  onClick={submitComposerDraft}
-                  aria-label={parallelChatMode ? "Send to parallel lanes" : "Send message"}
-                >
-                  <PaperPlaneTilt className="h-3 w-3" size={12} weight="fill" />
-                  <span className="ml-1 max-w-[8.5rem] truncate font-sans text-[length:calc(var(--chat-font-size)*10/14)] sm:max-w-[11rem]">
-                    {parallelChatMode ? "Send to lanes" : "Send"}
-                  </span>
-                </button>
-              </SmartTooltip>
+              (() => {
+                // Switch the Send button to its cloud variant only when the chat is fresh enough
+                // to actually launch a new cloud run. Once turns exist, the launch path is closed
+                // and we keep the standard local Send affordance even if the cloud pane is open.
+                const cloudMode = cursorCloudAvailable
+                  && cursorCloudCanLaunch
+                  && cursorCloudLaunchModeOpen
+                  && !parallelChatMode;
+                const label = parallelChatMode
+                  ? "Send to lanes"
+                  : cloudMode
+                    ? "Send to Cursor Cloud"
+                    : "Send";
+                const description = parallelChatMode
+                  ? "Create child lanes and send this prompt with its attachments to every configured model."
+                  : cloudMode
+                    ? "Launch a Cursor Cloud agent with this prompt and the panel's settings."
+                    : "Send this prompt to the selected model.";
+                return (
+                  <SmartTooltip content={{ label, description, effect: sendButtonTitle() }}>
+                    <button
+                      type="button"
+                      className={cn(
+                        "inline-flex h-8 min-h-0 items-center justify-center rounded-lg border px-2.5 transition-all",
+                        sendEnabled
+                          ? "border-violet-300/30 bg-violet-500/[0.16] text-violet-50 hover:border-violet-300/45 hover:bg-violet-500/[0.22] active:scale-[0.97]"
+                          : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
+                      )}
+                      disabled={!sendEnabled}
+                      onClick={submitComposerDraft}
+                      aria-label={label}
+                    >
+                      {cloudMode
+                        ? <CloudArrowUp className="h-3 w-3" size={12} weight="fill" />
+                        : <PaperPlaneTilt className="h-3 w-3" size={12} weight="fill" />}
+                      <span className="ml-1 max-w-[10rem] truncate font-sans text-[length:calc(var(--chat-font-size)*10/14)] sm:max-w-[13rem]">
+                        {label}
+                      </span>
+                    </button>
+                  </SmartTooltip>
+                );
+              })()
             )}
           </div>
           </div>
         </div>
       }
     >
+      {cursorCloudLaunchModeOpen && cursorCloudLaunchPanel ? (
+        <div className="border-b border-violet-300/[0.10] bg-violet-500/[0.04] px-3 py-3">
+          {cursorCloudLaunchPanel}
+        </div>
+      ) : null}
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
         <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1.5">
@@ -2902,3 +2979,145 @@ export function AgentChatComposer({
     </>
   );
 }
+
+function CursorCloudActionMenu({
+  canLaunch,
+  paneOpen,
+  launchModeOpen,
+  cloudAgentId,
+  activeCount,
+  onOpenLaunchMode,
+  onCloseLaunchMode,
+  onOpenBringToLocal,
+}: {
+  /**
+   * Whether the "Send to Cursor Cloud" launch item should be available. The trigger button itself
+   * is always shown (so users can always reach "Open existing cloud chat") but the launch row is
+   * only useful for fresh chats with no exchanged turns.
+   */
+  canLaunch: boolean;
+  paneOpen: boolean;
+  launchModeOpen: boolean;
+  cloudAgentId: string | null;
+  activeCount: number;
+  onOpenLaunchMode?: () => void;
+  onCloseLaunchMode?: () => void;
+  onOpenBringToLocal?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const recalc = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const menuWidth = 280;
+      const gap = 8;
+      const top = Math.max(8, rect.top - gap);
+      const left = Math.min(window.innerWidth - menuWidth - 8, Math.max(8, rect.right - menuWidth));
+      setMenuPos({ left, top });
+    };
+    recalc();
+    window.addEventListener("resize", recalc);
+    window.addEventListener("scroll", recalc, true);
+    return () => {
+      window.removeEventListener("resize", recalc);
+      window.removeEventListener("scroll", recalc, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handle = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (wrapRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    window.addEventListener("mousedown", handle);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", handle);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const active = paneOpen || launchModeOpen;
+  return (
+    <div ref={wrapRef} className="relative">
+      <SmartTooltip
+        content={{
+          label: "Cursor Cloud",
+          description: "Send this prompt to Cursor Cloud or resume a cloud chat locally.",
+          effect: cloudAgentId ? "This chat is promoted to cloud." : undefined,
+        }}
+      >
+        <button
+          type="button"
+          ref={triggerRef}
+          onClick={() => setOpen((v) => !v)}
+          className={cn(
+            "relative inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+            active
+              ? "border-violet-300/30 bg-violet-500/[0.16] text-violet-100/90"
+              : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-violet-300/22 hover:text-violet-200/80",
+          )}
+          aria-label="Cursor Cloud actions"
+          aria-haspopup="menu"
+          aria-expanded={open}
+        >
+          <CloudArrowUp className="h-3 w-3" size={14} weight={active ? "fill" : "regular"} />
+          {activeCount > 0 ? (
+            <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 px-0.5 font-mono text-[8px] font-bold text-black" style={{ background: "#A78BFA" }}>{activeCount}</span>
+          ) : cloudAgentId ? (
+            <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full border border-black/40" style={{ background: "#A78BFA" }} aria-hidden />
+          ) : null}
+        </button>
+      </SmartTooltip>
+      {open && menuPos ? createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          style={{ left: menuPos.left, top: menuPos.top, transform: "translateY(-100%)", width: 280 }}
+          className="fixed z-[1000] overflow-hidden rounded-lg border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_94%,black_6%)] shadow-[0_18px_48px_rgba(0,0,0,0.48)] backdrop-blur-xl"
+        >
+          {canLaunch ? (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setOpen(false); if (launchModeOpen) onCloseLaunchMode?.(); else onOpenLaunchMode?.(); }}
+                className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-violet-500/[0.10]"
+              >
+                <CloudArrowUp size={14} weight="fill" className="mt-0.5 shrink-0 text-violet-300" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-sans text-[12px] font-semibold text-fg/90">{launchModeOpen ? "Cancel cloud send" : "Send to Cursor Cloud"}</span>
+                  <span className="block font-sans text-[10.5px] leading-snug text-fg/45">{launchModeOpen ? "Hide the cloud launch options." : "Pick a repo, branch, model — then send your prompt to a fresh cloud agent."}</span>
+                </span>
+              </button>
+              <div className="h-px bg-white/[0.05]" />
+            </>
+          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => { setOpen(false); onOpenBringToLocal?.(); }}
+            className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-violet-500/[0.10]"
+          >
+            <ArrowBendDownRight size={14} weight="bold" className="mt-0.5 shrink-0 text-violet-300/85" />
+            <span className="min-w-0 flex-1">
+              <span className="block font-sans text-[12px] font-semibold text-fg/90">Open existing cloud chat</span>
+              <span className="block font-sans text-[10.5px] leading-snug text-fg/45">Browse your Cursor Cloud agents and open one as a chat in ADE.</span>
+            </span>
+          </button>
+        </div>,
+        document.body,
+      ) : null}
+    </div>
+  );
+}
+

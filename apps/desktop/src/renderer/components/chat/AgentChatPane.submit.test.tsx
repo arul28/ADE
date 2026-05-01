@@ -425,7 +425,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship the transcript cleanup." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -454,7 +454,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship the optimistic bubble." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(screen.getByText("Ship the optimistic bubble.")).toBeTruthy();
@@ -478,7 +478,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Open the simulator screen in preview." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -525,7 +525,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Retry after the failure." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalled();
@@ -573,7 +573,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Just plan the implementation." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -628,7 +628,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Make the change now." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(send).not.toHaveBeenCalled();
@@ -975,7 +975,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship the instant route fix." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(create).toHaveBeenCalled();
@@ -1041,7 +1041,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship it." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(create).toHaveBeenCalled();
@@ -1293,7 +1293,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
 
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix the login bug" } });
-    fireEvent.click(await screen.findByRole("button", { name: /Send to parallel lanes/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Send to lanes/i }));
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
@@ -1455,7 +1455,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(/Claude Sonnet 4\.6/i);
 
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix the login bug" } });
-    fireEvent.click(await screen.findByRole("button", { name: /Send to parallel lanes/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Send to lanes/i }));
 
     expect(await screen.findByText(/Lane 2 failed to send\./i)).toBeTruthy();
     expect(screen.getByText(/Cleanup could not delete lane lane-child-1/i)).toBeTruthy();

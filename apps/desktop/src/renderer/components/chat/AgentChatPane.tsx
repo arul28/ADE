@@ -72,6 +72,8 @@ import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
+import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
+import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
@@ -85,7 +87,7 @@ import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { LaneCombobox } from "../terminals/LaneCombobox";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
-import { getAgentChatModelsCached, getAiStatusCached } from "../../lib/aiDiscoveryCache";
+import { getAgentChatModelsCached, getAiStatusCached, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
@@ -529,7 +531,7 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
       codexConfigSource: "flags",
       opencodePermissionMode: "full-auto",
       droidPermissionMode: "auto-high",
-      cursorModeId: "agent",
+      cursorModeId: "full-auto",
       cursorConfigValues: {},
     };
   }
@@ -663,7 +665,7 @@ function legacyPermissionModeToDroidPermissionMode(
 }
 
 /**
- * Build a fallback CursorModeSnapshot when the Cursor ACP provider hasn't
+ * Build a fallback CursorModeSnapshot when the Cursor SDK runtime hasn't
  * reported its own snapshot yet.
  */
 function buildFallbackCursorModeSnapshot(modeId: string | null | undefined): NonNullable<AgentChatSessionSummary["cursorModeSnapshot"]> {
@@ -1393,7 +1395,26 @@ export function AgentChatPane({
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [interactionMode, setInteractionMode] = useState<AgentChatInteractionMode>(initialNativeControls.interactionMode);
-  const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
+  // Seed availableModelIds, aiStatus, and providerConnections synchronously
+  // from the cached AI status (if any). This avoids a "not configured" flash
+  // in the model picker every time a chat pane mounts: the previously-known
+  // configured set is shown immediately, and `refreshAvailableModels` below
+  // re-verifies asynchronously and corrects any stale entries. We only block
+  // sends when the *fresh* status confirms the provider is unauthenticated;
+  // the seeded value is purely cosmetic for the picker's "Ready / not
+  // configured" labels.
+  const seedAiStatus = useMemo<AiStatusSnapshot | null>(
+    () => peekAiStatusCached(projectRoot),
+    // projectRoot is stable for the lifetime of a project session — recompute
+    // only when the user actually switches projects. We intentionally do not
+    // depend on cache mutations; refreshAvailableModels overrides state once
+    // the async re-check resolves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectRoot],
+  );
+  const [availableModelIds, setAvailableModelIds] = useState<string[]>(() =>
+    seedAiStatus ? deriveConfiguredModelIds(seedAiStatus, { includeDroid: true }) : [],
+  );
   const [claudePermissionMode, setClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(initialNativeControls.claudePermissionMode);
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<AgentChatCodexApprovalPolicy>(initialNativeControls.codexApprovalPolicy);
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
@@ -1403,13 +1424,22 @@ export function AgentChatPane({
   const prevModelDescRef = useRef<ModelDescriptor | null | undefined>(undefined);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(initialNativeControls.cursorConfigValues);
-  const [aiStatus, setAiStatus] = useState<AiStatusSnapshot | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiStatusSnapshot | null>(seedAiStatus);
   const [providerConnections, setProviderConnections] = useState<{
     claude: AiProviderConnectionStatus | null;
     codex: AiProviderConnectionStatus | null;
     cursor: AiProviderConnectionStatus | null;
     droid: AiProviderConnectionStatus | null;
-  } | null>(null);
+  } | null>(() =>
+    seedAiStatus
+      ? {
+          claude: seedAiStatus.providerConnections?.claude ?? null,
+          codex: seedAiStatus.providerConnections?.codex ?? null,
+          cursor: seedAiStatus.providerConnections?.cursor ?? null,
+          droid: seedAiStatus.providerConnections?.droid ?? null,
+        }
+      : null,
+  );
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
@@ -1429,6 +1459,12 @@ export function AgentChatPane({
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
   );
   const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
+  const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
+  const [cursorCloudLaunchModeOpen, setCursorCloudLaunchModeOpen] = useState(false);
+  const cursorCloudPanelRef = useRef<ChatCursorCloudPanelHandle | null>(null);
+  const cursorCloudInlineLaunchRef = useRef<CursorCloudInlineLaunchHandle | null>(null);
+  const [laneGitRemote, setLaneGitRemote] = useState<string | null>(null);
+  const [laneGitBranch, setLaneGitBranch] = useState<string | null>(null);
   const [iosElementContextItems, setIosElementContextItems] = useState<IosElementContextItem[]>([]);
   const [appControlOpen, setAppControlOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).appControlOpen,
@@ -1677,11 +1713,38 @@ export function AgentChatPane({
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
   const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
   const selectedEventsForDisplay = useMemo(() => {
-    if (!optimisticOutgoingMessage || optimisticOutgoingMessage.sessionId !== selectedSessionId) {
-      return selectedEvents;
+    const baseEvents = optimisticOutgoingMessage && optimisticOutgoingMessage.sessionId === selectedSessionId
+      ? [...selectedEvents, optimisticOutgoingMessage.envelope]
+      : selectedEvents;
+    const promotedTurnId = selectedSession?.cursorPromotedTurnId;
+    const cloudAgentId = selectedSession?.cursorCloudAgentId;
+    if (!promotedTurnId || !cloudAgentId) return baseEvents;
+    if (baseEvents.some((env) => env.event.type === "system_notice" && env.event.noticeKind === "info" && env.event.message === "Promoted to Cursor Cloud")) {
+      return baseEvents;
     }
-    return [...selectedEvents, optimisticOutgoingMessage.envelope];
-  }, [optimisticOutgoingMessage, selectedEvents, selectedSessionId]);
+    let insertAt = baseEvents.length;
+    for (let i = 0; i < baseEvents.length; i += 1) {
+      const evt = baseEvents[i]?.event;
+      const turnId = evt && "turnId" in evt ? (evt as { turnId?: string }).turnId : undefined;
+      if (turnId === promotedTurnId) {
+        insertAt = i;
+        break;
+      }
+    }
+    const refEnvelope = baseEvents[insertAt] ?? baseEvents[baseEvents.length - 1];
+    const synthetic: AgentChatEventEnvelope = {
+      sessionId: selectedSessionId ?? "",
+      timestamp: refEnvelope?.timestamp ?? new Date().toISOString(),
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "Promoted to Cursor Cloud",
+        detail: cloudAgentId,
+        turnId: promotedTurnId,
+      },
+    };
+    return [...baseEvents.slice(0, insertAt), synthetic, ...baseEvents.slice(insertAt)];
+  }, [optimisticOutgoingMessage, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
@@ -2163,6 +2226,84 @@ export function AgentChatPane({
       policy: modelSwitchPolicy,
     });
   }, [availableModelIds, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length]);
+  const cursorCloudModelIds = useMemo(
+    () => effectiveAvailableModelIds.filter((id) => id.startsWith("cursor/")),
+    [effectiveAvailableModelIds],
+  );
+  const cursorCloudAvailable = Boolean(laneId)
+    && (selectedSession?.provider === "cursor" || (typeof modelId === "string" && modelId.startsWith("cursor/")));
+  // Launch-to-cloud is only allowed for a fresh chat: no events yet AND not already promoted to a
+  // cloud agent. The "open existing cloud chat" affordance remains independent of this flag because
+  // it spawns a brand-new session.
+  const cursorCloudCanLaunch = cursorCloudAvailable
+    && selectedEvents.length === 0
+    && !selectedSession?.cursorCloudAgentId;
+  useEffect(() => {
+    if (!cursorCloudAvailable && cursorCloudPaneOpen) setCursorCloudPaneOpen(false);
+  }, [cursorCloudAvailable, cursorCloudPaneOpen]);
+  // If the chat is no longer fresh (events arrived, or it was promoted to a cloud agent) close the
+  // inline launch strip so users can't accidentally fire a second cloud agent from a stale draft.
+  useEffect(() => {
+    if (!cursorCloudCanLaunch && cursorCloudLaunchModeOpen) setCursorCloudLaunchModeOpen(false);
+  }, [cursorCloudCanLaunch, cursorCloudLaunchModeOpen]);
+  useEffect(() => {
+    if (!cursorCloudPaneOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCursorCloudPaneOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cursorCloudPaneOpen]);
+  useEffect(() => {
+    if (!laneId) return;
+    if (!cursorCloudPaneOpen && !cursorCloudLaunchModeOpen) return;
+    let cancelled = false;
+    void window.ade.git
+      .getOriginRemote({ laneId })
+      .then((info) => {
+        if (cancelled) return;
+        setLaneGitRemote(info?.remoteUrl ?? null);
+        setLaneGitBranch(info?.branch ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLaneGitRemote(null);
+        setLaneGitBranch(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cursorCloudPaneOpen, cursorCloudLaunchModeOpen, laneId]);
+  const [cursorCloudActiveCount, setCursorCloudActiveCount] = useState<number>(0);
+  useEffect(() => {
+    if (!cursorCloudAvailable) {
+      setCursorCloudActiveCount(0);
+      return;
+    }
+    let cancelled = false;
+    async function poll() {
+      try {
+        const result = await window.ade.ai.cursorCloudListAgents({ limit: 16 });
+        if (cancelled) return;
+        const active = result.items.filter((agent) => {
+          const s = (agent.status ?? "").toLowerCase();
+          return s === "running" || s === "creating";
+        }).length;
+        setCursorCloudActiveCount(active);
+      } catch { /* best-effort */ }
+    }
+    void poll();
+    const interval = window.setInterval(poll, 20_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [cursorCloudAvailable]);
+  // Runtime tracks whether sends go to the local agent or to a promoted Cursor Cloud agent. The
+  // value is derived purely from session state — the previous renderer-side override (split-send
+  // chevron) was removed when launches were funneled through the dedicated cloud composer surface.
+  const cursorRuntime: "local" | "cloud" = selectedSession?.cursorRuntime
+    ?? (selectedSession?.cursorCloudAgentId ? "cloud" : "local");
   const handoffAvailableModelIds = useMemo(() => {
     const merged = new Set<string>(availableModelIds);
     if (selectedSessionModelId) {
@@ -3829,6 +3970,7 @@ export function AgentChatPane({
             reasoningEffort,
             executionMode: launchModeEditable ? executionMode : null,
             interactionMode: sessionProvider === "claude" ? interactionMode : null,
+            ...(sessionProvider === "cursor" ? { runtime: cursorRuntime } : {}),
           });
         } catch (sendError) {
           // Race condition: the turn may have started between our state check
@@ -3891,6 +4033,7 @@ export function AgentChatPane({
     selectedSessionId,
     selectedSessionModelId,
     sessionProvider,
+    cursorRuntime,
     touchSession,
     turnActive,
     turnActiveBySession,
@@ -4158,6 +4301,37 @@ export function AgentChatPane({
       </div>
     </>
   );
+  const cursorCloudPanelContent = (
+    <ChatCursorCloudPanel
+      ref={cursorCloudPanelRef}
+      cursorCloudAgentId={selectedSession?.cursorCloudAgentId ?? null}
+      cursorRuntime={cursorRuntime}
+      cursorModelIds={cursorCloudModelIds}
+      defaultRepoUrl={null}
+      defaultBranch={laneGitBranch}
+      defaultModelSdkId={modelId.startsWith("cursor/") ? modelId.slice("cursor/".length) : null}
+      laneGitRemote={laneGitRemote}
+      laneId={laneId ?? null}
+      onClose={() => setCursorCloudPaneOpen(false)}
+      onOpened={({ sessionId, session }) => {
+        setCursorCloudPaneOpen(false);
+        if (!sessionId) return;
+        loadedHistoryRef.current.delete(sessionId);
+        optimisticSessionIdsRef.current.add(sessionId);
+        knownSessionIdsRef.current.add(sessionId);
+        pendingSelectedSessionIdRef.current = sessionId;
+        draftSelectionLockedRef.current = false;
+        touchSession(sessionId);
+        // In locked-pane mode (single chat tile) `refreshSessions` rewrites
+        // selection back to the lock id, so we hand the new session up to the
+        // parent — same path createSession uses for new chats.
+        if (session) notifySessionCreated(session);
+        setSelectedSessionId(sessionId);
+        void refreshSessions().catch(() => undefined);
+      }}
+      onMissingFields={(message) => setError(message)}
+    />
+  );
   const iosSimulatorPanelContent = (
     <>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
@@ -4313,6 +4487,7 @@ export function AgentChatPane({
                     if (next) {
                       setProofDrawerOpen(false);
                       setAppControlOpen(false);
+                      setCursorCloudPaneOpen(false);
                     }
                     return next;
                   });
@@ -4392,6 +4567,7 @@ export function AgentChatPane({
                     const next = !current;
                     if (next) {
                       setIosSimulatorOpen(false);
+                      setCursorCloudPaneOpen(false);
                       setAppControlOpen(false);
                     }
                     return next;
@@ -4909,6 +5085,7 @@ export function AgentChatPane({
                 const next = !current;
                 if (next) {
                   setProofDrawerOpen(false);
+                  setCursorCloudPaneOpen(false);
                   setAppControlOpen(false);
                 }
                 return next;
@@ -4922,9 +5099,53 @@ export function AgentChatPane({
                 if (next) {
                   setProofDrawerOpen(false);
                   setIosSimulatorOpen(false);
+                  setCursorCloudPaneOpen(false);
                 }
                 return next;
               });
+            }}
+            cursorCloudAvailable={cursorCloudAvailable}
+            cursorCloudCanLaunch={cursorCloudCanLaunch}
+            cursorCloudAgentId={selectedSession?.cursorCloudAgentId ?? null}
+            cursorCloudPaneOpen={cursorCloudPaneOpen}
+            cursorCloudActiveCount={cursorCloudActiveCount}
+            cursorCloudLaunchModeOpen={cursorCloudLaunchModeOpen}
+            cursorCloudLaunchPanel={
+              cursorCloudLaunchModeOpen ? (
+                <CursorCloudInlineLaunch
+                  ref={cursorCloudInlineLaunchRef}
+                  cursorModelIds={cursorCloudModelIds}
+                  defaultBranch={laneGitBranch}
+                  defaultModelSdkId={modelId.startsWith("cursor/") ? modelId.slice("cursor/".length) : null}
+                  laneGitRemote={laneGitRemote}
+                  laneId={laneId ?? null}
+                  onClose={() => setCursorCloudLaunchModeOpen(false)}
+                  onLaunched={() => {
+                    setCursorCloudLaunchModeOpen(false);
+                    void refreshSessions().catch(() => undefined);
+                  }}
+                  onMissingFields={(message) => setError(message)}
+                />
+              ) : null
+            }
+            onOpenCloudLaunchMode={() => {
+              setCursorCloudLaunchModeOpen(true);
+              setCursorCloudPaneOpen(false);
+            }}
+            onCloseCloudLaunchMode={() => setCursorCloudLaunchModeOpen(false)}
+            onOpenCloudBringToLocal={() => {
+              setCursorCloudLaunchModeOpen(false);
+              setProofDrawerOpen(false);
+              setIosSimulatorOpen(false);
+              setCursorCloudPaneOpen(true);
+            }}
+            onSubmitToCloud={async (promptText) => {
+              if (cursorCloudLaunchModeOpen) {
+                const result = await cursorCloudInlineLaunchRef.current?.launchWithPrompt(promptText);
+                return Boolean(result);
+              }
+              const result = await cursorCloudPanelRef.current?.launchWithPrompt(promptText);
+              return Boolean(result);
             }}
             parallelChatMode={parallelChatMode}
             onParallelChatModeChange={(enabled) => {
@@ -5139,6 +5360,14 @@ export function AgentChatPane({
                       layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
                     )}
                   >
+                    {selectedSession?.cursorRuntime === "cloud" && selectedSession?.cursorCloudAgentId ? (
+                      <div
+                        className="shrink-0 border-b border-violet-300/20 bg-violet-500/[0.06] px-4 py-1.5 font-sans text-[11px] leading-snug text-violet-100/85"
+                        role="status"
+                      >
+                        Live view of Cursor Cloud agent. Replies run in cloud.
+                      </div>
+                    ) : null}
                     <AgentChatMessageList
                       key={selectedSessionId ?? "chat-draft"}
                       events={selectedEventsForDisplay}
@@ -5197,6 +5426,7 @@ export function AgentChatPane({
                   {proofDrawerOpen ? renderRightPane(proofPanelContent) : null}
                   {iosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {appControlOpen ? renderRightPane(appControlPanelContent) : null}
+                  {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               ) : (
                 <motion.div
@@ -5292,6 +5522,7 @@ export function AgentChatPane({
                   {rightPaneDivider}
                   {iosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {appControlOpen ? renderRightPane(appControlPanelContent) : null}
+                  {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               )}
             </AnimatePresence>

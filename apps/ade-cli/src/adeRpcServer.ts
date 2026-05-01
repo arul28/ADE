@@ -2317,8 +2317,21 @@ function mapCheckToSummary(check: PrCheck): { name: string; status: string; conc
   return { name: check.name, status: check.status, conclusion: check.conclusion, url: check.detailsUrl };
 }
 
-function summarizePrReviewComments(prId: string, comments: PrComment[], reviews: Array<{ reviewer: string; reviewerAvatarUrl: string | null; state: string; body: string | null; submittedAt: string | null }>, checks: PrCheck[]) {
-  const actionableComments = comments.filter((comment) => Boolean(comment.body?.trim()) && !isBotAuthor(comment.author));
+function summarizePrReviewComments(
+  prId: string,
+  comments: PrComment[],
+  reviews: Array<{ reviewer: string; reviewerAvatarUrl: string | null; state: string; body: string | null; submittedAt: string | null }>,
+  checks: PrCheck[],
+  reviewThreads: PrReviewThread[],
+) {
+  // Issue comments: still skip bot chatter (e.g. CI status echoes). Inline review-thread
+  // comments are NOT filtered here — they come from review bots like Greptile/CodeRabbit,
+  // which are exactly the actionable signal the agent needs to address.
+  const actionableIssueComments = comments.filter(
+    (comment) => Boolean(comment.body?.trim()) && comment.source === "issue" && !isBotAuthor(comment.author),
+  );
+  const unresolvedThreads = reviewThreads.filter((thread) => !thread.isResolved && !thread.isOutdated);
+  const actionableThreadCommentCount = unresolvedThreads.reduce((acc, thread) => acc + thread.comments.length, 0);
   const pendingReviews = reviews.filter((review) => review.state === "changes_requested" || review.state === "commented");
   const checkSummary = summarizePrChecks(checks);
   return {
@@ -2326,11 +2339,26 @@ function summarizePrReviewComments(prId: string, comments: PrComment[], reviews:
     prId,
     summary: {
       totalComments: comments.length,
-      actionableComments: actionableComments.length,
+      actionableComments: actionableIssueComments.length + actionableThreadCommentCount,
+      actionableReviewThreadCount: unresolvedThreads.length,
       reviewsRequiringChanges: pendingReviews.filter((review) => review.state === "changes_requested").length,
       checksStatus: checkSummary.overall,
     },
-    comments: actionableComments.map((comment) => ({
+    reviewThreads: unresolvedThreads.map((thread) => ({
+      id: thread.id,
+      path: thread.path,
+      line: thread.line,
+      url: thread.url,
+      isResolved: thread.isResolved,
+      isOutdated: thread.isOutdated,
+      comments: thread.comments.map((comment) => ({
+        id: comment.id,
+        author: comment.author,
+        body: comment.body,
+        url: comment.url,
+      })),
+    })),
+    comments: actionableIssueComments.map((comment) => ({
       id: comment.id,
       author: comment.author,
       body: comment.body,
@@ -5578,12 +5606,13 @@ async function runTool(args: {
   if (name === "pr_get_review_comments") {
     const prId = assertNonEmptyString(toolArgs.prId, "prId");
     const prSvc = requirePrService(runtime);
-    const [comments, reviews, checks] = await Promise.all([
+    const [comments, reviews, checks, reviewThreads] = await Promise.all([
       prSvc.getComments(prId),
       prSvc.getReviews(prId),
       prSvc.getChecks(prId),
+      prSvc.getReviewThreads(prId).catch(() => []),
     ]);
-    return summarizePrReviewComments(prId, comments, reviews, checks);
+    return summarizePrReviewComments(prId, comments, reviews, checks, reviewThreads);
   }
 
   if (name === "pr_refresh_issue_inventory") {

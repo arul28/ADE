@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
@@ -108,7 +108,7 @@ function buildStatus(
         runtimeAvailable: false,
         usageAvailable: false,
         path: null,
-        blocker: "No Cursor CLI (`agent`) or Cursor credentials were found locally.",
+        blocker: "Enter a Cursor API key from https://cursor.com/dashboard/integrations.",
         lastCheckedAt: "2026-03-17T19:00:00.000Z",
         sources: [],
       },
@@ -145,6 +145,15 @@ describe("ProvidersSection", () => {
           .mockResolvedValueOnce(buildStatus(true, ["lmstudio/meta-llama-3.1-70b-instruct", "lmstudio/qwen2.5-coder:32b"]))
           .mockResolvedValueOnce(buildStatus(false, ["lmstudio/meta-llama-3.1-70b-instruct", "lmstudio/qwen2.5-coder:32b"])),
         listApiKeys: vi.fn().mockResolvedValue([]),
+        storeApiKey: vi.fn().mockResolvedValue(undefined),
+        deleteApiKey: vi.fn().mockResolvedValue(undefined),
+        verifyApiKey: vi.fn().mockResolvedValue({
+          provider: "cursor",
+          ok: true,
+          message: "Verified",
+          source: "store",
+          verifiedAt: "2026-03-17T19:00:00.000Z",
+        }),
         updateConfig: vi.fn().mockResolvedValue(undefined),
       },
       projectConfig: {
@@ -168,6 +177,7 @@ describe("ProvidersSection", () => {
   });
 
   afterEach(() => {
+    cleanup();
     globalThis.window.ade = originalAde;
   });
 
@@ -256,5 +266,40 @@ describe("ProvidersSection", () => {
     expect(await current.findByText("Load a model")).toBeTruthy();
     expect(current.getByText("LM Studio is reachable, but no models are currently loaded.")).toBeTruthy();
     expect(current.queryByText("Ready")).toBeNull();
+  });
+
+  it("keeps Cursor API key setup in the Cursor runtime card and verifies on save", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
+    listApiKeysMock.mockReset();
+    listApiKeysMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValue(["cursor"]);
+
+    render(<ProvidersSection />);
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      screen.getByLabelText("Add Cursor API key").click();
+    });
+
+    fireEvent.change(screen.getByLabelText("Cursor API key"), { target: { value: "crsr_test" } });
+
+    await act(async () => {
+      screen.getByLabelText("Save Cursor API key").click();
+    });
+
+    await waitFor(() => {
+      expect(window.ade.ai.storeApiKey).toHaveBeenCalledWith("cursor", "crsr_test");
+      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor");
+    });
+    expect(await screen.findByText("Cursor connection verified.")).toBeTruthy();
+    expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
   });
 });

@@ -73,7 +73,7 @@ function subsectionTabTitle(sub: ModelSubsection): string {
 
 function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): string {
   if (isAvailable) {
-    if (model.family === "cursor" && model.isCliWrapped) return "Cursor ready";
+    if (model.family === "cursor") return "Cursor SDK ready";
     if (model.isCliWrapped && model.cliCommand === "claude") return "Claude ready";
     if (model.isCliWrapped && model.cliCommand === "codex") return "Codex ready";
     if (model.authTypes.includes("local")) return `${providerLabel(model.family)} ready`;
@@ -82,8 +82,8 @@ function modelAvailabilityLabel(model: ModelDescriptor, isAvailable: boolean): s
     if (model.authTypes.includes("openrouter")) return "OpenCode · OpenRouter ready";
     return "Ready";
   }
-  if (model.family === "cursor" && model.isCliWrapped) {
-    return "Cursor · run `agent login` or set CURSOR_API_KEY / CURSOR_AUTH_TOKEN";
+  if (model.family === "cursor") {
+    return "Cursor · enter a Cursor API key";
   }
   if (model.isCliWrapped && model.cliCommand === "claude") return "Claude · not configured";
   if (model.isCliWrapped && model.cliCommand === "codex") return "Codex · not configured";
@@ -109,15 +109,15 @@ export function createUnknownModelPlaceholder(modelId: string): ModelDescriptor 
       shortId: tail || modelId,
       displayName: tail || modelId,
       family: "cursor",
-      authTypes: ["cli-subscription"],
+      authTypes: ["api-key"],
       contextWindow: 0,
       maxOutputTokens: 0,
       capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
       color: "#A78BFA",
-      providerRoute: "cursor-cli",
+      providerRoute: "cursor-sdk",
       providerModelId: tail || modelId,
       cliCommand: "cursor",
-      isCliWrapped: true,
+      isCliWrapped: false,
     };
   }
   const droidCli = parseDynamicDroidModelRef(modelId);

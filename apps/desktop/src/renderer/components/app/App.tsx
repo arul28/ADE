@@ -66,6 +66,7 @@ const CtoPage = React.lazy(() =>
 
 import { useAppStore } from "../../state/appStore";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
+import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 
 const StartupSplashScreen = (
@@ -291,6 +292,7 @@ function ShellLayout() {
 
 export function App() {
   const theme = useAppStore((s) => s.theme);
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
 
   React.useEffect(() => {
     const w = window as Window & { __ADE_GET_DIRTY_FILE_TEXT__?: (p: string) => string | undefined };
@@ -299,6 +301,11 @@ export function App() {
       delete w.__ADE_GET_DIRTY_FILE_TEXT__;
     };
   }, []);
+
+  React.useEffect(() => {
+    if (!projectRoot) return;
+    void getAiStatusCached({ projectRoot }).catch(() => undefined);
+  }, [projectRoot]);
 
   React.useEffect(() => {
     // Keep theme consistent for portals mounted outside the app root.

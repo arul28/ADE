@@ -13,7 +13,7 @@ export default defineConfig({
   outExtension: () => ({
     js: ".cjs"
   }),
-  external: ["node-pty", "sql.js", "node:sqlite"],
+  external: ["node-pty", "sql.js", "node:sqlite", "@cursor/sdk", "sqlite3"],
   esbuildOptions(options) {
     options.alias = {
       ...(options.alias ?? {}),

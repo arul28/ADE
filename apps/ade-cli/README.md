@@ -74,6 +74,9 @@ ade --socket ios-sim launch --target target-id --text
 ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
 ade actions list
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
+ade cursor cloud agents list --text
+ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
+ade cursor cloud me
 ```
 
 Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet.

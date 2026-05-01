@@ -36,8 +36,10 @@ provider adapter:
   Codex app-server. ADE workflow actions are available through the
   `ade` CLI.
 - **OpenCode:** tools are registered with the OpenCode runtime.
-- **Cursor ACP:** Cursor exposes its own tool model; ADE workflow
-  actions are available through the `ade` CLI.
+- **Cursor SDK:** the embedded `@cursor/sdk` exposes its own tool model
+  and ADE supplies a permission/hook bridge through `cursorSdkPool.ts`
+  and `cursorSdkPolicy.ts`. ADE workflow actions are available through
+  the `ade` CLI.
 
 ### ADE CLI path
 
