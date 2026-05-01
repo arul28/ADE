@@ -1,0 +1,47 @@
+name: iOS internal TestFlight build bump (self-hosted asc)
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: >-
+          Git ref to checkout before archiving. Marketing version is always read from
+          apps/ios/ADE.xcodeproj; this workflow never edits CFBundleShortVersionString.
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-tf-internal-bump-${{ github.repository }}
+  cancel-in-progress: false
+
+# Auth/env should match `.claude/commands/release.md` Phase 7: identical `asc`/Xcode toolchain as your Studio shell.
+#
+# IMPORTANT: do not declare empty GitHub Secrets as job env vars here — an empty APPLE_* value overrides inherited
+# runner environment and defeats “same ~/.asc / same ENV as `/release`”. Put ASC_APP_ID (or APPLE_IOS_APP_ID),
+# optional APPLE_* for AuthKey injection, toolchain PATH, etc. on the runner service environment (recommended:
+# `$RUNNER_ROOT/.env` for the Actions runner) or rely on ~/.asc/config.json plus your login profile.
+#
+# Runs every `run` step with `bash --login -eo pipefail` so interactive-path setup (Apple Silicon Homebrew bins,
+# Xcode paths, exporter env hooks) behaves like Terminal when you configured `asc doctor`.
+
+jobs:
+  internal-build-bump:
+    runs-on: [self-hosted, macOS]
+    defaults:
+      run:
+        shell: bash --login -eo pipefail {0}
+    env:
+      ASC_PUBLISH_WAIT_TIMEOUT: 60m
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref }}
+          fetch-depth: 0
+
+      - name: Bump build and ship to internal testers
+        run: bash ./.github/scripts/ios-testflight-internal-build-bump-asc.sh
