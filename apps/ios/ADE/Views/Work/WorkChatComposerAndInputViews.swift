@@ -335,12 +335,15 @@ struct WorkComposerChipStrip: View {
 
   private func prettyModelName(_ model: String) -> String {
     // Match the desktop composer's model label: "Claude Sonnet 4.6" /
-    // "GPT-5.4-Codex" instead of a bare short id. Host-reported
+    // "GPT-5.4" instead of a bare short id. Host-reported
     // `chatSummary.model` is usually just "sonnet" / "opus" / "haiku" for
     // Claude and the full long form for Codex, so we special-case the
     // Claude short ids and otherwise beautify the raw string.
     let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return "Model" }
+    if let known = workKnownModelDisplayName(trimmed) {
+      return known
+    }
     let lower = trimmed.lowercased()
 
     switch lower {

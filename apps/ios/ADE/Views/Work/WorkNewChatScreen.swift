@@ -24,9 +24,6 @@ struct WorkNewChatScreen: View {
   @State private var modelPickerPresented = false
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
-  @State private var mentionsSheetPresented = false
-  @State private var slashSheetPresented = false
-  @State private var pendingDraftInsert: String?
 
   private var selectedLaneName: String {
     if let match = lanes.first(where: { $0.id == selectedLaneId }) {
@@ -116,18 +113,6 @@ struct WorkNewChatScreen: View {
         }
       )
     }
-    .sheet(isPresented: $mentionsSheetPresented) {
-      WorkMentionsPickerSheet(lanes: lanes) { token in
-        pendingDraftInsert = token
-        mentionsSheetPresented = false
-      }
-    }
-    .sheet(isPresented: $slashSheetPresented) {
-      WorkSlashCommandsSheet(provider: provider) { token in
-        pendingDraftInsert = token
-        slashSheetPresented = false
-      }
-    }
   }
 
   @ViewBuilder
@@ -210,10 +195,7 @@ struct WorkNewChatScreen: View {
       canStart: !busy && !selectedLaneId.isEmpty && !modelId.isEmpty,
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
-      pendingInsert: $pendingDraftInsert,
       onOpenModelPicker: { modelPickerPresented = true },
-      onOpenMentions: { mentionsSheetPresented = true },
-      onOpenSlash: { slashSheetPresented = true },
       onSubmit: submit(openingMessage:)
     )
   }
@@ -221,6 +203,9 @@ struct WorkNewChatScreen: View {
   private func prettyNewChatModelName(_ model: String) -> String {
     let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return "Model" }
+    if let known = workKnownModelDisplayName(trimmed) {
+      return known
+    }
     let lower = trimmed.lowercased()
     switch lower {
     case "opus": return "Claude Opus 4.7"
@@ -283,10 +268,7 @@ private struct WorkNewChatComposerBar: View {
   let canStart: Bool
   @Binding var runtimeMode: String
   @Binding var reasoningEffort: String
-  @Binding var pendingInsert: String?
   let onOpenModelPicker: () -> Void
-  let onOpenMentions: () -> Void
-  let onOpenSlash: () -> Void
   let onSubmit: @MainActor (String) async -> Bool
 
   @State private var draft: String = ""
@@ -324,119 +306,86 @@ private struct WorkNewChatComposerBar: View {
         .textInputAutocapitalization(.sentences)
         .focused($composerFocused)
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-        .onChange(of: pendingInsert) { _, newValue in
-          guard let token = newValue, !token.isEmpty else { return }
-          if !draft.isEmpty && !draft.hasSuffix(" ") && !draft.hasSuffix("\n") {
-            draft += " "
-          }
-          draft += token
-          pendingInsert = nil
-          composerFocused = true
-        }
 
       HStack(alignment: .center, spacing: 8) {
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(alignment: .center, spacing: 10) {
-        Button {
-          onOpenModelPicker()
-        } label: {
-          HStack(spacing: 6) {
-            WorkProviderLogo(
-              provider: provider,
-              fallbackSymbol: providerIcon(provider),
-              tint: providerTint(provider),
-              size: 16
-            )
-            Text(modelName)
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-            if !reasoningEffort.isEmpty {
-              Text("·")
-                .font(.caption2)
-                .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-              Text(reasoningEffort.capitalized)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(ADEColor.textMuted)
-                .lineLimit(1)
-            }
-            Image(systemName: "chevron.down")
-              .font(.system(size: 9, weight: .bold))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-          .padding(.horizontal, 9)
-          .padding(.vertical, 6)
-          .background(Color.clear, in: Capsule(style: .continuous))
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-          )
-        }
-        .buttonStyle(.plain)
-
-        if !runtimeOptions.isEmpty {
-          Menu {
-            ForEach(runtimeOptions) { option in
-              Button {
-                runtimeMode = option.id
-              } label: {
-                if option.id == runtimeMode {
-                  Label(option.title, systemImage: "checkmark")
-                } else {
-                  Text(option.title)
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(alignment: .center, spacing: 10) {
+            Button {
+              onOpenModelPicker()
+            } label: {
+              HStack(spacing: 6) {
+                WorkProviderLogo(
+                  provider: provider,
+                  fallbackSymbol: providerIcon(provider),
+                  tint: providerTint(provider),
+                  size: 16
+                )
+                Text(modelName)
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                if !reasoningEffort.isEmpty {
+                  Text("·")
+                    .font(.caption2)
+                    .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+                  Text(reasoningEffort.capitalized)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(ADEColor.textMuted)
+                    .lineLimit(1)
                 }
+                Image(systemName: "chevron.down")
+                  .font(.system(size: 9, weight: .bold))
+                  .foregroundStyle(ADEColor.textMuted)
               }
+              .padding(.horizontal, 9)
+              .padding(.vertical, 6)
+              .background(Color.clear, in: Capsule(style: .continuous))
+              .overlay(
+                Capsule(style: .continuous)
+                  .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+              )
             }
-          } label: {
-            HStack(spacing: 6) {
-              Circle().fill(runtimeTint).frame(width: 6, height: 6)
-              Text(runtimeLabel)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-                .lineLimit(1)
-              Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(ADEColor.textMuted)
+            .buttonStyle(.plain)
+
+            if !runtimeOptions.isEmpty {
+              Menu {
+                ForEach(runtimeOptions) { option in
+                  Button {
+                    runtimeMode = option.id
+                  } label: {
+                    if option.id == runtimeMode {
+                      Label(option.title, systemImage: "checkmark")
+                    } else {
+                      Text(option.title)
+                    }
+                  }
+                }
+              } label: {
+                HStack(spacing: 6) {
+                  Circle().fill(runtimeTint).frame(width: 6, height: 6)
+                  Text(runtimeLabel)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ADEColor.textPrimary)
+                    .lineLimit(1)
+                  Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(ADEColor.textMuted)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(runtimeTint.opacity(0.06), in: Capsule(style: .continuous))
+                .overlay(
+                  Capsule(style: .continuous)
+                    .stroke(runtimeTint.opacity(0.22), lineWidth: 0.5)
+                )
+              }
+              .menuStyle(.borderlessButton)
+              .buttonStyle(.plain)
+              .accessibilityLabel("Access mode: \(runtimeLabel). Tap to change.")
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background(runtimeTint.opacity(0.06), in: Capsule(style: .continuous))
-            .overlay(
-              Capsule(style: .continuous)
-                .stroke(runtimeTint.opacity(0.22), lineWidth: 0.5)
-            )
           }
-          .menuStyle(.borderlessButton)
-          .buttonStyle(.plain)
-          .accessibilityLabel("Access mode: \(runtimeLabel). Tap to change.")
+          .padding(.trailing, 4)
         }
-
-        Button(action: onOpenMentions) {
-          Image(systemName: "at")
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .frame(width: 28, height: 28)
-            .background(ADEColor.surfaceBackground.opacity(0.7), in: Circle())
-            .glassEffect()
-            .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.6))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Insert @ mention")
-
-        Button(action: onOpenSlash) {
-          Text("/")
-            .font(.system(size: 14, weight: .bold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .frame(width: 28, height: 28)
-            .background(ADEColor.surfaceBackground.opacity(0.7), in: Circle())
-            .glassEffect()
-            .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.6))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Insert slash command")
-        }
-        .padding(.trailing, 4)
-      }
 
         Button {
           let text = trimmedDraft
@@ -477,7 +426,7 @@ private struct WorkNewChatComposerBar: View {
         .disabled(!canSend)
         .accessibilityLabel(canSend ? "Start chat" : "Enter a message to start")
       }
-      }
+    }
     .padding(.horizontal, 14)
     .padding(.vertical, 14)
     .background(

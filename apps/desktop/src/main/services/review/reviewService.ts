@@ -141,7 +141,7 @@ type ReviewRunPublicationRow = {
   completed_at: string | null;
 };
 
-const REVIEW_MODEL_FALLBACK_ID = "openai/gpt-5.4-codex";
+const REVIEW_MODEL_FALLBACK_ID = "openai/gpt-5.4";
 
 function resolveBuiltinReviewModelId(): string {
   const candidates = [

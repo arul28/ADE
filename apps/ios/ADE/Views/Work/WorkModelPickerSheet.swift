@@ -221,7 +221,7 @@ struct WorkModelPickerSheet: View {
     }
 
     if let provider = block.providers.first(where: { provider in
-      provider.models.contains { $0.id == currentModelId }
+      provider.models.contains { workModelIdsEquivalent($0.id, currentModelId) }
     }) {
       return provider.key
     }
@@ -267,8 +267,11 @@ struct WorkModelPickerSheet: View {
     if lower.contains("sonnet") || lower.contains("thinking") {
       return ["low", "medium", "high"]
     }
+    if lower.contains("gpt-5.4-mini") {
+      return ["low", "medium", "high", "xhigh"]
+    }
     if lower.contains("gpt-5") {
-      return lower.contains("mini") ? ["medium", "high"] : ["low", "medium", "high", "xhigh"]
+      return ["low", "medium", "high", "xhigh"]
     }
     return []
   }
@@ -554,12 +557,10 @@ struct WorkModelPickerSheet: View {
   @ViewBuilder
   private func modelButton(model: WorkModelOption) -> some View {
     let tiers = supportedReasoningTiers(for: model)
-    let isSelected = model.id == currentModelId
+    let isSelected = workModelIdsEquivalent(model.id, currentModelId)
     VStack(alignment: .leading, spacing: 0) {
-      // Card header is always tappable: tapping the header commits the model
-      // with `effort: nil` (server default) even for reasoning-capable models,
-      // so users who don't care about a specific tier aren't forced to pick one.
       Button {
+        guard tiers.isEmpty else { return }
         commit(model: model, effort: nil)
       } label: {
         modelHeaderRow(model: model, isSelected: isSelected)
@@ -567,7 +568,7 @@ struct WorkModelPickerSheet: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .disabled(isBusy)
+      .disabled(isBusy || !tiers.isEmpty)
 
       if !tiers.isEmpty {
         reasoningPills(model: model, tiers: tiers)

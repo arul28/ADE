@@ -336,7 +336,7 @@ describe("TerminalView", () => {
       await waitFor(
         () => {
           const runtime = getTerminalRuntimeSnapshot("session-valid");
-          expect(runtime?.renderer).toBe("dom");
+          expect(runtime?.renderer).toBe("webgl");
           expect(runtime?.health.fitRecoveries).toBe(0);
           expect((window as any).ade.pty.resize).toHaveBeenCalledWith({
             ptyId: "pty-valid",
@@ -351,16 +351,16 @@ describe("TerminalView", () => {
     }
   });
 
-  it("uses the WebGL renderer when explicitly opted in", async () => {
+  it("uses the DOM renderer when explicitly opted out", async () => {
     vi.useRealTimers();
     try {
-      window.localStorage.setItem("ade.terminalRenderer", "webgl");
-      render(<TerminalView ptyId="pty-webgl" sessionId="session-webgl" isActive />);
+      window.localStorage.setItem("ade.terminalRenderer", "dom");
+      render(<TerminalView ptyId="pty-dom-opt-out" sessionId="session-dom-opt-out" isActive />);
 
       await waitFor(
         () => {
-          const runtime = getTerminalRuntimeSnapshot("session-webgl");
-          expect(runtime?.renderer).toBe("webgl");
+          const runtime = getTerminalRuntimeSnapshot("session-dom-opt-out");
+          expect(runtime?.renderer).toBe("dom");
         },
         { timeout: 10_000 },
       );
@@ -441,7 +441,6 @@ describe("TerminalView", () => {
     // `await import("@xterm/addon-webgl")` may not settle under Vi's fake timers on CI shards.
     vi.useRealTimers();
     try {
-      window.localStorage.setItem("ade.terminalRenderer", "webgl");
       mockState.shouldThrowWebglAddon = true;
       const previousFallbacks = getTerminalRuntimeSnapshot("session-dom")?.health.rendererFallbacks ?? 0;
 

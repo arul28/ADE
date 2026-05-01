@@ -340,10 +340,24 @@ export type SyncPairingResultPayload = {
 };
 
 export type SyncChangesetBatchPayload = {
+  batchId?: string | null;
   reason: "catchup" | "broadcast" | "relay";
   fromDbVersion: number;
   toDbVersion: number;
   changes: CrsqlChangeRow[];
+};
+
+export type SyncChangesetAckPayload = {
+  batchId?: string | null;
+  fromDbVersion: number;
+  toDbVersion: number;
+  appliedDbVersion: number;
+  appliedCount: number;
+  ok: boolean;
+  error?: {
+    code: string;
+    message: string;
+  };
 };
 
 export type SyncHeartbeatPayload = {
@@ -463,6 +477,12 @@ export type SyncBrainStatusPayload = {
     dbVersion: number;
     uptimeMs: number;
     lastBroadcastAt: string | null;
+    pendingChangesetPeerCount?: number;
+    commandLedgerSize?: number;
+    commandReplayCount?: number;
+    commandConflictCount?: number;
+    lastCommandResultLatencyMs?: number | null;
+    lastChangesetAckLatencyMs?: number | null;
   };
 };
 
@@ -880,6 +900,7 @@ export type SyncProjectSwitchResultEnvelope = SyncEnvelopeWithPayload<"project_s
 export type SyncPairingRequestEnvelope = SyncEnvelopeWithPayload<"pairing_request", SyncPairingRequestPayload>;
 export type SyncPairingResultEnvelope = SyncEnvelopeWithPayload<"pairing_result", SyncPairingResultPayload>;
 export type SyncChangesetBatchEnvelope = SyncEnvelopeWithPayload<"changeset_batch", SyncChangesetBatchPayload>;
+export type SyncChangesetAckEnvelope = SyncEnvelopeWithPayload<"changeset_ack", SyncChangesetAckPayload>;
 export type SyncHeartbeatEnvelope = SyncEnvelopeWithPayload<"heartbeat", SyncHeartbeatPayload>;
 export type SyncFileRequestEnvelope = SyncEnvelopeWithPayload<"file_request", SyncFileRequest>;
 export type SyncFileResponseEnvelope = SyncEnvelopeWithPayload<"file_response", SyncFileResponsePayload>;
@@ -914,6 +935,7 @@ export type SyncEnvelope =
   | SyncPairingRequestEnvelope
   | SyncPairingResultEnvelope
   | SyncChangesetBatchEnvelope
+  | SyncChangesetAckEnvelope
   | SyncHeartbeatEnvelope
   | SyncFileRequestEnvelope
   | SyncFileResponseEnvelope

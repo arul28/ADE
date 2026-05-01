@@ -44,7 +44,7 @@ import type {
   OperatorNavigationSuggestion,
   TurnDiffFile,
 } from "../../../shared/types";
-import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -1237,6 +1237,15 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
 
 /* ── Main event renderer ── */
 
+function isKnownModelRefForDescriptor(desc: ModelDescriptor, value?: string): boolean {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  if (!normalized.length) return false;
+  return normalized === desc.id.toLowerCase()
+    || normalized === desc.shortId.toLowerCase()
+    || normalized === desc.providerModelId.toLowerCase()
+    || (desc.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized);
+}
+
 function resolveModelLabel(modelId?: string, model?: string): string | null {
   if (modelId) {
     const desc = getModelById(modelId);
@@ -1244,21 +1253,18 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
       // When the runtime-reported model name differs from all known canonical
       // identifiers, show it in the parenthetical so the user sees the exact
       // model string the provider returned (e.g. a snapshot variant).
-      const normalizedModel = model?.trim().toLowerCase() ?? "";
-      const isNonCanonicalModel = normalizedModel.length > 0
-        && normalizedModel !== desc.id.toLowerCase()
-        && normalizedModel !== desc.shortId.toLowerCase()
-        && normalizedModel !== desc.providerModelId.toLowerCase();
+      const isNonCanonicalModel = Boolean(model?.trim())
+        && !isKnownModelRefForDescriptor(desc, model);
       if (isNonCanonicalModel) {
         return `${desc.displayName} (${model?.trim()})`;
       }
-      return `${desc.displayName} (${modelId})`;
+      return desc.displayName;
     }
     return modelId;
   }
   if (model) {
     const desc = resolveModelDescriptor(model);
-    if (desc) return `${desc.displayName} (${desc.id})`;
+    if (desc) return desc.displayName;
     return model;
   }
   return null;

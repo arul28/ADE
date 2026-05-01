@@ -773,7 +773,7 @@ describe("deriveTurnDividerData", () => {
           type: "done",
           turnId: "turn-1",
           status: "completed",
-          modelId: "gpt-5.4-codex",
+          modelId: "gpt-5.4",
           model: "GPT-5.4",
           usage: {
             inputTokens: 100,
@@ -795,7 +795,7 @@ describe("deriveTurnDividerData", () => {
     expect(turn.deletions).toBe(1);
     expect(turn.status).toBe("completed");
     expect(turn.model).toBe("GPT-5.4");
-    expect(turn.modelId).toBe("gpt-5.4-codex");
+    expect(turn.modelId).toBe("gpt-5.4");
     expect(turn.inputTokens).toBe(100);
     expect(turn.outputTokens).toBe(50);
     expect(turn.cacheReadTokens).toBe(10);

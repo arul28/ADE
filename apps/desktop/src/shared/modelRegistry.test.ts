@@ -51,10 +51,10 @@ describe("modelRegistry", () => {
   it("resolveModelSlug returns canonical id for registry input and codex-hinted refs", () => {
     const byId = resolveModelSlug("  anthropic/claude-opus-4-7  ");
     expect(byId).toBe("anthropic/claude-opus-4-7");
-    expect(resolveModelSlug("gpt-5.4")).toBeUndefined();
-    expect(resolveModelSlug("gpt-5.5")).toBeUndefined();
-    expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4-codex");
-    expect(resolveModelSlug("gpt-5.5", "codex")).toBe("openai/gpt-5.5-codex");
+    expect(resolveModelSlug("gpt-5.4")).toBe("openai/gpt-5.4");
+    expect(resolveModelSlug("gpt-5.5")).toBe("openai/gpt-5.5");
+    expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4");
+    expect(resolveModelSlug("gpt-5.5", "codex")).toBe("openai/gpt-5.5");
     expect(resolveModelSlug("")).toBeUndefined();
     expect(resolveModelSlug("   ")).toBeUndefined();
     expect(resolveModelSlug("not-a-real-model-xyz")).toBeUndefined();
@@ -81,24 +81,20 @@ describe("modelRegistry", () => {
 
   it("keeps only the allowed OpenAI chat models in the registry defaults", () => {
     expect(listModelDescriptorsForProvider("codex").map((model) => model.id)).toEqual([
-      "openai/gpt-5.5-codex",
-      "openai/gpt-5.4-codex",
-      "openai/gpt-5.4-mini-codex",
+      "openai/gpt-5.5",
+      "openai/gpt-5.4",
+      "openai/gpt-5.4-mini",
       "openai/gpt-5.3-codex",
-      "openai/gpt-5.3-codex-spark",
-      "openai/gpt-5.2-codex",
-      "openai/gpt-5.1-codex-max",
-      "openai/gpt-5.1-codex-mini",
     ]);
 
     // API-key OpenAI models are now discovered dynamically through OpenCode,
     // so the static registry yields no hits for api-key auth alone.
     expect(getAvailableModels([{ type: "api-key", provider: "openai" }]).map((model) => model.id)).toEqual([]);
-    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-5.5-codex");
+    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-5.5");
   });
 
-  it("exposes GPT-5.5-Codex with the Codex app-server model id and expected reasoning tiers", () => {
-    expect(getModelById("openai/gpt-5.5-codex")).toMatchObject({
+  it("exposes GPT-5.5 with the real OpenAI model id and expected reasoning tiers", () => {
+    expect(getModelById("openai/gpt-5.5")).toMatchObject({
       displayName: "GPT-5.5",
       providerRoute: "codex-cli",
       providerModelId: "gpt-5.5",
@@ -106,15 +102,15 @@ describe("modelRegistry", () => {
     });
   });
 
-  it("exposes GPT-5.4-Mini-Codex with the expected reasoning tiers", () => {
-    expect(getModelById("openai/gpt-5.4-mini-codex")).toMatchObject({
+  it("exposes GPT-5.4-Mini with the expected reasoning tiers", () => {
+    expect(getModelById("openai/gpt-5.4-mini")).toMatchObject({
       displayName: "GPT-5.4-Mini",
       reasoningTiers: ["low", "medium", "high", "xhigh"],
     });
   });
 
   it("marks CLI-wrapped models as CLI subscription in the shared model source helper", () => {
-    expect(describeModelSource(getModelById("openai/gpt-5.5-codex")!)).toBe("CLI subscription");
+    expect(describeModelSource(getModelById("openai/gpt-5.5")!)).toBe("CLI subscription");
   });
 
   it("returns undefined for unknown model IDs", () => {
@@ -135,40 +131,40 @@ describe("modelRegistry", () => {
     expect(perm?.authTypes).toContain("local");
   });
 
-  it("returns undefined for bare gpt-5.4 alias since API-key variants are now OpenCode-dynamic", () => {
+  it("resolves bare gpt-5.4 to the real OpenAI registry id", () => {
     const resolved = resolveModelAlias("gpt-5.4");
-    expect(resolved).toBeUndefined();
+    expect(resolved?.id).toBe("openai/gpt-5.4");
   });
 
-  it("returns undefined for bare gpt-5.5 alias since API-key variants are now OpenCode-dynamic", () => {
+  it("resolves bare gpt-5.5 to the real OpenAI registry id", () => {
     const resolved = resolveModelAlias("gpt-5.5");
-    expect(resolved).toBeUndefined();
+    expect(resolved?.id).toBe("openai/gpt-5.5");
   });
 
-  it("resolves gpt-5.4 to the Codex wrapper when the provider is codex", () => {
+  it("resolves gpt-5.4 to the real OpenAI model when the provider is codex", () => {
     const resolved = resolveModelDescriptorForProvider("gpt-5.4", "codex");
-    expect(resolved?.id).toBe("openai/gpt-5.4-codex");
+    expect(resolved?.id).toBe("openai/gpt-5.4");
   });
 
-  it("resolves gpt-5.5 to the Codex wrapper when the provider is codex", () => {
+  it("resolves gpt-5.5 to the real OpenAI model when the provider is codex", () => {
     const resolved = resolveModelDescriptorForProvider("gpt-5.5", "codex");
-    expect(resolved?.id).toBe("openai/gpt-5.5-codex");
+    expect(resolved?.id).toBe("openai/gpt-5.5");
   });
 
-  it("resolves gpt-5.4-codex shortId to the codex variant", () => {
+  it("resolves the old gpt-5.4-codex alias to the real GPT-5.4 registry id", () => {
     const resolved = resolveModelAlias("gpt-5.4-codex");
     expect(resolved).toBeTruthy();
-    expect(resolved?.id).toBe("openai/gpt-5.4-codex");
+    expect(resolved?.id).toBe("openai/gpt-5.4");
   });
 
-  it("returns the real Codex runtime model name for wrapped GPT-5.4", () => {
-    const descriptor = getModelById("openai/gpt-5.4-codex");
+  it("returns the real Codex runtime model name for GPT-5.4", () => {
+    const descriptor = getModelById("openai/gpt-5.4");
     expect(descriptor).toBeTruthy();
     expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.4");
   });
 
-  it("returns the real Codex app-server runtime model name for wrapped GPT-5.5", () => {
-    const descriptor = getModelById("openai/gpt-5.5-codex");
+  it("returns the real Codex app-server runtime model name for GPT-5.5", () => {
+    const descriptor = getModelById("openai/gpt-5.5");
     expect(descriptor).toBeTruthy();
     expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.5");
   });

@@ -67,7 +67,7 @@ function renderModal(
       availability={availability}
       checks={failingChecks}
       reviewThreads={reviewThreads}
-      modelId="openai/gpt-5.4-codex"
+      modelId="openai/gpt-5.4"
       reasoningEffort="high"
       permissionMode="guarded_edit"
       busy={false}

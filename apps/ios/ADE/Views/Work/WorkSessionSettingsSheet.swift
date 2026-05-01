@@ -38,7 +38,7 @@ struct WorkSessionSettingsSheet: View {
   }
 
   var selectedModel: AgentChatModelInfo? {
-    models.first(where: { $0.id == selectedModelId })
+    models.first(where: { workModelIdsEquivalent($0.id, selectedModelId) || workModelIdsEquivalent($0.modelId, selectedModelId) })
   }
 
   var resolvedInitialModelId: String {

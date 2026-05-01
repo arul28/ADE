@@ -23,7 +23,15 @@ vi.mock("./TerminalView", () => ({
 vi.mock("../chat/AgentChatPane", async () => {
   const React = await vi.importActual("react") as typeof ReactNamespace;
   return {
-    AgentChatPane: ({ lockSessionId }: { lockSessionId?: string | null }) => {
+    AgentChatPane: ({
+      lockSessionId,
+      isTileActive,
+      isTileVisible,
+    }: {
+      lockSessionId?: string | null;
+      isTileActive?: boolean;
+      isTileVisible?: boolean;
+    }) => {
       const sessionId = lockSessionId ?? "draft";
       React.useEffect(() => {
         chatPaneLifecycle.mounts.set(sessionId, (chatPaneLifecycle.mounts.get(sessionId) ?? 0) + 1);
@@ -31,7 +39,14 @@ vi.mock("../chat/AgentChatPane", async () => {
           chatPaneLifecycle.unmounts.set(sessionId, (chatPaneLifecycle.unmounts.get(sessionId) ?? 0) + 1);
         };
       }, [sessionId]);
-      return <div data-testid="agent-chat-pane" data-session-id={sessionId} />;
+      return (
+        <div
+          data-testid="agent-chat-pane"
+          data-session-id={sessionId}
+          data-tile-active={String(isTileActive)}
+          data-tile-visible={String(isTileVisible)}
+        />
+      );
     },
   };
 });
@@ -416,6 +431,59 @@ describe("WorkViewArea", () => {
     expect(chatPaneLifecycle.mounts.get("chat-2")).toBe(1);
     expect(chatPaneLifecycle.unmounts.get("chat-1")).toBeUndefined();
     expect(chatPaneLifecycle.unmounts.get("chat-2")).toBeUndefined();
+  });
+
+  it("marks every chat tile visible in grid mode while only the selected tile is active", () => {
+    vi.mocked(isChatToolType).mockImplementation((toolType) => toolType === "codex-chat");
+    const first = makeChatSession("chat-1");
+    const second = makeChatSession("chat-2");
+
+    const view = render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[first, second]}
+        visibleSessions={[first, second]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[first.id, second.id]}
+        activeItemId={first.id}
+        viewMode="grid"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+
+    const tiles = within(view.container).getAllByTestId("agent-chat-pane");
+    const firstTile = tiles.find((el) => el.getAttribute("data-session-id") === "chat-1");
+    const secondTile = tiles.find((el) => el.getAttribute("data-session-id") === "chat-2");
+    expect(firstTile?.getAttribute("data-tile-active")).toBe("true");
+    expect(firstTile?.getAttribute("data-tile-visible")).toBe("true");
+    expect(secondTile?.getAttribute("data-tile-active")).toBe("false");
+    expect(secondTile?.getAttribute("data-tile-visible")).toBe("true");
   });
 
   it("keeps open chat tabs mounted while switching the active tab", () => {

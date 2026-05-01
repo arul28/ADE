@@ -84,7 +84,7 @@ describe("ReviewPage", () => {
         compareAgainst: { kind: "default_branch" },
         selectionMode: "full_diff",
         dirtyOnly: false,
-        modelId: "openai/gpt-5.5-codex",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: "medium",
         budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
         publishBehavior: "local_only",
@@ -114,7 +114,7 @@ describe("ReviewPage", () => {
         compareAgainst: { kind: "lane", laneId: "lane-review" },
         selectionMode: "full_diff",
         dirtyOnly: false,
-        modelId: "openai/gpt-5.5-codex",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: "high",
         budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
         publishBehavior: "local_only",
@@ -144,7 +144,7 @@ describe("ReviewPage", () => {
         compareAgainst: { kind: "default_branch" },
         selectionMode: "full_diff",
         dirtyOnly: false,
-        modelId: "openai/gpt-5.5-codex",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: "medium",
         budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
         publishBehavior: "local_only",
@@ -170,7 +170,7 @@ describe("ReviewPage", () => {
           sessionId: "session-1",
           laneId: "lane-review",
           provider: "codex",
-          model: "gpt-5.4-codex",
+          model: "gpt-5.4",
           status: "active",
           startedAt: "2026-04-02T12:01:00.000Z",
           endedAt: null,
@@ -288,7 +288,7 @@ describe("ReviewPage", () => {
           sessionId: "session-2",
           laneId: "lane-bugfix",
           provider: "codex",
-          model: "gpt-5.4-codex",
+          model: "gpt-5.4",
           status: "active",
           startedAt: "2026-04-03T12:01:00.000Z",
           endedAt: null,
@@ -324,7 +324,7 @@ describe("ReviewPage", () => {
               { sha: "def456abc1237890", shortSha: "def456a", subject: "Second commit", authoredAt: "2026-04-02T12:00:00.000Z", pushed: true },
             ],
           },
-          recommendedModelId: "openai/gpt-5.5-codex",
+          recommendedModelId: "openai/gpt-5.5",
         })),
         listRuns: vi.fn(async () => runs),
         getRunDetail: vi.fn(async (runId: string) => details.get(runId) ?? null),
@@ -437,7 +437,7 @@ describe("ReviewPage", () => {
       compareAgainst: { kind: "default_branch" },
       selectionMode: "full_diff",
       dirtyOnly: false,
-      modelId: "openai/gpt-5.5-codex",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: "medium",
       publishBehavior: "local_only",
     });
@@ -474,7 +474,7 @@ describe("ReviewPage", () => {
     expect(config).toMatchObject({
       selectionMode: "selected_commits",
       dirtyOnly: false,
-      modelId: "openai/gpt-5.5-codex",
+      modelId: "openai/gpt-5.5",
     });
   });
 
@@ -490,7 +490,7 @@ describe("ReviewPage", () => {
           { sha: "abc123def4567890", shortSha: "abc123d", subject: "Only commit", authoredAt: "2026-04-01T12:00:00.000Z", pushed: true },
         ],
       },
-      recommendedModelId: "openai/gpt-5.5-codex",
+      recommendedModelId: "openai/gpt-5.5",
     });
 
     render(
@@ -527,7 +527,7 @@ describe("ReviewPage", () => {
         compareAgainst: { kind: "default_branch" },
         selectionMode: "full_diff",
         dirtyOnly: false,
-        modelId: "openai/gpt-5.5-codex",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: "medium",
         budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
         publishBehavior: "local_only",

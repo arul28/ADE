@@ -23,7 +23,9 @@ import type {
   PtyDataEvent,
   PtyExitEvent,
   SyncBrainStatusPayload,
+  SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
+  SyncCommandAckPayload,
   SyncCommandPayload,
   SyncCommandResultPayload,
   SyncEnvelope,
@@ -77,7 +79,7 @@ import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../state/kvDb";
-import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, toOptionalString, uniqueStrings } from "../shared/utils";
+import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore } from "./syncPairingStore";
 import type { NotificationEventBus } from "../notifications/notificationEventBus";
@@ -101,6 +103,9 @@ const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
+const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
+const CHANGESET_ACK_TIMEOUT_MS = 10_000;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
@@ -138,7 +143,101 @@ type PeerState = {
   subscribedChatSessionIds: Set<string>;
   chatTranscriptOffsets: Map<string, number>;
   chatEventIdsSent: Map<string, Set<string>>;
+  pendingChangesetBatch: PendingChangesetBatch | null;
 };
+
+type PendingChangesetBatch = {
+  batchId: string;
+  fromDbVersion: number;
+  toDbVersion: number;
+  changes: CrsqlChangeRow[];
+  reason: SyncChangesetBatchPayload["reason"];
+  sentAtMs: number;
+  retryCount: number;
+};
+
+type CachedMobileCommandWaiter = {
+  peer: PeerState;
+  requestId: string | null;
+};
+
+type CachedMobileCommand = {
+  commandId: string;
+  action: string;
+  argsKey: string;
+  ack: SyncCommandAckPayload;
+  result: SyncCommandResultPayload | null;
+  waiters: CachedMobileCommandWaiter[];
+  acceptedAtMs: number;
+  completedAtMs: number | null;
+};
+
+type PersistedMobileCommand = {
+  key: string;
+  projectRoot: string;
+  deviceId: string;
+  commandId: string;
+  action: string;
+  argsKey: string;
+  ack: SyncCommandAckPayload;
+  result: SyncCommandResultPayload;
+  acceptedAtMs: number;
+  completedAtMs: number;
+};
+
+const mobileCommandResultCache = new Map<string, CachedMobileCommand>();
+
+function stableJsonValue(value: unknown): unknown {
+  if (value == null) return value;
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (typeof value !== "object") return value;
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(input).sort()) {
+    output[key] = stableJsonValue(input[key]);
+  }
+  return output;
+}
+
+function stableJsonKey(value: unknown): string {
+  return JSON.stringify(stableJsonValue(value)) ?? "null";
+}
+
+function mobileCommandCacheKey(projectRoot: string, peer: PeerState, commandId: string): string | null {
+  const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId;
+  if (!deviceId || !commandId) return null;
+  return `${projectRoot}:${deviceId}:${commandId}`;
+}
+
+function addMobileCommandWaiter(record: CachedMobileCommand, peer: PeerState, requestId: string | null): void {
+  if (record.waiters.some((waiter) => waiter.peer === peer && waiter.requestId === requestId)) return;
+  record.waiters.push({ peer, requestId });
+}
+
+function pruneMobileCommandResultCache(nowMs = Date.now()): void {
+  for (const [key, record] of mobileCommandResultCache) {
+    const referenceMs = record.completedAtMs ?? record.acceptedAtMs;
+    if (nowMs - referenceMs > MOBILE_COMMAND_RESULT_CACHE_TTL_MS) {
+      mobileCommandResultCache.delete(key);
+    }
+  }
+  if (mobileCommandResultCache.size <= MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES) return;
+
+  const completed = [...mobileCommandResultCache.entries()]
+    .filter(([, record]) => record.completedAtMs != null)
+    .sort(([, left], [, right]) => (left.completedAtMs ?? left.acceptedAtMs) - (right.completedAtMs ?? right.acceptedAtMs));
+  for (const [key] of completed) {
+    if (mobileCommandResultCache.size <= MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES) break;
+    mobileCommandResultCache.delete(key);
+  }
+  const inFlight = [...mobileCommandResultCache.entries()]
+    .filter(([, record]) => record.completedAtMs == null)
+    .sort(([, left], [, right]) => left.acceptedAtMs - right.acceptedAtMs);
+  for (const [key] of inFlight) {
+    if (mobileCommandResultCache.size <= MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES) break;
+    mobileCommandResultCache.delete(key);
+  }
+}
 
 type SyncHostServiceArgs = {
   db: AdeDb;
@@ -355,6 +454,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const bootstrapTokenPath = args.bootstrapTokenPath ?? path.join(layout.secretsDir, "sync-bootstrap-token");
   const pairingSecretsPath = args.pairingSecretsPath ?? path.join(layout.secretsDir, "sync-paired-devices.json");
+  const commandLedgerPath = path.join(layout.cacheDir, "sync-mobile-command-ledger.json");
   const bootstrapToken = ensureBootstrapToken(bootstrapTokenPath);
   const pairingStore = createSyncPairingStore({
     filePath: pairingSecretsPath,
@@ -423,6 +523,76 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const peers = new Set<PeerState>();
+  let commandReplayCount = 0;
+  let commandConflictCount = 0;
+  let lastCommandResultLatencyMs: number | null = null;
+  let lastChangesetAckLatencyMs: number | null = null;
+
+  const readPersistedCommandLedger = (): PersistedMobileCommand[] => {
+    try {
+      if (!fs.existsSync(commandLedgerPath)) return [];
+      const parsed = safeJsonParse<{ commands?: PersistedMobileCommand[] }>(
+        fs.readFileSync(commandLedgerPath, "utf8"),
+        { commands: [] },
+      );
+      return Array.isArray(parsed.commands) ? parsed.commands : [];
+    } catch (error) {
+      args.logger.warn("sync_host.command_ledger_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+  };
+  const writePersistedCommandLedger = (): void => {
+    const nowMs = Date.now();
+    const commands: PersistedMobileCommand[] = [];
+    for (const [key, record] of mobileCommandResultCache) {
+      if (!record.result || record.completedAtMs == null) continue;
+      if (!key.startsWith(`${args.projectRoot}:`)) continue;
+      if (nowMs - record.completedAtMs > MOBILE_COMMAND_RESULT_CACHE_TTL_MS) continue;
+      const deviceId = key.slice(`${args.projectRoot}:`.length).split(":")[0] ?? "";
+      commands.push({
+        key,
+        projectRoot: args.projectRoot,
+        deviceId,
+        commandId: record.commandId,
+        action: record.action,
+        argsKey: record.argsKey,
+        ack: record.ack,
+        result: record.result,
+        acceptedAtMs: record.acceptedAtMs,
+        completedAtMs: record.completedAtMs,
+      });
+    }
+    commands.sort((left, right) => right.completedAtMs - left.completedAtMs);
+    writeTextAtomic(commandLedgerPath, `${JSON.stringify({ commands: commands.slice(0, MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES) }, null, 2)}\n`);
+  };
+  const loadPersistedCommandLedger = (): void => {
+    const nowMs = Date.now();
+    for (const command of readPersistedCommandLedger()) {
+      if (command.projectRoot !== args.projectRoot) continue;
+      if (nowMs - command.completedAtMs > MOBILE_COMMAND_RESULT_CACHE_TTL_MS) continue;
+      mobileCommandResultCache.set(command.key, {
+        commandId: command.commandId,
+        action: command.action,
+        argsKey: command.argsKey,
+        ack: command.ack,
+        result: command.result,
+        waiters: [],
+        acceptedAtMs: command.acceptedAtMs,
+        completedAtMs: command.completedAtMs,
+      });
+    }
+  };
+  const commandLedgerSizeForProject = (): number =>
+    [...mobileCommandResultCache.keys()].filter((key) => key.startsWith(`${args.projectRoot}:`)).length;
+  const dropInFlightCommandRecordsForProject = (): void => {
+    for (const [key, record] of mobileCommandResultCache) {
+      if (!key.startsWith(`${args.projectRoot}:`)) continue;
+      if (record.result == null) mobileCommandResultCache.delete(key);
+    }
+  };
+  loadPersistedCommandLedger();
   /** Notification preferences keyed by deviceId. The map is a hot cache;
    * device metadata is the restart-safe source for offline push fan-out. */
   const notificationPrefsByDeviceId = new Map<string, NotificationPreferences>();
@@ -817,6 +987,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       subscribedChatSessionIds: new Set(),
       chatTranscriptOffsets: new Map(),
       chatEventIdsSent: new Map(),
+      pendingChangesetBatch: null,
     };
     peers.add(peer);
     ws.on("message", (raw) => {
@@ -1103,17 +1274,33 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
-  function send<TPayload>(target: WebSocket | PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): void {
+  function send<TPayload>(target: WebSocket | PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
     const ws = target instanceof WebSocket ? target : target.ws;
-    if (ws.readyState !== WebSocket.OPEN) return;
+    if (ws.readyState !== WebSocket.OPEN) return false;
     // Drop sends to backpressured peers as the default — most envelopes are
     // either replayable (chat events / changesets re-derived from db state) or
     // tolerable to lose (acks, status pings). Routes that *must* deliver under
     // backpressure should call ws.send / sendAndWait directly.
     if (target instanceof WebSocket ? ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES : isPeerBackpressured(target)) {
-      return;
+      return false;
     }
     ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }));
+    return true;
+  }
+
+  function sendRequired<TPayload>(peer: PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
+    const ws = peer.ws;
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }), (error) => {
+      if (!error) return;
+      args.logger.warn("sync_host.required_send_failed", {
+        type,
+        requestId: requestId ?? null,
+        peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+        error: error.message,
+      });
+    });
+    return true;
   }
 
   function isPeerBackpressured(peer: PeerState): boolean {
@@ -1166,30 +1353,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  function sendChangesetBatch(
+  function makeChangesetBatchId(peer: PeerState, fromDbVersion: number, toDbVersion: number): string {
+    const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "peer";
+    return `changeset:${deviceId}:${fromDbVersion}:${toDbVersion}:${Date.now()}:${randomBytes(4).toString("hex")}`;
+  }
+
+  function sendNextChangesetBatch(
     peer: PeerState,
     reason: SyncChangesetBatchPayload["reason"],
     fromDbVersion: number,
     toDbVersion: number,
     changes: CrsqlChangeRow[],
-  ): void {
+  ): PendingChangesetBatch | null {
     let chunk: CrsqlChangeRow[] = [];
-    let chunkFromDbVersion = fromDbVersion;
     let chunkBytes = 0;
-
-    const flush = (): void => {
-      if (chunk.length === 0) return;
-      const chunkToDbVersion = Math.max(...chunk.map((change) => Number(change.db_version ?? chunkFromDbVersion)));
-      send(peer.ws, "changeset_batch", {
-        reason,
-        fromDbVersion: chunkFromDbVersion,
-        toDbVersion: chunkToDbVersion,
-        changes: chunk,
-      });
-      chunkFromDbVersion = chunkToDbVersion;
-      chunk = [];
-      chunkBytes = 0;
-    };
 
     for (const change of changes) {
       const changeBytes = Buffer.byteLength(JSON.stringify(change), "utf8");
@@ -1197,21 +1374,50 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         chunk.length > 0
         && (chunk.length >= maxChangesetBatchRows || chunkBytes + changeBytes > maxChangesetBatchBytes)
       ) {
-        flush();
+        break;
       }
       chunk.push(change);
       chunkBytes += changeBytes;
     }
-    flush();
-
-    if (changes.length === 0 && toDbVersion > fromDbVersion) {
-      send(peer.ws, "changeset_batch", {
-        reason,
-        fromDbVersion,
-        toDbVersion,
-        changes: [],
-      });
+    if (chunk.length === 0 && changes.length > 0) {
+      chunk = [changes[0]!];
     }
+    if (chunk.length === 0 && toDbVersion <= fromDbVersion) return null;
+
+    const chunkToDbVersion = chunk.length > 0
+      ? Math.max(...chunk.map((change) => Number(change.db_version ?? fromDbVersion)))
+      : toDbVersion;
+    const batch: PendingChangesetBatch = {
+      batchId: makeChangesetBatchId(peer, fromDbVersion, chunkToDbVersion),
+      reason,
+      fromDbVersion,
+      toDbVersion: chunkToDbVersion,
+      changes: chunk,
+      sentAtMs: Date.now(),
+      retryCount: 0,
+    };
+    const sent = send(peer, "changeset_batch", {
+      batchId: batch.batchId,
+      reason,
+      fromDbVersion,
+      toDbVersion: chunkToDbVersion,
+      changes: chunk,
+    });
+    return sent ? batch : null;
+  }
+
+  function resendPendingChangesetBatch(peer: PeerState): boolean {
+    const batch = peer.pendingChangesetBatch;
+    if (!batch) return false;
+    batch.sentAtMs = Date.now();
+    batch.retryCount += 1;
+    return send(peer, "changeset_batch", {
+      batchId: batch.batchId,
+      reason: batch.reason,
+      fromDbVersion: batch.fromDbVersion,
+      toDbVersion: batch.toDbVersion,
+      changes: batch.changes,
+    });
   }
 
   async function buildProjectCatalogPayload(): Promise<SyncProjectCatalogPayload> {
@@ -1308,7 +1514,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     payload: SyncProjectSwitchRequestPayload | null,
   ): Promise<void> {
     if (!args.projectCatalogProvider) {
-      send(peer.ws, "project_switch_result", {
+      sendRequired(peer, "project_switch_result", {
         ok: false,
         message: "Desktop project switching is not available.",
       }, requestId);
@@ -1327,7 +1533,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       args.logger.warn("sync_host.project_switch_failed", { message });
-      send(peer.ws, "project_switch_result", {
+      sendRequired(peer, "project_switch_result", {
         ok: false,
         message,
       }, requestId);
@@ -1346,6 +1552,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           dbVersion: brainMetadata.dbVersion,
           uptimeMs: Date.now() - startedAtMs,
           lastBroadcastAt,
+          pendingChangesetPeerCount: 0,
+          commandLedgerSize: commandLedgerSizeForProject(),
+          commandReplayCount,
+          commandConflictCount,
+          lastCommandResultLatencyMs,
+          lastChangesetAckLatencyMs,
         },
       };
     }
@@ -1365,6 +1577,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         dbVersion,
         uptimeMs: Date.now() - startedAtMs,
         lastBroadcastAt,
+        pendingChangesetPeerCount: [...peers].filter((peer) => peer.pendingChangesetBatch != null).length,
+        commandLedgerSize: commandLedgerSizeForProject(),
+        commandReplayCount,
+        commandConflictCount,
+        lastCommandResultLatencyMs,
+        lastChangesetAckLatencyMs,
       },
     };
   }
@@ -1473,19 +1691,79 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   async function pumpChanges(): Promise<void> {
     if (disposed) return;
     const currentDbVersion = args.db.sync.getDbVersion();
+    const nowMs = Date.now();
     for (const peer of peers) {
       if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
+      if (peer.pendingChangesetBatch) {
+        if (nowMs - peer.pendingChangesetBatch.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
+          const pending = peer.pendingChangesetBatch;
+          const resent = resendPendingChangesetBatch(peer);
+          args.logger.debug("sync_host.changeset_ack_retry", {
+            peerDeviceId: peer.metadata.deviceId,
+            batchId: pending.batchId,
+            fromDbVersion: pending.fromDbVersion,
+            toDbVersion: pending.toDbVersion,
+            retryCount: pending.retryCount,
+            resent,
+          });
+        }
+        continue;
+      }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) continue;
       const changes = args.db.sync
         .exportChangesSince(peer.lastKnownServerDbVersion)
         .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId);
-      if (changes.length > 0) {
-        sendChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, currentDbVersion, changes);
+      const pending = sendNextChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, currentDbVersion, changes);
+      if (pending) {
+        peer.pendingChangesetBatch = pending;
         lastBroadcastAt = nowIso();
+      } else {
+        args.logger.debug("sync_host.changeset_deferred_backpressure", {
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          fromDbVersion: peer.lastKnownServerDbVersion,
+          toDbVersion: currentDbVersion,
+          bufferedAmount: peer.ws.bufferedAmount,
+        });
       }
-      peer.lastKnownServerDbVersion = currentDbVersion;
     }
+  }
+
+  function handleChangesetAck(peer: PeerState, payload: SyncChangesetAckPayload | null | undefined): void {
+    const pending = peer.pendingChangesetBatch;
+    if (!pending || !payload) return;
+    if (payload.batchId !== pending.batchId) {
+      args.logger.debug("sync_host.changeset_ack_ignored", {
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+        expectedBatchId: pending.batchId,
+        receivedBatchId: payload.batchId ?? null,
+      });
+      return;
+    }
+    if (!payload.ok) {
+      pending.sentAtMs = Date.now();
+      args.logger.warn("sync_host.changeset_ack_failed", {
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+        batchId: pending.batchId,
+        fromDbVersion: pending.fromDbVersion,
+        toDbVersion: pending.toDbVersion,
+        error: payload.error?.message ?? "Changeset apply failed.",
+      });
+      return;
+    }
+    if (payload.toDbVersion < pending.toDbVersion) return;
+    peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
+    peer.pendingChangesetBatch = null;
+    peer.lastAppliedAt = nowIso();
+    lastChangesetAckLatencyMs = Math.max(0, Date.now() - pending.sentAtMs);
+    args.logger.debug("sync_host.changeset_ack_applied", {
+      peerDeviceId: peer.metadata?.deviceId ?? null,
+      batchId: pending.batchId,
+      fromDbVersion: pending.fromDbVersion,
+      toDbVersion: pending.toDbVersion,
+      latencyMs: lastChangesetAckLatencyMs,
+    });
+    broadcastBrainStatus();
   }
 
   function resolveArtifactPath(request: Extract<SyncFileRequest, { action: "readArtifact" }>["args"]): string {
@@ -1551,7 +1829,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {
     const respond = (response: SyncFileResponsePayload) => {
-      send(peer.ws, "file_response", response, requestId);
+      sendRequired(peer, "file_response", response, requestId);
     };
 
     try {
@@ -1629,13 +1907,85 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   async function handleCommand(peer: PeerState, requestId: string | null, payload: SyncCommandPayload): Promise<void> {
     const commandId = toOptionalString(payload.commandId) ?? requestId ?? `cmd-${Date.now()}`;
+    const commandCacheKey = mobileCommandCacheKey(args.projectRoot, peer, commandId);
+    const commandArgsKey = stableJsonKey(payload.args ?? {});
+    pruneMobileCommandResultCache();
+
+    const sendResult = (record: CachedMobileCommand | null, result: SyncCommandResultPayload) => {
+      if (!record) {
+        sendRequired(peer, "command_result", result, requestId);
+        return;
+      }
+      record.result = result;
+      record.completedAtMs = Date.now();
+      lastCommandResultLatencyMs = Math.max(0, record.completedAtMs - record.acceptedAtMs);
+      const waiters = record.waiters.splice(0);
+      for (const waiter of waiters) {
+        sendRequired(waiter.peer, "command_result", result, waiter.requestId);
+      }
+      pruneMobileCommandResultCache();
+      try {
+        writePersistedCommandLedger();
+      } catch (error) {
+        args.logger.warn("sync_host.command_ledger_write_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    const startCommandRecord = (ack: SyncCommandAckPayload): CachedMobileCommand | null => {
+      sendRequired(peer, "command_ack", ack, requestId);
+      if (!commandCacheKey) return null;
+      const record: CachedMobileCommand = {
+        commandId,
+        action: payload.action,
+        argsKey: commandArgsKey,
+        ack,
+        result: null,
+        waiters: [{ peer, requestId }],
+        acceptedAtMs: Date.now(),
+        completedAtMs: null,
+      };
+      mobileCommandResultCache.set(commandCacheKey, record);
+      return record;
+    };
+    const existingCommand = commandCacheKey ? mobileCommandResultCache.get(commandCacheKey) : null;
+    if (existingCommand) {
+      if (existingCommand.action !== payload.action || existingCommand.argsKey !== commandArgsKey) {
+        commandConflictCount += 1;
+        const mismatchResult: SyncCommandResultPayload = {
+          commandId,
+          ok: false,
+          error: {
+            code: "duplicate_command_mismatch",
+            message: "A command with this id already exists for a different action or payload.",
+          },
+        };
+        sendRequired(peer, "command_ack", {
+          commandId,
+          accepted: false,
+          status: "rejected",
+          message: mismatchResult.error?.message ?? null,
+        }, requestId);
+        sendRequired(peer, "command_result", mismatchResult, requestId);
+        return;
+      }
+      commandReplayCount += 1;
+      sendRequired(peer, "command_ack", existingCommand.ack, requestId);
+      if (existingCommand.result) {
+        sendRequired(peer, "command_result", existingCommand.result, requestId);
+      } else {
+        addMobileCommandWaiter(existingCommand, peer, requestId);
+      }
+      return;
+    }
+
     const reject = (message: string, code = "unsupported_command") => {
-      send(peer.ws, "command_ack", {
+      const ack: SyncCommandAckPayload = {
         commandId,
         accepted: false,
         status: "rejected",
         message,
-      }, requestId);
+      };
       const result: SyncCommandResultPayload = {
         commandId,
         ok: false,
@@ -1644,7 +1994,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           message,
         },
       };
-      send(peer.ws, "command_result", result, requestId);
+      sendResult(startCommandRecord(ack), result);
     };
 
     const policy = remoteCommandService.getPolicy(payload.action);
@@ -1665,17 +2015,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const muteUntil = typeof rawMute === "string" && rawMute.length > 0 ? rawMute : null;
       const existing = readNotificationPrefsForDevice(deviceId);
       storeNotificationPrefsForDevice(deviceId, { ...existing, muteUntil });
-      send(peer.ws, "command_ack", {
+      const ack: SyncCommandAckPayload = {
         commandId,
         accepted: true,
         status: "accepted",
         message: muteUntil ? `Muted pushes until ${muteUntil}.` : "Cleared push mute.",
-      }, requestId);
-      send(peer.ws, "command_result", {
+      };
+      sendResult(startCommandRecord(ack), {
         commandId,
         ok: true,
         result: { ok: true, muteUntil },
-      }, requestId);
+      });
       return;
     }
     if (payload.action === "lanes.presence.announce" || payload.action === "lanes.presence.release") {
@@ -1696,19 +2046,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         args.onStateChanged?.();
         broadcastBrainStatus();
       }
-      send(peer.ws, "command_ack", {
+      const ack: SyncCommandAckPayload = {
         commandId,
         accepted: true,
         status: "accepted",
         message: payload.action === "lanes.presence.announce"
           ? `Marked ${laneId} as open on ${marker.displayName}.`
           : `Released ${laneId} on ${marker.displayName}.`,
-      }, requestId);
-      send(peer.ws, "command_result", {
+      };
+      sendResult(startCommandRecord(ack), {
         commandId,
         ok: true,
         result: { ok: true },
-      }, requestId);
+      });
       return;
     }
     if (!policy) {
@@ -1728,29 +2078,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
 
-    send(peer.ws, "command_ack", {
+    const acceptedRecord = startCommandRecord({
       commandId,
       accepted: true,
       status: "accepted",
       message: `Executing ${payload.action}.`,
-    }, requestId);
+    });
 
     try {
       const created = await remoteCommandService.execute(payload);
-      send(peer.ws, "command_result", {
+      sendResult(acceptedRecord, {
         commandId,
         ok: true,
         result: decorateCommandResult(payload.action, created),
-      }, requestId);
+      });
     } catch (error) {
-      send(peer.ws, "command_result", {
+      sendResult(acceptedRecord, {
         commandId,
         ok: false,
         error: {
           code: "command_failed",
           message: error instanceof Error ? error.message : String(error),
         },
-      }, requestId);
+      });
     }
   }
 
@@ -1957,13 +2307,43 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       case "changeset_batch": {
         const payload = (envelope.payload ?? {}) as SyncChangesetBatchPayload;
         const changes = Array.isArray(payload.changes) ? payload.changes as CrsqlChangeRow[] : [];
-        if (changes.length > 0) {
-          args.db.sync.applyChanges(changes);
-          peer.lastAppliedAt = nowIso();
-          lastBroadcastAt = nowIso();
-          args.onStateChanged?.();
-          broadcastBrainStatus();
+        try {
+          let appliedCount = 0;
+          if (changes.length > 0) {
+            args.db.sync.applyChanges(changes);
+            appliedCount = changes.length;
+            peer.lastAppliedAt = nowIso();
+            lastBroadcastAt = nowIso();
+            args.onStateChanged?.();
+            broadcastBrainStatus();
+          }
+          sendRequired(peer, "changeset_ack", {
+            batchId: payload.batchId ?? null,
+            fromDbVersion: Number(payload.fromDbVersion ?? 0),
+            toDbVersion: Number(payload.toDbVersion ?? 0),
+            appliedDbVersion: args.db.sync.getDbVersion(),
+            appliedCount,
+            ok: true,
+          } satisfies SyncChangesetAckPayload, envelope.requestId);
+        } catch (error) {
+          sendRequired(peer, "changeset_ack", {
+            batchId: payload.batchId ?? null,
+            fromDbVersion: Number(payload.fromDbVersion ?? 0),
+            toDbVersion: Number(payload.toDbVersion ?? 0),
+            appliedDbVersion: args.db.sync.getDbVersion(),
+            appliedCount: 0,
+            ok: false,
+            error: {
+              code: "changeset_apply_failed",
+              message: error instanceof Error ? error.message : String(error),
+            },
+          } satisfies SyncChangesetAckPayload, envelope.requestId);
+          throw error;
         }
+        break;
+      }
+      case "changeset_ack": {
+        handleChangesetAck(peer, envelope.payload as SyncChangesetAckPayload);
         break;
       }
       case "file_request":
@@ -1990,7 +2370,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           lastOutputPreview: session?.lastOutputPreview ?? null,
           capturedAt: nowIso(),
         };
-        send(peer.ws, "terminal_snapshot", snapshot, envelope.requestId);
+        sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
         break;
       }
       case "terminal_unsubscribe": {
@@ -2063,7 +2443,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           truncated: transcriptSize > maxBytes,
           events,
         };
-        send(peer.ws, "chat_subscribe", snapshot, envelope.requestId);
+        sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);
         break;
       }
       case "chat_unsubscribe": {
@@ -2107,7 +2487,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const deviceId = peer.metadata?.deviceId;
     if (!deviceId) {
       args.logger.warn("sync_host.push_token_missing_device", {});
-      send(peer.ws, "command_ack", {
+      sendRequired(peer, "command_ack", {
         commandId: "push-token:unknown",
         accepted: false,
         status: "missing_device_id",
@@ -2117,7 +2497,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     if (!payload || typeof payload.token !== "string" || payload.token.trim().length === 0) {
       args.logger.warn("sync_host.push_token_missing", { deviceId });
-      send(peer.ws, "command_ack", {
+      sendRequired(peer, "command_ack", {
         commandId: `push-token:${deviceId}:unknown`,
         accepted: false,
         status: "invalid_payload",
@@ -2131,7 +2511,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         : "alert";
     if (kind === "activity-update" && !payload.activityId?.trim()) {
       args.logger.warn("sync_host.push_token_missing_activity_id", { deviceId });
-      send(peer.ws, "command_ack", {
+      sendRequired(peer, "command_ack", {
         commandId: `push-token:${deviceId}:${kind}`,
         accepted: false,
         status: "missing_activity_id",
@@ -2145,7 +2525,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       activityId: payload.activityId,
     });
     if (!stored) {
-      send(peer.ws, "command_ack", {
+      sendRequired(peer, "command_ack", {
         commandId: `push-token:${deviceId}:${kind}`,
         accepted: false,
         status: "device_not_found",
@@ -2154,7 +2534,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     // Optional ack so the client can retry on failure.
-    send(peer.ws, "command_ack", {
+    sendRequired(peer, "command_ack", {
       commandId: `push-token:${deviceId}:${kind}`,
       accepted: true,
       status: "accepted",
@@ -2179,7 +2559,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const result = args.notificationEventBus
       ? await args.notificationEventBus.sendTestPush(deviceId, kind)
       : { ok: false, reason: "notification_bus_unavailable" as const };
-    send(peer.ws, "command_result", {
+    sendRequired(peer, "command_result", {
       commandId: `push-test:${deviceId}:${kind}`,
       ok: result.ok,
       ...(result.ok ? {} : { error: { code: "test_push_failed", message: result.reason ?? "unknown" } }),
@@ -2442,6 +2822,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       disposed = true;
       localActiveLaneIds = new Set<string>();
       lanePresenceByLaneId.clear();
+      dropInFlightCommandRecordsForProject();
       chatEventSubscription?.();
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);

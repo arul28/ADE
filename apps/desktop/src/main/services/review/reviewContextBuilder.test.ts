@@ -134,7 +134,7 @@ function makeRun() {
       compareAgainst: { kind: "default_branch" },
       selectionMode: "full_diff",
       dirtyOnly: false,
-      modelId: "openai/gpt-5.4-codex",
+      modelId: "openai/gpt-5.4",
       reasoningEffort: "medium",
       budgets: {
         maxFiles: 60,

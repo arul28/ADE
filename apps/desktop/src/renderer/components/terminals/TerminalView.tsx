@@ -122,9 +122,9 @@ function isDarkTheme(theme: ThemeId): boolean {
 
 function terminalWebglRendererEnabled(): boolean {
   try {
-    return window.localStorage.getItem(TERMINAL_RENDERER_STORAGE_KEY) === "webgl";
+    return window.localStorage.getItem(TERMINAL_RENDERER_STORAGE_KEY) !== "dom";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -796,7 +796,7 @@ function createRuntime(args: {
   const term = new Terminal({
     allowProposedApi: true,
     convertEol: true,
-    cursorBlink: false,
+    cursorBlink: true,
     cursorInactiveStyle: "none",
     documentOverride: document,
     scrollback: args.preferences.scrollback,

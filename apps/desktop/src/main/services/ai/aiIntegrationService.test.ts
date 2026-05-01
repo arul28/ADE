@@ -296,14 +296,14 @@ describe("aiIntegrationService", () => {
       taskType: "review",
       prompt: "Evaluate this step",
       cwd: "/tmp",
-      model: "openai/gpt-5.4-codex",
+      model: "openai/gpt-5.4",
       sessionId: "carry-forward-session",
       permissionMode: "read-only",
     });
 
     expect(mockState.runProviderTask).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "carry-forward-session",
-      descriptor: expect.objectContaining({ id: "openai/gpt-5.4-codex" }),
+      descriptor: expect.objectContaining({ id: "openai/gpt-5.4" }),
       permissionMode: "read-only",
     }));
   });

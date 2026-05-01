@@ -901,6 +901,14 @@ function trimChatEventHistory(events: AgentChatEventEnvelope[], maxEvents: numbe
   return events.length > maxEvents ? events.slice(-maxEvents) : events;
 }
 
+function stableSessionDelayOffset(sessionId: string): number {
+  let hash = 0;
+  for (let index = 0; index < sessionId.length; index += 1) {
+    hash = ((hash * 31) + sessionId.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
 function chatEventDedupKey(entry: AgentChatEventEnvelope): string {
   return `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
 }
@@ -1320,6 +1328,7 @@ export function AgentChatPane({
   embeddedWorkLayout = false,
   layoutVariant = "standard",
   isTileActive = true,
+  isTileVisible = isTileActive,
   shouldAutofocusComposer = false,
   onSessionCreated,
   availableLanes,
@@ -1343,6 +1352,8 @@ export function AgentChatPane({
   embeddedWorkLayout?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   isTileActive?: boolean;
+  /** Visible grid tiles hydrate transcripts even when they are not the focused tile. */
+  isTileVisible?: boolean;
   shouldAutofocusComposer?: boolean;
   onSessionCreated?: (session: AgentChatSession) => void | Promise<void>;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
@@ -2990,7 +3001,7 @@ export function AgentChatPane({
   }, [handoffOpen, handoffModelId, handoffTargetDescriptor]);
 
   useEffect(() => {
-    if (!isTileActive) return;
+    if (!isTileVisible) return;
     if (!selectedSessionId) return;
     if (!lockedSingleSessionMode) {
       // Re-read the selected transcript on every tab switch so the selected
@@ -3004,11 +3015,14 @@ export function AgentChatPane({
     // switch, session tile activation) we always pull the freshest snapshot
     // rather than short-circuiting on a stale loadedHistoryRef from the
     // previous component instance.
+    const hydrateDelayMs = isTileActive
+      ? 120
+      : 220 + (stableSessionDelayOffset(selectedSessionId) % 260);
     const handle = window.setTimeout(() => {
       void loadHistory(selectedSessionId, { force: true });
-    }, 120);
+    }, hydrateDelayMs);
     return () => window.clearTimeout(handle);
-  }, [isTileActive, loadHistory, lockedSingleSessionMode, selectedSessionId]);
+  }, [isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
 
   useEffect(() => {
     if (!isTileActive) {

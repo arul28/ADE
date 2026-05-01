@@ -2800,10 +2800,26 @@ struct CrsqlChangeRow: Codable, Equatable {
 }
 
 struct SyncChangesetBatchPayload: Codable, Equatable {
+  var batchId: String?
   var reason: String
   var fromDbVersion: Int
   var toDbVersion: Int
   var changes: [CrsqlChangeRow]
+}
+
+struct SyncChangesetAckPayload: Codable, Equatable {
+  struct AckError: Codable, Equatable {
+    var code: String
+    var message: String
+  }
+
+  var batchId: String?
+  var fromDbVersion: Int
+  var toDbVersion: Int
+  var appliedDbVersion: Int
+  var appliedCount: Int
+  var ok: Bool
+  var error: AckError?
 }
 
 struct ApplyRemoteChangesResult: Equatable {

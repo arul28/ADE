@@ -414,7 +414,7 @@ describe("ptyService", () => {
         rows: 24,
         command: "npm",
         args: ["run", "dev"],
-        env: { CUSTOM_FLAG: "1" },
+        env: { CUSTOM_FLAG: "1", TERM: "", COLORTERM: "", FORCE_COLOR: "", NO_COLOR: "" },
       });
 
       const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
@@ -426,9 +426,60 @@ describe("ptyService", () => {
             PORT: "3100",
             HOSTNAME: "lane-1.localhost",
             CUSTOM_FLAG: "1",
+            TERM: "xterm-256color",
+            COLORTERM: "truecolor",
+            FORCE_COLOR: "1",
           }),
         }),
       );
+    });
+
+    it("preserves explicit terminal color environment overrides", async () => {
+      const { service, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Color env",
+        cols: 80,
+        rows: 24,
+        env: {
+          TERM: "screen-256color",
+          COLORTERM: "24bit",
+          FORCE_COLOR: "2",
+        },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+      const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).toEqual(expect.objectContaining({
+        TERM: "screen-256color",
+        COLORTERM: "24bit",
+        FORCE_COLOR: "2",
+      }));
+    });
+
+    it("does not force color when NO_COLOR is set", async () => {
+      const { service, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "No color env",
+        cols: 80,
+        rows: 24,
+        env: {
+          NO_COLOR: "1",
+          FORCE_COLOR: "",
+        },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+      const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).toEqual(expect.objectContaining({
+        NO_COLOR: "1",
+        FORCE_COLOR: "",
+      }));
     });
 
     it("does not type startupCommand preview into direct command sessions", async () => {

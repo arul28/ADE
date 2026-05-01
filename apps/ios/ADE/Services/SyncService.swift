@@ -58,6 +58,13 @@ func unwrapSyncCommandResponse(_ raw: Any) throws -> Any {
   )
 }
 
+func isRemoteCommandApplicationError(_ error: Error) -> Bool {
+  let nsError = error as NSError
+  return nsError.domain == "ADE"
+    && nsError.code == 17
+    && nsError.userInfo["ADEErrorCode"] != nil
+}
+
 func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLabel: String, decoder: JSONDecoder) throws -> T {
   do {
     let data = try adeJSONData(withJSONObject: raw)
@@ -654,6 +661,13 @@ final class SyncService: ObservableObject {
   /// list and chat detail screens so the LA reconcile can read `modelId`
   /// + a real `lastActivityAt` without round-tripping for each running chat.
   private(set) var chatSummaryCache: [String: AgentChatSessionSummary] = [:]
+  private struct ChatModelsCacheEntry {
+    var models: [AgentChatModelInfo]
+    var fetchedAt: Date
+  }
+  private let chatModelsCacheTTL: TimeInterval = 300
+  private var chatModelsCache: [String: ChatModelsCacheEntry] = [:]
+  private var chatModelsInFlight: [String: Task<[AgentChatModelInfo], Error>] = [:]
 
   private let legacyDraftKey = "ade.sync.connectionDraft"
   private let profileKey = "ade.sync.hostProfile"
@@ -664,6 +678,9 @@ final class SyncService: ObservableObject {
   private let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+  private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
+  private let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
+  private let outboundSyncStateMaxEntries = 128
   private let keychain = KeychainService()
   private let database: DatabaseService
   private let socketSessionDelegate: SyncSocketSessionDelegate
@@ -681,7 +698,31 @@ final class SyncService: ObservableObject {
     let startedAt: TimeInterval
   }
 
+  private struct PendingOutboundChangeset {
+    var payload: SyncChangesetBatchPayload
+    var sentAt: TimeInterval
+    var retryCount: Int
+  }
+
+  private struct OutboundSyncCursor: Codable, Equatable {
+    var projectId: String?
+    var projectRootPath: String?
+    var siteId: String
+    var lastAckedDbVersion: Int
+    var updatedAt: String
+  }
+
+  private struct PersistedOutboundChangeset: Codable, Equatable {
+    var projectId: String?
+    var projectRootPath: String?
+    var siteId: String
+    var payload: SyncChangesetBatchPayload
+    var retryCount: Int
+    var updatedAt: String
+  }
+
   private var pending: [String: PendingRequest] = [:]
+  private var pendingOutboundChangeset: PendingOutboundChangeset?
   private var pendingSocketOpen: [Int: CheckedContinuation<Void, Error>] = [:]
   private var pendingSocketOpenTimeoutTasks: [Int: Task<Void, Never>] = [:]
   private let decoder = JSONDecoder()
@@ -1086,6 +1127,7 @@ final class SyncService: ObservableObject {
     setActiveProjectId(targetProject.id, rootPath: targetProject.rootPath ?? project.rootPath)
     refreshProjectCatalog()
     latestRemoteDbVersion = 0
+    resetOutboundCursorStateForActiveProject()
 
     guard let connection = result.connection else {
       // Desktop's success path for project_switch_request intentionally returns
@@ -1180,6 +1222,7 @@ final class SyncService: ObservableObject {
       }
       setActiveProjectId(previousActiveProjectId, rootPath: previousActiveProjectRootPath)
       latestRemoteDbVersion = previousLatestRemoteDbVersion
+      resetOutboundCursorStateForActiveProject()
       remoteProjectCatalog = previousRemoteProjectCatalog
       if let previousToken {
         keychain.saveToken(previousToken)
@@ -1216,13 +1259,20 @@ final class SyncService: ObservableObject {
   }
 
   private func setActiveProjectId(_ projectId: String?, rootPath: String? = nil) {
-    activeProjectId = projectId
-    activeProjectRootPath = projectId == nil
+    let previousProjectId = normalizedProjectId(activeProjectId)
+    let previousRootPath = normalizedProjectRoot(activeProjectRootPath)
+    let nextProjectId = normalizedProjectId(projectId)
+    let nextRootPath = projectId == nil
       ? nil
       : normalizedProjectRoot(rootPath)
         ?? projectId.flatMap { id in
           projects.first { $0.id == id }.flatMap { normalizedProjectRoot($0.rootPath) }
         }
+    if previousProjectId != nextProjectId || previousRootPath != nextRootPath {
+      prepareOutboundStateForProjectScopeChange()
+    }
+    activeProjectId = projectId
+    activeProjectRootPath = nextRootPath
     database.setActiveProjectId(projectId)
     if let projectId {
       UserDefaults.standard.set(projectId, forKey: activeProjectIdKey)
@@ -1288,6 +1338,8 @@ final class SyncService: ObservableObject {
     let action: String
     let payload: Data
     let queuedAt: String
+    let projectId: String?
+    let projectRootPath: String?
   }
 
   init(database: DatabaseService = DatabaseService()) {
@@ -1318,9 +1370,10 @@ final class SyncService: ObservableObject {
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
     database.setActiveProjectId(activeProjectId)
     projects = database.listMobileProjects()
+    outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
     pendingOperationCount = loadPendingOperations().count
-    outboundLocalDbVersion = database.currentDbVersion()
+    resetOutboundCursorStateForActiveProject()
     activeHostProfile = loadProfile()
     hostName = activeHostProfile?.hostName
     latestRemoteDbVersion = activeHostProfile?.lastRemoteDbVersion ?? 0
@@ -1903,14 +1956,11 @@ final class SyncService: ObservableObject {
   func handleForegroundTransition() async {
     guard !reconnectConnectInFlight else { return }
     if canSendLiveRequests() {
-      do {
-        try await refreshLaneSnapshots()
-        try await refreshWorkSessions()
-        try await refreshPullRequestSnapshots()
-        lastError = nil
-      } catch {
-        lastError = SyncUserFacingError.message(for: error)
-      }
+      lastError = nil
+      await restoreTrackedOpenLanesAfterReconnect()
+      restoreChatEventSubscriptions()
+      await refreshRemoteProjectCatalog()
+      await flushPendingOperations()
       return
     }
 
@@ -2136,7 +2186,7 @@ final class SyncService: ObservableObject {
     connectionState = .disconnected
     hostName = activeHostProfile?.hostName
     latestRemoteDbVersion = 0
-    outboundLocalDbVersion = database.currentDbVersion()
+    resetOutboundCursorStateForActiveProject()
     setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     if clearCredentials {
       let profileToClear = activeHostProfile ?? loadProfile()
@@ -3182,7 +3232,56 @@ final class SyncService: ObservableObject {
   func rebaseAbortGit(laneId: String) async throws { _ = try await sendCommand(action: "git.rebaseAbort", args: ["laneId": laneId]) }
 
   func listChatModels(provider: String) async throws -> [AgentChatModelInfo] {
-    try await sendDecodableCommand(action: "chat.models", args: ["provider": provider], as: [AgentChatModelInfo].self)
+    let normalizedProvider = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let cacheKey = chatModelsCacheKey(provider: normalizedProvider)
+    let now = Date()
+
+    if let cached = chatModelsCache[cacheKey],
+       now.timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL {
+      return cached.models
+    }
+
+    if let task = chatModelsInFlight[cacheKey] {
+      return try await task.value
+    }
+
+    let task = Task { @MainActor [weak self] in
+      guard let self else { throw CancellationError() }
+      return try await self.sendDecodableCommand(
+        action: "chat.models",
+        args: ["provider": normalizedProvider],
+        as: [AgentChatModelInfo].self
+      )
+    }
+    chatModelsInFlight[cacheKey] = task
+
+    do {
+      let models = try await task.value
+      chatModelsCache[cacheKey] = ChatModelsCacheEntry(models: models, fetchedAt: now)
+      chatModelsInFlight[cacheKey] = nil
+      return models
+    } catch {
+      chatModelsInFlight[cacheKey] = nil
+      if let cached = chatModelsCache[cacheKey] {
+        return cached.models
+      }
+      throw error
+    }
+  }
+
+  private func chatModelsCacheKey(provider: String) -> String {
+    let profile = activeHostProfile
+    let hostKey = profile?.hostIdentity
+      ?? profile?.lastHostDeviceId
+      ?? profile?.lastSuccessfulAddress
+      ?? currentAddress
+      ?? hostName
+      ?? "unpaired-host"
+    return [
+      provider.isEmpty ? "default" : provider,
+      hostKey,
+      activeProjectRootPath ?? activeProjectId ?? "no-project",
+    ].joined(separator: "\u{1f}")
   }
 
   func listChatSessions(laneId: String) async throws -> [AgentChatSessionSummary] {
@@ -3880,6 +3979,288 @@ final class SyncService: ObservableObject {
     } else if let data = try? encoder.encode(descriptors) {
       UserDefaults.standard.set(data, forKey: remoteCommandDescriptorsKey)
     }
+  }
+
+  private func normalizedProjectId(_ projectId: String?) -> String? {
+    guard let value = projectId?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+      return nil
+    }
+    return value
+  }
+
+  private func outboundCursorStorageKey(projectId: String?, rootPath: String?, siteId: String) -> String? {
+    let normalizedSiteId = siteId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !normalizedSiteId.isEmpty else { return nil }
+    let normalizedId = normalizedProjectId(projectId)
+    let normalizedRoot = normalizedProjectRoot(rootPath)
+    guard normalizedId != nil || normalizedRoot != nil else { return nil }
+    return [
+      "site=\(normalizedSiteId)",
+      "project=\(normalizedId ?? "")",
+      "root=\(normalizedRoot ?? "")",
+    ].joined(separator: "|")
+  }
+
+  private func activeOutboundCursorStorageKey() -> String? {
+    outboundCursorStorageKey(
+      projectId: activeProjectId,
+      rootPath: activeProjectRootPath,
+      siteId: database.localSiteId()
+    )
+  }
+
+  private func loadOutboundSyncCursors() -> [String: OutboundSyncCursor] {
+    guard let data = UserDefaults.standard.data(forKey: outboundSyncCursorsKey) else {
+      return [:]
+    }
+    guard let decoded = try? decoder.decode([String: OutboundSyncCursor].self, from: data) else {
+      UserDefaults.standard.removeObject(forKey: outboundSyncCursorsKey)
+      return [:]
+    }
+    return decoded.filter { _, cursor in
+      !cursor.siteId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && cursor.lastAckedDbVersion >= 0
+        && (normalizedProjectId(cursor.projectId) != nil || normalizedProjectRoot(cursor.projectRootPath) != nil)
+    }
+  }
+
+  private func saveOutboundSyncCursors(_ cursors: [String: OutboundSyncCursor]) {
+    let capped = cappedOutboundSyncState(cursors) { $0.updatedAt }
+    if capped.isEmpty {
+      UserDefaults.standard.removeObject(forKey: outboundSyncCursorsKey)
+    } else if let data = try? encoder.encode(capped) {
+      UserDefaults.standard.set(data, forKey: outboundSyncCursorsKey)
+    }
+  }
+
+  private func loadPendingOutboundChangesets() -> [String: PersistedOutboundChangeset] {
+    guard let data = UserDefaults.standard.data(forKey: pendingOutboundChangesetsKey) else {
+      return [:]
+    }
+    guard let decoded = try? decoder.decode([String: PersistedOutboundChangeset].self, from: data) else {
+      UserDefaults.standard.removeObject(forKey: pendingOutboundChangesetsKey)
+      return [:]
+    }
+    return decoded.filter { _, pending in
+      let siteId = pending.siteId.trimmingCharacters(in: .whitespacesAndNewlines)
+      let batchId = pending.payload.batchId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      return !siteId.isEmpty
+        && !batchId.isEmpty
+        && pending.payload.fromDbVersion >= 0
+        && pending.payload.toDbVersion >= pending.payload.fromDbVersion
+        && !pending.payload.changes.isEmpty
+        && (normalizedProjectId(pending.projectId) != nil || normalizedProjectRoot(pending.projectRootPath) != nil)
+    }
+  }
+
+  private func savePendingOutboundChangesets(_ changesets: [String: PersistedOutboundChangeset]) {
+    let capped = cappedOutboundSyncState(changesets) { $0.updatedAt }
+    if capped.isEmpty {
+      UserDefaults.standard.removeObject(forKey: pendingOutboundChangesetsKey)
+    } else if let data = try? encoder.encode(capped) {
+      UserDefaults.standard.set(data, forKey: pendingOutboundChangesetsKey)
+    }
+  }
+
+  private func cappedOutboundSyncState<Value>(
+    _ entries: [String: Value],
+    updatedAt: (Value) -> String
+  ) -> [String: Value] {
+    guard entries.count > outboundSyncStateMaxEntries else { return entries }
+    return Dictionary(
+      uniqueKeysWithValues: entries
+        .sorted { left, right in
+          let leftDate = updatedAt(left.value)
+          let rightDate = updatedAt(right.value)
+          if leftDate != rightDate {
+            return leftDate > rightDate
+          }
+          return left.key < right.key
+        }
+        .prefix(outboundSyncStateMaxEntries)
+        .map { ($0.key, $0.value) }
+    )
+  }
+
+  private func matchingOutboundCursor(in cursors: [String: OutboundSyncCursor]) -> OutboundSyncCursor? {
+    let siteId = database.localSiteId().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let projectId = normalizedProjectId(activeProjectId)
+    let rootPath = normalizedProjectRoot(activeProjectRootPath)
+    guard !siteId.isEmpty, projectId != nil || rootPath != nil else { return nil }
+
+    if let key = activeOutboundCursorStorageKey(), let exact = cursors[key] {
+      return exact
+    }
+
+    return cursors.values
+      .filter { cursor in
+        cursor.siteId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == siteId
+          && (
+            (rootPath != nil && normalizedProjectRoot(cursor.projectRootPath) == rootPath)
+              || (projectId != nil && normalizedProjectId(cursor.projectId) == projectId)
+          )
+      }
+      .max { left, right in
+        if left.updatedAt != right.updatedAt {
+          return left.updatedAt < right.updatedAt
+        }
+        return left.lastAckedDbVersion < right.lastAckedDbVersion
+      }
+  }
+
+  private func matchingPendingOutboundChangeset(in changesets: [String: PersistedOutboundChangeset]) -> PersistedOutboundChangeset? {
+    let siteId = database.localSiteId().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let projectId = normalizedProjectId(activeProjectId)
+    let rootPath = normalizedProjectRoot(activeProjectRootPath)
+    guard !siteId.isEmpty, projectId != nil || rootPath != nil else { return nil }
+
+    if let key = activeOutboundCursorStorageKey(), let exact = changesets[key] {
+      return exact
+    }
+
+    return changesets.values
+      .filter { pending in
+        pending.siteId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == siteId
+          && (
+            (rootPath != nil && normalizedProjectRoot(pending.projectRootPath) == rootPath)
+              || (projectId != nil && normalizedProjectId(pending.projectId) == projectId)
+          )
+      }
+      .max { left, right in
+        if left.updatedAt != right.updatedAt {
+          return left.updatedAt < right.updatedAt
+        }
+        return left.payload.toDbVersion < right.payload.toDbVersion
+      }
+  }
+
+  private func persistOutboundCursorForActiveProject(_ dbVersion: Int) {
+    guard let key = activeOutboundCursorStorageKey() else { return }
+    var cursors = loadOutboundSyncCursors()
+    cursors[key] = OutboundSyncCursor(
+      projectId: normalizedProjectId(activeProjectId),
+      projectRootPath: normalizedProjectRoot(activeProjectRootPath),
+      siteId: database.localSiteId().trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+      lastAckedDbVersion: max(0, dbVersion),
+      updatedAt: ISO8601DateFormatter().string(from: Date())
+    )
+    saveOutboundSyncCursors(cursors)
+  }
+
+  private func persistPendingOutboundChangesetForActiveProject(_ pending: PendingOutboundChangeset) {
+    guard let key = activeOutboundCursorStorageKey() else { return }
+    var changesets = loadPendingOutboundChangesets()
+    changesets[key] = PersistedOutboundChangeset(
+      projectId: normalizedProjectId(activeProjectId),
+      projectRootPath: normalizedProjectRoot(activeProjectRootPath),
+      siteId: database.localSiteId().trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+      payload: pending.payload,
+      retryCount: pending.retryCount,
+      updatedAt: ISO8601DateFormatter().string(from: Date())
+    )
+    savePendingOutboundChangesets(changesets)
+  }
+
+  private func clearPendingOutboundChangesetForActiveProject() {
+    let siteId = database.localSiteId().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let projectId = normalizedProjectId(activeProjectId)
+    let rootPath = normalizedProjectRoot(activeProjectRootPath)
+    guard !siteId.isEmpty, projectId != nil || rootPath != nil else { return }
+    var changesets = loadPendingOutboundChangesets()
+    if let key = activeOutboundCursorStorageKey() {
+      changesets.removeValue(forKey: key)
+    }
+    changesets = changesets.filter { _, pending in
+      let sameSite = pending.siteId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == siteId
+      let sameProject = projectId != nil && normalizedProjectId(pending.projectId) == projectId
+      let sameRoot = rootPath != nil && normalizedProjectRoot(pending.projectRootPath) == rootPath
+      return !(sameSite && (sameProject || sameRoot))
+    }
+    savePendingOutboundChangesets(changesets)
+  }
+
+  private func loadOutboundCursorVersionForActiveProject(defaultVersion: Int) -> Int {
+    let currentDbVersion = max(0, database.currentDbVersion())
+    guard activeOutboundCursorStorageKey() != nil else {
+      return min(max(0, defaultVersion), currentDbVersion)
+    }
+    guard let cursor = matchingOutboundCursor(in: loadOutboundSyncCursors()) else {
+      let initialVersion = min(max(0, defaultVersion), currentDbVersion)
+      persistOutboundCursorForActiveProject(initialVersion)
+      return initialVersion
+    }
+    let persistedVersion = max(0, cursor.lastAckedDbVersion)
+    if persistedVersion > currentDbVersion {
+      persistOutboundCursorForActiveProject(currentDbVersion)
+      return currentDbVersion
+    }
+    return persistedVersion
+  }
+
+  private func resetOutboundCursorStateForActiveProject(defaultVersion: Int? = nil) {
+    let currentDbVersion = max(0, database.currentDbVersion())
+    outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(
+      defaultVersion: defaultVersion ?? currentDbVersion
+    )
+    guard let persisted = matchingPendingOutboundChangeset(in: loadPendingOutboundChangesets()) else {
+      pendingOutboundChangeset = nil
+      return
+    }
+    guard persisted.payload.toDbVersion <= currentDbVersion else {
+      clearPendingOutboundChangesetForActiveProject()
+      pendingOutboundChangeset = nil
+      return
+    }
+    pendingOutboundChangeset = PendingOutboundChangeset(
+      payload: persisted.payload,
+      sentAt: 0,
+      retryCount: max(0, persisted.retryCount)
+    )
+    outboundLocalDbVersion = min(outboundLocalDbVersion, persisted.payload.fromDbVersion)
+  }
+
+  private func advanceOutboundCursorForActiveProject(to dbVersion: Int) {
+    outboundLocalDbVersion = max(outboundLocalDbVersion, max(0, dbVersion))
+    persistOutboundCursorForActiveProject(outboundLocalDbVersion)
+  }
+
+  private func prepareOutboundStateForProjectScopeChange() {
+    guard activeOutboundCursorStorageKey() != nil else {
+      pendingOutboundChangeset = nil
+      return
+    }
+    if let pending = pendingOutboundChangeset {
+      persistPendingOutboundChangesetForActiveProject(pending)
+      pendingOutboundChangeset = nil
+      return
+    }
+
+    let currentDbVersion = database.currentDbVersion()
+    guard currentDbVersion > outboundLocalDbVersion else {
+      pendingOutboundChangeset = nil
+      return
+    }
+    let localSiteId = database.localSiteId()
+    let changes = database.exportChangesSince(version: outboundLocalDbVersion).filter { $0.siteId == localSiteId }
+    guard !changes.isEmpty else {
+      advanceOutboundCursorForActiveProject(to: currentDbVersion)
+      pendingOutboundChangeset = nil
+      return
+    }
+
+    let pending = PendingOutboundChangeset(
+      payload: SyncChangesetBatchPayload(
+        batchId: makeRequestId(),
+        reason: "relay",
+        fromDbVersion: outboundLocalDbVersion,
+        toDbVersion: currentDbVersion,
+        changes: changes
+      ),
+      sentAt: 0,
+      retryCount: 0
+    )
+    persistPendingOutboundChangesetForActiveProject(pending)
+    pendingOutboundChangeset = nil
   }
 
   private func commandDescriptor(for action: String) -> SyncRemoteCommandDescriptor? {
@@ -4616,6 +4997,33 @@ final class SyncService: ObservableObject {
   func prioritizedReconnectAddressesForTesting(_ profile: HostConnectionProfile) -> [String] {
     prioritizedAddresses(for: profile)
   }
+
+  func setActiveProjectForTesting(projectId: String?, rootPath: String?) {
+    setActiveProjectId(projectId, rootPath: rootPath)
+    resetOutboundCursorStateForActiveProject()
+  }
+
+  func outboundLocalDbVersionForTesting() -> Int {
+    outboundLocalDbVersion
+  }
+
+  func advanceOutboundCursorForTesting(to dbVersion: Int) {
+    pendingOutboundChangeset = nil
+    clearPendingOutboundChangesetForActiveProject()
+    advanceOutboundCursorForActiveProject(to: dbVersion)
+  }
+
+  func pendingOperationsForTesting() -> [(id: String, kind: String, action: String, projectId: String?, projectRootPath: String?)] {
+    loadPendingOperations().map { operation in
+      (
+        id: operation.id,
+        kind: operation.kind,
+        action: operation.action,
+        projectId: operation.projectId,
+        projectRootPath: operation.projectRootPath
+      )
+    }
+  }
   #endif
 
   private func applyHelloPayload(
@@ -4705,7 +5113,7 @@ final class SyncService: ObservableObject {
     // The mobile should only claim a dbVersion it actually received via
     // changeset_batch. Setting it prematurely causes the desktop to skip
     // the full initial sync on reconnect (it thinks we already have the data).
-    outboundLocalDbVersion = database.currentDbVersion()
+    resetOutboundCursorStateForActiveProject()
     hostName = remoteHostName ?? activeHostProfile?.hostName
     connectionState = .connected
     currentAddress = connectedHost
@@ -4886,13 +5294,33 @@ final class SyncService: ObservableObject {
       resolve(requestId: requestId, result: .success(payload))
     case "changeset_batch":
       let batch = try decode(payload, as: SyncChangesetBatchPayload.self)
-      let result = try database.applyChanges(batch.changes)
-      latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
-      lastSyncAt = Date()
-      updateProfile { profile in
-        profile.lastRemoteDbVersion = latestRemoteDbVersion
+      do {
+        let result = try database.applyChanges(batch.changes)
+        latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
+        lastSyncAt = Date()
+        updateProfile { profile in
+          profile.lastRemoteDbVersion = latestRemoteDbVersion
+        }
+        sendChangesetAck(
+          batch: batch,
+          ok: true,
+          appliedDbVersion: result.dbVersion,
+          appliedCount: result.appliedCount
+        )
+        resolve(requestId: requestId, result: .success(payload))
+      } catch {
+        sendChangesetAck(
+          batch: batch,
+          ok: false,
+          appliedDbVersion: database.currentDbVersion(),
+          appliedCount: 0,
+          error: error
+        )
+        throw error
       }
-      resolve(requestId: requestId, result: .success(payload))
+    case "changeset_ack":
+      let ack = try decode(payload, as: SyncChangesetAckPayload.self)
+      handleChangesetAck(ack)
     case "brain_status":
       if let dict = payload as? [String: Any], let brain = dict["brain"] as? [String: Any] {
         hostName = brain["deviceName"] as? String
@@ -4975,25 +5403,92 @@ final class SyncService: ObservableObject {
     !Task.isCancelled && connectionGeneration == generation
   }
 
+  private func sendChangesetAck(
+    batch: SyncChangesetBatchPayload,
+    ok: Bool,
+    appliedDbVersion: Int,
+    appliedCount: Int,
+    error: Error? = nil
+  ) {
+    let ack = SyncChangesetAckPayload(
+      batchId: batch.batchId,
+      fromDbVersion: batch.fromDbVersion,
+      toDbVersion: batch.toDbVersion,
+      appliedDbVersion: appliedDbVersion,
+      appliedCount: appliedCount,
+      ok: ok,
+      error: error.map {
+        SyncChangesetAckPayload.AckError(
+          code: "changeset_apply_failed",
+          message: SyncUserFacingError.message(for: $0)
+        )
+      }
+    )
+    guard let payloadObject = try? jsonObject(from: ack) else { return }
+    sendEnvelope(type: "changeset_ack", requestId: batch.batchId, payload: payloadObject)
+  }
+
+  private func handleChangesetAck(_ ack: SyncChangesetAckPayload) {
+    guard var pending = pendingOutboundChangeset else { return }
+    guard ack.batchId == pending.payload.batchId else {
+      syncConnectLog.info("changeset ack ignored batch=\(ack.batchId ?? "missing", privacy: .public)")
+      return
+    }
+    guard ack.toDbVersion >= pending.payload.toDbVersion else { return }
+    if ack.ok {
+      pendingOutboundChangeset = nil
+      clearPendingOutboundChangesetForActiveProject()
+      advanceOutboundCursorForActiveProject(to: pending.payload.toDbVersion)
+      lastSyncAt = Date()
+      return
+    }
+    pending.retryCount += 1
+    pending.sentAt = ProcessInfo.processInfo.systemUptime
+    pendingOutboundChangeset = pending
+    persistPendingOutboundChangesetForActiveProject(pending)
+    lastError = ack.error?.message ?? "The desktop could not apply the latest phone changes."
+  }
+
+  private func sendOutboundChangeset(_ pending: PendingOutboundChangeset) {
+    guard let payloadObject = try? jsonObject(from: pending.payload) else { return }
+    sendEnvelope(type: "changeset_batch", requestId: pending.payload.batchId, payload: payloadObject)
+  }
+
   private func sendLocalChanges() {
     guard canSendLiveRequests() else { return }
+    let now = ProcessInfo.processInfo.systemUptime
+    if var pending = pendingOutboundChangeset {
+      if now - pending.sentAt >= 10 {
+        pending.sentAt = now
+        pending.retryCount += 1
+        pendingOutboundChangeset = pending
+        persistPendingOutboundChangesetForActiveProject(pending)
+        sendOutboundChangeset(pending)
+      }
+      return
+    }
     let currentDbVersion = database.currentDbVersion()
     guard currentDbVersion > outboundLocalDbVersion else { return }
     let localSiteId = database.localSiteId()
     let changes = database.exportChangesSince(version: outboundLocalDbVersion).filter { $0.siteId == localSiteId }
     let previousDbVersion = outboundLocalDbVersion
-    outboundLocalDbVersion = currentDbVersion
-    guard !changes.isEmpty else { return }
+    guard !changes.isEmpty else {
+      advanceOutboundCursorForActiveProject(to: currentDbVersion)
+      return
+    }
 
     let payload = SyncChangesetBatchPayload(
+      batchId: makeRequestId(),
       reason: "relay",
       fromDbVersion: previousDbVersion,
       toDbVersion: currentDbVersion,
       changes: changes
     )
     latestRemoteDbVersion = max(latestRemoteDbVersion, currentDbVersion)
-    guard let payloadObject = try? jsonObject(from: payload) else { return }
-    sendEnvelope(type: "changeset_batch", requestId: nil, payload: payloadObject)
+    let pending = PendingOutboundChangeset(payload: payload, sentAt: now, retryCount: 0)
+    pendingOutboundChangeset = pending
+    persistPendingOutboundChangesetForActiveProject(pending)
+    sendOutboundChangeset(pending)
   }
 
   private func resolve(requestId: String?, result: Result<Any, Error>) {
@@ -5256,20 +5751,37 @@ final class SyncService: ObservableObject {
     pendingOperationCount = operations.count
   }
 
-  private func enqueueOperation(kind: String, action: String, args: [String: Any]) throws {
+  private func enqueueOperation(kind: String, action: String, args: [String: Any], id: String? = nil) throws {
     guard JSONSerialization.isValidJSONObject(args) else {
       throw NSError(domain: "ADE", code: 11, userInfo: [NSLocalizedDescriptionKey: "Invalid queued operation payload."])
     }
     let payload = try adeJSONData(withJSONObject: args)
     var queued = loadPendingOperations()
     queued.append(PendingOperation(
-      id: makeRequestId(),
+      id: id ?? makeRequestId(),
       kind: kind,
       action: action,
       payload: payload,
-      queuedAt: ISO8601DateFormatter().string(from: Date())
+      queuedAt: ISO8601DateFormatter().string(from: Date()),
+      projectId: activeProjectId,
+      projectRootPath: activeProjectRootPath
     ))
     savePendingOperations(queued)
+  }
+
+  private func pendingOperationMatchesActiveProject(_ operation: PendingOperation) -> Bool {
+    if operation.projectId == nil && operation.projectRootPath == nil {
+      return true
+    }
+    if let projectId = operation.projectId, projectId == activeProjectId {
+      return true
+    }
+    if let operationRoot = normalizedProjectRoot(operation.projectRootPath),
+       let activeRoot = normalizedProjectRoot(activeProjectRootPath),
+       operationRoot == activeRoot {
+      return true
+    }
+    return false
   }
 
   private func decodeQueuedArgs(_ operation: PendingOperation) throws -> [String: Any] {
@@ -5288,8 +5800,13 @@ final class SyncService: ObservableObject {
       return
     }
 
-    while !queued.isEmpty {
-      let operation = queued[0]
+    var index = queued.startIndex
+    while index < queued.endIndex {
+      let operation = queued[index]
+      guard pendingOperationMatchesActiveProject(operation) else {
+        index = queued.index(after: index)
+        continue
+      }
       do {
         let args = try decodeQueuedArgs(operation)
         switch operation.kind {
@@ -5297,7 +5814,7 @@ final class SyncService: ObservableObject {
           guard commandPolicy(for: operation.action) != nil else {
             throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Queued action \(operation.action) is no longer available on this host."])
           }
-          _ = try await performCommandRequest(action: operation.action, args: args)
+          _ = try await performCommandRequest(action: operation.action, args: args, commandId: operation.id)
         case "file":
           guard queueableFileActions.contains(operation.action) else {
             throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Queued file action \(operation.action) is no longer supported."])
@@ -5306,12 +5823,12 @@ final class SyncService: ObservableObject {
         default:
           throw NSError(domain: "ADE", code: 13, userInfo: [NSLocalizedDescriptionKey: "Unknown queued operation type."])
         }
-        queued.removeFirst()
+        queued.remove(at: index)
         savePendingOperations(queued)
       } catch {
         lastError = SyncUserFacingError.message(for: error)
         if canSendLiveRequests() {
-          queued.removeFirst()
+          queued.remove(at: index)
           savePendingOperations(queued)
           continue
         }
@@ -5325,13 +5842,14 @@ final class SyncService: ObservableObject {
   private func performCommandRequest(
     action: String,
     args: [String: Any],
+    commandId: String? = nil,
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message
   ) async throws -> Any {
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The host is offline."])
     }
-    let requestId = makeRequestId()
+    let requestId = commandId ?? makeRequestId()
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: disconnectOnTimeout,
@@ -5347,8 +5865,19 @@ final class SyncService: ObservableObject {
   }
 
   private func sendCommand(action: String, args: [String: Any]) async throws -> Any {
+    let commandId = makeRequestId()
     if canSendLiveRequests() {
-      return try await performCommandRequest(action: action, args: args)
+      do {
+        return try await performCommandRequest(action: action, args: args, commandId: commandId)
+      } catch {
+        if !isRemoteCommandApplicationError(error),
+           !canSendLiveRequests(),
+           commandPolicy(for: action)?.queueable == true {
+          try enqueueOperation(kind: "command", action: action, args: args, id: commandId)
+          return ["queued": true]
+        }
+        throw error
+      }
     }
     guard let policy = commandPolicy(for: action) else {
       throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "This action is not available for the current host. Reconnect to refresh lane capabilities."])
@@ -5776,13 +6305,24 @@ extension SyncService {
   }
 
   private func performCommandRequestSafe(action: String, args: [String: Any]) async throws -> Any {
+    let commandId = makeRequestId()
     if canSendLiveRequests() {
-      return try await performCommandRequest(action: action, args: args)
+      do {
+        return try await performCommandRequest(action: action, args: args, commandId: commandId)
+      } catch {
+        if !isRemoteCommandApplicationError(error),
+           !canSendLiveRequests(),
+           commandPolicy(for: action)?.queueable == true {
+          try enqueueOperation(kind: "command", action: action, args: args, id: commandId)
+          return ["queued": true]
+        }
+        throw error
+      }
     }
     guard let policy = commandPolicy(for: action), policy.queueable == true else {
       throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "Offline — command dropped."])
     }
-    try enqueueOperation(kind: "command", action: action, args: args)
+    try enqueueOperation(kind: "command", action: action, args: args, id: commandId)
     return ["queued": true]
   }
 

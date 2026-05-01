@@ -110,14 +110,10 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "openai",
         displayName: "OpenAI",
         models: [
-          WorkModelOption(id: "gpt-5.5-codex", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 400K context", provider: "codex"),
-          WorkModelOption(id: "gpt-5.4-codex", displayName: "GPT-5.4", tier: .flagship, tagline: "Flagship · 400K context", provider: "codex"),
-          WorkModelOption(id: "gpt-5.4-mini-codex", displayName: "GPT-5.4-Mini", tier: .fast, tagline: "Cheaper 1M-context variant", provider: "codex"),
+          WorkModelOption(id: "gpt-5.5", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 1M context", provider: "codex"),
+          WorkModelOption(id: "gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "Affordable · 1M context", provider: "codex"),
+          WorkModelOption(id: "gpt-5.4-mini", displayName: "GPT-5.4-Mini", tier: .fast, tagline: "Cheaper 400K-context variant", provider: "codex"),
           WorkModelOption(id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex", tier: .balanced, tagline: "Tuned for code edits", provider: "codex"),
-          WorkModelOption(id: "gpt-5.3-codex-spark", displayName: "GPT-5.3-Codex-Spark", tier: .balanced, tagline: "Faster Codex variant", provider: "codex"),
-          WorkModelOption(id: "gpt-5.2-codex", displayName: "GPT-5.2-Codex", tier: .balanced, tagline: "Prior-gen Codex", provider: "codex"),
-          WorkModelOption(id: "gpt-5.1-codex-max", displayName: "GPT-5.1-Codex-Max", tier: .flagship, tagline: "Long-running Codex turns", provider: "codex"),
-          WorkModelOption(id: "gpt-5.1-codex-mini", displayName: "GPT-5.1-Codex-Mini", tier: .fast, tagline: "Lowest-cost Codex", provider: "codex"),
         ]
       )
     ]
@@ -177,12 +173,8 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
           WorkModelOption(id: "gpt-5.4-fast", displayName: "GPT-5.4 Fast", tier: .flagship, tagline: "Faster GPT-5.4", provider: "codex"),
           WorkModelOption(id: "gpt-5.4-mini", displayName: "GPT-5.4 Mini", tier: .fast, tagline: "Cheaper general-purpose", provider: "codex"),
           WorkModelOption(id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex (0.7x)", tier: .balanced, tagline: "Tuned for code edits", provider: "codex"),
-          WorkModelOption(id: "gpt-5.3-codex-fast", displayName: "GPT-5.3-Codex Fast", tier: .balanced, tagline: "Faster Codex variant", provider: "codex"),
           WorkModelOption(id: "gpt-5.2", displayName: "GPT-5.2 (0.7x)", tier: .balanced, tagline: "Prior-gen GPT-5", provider: "codex"),
-          WorkModelOption(id: "gpt-5.2-codex", displayName: "GPT-5.2-Codex (0.7x)", tier: .balanced, tagline: "Prior-gen Codex", provider: "codex"),
           WorkModelOption(id: "gpt-5.1", displayName: "GPT-5.1 (0.5x)", tier: .balanced, tagline: "Older GPT-5", provider: "codex"),
-          WorkModelOption(id: "gpt-5.1-codex", displayName: "GPT-5.1-Codex (0.5x)", tier: .balanced, tagline: "Older Codex", provider: "codex"),
-          WorkModelOption(id: "gpt-5.1-codex-max", displayName: "GPT-5.1-Codex-Max (0.5x)", tier: .flagship, tagline: "Long-running Codex turns", provider: "codex"),
         ]
       ),
       WorkModelProvider(
@@ -302,11 +294,12 @@ func workModelCatalogGroups(
     var modelsByProvider: [String: [WorkModelOption]] = [:]
     for model in availableModels {
       let providerKey = workModelProviderKey(for: model, topLevelProvider: groupKey)
+      let curated = workCuratedModelLookupMatch(for: model, in: curatedModelLookup)
       let option = workDynamicModelOption(
         from: model,
         topLevelProvider: groupKey,
         providerKey: providerKey,
-        curated: curatedModelLookup[model.id]
+        curated: curated
       )
       modelsByProvider[providerKey, default: []].append(option)
     }
@@ -348,11 +341,111 @@ private func workCuratedModelLookup(from groups: [WorkModelCatalogGroup]) -> [St
   for group in groups {
     for provider in group.providers {
       for model in provider.models {
-        lookup[model.id] = model
+        for key in workModelLookupKeys(model.id) {
+          lookup[key] = model
+        }
       }
     }
   }
   return lookup
+}
+
+private func workCuratedModelLookupMatch(
+  for model: AgentChatModelInfo,
+  in lookup: [String: WorkModelOption]
+) -> WorkModelOption? {
+  for key in workModelLookupKeys(model.id) {
+    if let match = lookup[key] { return match }
+  }
+  if let canonical = model.modelId {
+    for key in workModelLookupKeys(canonical) {
+      if let match = lookup[key] { return match }
+    }
+  }
+  return nil
+}
+
+private func workModelLookupKeys(_ raw: String?) -> [String] {
+  let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !trimmed.isEmpty else { return [] }
+
+  var keys: [String] = []
+  func append(_ value: String) {
+    let key = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if !key.isEmpty && !keys.contains(key) {
+      keys.append(key)
+    }
+  }
+
+  append(trimmed)
+  if let registryId = workCanonicalCodexRegistryId(for: trimmed) {
+    append(registryId)
+  }
+  if let runtimeId = workCodexRuntimeModelId(for: trimmed) {
+    append(runtimeId)
+  }
+  if trimmed.lowercased().hasPrefix("openai/") {
+    append(String(trimmed.dropFirst("openai/".count)))
+  }
+
+  return keys
+}
+
+private func workCanonicalCodexRegistryId(for raw: String) -> String? {
+  switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":
+    return "openai/gpt-5.5"
+  case "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex":
+    return "openai/gpt-5.4"
+  case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
+    return "openai/gpt-5.4-mini"
+  case "gpt-5.3-codex", "openai/gpt-5.3-codex":
+    return "openai/gpt-5.3-codex"
+  default:
+    return nil
+  }
+}
+
+private func workCodexRuntimeModelId(for raw: String) -> String? {
+  switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":
+    return "gpt-5.5"
+  case "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex":
+    return "gpt-5.4"
+  case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
+    return "gpt-5.4-mini"
+  default:
+    return nil
+  }
+}
+
+func workModelIdsEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
+  let lhsKeys = Set(workModelLookupKeys(lhs))
+  let rhsKeys = Set(workModelLookupKeys(rhs))
+  return !lhsKeys.isDisjoint(with: rhsKeys)
+}
+
+func workKnownModelDisplayName(_ raw: String?) -> String? {
+  switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
+  case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7":
+    return "Claude Opus 4.7"
+  case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7[1m]":
+    return "Claude Opus 4.7 1M"
+  case "sonnet", "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
+    return "Claude Sonnet 4.6"
+  case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5":
+    return "Claude Haiku 4.5"
+  case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":
+    return "GPT-5.5"
+  case "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex":
+    return "GPT-5.4"
+  case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
+    return "GPT-5.4-Mini"
+  case "gpt-5.3-codex", "openai/gpt-5.3-codex":
+    return "GPT-5.3-Codex"
+  default:
+    return nil
+  }
 }
 
 private func workProviderDisplayName(
@@ -405,7 +498,7 @@ private func workModelSortOrder(
         let provider = group.providers.first(where: { $0.key == providerKey }) else {
     return Int.max
   }
-  return provider.models.firstIndex(where: { $0.id == modelId }) ?? Int.max - 1
+  return provider.models.firstIndex(where: { workModelIdsEquivalent($0.id, modelId) }) ?? Int.max - 1
 }
 
 private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvider: String) -> String {
@@ -562,7 +655,7 @@ private func injectCurrentWorkModelIfNeeded(
   // matching group, or append a lightweight "Other" group when no group matches.
   if !currentModelId.isEmpty {
     let alreadyPresent = groups.contains { g in
-      g.providers.contains { p in p.models.contains { $0.id == currentModelId } }
+      g.providers.contains { p in p.models.contains { workModelIdsEquivalent($0.id, currentModelId) } }
     }
     if !alreadyPresent {
       let providerLower = currentProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

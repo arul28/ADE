@@ -5456,7 +5456,7 @@ describe("createAgentChatService", () => {
         | { mode?: unknown; settings?: { model?: unknown; reasoning_effort?: unknown; developer_instructions?: unknown } }
         | undefined;
 
-      expect(params?.approvalPolicy).toBe("untrusted");
+      expect(params?.approvalPolicy).toBe("unlessTrusted");
       expect(params?.sandboxPolicy?.type).toBe("readOnly");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("plan");
@@ -5509,7 +5509,7 @@ describe("createAgentChatService", () => {
       } | undefined;
       const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
 
-      expect(params?.approvalPolicy).toBe("on-request");
+      expect(params?.approvalPolicy).toBe("onRequest");
       expect(params?.sandboxPolicy?.type).toBe("workspaceWrite");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("default");
@@ -5573,8 +5573,8 @@ describe("createAgentChatService", () => {
         reasoningEffort?: unknown;
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
-      expect(params?.sandbox).toBe("danger-full-access");
-      expect(params?.reasoningEffort).toBeUndefined();
+      expect(params?.sandbox).toBe("dangerFullAccess");
+      expect(params?.reasoningEffort).toBe("medium");
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnStartParams = turnStartRequest?.params as {
@@ -5587,10 +5587,10 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.effort).toBe("medium");
     });
 
-    it("uses the app-server's effective Codex policy for subsequent turn/start overrides", async () => {
+    it("keeps the requested Codex reasoning effort while applying effective thread policy", async () => {
       mockState.codexResponseOverrides.set("thread/start", () => ({
         thread: { id: "thread-effective-start" },
-        approvalPolicy: "on-failure",
+        approvalPolicy: "onFailure",
         sandbox: {
           type: "workspaceWrite",
           writableRoots: [],
@@ -5607,6 +5607,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "codex",
         model: "gpt-5.4",
+        reasoningEffort: "xhigh",
       });
 
       await service.sendMessage({
@@ -5618,26 +5619,28 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
 
+      const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      expect((threadStartRequest?.params as { reasoningEffort?: unknown } | undefined)?.reasoningEffort).toBe("xhigh");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnStartParams = turnStartRequest?.params as {
         approvalPolicy?: unknown;
         sandboxPolicy?: { type?: unknown };
         effort?: unknown;
       } | undefined;
-      expect(turnStartParams?.approvalPolicy).toBe("on-failure");
+      expect(turnStartParams?.approvalPolicy).toBe("onFailure");
       expect(turnStartParams?.sandboxPolicy?.type).toBe("workspaceWrite");
-      expect(turnStartParams?.effort).toBe("high");
+      expect(turnStartParams?.effort).toBe("xhigh");
 
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.codexApprovalPolicy).toBe("on-failure");
       expect(summary?.codexSandbox).toBe("workspace-write");
       expect(summary?.permissionMode).toBe("default");
-      expect(summary?.reasoningEffort).toBe("high");
+      expect(summary?.reasoningEffort).toBe("xhigh");
 
       const persisted = readPersistedChatState(session.id);
       expect(persisted.codexApprovalPolicy).toBe("on-failure");
       expect(persisted.codexSandbox).toBe("workspace-write");
-      expect(persisted.reasoningEffort).toBe("high");
+      expect(persisted.reasoningEffort).toBe("xhigh");
     });
 
     it("re-resumes Codex threads when permission mode changes mid-session", async () => {
@@ -5706,8 +5709,8 @@ describe("createAgentChatService", () => {
         reasoningEffort?: unknown;
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
-      expect(params?.sandbox).toBe("danger-full-access");
-      expect(params?.reasoningEffort).toBeUndefined();
+      expect(params?.sandbox).toBe("dangerFullAccess");
+      expect(params?.reasoningEffort).toBe("medium");
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnStartParams = turnStartRequest?.params as {
@@ -5785,7 +5788,7 @@ describe("createAgentChatService", () => {
       const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
       const resumeParams = resumeRequest?.params as { approvalPolicy?: unknown; sandbox?: unknown } | undefined;
       expect(resumeParams?.approvalPolicy).toBe("never");
-      expect(resumeParams?.sandbox).toBe("danger-full-access");
+      expect(resumeParams?.sandbox).toBe("dangerFullAccess");
     });
 
     it("does not auto-upgrade default Codex chats into plan mode", async () => {
@@ -5862,10 +5865,10 @@ describe("createAgentChatService", () => {
       expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
     });
 
-    it("trusts the app-server's effective Codex policy on resume", async () => {
+    it("keeps persisted Codex reasoning effort while applying effective policy on resume", async () => {
       mockState.codexResponseOverrides.set("thread/resume", () => ({
         thread: { id: "thread-effective-resume" },
-        approvalPolicy: "on-failure",
+        approvalPolicy: "onFailure",
         sandbox: { type: "workspaceWrite" },
         reasoningEffort: "high",
       }));
@@ -5886,21 +5889,23 @@ describe("createAgentChatService", () => {
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
         codexConfigSource: "flags",
-        reasoningEffort: "medium",
+        reasoningEffort: "xhigh",
       });
 
       const resumed = await service.resumeSession({ sessionId: session.id });
 
+      const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
+      expect((resumeRequest?.params as { reasoningEffort?: unknown } | undefined)?.reasoningEffort).toBe("xhigh");
       expect(resumed.codexApprovalPolicy).toBe("on-failure");
       expect(resumed.codexSandbox).toBe("workspace-write");
       expect(resumed.permissionMode).toBe("default");
-      expect(resumed.reasoningEffort).toBe("high");
+      expect(resumed.reasoningEffort).toBe("xhigh");
 
       const persistedAfter = readPersistedChatState(session.id);
       expect(persistedAfter.threadId).toBe("thread-effective-resume");
       expect(persistedAfter.codexApprovalPolicy).toBe("on-failure");
       expect(persistedAfter.codexSandbox).toBe("workspace-write");
-      expect(persistedAfter.reasoningEffort).toBe("high");
+      expect(persistedAfter.reasoningEffort).toBe("xhigh");
     });
 
     it("throws when resuming an unknown session", async () => {

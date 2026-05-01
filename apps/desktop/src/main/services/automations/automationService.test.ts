@@ -1144,7 +1144,7 @@ describe("automationService integration", () => {
       triggers: [{ type: "manual" as const }],
       executor: { mode: "automation-bot", targetId: null },
       modelConfig: {
-        orchestratorModel: { modelId: "openai/gpt-5.4-codex", thinkingLevel: "low" },
+        orchestratorModel: { modelId: "openai/gpt-5.4", thinkingLevel: "low" },
       },
       permissionConfig: { providers: { codex: "default" as const, opencode: "edit" as const } },
       toolPalette: [] as const,
@@ -1242,7 +1242,7 @@ describe("automationService integration", () => {
       },
       modelConfig: {
         orchestratorModel: {
-          modelId: "openai/gpt-5.4-codex",
+          modelId: "openai/gpt-5.4",
           thinkingLevel: "medium",
         },
       },

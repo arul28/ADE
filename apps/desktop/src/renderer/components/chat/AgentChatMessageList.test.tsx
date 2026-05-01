@@ -915,7 +915,7 @@ describe("AgentChatMessageList transcript rendering", () => {
             type: "done",
             turnId: "turn-live",
             status: "completed",
-            modelId: "gpt-5.4-codex",
+            modelId: "gpt-5.4",
           },
         },
       ],
@@ -1325,8 +1325,30 @@ describe("AgentChatMessageList transcript rendering", () => {
 });
 
 describe("deriveTurnModelState", () => {
+  it("shows the canonical display name for legacy Codex model aliases", () => {
+    const state = deriveTurnModelState([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          modelId: "openai/gpt-5.5-codex",
+          model: "gpt-5.5",
+        },
+      },
+    ]);
+
+    expect(state.map.get("turn-1")?.label).toBe("GPT-5.5");
+  });
+
   it("only processes newly appended done events when history grows", () => {
     const getModelByIdSpy = vi.spyOn(modelRegistry, "getModelById").mockReturnValue({
+      id: "openai/gpt-5.4",
+      shortId: "gpt-5.4",
+      providerModelId: "gpt-5.4",
+      aliases: [],
       displayName: "Codex",
     } as any);
     const firstBatch: AgentChatEventEnvelope[] = [
@@ -1337,7 +1359,7 @@ describe("deriveTurnModelState", () => {
           type: "done",
           turnId: "turn-1",
           status: "completed",
-          modelId: "gpt-5.4-codex",
+          modelId: "gpt-5.4",
         },
       },
     ];
@@ -1356,7 +1378,7 @@ describe("deriveTurnModelState", () => {
             type: "done",
             turnId: "turn-2",
             status: "completed",
-            modelId: "gpt-5.4-codex",
+            modelId: "gpt-5.4",
           },
         },
       ],

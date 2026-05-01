@@ -1004,10 +1004,13 @@ func workTurnModelMetadataByTurn(
 
 /// Beautify a host-supplied model id into the label used on chips and turn
 /// separators. Mirrors the desktop composer's display: "Claude Sonnet 4.6",
-/// "GPT-5.4-Codex", etc., so iOS and desktop read the same.
+/// "GPT-5.4", etc., so iOS and desktop read the same.
 func prettyWorkChatModelName(_ raw: String) -> String {
   let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return "Model" }
+  if let known = workKnownModelDisplayName(trimmed) {
+    return known
+  }
   switch trimmed.lowercased() {
   case "opus": return "Claude Opus 4.7"
   case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"

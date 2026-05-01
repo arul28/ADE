@@ -316,8 +316,8 @@ describe("resolveTokenPrice", () => {
     expect(price.input).toBe(2 / 1_000_000);
   });
 
-  it("returns codex-mini pricing for codex-mini models", () => {
-    const price = resolveTokenPrice("codex-mini-latest");
+  it("returns mini pricing for mini OpenAI models", () => {
+    const price = resolveTokenPrice("gpt-5.4-mini");
     expect(price.input).toBe(0.3 / 1_000_000);
   });
 

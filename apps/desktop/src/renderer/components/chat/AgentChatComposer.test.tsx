@@ -70,8 +70,8 @@ afterEach(() => {
 
 function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
   const props: ComponentProps<typeof AgentChatComposer> = {
-    modelId: "openai/gpt-5.4-codex",
-    availableModelIds: ["openai/gpt-5.4-codex"],
+    modelId: "openai/gpt-5.4",
+    availableModelIds: ["openai/gpt-5.4"],
     reasoningEffort: null,
     draft: "Need a steer message",
     attachments: [],
@@ -618,7 +618,7 @@ describe("AgentChatComposer", () => {
       parallelLaunchBusy: true,
       parallelLaunchStatus: "Creating child lanes…",
       parallelModelSlots: [
-        { modelId: "openai/gpt-5.4-codex", reasoningEffort: "high" },
+        { modelId: "openai/gpt-5.4", reasoningEffort: "high" },
         { modelId: "anthropic/claude-sonnet-4-6", reasoningEffort: "medium" },
         { modelId: "openai/gpt-5.4-mini", reasoningEffort: "low" },
       ],

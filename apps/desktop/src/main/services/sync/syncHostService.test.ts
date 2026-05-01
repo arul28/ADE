@@ -1054,6 +1054,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       type: "changeset_batch",
       requestId: "changes-a",
       payload: {
+        batchId: "changes-a",
         reason: "relay",
         fromDbVersion: beforeVersion,
         toDbVersion: dbA.sync.getDbVersion(),
@@ -1066,12 +1067,35 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       const replicated = brainDb.getJson<{ value: string }>("replicated-state");
       return replicated?.value === "hello";
     });
+    const sourceAck = await clientA.queue.next("changeset_ack");
+    expect((sourceAck.payload as { ok: boolean; batchId?: string }).ok).toBe(true);
+    expect((sourceAck.payload as { ok: boolean; batchId?: string }).batchId).toBe("changes-a");
 
     const rebroadcast = await clientB.queue.next("changeset_batch");
-    const payload = rebroadcast.payload as { changes: unknown[] };
+    const payload = rebroadcast.payload as {
+      batchId?: string;
+      fromDbVersion: number;
+      toDbVersion: number;
+      changes: unknown[];
+    };
     expect(payload.changes.length).toBeGreaterThan(0);
     dbB.sync.applyChanges(payload.changes as any);
     expect(dbB.getJson<{ value: string }>("replicated-state")).toEqual({ value: "hello" });
+    expect(host.getPeerStates().find((peer) => peer.deviceId === "peer-b")?.syncLag).toBeGreaterThan(0);
+    clientB.ws.send(encodeSyncEnvelope({
+      type: "changeset_ack",
+      requestId: payload.batchId ?? "rebroadcast-ack",
+      payload: {
+        batchId: payload.batchId ?? null,
+        fromDbVersion: payload.fromDbVersion,
+        toDbVersion: payload.toDbVersion,
+        appliedDbVersion: dbB.sync.getDbVersion(),
+        appliedCount: payload.changes.length,
+        ok: true,
+      },
+      compressionThresholdBytes: 100_000,
+    }));
+    await waitFor(() => host.getPeerStates().find((peer) => peer.deviceId === "peer-b")?.syncLag === 0);
   }, 60_000);
 
   it("serves workspace file operations and artifact reads while blocking .git access", async () => {
@@ -1535,6 +1559,46 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect((ack.payload as { accepted: boolean }).accepted).toBe(true);
     const result = await client.queue.next("command_result");
     expect((result.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => fs.existsSync(path.join(projectRoot, ".ade", "cache", "sync-mobile-command-ledger.json")));
+    expect(fs.readFileSync(path.join(projectRoot, ".ade", "cache", "sync-mobile-command-ledger.json"), "utf8")).toContain("cmd-quick-run");
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-quick-run-retry",
+      payload: {
+        commandId: "cmd-quick-run",
+        action: "work.runQuickCommand",
+        args: {
+          laneId: "lane-1",
+          title: "Run tests",
+          startupCommand: "npm test",
+        },
+      },
+    }));
+    const replayAck = await client.queue.next("command_ack");
+    expect((replayAck.payload as { accepted: boolean }).accepted).toBe(true);
+    const replayResult = await client.queue.next("command_result");
+    expect((replayResult.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
+    expect(createSpy).toHaveBeenCalledTimes(1);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-quick-run-conflict",
+      payload: {
+        commandId: "cmd-quick-run",
+        action: "work.runQuickCommand",
+        args: {
+          laneId: "lane-2",
+          title: "Run a different command",
+          startupCommand: "npm run lint",
+        },
+      },
+    }));
+    const mismatchAck = await client.queue.next("command_ack");
+    expect((mismatchAck.payload as { accepted: boolean }).accepted).toBe(false);
+    const mismatchResult = await client.queue.next("command_result");
+    expect((mismatchResult.payload as { ok: boolean; error?: { code: string } }).error?.code).toBe("duplicate_command_mismatch");
     expect(createSpy).toHaveBeenCalledTimes(1);
 
     client.ws.send(encodeSyncEnvelope({

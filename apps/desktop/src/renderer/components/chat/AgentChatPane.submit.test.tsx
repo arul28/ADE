@@ -25,7 +25,7 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     laneId: "lane-1",
     provider: "codex",
     model: "gpt-5.4",
-    modelId: "openai/gpt-5.4-codex",
+    modelId: "openai/gpt-5.4",
     endedAt: null,
     lastOutputPreview: null,
     summary: null,
@@ -49,7 +49,7 @@ function buildCreatedSession(sessionId: string, overrides: Partial<AgentChatSess
     laneId: "lane-1",
     provider: "codex",
     model: "gpt-5.4",
-    modelId: "openai/gpt-5.4-codex",
+    modelId: "openai/gpt-5.4",
     status: "idle",
     sessionProfile: "workflow",
     reasoningEffort: "xhigh",
@@ -939,9 +939,11 @@ describe("AgentChatPane submit recovery", () => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
         targetModelId: "openai/gpt-5.4-mini",
-        reasoningEffort: null,
+        reasoningEffort: "xhigh",
+        permissionMode: "default",
         claudePermissionMode: "default",
         opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
         codexApprovalPolicy: "on-request",
         codexSandbox: "workspace-write",
         codexConfigSource: "flags",
@@ -967,7 +969,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: "Select model" });
-    const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
 
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
@@ -1033,7 +1035,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: "Select model" });
-    const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
 
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
@@ -1163,6 +1165,67 @@ describe("AgentChatPane submit recovery", () => {
     expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
   });
 
+  it("hydrates a visible inactive grid tile without requiring a click", async () => {
+    const session = buildSession("grid-inactive-chat", {
+      title: "Grid inactive chat",
+    });
+    installAdeMocks({ sessions: [session] });
+    const readTranscriptTail = vi.fn().mockResolvedValue(`${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T06:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "text",
+        text: "Visible inactive grid tile loaded",
+        turnId: "turn-grid",
+        messageId: "assistant-grid",
+      },
+    })}\n`);
+    window.ade.sessions.readTranscriptTail = readTranscriptTail as any;
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          layoutVariant="grid-tile"
+          isTileActive={false}
+          isTileVisible
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Visible inactive grid tile loaded")).toBeTruthy();
+    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+  });
+
+  it("does not hydrate hidden inactive chat tiles", async () => {
+    const session = buildSession("hidden-inactive-chat", {
+      title: "Hidden inactive chat",
+    });
+    installAdeMocks({ sessions: [session] });
+    const readTranscriptTail = vi.fn().mockResolvedValue("");
+    window.ade.sessions.readTranscriptTail = readTranscriptTail as any;
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          layoutVariant="grid-tile"
+          isTileActive={false}
+        />
+      </MemoryRouter>,
+    );
+
+    await new Promise((resolve) => window.setTimeout(resolve, 550));
+    expect(readTranscriptTail).not.toHaveBeenCalled();
+  });
+
   it("shows 'New chat' in the header when no session is selected", async () => {
     installAdeMocks({ sessions: [] });
 
@@ -1272,13 +1335,13 @@ describe("AgentChatPane submit recovery", () => {
 
     renderParallelDraftPane({
       availableModelIdsOverride: [
-        "openai/gpt-5.4-codex",
+        "openai/gpt-5.4",
         "anthropic/claude-sonnet-4-6",
       ],
     });
 
     const baseModelTrigger = await screen.findByRole("button", { name: "Select model" });
-    const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
     fireEvent.click(baseModelTrigger);
     fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
@@ -1299,7 +1362,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
         prompt: "Fix the login bug",
-        modelId: "openai/gpt-5.4-codex",
+        modelId: "openai/gpt-5.4",
       }));
       expect(createChild).toHaveBeenCalledTimes(2);
     });
@@ -1315,7 +1378,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({
       laneId: "lane-child-1",
       provider: "codex",
-      modelId: "openai/gpt-5.4-codex",
+      modelId: "openai/gpt-5.4",
     }));
     expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({
       laneId: "lane-child-2",
@@ -1437,13 +1500,13 @@ describe("AgentChatPane submit recovery", () => {
 
     renderParallelDraftPane({
       availableModelIdsOverride: [
-        "openai/gpt-5.4-codex",
+        "openai/gpt-5.4",
         "anthropic/claude-sonnet-4-6",
       ],
     });
 
     const baseModelTrigger = await screen.findByRole("button", { name: "Select model" });
-    const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
     fireEvent.click(baseModelTrigger);
     fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));

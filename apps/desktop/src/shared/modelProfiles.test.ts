@@ -242,7 +242,7 @@ describe("getProfileById", () => {
 
 describe("resolveCallTypeModel", () => {
   it("returns explicit config when present in intelligenceConfig", () => {
-    const config = { provider: "codex" as const, modelId: "openai/gpt-5.4-codex", thinkingLevel: "high" as const };
+    const config = { provider: "codex" as const, modelId: "openai/gpt-5.4", thinkingLevel: "high" as const };
     const result = resolveCallTypeModel("coordinator", { coordinator: config });
     expect(result).toBe(config);
   });
@@ -254,13 +254,13 @@ describe("resolveCallTypeModel", () => {
   });
 
   it("falls back to fallbackModel when intelligenceConfig is null", () => {
-    const fallback = { provider: "codex" as const, modelId: "openai/gpt-5.4-codex" };
+    const fallback = { provider: "codex" as const, modelId: "openai/gpt-5.4" };
     const result = resolveCallTypeModel("chat_response", null, fallback);
     expect(result).toBe(fallback);
   });
 
   it("falls back to fallbackModel when intelligenceConfig is undefined", () => {
-    const fallback = { provider: "codex" as const, modelId: "openai/gpt-5.4-codex" };
+    const fallback = { provider: "codex" as const, modelId: "openai/gpt-5.4" };
     const result = resolveCallTypeModel("coordinator", undefined, fallback);
     expect(result).toBe(fallback);
   });
